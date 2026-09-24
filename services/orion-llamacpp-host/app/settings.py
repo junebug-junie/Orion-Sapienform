@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     )
     llm_profile_name: str = Field(..., env="LLM_PROFILE_NAME")
 
+    # --- GPU pool discovery (orion:llm:worker:announce) ---
+    # Which config/gpu_pool.yaml role this worker fills, and the HOST port the pool reaches it
+    # on (the container only knows its internal 8080). Both unset -> no announcement, and the
+    # pool shows this worker's port as "silent" (no grants) rather than guessing.
+    llm_role: Optional[str] = Field(None, alias="LLM_ROLE")
+    llm_announce_port: Optional[int] = Field(None, alias="LLM_ANNOUNCE_PORT")
+    llm_announce_host: str = Field("circe", alias="LLM_ANNOUNCE_HOST")
+
     # Token (optional; only needed for gated/private repos)
     hf_token: Optional[str] = Field(
         default=None,

@@ -1,0 +1,74 @@
+name: orion-gpu-pool tests
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-gpu-pool/**"
+      - "orion/gpu_pool/**"
+      - "orion/schemas/gpu_pool.py"
+      - "config/gpu_pool.yaml"
+      - "config/llm_profiles.yaml"
+      - "services/orion-llamacpp-host/**"
+      - "services/orion-sql-db/manual_migration_gpu_pool_v1.sql"
+      - "services/orion-equilibrium-service/app/settings.py"
+      - "services/orion-equilibrium-service/.env_example"
+      - "services/orion-equilibrium-service/docker-compose.yml"
+      - "scripts/check_gpu_pool_config.py"
+      - ".github/workflows/orion-gpu-pool-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/orion-gpu-pool/**"
+      - "orion/gpu_pool/**"
+      - "orion/schemas/gpu_pool.py"
+      - "config/gpu_pool.yaml"
+      - "config/llm_profiles.yaml"
+      - "services/orion-llamacpp-host/**"
+
+jobs:
+  pool:
+    name: gpu-pool — config gate, scheduler, lease graph, runtime, Postgres, eval
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: gpu-pool-test
+          POSTGRES_DB: gpu_pool_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-gpu-pool/requirements.txt
+          python -m pip install -r requirements-dev.txt
+      - name: Config gate (config/gpu_pool.yaml vs llama.cpp compose roles/ports)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python scripts/check_gpu_pool_config.py
+      - name: Pure core (config, scheduler, discovery, lease graph, transport contract)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest orion/gpu_pool/tests -q -p no:cacheprovider
+      - name: Service (runtime, client round trip, Postgres store + restart)
+        env:
+          GPU_POOL_TEST_POSTGRES_URI: postgresql://postgres:gpu-pool-test@127.0.0.1:5432/gpu_pool_test
+        run: cd services/orion-gpu-pool && python -m pytest tests -q -p no:cacheprovider
+      - name: Worker announce (llamacpp-host side of the discovery bridge)
+        env:
+          LLM_PROFILE_NAME: ci
+        run: |
+          python -m pip install -r services/orion-llamacpp-host/requirements.txt
+          cd services/orion-llamacpp-host && python -m pytest tests/test_worker_announce.py -q -p no:cacheprovider
+      - name: Policy eval (owner starvation, lost leases, spill-down violations)
+        run: python services/orion-gpu-pool/evals/run_pool_day_eval.py

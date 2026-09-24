@@ -23,6 +23,8 @@ services:
       - ORION_BUS_URL=${ORION_BUS_URL}
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
       - LLM_PROFILE_NAME=${DSV41_PROFILE_NAME:-deepseek-v41-flash-mxfp4-engram-4xv100-32gb-circe-test}
+      - LLM_ROLE=experiment
+      - LLM_ANNOUNCE_PORT=${DSV41_HOST_PORT:-8099}
       - HF_TOKEN=${HF_TOKEN}
       - hf_token=${hf_token}
       - LLAMACPP_HOST_OVERRIDE=0.0.0.0

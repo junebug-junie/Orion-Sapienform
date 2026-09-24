@@ -54,6 +54,7 @@ def retention_days_for(settings: Settings) -> dict[str, int]:
         "substrate_durable_run_state": int(
             getattr(settings, "substrate_durable_run_state_retention_days", 0) or 0
         ),
+        "gpu_pool_events": int(getattr(settings, "gpu_pool_events_retention_days", 0) or 0),
     }
 
 

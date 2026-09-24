@@ -57,6 +57,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "curiosity.peer.brief.v1": "CuriosityPeerBriefSQL",
     "curiosity.supervisor.reading.v1": "CuriosityHopReadingSQL",
     "durable.run.state.v1": "DurableRunStateSQL",
+    "gpu_pool.event.v1": "GpuPoolEventSQL",
     "chat_stance.belief.write.v1": "ChatStanceBeliefLogSQL",
     "self_concept.history.write.v1": "SelfConceptHistorySQL",
     "self_sense.eval.write.v1": "SelfSenseEvalLogSQL",
@@ -177,6 +178,7 @@ class Settings(BaseSettings):
             "orion:curiosity:peer:brief",
             "orion:curiosity:supervisor:reading",
             "orion:durable:run:state",
+            "orion:gpu_pool:event",
             "orion:chat_stance:belief:write",
             "orion:self_concept:history:write",
             "orion:self_sense:eval:write",
@@ -416,6 +418,9 @@ class Settings(BaseSettings):
     substrate_durable_run_state_retention_days: int = Field(
         90, alias="SUBSTRATE_DURABLE_RUN_STATE_RETENTION_DAYS"
     )
+    # gpu_pool_events: ~4-6 rows per GPU lease (every LLM call once the gateway leases),
+    # so the busiest new table here. 30 days covers the panel's historical views.
+    gpu_pool_events_retention_days: int = Field(30, alias="GPU_POOL_EVENTS_RETENTION_DAYS")
 
     # 15 -> 3 days (2026-08-20, Juniper's call, made against measured numbers).
     #
@@ -721,6 +726,9 @@ class Settings(BaseSettings):
         # route with no feature toggle; SQL_WRITER_SUBSCRIBE_CHANNELS replaces).
         if "orion:durable:run:state" not in channels:
             channels.append("orion:durable:run:state")
+        # Same guarantee, same reason (gpu_pool.event.v1 is a code-default route).
+        if "orion:gpu_pool:event" not in channels:
+            channels.append("orion:gpu_pool:event")
         # Same guarantee, same reason: walkway camera routes are code
         # defaults with no feature toggle.
         for walkway_channel in ("orion:vision:crops:sql-write", "orion:vision:unresolved:sql-write"):

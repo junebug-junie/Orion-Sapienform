@@ -99,6 +99,11 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "juniper.affective_state.v1": "JuniperAffectiveStateSQL",
     "affectgpt.juniper_multimodal_affect.v1": "JuniperMultimodalAffectSQL",
     "equilibrium.service.transition.v1": "EquilibriumServiceTransitionSQL",
+    # Walkway camera. The crop kind fans out to one row per crop in a
+    # dedicated worker branch (app/vision_crop_persist.py), same shape as
+    # __patch_chat_history__.
+    "vision.crop.observation.v1": "__vision_crop_observation__",
+    "vision.unresolved.v1": "VisionUnresolvedSQL",
 }
 
 
@@ -208,6 +213,8 @@ class Settings(BaseSettings):
             "orion:substrate:dev_economics_ledger",
             "orion:substrate:doc_semantic_drift","orion:substrate:juniper_affective_state",
             "orion:affectgpt:assessment",
+            "orion:vision:crops:sql-write",
+            "orion:vision:unresolved:sql-write",
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )
@@ -460,6 +467,68 @@ class Settings(BaseSettings):
         86400.0, alias="VISION_PERMANENCE_MAX_ABSENCE_SEC"
     )
 
+    # Walkway camera reducers (docs/superpowers/specs/2026-09-22-walkway-
+    # camera-busy-world-design.md). Both loops are no-ops while their tables
+    # are empty, and back off with a clear log line (not a crash loop) while
+    # services/orion-sql-db/manual_migration_walkway_camera_v1.sql is not
+    # applied. Interval 0 disables a loop.
+    #
+    # Individuals: clusters crop embeddings into "the same one again",
+    # groups them into sightings, scores attention, opens asks, applies
+    # Juniper's answers, writes patio presence, prunes.
+    vision_individuals_interval_sec: float = Field(60.0, alias="VISION_INDIVIDUALS_INTERVAL_SEC")
+    # Cosine similarity to the nearest same-kind centroid needed to count as
+    # the same individual. A starting guess, not calibrated: the first week
+    # of scripts/report_vision_individuals.py output is what tunes it.
+    vision_individuals_match_threshold: float = Field(0.80, alias="VISION_INDIVIDUALS_MATCH_THRESHOLD")
+    # Two observations of one individual this close together are one sighting.
+    vision_individuals_merge_gap_sec: float = Field(60.0, alias="VISION_INDIVIDUALS_MERGE_GAP_SEC")
+    # Rows read per stream per tick; the cursor carries the rest to the next tick.
+    vision_individuals_batch_rows: int = Field(5000, alias="VISION_INDIVIDUALS_BATCH_ROWS")
+    # A stream's first-ever tick looks back at most this far.
+    vision_individuals_lookback_ceiling_sec: float = Field(3600.0, alias="VISION_INDIVIDUALS_LOOKBACK_CEILING_SEC")
+    vision_crop_retention_days: float = Field(7.0, alias="VISION_CROP_RETENTION_DAYS")
+    vision_sighting_retention_days: float = Field(90.0, alias="VISION_SIGHTING_RETENTION_DAYS")
+    # Patio presence (no individuals, no embeddings): "present" if a patio box
+    # was seen within this many seconds, "recent" within the grace, else "absent".
+    vision_patio_present_sec: float = Field(120.0, alias="VISION_PATIO_PRESENT_SEC")
+    vision_patio_grace_sec: float = Field(600.0, alias="VISION_PATIO_GRACE_SEC")
+    # Attention score (app/vision_attention_score.py): a sighting at or above
+    # this writes one vision_events row event_type='attention_worthy'.
+    vision_attention_threshold: float = Field(0.70, alias="VISION_ATTENTION_THRESHOLD")
+    # Asks: an unlabeled individual seen this often, across this many local
+    # days, gets one question to Juniper.
+    vision_ask_min_sightings: int = Field(10, alias="VISION_ASK_MIN_SIGHTINGS")
+    vision_ask_min_days: int = Field(5, alias="VISION_ASK_MIN_DAYS")
+    vision_ask_expiry_days: float = Field(7.0, alias="VISION_ASK_EXPIRY_DAYS")
+    # Orion's whole daily ask budget (every source_kind), counted from
+    # orion_ask.created_at since local midnight, so a restart cannot reset it.
+    orion_ask_daily_cap: int = Field(2, alias="ORION_ASK_DAILY_CAP")
+    orion_ask_opened_channel: str = Field("orion:ask:opened", alias="ORION_ASK_OPENED_CHANNEL")
+    # Local clock for "07:40", distinct days, weekday/weekend, and the ask cap day.
+    vision_local_tz: str = Field("America/Denver", alias="VISION_LOCAL_TZ")
+
+    # Rhythm learner: fits when things usually happen, emits expectations,
+    # grades them met / missed / unscorable.
+    vision_rhythm_interval_sec: float = Field(900.0, alias="VISION_RHYTHM_INTERVAL_SEC")
+    vision_rhythm_min_occurrences: int = Field(5, alias="VISION_RHYTHM_MIN_OCCURRENCES")
+    vision_rhythm_min_days: int = Field(5, alias="VISION_RHYTHM_MIN_DAYS")
+    vision_rhythm_history_days: float = Field(28.0, alias="VISION_RHYTHM_HISTORY_DAYS")
+    # Circular kernel bandwidth over minute-of-day.
+    vision_rhythm_bandwidth_min: float = Field(20.0, alias="VISION_RHYTHM_BANDWIDTH_MIN")
+    # Expectations below this hit rate are not emitted.
+    vision_rhythm_min_confidence: float = Field(0.5, alias="VISION_RHYTHM_MIN_CONFIDENCE")
+    vision_rhythm_max_per_subject: int = Field(3, alias="VISION_RHYTHM_MAX_PER_SUBJECT")
+    # Wait this long after a window closes before grading it, so the
+    # individuals reducer has caught up on that window's crops.
+    vision_rhythm_score_lag_sec: float = Field(600.0, alias="VISION_RHYTHM_SCORE_LAG_SEC")
+    # Label subjects (from vision_scene_inventory counts). An arrival is the
+    # first window with count > 0 after at least VISION_RHYTHM_ARRIVAL_GAP_SEC
+    # without one -- a debounced 0 -> >0, so detector flicker is not an arrival.
+    vision_rhythm_labels: str = Field("vehicle,package,mail truck", alias="VISION_RHYTHM_LABELS")
+    vision_rhythm_label_streams: str = Field("walkway", alias="VISION_RHYTHM_LABEL_STREAMS")
+    vision_rhythm_arrival_gap_sec: float = Field(300.0, alias="VISION_RHYTHM_ARRIVAL_GAP_SEC")
+
     grammar_retention_interval_sec: float = Field(
         60.0, alias="GRAMMAR_RETENTION_INTERVAL_SEC"
     )
@@ -635,6 +704,11 @@ class Settings(BaseSettings):
         # route with no feature toggle; SQL_WRITER_SUBSCRIBE_CHANNELS replaces).
         if "orion:durable:run:state" not in channels:
             channels.append("orion:durable:run:state")
+        # Same guarantee, same reason: walkway camera routes are code
+        # defaults with no feature toggle.
+        for walkway_channel in ("orion:vision:crops:sql-write", "orion:vision:unresolved:sql-write"):
+            if walkway_channel not in channels:
+                channels.append(walkway_channel)
         return channels
 
     @property

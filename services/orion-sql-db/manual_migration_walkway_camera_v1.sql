@@ -64,6 +64,9 @@ CREATE TABLE IF NOT EXISTS vision_individual_sighting (
     evidence_ref         TEXT,
     attention_score      REAL,
     attention_components JSONB,
+    -- {zone: observation count}; a sighting spans reducer ticks, so "the zone
+    -- it spent most observations in" needs the running tally, not just the last zone.
+    zone_counts          JSONB NOT NULL DEFAULT '{}'::jsonb,
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT vision_individual_sighting_patio_no_embedding
         CHECK (zone IS DISTINCT FROM 'patio' OR embedding_ref IS NULL)

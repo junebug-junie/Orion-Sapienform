@@ -989,11 +989,31 @@ async def lifespan(app: FastAPI):
             "vision object-permanence sweep DISABLED (VISION_PERMANENCE_SWEEP_INTERVAL_SEC=0)"
         )
 
+    # Walkway camera reducers -- see app/vision_individuals.py and
+    # app/vision_rhythm.py. Both are clocked (absence and "the usual thing did
+    # not happen" are non-events) and back off with a clear log line while the
+    # walkway migration is not applied.
+    vision_individuals_task: asyncio.Task | None = None
+    if float(getattr(settings, "vision_individuals_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_individuals_loop import vision_individuals_loop
+
+        vision_individuals_task = asyncio.create_task(vision_individuals_loop(settings))
+    else:
+        logger.info("vision individuals reducer DISABLED (VISION_INDIVIDUALS_INTERVAL_SEC=0)")
+    vision_rhythm_task: asyncio.Task | None = None
+    if float(getattr(settings, "vision_rhythm_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_rhythm_loop import vision_rhythm_loop
+
+        vision_rhythm_task = asyncio.create_task(vision_rhythm_loop(settings))
+    else:
+        logger.info("vision rhythm learner DISABLED (VISION_RHYTHM_INTERVAL_SEC=0)")
+
     try:
         yield
     finally:
         pending = [
-            t for t in (task, watch_task, retention_task, vision_permanence_task)
+            t for t in (task, watch_task, retention_task, vision_permanence_task,
+                        vision_individuals_task, vision_rhythm_task)
             if t is not None
         ]
         for background in pending:

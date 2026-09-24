@@ -579,3 +579,16 @@ def test_fast_hop_material_step_still_spikes():
     _warm(state, rng, center=10.0, n_windows=40)
     events, _ = _run(state, ((i, {HOP: _stats(_noisy(rng, 600.0, sigma=0.05))}) for i in range(40, 44)))
     assert any(e.condition == "spike" and e.phase == "open" for e in events)
+
+
+def test_open_saturation_keeps_hysteresis_on_the_materiality_term():
+    # Review finding: with open/close sharing the 250 ms absolute test, a fast
+    # hop sitting ~200 ms over a ~200 ms floor would close an open saturation
+    # even though ratio (2.0) is still above the 1.5 close band.
+    rng = random.Random(9)
+    state = new_state(CFG)
+    _warm(state, rng, center=200.0, n_windows=120)
+    ev_open, _ = _run(state, ((i, {HOP: _stats(_noisy(rng, 700.0, sigma=0.02))}) for i in range(120, 300)))
+    assert any(e.condition == "saturation" and e.phase == "open" for e in ev_open)
+    ev_hold, _ = _run(state, ((i, {HOP: _stats(_noisy(rng, 400.0, sigma=0.02))}) for i in range(300, 500)))
+    assert not [e for e in ev_hold if e.condition == "saturation" and e.phase == "close"]

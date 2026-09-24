@@ -768,9 +768,18 @@ def fold_snapshot(
 
                 # saturation, with open/close hysteresis.
                 sat_open = "saturation" in ks.episodes
-                sat_hot = ratio >= (
-                    config.saturation_close_ratio if sat_open else config.saturation_ratio
-                ) and math.exp(ks.level_mean) - math.exp(ks.floor) >= config.min_excess_ms
+                # Both terms keep hysteresis: once open, the materiality floor
+                # drops in the same proportion as the ratio (250 ms -> 125 ms at
+                # the defaults), so a fast hop can't flap on the absolute term.
+                excess_ms = math.exp(ks.level_mean) - math.exp(ks.floor)
+                if sat_open:
+                    sat_hot = ratio >= config.saturation_close_ratio and excess_ms >= (
+                        config.min_excess_ms
+                        * (config.saturation_close_ratio - 1.0)
+                        / max(config.saturation_ratio - 1.0, 1e-9)
+                    )
+                else:
+                    sat_hot = ratio >= config.saturation_ratio and excess_ms >= config.min_excess_ms
                 step = _episode_step(
                     ks, "saturation", hot=sat_hot, magnitude=ratio, now=now,
                     peak_ms=peak, config=config,

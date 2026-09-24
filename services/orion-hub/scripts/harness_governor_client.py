@@ -197,10 +197,11 @@ class HarnessGovernorClient:
             # rpc_transport_timeout grammar atom (equilibrium's transport trigger).
             _record_governor_hop(self.bus, hop, elapsed_ms, timed_out=True)
             # The grammar atom fires equilibrium's transport metacog trigger directly
-            # (no gate, only a cooldown), and msg=None also covers a failed liveness
-            # check on a long run. Tie it to the same switch that puts Hub into transport
-            # health at all, which stays off until the per-hop EWMA gate ships.
-            if bool(getattr(settings, "RPC_HEALTH_PUBLISH_ENABLED", False)):
+            # (no gate, only a cooldown), msg=None also covers a failed liveness check
+            # on a long run, and a timed-out turn already reports via exec_turn_timeout.
+            # So it has its own switch, off by default -- independent of RPC-health
+            # publishing, which only feeds the log-only per-hop baseline gate.
+            if bool(getattr(settings, "HUB_GOVERNOR_TIMEOUT_GRAMMAR_ENABLED", False)):
                 await _emit_governor_timeout_grammar(
                     self.bus,
                     request_channel=request_channel,

@@ -1510,15 +1510,19 @@ class Settings(BaseSettings):
     # most needs to cover.
     # RPC-health snapshot publish (orion/core/bus/rpc_health_publish.py): drains the Hub's
     # forked RPC bus (rpc_request() outcomes + hub->harness-governor `governor:<mode>`
-    # hops) onto orion:rpc_health:snapshot every interval. Off by default: Hub's pooled
-    # p95 includes long hub->orch turns, and orion-equilibrium-service's current
-    # transport gate fires on pooled p95 >= 5 s, so enabling this before the per-hop EWMA
-    # gate lands would add transport metacog rows (2026-09-24 transport-EWMA spec).
+    # hops) onto orion:rpc_health:snapshot every interval. On since 2026-09-24: the fixed
+    # 5 s pooled-p95 gate is gone and equilibrium's legacy timeout branch skips Hub, so
+    # these snapshots only feed the log-only per-hop EWMA gate.
     RPC_HEALTH_PUBLISH_ENABLED: bool = Field(default=True, alias="RPC_HEALTH_PUBLISH_ENABLED")
     RPC_HEALTH_PUBLISH_INTERVAL_SEC: float = Field(default=30.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
-    # Per-hop `channel_latency` in each snapshot. RpcHealthSnapshotV1 is extra="forbid":
-    # keep false until orion-signal-gateway and orion-equilibrium-service are rebuilt.
+    # Per-hop `channel_latency` in each snapshot (consumers shipped first, 2026-09-24).
     RPC_HEALTH_CHANNEL_LATENCY_ENABLED: bool = Field(default=True, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
+    # Governor wait timeouts also emit the mesh-wide rpc_transport_timeout grammar atom,
+    # which fires a transport metacog row directly (cooldown only). Off: it would also
+    # fire on a failed liveness check and duplicate the chat_turn exec_turn_timeout path.
+    HUB_GOVERNOR_TIMEOUT_GRAMMAR_ENABLED: bool = Field(
+        default=False, alias="HUB_GOVERNOR_TIMEOUT_GRAMMAR_ENABLED"
+    )
 
     HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC: float = Field(
         default=8300.0,

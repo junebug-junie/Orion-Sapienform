@@ -14,11 +14,15 @@ from uuid import UUID, uuid4
 
 import httpx
 
+from orion.core.bus.http_health import AsyncHopTimingTransport, normalize_id_path
+
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.mind.constants import MIND_RUN_ARTIFACT_SCHEMA_ID
 from orion.mind.v1 import MindRunPolicyV1, MindRunRequestV1, MindRunResultV1
 from orion.schemas.mind.artifact import MindRunArtifactV1
 from orion.schemas.thought import StanceReactRequestV1
+
+from .rpc_health import hop_recorder
 
 logger = logging.getLogger("orion-thought.mind_enrichment")
 
@@ -401,10 +405,16 @@ async def run_mind_for_thought(
         pool=5.0,
     )
     max_body = int(getattr(settings, "mind_max_response_bytes", 2_000_000))
-    transport = _mind_transport()
-    client_kwargs: dict[str, Any] = {"timeout": timeout}
-    if transport is not None:
-        client_kwargs["transport"] = transport
+    # Hop key http:<mind host[:port]>/v1/mind/run, recorded into the process RPC-health
+    # sink (app/rpc_health.py) -- timeout/504 -> timeout, any response -> success.
+    client_kwargs: dict[str, Any] = {
+        "timeout": timeout,
+        "transport": AsyncHopTimingTransport(
+            _mind_transport() or httpx.AsyncHTTPTransport(),
+            recorder_getter=hop_recorder,
+            path_normalizer=normalize_id_path,
+        ),
+    }
     try:
         async with httpx.AsyncClient(**client_kwargs) as client:
             resp = await client.post(url, json=req.model_dump(mode="json"))

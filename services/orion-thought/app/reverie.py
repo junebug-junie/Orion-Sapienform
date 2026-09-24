@@ -38,6 +38,7 @@ from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.reverie import ConcernCardV1, SpontaneousThoughtV1
 from orion.schemas.thought import CoalitionSnapshotV1
 
+from .rpc_health import fold_bus
 from .bus_listener import extract_stance_react_payload
 from .cortex_client import CortexExecClient
 from .settings import settings
@@ -781,6 +782,7 @@ async def run_reverie_worker(stop_event: asyncio.Event | None = None) -> None:
                 await run_reverie_once(bus)
             except Exception:
                 logger.exception("unhandled reverie tick error")
+            fold_bus(bus)  # per tick: this worker bus lives for the process (app/rpc_health.py)
             try:
                 if stop_event is not None:
                     await asyncio.wait_for(stop_event.wait(), timeout=settings.reverie_interval_sec)

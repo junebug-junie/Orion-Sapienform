@@ -165,6 +165,28 @@ id names an attempt no turn ran for, so the join returns no row -- never a wrong
 The worker-recovery fence stashes the same id before clearing an in-flight attempt's
 lease, so a later deadline/cancel terminal names the fenced generation, not an older one.
 
+## RPC-health publish (mesh transport coverage, 2026-09-24)
+
+The long-lived `rpc_bus` (opened in `app/main.py`'s lifespan) publishes an
+`RpcHealthSnapshotV1` to `orion:rpc_health:snapshot` every
+`RPC_HEALTH_PUBLISH_INTERVAL_SEC` (default 30) with `instance="main"`
+(`RpcHealthPublisher`, `orion/core/bus/rpc_health_publish.py`). The signal gateway maps it
+to organ `rpc_health_durable_runs` (pass-through, unregistered/exogenous).
+
+Hops in `channel_latency` (when `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true`):
+
+- the runner's `rpc_request` channels (harness turn to Hub, verb dispatch to cortex-orch);
+- outbound HTTP via `app/http_hops.py` (`AsyncHopTimingTransport`, ids collapsed to `:id`
+  by `normalize_id_path`): `http:<gateway>/routes`, `http:<lane upstream>/slots`, the
+  cabinet thermal feed, `http:<thought>/visual-chain/activity`,
+  `http:<controller>/v1/gpu-slots/circe-gpu2/status` and `/v1/gpu-slots/activate`.
+  A 504 or an httpx timeout counts as a timeout; any other response is a success.
+
+Keys: `RPC_HEALTH_PUBLISH_ENABLED` (true), `RPC_HEALTH_PUBLISH_INTERVAL_SEC` (30),
+`RPC_HEALTH_CHANNEL_LATENCY_ENABLED` (true). Consumer-first: rebuild
+`orion-signal-gateway` and `orion-equilibrium-service` on PR #2312's build before this
+service ships `channel_latency` (the schema is `extra="forbid"`).
+
 ## Deploy order
 
 The operator templates select admitted Curiosity. Before restarting, apply both

@@ -21,6 +21,7 @@ from orion.cognition.skills_manifest import build_compact_skill_catalog, load_sk
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
+from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.core.llm_json import parse_json_object
 from orion.llm.routes import ACCEPTED_LLM_ROUTES, SYSTEM_LLM_ROUTES, normalize_llm_route
 from orion.journaler import (
@@ -182,6 +183,19 @@ def _cfg() -> ChassisConfig:
 
 def _source_ref() -> ServiceRef:
     return ServiceRef(name=settings.service_name, version=settings.service_version, node=settings.node_name)
+
+
+def build_rpc_health_publisher(bus_getter: Callable[[], Any]) -> RpcHealthPublisher:
+    return RpcHealthPublisher(
+        enabled=settings.rpc_health_publish_enabled and settings.orion_bus_enabled,
+        bus_getter=bus_getter,
+        service=settings.service_name,
+        node=settings.node_name,
+        instance="main",
+        source=_source_ref(),
+        interval_sec=settings.rpc_health_publish_interval_sec,
+        include_channel_latency=settings.rpc_health_channel_latency_enabled,
+    )
 
 
 def _iso(ts: datetime) -> str:
@@ -2366,6 +2380,10 @@ async def lifespan(app: FastAPI):
 
     _actions_rpc_bus = await fork_rpc_client(hunter.bus)
     app.state.rpc_bus = _actions_rpc_bus
+    # Every rpc_request in this service runs on _actions_rpc_bus, so its aggregator is
+    # the whole picture; the Hunter's listener bus only subscribes/publishes.
+    app.state.rpc_health_publisher = build_rpc_health_publisher(lambda: _actions_rpc_bus)
+    app.state.rpc_health_publisher.start()
 
     logger.info(
         "Starting orion-actions Hunter channels=%s bus=%s cortex_request=%s",
@@ -2380,6 +2398,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    await app.state.rpc_health_publisher.stop()
     if _actions_rpc_bus is not None:
         with suppress(Exception):
             await _actions_rpc_bus.close()

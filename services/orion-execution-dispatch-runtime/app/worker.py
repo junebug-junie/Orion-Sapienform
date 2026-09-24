@@ -13,6 +13,7 @@ from uuid import uuid4
 from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.bus.ewma import compute_ewma_update
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.rpc_health import SharedRpcHealthSink
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.autonomy.allocator import (
     ALLOCATOR_BLOCK_REASON,
@@ -55,6 +56,12 @@ from app.settings import get_settings
 from app.store import ExecutionDispatchRuntimeStore
 
 logger = logging.getLogger("orion.execution_dispatch.runtime")
+
+# Process-wide landing spot for RPC-health stats. Each dispatch tick opens its own
+# short-lived OrionBusAsync inside asyncio.run() on a to_thread worker; without this,
+# that bus's rpc_request() outcomes (orion:cortex:exec:request:background) were thrown
+# away with it. app.main's RpcHealthPublisher drains this sink into its long-lived bus.
+RPC_HEALTH_SINK = SharedRpcHealthSink()
 
 THEATER_TRIPWIRE_WINDOW = 10
 # Renamed from THEATER_TRIPWIRE_EMPTY_THRESHOLD 2026-08-13: the predicate it
@@ -1354,6 +1361,9 @@ class ExecutionDispatchRuntimeWorker:
                 return_exceptions=True,
             )
         finally:
+            # Before close: fold this tick's rpc_request outcomes into the process sink
+            # (published by app.main), even when a send raised or timed out.
+            RPC_HEALTH_SINK.absorb_bus(bus)
             await bus.close()
 
         dispatched_candidates = list(frame.dispatched_candidates) + newly_dispatched

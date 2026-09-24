@@ -30,8 +30,15 @@ Same mechanism as `orion-cortex-exec`'s (see that service's README for the full 
 `RPC_HEALTH_PUBLISH_ENABLED=true` starts a periodic task draining this process's real
 `OrionBusAsync.rpc_request()` outcome tally onto `orion:rpc_health:snapshot`, read via the
 existing `_bus_for_rpc()` helper so it drains the real `_rpc_bus` fork (used by
-`DecisionRouter`/`workflow_runtime`), not the idle `svc.bus`. Off by default until
-live-verified.
+`DecisionRouter`/`workflow_runtime`), not the idle `svc.bus`. Live-verified; on in
+`.env_example`.
+
+Per-hop breakdown (2026-09-24, gated by `RPC_HEALTH_CHANNEL_LATENCY_ENABLED`): the chat
+lane's hand-rolled `orion:verb:request` round trip is recorded as hop `verb:<verb_name>`;
+metacog dispatch (`dispatch_metacog_trigger`) passes `health_label="log_orion_metacognition"`,
+so its hop is `<background exec channel>#log_orion_metacognition`. That call runs on the
+equilibrium Hunter's own bus, which the publish loop folds in hop-only (per-hop stats merged,
+pooled fields untouched). Publishes `instance="main"`.
 
 ### Environment Variables
 Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
@@ -43,8 +50,9 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `REDIS_URL` | ... | Redis connection. |
 | `PUBLISH_CORTEX_ORCH_GRAMMAR` | `true` | Publish route arbitration as a `GrammarEventV1` trace. Fire-and-forget; a publish failure never affects the chat response. |
 | `GRAMMAR_EVENT_CHANNEL` | `orion:grammar:event` | Channel used for the route-arbitration grammar trace above. |
-| `RPC_HEALTH_PUBLISH_ENABLED` | `false` | Periodically publish this process's real RPC-health snapshot. See "RPC-health snapshot publish" above. |
+| `RPC_HEALTH_PUBLISH_ENABLED` | `true` | Periodically publish this process's real RPC-health snapshot. See "RPC-health snapshot publish" above. |
 | `RPC_HEALTH_PUBLISH_INTERVAL_SEC` | `30` | Publish cadence for the above. |
+| `RPC_HEALTH_CHANNEL_LATENCY_ENABLED` | `false` | Include per-hop `channel_latency` in each snapshot. Flip only after signal-gateway and equilibrium are rebuilt (consumer-first, `extra="forbid"`). |
 
 ## Compactor workflows
 

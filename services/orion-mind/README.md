@@ -30,3 +30,23 @@ Publishes a `SystemHealthV1` heartbeat to `orion:system:health` every
 `app/main.py`'s FastAPI `lifespan` (this service had no `lifespan` at all before this patch).
 Separate from the LLM-gateway RPC bus connections used by `MIND_LLM_USE_BUS`. See
 docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
+
+## RPC-health snapshot publish (2026-09-24)
+
+Every LLM call (`MIND_LLM_USE_BUS`) opens its own short-lived bus to
+`orion:exec:request:LLMGatewayService` and closes it afterwards, so its timing tally used to
+vanish with it. Each call now folds its tally into one process-wide sink
+(`app.llm_client.RPC_HEALTH_SINK`, in the `finally` that closes the bus, so timeouts and
+errors count), and a separate long-lived bus opened in the FastAPI `lifespan` publishes it
+every `RPC_HEALTH_PUBLISH_INTERVAL_SEC` as an `RpcHealthSnapshotV1` on
+`orion:rpc_health:snapshot` (`instance=main`, organ `rpc_health_mind`).
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `RPC_HEALTH_PUBLISH_ENABLED` | `true` | start the publisher |
+| `RPC_HEALTH_PUBLISH_INTERVAL_SEC` | `30` | window length |
+| `RPC_HEALTH_CHANNEL_LATENCY_ENABLED` | `true` | include the per-hop `channel_latency` breakdown |
+
+Rollout is consumer-first: the schema is `extra="forbid"`, so rebuild
+`orion-signal-gateway` and `orion-equilibrium-service` on PR #2312's build before deploying
+this service with `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true`.

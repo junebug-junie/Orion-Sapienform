@@ -46,6 +46,13 @@ class ThoughtSettings(BaseSettings):
     # Bus-native SystemHealthV1 heartbeat cadence (orion:system:health). See
     # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md.
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
+    # RPC-health snapshot publish (orion:rpc_health:snapshot) + per-hop channel_latency
+    # (A0 of docs/superpowers/specs/2026-09-24-metacog-capture-and-transport-ewma-baseline-design.md).
+    # Defaults match .env_example. channel_latency is extra="forbid" on the consumer side:
+    # rebuild orion-signal-gateway + orion-equilibrium-service on PR #2312's build first.
+    rpc_health_publish_enabled: bool = Field(True, alias="RPC_HEALTH_PUBLISH_ENABLED")
+    rpc_health_publish_interval_sec: float = Field(30.0, gt=0.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
+    rpc_health_channel_latency_enabled: bool = Field(True, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
 
     channel_thought_request: str = Field(
         "orion:thought:request",
@@ -278,6 +285,62 @@ class ThoughtSettings(BaseSettings):
     # for circe-worker-agent-1, the llama.cpp worker this port used to serve).
     diffusion_host_base_url: str = Field(
         "http://100.112.254.99:8014", alias="ORION_DIFFUSION_HOST_BASE_URL"
+    )
+
+    # GPU2 CAPACITY MUTEX. orion-world-model shares this same physical card
+    # (circe GPU2) with zero OS/driver-level arbitration -- live-confirmed
+    # 2026-09-24, two back-to-back "CUDA error: CUDA-capable device(s)
+    # is/are busy or unavailable" failures. Routed through orion-durable-runs'
+    # existing Gateway capacity-permit authority (orion.durable_admission.
+    # capacity_client.GpuCapacityPermit) -- the same authority orion-llm-
+    # gateway already uses for every outbound call, per docs/architecture/
+    # durable-gateway-capacity.md's own stated pattern for a standalone
+    # GPU-bound HTTP call. NOT the heavier per-run admission/elastic-borrow
+    # system (docs/architecture/gpu2-elastic-admission.md): that one is
+    # scoped to whole cognition runs and already fully owns the diffusion
+    # <-> agent-burst pair; this is a separate, additive layer beside it.
+    # Long budget: this pipeline already treats deferral as a normal,
+    # non-failure outcome (resource_deferred), so diffusion can afford to
+    # camp and wait rather than back off -- that asymmetry against world-
+    # model's own short budget (services/orion-world-model/app/settings.py)
+    # is what gives diffusion practical precedence on its native card
+    # without any new priority concept in the broker itself (confirmed:
+    # orion/durable_admission/capacity.py enforces a plain max_inflight
+    # counter, no priority ordering).
+    visual_chain_gpu2_capacity_enabled: bool = Field(
+        True, alias="ORION_VISUAL_CHAIN_GPU2_CAPACITY_ENABLED"
+    )
+    # orion-durable-runs is on the same docker network as this service (both
+    # athena-resident) -- the internal compose DNS name, same convention
+    # orion-llm-gateway's own LLM_GATEWAY_CAPACITY_URL uses.
+    visual_chain_gpu2_capacity_url: str = Field(
+        "http://durable-runs:8121/capacity", alias="ORION_VISUAL_CHAIN_GPU2_CAPACITY_URL"
+    )
+    # Deliberately diffusion_host_base_url's own value above, not a made-up
+    # logical key -- an opaque shared identifier this service and world-model
+    # both agree on so the broker's max_inflight enforcement crosses the
+    # service boundary. Confirmed this does NOT collide with the existing
+    # GPU2 elastic slot's own reserved backend_key: that one is the
+    # agent-burst llama.cpp URL (port 8016, DURABLE_RUNS_ELASTIC_BACKEND),
+    # not this one.
+    visual_chain_gpu2_capacity_backend_key: str = Field(
+        "http://100.112.254.99:8014", alias="ORION_VISUAL_CHAIN_GPU2_CAPACITY_BACKEND_KEY"
+    )
+    visual_chain_gpu2_capacity_lane: str = Field(
+        "diffusion", alias="ORION_VISUAL_CHAIN_GPU2_CAPACITY_LANE"
+    )
+    visual_chain_gpu2_capacity_max_inflight: int = Field(
+        1, alias="ORION_VISUAL_CHAIN_GPU2_CAPACITY_MAX_INFLIGHT"
+    )
+    # Long: covers the elastic-status pre-check plus the full generate call,
+    # with real margin over visual_chain_diffusion_timeout_sec (120s) below --
+    # diffusion should keep waiting through a world-model burst rather than
+    # give up early and report a false resource_deferred.
+    visual_chain_gpu2_capacity_budget_sec: float = Field(
+        180.0, alias="ORION_VISUAL_CHAIN_GPU2_CAPACITY_BUDGET_SEC"
+    )
+    visual_chain_gpu2_capacity_poll_interval_sec: float = Field(
+        1.0, alias="ORION_VISUAL_CHAIN_GPU2_CAPACITY_POLL_INTERVAL_SEC"
     )
 
     # AMBIENT THERMAL GATE. GPU work heats the room Juniper sits in, and this is

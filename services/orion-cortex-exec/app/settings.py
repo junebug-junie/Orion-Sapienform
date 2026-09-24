@@ -26,8 +26,13 @@ class Settings(BaseSettings):
     # RPC-health snapshot publish (Step 3 of docs/superpowers/specs/2026-07-23-rpc-health-
     # signal-gateway-wiring-design.md). Off by default until live-verified per that spec's
     # acceptance checks; draining is free (in-memory) but this gates the new periodic publish.
-    rpc_health_publish_enabled: bool = Field(False, alias="RPC_HEALTH_PUBLISH_ENABLED")
+    rpc_health_publish_enabled: bool = Field(True, alias="RPC_HEALTH_PUBLISH_ENABLED")
     rpc_health_publish_interval_sec: float = Field(30.0, alias="RPC_HEALTH_PUBLISH_INTERVAL_SEC")
+    # Per-hop `channel_latency` in RpcHealthSnapshotV1 (A0 of docs/superpowers/specs/
+    # 2026-09-24-metacog-capture-and-transport-ewma-baseline-design.md). The model is
+    # extra="forbid": keep false until every consumer (orion-signal-gateway,
+    # orion-equilibrium-service) runs a build that knows the field.
+    rpc_health_channel_latency_enabled: bool = Field(False, alias="RPC_HEALTH_CHANNEL_LATENCY_ENABLED")
 
     # Intake channel (hub or orch -> exec)
     channel_exec_request: str = Field("orion:cortex:exec:request", alias="CHANNEL_EXEC_REQUEST")
@@ -119,21 +124,8 @@ class Settings(BaseSettings):
             "replies. Rides the existing OpenAI-compat gateway call (llm_backend.py's "
             "_execute_openai_chat) -- no endpoint switch, no response_format set, no separate "
             "probe request. Feeds chat_history_log.llm_* columns via "
-            "_forward_llm_uncertainty_metadata's existing spark_meta merge. Distinct from "
-            "CORTEX_METACOG_RETURN_LOGPROBS, which gates MetacogDraftService's own separate "
-            "native-completion probe and never touches the user-facing reply."
+            "_forward_llm_uncertainty_metadata's existing spark_meta merge."
         ),
-    )
-    cortex_metacog_return_logprobs: bool = Field(False, alias="CORTEX_METACOG_RETURN_LOGPROBS")
-    cortex_metacog_logprob_probe_mode: str = Field(
-        default="",
-        alias="CORTEX_METACOG_LOGPROB_PROBE_MODE",
-        description="Pass-2 uncertainty probe mode. Only native_completion is supported (llama.cpp /completion). Other values skip pass 2.",
-    )
-    cortex_metacog_uncertainty_probe_enabled: bool = Field(
-        True,
-        alias="CORTEX_METACOG_UNCERTAINTY_PROBE_ENABLED",
-        description="When CORTEX_METACOG_RETURN_LOGPROBS: run pass-2 native probe after successful draft parse.",
     )
     daily_metacog_prompt_max_chars: int = Field(
         8192,

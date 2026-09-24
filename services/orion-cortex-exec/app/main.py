@@ -1131,16 +1131,22 @@ async def main() -> None:
                     bus_getter=_bus_for_rpc,
                     service=settings.service_name,
                     node=settings.node_name,
-                    instance=None,
+                    # All four lane containers share service="cortex-exec"; the lane is
+                    # what tells a :background backlog apart from :chat downstream.
+                    instance=settings.exec_lane,
                     source=_source(),
                     interval_sec=settings.rpc_health_publish_interval_sec,
                     stop_event=_rpc_health_stop,
+                    include_channel_latency=settings.rpc_health_channel_latency_enabled,
                 ),
                 name="rpc-health-publish",
             )
             logger.info(
-                "rpc_health_publish_started interval=%ss channel=orion:rpc_health:snapshot",
+                "rpc_health_publish_started interval=%ss channel=orion:rpc_health:snapshot "
+                "instance=%s channel_latency=%s",
                 settings.rpc_health_publish_interval_sec,
+                settings.exec_lane,
+                settings.rpc_health_channel_latency_enabled,
             )
         starters: list[Any] = [svc.start(), health_task]
         if settings.enable_pre_turn_appraisal_handler:

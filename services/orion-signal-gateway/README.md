@@ -31,12 +31,18 @@ is available for endogenous/hybrid organs to reference.
 `exogenous` `rpc_transport_health` signal: `level` = success fraction for the window,
 `confidence` = scales with real call volume observed (an empty window is healthy-by-absence,
 not a failure, so `level` stays 1.0 but `confidence` drops instead), `latency_level` = inverse
-of `success_latency_ms_p95`. **Per-service `organ_id`**, not one shared id: `rpc_health_cortex_exec`
-/ `rpc_health_cortex_orch` (`orion/signals/registry.py`). `SignalWindow` keys its current-state
-view by `organ_id` alone, so a shared id across producers would make each publish silently
-overwrite the previous producer's entry — found in review of this step's first cut, fixed before
-merge. `_organ_id_for_service()` in the adapter resolves the payload's `service` field to the
-right per-service id and degrades to no signal for an unrecognized service.
+of `success_latency_ms_p95`. **Per-producer `organ_id`, keyed by `(service, instance)`**, not one
+shared id: `rpc_health_<service>` for a service's primary instance (`instance` unset or `"main"`,
+e.g. `rpc_health_cortex_orch`) and `rpc_health_<service>__<instance>` otherwise (the four
+cortex-exec lane containers: `rpc_health_cortex_exec__{legacy,chat,spark,background}`).
+`SignalWindow` keys its current-state view by `organ_id` alone, so a shared id across producers
+would make each publish silently overwrite the previous producer's entry. Since 2026-09-24 this is
+a pass-through, not a whitelist: an unregistered producer (hub, durable-runs, ...) still gets its
+own exogenous signal instead of being dropped (`_organ_id_for()` in the adapter). Only
+`rpc_health_cortex_orch` is registered; the former single `rpc_health_cortex_exec` organ, which
+all four exec lanes overwrote, is retired, and the per-lane ids pass through unregistered. The
+optional per-hop `channel_latency` field of `RpcHealthSnapshotV1` is ignored by this adapter
+(consumed by orion-equilibrium-service's transport gate).
 
 **Not the same pipeline as `orion-equilibrium-service`'s `transport` metacog trigger.** That
 trigger's Option A subscribes to the same `orion:rpc_health:snapshot` channel as a second,

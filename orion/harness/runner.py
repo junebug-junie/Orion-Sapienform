@@ -82,6 +82,12 @@ class HarnessMotorResult:
     # distance from 7200s is real headroom and "the budget is too small"
     # stops being a guess.
     fcc_elapsed_sec: float | None = None
+    # The gateway's currently-served model as probed BEFORE the subprocess ran
+    # (probe_current_served_model). Unlike fcc_served_model (echoed by the CLI's
+    # assistant events, so None when a run stalls before its first one), this is
+    # known for early timeouts too -- the RPC-health `fcc:<served_model>` hop key
+    # falls back to it (services/orion-harness-governor/app/bus_listener.py).
+    probed_served_model: str | None = None
     # Verbosity/stuck-loop signals (see runner.py's step loop for how these accumulate).
     # Carried on the result object -- not just recorded into grammar_collector -- because
     # services/orion-harness-governor/app/bus_listener.py's _emit_finalize_lifecycle_grammar
@@ -504,9 +510,14 @@ class HarnessRunner:
                 partial = str(event.get("llm_response") or "").strip()
                 error_code = str(event.get("error_code") or "").strip()
                 error_msg = str(event.get("error") or "").strip()
-                seen_served_model = _served_model_from_metadata(event.get("metadata"))
+                err_meta = event.get("metadata")
+                seen_served_model = _served_model_from_metadata(err_meta)
                 if seen_served_model:
                     fcc_served_model = seen_served_model
+                # fcc_nonzero_exit carries the real exit code (negative = killed by a
+                # signal, e.g. a Hub cancel's SIGKILL); keep it instead of None.
+                if isinstance(err_meta, dict) and isinstance(err_meta.get("exit_code"), int):
+                    exit_code = err_meta["exit_code"]
                 if partial:
                     draft_text = apply_context_overflow_hint(partial)
                     compliance_verdict = "partial"
@@ -633,6 +644,7 @@ class HarnessRunner:
                 context_gathering_step_count=context_gathering_step_count,
                 execution_step_count=execution_step_count,
                 fcc_served_model=fcc_served_model,
+                probed_served_model=current_served_model,
                 reading_receipts=reading_receipts,
             )
 
@@ -693,5 +705,6 @@ class HarnessRunner:
             context_gathering_step_count=context_gathering_step_count,
             execution_step_count=execution_step_count,
             fcc_served_model=fcc_served_model,
+            probed_served_model=current_served_model,
             reading_receipts=reading_receipts,
         )

@@ -174,6 +174,23 @@ Every hop degrades honestly rather than fabricating:
 
 Default-off: `run_visual_chain_worker` is a no-op unless
 ORION_VISUAL_CHAIN_ENABLED.
+
+Patch 9: `call_diffusion_generate`'s call site now wraps the whole
+diffusion-host round trip (elastic-status pre-check plus `/generate`) in a
+`GpuCapacityPermit` (`orion.durable_admission.capacity_client`) before
+attempting it. Live-caught 2026-09-24, same day the freshness-window fix
+(PR #2306) let this chain reach diffusion-host again for the first time
+since 09-14: two back-to-back `CUDA error: CUDA-capable device(s) is/are
+busy or unavailable` failures, because `orion-world-model` shares this same
+physical card (circe GPU2) with zero OS/driver-level arbitration -- the
+existing `visual_elastic_status_enabled` pre-check only asks
+`orion-gpu-lane-controller`, which has no idea world-model exists (it only
+tracks diffusion/agent-burst). The capacity permit is real mutual exclusion
+on the actual hardware, not another status read: see
+`visual_chain_gpu2_capacity_*` in `settings.py` for the backend_key
+reasoning and why diffusion's long acquire budget (vs. world-model's short
+one, `services/orion-world-model/app/settings.py`) is what gives diffusion
+practical precedence on its own native card.
 """
 
 from __future__ import annotations
@@ -195,6 +212,7 @@ from uuid import uuid4
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.durable_admission.capacity_client import CapacityRejected, GpuCapacityPermit
 from orion.reverie.visual_storage import StoredVisualArtifact, store_visual_artifact
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.autonomy.thermal_gate import ThermalVerdict, thermal_state
@@ -202,6 +220,7 @@ from orion.schemas.reverie_visual import ReverieVisualArtifactV1, ReverieVisualC
 from orion.schemas.vision import VisionTaskRequestPayload, VisionTaskResultPayload
 
 from .cortex_client import CortexExecClient
+from .rpc_health import fold_bus
 from .settings import settings
 from .store import (
     acknowledge_visual_production,
@@ -1069,13 +1088,35 @@ async def _run_visual_chain_body(
         effective_prior, context_slot_used, context_slot_interpreted or context_slot_text
     )
 
-    try:
-        png_bytes = await asyncio.to_thread(
+    async def _generate() -> bytes:
+        return await asyncio.to_thread(
             call_diffusion_generate,
             prompt,
             base_url=settings.diffusion_host_base_url,
             timeout_sec=settings.visual_chain_diffusion_timeout_sec,
         )
+
+    # GPU2 capacity mutex (settings.py docstring on visual_chain_gpu2_capacity_enabled):
+    # real cross-service mutual exclusion with orion-world-model, which shares
+    # this physical card with no OS-level arbitration. Covers the elastic-
+    # status pre-check inside call_diffusion_generate too, not just /generate
+    # itself, since both touch shared GPU state.
+    gpu_permit: GpuCapacityPermit | None = None
+    try:
+        if settings.visual_chain_gpu2_capacity_enabled:
+            try:
+                gpu_permit = await GpuCapacityPermit(
+                    capacity_url=settings.visual_chain_gpu2_capacity_url,
+                    lane=settings.visual_chain_gpu2_capacity_lane,
+                    backend_key=settings.visual_chain_gpu2_capacity_backend_key,
+                    correlation_id=chain_id,
+                    max_inflight=settings.visual_chain_gpu2_capacity_max_inflight,
+                    budget_sec=settings.visual_chain_gpu2_capacity_budget_sec,
+                    poll_interval_sec=settings.visual_chain_gpu2_capacity_poll_interval_sec,
+                ).acquire()
+            except CapacityRejected as exc:
+                raise DiffusionResourceDeferred(f"gpu2_capacity:{exc}") from exc
+        png_bytes = await _generate()
     except DiffusionResourceDeferred as exc:
         chain = ReverieVisualChainV1(chain_id=chain_id, created_at=now_fn(),
             terminal_reason="resource_deferred", context_selection=context_selection,
@@ -1098,6 +1139,9 @@ async def _run_visual_chain_body(
             continuity_streak=continuity_streak,
             continuity_reset=continuity_reset,
         )
+    finally:
+        if gpu_permit is not None:
+            await gpu_permit.close()
 
     # store_visual_artifact (disk write) and upload_to_percept_store (a
     # network round trip) both operate on the same immutable png_bytes
@@ -1248,6 +1292,7 @@ async def run_visual_chain_worker(stop_event: asyncio.Event | None = None) -> No
                 await run_visual_chain_once(bus)
             except Exception:
                 logger.exception("unhandled visual chain error")
+            fold_bus(bus)  # per run: this worker bus lives for the process (app/rpc_health.py)
             try:
                 if stop_event is not None:
                     await asyncio.wait_for(

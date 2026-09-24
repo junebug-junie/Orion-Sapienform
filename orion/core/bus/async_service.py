@@ -118,6 +118,56 @@ class OrionBusAsync:
         module docstring for why that's a separate, deliberately deferred decision."""
         return self._rpc_health.snapshot_and_reset()
 
+    def take_rpc_health_aggregator(self) -> RpcHealthAggregator:
+        """Hand over this bus's raw accumulated window and start a fresh one. For
+        short-lived buses folding into a process-wide ``SharedRpcHealthSink`` (see
+        rpc_health.py) before being discarded; the publish loop's own bus uses
+        ``get_rpc_health_snapshot()`` instead."""
+        taken, self._rpc_health = self._rpc_health, RpcHealthAggregator()
+        return taken
+
+    def absorb_rpc_health(self, other: RpcHealthAggregator) -> None:
+        """Fold another aggregator's raw window into this bus's (see
+        ``RpcHealthAggregator.absorb``). Call on this bus's event-loop thread."""
+        self._rpc_health.absorb(other)
+
+    def record_hop_success(self, hop: str, elapsed_ms: float) -> None:
+        """Record a successful round trip for a hop that does NOT go through
+        rpc_request() -- hand-rolled bus RPC, HTTP, a subprocess -- into this bus's
+        RPC-health aggregator, so rpc_health_publish_loop reports it in
+        ``RpcHealthSnapshotV1.channel_latency[hop]``. Pooled fields are untouched.
+        Hop key conventions: see orion/core/bus/rpc_health.py's module docstring
+        (``verb:<name>``, ``governor:<mode>``, ``http:<host><path>``,
+        ``fcc:<served_model>``). In-memory only, never raises."""
+        self._rpc_health.record_hop_success(hop, elapsed_ms)
+
+    def record_hop_timeout(self, hop: str, elapsed_ms: Optional[float] = None) -> None:
+        """Timeout counterpart of record_hop_success(). In-memory only, never raises.
+        Does NOT emit the rpc_transport_timeout grammar atom; call
+        emit_rpc_timeout_grammar() separately if the hop should reach that mesh-wide
+        fallback too."""
+        self._rpc_health.record_hop_timeout(hop, elapsed_ms)
+
+    async def emit_rpc_timeout_grammar(
+        self,
+        *,
+        request_channel: str,
+        reply_channel: str,
+        corr: str,
+        timeout_sec: float,
+        timeout_elapsed_ms: float,
+    ) -> None:
+        """Public entry to the same bus-wide ``rpc_transport_timeout`` grammar atom that
+        rpc_request() emits on every timeout, for hand-rolled RPC paths. Fire-and-forget,
+        never raises."""
+        await self._emit_rpc_timeout_grammar(
+            request_channel=request_channel,
+            reply_channel=reply_channel,
+            corr=corr,
+            timeout_sec=timeout_sec,
+            timeout_elapsed_ms=timeout_elapsed_ms,
+        )
+
     def start_rpc_worker(self) -> None:
         if not self.enabled:
             return
@@ -463,9 +513,16 @@ class OrionBusAsync:
         *,
         reply_channel: str,
         timeout_sec: float = 60.0,
+        health_label: str | None = None,
     ) -> dict:
         """
         Publish `envelope` to request_channel and await first message on reply_channel.
+
+        `health_label` (optional) splits this call's per-hop RPC-health key from other
+        traffic on the same channel: the outcome is recorded under
+        ``f"{request_channel}#{health_label}"`` in ``channel_latency`` (pooled fields
+        are unaffected). Used e.g. by cortex-orch's metacog dispatch
+        (``log_orion_metacognition``) so a transport gate can exclude metacog's own load.
         """
         started = perf_counter()
         corr = str(envelope.correlation_id)
@@ -519,7 +576,9 @@ class OrionBusAsync:
                     reply_channel,
                     success_elapsed_ms,
                 )
-                self._rpc_health.record_success(request_channel=request_channel, latency_ms=success_elapsed_ms)
+                self._rpc_health.record_success(
+                    request_channel=request_channel, latency_ms=success_elapsed_ms, health_label=health_label
+                )
                 return result
             except asyncio.TimeoutError:
                 timeout_elapsed_ms = (perf_counter() - started) * 1000.0
@@ -531,7 +590,9 @@ class OrionBusAsync:
                     timeout_sec,
                     timeout_elapsed_ms,
                 )
-                self._rpc_health.record_timeout(request_channel=request_channel, elapsed_ms=timeout_elapsed_ms)
+                self._rpc_health.record_timeout(
+                    request_channel=request_channel, elapsed_ms=timeout_elapsed_ms, health_label=health_label
+                )
                 await self._emit_rpc_timeout_grammar(
                     request_channel=request_channel,
                     reply_channel=reply_channel,
@@ -571,7 +632,9 @@ class OrionBusAsync:
                             success_elapsed_ms,
                         )
                         self._rpc_health.record_success(
-                            request_channel=request_channel, latency_ms=success_elapsed_ms
+                            request_channel=request_channel,
+                            latency_ms=success_elapsed_ms,
+                            health_label=health_label,
                         )
                         return msg
 
@@ -593,7 +656,9 @@ class OrionBusAsync:
                     timeout_sec,
                     timeout_elapsed_ms,
                 )
-                self._rpc_health.record_timeout(request_channel=request_channel, elapsed_ms=timeout_elapsed_ms)
+                self._rpc_health.record_timeout(
+                    request_channel=request_channel, elapsed_ms=timeout_elapsed_ms, health_label=health_label
+                )
                 await self._emit_rpc_timeout_grammar(
                     request_channel=request_channel,
                     reply_channel=reply_channel,

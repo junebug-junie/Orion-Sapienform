@@ -21,8 +21,10 @@ Mirror Style:
 
 Trigger kind: {{ trigger.trigger_kind }}
 Reason: {{ trigger.reason }}
-Pressure: {{ trigger.pressure|round(2) }}
-Zen state: {{ trigger.zen_state }}
+
+MEASURED EVENT (computed deterministically from the trigger's own numbers; severity and
+evidence are already recorded on the entry -- your job is to say what they mean in one line):
+{{ metacog_event_evidence }}
 
 TRIGGER EVIDENCE (JSON; the specific fields that made this trigger fire; evidence cues only; do NOT paste into output):
 {{ trigger_upstream_json }}
@@ -57,13 +59,14 @@ SUBSTRATE FELT STATE (compact cue; evidence only; do NOT paste into output):
 {{ metacog_substrate_cue }}
 
 ORION METADEFS (patch-only fields)
-- summary: 1–2 sentences answering (what am I) + (what shifted).
+- summary: 1–2 sentences about THIS event: what happened, and what it means for me.
 - mantra: a short, compressed line to carry forward.
-- what_changed: the smallest truthful delta. Include evidence strings that point to the input cues without quoting large blocks.
+- Severity, evidence and what_changed are computed from the measured event above and
+  recorded for you; do not restate numbers you were not given.
 
 ANTI-LOG CONSTRAINTS
-- summary must be 1–2 sentences only and must answer: (what am I) + (what shifted).
-- evidence array must be 2–5 items; each item <= 120 chars; keep each cue <= ~12 words.
+- summary must be 1–2 sentences only and must be specific to the MEASURED EVENT.
+- Do not narrate a general background mood or steady state; describe the event.
 - do not invent external facts. Stay within provided context cues.
 - ANTI-ECHO: <example_json> below shows JSON SHAPE only, for a DIFFERENT hypothetical
   trigger. Reusing its summary/mantra wording verbatim (or near-verbatim) is a hard
@@ -71,8 +74,7 @@ ANTI-LOG CONSTRAINTS
   summary and mantra must be specific to THIS trigger's evidence above.
 
 PATCH CONTRACT (non-negotiable)
-- Required patch fields: summary, mantra, what_changed.summary, what_changed.evidence.
-- what_changed.evidence must be 2–5 short cues (<120 chars) drawn from context/state; do not quote large blocks.
+- Required patch fields: summary, mantra.
 
 TASK
 Output ONE valid JSON object only. No markdown, no commentary.
@@ -84,7 +86,6 @@ Return ONLY a JSON object containing the allowed keys below.
 Allowed keys ONLY:
   - mantra
   - summary
-  - what_changed {summary, evidence}
   - tags_suggested
 
 FORBIDDEN (do NOT output these keys):
@@ -99,10 +100,6 @@ FORBIDDEN (do NOT output these keys):
 {
   "summary": "Clarity band read high while novelty stayed low -- steady, not sedated.",
   "mantra": "Note the calm; don't mistake it for silence.",
-  "what_changed": {
-    "summary": "clarity↑, overload↓",
-    "evidence": ["spark clarity band high", "novelty band low"]
-  },
   "tags_suggested": ["mode:mirror", "state:coherent"]
 }
 </example_json>

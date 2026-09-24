@@ -14,6 +14,7 @@ from loguru import logger
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
+from orion.durable_admission.capacity_client import CapacityRejected, GpuCapacityPermit
 from orion.schemas.world_model import (
     WorldModelPredictionPayload,
     WorldModelTaskRequestPayload,
@@ -253,36 +254,65 @@ class WorldModelService:
                 error_code="service_not_ready",
             )
         t0 = time.monotonic()
-        async with self._inflight_sem:  # type: ignore[union-attr]
+        # GPU2 capacity mutex (settings.py docstring on WM_GPU2_CAPACITY_ENABLED):
+        # real cross-service mutual exclusion with orion-diffusion-host, which
+        # shares this physical card with no OS-level arbitration. Skipped
+        # entirely on CPU fallback -- there is no shared-hardware contention
+        # to arbitrate there, and no reason to depend on durable-runs being up.
+        gpu_permit: GpuCapacityPermit | None = None
+        if settings.WM_GPU2_CAPACITY_ENABLED and self.device.startswith("cuda:"):
             try:
-                mean, log_var = await asyncio.wait_for(
-                    self._run_forward(payload), timeout=float(settings.WM_TIMEOUT_S)
-                )
-            except asyncio.TimeoutError:
+                gpu_permit = await GpuCapacityPermit(
+                    capacity_url=settings.WM_GPU2_CAPACITY_URL,
+                    lane=settings.WM_GPU2_CAPACITY_LANE,
+                    backend_key=settings.WM_GPU2_CAPACITY_BACKEND_KEY,
+                    correlation_id=str(uuid.uuid4()),
+                    max_inflight=settings.WM_MAX_INFLIGHT,
+                    budget_sec=settings.WM_GPU2_CAPACITY_BUDGET_SEC,
+                    poll_interval_sec=settings.WM_GPU2_CAPACITY_POLL_INTERVAL_SEC,
+                ).acquire()
+            except CapacityRejected as exc:
                 return WorldModelPredictionPayload(
                     ok=False,
                     task_type=payload.task_type,
                     device=self.device,
-                    error=f"forward pass timed out after {settings.WM_TIMEOUT_S}s",
-                    error_code="timeout",
+                    error=f"gpu2 contended: {exc}",
+                    error_code="gpu_contended",
                 )
-            except ValueError as exc:
-                return WorldModelPredictionPayload(
-                    ok=False,
-                    task_type=payload.task_type,
-                    device=self.device,
-                    error=str(exc),
-                    error_code="bad_trajectory",
-                )
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.exception("world_model_forward_failed")
-                return WorldModelPredictionPayload(
-                    ok=False,
-                    task_type=payload.task_type,
-                    device=self.device,
-                    error=str(exc),
-                    error_code="forward_failed",
-                )
+        try:
+            async with self._inflight_sem:  # type: ignore[union-attr]
+                try:
+                    mean, log_var = await asyncio.wait_for(
+                        self._run_forward(payload), timeout=float(settings.WM_TIMEOUT_S)
+                    )
+                except asyncio.TimeoutError:
+                    return WorldModelPredictionPayload(
+                        ok=False,
+                        task_type=payload.task_type,
+                        device=self.device,
+                        error=f"forward pass timed out after {settings.WM_TIMEOUT_S}s",
+                        error_code="timeout",
+                    )
+                except ValueError as exc:
+                    return WorldModelPredictionPayload(
+                        ok=False,
+                        task_type=payload.task_type,
+                        device=self.device,
+                        error=str(exc),
+                        error_code="bad_trajectory",
+                    )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.exception("world_model_forward_failed")
+                    return WorldModelPredictionPayload(
+                        ok=False,
+                        task_type=payload.task_type,
+                        device=self.device,
+                        error=str(exc),
+                        error_code="forward_failed",
+                    )
+        finally:
+            if gpu_permit is not None:
+                await gpu_permit.close()
 
         elapsed = time.monotonic() - t0
         return WorldModelPredictionPayload(

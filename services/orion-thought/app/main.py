@@ -17,6 +17,7 @@ from .chain import run_reverie_chain_worker
 from .reasoning_activity import run_reasoning_worker
 from .reasoning_activity import store as reasoning_store
 from .reverie import run_reverie_worker
+from .rpc_health import build_publisher, fold_bus
 from .settings import settings
 from .store import warm_pool
 from .visual_chain import run_visual_chain_watchdog, run_visual_chain_worker
@@ -100,7 +101,27 @@ async def lifespan(app: FastAPI):
     # kept on app.state -- an unreferenced asyncio task can be
     # garbage-collected mid-execution (see asyncio docs on create_task).
     app.state.pool_warmup_task = asyncio.create_task(warm_pool())
-    yield
+    # RPC-health publish (orion:rpc_health:snapshot): one dedicated long-lived bus that
+    # drains the process sink every worker/per-call bus folds into (app/rpc_health.py).
+    app.state.rpc_health_bus = None
+    app.state.rpc_health_publisher = build_publisher(settings, lambda: app.state.rpc_health_bus)
+    if app.state.rpc_health_publisher.enabled:
+        from orion.core.bus.async_service import OrionBusAsync
+
+        try:
+            rpc_health_bus = OrionBusAsync(url=settings.orion_bus_url)
+            app.state.rpc_health_bus = rpc_health_bus
+            app.state.rpc_health_publisher.start()
+        except Exception as exc:
+            logger.warning("rpc_health_publish_start_failed error=%s", exc)
+    try:
+        yield
+    finally:
+        await app.state.rpc_health_publisher.stop()
+        if app.state.rpc_health_bus is not None:
+            with suppress(Exception):
+                await app.state.rpc_health_bus.close()
+            app.state.rpc_health_bus = None
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -236,6 +257,7 @@ async def visual_chain_run_once(request: VisualRunRequestV1 | None = Body(defaul
         else:
             await asyncio.to_thread(persist_visual_execution_receipt, chain.chain_id, receipt)
     finally:
+        fold_bus(bus)  # per-call bus: keep its RPC-health window (app/rpc_health.py)
         with suppress(Exception):
             await bus.close()
     if attempt_id:

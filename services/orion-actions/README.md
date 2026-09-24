@@ -574,6 +574,19 @@ The Hub UI is a presentation surface over backend responses, not a parallel sche
 
 ---
 
+## RPC-health publish (on by default)
+
+Every `RPC_HEALTH_PUBLISH_INTERVAL_SEC` (30s) Actions drains its long-lived RPC bus fork
+(`app.state.rpc_bus` -- every `rpc_request` in this service goes through it; the Hunter's
+listener bus makes none) and publishes `RpcHealthSnapshotV1` to `orion:rpc_health:snapshot`
+with `instance="main"`. With `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true` the snapshot carries
+per-hop stats keyed by request channel (e.g. `orion:cortex:exec:request:background` for the
+daily plans, `orion:cortex:request` for cortex-orch calls). Consumer-first rollout: rebuild
+`orion-signal-gateway` and `orion-equilibrium-service` on PR #2312's build first. Hop key
+conventions: `orion/core/bus/rpc_health.py` module docstring.
+
+---
+
 ## Current v1 constraints / known boundaries
 
 - **Storage substrate**: local JSON file persistence (`workflow_schedules.json`) with atomic temp-file replace; acceptable for v1 durability and simplicity.

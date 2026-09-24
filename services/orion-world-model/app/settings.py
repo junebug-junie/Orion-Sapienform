@@ -108,6 +108,51 @@ class Settings(BaseSettings):
     WM_TIMEOUT_S: int = 30
     WM_MAX_INFLIGHT: int = 2
 
+    # GPU2 CAPACITY MUTEX. This service shares circe's GPU2 (the same
+    # physical card as orion-diffusion-host) with no OS/driver-level
+    # arbitration between the two -- live-confirmed 2026-09-24, two
+    # back-to-back "CUDA error: CUDA-capable device(s) is/are busy or
+    # unavailable" failures on diffusion-host's side. Routed through the
+    # same durable-runs Gateway capacity-permit authority orion-thought's
+    # diffusion call now also acquires (orion.durable_admission.
+    # capacity_client.GpuCapacityPermit) -- shared backend_key, so the
+    # broker's max_inflight enforcement becomes real cross-service mutual
+    # exclusion on the actual contested hardware.
+    #
+    # Short budget, deliberately asymmetric with diffusion-host's own long
+    # one (services/orion-thought/app/settings.py): this service is
+    # latency-sensitive (WM_TIMEOUT_S above is only 30s) and should back off
+    # immediately with an honest gpu_contended outcome if diffusion already
+    # holds the card, not queue behind it -- diffusion's own generation is
+    # rare (a ~90-minute cadence) and already tolerates waiting, which is
+    # what gives it practical precedence on its own native card without any
+    # new priority concept in the broker itself.
+    WM_GPU2_CAPACITY_ENABLED: bool = True
+    # circe reaches orion-durable-runs (athena) over Tailscale -- same
+    # address orion-gpu-lane-controller's own GPU2_AUTHORITY_URL uses.
+    WM_GPU2_CAPACITY_URL: str = "http://100.92.216.81:8124/capacity"
+    # Deliberately orion-diffusion-host's own base URL, not a made-up
+    # logical key -- an opaque shared identifier both services agree on.
+    # Confirmed this does NOT collide with the existing GPU2 elastic slot's
+    # own reserved backend_key (the agent-burst llama.cpp URL, port 8016).
+    WM_GPU2_CAPACITY_BACKEND_KEY: str = "http://100.112.254.99:8014"
+    WM_GPU2_CAPACITY_LANE: str = "world-model"
+    # Deliberately NOT a separate setting -- the capacity authority takes
+    # the MINIMUM max_inflight declared across every currently-active
+    # permit on a backend_key, so a separate, more restrictive value here
+    # (e.g. 1) would silently cap this service's own already-declared
+    # concurrency policy (WM_MAX_INFLIGHT) even when diffusion-host is
+    # completely idle -- two purely-internal concurrent world-model
+    # requests would then fight over one shared slot for no reason (review
+    # finding, caught before this shipped). Reusing WM_MAX_INFLIGHT keeps
+    # this service's own concurrency policy authoritative for itself,
+    # while diffusion's own max_inflight=1 (visual_chain_gpu2_capacity_
+    # max_inflight) still correctly excludes everyone whenever it holds
+    # the slot, and still correctly gets excluded while any world-model
+    # permits are held.
+    WM_GPU2_CAPACITY_BUDGET_SEC: float = 2.0
+    WM_GPU2_CAPACITY_POLL_INTERVAL_SEC: float = 0.25
+
     # VRAM pressure -- sized well under a 32GB card so this service's own
     # ceiling leaves real headroom for the separately-scheduled Infinity 2B
     # diffusion process sharing the same physical card via MPS (README "GPU

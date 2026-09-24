@@ -8,7 +8,9 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
+from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 
 from .bus_listener import run_bus_worker
 from .cancel_listener import run_cancel_worker
@@ -34,6 +36,19 @@ def build_heartbeat_chassis() -> HeartbeatOnly:
             bus_enabled=settings.orion_bus_enabled,
             heartbeat_interval_sec=settings.heartbeat_interval_sec,
         )
+    )
+
+
+def build_rpc_health_publisher(bus_getter) -> RpcHealthPublisher:
+    return RpcHealthPublisher(
+        enabled=settings.rpc_health_publish_enabled,
+        bus_getter=bus_getter,
+        service=settings.service_name,
+        node=settings.node_name,
+        instance="main",
+        source=ServiceRef(name=settings.service_name, version=settings.service_version, node=settings.node_name),
+        interval_sec=settings.rpc_health_publish_interval_sec,
+        include_channel_latency=settings.rpc_health_channel_latency_enabled,
     )
 
 
@@ -64,6 +79,12 @@ async def lifespan(app: FastAPI):
     # open a real connection right here.
     app.state.dispatch_bus = OrionBusAsync(url=settings.orion_bus_url, enabled=settings.orion_bus_enabled)
     await app.state.dispatch_bus.connect()
+    # RPC-health publish from the dispatch bus: every rpc_request the handlers make
+    # (cortex-exec :background finalize, substrate appraisal) records here, and
+    # bus_listener.record_fcc_hop adds the FCC subprocess leg as fcc:<served_model>.
+    app.state.rpc_health_publisher = build_rpc_health_publisher(lambda: app.state.dispatch_bus)
+    if settings.orion_bus_enabled:
+        app.state.rpc_health_publisher.start()
     # KNOWN RISK, not fixed here: both loops' `claude -p` subprocesses run
     # against the SAME shared checkout (HARNESS_FCC_WORKSPACE), protected only
     # by orion/fcc/turn_lock.py's SHARED (non-exclusive) lock. That lock was
@@ -102,6 +123,9 @@ async def lifespan(app: FastAPI):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+    publisher = getattr(app.state, "rpc_health_publisher", None)
+    if publisher is not None:
+        await publisher.stop()
     dispatch_bus = getattr(app.state, "dispatch_bus", None)
     if dispatch_bus is not None:
         with suppress(Exception):

@@ -32,7 +32,6 @@ from orion.schemas.agents.schemas import DeliberationRequest
 from orion.core.verbs import VerbResultV1
 from orion.schemas.collapse_mirror import (
     CollapseMirrorEntryV2,
-    attach_llm_uncertainty_to_collapse_payload,
     find_collapse_entry,
     normalize_collapse_entry,
 )
@@ -67,9 +66,9 @@ from orion.metacog.service import (
     IS_CAUSALLY_DENSE_THRESHOLD,
     compute_causal_density,
     compute_provenance,
-    compute_severity,
-    compute_touches,
 )
+from orion.metacog.evidence_map import DEFINITION_TAG as METACOG_DEFINITION_TAG
+from orion.metacog.evidence_map import EvidenceMapping, map_trigger as map_metacog_trigger
 from orion.schemas.platform import CoreEventV1
 
 from orion.cognition.personality.identity_context import build_identity_context, load_identity_file
@@ -194,6 +193,7 @@ _METACOG_DRAFT_CTX_LEN_KEYS: tuple[str, ...] = (
     "metacog_substrate_cue",
     "trigger_upstream_json",
     "recent_trend_signals_json",
+    "metacog_event_evidence",
 )
 
 def _filter_world_context_capsule(
@@ -864,52 +864,15 @@ def _metacog_messages(
     ]
 
 
-_METACOG_UNCERTAINTY_PROBE_MAX_CHARS = 512
-
-
-def _truncate_metacog_probe_text(text: str, *, limit: int = _METACOG_UNCERTAINTY_PROBE_MAX_CHARS) -> str:
-    s = str(text or "").strip()
-    if len(s) <= limit:
-        return s
-    return s[: limit - 3] + "..."
-
-
-def _metacog_uncertainty_probe_messages(patch: MetacogDraftTextPatchV1) -> List[Dict[str, Any]]:
-    summary = _truncate_metacog_probe_text(patch.summary or "unknown")
-    mantra = _truncate_metacog_probe_text(patch.mantra or "unknown")
-    what_changed_summary = _truncate_metacog_probe_text(
-        (patch.what_changed.summary if patch.what_changed else None) or ""
-    )
-    system = _truncate_metacog_probe_text(
-        "You are a metacognition uncertainty probe. "
-        "Output exactly one line: a compressed restatement of the summary only. "
-        "No JSON, no markdown, no preamble."
-    )
-    user_parts = [f"summary={summary} mantra={mantra}"]
-    if what_changed_summary:
-        user_parts.append(f"what_changed={what_changed_summary}")
-    user_parts.append("Format: a single compressed sentence restating the summary.")
-    user = _truncate_metacog_probe_text(" ".join(user_parts))
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
-
-
-def _should_run_metacog_uncertainty_probe() -> bool:
-    if not getattr(settings, "cortex_metacog_return_logprobs", False):
-        return False
-    if not bool(getattr(settings, "cortex_metacog_uncertainty_probe_enabled", True)):
-        return False
-    probe_mode = str(getattr(settings, "cortex_metacog_logprob_probe_mode", "") or "").strip().lower()
-    if probe_mode != "native_completion":
-        if probe_mode:
-            logger.warning(
-                "metacog_uncertainty_probe_skipped unsupported_probe_mode=%s (only native_completion)",
-                probe_mode,
-            )
-        return False
-    return True
+def _metacog_event_evidence_cue(mapping: EvidenceMapping) -> str:
+    """Compact, deterministic rendering of the event's own evidence for the
+    draft prompt (replaces the flat zen_state/pressure lines, which sat at
+    zen_score 0.965 +/- 0.01 and drove "zen persists" narration)."""
+    lines = [f"severity={mapping.severity} magnitude={mapping.magnitude:.2f}"]
+    lines += [f"- {e}" for e in mapping.evidence]
+    if mapping.touches:
+        lines.append("touches: " + ", ".join(mapping.touches[:8]))
+    return "\n".join(lines)
 
 
 # Anti-echo guard for the metacog draft prompt's one-shot example
@@ -3382,7 +3345,6 @@ async def call_step_services(
                 }
 
                 llm_res: Any = None
-                probe_unc: Dict[str, Any] | None = None
                 if draft_ctx_overflow:
                     logs.append("skip <- MetacogDraftService LLM (prompt_context_overflow)")
                     raw_content = ""
@@ -3462,61 +3424,11 @@ async def call_step_services(
                             patch_error = "example_echo"
                             patch_model = MetacogDraftTextPatchV1()
                         finish_reason = _extract_llm_finish_reason(llm_res)
-                        if (
-                            not draft_error
-                            and not patch_error
-                            and _should_run_metacog_uncertainty_probe()
-                        ):
-                            probe_options: Dict[str, Any] = {
-                                "temperature": 0.8,
-                                "max_tokens": 128,
-                                "return_logprobs": True,
-                                "logprobs_top_k": 5,
-                                "logprob_summary_only": True,
-                                "logprob_probe_mode": "native_completion",
-                                "stream": False,
-                                **_md_lane,
-                            }
-                            probe_req = ChatRequestPayload(
-                                model=req_model,
-                                profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
-                                messages=_metacog_uncertainty_probe_messages(patch_model),
-                                raw_user_text="metacog_uncertainty_probe",
-                                # metacog_background: same draft-quality reflection work as
-                                # the request above, same reasoning for yielding.
-                                route="metacog_background",
-                                options=probe_options,
-                            )
-                            try:
-                                probe_res = await llm_client.chat(
-                                    source=source,
-                                    req=probe_req,
-                                    correlation_id=correlation_id,
-                                    reply_to=reply_channel,
-                                    timeout_sec=effective_timeout,
-                                )
-                                if hasattr(probe_res, "meta") and isinstance(probe_res.meta, dict):
-                                    maybe_unc = probe_res.meta.get("llm_uncertainty")
-                                    if isinstance(maybe_unc, dict):
-                                        probe_unc = maybe_unc
-                            except Exception as probe_exc:
-                                logger.warning(
-                                    "metacog_uncertainty_probe_failed corr_id=%s error=%s",
-                                    correlation_id,
-                                    probe_exc,
-                                )
                     else:
                         finish_reason = None
 
                     base_entry = _fallback_metacog_draft(ctx).model_dump(mode="json")
                     base_entry = _apply_metacog_system_fields(base_entry, ctx)
-                    unc = probe_unc
-                    if unc is None:
-                        md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
-                        if isinstance(md.get("llm_uncertainty"), dict):
-                            unc = md["llm_uncertainty"]
-                    if isinstance(unc, dict):
-                        attach_llm_uncertainty_to_collapse_payload(base_entry, unc)
                     raw_trigger_null = not isinstance(ctx.get("trigger"), dict)
                     draft_mode = "fallback" if draft_error or patch_error else "llm"
                     fallback_reason = _resolve_metacog_draft_fallback_reason(
@@ -3762,8 +3674,6 @@ async def call_step_services(
                     metacog_entry_id = _ensure_metacog_entry_id(ctx)
                     trig = ctx.get("trigger") if isinstance(ctx.get("trigger"), dict) else {}
 
-                    what_changed_dict = entry.what_changed.model_dump(mode="json") if entry.what_changed else {}
-
                     repair_pressure_summary = (
                         ctx.get("metadata", {}).get("substrate_effect_summary")
                         if isinstance(ctx.get("metadata"), dict)
@@ -3787,14 +3697,24 @@ async def call_step_services(
                             behavior_applied=repair_pressure_summary.get("behavior_applied"),
                         )
 
-                    llm_uncertainty = ctx.get("llm_uncertainty")
-                    if not isinstance(llm_uncertainty, dict):
-                        md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
-                        llm_uncertainty = md.get("llm_uncertainty") if isinstance(md.get("llm_uncertainty"), dict) else None
-                    if not isinstance(llm_uncertainty, dict):
-                        scratch_telemetry = entry.state_snapshot.telemetry if entry.state_snapshot else {}
-                        candidate = scratch_telemetry.get("llm_uncertainty") if isinstance(scratch_telemetry, dict) else None
-                        llm_uncertainty = candidate if isinstance(candidate, dict) else None
+                    trigger_kind_value = _metacog_trigger_kind(ctx)
+                    # Spec 2026-09-24 section B: severity, causal_density,
+                    # what_changed and touches come from the trigger's OWN
+                    # upstream evidence -- a pure function, never the writing
+                    # LLM or this pipeline's step log.
+                    evidence_mapping: EvidenceMapping = map_metacog_trigger(
+                        trigger_kind_value, trig.get("reason"), trig.get("upstream")
+                    )
+                    trigger_upstream = trig.get("upstream") if isinstance(trig.get("upstream"), dict) else {}
+                    # llm_uncertainty is only real evidence when the event IS
+                    # about LLM surface instability; the writer's own logprob
+                    # probe that used to fill it was removed.
+                    event_llm_uncertainty = (
+                        trigger_upstream.get("llm_uncertainty")
+                        if trigger_kind_value == "llm_surface_instability"
+                        and isinstance(trigger_upstream.get("llm_uncertainty"), dict)
+                        else None
+                    )
 
                     state = MetacogRealState(
                         biometrics=ctx.get("biometrics") if isinstance(ctx.get("biometrics"), dict) else None,
@@ -3808,63 +3728,51 @@ async def call_step_services(
                             if isinstance(ctx.get("substrate_eventfulness_reasons"), list)
                             else None
                         ),
-                        llm_uncertainty=llm_uncertainty,
+                        llm_uncertainty=event_llm_uncertainty,
                         reasoning_excerpt=_metacog_reasoning_excerpt(reasoning_content),
                         repair_pressure=repair_pressure,
                     )
 
-                    causal_density = compute_causal_density(state)
+                    causal_density = compute_causal_density(evidence_mapping)
                     is_causally_dense = causal_density.score >= IS_CAUSALLY_DENSE_THRESHOLD
 
-                    # Real per-step evidence for this turn -- `logs` is the
-                    # same ordered list every service block in this dispatch
-                    # loop appends "ok <- X" / "error <- X" / "skip <- X (...)"
-                    # to. A turn is a sequence of phases, not one atomic
-                    # event: this is that sequence, not a re-derived signal.
-                    # Capped, not filtered to failures only -- the design
-                    # intent was the full ordered sequence as supporting
-                    # evidence for whatever trigger_kind/trigger_reason names
-                    # as the single specific thing that fired the entry.
-                    turn_step_log = [str(line)[:200] for line in logs[-20:]]
-                    # Only count unambiguous failure markers. `logs` also
-                    # carries routine "exec ->" start markers, "skip <-"
-                    # (often a budget/config choice, not a reliability
-                    # problem -- e.g. prompt_context_overflow), "rpc"/"info"/
-                    # "publish" bookkeeping, and "warn" (soft, not fatal).
-                    # Counting those as failures would make severity noisy on
-                    # every ordinary turn instead of reflecting real trouble.
-                    _FAILURE_PREFIXES = ("fail", "error", "exception")
-                    non_ok_step_count = sum(
-                        1 for line in logs if str(line).lstrip().startswith(_FAILURE_PREFIXES)
+                    # The pipeline's own ordered step log ("exec -> X",
+                    # "ok <- X", ...) describes how this row was made, not
+                    # what happened -- it lives in provenance now, not in
+                    # what_changed.evidence.
+                    touches = list(evidence_mapping.touches)
+                    provenance = compute_provenance(
+                        trigger_kind=trigger_kind_value,
+                        touches=touches,
+                        pipeline_steps=[str(line) for line in logs],
                     )
 
-                    touches = compute_touches(state)
-                    trigger_kind_value = _metacog_trigger_kind(ctx)
-                    severity = compute_severity(
-                        llm_uncertainty=llm_uncertainty,
-                        non_ok_step_count=non_ok_step_count,
-                    )
-                    provenance = compute_provenance(trigger_kind=trigger_kind_value, touches=touches)
+                    # LLM authors summary/mantra/tags only. If the draft fell
+                    # back, the summary is the deterministic evidence line,
+                    # not the scratch "Fallback mirror draft ..." text.
+                    summary_text = entry.summary
+                    if draft_mode == "fallback" or not str(summary_text or "").strip():
+                        summary_text = evidence_mapping.summary_fallback
 
                     metacog_entry = MetacogEntryV1(
                         event_id=f"metacog_{metacog_entry_id}",
                         environment=entry.environment,
                         trigger_kind=trigger_kind_value,
                         trigger_reason=str(trig.get("reason") or "unknown"),
-                        summary=entry.summary,
+                        summary=summary_text,
                         mantra=entry.mantra,
                         what_changed=MetacogWhatChanged(
-                            summary=what_changed_dict.get("summary"),
-                            evidence=(what_changed_dict.get("evidence") or []) + turn_step_log,
+                            summary=evidence_mapping.summary_fallback,
+                            evidence=list(evidence_mapping.evidence),
                         ),
                         state=state,
-                        severity=severity,
+                        severity=evidence_mapping.severity,
                         touches=touches,
                         causal_density=causal_density,
                         is_causally_dense=is_causally_dense,
                         snapshot_kind="confirmed_dense" if is_causally_dense else "baseline",
                         provenance=provenance,
-                        tags=list(entry.tags or []),
+                        tags=_merge_system_tags(list(entry.tags or []), [METACOG_DEFINITION_TAG]),
                         source_service=entry.source_service or "metacog",
                         source_node=entry.source_node,
                     )
@@ -4107,7 +4015,6 @@ async def call_step_services(
                 )
                 summary_text = (
                     f"Trigger: {trigger.trigger_kind} ({trigger.reason})\n"
-                    f"Pressure: {trigger.pressure}\n"
                     f"Spark: {spark_line}\n"
                     f"{turn_effect_line}"
                     f"{alerts_line}\n"
@@ -4128,6 +4035,9 @@ async def call_step_services(
                 # 2026-07-18-collapse-mirror-metacog-redesign.md's chat_turn spec,
                 # question 5.
                 ctx["trigger_upstream_json"] = json.dumps(trigger.upstream or {}, indent=2, default=str)
+                ctx["metacog_event_evidence"] = _metacog_event_evidence_cue(
+                    map_metacog_trigger(trigger.trigger_kind, trigger.reason, trigger.upstream)
+                )
                 ctx["context_summary"] = summary_text
                 # ROADMAP A5. Fetched here rather than inside the cue builder so that builder
                 # stays a pure function of ctx and can be tested without a live gateway.

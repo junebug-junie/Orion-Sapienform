@@ -35,6 +35,18 @@ above -- process liveness, not town actuation.
 
 Never hardcode `bus-core` / `redis://redis`. `ORION_BUS_URL` passes through from the root `.env`.
 
+## RPC-health publish (on by default)
+
+Every `RPC_HEALTH_PUBLISH_INTERVAL_SEC` (30s) the worker drains its own long-lived bus's
+RPC-health window and publishes `RpcHealthSnapshotV1` to `orion:rpc_health:snapshot`
+(`instance="main"`). Only runs when the worker itself runs (`ORION_EMBODIMENT_ENABLED=true`,
+since that is when the bus connects). With `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true` the
+snapshot carries per-hop stats keyed by request channel -- both town-speech paths (unified
+cortex and quick) call `rpc_request` on `EMBODIMENT_CORTEX_REQUEST_CHANNEL`, so they share
+that one hop key. Consumer-first rollout: rebuild
+`orion-signal-gateway` and `orion-equilibrium-service` on PR #2312's build first. Hop key
+conventions: `orion/core/bus/rpc_health.py` module docstring.
+
 ## Town speech (unified vs quick)
 
 When `EMBODIMENT_SPEECH_ENABLED=true`, Orion generates town utterances via `_request_utterance`, a dispatcher with two lanes:

@@ -1,0 +1,30 @@
+# Per-camera zones, in normalized image coordinates (0..1, origin top-left).
+# docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md ideas 6, 9.
+#
+# A box belongs to the first zone that contains its bottom-center point (where
+# a person or dog stands), else to no zone.
+#
+# embed: false means boxes in this zone are NEVER crop-embedded and never
+# become individuals. The patio is the family's space: Orion may know people
+# are there (count + presence), but keeps no pictures and no vectors of them.
+# The same rule is enforced by a CHECK constraint on vision_crop_observation.
+#
+# dwell_rare_sec: dwell longer than this is unusual here (attention score input).
+#
+# The polygons below are placeholders until the camera is mounted and
+# Juniper traces the real ones from a frame.
+version: 1
+streams:
+  walkway:
+    zones:
+      - name: patio
+        embed: false
+        polygon: [[0.0, 0.70], [0.35, 0.70], [0.35, 1.0], [0.0, 1.0]]
+      - name: mailbox
+        embed: true
+        dwell_rare_sec: 180
+        polygon: [[0.75, 0.40], [0.95, 0.40], [0.95, 0.75], [0.75, 0.75]]
+      - name: walkway
+        embed: true
+        dwell_rare_sec: 120
+        polygon: [[0.0, 0.35], [1.0, 0.35], [1.0, 1.0], [0.0, 1.0]]

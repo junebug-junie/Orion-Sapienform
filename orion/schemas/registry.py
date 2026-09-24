@@ -505,9 +505,14 @@ from orion.schemas.world_model import (
     WorldModelTaskRequestPayload,
     WorldModelTrajectoryStepV1,
 )
+from orion.schemas.ask import OrionAskAnsweredV1, OrionAskV1
 from orion.schemas.vision import (
     VisionArtifactPayload,
     VisionSceneInventoryV1,
+    VisionCropV1,
+    VisionCropObservationV1,
+    PerceptExpectationV1,
+    VisionUnresolvedV1,
     VisionCouncilRequestPayload,
     VisionCouncilResultPayload,
     VisionEdgeActivityPayload,
@@ -894,6 +899,12 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "VisionEdgeArtifact": VisionEdgeArtifact,
     "VisionEdgeActivityPayload": VisionEdgeActivityPayload,
     "VisionSceneInventoryV1": VisionSceneInventoryV1,
+    "VisionCropV1": VisionCropV1,
+    "VisionCropObservationV1": VisionCropObservationV1,
+    "PerceptExpectationV1": PerceptExpectationV1,
+    "VisionUnresolvedV1": VisionUnresolvedV1,
+    "OrionAskV1": OrionAskV1,
+    "OrionAskAnsweredV1": OrionAskAnsweredV1,
     # Pre-existing gap surfaced by test_registry_and_schema_registry_agree:
     # registered in SCHEMA_REGISTRY, carried on a real channel
     # (orion/bus/channels.yaml:2790) and published by
@@ -1533,6 +1544,19 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=VisionSceneInventoryV1,
         kind="vision.scene.inventory.v1",
     ),
+    # Walkway camera (docs/superpowers/specs/2026-09-22-walkway-camera-busy-
+    # world-design.md). PerceptExpectationV1/VisionCropV1 are persisted/nested
+    # shapes with no bus kind, so they live in _REGISTRY only.
+    "VisionCropObservationV1": SchemaRegistration(
+        model=VisionCropObservationV1,
+        kind="vision.crop.observation.v1",
+    ),
+    "VisionUnresolvedV1": SchemaRegistration(
+        model=VisionUnresolvedV1,
+        kind="vision.unresolved.v1",
+    ),
+    "OrionAskV1": SchemaRegistration(model=OrionAskV1, kind="orion.ask.v1"),
+    "OrionAskAnsweredV1": SchemaRegistration(model=OrionAskAnsweredV1, kind="orion.ask.answered.v1"),
     "CoalitionSnapshotV1": SchemaRegistration(
         model=CoalitionSnapshotV1,
         kind="coalition.snapshot.v1",

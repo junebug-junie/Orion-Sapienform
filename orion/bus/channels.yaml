@@ -483,6 +483,43 @@ channels:
     stability: "experimental"
     since: "2026-08-21"
 
+  # Walkway camera (docs/superpowers/specs/2026-09-22-walkway-camera-busy-
+  # world-design.md). Tracked-label boxes with crop embeddings, clustered into
+  # individuals by orion-sql-writer's vision_individuals reducer.
+  - name: "orion:vision:crops:sql-write"
+    kind: "event"
+    schema_id: "VisionCropObservationV1"
+    producer_services: ["orion-vision-window"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-24"
+
+  # Things the council looked at and could not name; curiosity study material.
+  - name: "orion:vision:unresolved:sql-write"
+    kind: "event"
+    schema_id: "VisionUnresolvedV1"
+    producer_services: ["orion-vision-council"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-24"
+
+  # Orion asking Juniper a question that stays open until answered.
+  - name: "orion:ask:opened"
+    kind: "event"
+    schema_id: "OrionAskV1"
+    producer_services: ["orion-sql-writer"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-09-24"
+
+  - name: "orion:ask:answered"
+    kind: "event"
+    schema_id: "OrionAskAnsweredV1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-substrate-runtime"]
+    stability: "experimental"
+    since: "2026-09-24"
+
   - name: "orion:exec:request:VisionWindowService"
     kind: "request"
     schema_id: "VisionWindowRequestPayload"

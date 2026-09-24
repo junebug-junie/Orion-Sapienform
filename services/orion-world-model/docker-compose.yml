@@ -52,14 +52,6 @@ services:
       - WM_VRAM_SOFT_FLOOR_MB=${WM_VRAM_SOFT_FLOOR_MB}
       - WM_VRAM_HARD_FLOOR_MB=${WM_VRAM_HARD_FLOOR_MB}
 
-      # Real hardening gap found 2026-09-24: this container had `gpus: all`
-      # with no CUDA_VISIBLE_DEVICES lock, so it could see every physical GPU
-      # on the host -- only WM_DEFAULT_DEVICE's app-level convention steered
-      # it onto circe's GPU2, the same card orion-diffusion-host uses, which
-      # IS properly scoped this way. Mirrors orion-diffusion-host's own
-      # docker-compose.yml pattern exactly.
-      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
-
       - WM_GPU2_CAPACITY_ENABLED=${WM_GPU2_CAPACITY_ENABLED}
       - WM_GPU2_CAPACITY_URL=${WM_GPU2_CAPACITY_URL}
       - WM_GPU2_CAPACITY_BACKEND_KEY=${WM_GPU2_CAPACITY_BACKEND_KEY}
@@ -73,7 +65,6 @@ services:
     ports:
       - "${HOST_PORT}:6701"
 
-    # CUDA_VISIBLE_DEVICES above scopes the container to one physical device.
     gpus: all
 
     networks:

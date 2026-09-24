@@ -1,6 +1,6 @@
 # GPU pool — one lease queue for every GPU on circe
 
-Status: DESIGN v2 (awaiting Juniper sign-off before build)
+Status: v2, stage 1 built (observe mode). Signed off by Juniper 2026-09-24.
 Date: 2026-09-24
 Supersedes: `orion/durable_admission/` (broker, policy, capacity, elastic, capacity_client), gateway
 `capacity.py` / `upstream_admission.py` / `priority_admission.py` / `lane_gate.py` /
@@ -337,9 +337,10 @@ causal-hop edges, which feed `bus_synaptic_prediction_error` → `node:substrate
    bus-mirror causal edges and `bus_synaptic_prediction_error` pick up the pool hop
    automatically. The RPC answers immediately (it never waits in line), so an RPC timeout means
    the pool is unreachable, not busy.
-2. The pool runs `RpcHealthPublisher` (service `gpu-pool`, hop `gpu_pool:<class>#grant`,
-   latency = queue wait, deadline miss = timeout). signal-gateway turns that into an
-   `rpc_health_gpu_pool` organ with no registry change.
+2. The pool runs `RpcHealthPublisher` (service `orion-gpu-pool`, hop
+   `gpu_pool:<class>#gpu_pool_wait`, latency = queue wait, deadline miss = timeout).
+   signal-gateway passes it through as an unregistered organ, by design. The `gpu_pool_wait`
+   label is in equilibrium's `EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS`.
 3. Lease lifecycle facts go out as `GrammarEventV1` (`source_service="orion-gpu-pool"`, trace
    prefix `gpu_pool.lease:`). They are persisted via sql-writer. **A reducer and field wiring
    only come after the metric quality gate** (stage 6).
@@ -381,9 +382,11 @@ slow". Everything below follows from that.
    - The anomaly fans out to equilibrium, execution-dispatch's surprise gate, world-pulse
      curiosity, concept induction, the attention self-model, endogenous curiosity and recall's
      `causal_latency_zscore` fragments into Mind.
-   - **Handling:** the lease RPC uses a **child correlation_id** (`<turn_corr>:lease:<n>`), with
-     the turn's id carried in `causality_chain` and stored on the lease. bus-mirror never sees the
-     pool inside a turn's chain, yet the panel and the lease row still join to the turn.
+   - **Handling:** the lease RPC uses a **fresh correlation id** (envelope correlation ids are
+     UUIDs, so a derived `<turn>:lease:<n>` string is not possible), with the turn's id carried
+     as `turn_correlation_id` and stored on the lease. bus-mirror never sees the pool inside a
+     turn's chain, yet the panel and the lease row still join to the turn. Implemented and
+     tested in stage 1 (`test_client_roundtrip.py`).
    - The exec→gateway edge still loses the queue wait that used to sit inside the gateway, so its
      latency steps down once. Stage 3 captures that edge's EWMA before cutover and resets it at
      cutover (a documented step, with before/after numbers in the PR). The alternative, letting a
@@ -458,8 +461,10 @@ slow". Everything below follows from that.
   `bus_channel/orion-durable-runs/orion:durable:resource:event`, add the pool channels, and
   re-check `reasoning_load`, `gpu_pressure` and `queue_contention_score` through the metric gate
   in the stage that touches them.
-- The signals registry gets an `rpc_health_gpu_pool` organ with its causal parents, so
-  `causal_dag_empirical_verification.py` does not report an unregistered organ.
+- **No signals registry entry** (corrected in stage 1). `orion/signals/registry.py` says per-producer
+  rpc_health organs are deliberately left unregistered: they pass through as
+  `rpc_health_<service>` automatically, and registering one that nobody reads by name trips the
+  metric-lineage orphan ratchet. `rpc_health_gpu_pool` follows that rule.
 - Workflows `orion-durable-runs-tests.yml` (admission/gateway-capacity/elastic evals, SQL path
   filters) and `gpu2-elastic-tests.yml` are replaced by `orion-gpu-pool-tests.yml`. The poacher
   gate's ALLOW keys are updated as the listed functions are deleted.

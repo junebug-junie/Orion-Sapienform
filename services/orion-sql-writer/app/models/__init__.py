@@ -42,6 +42,7 @@ from .attention_schema import AttentionSchemaSQL
 from .curiosity_peer_brief import CuriosityPeerBriefSQL
 from .curiosity_hop_reading import CuriosityHopReadingSQL
 from .durable_run_state import DurableRunStateSQL
+from .gpu_pool_event import GpuPoolEventSQL
 from .chat_stance_belief import ChatStanceBeliefLogSQL
 from .self_concept_history import SelfConceptHistorySQL
 from .self_sense_eval_log import SelfSenseEvalLogSQL
@@ -130,6 +131,7 @@ __all__ = [
     "CuriosityPeerBriefSQL",
     "CuriosityHopReadingSQL",
     "DurableRunStateSQL",
+    "GpuPoolEventSQL",
     "JournalEntryIndexSQL",
     "ChatStanceBeliefLogSQL",
     "SelfConceptHistorySQL",

@@ -1,12 +1,18 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 659,
+  "metric_count": 666,
   "_last_change": {
-    "base": "merge base fcc23dbee (origin/main)",
-    "change_count": 0,
+    "base": "merge base 1a82439ae (origin/main)",
+    "change_count": 7,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://bus_channel/orion-durable-runs/orion:gpu_pool:lease:request",
+      "medium added metric://bus_channel/orion-gpu-pool/orion:gpu_pool:event",
+      "medium added metric://bus_channel/orion-gpu-pool/orion:gpu_pool:reply:*",
+      "medium added metric://bus_channel/orion-gpu-pool/orion:gpu_pool:state",
+      "medium added metric://bus_channel/orion-hub/orion:gpu_pool:control:request",
+      "medium added metric://bus_channel/orion-hub/orion:gpu_pool:state:request",
+      "medium added metric://bus_channel/orion-llamacpp-host/orion:llm:worker:announce"
     ]
   },
   "definitions": {
@@ -1267,6 +1273,21 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-durable-runs/orion:gpu_pool:lease:request": {
+      "schema_id": "GpuLeaseRequestV1",
+      "all_producers": [
+        "orion-durable-runs",
+        "orion-hub",
+        "orion-llm-gateway",
+        "orion-thought",
+        "orion-world-model"
+      ],
+      "declared_consumers": [
+        "orion-gpu-pool"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-durable-runs/orion:harness:run:cancel": {
       "schema_id": "HarnessRunCancelV1",
       "all_producers": [
@@ -1443,6 +1464,48 @@
         "orion-self-study-enrichment"
       ],
       "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-gpu-pool/orion:gpu_pool:event": {
+      "schema_id": "GpuPoolEventV1",
+      "all_producers": [
+        "orion-gpu-pool"
+      ],
+      "declared_consumers": [
+        "orion-durable-runs",
+        "orion-hub",
+        "orion-llm-gateway",
+        "orion-sql-writer",
+        "orion-thought",
+        "orion-world-model"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-gpu-pool/orion:gpu_pool:reply:*": {
+      "schema_id": "GpuLeaseReplyV1",
+      "all_producers": [
+        "orion-gpu-pool"
+      ],
+      "declared_consumers": [
+        "orion-durable-runs",
+        "orion-hub",
+        "orion-llm-gateway",
+        "orion-thought",
+        "orion-world-model"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-gpu-pool/orion:gpu_pool:state": {
+      "schema_id": "GpuPoolStateV1",
+      "all_producers": [
+        "orion-gpu-pool"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-graph-compression/orion:graph:compression:events": {
@@ -1720,6 +1783,28 @@
       ],
       "declared_consumers": [
         "orion-agent-council"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:gpu_pool:control:request": {
+      "schema_id": "GpuPoolControlV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-gpu-pool"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hub/orion:gpu_pool:state:request": {
+      "schema_id": "GpuPoolStateRequestV1",
+      "all_producers": [
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-gpu-pool"
       ],
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -2020,6 +2105,17 @@
         "orion-vision-retina"
       ],
       "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-llamacpp-host/orion:llm:worker:announce": {
+      "schema_id": "LlmWorkerAnnounceV1",
+      "all_producers": [
+        "orion-llamacpp-host"
+      ],
+      "declared_consumers": [
+        "orion-gpu-pool"
+      ],
+      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-llm-gateway/orion:council:reply*": {

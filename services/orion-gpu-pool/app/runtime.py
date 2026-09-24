@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.gpu_pool.client import WAIT_HOP_LABEL
 from orion.gpu_pool.config import PoolConfig
 from orion.gpu_pool.discovery import Probe, resolve_roles
 from orion.gpu_pool.lease_graph import FINAL, InvalidTransition, initial_state
@@ -436,7 +437,7 @@ class PoolRuntime:
             turn_correlation_id=row.get("turn_correlation_id"), attempt=row.get("attempt"),
             waited_ms=waited_ms, held_ms=held_ms, reason=reason or row.get("reason"), detail=detail))
         if self.bus is not None:
-            hop = f"gpu_pool:{row['work_class']}#gpu_pool_wait"
+            hop = f"gpu_pool:{row['work_class']}#{WAIT_HOP_LABEL}"
             if event == "granted" and waited_ms is not None:
                 self.bus.record_hop_success(hop, waited_ms)
             elif event == "unavailable" and (reason or row.get("reason")) == "deadline":

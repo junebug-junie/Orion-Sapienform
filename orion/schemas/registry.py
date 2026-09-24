@@ -624,6 +624,16 @@ from orion.schemas.durable_run import (
     DurableRunReceiptV1,
 )
 from orion.schemas.resource_admission import ResourceEventV1
+from orion.schemas.gpu_pool import (
+    GpuLeaseReplyV1,
+    GpuLeaseRequestV1,
+    GpuPoolControlReplyV1,
+    GpuPoolControlV1,
+    GpuPoolEventV1,
+    GpuPoolStateRequestV1,
+    GpuPoolStateV1,
+    LlmWorkerAnnounceV1,
+)
 from orion.schemas.attention_salience import (
     AttentionLoopOutcomeV1,
     AttentionSalienceTraceV1,
@@ -950,6 +960,14 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "DurableRunRequestV1": DurableRunRequestV1,
     "DurableRunReceiptV1": DurableRunReceiptV1,
     "ResourceEventV1": ResourceEventV1,
+    "GpuLeaseRequestV1": GpuLeaseRequestV1,
+    "GpuLeaseReplyV1": GpuLeaseReplyV1,
+    "GpuPoolEventV1": GpuPoolEventV1,
+    "GpuPoolStateV1": GpuPoolStateV1,
+    "GpuPoolStateRequestV1": GpuPoolStateRequestV1,
+    "GpuPoolControlV1": GpuPoolControlV1,
+    "GpuPoolControlReplyV1": GpuPoolControlReplyV1,
+    "LlmWorkerAnnounceV1": LlmWorkerAnnounceV1,
     "DurableRunStateV1": DurableRunStateV1,
     "CuriosityTurnRequestV1": CuriosityTurnRequestV1,
     "CuriosityTurnResultV1": CuriosityTurnResultV1,
@@ -1747,6 +1765,14 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "DurableRunStateV1": SchemaRegistration(model=DurableRunStateV1, kind="durable.run.state.v1"),
     "DurableRunReceiptV1": SchemaRegistration(model=DurableRunReceiptV1, kind="durable.run.receipt.v1"),
     "ResourceEventV1": SchemaRegistration(model=ResourceEventV1, kind="durable.resource.event.v1"),
+    "GpuLeaseRequestV1": SchemaRegistration(model=GpuLeaseRequestV1, kind="gpu_pool.lease.request.v1"),
+    "GpuLeaseReplyV1": SchemaRegistration(model=GpuLeaseReplyV1, kind="gpu_pool.lease.reply.v1"),
+    "GpuPoolEventV1": SchemaRegistration(model=GpuPoolEventV1, kind="gpu_pool.event.v1"),
+    "GpuPoolStateV1": SchemaRegistration(model=GpuPoolStateV1, kind="gpu_pool.state.v1"),
+    "GpuPoolStateRequestV1": SchemaRegistration(model=GpuPoolStateRequestV1, kind="gpu_pool.state.request.v1"),
+    "GpuPoolControlV1": SchemaRegistration(model=GpuPoolControlV1, kind="gpu_pool.control.v1"),
+    "GpuPoolControlReplyV1": SchemaRegistration(model=GpuPoolControlReplyV1, kind="gpu_pool.control.reply.v1"),
+    "LlmWorkerAnnounceV1": SchemaRegistration(model=LlmWorkerAnnounceV1, kind="llm.worker.announce.v1"),
     "CuriosityTurnRequestV1": SchemaRegistration(model=CuriosityTurnRequestV1, kind="curiosity.turn.request.v1"),
     "CuriosityTurnResultV1": SchemaRegistration(model=CuriosityTurnResultV1, kind="curiosity.turn.result.v1"),
     "HelpRequestV1": SchemaRegistration(

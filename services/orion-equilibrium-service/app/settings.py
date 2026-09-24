@@ -236,7 +236,10 @@ class Settings(BaseSettings):
     # Comma-separated health labels / verb names / whole hop keys that are
     # baselined and logged but never trigger. Default breaks metacog's self-loop.
     transport_exclude_labels_raw: str = Field(
-        "log_orion_metacognition", alias="EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS"
+        # gpu_pool_wait: orion-gpu-pool's grant hop, whose latency IS queue wait. Waiting in line
+        # is a capacity fact, not transport; a baseline that "cannot learn busy" would read it as
+        # saturation (docs/superpowers/specs/2026-09-24-gpu-pool-design.md, impacts item 2).
+        "log_orion_metacognition,gpu_pool_wait", alias="EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS"
     )
     transport_baseline_state_key: str = Field(
         "equilibrium:transport_baseline_state:v1",

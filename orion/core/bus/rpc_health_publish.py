@@ -112,6 +112,15 @@ async def rpc_health_publish_loop(
     publishes it. Never raises past this loop -- a publish failure is logged and the loop
     continues, since this is telemetry, not a path any real turn depends on."""
     hop_only_getters = list(hop_only_bus_getters)
+    # Discard whatever hop-only buses accumulated before the loop started, so the first
+    # published window covers one interval, not "since process start".
+    for extra_getter in hop_only_getters:
+        try:
+            extra = extra_getter()
+            if extra is not None:
+                extra.get_rpc_health_snapshot()
+        except Exception:
+            logger.warning("rpc_health_hop_only_initial_drain_failed service=%s", service, exc_info=True)
     while not stop_event.is_set():
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval_sec)

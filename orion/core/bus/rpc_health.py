@@ -39,8 +39,10 @@ same thing everywhere:
   ``log_orion_metacognition`` so a transport gate can exclude it
 - hand-rolled bus RPC: ``verb:<verb_name>`` (cortex-orch chat lane),
   ``governor:<mode>`` (hub -> harness-governor)
-- HTTP: ``http:<host><path>`` (``orion.core.bus.http_health``)
-- FCC motor subprocess wall time: ``fcc:<served_model>``
+- HTTP: ``http:<host><path>`` (``orion.core.bus.http_health``; helper built, no service
+  wired yet -- follow-up applies it to thought->mind, durable-runs/fcc proxy->gateway)
+- FCC motor subprocess wall time: ``fcc:<served_model>`` -- RESERVED, no producer yet
+  (a follow-up instruments orion-harness-governor)
 
 Hand-rolled paths call ``record_hop_success()``/``record_hop_timeout()``. Those record
 into ``channel_latency`` ONLY -- the pooled fields keep their original, documented
@@ -91,10 +93,11 @@ class HopLatency:
     max_ms: Optional[float] = None
 
     def add_success(self, elapsed_ms: float) -> None:
-        self.success_count += 1
         ms = float(elapsed_ms)
         if not math.isfinite(ms):
+            # Skip entirely: counting it without its log would bias mean = sum / n low.
             return
+        self.success_count += 1
         lm = math.log(max(ms, _MIN_LOG_MS))
         self.log_ms_sum += lm
         self.log_ms_sumsq += lm * lm
@@ -237,7 +240,8 @@ class RpcHealthAggregator:
         if stats is not None:
             return stats
         if len(self._hops) >= MAX_DISTINCT_HOPS:
-            self._truncated = True
+            # Deliberately NOT setting self._truncated: that flag documents the POOLED
+            # sample lists; hop overflow is visible as the OVERFLOW_HOP_KEY entry.
             key = OVERFLOW_HOP_KEY
             stats = self._hops.get(key)
             if stats is not None:

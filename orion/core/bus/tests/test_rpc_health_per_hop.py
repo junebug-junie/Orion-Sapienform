@@ -61,7 +61,7 @@ def test_zero_and_nonfinite_latency_do_not_poison_sums() -> None:
     agg.record_hop_success("x", 0.0)
     agg.record_hop_success("x", float("nan"))
     hop = agg.snapshot_and_reset().channel_latency["x"]
-    assert hop.success_count == 2
+    assert hop.success_count == 1  # NaN skipped entirely, so mean = sum / n stays unbiased
     assert math.isfinite(hop.log_ms_sum) and math.isfinite(hop.log_ms_sumsq)
     assert hop.max_ms == 0.0
 
@@ -117,7 +117,7 @@ def test_hop_cardinality_overflow_is_conserved() -> None:
     assert len(snap.channel_latency) == MAX_DISTINCT_HOPS + 1
     assert snap.channel_latency[OVERFLOW_HOP_KEY].success_count == 5
     assert sum(h.success_count for h in snap.channel_latency.values()) == MAX_DISTINCT_HOPS + 5
-    assert snap.truncated is True
+    assert snap.truncated is False  # pooled flag keeps its meaning; overflow shows as _overflow
 
 
 def test_snapshot_resets_hops() -> None:
@@ -261,8 +261,7 @@ def test_envelope_includes_channel_latency_when_enabled() -> None:
 async def test_publish_loop_merges_hop_only_bus_channel_latency_not_pooled() -> None:
     main = OrionBusAsync("redis://unused:6379/0")
     side = OrionBusAsync("redis://unused:6379/0")
-    main._rpc_health.record_success(request_channel="orion:a", latency_ms=3.0)
-    side._rpc_health.record_success(request_channel="orion:b", latency_ms=50.0, health_label="m")
+    side._rpc_health.record_success(request_channel="orion:stale", latency_ms=1.0)  # pre-start: discarded
     main.publish = AsyncMock()
     stop = asyncio.Event()
 
@@ -279,6 +278,9 @@ async def test_publish_loop_merges_hop_only_bus_channel_latency_not_pooled() -> 
             hop_only_bus_getters=[lambda: side, lambda: None, lambda: main],
         )
     )
+    await asyncio.sleep(0)  # initial hop-only drain
+    main._rpc_health.record_success(request_channel="orion:a", latency_ms=3.0)
+    side._rpc_health.record_success(request_channel="orion:b", latency_ms=50.0, health_label="m")
     for _ in range(100):
         if main.publish.await_count:
             break

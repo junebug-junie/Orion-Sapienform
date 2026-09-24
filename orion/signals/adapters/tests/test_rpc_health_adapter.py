@@ -180,7 +180,7 @@ def test_adapt_keys_by_service_and_instance(
             "orion:rpc_health:snapshot", _payload(instance=lane), ORGAN_REGISTRY, {}, norm_ctx
         )
         assert sig is not None
-        assert sig.organ_id == f"rpc_health_cortex_exec_{lane}"
+        assert sig.organ_id == f"rpc_health_cortex_exec__{lane}"
         assert sig.organ_class == OrganClass.exogenous
         ids.add(sig.organ_id)
     assert len(ids) == 4

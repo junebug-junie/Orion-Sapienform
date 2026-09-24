@@ -415,7 +415,7 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
             "sole instance), which maps to this unsuffixed id. The former 'rpc_health_cortex_exec' "
             "entry was retired 2026-09-24: all four exec lane containers overwrote it with "
             "instance=None. Exec lanes (and any other producer) now pass through the adapter "
-            "unregistered as rpc_health_<service>[_<instance>] (exogenous), see "
+            "unregistered as rpc_health_<service>[__<instance>] (exogenous), see "
             "orion/signals/adapters/rpc_health.py::_organ_id_for. Not registered per lane on purpose: "
             "no consumer reads these organ signals by name (the metric-lineage orphan ratchet); the "
             "transport consumer is orion-equilibrium-service reading the raw snapshot.",

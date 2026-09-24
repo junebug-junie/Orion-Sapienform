@@ -111,6 +111,10 @@ def _payload(**overrides) -> dict:
     return HarnessRunV1(**base).model_dump(mode="json")
 
 
+def _client_settings():
+    return HarnessGovernorClient.run.__globals__["settings"]
+
+
 def test_hop_key_uses_mode() -> None:
     assert governor_hop_key(_request("orion")) == "governor:orion"
     assert governor_hop_key(_request("agent")) == "governor:agent"
@@ -130,7 +134,26 @@ async def test_reply_records_governor_hop_success_no_grammar() -> None:
 
 
 @pytest.mark.asyncio
-async def test_timeout_records_governor_hop_timeout_and_emits_grammar_atom() -> None:
+async def test_timeout_records_hop_but_no_grammar_atom_when_publish_off(monkeypatch) -> None:
+    # Patch the settings object run() actually reads: conftest re-imports hub modules,
+    # so `scripts.harness_governor_client` in sys.modules can differ from the module
+    # this file imported HarnessGovernorClient from.
+    monkeypatch.setattr(_client_settings(), "RPC_HEALTH_PUBLISH_ENABLED", False)
+    bus = _Bus(None)
+    result = await HarnessGovernorClient(bus).run(
+        _request("orion"), correlation_id=_CORR, timeout_sec=0.05, liveness_check=lambda _s: False
+    )
+    assert result is None
+    assert bus._real.get_rpc_health_snapshot().channel_latency["governor:orion"].timeout_count == 1
+    assert bus.grammar_calls == []
+
+
+@pytest.mark.asyncio
+async def test_timeout_records_governor_hop_timeout_and_emits_grammar_atom(monkeypatch) -> None:
+    # Patch the settings object run() actually reads: conftest re-imports hub modules,
+    # so `scripts.harness_governor_client` in sys.modules can differ from the module
+    # this file imported HarnessGovernorClient from.
+    monkeypatch.setattr(_client_settings(), "RPC_HEALTH_PUBLISH_ENABLED", True)
     bus = _Bus(None)
     result = await HarnessGovernorClient(bus).run(
         _request("orion"), correlation_id=_CORR, timeout_sec=0.05, liveness_check=lambda _s: False
@@ -147,8 +170,12 @@ async def test_timeout_records_governor_hop_timeout_and_emits_grammar_atom() -> 
 
 
 @pytest.mark.asyncio
-async def test_bus_without_hop_api_still_completes_the_run() -> None:
+async def test_bus_without_hop_api_still_completes_the_run(monkeypatch) -> None:
     """Old fakes/wrappers lacking record_hop_*/emit_rpc_timeout_grammar must not break a turn."""
+    # Patch the settings object run() actually reads: conftest re-imports hub modules,
+    # so `scripts.harness_governor_client` in sys.modules can differ from the module
+    # this file imported HarnessGovernorClient from.
+    monkeypatch.setattr(_client_settings(), "RPC_HEALTH_PUBLISH_ENABLED", True)
 
     class _Bare(_Bus):
         record_hop_success = None  # type: ignore[assignment]
@@ -195,9 +222,10 @@ async def test_hub_main_rpc_health_publish_is_gated_and_drains_rpc_bus(monkeypat
     monkeypatch.setattr(hub_main.settings, "RPC_HEALTH_PUBLISH_ENABLED", True)
     monkeypatch.setattr(hub_main.settings, "RPC_HEALTH_PUBLISH_INTERVAL_SEC", 0.02)
     monkeypatch.setattr(hub_main.settings, "RPC_HEALTH_CHANNEL_LATENCY_ENABLED", True)
+    hub_main._start_rpc_health_publish()
+    await asyncio.sleep(0)  # let the loop's initial hop-only drain run first
     rpc.record_hop_success("governor:orion", 1000.0)
     main_bus.record_hop_timeout("governor:agent", None)
-    hub_main._start_rpc_health_publish()
     try:
         for _ in range(100):
             if rpc.publish.await_count:

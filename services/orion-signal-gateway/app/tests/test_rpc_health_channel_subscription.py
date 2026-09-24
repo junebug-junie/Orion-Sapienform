@@ -143,4 +143,4 @@ async def test_gateway_signal_window_keeps_each_exec_lane_instance() -> None:
         await proc.handle_envelope(env)
 
     for lane in lanes:
-        assert window.get(f"rpc_health_cortex_exec_{lane}") is not None
+        assert window.get(f"rpc_health_cortex_exec__{lane}") is not None

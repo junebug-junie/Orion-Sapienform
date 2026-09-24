@@ -33,8 +33,8 @@ is available for endogenous/hybrid organs to reference.
 not a failure, so `level` stays 1.0 but `confidence` drops instead), `latency_level` = inverse
 of `success_latency_ms_p95`. **Per-producer `organ_id`, keyed by `(service, instance)`**, not one
 shared id: `rpc_health_<service>` for a service's primary instance (`instance` unset or `"main"`,
-e.g. `rpc_health_cortex_orch`) and `rpc_health_<service>_<instance>` otherwise (the four
-cortex-exec lane containers: `rpc_health_cortex_exec_{legacy,chat,spark,background}`).
+e.g. `rpc_health_cortex_orch`) and `rpc_health_<service>__<instance>` otherwise (the four
+cortex-exec lane containers: `rpc_health_cortex_exec__{legacy,chat,spark,background}`).
 `SignalWindow` keys its current-state view by `organ_id` alone, so a shared id across producers
 would make each publish silently overwrite the previous producer's entry. Since 2026-09-24 this is
 a pass-through, not a whitelist: an unregistered producer (hub, durable-runs, ...) still gets its

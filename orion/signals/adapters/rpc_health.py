@@ -61,7 +61,7 @@ def _slug(value: str) -> str:
 
 def _organ_id_for(service: str, instance: Optional[str]) -> Optional[str]:
     """organ_id keyed by (service, instance), e.g. ('cortex-exec', 'chat') ->
-    'rpc_health_cortex_exec_chat'; ('cortex-orch', 'main'|None) -> 'rpc_health_cortex_orch'.
+    'rpc_health_cortex_exec__chat'; ('cortex-orch', 'main'|None) -> 'rpc_health_cortex_orch'.
 
     Pass-through, not a whitelist (2026-09-24, A0 of
     docs/superpowers/specs/2026-09-24-metacog-capture-and-transport-ewma-baseline-design.md).
@@ -86,7 +86,9 @@ def _organ_id_for(service: str, instance: Optional[str]) -> Optional[str]:
     organ_id = f"rpc_health_{normalized}"
     inst = _slug(instance or "")
     if inst and inst != PRIMARY_INSTANCE:
-        organ_id = f"{organ_id}_{inst}"
+        # "__" cannot appear inside a slug, so (svc "a-b", inst "main") and
+        # (svc "a", inst "b") can never collide.
+        organ_id = f"{organ_id}__{inst}"
     return organ_id
 
 

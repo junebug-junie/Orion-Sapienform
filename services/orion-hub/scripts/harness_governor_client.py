@@ -196,13 +196,18 @@ class HarnessGovernorClient:
             # per-hop timeout in this bus's RPC-health aggregator, and the mesh-wide
             # rpc_transport_timeout grammar atom (equilibrium's transport trigger).
             _record_governor_hop(self.bus, hop, elapsed_ms, timed_out=True)
-            await _emit_governor_timeout_grammar(
-                self.bus,
-                request_channel=request_channel,
-                reply_channel=reply_to,
-                corr=correlation_id,
-                elapsed_ms=elapsed_ms,
-            )
+            # The grammar atom fires equilibrium's transport metacog trigger directly
+            # (no gate, only a cooldown), and msg=None also covers a failed liveness
+            # check on a long run. Tie it to the same switch that puts Hub into transport
+            # health at all, which stays off until the per-hop EWMA gate ships.
+            if bool(getattr(settings, "RPC_HEALTH_PUBLISH_ENABLED", False)):
+                await _emit_governor_timeout_grammar(
+                    self.bus,
+                    request_channel=request_channel,
+                    reply_channel=reply_to,
+                    corr=correlation_id,
+                    elapsed_ms=elapsed_ms,
+                )
             return None
         # A reply is a completed round trip even if its payload carries an error:
         # transport health measures the hop, not the run's outcome.

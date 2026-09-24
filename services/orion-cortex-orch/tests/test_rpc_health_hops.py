@@ -217,3 +217,22 @@ def test_exec_client_forwards_health_label_to_rpc_request() -> None:
     with pytest.raises(RuntimeError):
         asyncio.run(client.execute_plan(source=SOURCE, req=req, correlation_id="11111111-1111-1111-1111-000000000004", timeout_sec=1.0))
     assert "health_label" not in seen  # unlabelled calls keep the old call shape
+
+
+def test_main_publish_loop_wiring_folds_metacog_bus_and_sets_instance() -> None:
+    """Static guard: importing app.main starts real chassis objects, so check the call
+    site's source. Without the hop-only fold, the metacog hop (recorded on the
+    equilibrium Hunter's bus) would never be published."""
+    import ast
+
+    tree = ast.parse((APP_ROOT / "app" / "main.py").read_text())
+    calls = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "rpc_health_publish_loop"
+    ]
+    assert len(calls) == 1
+    kw = {k.arg: ast.unparse(k.value) for k in calls[0].keywords}
+    assert kw["instance"] == "'main'"
+    assert kw["include_channel_latency"] == "s.rpc_health_channel_latency_enabled"
+    assert kw["hop_only_bus_getters"] == "[lambda: equilibrium_hunter.bus]"
+    assert kw["bus_getter"] == "_bus_for_rpc"

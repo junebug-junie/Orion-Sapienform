@@ -36,6 +36,10 @@ end of a streamed body. For ordinary non-streaming calls against services that a
 after doing the work, that is the round trip; for a streamed response it is time to
 first byte.
 
+Thread safety: the aggregator is lock-free and assumes the asyncio event-loop thread.
+Use the sync ``HopTimingTransport`` only from that thread, not from ``run_in_executor``
+workers.
+
 A transport wrapper, not httpx ``event_hooks``: response hooks never fire on a timeout,
 which is exactly the outcome transport health most needs. Recording never raises into
 the request path.

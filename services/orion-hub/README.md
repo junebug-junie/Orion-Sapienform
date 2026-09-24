@@ -3053,8 +3053,9 @@ appears in the Compute picker. Uses `HUB_LLM_GATEWAY_URL`, `NOTIFY_BASE_URL` and
 forked RPC bus, publishing `RpcHealthSnapshotV1` (`service="hub"`, `instance="main"`) on
 `orion:rpc_health:snapshot` every `RPC_HEALTH_PUBLISH_INTERVAL_SEC`. The hub -> harness-governor
 hand-rolled RPC (`scripts/harness_governor_client.py`) records each run as hop
-`governor:<mode>` (success on any reply, timeout when the wait gives up) and, on timeout, emits
-the same `rpc_transport_timeout` grammar atom `rpc_request()` emits. Per-hop stats reach the
+`governor:<mode>` (success on any reply, timeout when the wait gives up). With publish enabled,
+a governor timeout also emits the same `rpc_transport_timeout` grammar atom `rpc_request()`
+emits (gated because that atom fires equilibrium's transport metacog trigger directly). Per-hop stats reach the
 snapshot only with `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true`.
 
 Off by default on purpose: Hub's pooled p95 includes long hub->orch turns, and

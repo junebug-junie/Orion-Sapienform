@@ -45,7 +45,7 @@ with the server's own `GET /props`: the loaded file must equal the profile's `hf
 | `orion:gpu_pool:lease:request` | acquire / heartbeat / release / cancel (RPC; answers at once) |
 | `orion:gpu_pool:event` | lease facts; callers wake on `granted` |
 | `orion:gpu_pool:state` (+ `:state:request`) | whole-pool snapshot |
-| `orion:gpu_pool:control:request` | operator: lend, unlend, replay, cancel, backfill (needs `GPU_POOL_OPERATOR_TOKEN`) |
+| `orion:gpu_pool:control:request` | operator: lend, unlend, hold, release, replay, cancel, backfill. No token (the pool trusts the bus like every Orion service); each verb is logged with its actor and published as a pool event. |
 | `orion:llm:worker:announce` | worker → pool discovery |
 
 HTTP is only `/health`, the read-only `GET /v1/pool` debug mirror, and

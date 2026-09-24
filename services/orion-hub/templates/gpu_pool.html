@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>GPU Pool</title>
+<style>
+/* Theme tokens shared with templates/curiosity_atlas.html so the tab matches Hub in both modes. */
+:root {
+  color-scheme: light;
+  --plane: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --ink-muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --hairline: rgba(11,11,11,0.10);
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+  --series-5: #e87ba4; --series-6: #5c940d; --series-7: #a78bfa;
+  --good: #0ca30c; --warning: #fab219; --critical: #d03b3b; --good-text: #006300;
+  --shadow: 0 1px 2px rgba(11,11,11,0.05), 0 4px 12px rgba(11,11,11,0.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --hairline: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+    --series-5: #d55181; --series-6: #5c940d; --series-7: #9d7cf5; --good-text: #0ca30c;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4), 0 4px 12px rgba(0,0,0,0.3);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --hairline: rgba(255,255,255,0.10);
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+  --series-5: #d55181; --series-6: #5c940d; --series-7: #9d7cf5; --good-text: #0ca30c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--plane); color: var(--ink); font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1400px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; }
+h1 { font-size: 18px; margin: 0; }
+h2 { font-size: 14px; margin: 0 0 8px; }
+.muted { color: var(--ink-muted); }
+.panel { background: var(--surface); border: 1px solid var(--hairline); border-radius: 12px; padding: 14px; box-shadow: var(--shadow); }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--hairline); font-size: 11px; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--ink-muted); margin-right: 4px; }
+.live-dot.on { background: var(--good); }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.card { border: 1px solid var(--axis); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.card-head { display: flex; justify-content: space-between; align-items: baseline; }
+.role { border: 1px solid var(--hairline); border-left: 4px solid var(--ink-muted); border-radius: 8px; padding: 6px 8px; }
+.role.swap { border-style: dashed; border-left-style: solid; }
+.role .name { font-weight: 600; }
+.role .model { color: var(--ink-2); font-size: 12px; word-break: break-all; }
+.role .meta { color: var(--ink-muted); font-size: 11px; }
+.status-confirmed, .status-static { border-left-color: var(--good) !important; }
+.status-mismatch, .status-down { border-left-color: var(--critical) !important; }
+.status-silent { border-left-color: var(--warning) !important; }
+.slotbar { display: flex; gap: 2px; margin-top: 4px; }
+.slotbar span { flex: 1; height: 6px; border-radius: 2px; background: var(--grid); }
+.slotbar span.busy { background: var(--series-1); }
+.spanning { margin-top: 10px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button, select, input { font: inherit; color: var(--ink); background: var(--plane); border: 1px solid var(--axis); border-radius: 8px; padding: 4px 10px; }
+button { cursor: pointer; }
+button:hover { border-color: var(--ink-2); }
+button:disabled { opacity: 0.5; cursor: default; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--hairline); white-space: nowrap; }
+th { color: var(--ink-2); font-weight: 600; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.scroll { overflow-x: auto; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover { background: var(--hairline); }
+pre { background: var(--plane); border: 1px solid var(--hairline); border-radius: 8px; padding: 10px; overflow: auto; max-height: 420px; font-size: 12px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+svg text { fill: var(--ink-2); font-size: 11px; }
+.ev-granted { color: var(--good-text); }
+.ev-aborted, .ev-expired, .ev-dead_lettered, .ev-unavailable, .ev-discovery_mismatch { color: var(--critical); }
+.ev-recalled, .ev-backlogged, .ev-swap_requested { color: var(--warning); }
+#controlStatus { min-height: 1.4em; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>GPU pool</h1>
+    <span class="badge" id="poolMode">mode: ?</span>
+    <span class="muted" id="poolDigest"></span>
+    <span class="muted"><span class="live-dot" id="liveDot"></span><span id="liveText">connecting…</span></span>
+  </header>
+
+  <section class="panel" aria-labelledby="cardsTitle">
+    <h2 id="cardsTitle">Cards and what is loaded on them</h2>
+    <p class="muted" id="cardsHint">Each role shows the model the pool discovered and confirmed against the server's own report. Dashed = a swap seat. Green = confirmed, amber = silent (no announcement), red = mismatch or down; only green takes work.</p>
+    <div class="cards" id="cards"></div>
+    <div class="spanning" id="spanning"></div>
+    <div class="muted" id="unclaimed"></div>
+    <details><summary>Raw config/gpu_pool.yaml</summary><pre id="yaml"></pre></details>
+  </section>
+
+  <section class="panel" aria-labelledby="controlsTitle">
+    <h2 id="controlsTitle">Controls</h2>
+    <div class="row" id="lendControls"></div>
+    <div class="row" style="margin-top:8px" id="holdControls"></div>
+    <details style="margin-top:8px"><summary>Backfill (replay past leases)</summary>
+      <div class="row" style="margin-top:8px">
+        <select id="bfClass"></select>
+        <input id="bfHolder" placeholder="holder (optional)" />
+        <select id="bfStatus"><option value="">any status</option><option>released</option><option>dead_letter</option><option>unavailable</option></select>
+        <input id="bfSince" type="datetime-local" /> <input id="bfUntil" type="datetime-local" />
+        <button id="bfPreview" type="button">Preview count</button>
+        <button id="bfRun" type="button" disabled>Replay</button>
+      </div>
+    </details>
+    <div class="muted" id="controlStatus" role="status"></div>
+  </section>
+
+  <section class="panel" aria-labelledby="trafficTitle">
+    <div class="row" style="justify-content:space-between">
+      <h2 id="trafficTitle">Traffic</h2>
+      <div class="row">
+        <select id="range" aria-label="Time range">
+          <option value="live">Live</option><option value="15">Last 15 min</option><option value="60">Last hour</option>
+          <option value="360">Last 6 h</option><option value="1440">Last 24 h</option><option value="10080">Last 7 days</option>
+        </select>
+        <select id="filterClass" aria-label="Class"><option value="">all classes</option></select>
+        <input id="filterHolder" placeholder="holder" aria-label="Holder" />
+        <button id="refreshTraffic" type="button">Refresh</button>
+      </div>
+    </div>
+    <div class="grid2">
+      <div><h2>By role (aggregate)</h2><div class="scroll"><table id="byRole"></table></div></div>
+      <div><h2>By class / holder / priority</h2><div class="scroll"><table id="byClass"></table></div></div>
+    </div>
+    <h2 style="margin-top:12px">Grants and p95 wait over time</h2>
+    <svg id="series" width="100%" height="160" role="img" aria-label="Grants and wait over time"></svg>
+    <h2 style="margin-top:12px">Lease events <span class="muted">(click a row to walk that lease)</span></h2>
+    <div class="scroll" style="max-height:360px"><table id="events"></table></div>
+  </section>
+
+  <section class="panel" aria-labelledby="walkerTitle">
+    <h2 id="walkerTitle">Lease walker</h2>
+    <div class="row">
+      <input id="walkLease" placeholder="lease id" size="36" aria-label="Lease id" />
+      <button id="walkGo" type="button">Walk</button>
+      <button id="walkReplay" type="button" disabled>Replay</button>
+      <button id="walkCancel" type="button" disabled>Cancel</button>
+    </div>
+    <svg id="walker" width="100%" height="230" role="img" aria-label="Lease path through the lease graph"></svg>
+    <div class="scroll"><table id="walkSteps"></table></div>
+  </section>
+</main>
+<script src="/static/js/gpu_pool.js?v={{HUB_UI_ASSET_VERSION}}"></script>
+</body>
+</html>

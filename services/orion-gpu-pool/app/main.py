@@ -97,7 +97,8 @@ async def _on_lease(env: BaseEnvelope) -> BaseEnvelope | None:
 
 async def _on_state(env: BaseEnvelope) -> BaseEnvelope | None:
     req = GpuPoolStateRequestV1.model_validate(env.payload or {})
-    return _reply(env, GPU_POOL_STATE_KIND, await runtime.snapshot(include_leases=req.include_leases))
+    return _reply(env, GPU_POOL_STATE_KIND, await runtime.snapshot(
+        include_leases=req.include_leases, include_config=req.include_config, history_for=req.history_for))
 
 
 async def _on_control(env: BaseEnvelope) -> BaseEnvelope | None:
@@ -182,7 +183,7 @@ async def lifespan(app: FastAPI):
 
     runtime = PoolRuntime(
         cfg=cfg, profiles=profiles, store=_store, graph=build_lease_graph(lambda: cfg, saver), bus=_bus,
-        prober=prober, mode=_settings.mode, operator_token=_settings.operator_token,
+        prober=prober, mode=_settings.mode,
         service_name=_settings.service_name, announce_stale_sec=_settings.announce_stale_sec,
         probe_interval_sec=_settings.probe_interval_sec, state_publish_sec=_settings.state_publish_sec,
         replay_payload_max_bytes=_settings.replay_payload_max_bytes)

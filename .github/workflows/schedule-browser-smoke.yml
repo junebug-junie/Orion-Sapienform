@@ -21,3 +21,5 @@ jobs:
         run: python -m playwright install --with-deps chromium
       - name: Run schedule panel browser smoke
         run: pytest -q services/orion-hub/tests/test_schedule_panel_browser_smoke.py
+      - name: Run GPU pool panel browser smoke
+        run: pytest -q services/orion-hub/tests/test_gpu_pool_panel_browser_smoke.py

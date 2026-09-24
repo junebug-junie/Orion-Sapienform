@@ -60,14 +60,14 @@ def _utcnow() -> datetime:
 class PoolRuntime:
     def __init__(self, *, cfg: PoolConfig, profiles: dict[str, Any], store: Any, graph: Any,
                  bus: Any = None, prober: Prober | None = None, now: Callable[[], datetime] = _utcnow,
-                 mode: str = "observe", operator_token: str = "", service_name: str = "orion-gpu-pool",
+                 mode: str = "observe", service_name: str = "orion-gpu-pool",
                  announce_stale_sec: float = 120.0, probe_interval_sec: float = 15.0,
                  state_publish_sec: float = 5.0, replay_payload_max_bytes: int = 262144):
         import asyncio
 
         self.cfg, self.profiles, self.store, self.graph, self.bus = cfg, profiles, store, graph, bus
         self.prober, self.now, self.mode = prober, now, mode
-        self.operator_token, self.service_name = operator_token, service_name
+        self.service_name = service_name
         self.announce_stale_sec, self.probe_interval_sec = announce_stale_sec, probe_interval_sec
         self.state_publish_sec, self.replay_payload_max_bytes = state_publish_sec, replay_payload_max_bytes
         self.lock = asyncio.Lock()
@@ -181,8 +181,8 @@ class PoolRuntime:
         return await self.release(lease_id, "cancelled", "cancelled")
 
     async def control(self, ctl: GpuPoolControlV1) -> GpuPoolControlReplyV1:
-        if not self.operator_token or ctl.operator_token != self.operator_token:
-            return GpuPoolControlReplyV1(ok=False, reason="operator_token_rejected")
+        logger.info("gpu_pool_control verb=%s actor=%s card=%s lease=%s class=%s",
+                    ctl.verb, ctl.actor, ctl.card, ctl.lease_id, ctl.work_class)
         if ctl.verb in ("lend", "unlend"):
             async with self.lock:
                 card = self.cards.get(ctl.card or "")
@@ -438,7 +438,8 @@ class PoolRuntime:
                        and (rank(r["priority"]), r["created_at"]) < mine)
 
     # --- state + events ---------------------------------------------------------------
-    async def snapshot(self, include_leases: bool = True) -> GpuPoolStateV1:
+    async def snapshot(self, include_leases: bool = True, include_config: bool = False,
+                       history_for: str | None = None) -> GpuPoolStateV1:
         rows = await self.store.live_leases()
         queue: dict[str, int] = {}
         backlog: dict[str, int] = {}
@@ -460,7 +461,11 @@ class PoolRuntime:
                 role=r.get("role"), attempt=r.get("attempt", 1), created_at=r["created_at"],
                 granted_at=r.get("granted_at"), recall_by=r.get("recall_by"),
                 turn_correlation_id=r.get("turn_correlation_id")) for r in rows] if include_leases else [],
-            queue_depth=queue, backlog_depth=backlog)
+            queue_depth=queue, backlog_depth=backlog,
+            config=self.cfg.model_dump(mode="json", by_alias=True, exclude={"digest"}) if include_config else None,
+            config_yaml=self.cfg.source_text if include_config else None,
+            history_lease_id=history_for,
+            history=await self.history(history_for) if history_for else None)
 
     async def publish_state(self) -> None:
         self._last_state = self.now()

@@ -16,7 +16,6 @@ from orion.schemas.gpu_pool import GpuLeaseRequestV1, GpuPoolControlV1, LlmWorke
 
 CFG = load_pool_config()
 PROFILES = load_profiles()
-TOKEN = "t0ken"
 LIVE = {  # what circe's llama.cpp servers report today (see spec, "The machine")
     "chat": ("qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition", "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf", 1, 65536),
     "agent": ("qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex", "Qwen3.8-27B-UD-Q4_K_XL.gguf", 1, 131072),
@@ -74,7 +73,7 @@ def make(down=(), store=None, saver=None, clock=None, bus=None):
 
     rt = PoolRuntime(cfg=CFG, profiles=PROFILES, store=store or MemoryStore(),
                      graph=build_lease_graph(lambda: CFG, saver or MemorySaver()), bus=bus or FakeBus(),
-                     prober=prober, now=clock, operator_token=TOKEN, probe_interval_sec=0)
+                     prober=prober, now=clock, probe_interval_sec=0)
     return rt, clock
 
 
@@ -166,9 +165,7 @@ def test_failures_retry_then_dead_letter_then_operator_replay():
             await later(rt, clock, CFG.defaults.retry.max_sec + 1)
         row = await rt.store.lease(r.lease_id)
         assert row["status"] == "dead_letter" and rt.bus.events("dead_lettered")
-        bad = await rt.control(GpuPoolControlV1(verb="replay", operator_token="nope", lease_id=r.lease_id))
-        assert not bad.ok and bad.reason == "operator_token_rejected"
-        ok = await rt.control(GpuPoolControlV1(verb="replay", operator_token=TOKEN, lease_id=r.lease_id))
+        ok = await rt.control(GpuPoolControlV1(verb="replay", lease_id=r.lease_id))
         assert ok.ok and (await rt.store.lease(r.lease_id))["status"] == "granted"
         path = [h["event"] for h in await rt.history(r.lease_id)]
         assert path[:3] == ["admit", "grant", "release_failed"] and "replay" in path
@@ -196,7 +193,7 @@ def test_gpu0_lend_lets_agent_borrow_and_chat_recalls_it():
         await rt.acquire(acq("agent"))                     # takes gpu1's only slot
         waiting = await rt.acquire(acq("agent"))
         assert waiting.status == "queued"
-        await rt.control(GpuPoolControlV1(verb="lend", operator_token=TOKEN, card="gpu0"))
+        await rt.control(GpuPoolControlV1(verb="lend", card="gpu0"))
         borrowed = await rt.store.lease(waiting.lease_id)
         assert borrowed["status"] == "granted" and borrowed["role"] == "chat"
         chat = await rt.acquire(acq("chat", priority="interactive"))
@@ -279,9 +276,9 @@ def test_backfill_preview_then_linked_children():
             r = await rt.acquire(acq("fast"))
             await rt.release(r.lease_id, "ok")
         spec = {"work_class": "fast", "status": "released"}
-        prev = await rt.control(GpuPoolControlV1(verb="backfill", operator_token=TOKEN, backfill=spec))
+        prev = await rt.control(GpuPoolControlV1(verb="backfill", backfill=spec))
         assert prev.detail == {"would_replay": 3}
-        done = await rt.control(GpuPoolControlV1(verb="backfill", operator_token=TOKEN,
+        done = await rt.control(GpuPoolControlV1(verb="backfill",
                                                  backfill={**spec, "preview": False}))
         children = done.detail["children"]
         assert len(children) == 3
@@ -321,7 +318,7 @@ def test_release_ok_after_abort_ends_the_lease():
         await boot(rt)
         await rt.acquire(acq("agent"))
         waiting = await rt.acquire(acq_r("agent"))
-        await rt.control(GpuPoolControlV1(verb="lend", operator_token=TOKEN, card="gpu0"))
+        await rt.control(GpuPoolControlV1(verb="lend", card="gpu0"))
         await rt.acquire(acq("chat", priority="interactive"))
         await later(rt, clock, CFG.defaults.clawback_grace_sec)
         assert (await rt.store.lease(waiting.lease_id))["status"] == "retry_wait"
@@ -390,11 +387,24 @@ def test_operator_hold_via_control_and_release():
     async def go():
         rt, _ = make()
         await boot(rt)
-        bad = await rt.control(GpuPoolControlV1(verb="hold", operator_token="x", work_class="experiment"))
-        assert not bad.ok
-        held = await rt.control(GpuPoolControlV1(verb="hold", operator_token=TOKEN, work_class="experiment"))
+        held = await rt.control(GpuPoolControlV1(verb="hold", work_class="experiment"))
         assert held.ok and held.detail["status"] == "queued"      # it drains every card first
-        rel = await rt.control(GpuPoolControlV1(verb="release", operator_token=TOKEN,
+        rel = await rt.control(GpuPoolControlV1(verb="release",
                                                 lease_id=held.detail["lease_id"]))
         assert rel.ok
+    run(go())
+
+
+def test_state_request_can_carry_config_and_a_lease_history():
+    async def go():
+        rt, _ = make()
+        await boot(rt)
+        r = await rt.acquire(acq("fast"))
+        await rt.release(r.lease_id, "ok")
+        plain = await rt.snapshot()
+        assert plain.config is None and plain.history is None      # broadcasts stay small
+        full = await rt.snapshot(include_config=True, history_for=r.lease_id)
+        assert set(full.config["roles"]) == set(CFG.roles) and "cards:" in full.config_yaml
+        assert full.config["routes"]["metacog"]["class"] == "metacog"
+        assert [h["event"] for h in full.history] == ["admit", "grant", "release_ok"]
     run(go())

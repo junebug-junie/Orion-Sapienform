@@ -283,7 +283,7 @@ backfill: operator selects a set of past leases (by class, holder, time range, o
 | `orion:gpu_pool:lease:request` | `GpuLeaseRequestV1` (verb acquire / heartbeat / release{outcome}) → `GpuLeaseReplyV1` (granted / queued / backlogged / unavailable) | callers → pool (RPC) |
 | `orion:gpu_pool:event` | `GpuPoolEventV1` (admitted, queued, granted, backlogged, recalled, aborted, expired, retried, dead_lettered, replayed, released, swapped, lent, discovery_mismatch) | pool → everyone |
 | `orion:gpu_pool:state` / `:state:request` | `GpuPoolStateV1` (config digest, cards, discovered roles, leases, queue, backlog, recalls, per-class rolling stats) | pool → panel / field / cortex-exec |
-| `orion:gpu_pool:control:request` | `GpuPoolControlV1` (lend, unlend, activate_experiment, release_experiment, replay, backfill, pause_class) | operator (Hub) → pool (RPC, operator token) |
+| `orion:gpu_pool:control:request` | `GpuPoolControlV1` (lend, unlend, hold, release, replay, cancel, backfill), no token (Juniper, 2026-09-24): the pool trusts the bus like every Orion service; Hub's control route only checks the request came from Hub's own page (CSRF), and every verb is logged with its actor | operator (Hub) → pool (RPC) |
 | `orion:gpu_pool:actuate:request` / `:result` | `GpuActuateV1` / `GpuActuateResultV1` | pool → circe actuator |
 | `orion:llm:worker:announce` | `LlmWorkerAnnounceV1` | llamacpp-host → pool |
 

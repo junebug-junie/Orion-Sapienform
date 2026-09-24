@@ -488,6 +488,27 @@ fails — fail-open, never blocks emitting the outcome itself. See
   at the schema level: `dispatch_status="dispatched"` requires `dispatched_at` plus one of
   `result_ref` (a `substrate_dispatch_results.result_id`) or `dispatch_error`.
 
+## RPC-health snapshot publish (2026-09-24)
+
+Each dispatch tick opens its own short-lived bus to send candidates to cortex-exec
+(`orion:cortex:exec:request:background`), inside `asyncio.run` on a worker thread. Before
+this, that bus's timing tally for those calls was thrown away when the tick closed it.
+Now each tick folds its tally into one process-wide sink (`app.worker.RPC_HEALTH_SINK`,
+in the `finally` that closes the bus, so a failed or timed-out send is still counted),
+and a separate long-lived bus opened in the FastAPI lifespan publishes the sink every
+`RPC_HEALTH_PUBLISH_INTERVAL_SEC` as an `RpcHealthSnapshotV1` on
+`orion:rpc_health:snapshot` (`instance=main`, organ `rpc_health_execution_dispatch_runtime`).
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `RPC_HEALTH_PUBLISH_ENABLED` | `true` | start the publisher |
+| `RPC_HEALTH_PUBLISH_INTERVAL_SEC` | `30` | window length |
+| `RPC_HEALTH_CHANNEL_LATENCY_ENABLED` | `true` | include the per-hop `channel_latency` breakdown |
+
+Rollout is consumer-first: the schema is `extra="forbid"`, so rebuild
+`orion-signal-gateway` and `orion-equilibrium-service` on PR #2312's build before deploying
+this service with `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true`.
+
 ## Prerequisites
 
 1. `substrate_policy_decision_frames` populated (`orion-policy-runtime`, port 8120)

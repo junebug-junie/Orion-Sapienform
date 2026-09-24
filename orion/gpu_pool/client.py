@@ -57,10 +57,12 @@ class Lease:
 
 
 async def lease_rpc(bus: Any, req: GpuLeaseRequestV1, *, source: str, timeout_sec: float = 10.0) -> GpuLeaseReplyV1:
+    reply_channel = f"{REPLY_PREFIX}{uuid.uuid4().hex}"
+    # rpc_request only listens on reply_channel; the responder (Rabbit) replies to env.reply_to and
+    # stays silent without it. Both must name the same channel.
     env = BaseEnvelope(kind=GPU_LEASE_REQUEST_KIND, source=ServiceRef(name=source), correlation_id=uuid.uuid4(),
-                       payload=req.model_dump(mode="json"))
-    raw = await bus.rpc_request(GPU_POOL_LEASE_REQUEST_CHANNEL, env,
-                                reply_channel=f"{REPLY_PREFIX}{uuid.uuid4().hex}",
+                       reply_to=reply_channel, payload=req.model_dump(mode="json"))
+    raw = await bus.rpc_request(GPU_POOL_LEASE_REQUEST_CHANNEL, env, reply_channel=reply_channel,
                                 timeout_sec=timeout_sec, health_label=RPC_HEALTH_LABEL)
     decoded = bus.codec.decode(raw["data"])  # rpc_request returns the raw pubsub message
     return GpuLeaseReplyV1.model_validate(decoded.envelope.payload)

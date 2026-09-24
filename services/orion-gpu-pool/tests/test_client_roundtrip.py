@@ -43,6 +43,10 @@ class WiredBus:
     # client side
     async def rpc_request(self, request_channel, envelope, *, reply_channel, timeout_sec=60.0, health_label=None):
         assert request_channel == GPU_POOL_LEASE_REQUEST_CHANNEL
+        # Like the real Rabbit chassis: no reply_to on the envelope means no reply, ever.
+        # (This fake used to answer regardless, which hid a client that never set reply_to.)
+        if envelope.reply_to != reply_channel:
+            raise asyncio.TimeoutError(f"responder would reply to {envelope.reply_to!r}, caller listens on {reply_channel!r}")
         self.rpc_labels.append(health_label)
         self.turn_corrs.add(str(envelope.correlation_id))
         wire = self.codec.decode(self.codec.encode(envelope)).envelope

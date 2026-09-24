@@ -15,7 +15,7 @@
   - operator hold and release, such as the multi-card experiment seat;
   - backfill, which previews a count first and then replays exactly what was previewed.
 - **Security:**
-  - Control messages to the pool are **HMAC-signed**, fresh within 60 s and single-use, so the operator secret never travels on the bus.
+  - **No token anywhere** (Juniper, 2026-09-24). Hub and the pool accept controls without a credential; Hub only checks the request came from its own page (cross-site forgery protection, not a credential).
   - The Hub control route refuses requests shaped like cross-site forgery.
 - Includes #2320, so pool grammar carries exceptions only. **Close #2320 when this merges.**
 
@@ -36,16 +36,15 @@ orion-gpu-pool (stage 1) runs live in observe mode on athena. All four circe LLM
   - a read-only SQL query on `gpu_pool_events`.
 - **Pool:**
   - A state request can now include the parsed YAML and one lease's history (bus, not HTTP).
-  - Control messages are now signed instead of carrying the token.
+  - Control messages carry no token; `GPU_POOL_OPERATOR_TOKEN` is removed.
 
 ## Files changed
 
 - `services/orion-hub/scripts/gpu_pool_routes.py` (new): the feed, the page, and the `/api/gpu-pool/{state,stream,history,control}` routes.
-- `services/orion-hub/scripts/operator_guard.py` (new): Hub's operator cookie and header check, moved out of `api_routes.py`, which re-imports it. All existing callers are unchanged.
 - `services/orion-hub/templates/gpu_pool.html`, `static/js/gpu_pool.js`, `static/js/gpu_pool_tab.js` (new): the page, its script and the tab wiring.
 - `services/orion-hub/templates/index.html`: the nav tab, the panel iframe and the script tag.
 - `services/orion-hub/scripts/main.py`: starts and stops the feed and registers the routers.
-- `services/orion-hub/app/settings.py`, `.env_example`: `HUB_GPU_POOL_ENABLED`, `HUB_GPU_POOL_RPC_TIMEOUT_SEC`, `GPU_POOL_OPERATOR_TOKEN`.
+- `services/orion-hub/app/settings.py`, `.env_example`: `HUB_GPU_POOL_ENABLED`, `HUB_GPU_POOL_RPC_TIMEOUT_SEC`.
 - `orion/gpu_pool/control_auth.py` (new): signing, verification and the nonce ledger.
 - `orion/schemas/gpu_pool.py`:
   - `GpuPoolControlV1` drops `operator_token` and gains `issued_at`, `nonce` and `signature`;
@@ -74,13 +73,12 @@ orion-gpu-pool (stage 1) runs live in observe mode on athena. All four circe LLM
 
 ## Env/config changes
 
-- **Added keys (Hub):**
-  - `HUB_GPU_POOL_ENABLED=true`
-  - `HUB_GPU_POOL_RPC_TIMEOUT_SEC=5.0`
-  - `GPU_POOL_OPERATOR_TOKEN=` (secret, left empty in the example)
-- **`.env_example` updated:** yes.
-- **Local `.env` synced** with `python scripts/sync_local_env_from_example.py --all-keys orion-hub`: all 3 keys were added. `GPU_POOL_OPERATOR_TOKEN` was set to the same value as orion-gpu-pool's.
-- **Operator action needed:** Hub's `SUBSTRATE_MUTATION_OPERATOR_TOKEN` is **unset**, so Hub's operator guard answers 503 to every control. This is a pre-existing Hub-wide switch, and setting it also enables Hub's other operator-only routes, so it is Juniper's call. Until it is set, the panel is read-only.
+- Added keys (Hub): `HUB_GPU_POOL_ENABLED=true`, `HUB_GPU_POOL_RPC_TIMEOUT_SEC=5.0`
+- Removed keys (pool): `GPU_POOL_OPERATOR_TOKEN` (no token, per Juniper)
+- `.env_example` updated: yes (hub, gpu-pool)
+- local `.env` synced: Hub keys added via `sync_local_env_from_example.py --all-keys orion-hub`; the stale
+  `GPU_POOL_OPERATOR_TOKEN` line removed by hand from the hub and gpu-pool `.env` (backups kept).
+- Operator action: none.
 
 ## Tests run
 
@@ -115,7 +113,7 @@ Hub templates/static are bind-mounted; Python changes need a Hub rebuild. Not de
 
 The review subagent reported 10 findings (0 high, 4 medium, 6 low or low-medium). All are fixed.
 
-- **Finding (medium):** control could be reached by a cross-site no-cors POST that rode the auto-issued operator cookie.
+- **Finding (medium):** control could be reached by a cross-site no-cors POST from any page the operator had open.
   - Fix: require `X-Requested-With: orion-hub` and a JSON content type (the custom header forces a CORS preflight, which Hub never grants).
   - Evidence: `test_control_refuses_cross_site_shaped_requests`.
 - **Finding (medium):** the panel died permanently if the pool was unreachable at page load.
@@ -130,7 +128,7 @@ The review subagent reported 10 findings (0 high, 4 medium, 6 low or low-medium)
 - **Finding (low-medium):** backfill Run could differ from the preview, and the preview count was silently capped.
   - Fix: Run sends exactly the frozen previewed spec, any form edit resets it, `limit=1000` is explicit, and the button shows "N+".
 - **Finding (low-medium):** the operator token travelled on the bus, where bus-mirror and bus-tap see everything.
-  - Fix: HMAC signing, a 60 s window and a single-use nonce.
+  - Fix: superseded by Juniper's no-token decision: there is no secret left to leak. Controls are logged with their actor and published as pool events.
   - Evidence: `test_control_signature_freshness_and_single_use`, and the Hub test asserts the secret is absent from the payload.
 - **Finding (low):** a 7-day history query could hold a connection.
   - Fix: `SET LOCAL statement_timeout = '5s'`.
@@ -147,14 +145,14 @@ The review subagent reported 10 findings (0 high, 4 medium, 6 low or low-medium)
 # athena, after merge, in this order (controls need the new pool; reads work either way)
 ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh orion-gpu-pool up -d --build
 ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh orion-hub up -d --build
-# open Hub -> "GPU pool" tab (or /gpu-pool). Controls stay 503 until SUBSTRATE_MUTATION_OPERATOR_TOKEN is set in Hub's .env.
+# open Hub -> "GPU pool" tab (or /gpu-pool). Controls work immediately (no token).
 ```
 
 ## Risks / concerns
 
 - **Severity:** medium
-  - **Concern:** Hub's operator cookie is issued to anyone who can load the Hub index. The operator guard therefore proves "can reach Hub", not identity. This is the existing Hub-wide model.
-  - **Mitigation:** the CSRF guard blocks cross-site use. Real operator identity is a Hub-wide auth change, out of scope here.
+  - **Concern:** no token, by decision: anyone who can reach Hub (or publish on the bus) can lend, hold or backfill. Same trust model as the rest of Orion's bus.
+  - **Mitigation:** cross-site forgery is still blocked, and every control is logged with its actor and published as a pool event.
 - **Severity:** low
   - **Concern:** 7-day history is capped by the 5 s timeout. At stage-3 volume it may time out before a rollup exists.
   - **Mitigation:** add a rollup when stage 3 lands.

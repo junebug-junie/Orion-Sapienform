@@ -34,8 +34,6 @@ class Settings(BaseSettings):
     probe_timeout_sec: float = Field(3.0, alias="GPU_POOL_PROBE_TIMEOUT_SEC")
     announce_stale_sec: float = Field(120.0, alias="GPU_POOL_ANNOUNCE_STALE_SEC")
     state_publish_sec: float = Field(5.0, alias="GPU_POOL_STATE_PUBLISH_SEC")
-    # Fail closed: with no token every control verb is refused.
-    operator_token: str = Field("", alias="GPU_POOL_OPERATOR_TOKEN")
     replay_payload_max_bytes: int = Field(262144, alias="GPU_POOL_REPLAY_PAYLOAD_MAX_BYTES")
 
 

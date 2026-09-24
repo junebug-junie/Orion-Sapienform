@@ -16,7 +16,6 @@ from typing import Any, Awaitable, Callable
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.gpu_pool.client import WAIT_HOP_LABEL
 from orion.gpu_pool.config import PoolConfig
-from orion.gpu_pool.control_auth import NonceLedger, verify
 from orion.gpu_pool.discovery import Probe, resolve_roles
 from orion.gpu_pool.lease_graph import FINAL, InvalidTransition, initial_state
 from orion.gpu_pool.scheduler import (
@@ -61,14 +60,14 @@ def _utcnow() -> datetime:
 class PoolRuntime:
     def __init__(self, *, cfg: PoolConfig, profiles: dict[str, Any], store: Any, graph: Any,
                  bus: Any = None, prober: Prober | None = None, now: Callable[[], datetime] = _utcnow,
-                 mode: str = "observe", operator_token: str = "", service_name: str = "orion-gpu-pool",
+                 mode: str = "observe", service_name: str = "orion-gpu-pool",
                  announce_stale_sec: float = 120.0, probe_interval_sec: float = 15.0,
                  state_publish_sec: float = 5.0, replay_payload_max_bytes: int = 262144):
         import asyncio
 
         self.cfg, self.profiles, self.store, self.graph, self.bus = cfg, profiles, store, graph, bus
         self.prober, self.now, self.mode = prober, now, mode
-        self.operator_token, self.service_name = operator_token, service_name
+        self.service_name = service_name
         self.announce_stale_sec, self.probe_interval_sec = announce_stale_sec, probe_interval_sec
         self.state_publish_sec, self.replay_payload_max_bytes = state_publish_sec, replay_payload_max_bytes
         self.lock = asyncio.Lock()
@@ -81,7 +80,6 @@ class PoolRuntime:
         self._last_probe: datetime | None = None
         self._last_state: datetime | None = None
         self._swap_requested: set[tuple[str, str]] = set()
-        self._nonces = NonceLedger()
 
     # --- lifecycle --------------------------------------------------------------------
     async def start(self) -> None:
@@ -183,10 +181,8 @@ class PoolRuntime:
         return await self.release(lease_id, "cancelled", "cancelled")
 
     async def control(self, ctl: GpuPoolControlV1) -> GpuPoolControlReplyV1:
-        refused = verify(ctl, self.operator_token, self.now(), self._nonces)
-        if refused:
-            logger.warning("gpu_pool_control_refused verb=%s actor=%s reason=%s", ctl.verb, ctl.actor, refused)
-            return GpuPoolControlReplyV1(ok=False, reason=refused)
+        logger.info("gpu_pool_control verb=%s actor=%s card=%s lease=%s class=%s",
+                    ctl.verb, ctl.actor, ctl.card, ctl.lease_id, ctl.work_class)
         if ctl.verb in ("lend", "unlend"):
             async with self.lock:
                 card = self.cards.get(ctl.card or "")

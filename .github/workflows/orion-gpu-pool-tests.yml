@@ -15,7 +15,6 @@ on:
       - "services/orion-equilibrium-service/docker-compose.yml"
       - "scripts/check_gpu_pool_config.py"
       - "services/orion-hub/scripts/gpu_pool_routes.py"
-      - "services/orion-hub/scripts/operator_guard.py"
       - "services/orion-hub/templates/gpu_pool.html"
       - "services/orion-hub/static/js/gpu_pool*.js"
       - "services/orion-hub/tests/test_gpu_pool_*.py"

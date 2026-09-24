@@ -7,8 +7,7 @@
 - ``GET /api/gpu-pool/history``: historical traffic from ``gpu_pool_events`` (sql-writer), at three
   zoom levels: per role, per class/holder/priority, and individual events, plus a time series.
 - ``POST /api/gpu-pool/control``: operator verbs (lend, unlend, hold, release, replay, cancel,
-  backfill). The browser is checked with Hub's operator cookie; Hub then speaks to the pool with its
-  own ``GPU_POOL_OPERATOR_TOKEN``, which never reaches the browser.
+  backfill). No token (Juniper's call); only Hub's own page can send it (see CSRF note below).
 
 Everything to and from the pool rides the bus; only Hub's own browser API is HTTP.
 """
@@ -26,15 +25,13 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.gpu_pool.control_auth import signed_control
 from orion.schemas.gpu_pool import (
     GPU_POOL_CONTROL_KIND, GPU_POOL_CONTROL_REPLY_PREFIX, GPU_POOL_CONTROL_REQUEST_CHANNEL,
     GPU_POOL_EVENT_CHANNEL, GPU_POOL_STATE_CHANNEL, GPU_POOL_STATE_REPLY_PREFIX,
-    GPU_POOL_STATE_REQUEST_CHANNEL, GPU_POOL_STATE_REQUEST_KIND, GpuPoolControlReplyV1,
+    GPU_POOL_STATE_REQUEST_CHANNEL, GPU_POOL_STATE_REQUEST_KIND, GpuPoolControlReplyV1, GpuPoolControlV1,
     GpuPoolStateRequestV1,
 )
 
-from .operator_guard import _require_mutation_operator_guard, _resolve_operator_token
 from .settings import settings
 
 logger = logging.getLogger("orion-hub.gpu_pool")
@@ -282,20 +279,16 @@ CSRF_HEADER_VALUE = "orion-hub"
 
 @router.post("/control")
 async def gpu_pool_control(body: ControlBody, request: Request,
-                           x_orion_operator_token: str | None = Header(default=None),
                            x_requested_with: str | None = Header(default=None)) -> dict[str, Any]:
     _enabled()
-    # Cross-site request forgery: the operator cookie is SameSite=Strict, but "same site" ignores ports,
-    # and FastAPI parses a typeless body as JSON. Requiring a custom header forces a CORS preflight that
-    # Hub never grants, so only Hub's own page can send this request.
+    # No token, by design. What stays is cross-site request forgery protection, which is not a
+    # credential: any web page could otherwise POST here from the operator's own browser. A custom
+    # header forces a CORS preflight that Hub never grants, and a JSON content type rules out the
+    # typeless "simple" POST that FastAPI would still parse as JSON.
     if x_requested_with != CSRF_HEADER_VALUE or "application/json" not in request.headers.get("content-type", ""):
         raise HTTPException(403, "gpu_pool_control_requires_hub_page")
-    _require_mutation_operator_guard(_resolve_operator_token(request, x_orion_operator_token))
-    token = str(settings.GPU_POOL_OPERATOR_TOKEN or "").strip()
-    if not token:
-        raise HTTPException(503, "gpu_pool_operator_token_not_configured")
-    ctl = signed_control(token, verb=body.verb, card=body.card, lease_id=body.lease_id,
-                         work_class=body.work_class, backfill=body.backfill, actor="hub-operator")
+    ctl = GpuPoolControlV1(verb=body.verb, card=body.card, lease_id=body.lease_id,
+                           work_class=body.work_class, backfill=body.backfill, actor="hub-operator")
     reply = await _rpc(GPU_POOL_CONTROL_REQUEST_CHANNEL, GPU_POOL_CONTROL_REPLY_PREFIX, GPU_POOL_CONTROL_KIND,
                        ctl.model_dump(mode="json"))
     out = GpuPoolControlReplyV1.model_validate(reply)

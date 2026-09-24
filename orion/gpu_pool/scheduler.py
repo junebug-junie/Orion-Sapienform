@@ -62,6 +62,7 @@ class LeaseView:
     not_before: datetime | None = None
     queued_since: datetime | None = None
     granted_at: datetime | None = None
+    expires_at: datetime | None = None
     operator: bool = False
 
 
@@ -82,6 +83,12 @@ class Recall:
 class Abort:
     lease_id: str
     reason: str = "recall_grace_exceeded"
+
+
+@dataclass(frozen=True)
+class Expire:
+    lease_id: str
+    reason: str = "heartbeat_lost"
 
 
 @dataclass(frozen=True)
@@ -120,7 +127,7 @@ class SwapUnload:
     reason: str
 
 
-Decision = Union[Grant, Recall, Abort, Unavailable, Backlog, Requeue, DeadLetter, SwapLoad, SwapUnload]
+Decision = Union[Grant, Recall, Abort, Expire, Unavailable, Backlog, Requeue, DeadLetter, SwapLoad, SwapUnload]
 
 
 @dataclass
@@ -195,7 +202,8 @@ def schedule(
 
     occupancy: dict[str, int] = {}
     for lease in leases:
-        if lease.status in ACTIVE and lease.role:
+        if lease.status in ACTIVE and lease.role and not (
+                lease.expires_at is not None and lease.expires_at <= now):
             occupancy[lease.role] = occupancy.get(lease.role, 0) + 1
 
     ctx = _Ctx(cfg, roles, cards, now, occupancy, set(), set())
@@ -221,6 +229,8 @@ def schedule(
                 backlogged.append(lease)
         elif lease.status == "recalling" and lease.recall_by is not None and lease.recall_by <= now:
             out.append(Abort(lease.lease_id))
+        elif lease.status in ACTIVE and lease.expires_at is not None and lease.expires_at <= now:
+            out.append(Expire(lease.lease_id))
 
     # --- 2. what is draining this tick (no new grants there) -------------------------
     swap_roles = [r for r, spec in cfg.roles.items() if spec.swap is not None]

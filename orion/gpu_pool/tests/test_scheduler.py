@@ -7,7 +7,7 @@ import pytest
 
 from orion.gpu_pool.config import load_pool_config
 from orion.gpu_pool.scheduler import (
-    Abort, Backlog, CardLive, DeadLetter, Grant, LeaseView, Recall, Requeue, RoleLive,
+    Abort, Backlog, Expire, CardLive, DeadLetter, Grant, LeaseView, Recall, Requeue, RoleLive,
     SwapLoad, SwapUnload, Unavailable, schedule,
 )
 
@@ -276,3 +276,11 @@ def test_unhealthy_role_gets_no_grants():
 @pytest.mark.parametrize("cls", sorted(CFG.classes))
 def test_every_class_resolves(cls):
     assert CFG.classes[cls].roles
+
+
+def test_lost_heartbeat_expires_and_frees_the_slot_this_tick():
+    dead = lease("chat", "granted", "chat", lease_id="dead", expires_at=T0)
+    q = lease("chat", lease_id="c", priority="interactive")
+    decisions = run([dead, q])
+    assert [e.lease_id for e in of(Expire, decisions)] == ["dead"]
+    assert grants(decisions) == {"c": "chat"}

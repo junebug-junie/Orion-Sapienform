@@ -20,6 +20,9 @@ services:
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
       # Required: set ATLAS_CHAT_PROFILE_NAME in your env file/shell.
       - LLM_PROFILE_NAME=${ATLAS_CHAT_PROFILE_NAME}
+      # GPU pool discovery: role + the host port it is reached on (same var as ports: below)
+      - LLM_ROLE=chat
+      - LLM_ANNOUNCE_PORT=${ATLAS_CHAT_HOST_PORT:-8011}
       - HF_TOKEN=${HF_TOKEN}
       - hf_token=${hf_token}
       - LLAMACPP_HOST_OVERRIDE=0.0.0.0
@@ -59,6 +62,9 @@ services:
       - ORION_BUS_URL=${ORION_BUS_URL}
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
       - LLM_PROFILE_NAME=${ATLAS_METACOG_PROFILE_NAME}
+      # GPU pool discovery: role + the host port it is reached on (same var as ports: below)
+      - LLM_ROLE=metacog
+      - LLM_ANNOUNCE_PORT=${ATLAS_METACOG_HOST_PORT:-8012}
       - HF_TOKEN=${HF_TOKEN}
       - hf_token=${hf_token}
       - LLAMACPP_HOST_OVERRIDE=0.0.0.0
@@ -98,6 +104,9 @@ services:
       - ORION_BUS_URL=${ORION_BUS_URL}
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
       - LLM_PROFILE_NAME=${ATLAS_FAST_PROFILE_NAME}
+      # GPU pool discovery: role + the host port it is reached on (same var as ports: below)
+      - LLM_ROLE=fast
+      - LLM_ANNOUNCE_PORT=${ATLAS_FAST_HOST_PORT:-8013}
       - HF_TOKEN=${HF_TOKEN}
       - hf_token=${hf_token}
       - LLAMACPP_HOST_OVERRIDE=0.0.0.0
@@ -138,6 +147,8 @@ services:
       - ORION_BUS_URL=${ORION_BUS_URL}
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
       - LLM_PROFILE_NAME=${ATLAS_AGENT_PROFILE_NAME}
+      - LLM_ROLE=agent
+      - LLM_ANNOUNCE_PORT=${ATLAS_AGENT_HOST_PORT:-8015}
       - HF_TOKEN=${HF_TOKEN}
       - hf_token=${hf_token}
       - LLAMACPP_HOST_OVERRIDE=0.0.0.0
@@ -180,6 +191,8 @@ services:
       - ORION_BUS_URL=${ORION_BUS_URL}
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
       - LLM_PROFILE_NAME=${ATLAS_AGENT_PROFILE_NAME}
+      - LLM_ROLE=agent-gpu2
+      - LLM_ANNOUNCE_PORT=${ATLAS_AGENT_BURST_HOST_PORT:-8016}
       - HF_TOKEN=${HF_TOKEN}
       - hf_token=${hf_token}
       - LLAMACPP_HOST_OVERRIDE=0.0.0.0

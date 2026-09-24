@@ -608,6 +608,40 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
 
     return cmd, env
 
+_WORKER_STARTED_AT = datetime.now(timezone.utc)
+
+
+async def _announce_worker(bus, settings) -> None:
+    """Tell the GPU pool which role and llm_profiles.yaml profile this worker serves.
+
+    The pool confirms it against llama.cpp's own /props before granting anything, so a stale
+    or wrong announcement costs grants, never correctness. Never raises.
+    """
+    if not settings.llm_role or not settings.llm_announce_port:
+        return
+    try:
+        from orion.schemas.gpu_pool import (
+            LLM_WORKER_ANNOUNCE_CHANNEL, LLM_WORKER_ANNOUNCE_KIND, LlmWorkerAnnounceV1,
+        )
+
+        payload = LlmWorkerAnnounceV1(
+            host=settings.llm_announce_host,
+            role=settings.llm_role,
+            profile_name=settings.llm_profile_name,
+            port=settings.llm_announce_port,
+            cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES"),
+            service_name=settings.service_name,
+            started_at=_WORKER_STARTED_AT,
+        )
+        await bus.publish(LLM_WORKER_ANNOUNCE_CHANNEL, BaseEnvelope(
+            kind=LLM_WORKER_ANNOUNCE_KIND,
+            source=ServiceRef(name=settings.service_name, version=settings.service_version),
+            payload=payload.model_dump(mode="json"),
+        ))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"worker announce failed: {e}")
+
+
 # Heartbeat Coroutine
 async def heartbeat_loop(settings):
     # Initialize a local bus just for this script
@@ -642,6 +676,7 @@ async def heartbeat_loop(settings):
             except Exception as e:
                 logger.warning(f"Heartbeat failed: {e}")
 
+            await _announce_worker(bus, settings)
             await asyncio.sleep(30)
     except asyncio.CancelledError:
         logger.info("Heartbeat loop stopping...")

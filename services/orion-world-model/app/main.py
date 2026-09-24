@@ -267,7 +267,7 @@ class WorldModelService:
                     lane=settings.WM_GPU2_CAPACITY_LANE,
                     backend_key=settings.WM_GPU2_CAPACITY_BACKEND_KEY,
                     correlation_id=str(uuid.uuid4()),
-                    max_inflight=settings.WM_GPU2_CAPACITY_MAX_INFLIGHT,
+                    max_inflight=settings.WM_MAX_INFLIGHT,
                     budget_sec=settings.WM_GPU2_CAPACITY_BUDGET_SEC,
                     poll_interval_sec=settings.WM_GPU2_CAPACITY_POLL_INTERVAL_SEC,
                 ).acquire()

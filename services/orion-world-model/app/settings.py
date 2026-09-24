@@ -137,7 +137,19 @@ class Settings(BaseSettings):
     # own reserved backend_key (the agent-burst llama.cpp URL, port 8016).
     WM_GPU2_CAPACITY_BACKEND_KEY: str = "http://100.112.254.99:8014"
     WM_GPU2_CAPACITY_LANE: str = "world-model"
-    WM_GPU2_CAPACITY_MAX_INFLIGHT: int = 1
+    # Deliberately NOT a separate setting -- the capacity authority takes
+    # the MINIMUM max_inflight declared across every currently-active
+    # permit on a backend_key, so a separate, more restrictive value here
+    # (e.g. 1) would silently cap this service's own already-declared
+    # concurrency policy (WM_MAX_INFLIGHT) even when diffusion-host is
+    # completely idle -- two purely-internal concurrent world-model
+    # requests would then fight over one shared slot for no reason (review
+    # finding, caught before this shipped). Reusing WM_MAX_INFLIGHT keeps
+    # this service's own concurrency policy authoritative for itself,
+    # while diffusion's own max_inflight=1 (visual_chain_gpu2_capacity_
+    # max_inflight) still correctly excludes everyone whenever it holds
+    # the slot, and still correctly gets excluded while any world-model
+    # permits are held.
     WM_GPU2_CAPACITY_BUDGET_SEC: float = 2.0
     WM_GPU2_CAPACITY_POLL_INTERVAL_SEC: float = 0.25
 

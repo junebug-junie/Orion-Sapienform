@@ -183,7 +183,33 @@ class GpuCapacityPermit:
                 await asyncio.sleep(min(self.poll_interval_sec, self.remaining))
                 continue
             if result.get("acquired") is True:
-                self._accept(result.get("permit"))
+                try:
+                    self._accept(result.get("permit"))
+                except CapacityRejected:
+                    # The authority already granted this permit -- _accept
+                    # only rejected it locally (e.g. clock-skew "expired
+                    # permit", or a duplicate-acquire race returning a
+                    # different permit_id). Release the real server-side
+                    # slot before propagating, or it sits held on the
+                    # shared backend_key until its TTL expires, starving
+                    # the other side of the mutex this whole class exists
+                    # for (review finding, caught before this shipped).
+                    raw = result.get("permit") or {}
+                    permit_id = raw.get("permit_id")
+                    if permit_id:
+                        try:
+                            await self._post(
+                                "release",
+                                {"request_id": self.request_id, "permit_id": permit_id},
+                            )
+                        except CapacityRejected:
+                            logger.warning(
+                                "gpu_capacity_release_unconfirmed_after_invalid_accept "
+                                "request_id=%s permit_id=%s",
+                                self.request_id,
+                                permit_id,
+                            )
+                    raise
                 self._heartbeat = asyncio.create_task(
                     self._renew_loop(), name=f"gpu-capacity-{self.request_id}"
                 )

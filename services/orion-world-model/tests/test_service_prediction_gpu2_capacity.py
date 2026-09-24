@@ -84,6 +84,28 @@ def _reset(monkeypatch):
     monkeypatch.setattr(main.settings, "WM_GPU2_CAPACITY_ENABLED", True)
 
 
+def test_max_inflight_reuses_wm_max_inflight_not_a_separate_setting(monkeypatch):
+    """Regression: a separate, more restrictive WM_GPU2_CAPACITY_MAX_INFLIGHT
+    used to be passed here. Since the authority takes the MINIMUM
+    max_inflight declared across every active permit on a shared
+    backend_key, that silently capped this service's own already-declared
+    concurrency policy even when diffusion-host was completely idle (review
+    finding, caught before this shipped) -- two purely-internal concurrent
+    world-model requests would fight over one shared slot for no reason."""
+    captured: dict = {}
+    monkeypatch.setattr(main, "GpuCapacityPermit", lambda **k: captured.update(k) or FakePermit(**k))
+    monkeypatch.setattr(main.settings, "WM_MAX_INFLIGHT", 7)
+    service, payload = _service(device="cuda:2")
+
+    async def _stub_run_forward(payload):
+        return torch.zeros(1, 4), torch.zeros(1, 4)
+    service._run_forward = _stub_run_forward  # type: ignore[method-assign]
+
+    asyncio.run(service.run_prediction_task(payload))
+
+    assert captured["max_inflight"] == 7
+
+
 def test_cpu_fallback_never_constructs_a_permit(monkeypatch):
     """No shared-hardware contention on CPU -- must not depend on
     durable-runs being reachable at all."""

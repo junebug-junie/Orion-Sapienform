@@ -163,6 +163,36 @@ async def test_renew_loop_flags_lost_on_invalid_renewal(authority):
 
 
 @pytest.mark.asyncio
+async def test_invalid_granted_permit_is_released_not_leaked(authority, monkeypatch):
+    """Regression: _accept() rejecting an already-granted permit (e.g. a
+    stale/mismatched response) must not leave the real server-side slot
+    stuck held until its TTL expires -- that would starve the other side
+    of the mutex this class exists for. Confirmed live before this fix:
+    acquire() let CapacityRejected from _accept propagate uncaught, past
+    the point gpu_permit would ever get bound in either call site, so the
+    caller's `finally: gpu_permit.close()` never ran."""
+    real_accept = cc.GpuCapacityPermit._accept
+    calls = {"count": 0}
+
+    def flaky_accept(self, raw):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            # Corrupt the response so real validation genuinely rejects it,
+            # exercising the real _accept code path rather than a stub.
+            raw = {**raw, "correlation_id": "someone-elses-request"}
+        return real_accept(self, raw)
+
+    monkeypatch.setattr(cc.GpuCapacityPermit, "_accept", flaky_accept)
+
+    permit = make_permit()
+    with pytest.raises(cc.CapacityRejected, match="invalid_capacity_permit"):
+        await permit.acquire()
+
+    assert not authority.active, "the granted-but-rejected permit must be released, not left held"
+    assert any(action == "release" for action, _ in authority.events)
+
+
+@pytest.mark.asyncio
 async def test_unreachable_authority_raises_capacity_unavailable():
     """No monkeypatched authority -- a real transport failure against an
     unreachable address, not a scripted one, exercises the real httpx path."""

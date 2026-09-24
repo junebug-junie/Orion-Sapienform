@@ -196,6 +196,6 @@ Expect `transport_baseline_skip reason=no_channel_latency` until the A0 producer
 
 ## PR link
 
-(filled on creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2310
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

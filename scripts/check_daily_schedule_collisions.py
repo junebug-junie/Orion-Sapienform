@@ -68,6 +68,13 @@ _CADENCE_ENV_KEYS: dict[str, tuple[str, str]] = {
     "Daily Metacog": ("ACTIONS_DAILY_METACOG_HOUR_LOCAL", "ACTIONS_DAILY_METACOG_MINUTE_LOCAL"),
 }
 
+# Cadences counted only when their keys are present, so an older .env_example
+# (or a test fixture) without them is not an error.
+_OPTIONAL_CADENCE_ENV_KEYS: dict[str, tuple[str, str]] = {
+    # services/orion-actions/app/walkway_forecast.py -- nightly grade + forecast.
+    "Walkway Forecast": ("ACTIONS_WALKWAY_FORECAST_HOUR_LOCAL", "ACTIONS_WALKWAY_FORECAST_MINUTE_LOCAL"),
+}
+
 # Daily Journal reuses Daily Pulse's hour/minute verbatim -- see
 # services/orion-actions/app/main.py's journal_should_run call (~line 2125-2131), which
 # passes hour_local=settings.actions_daily_pulse_hour_local and
@@ -102,6 +109,10 @@ def _load_cadences(env_example_path: Path) -> dict[str, int]:
         hour = int(values[hour_key])
         minute = int(values[minute_key])
         cadence_minutes[name] = hour * 60 + minute
+
+    for name, (hour_key, minute_key) in _OPTIONAL_CADENCE_ENV_KEYS.items():
+        if hour_key in values and minute_key in values:
+            cadence_minutes[name] = int(values[hour_key]) * 60 + int(values[minute_key])
 
     # Daily Journal is not read from its own keys -- it shares Daily Pulse's minute of
     # day by construction (see module docstring / _JOURNAL_REUSES_CADENCE above).

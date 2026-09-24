@@ -16,6 +16,12 @@ JournalTriggerKind = Literal[
     "notify_summary",
     "world_pulse_digest",
     "town_episode",
+    # Walkway camera (docs/superpowers/specs/2026-09-22-walkway-camera-busy-
+    # world-design.md idea 7): tonight's forecast of tomorrow's street, and
+    # tonight's grade of what was forecast for today. Producer:
+    # services/orion-actions/app/walkway_forecast.py.
+    "walkway_forecast",
+    "walkway_grade",
 ]
 JournalSourceKind = Literal[
     "autonomy_episode",

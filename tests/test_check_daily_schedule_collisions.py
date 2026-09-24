@@ -137,3 +137,24 @@ def test_real_env_example_has_known_daily_pulse_journal_collision():
     found = collisions._find_collisions(cadence_minutes, threshold_minutes=30)
     pairs = {frozenset((c["a"], c["b"])) for c in found}
     assert frozenset(("Daily Pulse", "Daily Journal")) in pairs
+
+
+def test_optional_walkway_forecast_cadence_is_counted_when_present(tmp_path):
+    env_path = _write_env_example(tmp_path, pulse=(8, 30), world=(6, 0), metacog=(20, 15))
+    env_path.write_text(
+        env_path.read_text(encoding="utf-8")
+        + "ACTIONS_WALKWAY_FORECAST_HOUR_LOCAL=20\nACTIONS_WALKWAY_FORECAST_MINUTE_LOCAL=30\n",
+        encoding="utf-8",
+    )
+    cadence_minutes = collisions._load_cadences(env_path)
+    assert cadence_minutes["Walkway Forecast"] == 20 * 60 + 30
+    pairs = {frozenset((c["a"], c["b"])) for c in collisions._find_collisions(cadence_minutes, 30)}
+    assert frozenset(("Walkway Forecast", "Daily Metacog")) in pairs
+
+
+def test_real_env_example_walkway_forecast_does_not_collide():
+    env_path = _REPO_ROOT / "services" / "orion-actions" / ".env_example"
+    cadence_minutes = collisions._load_cadences(env_path)
+    assert "Walkway Forecast" in cadence_minutes
+    for c in collisions._find_collisions(cadence_minutes, 30):
+        assert "Walkway Forecast" not in (c["a"], c["b"])

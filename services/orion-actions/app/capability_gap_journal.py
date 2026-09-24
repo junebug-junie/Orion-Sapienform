@@ -424,8 +424,15 @@ def build_daily_seed_payload(
     window_start_utc: str,
     window_end_utc: str,
     gaps: Sequence[dict[str, Any]] | None,
+    perception_gaps: Sequence[dict[str, Any]] | None = None,
+    perception_gaps_total: int = 0,
 ) -> dict[str, Any]:
     """Assemble the daily journal seed, omitting `capability_gaps` when empty.
+
+    `perception_gaps` (app/perception_gap_journal.py) follows the same rule:
+    absent when empty. `perception_gaps_omitted` appears only when the window
+    held more than the seed carries, so the entry cannot claim it listed
+    everything.
 
     Lives here, rather than inline in main.py's scheduler block, purely so the
     anti-spam guarantee is testable against the real construction instead of a
@@ -439,4 +446,9 @@ def build_daily_seed_payload(
     }
     if gaps:
         payload["capability_gaps"] = list(gaps)
+    if perception_gaps:
+        payload["perception_gaps"] = list(perception_gaps)
+        omitted = int(perception_gaps_total or 0) - len(perception_gaps)
+        if omitted > 0:
+            payload["perception_gaps_omitted"] = omitted
     return payload

@@ -110,6 +110,23 @@ JOURNAL_DISPATCH_REGISTRY: dict[str, JournalDispatchPolicy] = {
         in_app_enabled=False,
         recall_profile_setting="",
     ),
+    # Walkway forecast/grade: nightly, one each. No email -- two more
+    # reflective emails a night would compete for the shared daily cap every
+    # other journal kind already loses races for, and these read as a running
+    # log, not news. Flip email_enabled here (with its own daily_cap_scope) if
+    # Juniper wants them delivered.
+    "walkway_forecast": JournalDispatchPolicy(
+        "walkway_forecast",
+        email_enabled=False,
+        in_app_enabled=False,
+        recall_profile_setting="",
+    ),
+    "walkway_grade": JournalDispatchPolicy(
+        "walkway_grade",
+        email_enabled=False,
+        in_app_enabled=False,
+        recall_profile_setting="",
+    ),
     "manual": JournalDispatchPolicy(
         "manual",
         email_enabled=True,

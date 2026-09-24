@@ -1,119 +1,178 @@
 # GPU pool — one lease queue for every GPU on circe
 
-Status: DESIGN (awaiting Juniper sign-off before build)
+Status: DESIGN v2 (awaiting Juniper sign-off before build)
 Date: 2026-09-24
 Supersedes: `orion/durable_admission/` (broker, policy, capacity, elastic, capacity_client), gateway
-`capacity.py` / `upstream_admission.py` / `priority_admission.py` / `lane_gate.py`, PR #2317
-(`lane_contention.py`), the #2246 stance fallback chain, and `orion-gpu-lane-controller`'s own
-decision-making.
+`capacity.py` / `upstream_admission.py` / `priority_admission.py` / `lane_gate.py` /
+`admission_ledger.py`, PR #2317 (`lane_contention.py`), the #2246 stance fallback chain, and
+`orion-gpu-lane-controller`'s own decision-making.
 
 ## Arsonist summary
 
 Right now nine different pieces of code decide which GPU a piece of work lands on, and four of
-them have their own idea of priority. None of them sees the whole machine. Each slice since
-2026-09-13 added another decider instead of consolidating.
+them have their own idea of priority. None of them sees the whole machine, and none of them
+knows which model is actually loaded where. Each slice since 2026-09-13 added another decider.
 
-This design replaces all of them with **one service, `orion-gpu-pool`**. Every GPU user asks it
-for a **lease**: chat, the 27B agent lane, fast, metacog, world-model, diffusion, durable runs,
-and Juniper's Hub button. It grants the lease or queues the request. It is the only thing that
-knows what is on each card and the only thing allowed to decide who goes first.
+This replaces all of them with **one service, `orion-gpu-pool`**. Every GPU user asks it for a
+**lease** and gets a grant, a place in line, or a durable backlog entry that replays when
+capacity returns. It is the only thing that knows what is loaded on each card, and the only
+thing allowed to decide who goes first.
 
-Everything it knows (cards, what runs on each card, who may borrow what, priority order, grace
-periods) lives in **one YAML file**, `config/gpu_pool.yaml`. Adding a card or a service is a
-YAML edit, with no code change and no second table to keep in sync.
+- **Rules** live in one YAML file, `config/gpu_pool.yaml`. It speaks in *roles* (chat, agent,
+  metacog, …) and *cards*, never in model names.
+- **Which model sits in a role** is discovered live: each llama.cpp worker announces its
+  `llm_profiles.yaml` profile on the bus, and the pool confirms it against the server's own
+  `/props`.
+- **Every lease is a checkpointed LangGraph run**, with retry, dead-letter and operator replay
+  built into the graph.
+- **Everything the pool does is on the bus**, so transport metrics see it.
 
-## Decisions already made (Juniper, 2026-09-24)
+## Decisions made (Juniper, 2026-09-24)
 
 | Question | Answer |
 | --- | --- |
 | GPU0 borrowing | **Lent only.** Others use GPU0 only while Juniper's Hub button has it lent. Chat claws it back whether or not it is lent. |
-| Placement | **New service** `orion-gpu-pool` on athena, next to Postgres and the gateway. A small circe-side actuator loads and unloads models. Durable-runs becomes a client. |
-| Affect | **Out of scope** for the first cut. It becomes a YAML tenant later. |
+| Placement | **New service** `orion-gpu-pool` on athena. The circe actuator loads and unloads models. Durable-runs becomes a client. |
+| Affect | **Out of scope** for the first cut; it becomes a YAML tenant later. |
 | Clawback grace | **The borrower finishes its current request**, capped (default 60s). After that it gets no new work. |
-| GPU2 | Defaults to world-model and diffusion. It is leased out as a second 27B when needed. |
-| Config | Cards, tenants, borrow rules and leases are declared in YAML so new cards and services need no code. |
+| GPU2 | Defaults to world-model and diffusion; it is leased out as a second agent model when needed. |
+| Config | YAML-configured so new cards and services need no code. |
+| Engine | **LangGraph** for the lease lifecycle. |
+| Transport | **As much behind the bus as possible.** |
+| Naming | **No model names in the pool config.** Models come and go; `config/llm_profiles.yaml` is the only model catalog. |
+| Multi-card | Must handle a model spanning several cards (e.g. the DeepSeek-V4.1-Flash soak on 4×V100, `docker-compose.dsv41.yml`, profile `deepseek-v41-flash-mxfp4-engram-4xv100-32gb-circe-test`). |
+| Failure | Everything that hits an unavailable lane degrades gracefully into backlog and replays when capacity returns. |
 
-## The machine (live `nvidia-smi` on circe, 2026-09-24)
+## Pre-launch: #2317 pollution (found live 2026-09-24)
 
-| card | hardware | home tenants | notes |
-| --- | --- | --- | --- |
-| gpu0 | V100-PCIE-32GB | chat 35B (:8011, 1 slot, 64k ctx) | reserved for chat; lendable by button |
-| gpu1 | V100-SXM2-32GB | agent 27B (:8015, 1 slot) | 27B home |
-| gpu2 | PG500-216 (a V100) | world-model (~1GB), diffusion-host (~24GB, :8014) | swappable to agent 27B (:8016, ~25GB) |
-| gpu3 | V100-PCIE-32GB | metacog 8B (:8012), fast 8B (:8013) | the two 8B lanes share and can swap |
+#2317 was never merged, but it **is running in production**:
+
+- athena's `orion-llm-gateway` container (created 2026-09-24 16:20 UTC) was built from
+  `/mnt/scripts/Orion-Sapienform-gpu-lane-swap-burst`, the #2317 worktree. The image contains
+  `/app/app/lane_contention.py`, and the container env has `LLM_LANE_CONTENTION_FALLBACK_ENABLED
+  =true` plus both JSON keys.
+- The primary checkout's `services/orion-llm-gateway/.env` lines 146–148 carry the same three
+  keys.
+- circe is clean of #2317. However, eleven other prod containers across both hosts also run from
+  worktrees rather than main (see the PR report). This is the same "a worktree deploy pins a
+  worktree as production" failure recorded before.
+
+Rollback (production action, needs Juniper's explicit go): remove the three keys from the
+primary `.env`, then rebuild `orion-llm-gateway` from a clean `origin/main` worktree via
+`scripts/safe_docker_build.sh`. Verify: no `lane_contention.py` in the container, no
+`LLM_LANE_*` in its env, `/health` ok, and a metacog call served.
+
+## The machine (live, 2026-09-24)
+
+| card | hardware | what runs there today (discovered, not configured) |
+| --- | --- | --- |
+| gpu0 | V100-PCIE-32GB | chat worker, profile `qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition`, :8011 |
+| gpu1 | V100-SXM2-32GB | agent worker, profile `qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex`, :8015 |
+| gpu2 | PG500-216 (V100) | world-model (~1GB, :6613), diffusion-host (:8014, ~24GB when loaded) |
+| gpu3 | V100-PCIE-32GB | metacog worker (`qwen3-8b-q5km-…-metacog-16k`, :8012) and fast worker (`qwen3-8b-q4km-…-balanced`, :8013) |
 
 ## The rules, stated once
 
-1. **Every lease names a work class**, meaning what the work needs: `chat`, `agent`, `metacog`,
-   `fast`, `world`, `diffusion`. A class lists the models able to serve it, in preference order.
-2. **Home first.** A request goes to its home model when that model has a free slot.
-3. **Borrowing** goes only in the directions the YAML allows:
-   - `metacog` ↔ `fast` swap freely on gpu3.
-   - `metacog` and `fast` may spill up to gpu1, to gpu2 when a 27B is loaded there, and to gpu0
-     when it is lent. A bigger model can do small-model work.
-   - Nothing on gpu0, gpu1 or gpu2 ever spills down to gpu3, because the models are too small.
-   - `agent` may use gpu2's 27B (after a swap) and gpu0 when it is lent.
+1. **Roles, not models.** A *role* is a named place work can run: `chat`, `agent`, `metacog`,
+   `fast`, `world`, `diffusion`, and `experiment` for a multi-card soak. The YAML says which
+   cards a role lives on and who may borrow it. Which model fills the role right now is
+   discovered live (see "The discovery bridge").
+2. **Every lease names a work class.** A class lists the roles able to serve it, in preference
+   order, plus requirements checked against the *discovered* model: minimum context per slot,
+   vision, and so on. A 30k-token agent prompt is never placed on a role whose loaded model has
+   a 4k slot, whatever the preference list says.
+3. **Home first.** A request goes to its first role when that role has a free slot.
+4. **Borrowing** goes only in the directions the YAML allows:
+   - `metacog` ↔ `fast` share freely on gpu3.
+   - `metacog` and `fast` may spill up to `agent` (gpu1), to gpu2's agent seat when it is
+     loaded, and to `chat` when gpu0 is lent.
+   - Nothing from the big roles spills down to gpu3, because those models are too small. This
+     is structural: no big-role class lists `metacog` or `fast`.
+   - `agent` may use gpu2's agent seat after a swap, and `chat` when gpu0 is lent.
    - `chat` never leaves gpu0.
-4. **The owner always wins on its own card.** When an owner-class request is waiting and every
-   slot on its home model is held by borrowers, the pool **recalls** the newest borrower lease.
-   The borrower finishes its current request (grace cap, default 60s) and gets no new work. If
-   it overruns the cap it is aborted and requeued. The pool never grants a borrower a slot while
-   an owner is waiting.
-5. **Order inside the queue:** owner before borrower, then `priority`
-   (`interactive > system > background`), then oldest first. That is the whole ordering. No
-   per-lane budgets pretend to be priority.
-6. **Memory-aware swaps (gpu2).** A swap-in model is loaded only if the card's VRAM budget
-   allows it once the tenants it evicts are gone. The 27B (~25GB) plus world-model (~1GB) fit in
-   32GB, so **loading the 27B evicts diffusion only, and world-model keeps running.** A diffusion
-   request is an owner request and claws gpu2 back: the 27B leases are recalled, the 27B is
-   unloaded, and diffusion is restored. A cooldown (default 600s) stops the card flapping
-   straight back to the 27B.
-7. **GPU0 lend** is a card flag that only an operator can set. While it is off, no class other
-   than `chat` may be granted gpu0. Turning it off recalls every borrower on gpu0.
-8. **Health gates grants.** The pool reads each model's `/health` or `/slots`. A model that is
-   down gets no grants, and its queued work waits or goes to the next allowed model.
+5. **The owner always wins on its own card.** When an owner-class request is waiting and every
+   slot on its role is held by borrowers, the pool **recalls** the newest borrower lease. The
+   borrower finishes its current request (grace cap, default 60s) and gets no new work. If it
+   overruns it is aborted and retried. A borrower is never granted a slot while an owner waits.
+6. **Queue order:** owner before borrower, then `priority` (`interactive > system >
+   background`), then oldest first. That is the whole ordering.
+7. **Seats that need a swap.** A role may have a *swap seat*: a model the actuator can load onto
+   cards that normally host something else. The pool loads a swap seat only when the card's
+   VRAM, after evicting the tenants the YAML names, fits the discovered model's footprint.
+   - gpu2's agent seat evicts diffusion only, so world-model keeps running.
+   - The owner reclaiming a card reverses the swap: recall, grace, unload, restore.
+   - A cooldown (default 600s) stops flapping.
+8. **Multi-card seats.** A seat may span several cards (the `experiment` seat spans
+   gpu0–gpu3). Activating it is an **operator lease on every card it spans**. The pool:
+   - stops granting new work on those cards;
+   - recalls every lease on them, with grace;
+   - has the actuator stop the resident workers and start the experiment;
+   - holds it until the operator releases it or its max duration passes;
+   - then restores every resident.
 
-## `config/gpu_pool.yaml` (the whole configuration surface)
+   While it is active, work whose roles all live on those cards goes to **backlog** under rule
+   10. Nothing fails hard.
+9. **GPU0 lend** is a card flag only an operator can set. While it is off, only `chat` may be
+   granted gpu0. Turning it off recalls every borrower on gpu0.
+10. **Graceful degradation, never silent failure.** When no allowed role can serve a lease, the
+    class's YAML `on_unavailable` policy decides what happens:
+    - `wait`: stay queued until the caller's deadline, then return `unavailable` with a reason.
+      Used for interactive chat, so a person is told, not left hanging.
+    - `backlog`: park the lease durably. It replays automatically when an allowed role becomes
+      healthy, and its result is delivered on the caller's reply channel or wakes its durable
+      run. Used for background thinking, world ticks and curiosity. There is a max age, after
+      which it is dead-lettered.
+    - `fail`: return `unavailable` immediately. For callers that have their own fallback.
+
+    A caller always gets one of `granted`, `queued`, `backlogged {backlog_id}` or `unavailable
+    {reason}`. It never gets a timeout with no explanation.
+11. **Health gates grants.** A role whose worker is down, unannounced, or whose announcement
+    disagrees with `/props` gets no grants.
+
+## `config/gpu_pool.yaml`
 
 ```yaml
 version: 1
 host: circe
 defaults:
-  clawback_grace_sec: 60        # borrower finishes its current request, capped here
-  request_lease_ttl_sec: 30     # heartbeat window for one-inference leases
-  hold_lease_ttl_sec: 90        # heartbeat window for held leases (durable runs, button)
-  swap_cooldown_sec: 600        # after a clawback, don't re-swap the card for this long
+  clawback_grace_sec: 60
+  request_lease_ttl_sec: 30
+  hold_lease_ttl_sec: 90
+  swap_cooldown_sec: 600
+  retry: {max_attempts: 3, base_sec: 5, max_sec: 300}   # timeouts + upstream failures
+  backlog_max_age_sec: 86400
 
-priorities: [interactive, system, background]   # highest first
-
-models:                          # every servable thing, whether resident or swappable
-  chat-35b:   {url: http://100.112.254.99:8011, slots: 1, vram_gb: 28, health: /health}
-  agent-27b:  {url: http://100.112.254.99:8015, slots: 1, vram_gb: 25, health: /health}
-  agent-27b-gpu2: {url: http://100.112.254.99:8016, slots: 1, vram_gb: 25, health: /health,
-                   actuator: {load: gpu2/agent, unload: gpu2/restore}}
-  metacog-8b: {url: http://100.112.254.99:8012, slots: 4, vram_gb: 8,  health: /health}
-  fast-8b:    {url: http://100.112.254.99:8013, slots: 4, vram_gb: 8,  health: /health}
-  world-model: {url: http://100.112.254.99:6613, slots: 2, vram_gb: 1, health: /health}
-  diffusion:  {url: http://100.112.254.99:8014, slots: 1, vram_gb: 24, health: /health}
+priorities: [interactive, system, background]
 
 cards:
-  gpu0: {vram_gb: 32, owner: chat,  resident: [chat-35b], lendable: true}
-  gpu1: {vram_gb: 32, owner: agent, resident: [agent-27b]}
-  gpu2: {vram_gb: 32, owner: [world, diffusion], resident: [world-model, diffusion],
-         swappable: [agent-27b-gpu2]}
-  gpu3: {vram_gb: 32, owner: [metacog, fast], resident: [metacog-8b, fast-8b]}
+  gpu0: {vram_gb: 32, lendable: true}
+  gpu1: {vram_gb: 32}
+  gpu2: {vram_gb: 32}
+  gpu3: {vram_gb: 32}
 
-classes:                         # which models may serve a class, in preference order
-  chat:      [chat-35b]
-  agent:     [agent-27b, agent-27b-gpu2, chat-35b]
-  metacog:   [metacog-8b, fast-8b, agent-27b, agent-27b-gpu2, chat-35b]
-  fast:      [fast-8b, metacog-8b, agent-27b, agent-27b-gpu2, chat-35b]
-  world:     [world-model]
-  diffusion: [diffusion]
-```
+roles:                               # where work can run; NO model names
+  chat:      {kind: llm, cards: [gpu0], owner: chat, port: 8011}
+  agent:     {kind: llm, cards: [gpu1], owner: agent, port: 8015}
+  agent-gpu2: {kind: llm, cards: [gpu2], owner: [world, diffusion], port: 8016,
+               swap: {evicts: [diffusion], load: gpu2/agent, unload: gpu2/restore}}
+  metacog:   {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8012}
+  fast:      {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8013}
+  world:     {kind: service, cards: [gpu2], owner: world, port: 6613, slots: 2, vram_gb: 1}
+  diffusion: {kind: service, cards: [gpu2], owner: diffusion, port: 8014, slots: 1, vram_gb: 24}
+  experiment: {kind: llm, cards: [gpu0, gpu1, gpu2, gpu3], port: 8099, operator_only: true,
+               swap: {evicts: all, load: circe/experiment, unload: circe/restore},
+               max_hold_sec: 14400}
 
-```yaml
-routes:                          # what the gateway's callers say -> work class
+classes:                             # what a lease asks for
+  chat:      {roles: [chat], on_unavailable: wait}
+  agent:     {roles: [agent, agent-gpu2, chat], on_unavailable: backlog}
+  metacog:   {roles: [metacog, fast, agent, agent-gpu2, chat], on_unavailable: backlog}
+  fast:      {roles: [fast, metacog, agent, agent-gpu2, chat], on_unavailable: wait}
+  world:     {roles: [world], on_unavailable: backlog}
+  diffusion: {roles: [diffusion], on_unavailable: backlog}
+  experiment: {roles: [experiment], on_unavailable: fail}
+
+routes:                              # what gateway callers say -> class (+ priority)
   chat: chat
   harness: chat
   agent: agent
@@ -123,261 +182,267 @@ routes:                          # what the gateway's callers say -> work class
   quick_background: {class: fast, priority: background}
 ```
 
-The gateway reads `routes:` and `models:` from this file. Its `.env` loses
+Validation runs at boot and in CI. It checks that every role's cards exist, every class resolves
+to known roles, and swap evictions name real co-resident roles. It also checks the live side:
+every announced profile exists in `llm_profiles.yaml`, and resident VRAM from those profiles
+fits the card. Model-dependent checks (VRAM, context per slot, vision) are evaluated against
+the **discovered** profile, so swapping a model file never needs a pool-config edit.
+
+The gateway reads `routes:` and the discovered role → URL map. Its `.env` loses
 `LLM_GATEWAY_ROUTE_TABLE_JSON`, `LLM_ROUTE_*_SERVED_BY`, `LLM_LANE_*`,
 `LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT`, `LLM_GATEWAY_CAPACITY_*`, `LLM_GATEWAY_BACKGROUND_*` and
-`LLM_ALLOW_BACKGROUND_TO_CHAT_FALLBACK`. Every URL, slot count and fallback lives in exactly one
-place.
+`LLM_ALLOW_BACKGROUND_TO_CHAT_FALLBACK`.
 
-A class is served on a card only if the card owns that class, or the card allows borrowing
-(gpu0 only while lent). Rule 3's "no spill down to gpu3" is structural: no big-model class
-lists an 8B model. Validation runs at boot and in CI: every class resolves to known models,
-every model sits on exactly one card, and resident VRAM fits the card. A bad YAML fails the
-boot instead of degrading.
+## The discovery bridge: what is actually loaded in each role
 
-## Proposed schema / API
+This was never solved before. The facts:
+- every worker container already has `LLM_PROFILE_NAME` in its environment (e.g. the agent
+  worker has `qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex`);
+- `orion-llamacpp-host` already connects to the bus and publishes to `orion:system:health`
+  (`app/main.py:613-649`);
+- llama.cpp's own `GET /props` reports the `model_path` actually loaded, the per-slot `n_ctx`,
+  and `total_slots`.
 
-**Postgres (one migration, `services/orion-sql-db/manual_migration_gpu_pool_v1.sql`):**
-- `gpu_pool_leases`: `lease_id, request_id (unique, idempotency), holder, work_class,
-  priority, kind (request|hold), status (queued|granted|recalling|released|expired|aborted),
-  model, card, generation, created_at, granted_at, heartbeat_at, expires_at, recall_at,
-  deadline_at, correlation_id, detail jsonb`. Queued requests and granted leases share one
-  table, so "what is out there" is one query.
-- `gpu_pool_cards`: `card, lent bool, swapped_in text null, swap_state, cooldown_until,
-  updated_at, updated_by`.
-- `gpu_pool_events`: an append-only audit log and outbox for the bus.
+Nobody put these three together.
 
-**Every lease is a LangGraph run (Juniper, 2026-09-24: "let's use langgraph").** `thread_id =
-lease_id`. It is checkpointed by the same `AsyncPostgresSaver` + pool pattern durable-runs
-already uses. Graph:
+1. **Announce.** `orion-llamacpp-host` publishes `LlmWorkerAnnounceV1` on
+   `orion:llm:worker:announce` at boot and on each heartbeat: `{host, role (from a new
+   LLM_ROLE env, defaulting to the compose service name), profile_name, port, physical_gpus
+   (resolved from CUDA_VISIBLE_DEVICES_OVERRIDE, UUID-stable), pid, started_at}`.
+2. **Confirm.** The pool's discovery poller hits each announced worker's `/props` every 15s. It
+   resolves `profile_name` in `llm_profiles.yaml` and checks that the profile's model file
+   equals the basename of `/props.model_path`. From `/props` it takes the truth for slots, ctx
+   per slot and vision.
+3. **Map.** The result is the live role table in `orion:gpu_pool:state`: role → profile →
+   model file → cards → slots → ctx/slot → vision → health → `confirmed | mismatch | silent`.
+   - `mismatch` (announced profile ≠ loaded file) and `silent` (no announcement but the port
+     answers) are shown in red on the panel and get **no grants**.
+   - Any port answering on circe that no role claims is listed as an *unclaimed server*: the
+     "what the fuck is out there" row.
+
+Known live drift this surfaces: profiles record `device_ids: [0]` for the 8B workers, while they
+actually run on gpu3 via `CUDA_VISIBLE_DEVICES_OVERRIDE`. The announcement carries the real
+devices, so the profile's `device_ids` is never trusted for placement.
+
+## The lease graph (LangGraph, `thread_id = lease_id`)
+
+Checkpointed by `AsyncPostgresSaver` on a connection pool, the same pattern as durable-runs.
 
 ```text
-admit ──> enqueue ──> wait_grant ──(interrupt until scheduler resumes)──> granted
-                          │                                                 │
-                          └── deadline passed ──> expired                   v
-                                                                  hold (interrupt;
-                                                                  heartbeats resume it)
-                                                                    │     │       │
-                                                          release <─┘  recalled  lost heartbeat
-                                                             │            │          │
-                                                             v            v          v
-                                                          released   grace ──> requeue ──> enqueue
-                                                                           (or aborted)
+admit ─► place ─┬─ slot free ────────────────────────────────► granted ─► hold
+                ├─ allowed role busy ─► queued ──(interrupt)──► granted
+                ├─ no allowed role healthy ─► on_unavailable:
+                │     wait ─► queued (until deadline) ─► unavailable
+                │     backlog ─► backlogged ──(interrupt; woken on role healthy)──► place
+                │     fail ─► unavailable
+                └─ deadline passed while queued ─► unavailable(reason=deadline)
+
+hold ──(interrupt; heartbeats/release resume it)──┬─► release(outcome=ok) ─► released
+                                                  ├─► release(outcome=upstream_error|timeout)
+                                                  │        ─► retry_wait ─► place   (attempt<max)
+                                                  │        ─► dead_letter           (attempt=max)
+                                                  ├─► recalled ─► grace ─┬─► released (finished)
+                                                  │                      └─► aborted ─► retry_wait
+                                                  └─► heartbeat lost ─► expired ─► retry_wait
+
+dead_letter ──(operator replay)──► place   (new attempt series, same lease_id, audit kept)
+backfill: operator selects a set of past leases (by class, holder, time range, outcome)
+          ─► each spawns a replay child thread (parent_lease_id) ─► place
 ```
 
-- A wait is an `interrupt`, not an open socket, so nothing times out. The run holds no task or
-  connection while it waits. The caller is woken by the bus `granted` event.
-- A pool restart resumes every thread from its checkpoint. A failed or recalled lease replays
-  through `requeue` with its original `request_id`, `priority` and `created_at`, so it keeps its
-  place in line.
-- The **scheduler is one node-free deterministic function**, `schedule(yaml, cards, queue,
-  leases) -> [grant | recall | abort | swap]`. A single-writer loop (Postgres advisory lock,
-  1s tick plus a wake on every admit or release) calls it and then resumes the affected threads
-  with `Command(resume=...)`. It is pure, so it is fully unit-testable with a fake clock, and
-  the eval replays traffic through it.
-- The graph's knobs (grace, TTLs, cooldown, priority order) come from `config/gpu_pool.yaml`.
-  The graph shape is code and the policy is YAML.
-- `gpu_pool_leases` becomes a small **materialized projection** of thread state, one row per
-  lease, updated in the same transaction as the scheduler decision. It exists so "what is out
-  there" is one indexed query and so grants are fenced with `FOR UPDATE`. The LangGraph
-  checkpoint remains the source of replay.
-- Cost, measured in stage 1's eval rather than assumed: a request lease is about 4 checkpoint
-  writes (admit, enqueue, granted, released). If metacog/fast volume makes that the bottleneck,
-  the eval will show it before the gateway cutover depends on it.
+- **Timeouts and failures retry** with exponential backoff (YAML `retry`). The attempt number,
+  each failure reason and each placement are kept in the thread's history.
+- **Dead letter** is a terminal-but-replayable state. It is never deleted, and it shows in the
+  panel with its whole history.
+- **Operator replay and backfill** go over the bus (`orion:gpu_pool:control:request`, verbs
+  `replay` and `backfill`). A backfill creates child threads linked to their originals, so a
+  replayed day of world ticks is traceable back to what it replays.
+- **What a lease replays.** A request lease carries the caller's request envelope reference (the
+  gateway's request body is stored in the thread state, size-capped). So a backlogged or
+  replayed LLM call can be re-dispatched by the pool through the gateway without its original
+  caller still waiting. Its result goes to the reply channel it was issued with, and is
+  persisted if nobody is listening. A durable-run lease replays by resuming its run.
+- The **scheduler** stays one pure function, `schedule(config, discovered_roles, cards, queue,
+  leases, now) -> [grant | recall | abort | swap | wake_backlog]`. A single-writer loop
+  (Postgres advisory lock, 1s tick plus a wake on events) runs it and resumes threads with
+  `Command(resume=...)`.
+- `gpu_pool_leases` is a small **projection** of thread state (one row per lease, fenced with
+  `FOR UPDATE`) for fast queries. The checkpoint remains the source of history and replay.
+- Cost: about 4–6 checkpoint writes per request lease. Stage 1's eval measures throughput at
+  realistic metacog/fast volume before the gateway depends on it.
 
-**Bus RPC (callers) and HTTP (operators and panels only), `orion-gpu-pool` on athena.** The lease verbs below go over the bus: channel `orion:gpu_pool:lease:request` with verb field `acquire|heartbeat|release`. See the Transport section. Snapshot, lend and actuation are also bus RPC (see Transport). HTTP keeps only the `GET /v1/pool` debug mirror and `/health`. The shapes are listed as HTTP for readability:
-- `POST /v1/leases`: `{request_id, holder, work_class, priority, kind, deadline_at?,
-  correlation_id}` → `granted {lease_id, generation, model, url, card}` or `queued {position}`.
-- `GET /v1/leases/{id}?wait=25`: long-poll until granted or recalled. Interactive callers loop
-  on this until their own `deadline_at`. There are no blind HTTP timeouts.
-- `POST /v1/leases/{id}/heartbeat` → `{valid, recall: bool, recall_by?}`.
-- `POST /v1/leases/{id}/release`.
-- `GET /v1/pool`: cards, what is loaded, leases held, queue, recalls in flight. This is the "what
-  the fuck is out there" view.
-- `PUT /v1/cards/{card}/lend {lent}`: operator only (bearer token). Hub's button calls this.
-- `GET /health`.
+## Schemas and channels (all registered in `channels.yaml` + `registry.py`)
 
-**Bus:** `orion:gpu:pool:event` → `GpuPoolEventV1 {event: granted|recalled|released|expired|
-aborted|swapped|lent, lease_id?, card?, holder?, detail}`. It is registered in `channels.yaml`
-and `registry.py`. Durable runs wake on it, and Hub's panel refreshes on it.
+| channel | schema | direction |
+| --- | --- | --- |
+| `orion:gpu_pool:lease:request` | `GpuLeaseRequestV1` (verb acquire / heartbeat / release{outcome}) → `GpuLeaseReplyV1` (granted / queued / backlogged / unavailable) | callers → pool (RPC) |
+| `orion:gpu_pool:event` | `GpuPoolEventV1` (admitted, queued, granted, backlogged, recalled, aborted, expired, retried, dead_lettered, replayed, released, swapped, lent, discovery_mismatch) | pool → everyone |
+| `orion:gpu_pool:state` / `:state:request` | `GpuPoolStateV1` (config digest, cards, discovered roles, leases, queue, backlog, recalls, per-class rolling stats) | pool → panel / field / cortex-exec |
+| `orion:gpu_pool:control:request` | `GpuPoolControlV1` (lend, unlend, activate_experiment, release_experiment, replay, backfill, pause_class) | operator (Hub) → pool (RPC, operator token) |
+| `orion:gpu_pool:actuate:request` / `:result` | `GpuActuateV1` / `GpuActuateResultV1` | pool → circe actuator |
+| `orion:llm:worker:announce` | `LlmWorkerAnnounceV1` | llamacpp-host → pool |
 
-**Client library `orion/gpu_pool/client.py`:** one async context manager,
-`async with gpu_lease(work_class=..., holder=..., priority=...) as lease:`, which handles
-acquire, long-poll, heartbeat and release, and raises `LeaseRecalled` when a recall hits.
-Every caller uses this. There is no second client.
+Client library `orion/gpu_pool/client.py`: `async with gpu_lease(work_class, holder, priority,
+deadline, replay_payload=None) as lease:`. It handles every reply kind and raises typed
+`LeaseUnavailable(reason)` or `LeaseRecalled`. It is the only client.
 
 ## How each caller changes
 
-| caller | today | after |
-| --- | --- | --- |
-| llm-gateway | route table → port, in-process semaphores, capacity permits, background slot polling, lane gate | maps `route → work_class` and takes a **request lease** per dispatch. The pool returns the URL to call, and the gateway dispatches there. If the caller already holds a **hold lease** (durable run), the gateway dispatches on that lease's model. A recall during dispatch returns `recalled` and the gateway requeues once. |
-| durable-runs | `resource_request → resource_wait (interrupt) → ...` against its own broker | same graph shape. `resource_request` takes a **hold lease** from the pool, `resource_wait` interrupts until the bus announces `granted`, and a recall or failure goes to `retry_wait`, which requeues. LangGraph checkpoints keep the replay. |
-| world-model, visual chain (diffusion) | `GpuCapacityPermit` on a borrowed key | `gpu_lease(work_class="world" / "diffusion")` |
-| Hub | "Lend chat lane" button → gateway Redis gate; hold-and-email logic | the button → `PUT /v1/cards/gpu0/lend`. A new pool panel reads `GET /v1/pool`. Chat traffic is never "held" any more: chat is the owner and claws back. |
-| gpu-lane-controller (circe) | GPU1 affect flip, GPU2 transitions with its own lock | becomes the pool's **actuator**: `POST /v1/actuate {card, action}`, taking orders only from the pool (bearer token). The GPU1 flip is deleted (affect is out of scope). |
+| caller | after |
+| --- | --- |
+| llm-gateway | maps route → class, takes a request lease per dispatch, and calls the URL of the role granted. It holds the lease for the call and releases it with `outcome`. It honours durable-run hold leases. `backlogged` is returned to the caller as a typed reply (not an error string). |
+| durable-runs | `resource_request` takes a hold lease; `resource_wait` interrupts until `granted`; recall or failure goes through the pool's retry. Its own broker and elastic runtime are deleted. |
+| world-model, visual chain (diffusion) | `gpu_lease(class="world" / "diffusion")`; ticks that hit `backlogged` are replayed by the pool. |
+| Hub | lend button, experiment activate/release, replay and backfill are `control` RPCs; the new operator panel (below); the hold-and-email path is deleted. |
+| gpu-lane-controller (circe) | becomes the bus actuator for `gpu2/*` and `circe/experiment|restore`. The GPU1 affect flip is deleted. |
+| orion-llamacpp-host | announces its role, profile and devices. |
 
-## Downstream readers of the things being deleted (must move to the pool in the same stage)
+## Hub operator panel ("GPU pool" tab)
 
-These read the gateway's `/admission` snapshot or the durable-admission tables today. Deleting
-the source without moving these would not error: each is fail-open, so each would quietly read
-"calm" or empty.
+Built on `orion:gpu_pool:state` and `:event` live over Hub's websocket, plus sql-writer
+history.
 
-| reader | what it reads today | what it means | moves to |
-| --- | --- | --- | --- |
-| `orion-field-digester/app/digestion/queue_contention.py` → `FieldStateV1.queue_contention_score` | `count_durable_demand_pending()` (SQL on `durable_resource_demands`) and the gateway's `/admission` waiting sum | Orion's "am I backed up" field signal. Curiosity hire decisions read it (#2263/#2281). **It is a locked metric** (`config/metrics/metric_definitions.lock.json`). | pool queue depth per class. Changing a locked metric's producer needs Juniper's approval, so stage 2 either re-points the two sources as a like-for-like count (same meaning: "requests waiting for GPU") under the metric gate, or retires it for a pool-native successor. **Decision needed at stage 2.** |
-| `orion-cortex-exec/app/admission_cue.py` | gateway `/admission` ledger (background requests made to wait) | Orion's own metacog cue "was my background thinking made to wait" (scarcity roadmap A5) | pool lease events for `priority=background`: waited / waited-how-long / recalled. Same four states (observed-zero, waited-N, no-requests, unknown). |
-| `orion/hub/runtime_activity.py` + `scripts/runtime_activity_routes.py` | gateway `/admission` per-upstream inflight and waiting | Hub runtime activity panel | `GET /v1/pool` |
-| `orion/curiosity/run_story.py`, `hire_progress.py`, `hub/scripts/curiosity_run_store.py`, `curiosity_atlas.html` | `durable_admission_runs` and `durable_resource_events` (waiting for lane, granted, lease released or expired) | the curiosity run story and the "reach-out truth" tab | pool lease events via sql-writer, keyed by `run_id` as `holder`, keeping the same event names where the meaning is the same |
-| `orion/hub/turn_orchestrator.py`, gateway passthroughs | lease fencing and `lane_gate` refusals | chat hold-while-lent, burst refusals | the lease from the pool; hold-while-lent goes away because chat is the owner |
-| `orion/inner_state_registry.py`, `orion/schemas/field_state.py` | documentation of `queue_contention_*` sources | registry of inner-state fields | updated with the new source |
+1. **Config.** `gpu_pool.yaml` rendered as a picture, not a text dump:
+   - the four cards as columns, with the roles on each and swap seats drawn dashed;
+   - arrows for who may borrow what, owners marked;
+   - each role annotated with its *discovered* profile, model file, slots and ctx/slot;
+   - confirm/mismatch/silent badges, and unclaimed servers listed.
 
-## Transport and telemetry (traced 2026-09-24)
+   The raw YAML is one click away.
+2. **Traffic, three zoom levels, live or historical** (time-range picker; live is the default):
+   - *aggregate*: per card and per role, busy slots over time, queue depth, backlog depth,
+     p50/p95 wait, success/failure rate, recalls;
+   - *semi-aggregate*: the same broken down by class, holder service and priority;
+   - *detail*: a streaming table of individual leases (holder, class, role served, waited,
+     ran, outcome, attempt, correlation_id), filterable, with each row linking to the walker.
+3. **Graph walker.** Pick any lease, live or historical. It shows the lease graph above with the
+   path that lease actually took, each step's timestamps and durations, retries, the recall
+   that hit it, and the `correlation_id` link to the turn and trace it belonged to. The data
+   comes from LangGraph checkpoint history. Buttons: replay (dead-lettered or failed), cancel
+   (queued or backlogged).
+4. **Controls.** GPU0 lend on/off, experiment activate/release, pause a class, and backfill
+   (choose class, holder, time range and outcome, preview the count, confirm).
+
+## Transport and telemetry
 
 **Today:** cortex-orch → cortex-exec → gateway are bus RPC hops. Each `rpc_request()` records
-per-hop latency and timeouts in the caller's in-memory `RpcHealthAggregator`
-(`orion/core/bus/async_service.py:509-634`). `RpcHealthPublisher` drains that onto
-`orion:rpc_health:snapshot`. signal-gateway turns it into `OrionSignalV1` organs, equilibrium
-reads it for the transport metacog gate, and timeouts also emit `rpc_transport_timeout` grammar.
-Separately, bus-mirror turns every `orion:*` publish that shares a `correlation_id` into
-causal-hop edges, which feed `bus_synaptic_prediction_error` → field node
-`node:substrate.bus_synaptic`.
+per-hop latency and timeouts (`orion/core/bus/async_service.py:509-634`), and
+`RpcHealthPublisher` drains that to `orion:rpc_health:snapshot`. From there signal-gateway
+builds `OrionSignalV1` organs, equilibrium runs its transport metacog gate, and timeouts
+become `rpc_transport_timeout` grammar. bus-mirror turns every shared `correlation_id` into
+causal-hop edges, which feed `bus_synaptic_prediction_error` → `node:substrate.bus_synaptic`.
 
-**Gap found:** the gateway emits **no** per-call bus telemetry, neither rpc_health nor grammar.
-Its waits and refusals (`gateway_overloaded`, capacity rejections, lane-closed) live only in the
-reply payload and an in-process ledger behind `GET /admission`. So where the time actually goes
-(queue wait versus model time versus which card) is invisible downstream today.
+**The pool plugs in with the live helpers:**
+1. Lease calls are bus RPC, carrying the caller's `correlation_id`. Per-caller rpc_health,
+   bus-mirror causal edges and `bus_synaptic_prediction_error` pick up the pool hop
+   automatically. The RPC answers immediately (it never waits in line), so an RPC timeout means
+   the pool is unreachable, not busy.
+2. The pool runs `RpcHealthPublisher` (service `gpu-pool`, hop `gpu_pool:<class>#grant`,
+   latency = queue wait, deadline miss = timeout). signal-gateway turns that into an
+   `rpc_health_gpu_pool` organ with no registry change.
+3. Lease lifecycle facts go out as `GrammarEventV1` (`source_service="orion-gpu-pool"`, trace
+   prefix `gpu_pool.lease:`). They are persisted via sql-writer. **A reducer and field wiring
+   only come after the metric quality gate** (stage 6).
+4. Lease history persists bus → sql-writer (`gpu_pool_events`). The only direct Postgres writer
+   is the scheduler's fenced projection plus the checkpoint (a stated exception).
+5. **Gateway per-call telemetry is built last** (stage 6, after every cutover, per Juniper). It
+   covers rpc_health hops `llm:<role>#call` for model latency and failure, plus refusal grammar.
+   Until then, queue wait versus model time is visible only in the pool's own telemetry and
+   panel.
 
-**How the pool plugs in, reusing the live helpers and adding no new consumer code except where
-stated:**
+## Downstream readers that move with each deletion
 
-1. **Lease calls are bus RPC**, not HTTP. `rpc_request("orion:gpu_pool:lease:request", ...,
-   health_label=<work_class>)` returns `granted` or `queued` immediately. A queued caller then
-   awaits `granted` on `orion:gpu_pool:event` (filtered by its `lease_id`) until its own
-   deadline. The RPC itself never waits in line, so an RPC timeout means the pool is actually
-   unreachable, not busy. Every call carries the caller's `correlation_id`, so the existing
-   per-caller rpc_health, the bus-mirror causal edges and `bus_synaptic_prediction_error` pick up
-   the pool hop automatically.
-2. **The pool runs `RpcHealthPublisher`** (service `gpu-pool`). Hop `gpu_pool:<class>#grant`
-   records **queue wait** as its latency. A lease that hits its deadline without a grant is
-   recorded as a timeout on that hop. signal-gateway turns this into an `rpc_health_gpu_pool`
-   organ signal with no registry change. `RpcHealthSnapshotV1` is `extra="forbid"`, so no new
-   fields are added.
-3. **The gateway gets the telemetry it never had.** It runs `RpcHealthPublisher` with one hop per
-   model (`llm:<model>#call`), carrying model latency and failures, separate from the pool's
-   queue-wait hop. Together with (2), every LLM call splits into *waited N in line* plus
-   *ran M on card X* with success or failure, under one `correlation_id`.
-4. **Grammar.** Lease lifecycle facts (granted after wait, recalled, aborted after grace,
-   expired unserved, gpu2 swap) are emitted as `GrammarEventV1`: `source_service=
-   "orion-gpu-pool"`, trace prefix `gpu_pool.lease:`, and a `semantic_role` per fact. They land
-   in `grammar_events` via sql-writer. **No reducer reads them until a
-   `GRAMMAR_CURSOR_REGISTRY` entry plus a reducer is added** (substrate-runtime
-   `store.py:67-70`). That wiring is a new metric feeding the field, so it goes through the metric
-   quality gate as its own step (stage 5). It is not wired on faith in stage 1.
-5. **Persistence of the lease history goes via bus → sql-writer** (`gpu_pool_events` model,
-   `MODEL_MAP` + `DEFAULT_ROUTE_MAP` + `sql_writer_subscribe_channels`). The one direct Postgres
-   writer is the scheduler's own lease projection and checkpoint, because grants must be fenced
-   in a single transaction. That exception is stated here on purpose.
-6. **equilibrium** keeps reading `rpc_transport_timeout` unchanged. A pool that cannot be reached
-   surfaces there exactly like any other broken hop.
+Each of these is fail-open, so deleting its source without moving it reads as "calm" or empty,
+not as an error.
 
-**Everything else goes over the bus too (Juniper, 2026-09-24: "as much behind the bus as
-possible"):**
-
-| interaction | channel | why it's on the bus |
+| reader | reads today | moves to |
 | --- | --- | --- |
-| lease acquire, heartbeat, release | `orion:gpu_pool:lease:request` (RPC) | per-hop latency and timeouts in rpc_health, causal edges in bus-mirror |
-| lease lifecycle facts (granted, queued, recalled, aborted, expired, released) | `orion:gpu_pool:event` | durable-runs and callers wake on it; sql-writer persists it; bus-mirror links it to the turn |
-| pool snapshot (cards, loaded models, leases, queue) | `orion:gpu_pool:state` published every tick on change (at least every 5s), plus `orion:gpu_pool:state:request` (RPC) for an on-demand read | Hub panel, field-digester queue depth and cortex-exec's wait cue all read one bus shape instead of three HTTP polls |
-| GPU0 lend on/off | `orion:gpu_pool:control:request` (RPC, operator token in payload, checked by the pool) | the button press is a traced, persisted fact |
-| gpu2 swap orders to circe | `orion:gpu_pool:actuate:request` (RPC; gpu-lane-controller joins the bus as the actuator) and `orion:gpu_pool:actuate:result` | swap duration and failures become transport hops, not a private HTTP call |
-| model health as the pool sees it | carried inside `orion:gpu_pool:state` | one place to see "chat-35b down since 14:02" |
+| field-digester `queue_contention.py` → `FieldStateV1.queue_contention_score` (**locked metric**, curiosity hire decisions read it) | `durable_resource_demands` count + gateway `/admission` waiting | pool queue + backlog depth. **Needs Juniper's decision at stage 2**: re-point like-for-like under the metric gate, or retire it for a pool-native successor. |
+| cortex-exec `admission_cue.py` (Orion's "my background thinking was made to wait" cue) | gateway `/admission` ledger | pool events for `priority=background`, keeping its four distinct states |
+| Hub `runtime_activity` | gateway `/admission` | `orion:gpu_pool:state` |
+| curiosity `run_story`, `hire_progress`, `curiosity_run_store`, atlas | `durable_admission_runs` / `durable_resource_events` | pool events via sql-writer, keyed by holder = run_id, same event names where the meaning is unchanged |
+| `turn_orchestrator`, gateway passthroughs | lane gate, lease fencing | pool lease; hold-while-lent is deleted |
+| `inner_state_registry`, `field_state` docs | queue_contention sources | updated |
+| *(pending: second sweep in progress; results are appended before sign-off)* | | |
 
-**HTTP remains only where the far side cannot speak bus:**
-- gateway → llama.cpp inference calls (the model servers are third-party);
-- pool → llama.cpp `/health` and `/slots` probes (the results are republished on the bus as
-  above);
-- each service's `/health` for Docker healthchecks;
-- `GET /v1/pool` as a read-only debug mirror of the last `orion:gpu_pool:state`, for curl
-  from a shell.
+## Delete list (in the stage that replaces each piece)
 
-## Delete list (in the same stage that replaces each piece)
-
-- `orion/durable_admission/{broker,policy,capacity,capacity_client,elastic,store}.py`,
-  `services/orion-durable-runs/app/{admission_runtime,elastic_runtime}.py`, and their tables
-  (dropped by migration only after cutover is verified).
-- The gateway's `capacity.py`, `upstream_admission.py`, `priority_admission.py`, `lane_gate.py`
-  and `admission_ledger.py`, plus `BURST_LLM_ROUTES`/`OPERATOR_GATED_LLM_ROUTES`/
+- `orion/durable_admission/*`, durable-runs `admission_runtime.py` / `elastic_runtime.py`, and
+  their tables (dropped only after cutover is verified).
+- Gateway `capacity.py`, `upstream_admission.py`, `priority_admission.py`, `lane_gate.py`,
+  `admission_ledger.py`, `/admission`, plus `BURST_LLM_ROUTES` / `OPERATOR_GATED_LLM_ROUTES` /
   `CHAT_BURST_LENDS_ROUTE`.
-- The unread `LLM_LANE_CONTENTION_FALLBACK_JSON` / `LLM_LANE_REAL_CAPACITY_JSON`, the
-  `DURABLE_RUNS_{ADMISSION,CAPACITY,WIDENING,ELASTIC}_*` keys, `WM_GPU2_CAPACITY_*`,
-  `ORION_VISUAL_CHAIN_GPU2_CAPACITY_*`, and `HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED`.
-- Hub's `chat_lane_lend.py` hold-and-email path.
-- The #2246 stance fallback chain in cortex-exec/thought. Spill is now the pool's job.
-- PR #2317 is closed unmerged.
-- Fix the stray `ATLAS_AGENT_HOST_PORT=8014` in `services/orion-llamacpp-host/.env`.
-
-## Files likely to touch
-
-`config/gpu_pool.yaml` (new); `services/orion-gpu-pool/` (new: app, settings, scheduler, store,
-api, Dockerfile, compose, tests, evals); `orion/gpu_pool/{config,client}.py` (new);
-`orion/schemas/gpu_pool.py`, `orion/schemas/registry.py`, `orion/bus/channels.yaml`; `services/orion-sql-writer` (route + model + subscribe); `services/orion-substrate-runtime/app/store.py` (stage 5, gated);
-`services/orion-sql-db/manual_migration_gpu_pool_v1.sql`; `services/orion-llm-gateway/app/*`;
-`services/orion-durable-runs/app/*`; `services/orion-world-model/app/main.py`;
-`services/orion-thought/app/visual_chain.py`; `services/orion-hub/{scripts,static,templates}`;
-`services/orion-gpu-lane-controller/app/*`; CI gate script.
+- Env keys: `LLM_LANE_*`, `LLM_GATEWAY_{ROUTE_TABLE_JSON,UPSTREAM_MAX_INFLIGHT,CAPACITY_*,
+  BACKGROUND_*}`, `DURABLE_RUNS_{ADMISSION,CAPACITY,WIDENING,ELASTIC}_*`, `WM_GPU2_CAPACITY_*`,
+  `ORION_VISUAL_CHAIN_GPU2_CAPACITY_*`, `HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED`.
+- Hub `chat_lane_lend.py` hold-and-email; the #2246 stance fallback chain; the GPU1 affect flip.
+- PR #2317 closed unmerged; stray `ATLAS_AGENT_HOST_PORT=8014` fixed.
 
 ## Non-goals
 
 - Affect as a tenant (a later YAML entry).
-- athena's GPUs (T10, P4, kev). The YAML's `host` field leaves room for them, but this cut is
-  circe only.
-- Splitting a single llama.cpp request across cards, or live migration of a running request.
-- Automatic model re-quantization or context resizing per card.
+- athena's GPUs. The YAML `host` field leaves room, but this cut is circe only.
+- Splitting one request across cards (a multi-card *model* is supported; that is llama.cpp's own
+  split).
+- Auto re-quantization or context resizing.
 
 ## Acceptance checks
 
-1. **Config:** `config/gpu_pool.yaml` validates at boot and in CI. A card with too much resident
-   VRAM, an unknown model, or a class with no servable model fails the check.
-2. **Scheduler unit tests** (deterministic, fake clock):
-   - home-first grant;
-   - metacog→fast swap;
-   - metacog spill to gpu1;
-   - agent never to gpu3;
-   - gpu0 refused while not lent;
-   - a chat request recalls a lent-gpu0 borrower, which is aborted after grace;
-   - owner-before-borrower ordering;
-   - priority ordering;
+1. **Config and discovery:**
+   - YAML validation fails on unknown roles, cards or evictions.
+   - Discovery marks a worker whose `/props.model_path` ≠ its profile's file as `mismatch` and
+     grants it nothing.
+   - An unannounced answering port is listed as unclaimed.
+2. **Scheduler tests** (fake clock):
+   - home-first;
+   - metacog↔fast;
+   - metacog spill to agent;
+   - nothing spills to gpu3;
+   - ctx requirement blocks a large prompt from a small-slot role;
+   - gpu0 refused unless lent;
+   - chat recalls a gpu0 borrower, aborted after grace;
+   - owner before borrower, then priority, then FIFO;
    - idempotent `request_id`;
-   - expired heartbeat frees the slot;
-   - two schedulers → one grant (advisory lock);
-   - gpu2 swap evicts diffusion but keeps world;
-   - diffusion claws gpu2 back;
-   - cooldown blocks re-swap.
-3. **Eval:** replay a synthetic day of mixed traffic through the scheduler and report p50/p95 wait
-   per class, the number of recalls, and owner-starvation seconds (target: 0 seconds of owner
-   wait while a borrower holds its card beyond grace).
-4. **Live:**
-   - `GET /v1/pool` shows all four cards with the real tenants.
-   - A metacog burst beyond 4 slots shows grants on fast-8b, then agent-27b.
-   - Toggling the Hub button shows gpu0 lent/unlent, and a chat message during a lend
-     shows a `recalled` event followed by a chat grant.
-5. **Enforcement gate:** CI fails if any code outside `orion-gpu-pool` and the gateway's
-   dispatch references a circe model port (8011–8016, 6613) directly.
+   - lost heartbeat → retry;
+   - upstream failure → retry with backoff → dead letter at max;
+   - operator replay of a dead letter;
+   - backfill spawns linked children;
+   - `backlog` wakes when a role turns healthy;
+   - `wait` returns `unavailable` at the deadline;
+   - gpu2 swap keeps world and evicts diffusion;
+   - diffusion reclaims gpu2;
+   - cooldown;
+   - experiment activation recalls everything on gpu0–3, backlogs background, returns
+     `unavailable` to chat with a reason, and restores all residents on release;
+   - two schedulers → one grant.
+3. **Graph tests:** a pool restart mid-queue, mid-hold and mid-backlog resumes every thread with
+   the same `request_id`, priority and position.
+4. **Eval:** a synthetic day of mixed traffic, including one worker outage and one experiment
+   window. It reports p50/p95 wait per class, recalls, retries, dead letters, backlog replays,
+   owner-starvation seconds (target 0 beyond grace), leases lost (target 0), and checkpoint
+   writes/sec against capacity.
+5. **Live:**
+   - the panel shows all four cards with *discovered* profiles confirmed;
+   - a metacog burst spills fast → agent;
+   - lend on/off with a chat recall visible;
+   - stop the metacog worker, and background metacog backlogs, then replays when it returns;
+   - the walker shows one real lease's path with the timings of each step.
+6. **Enforcement gate:** CI fails on any direct reference to a circe model or service port
+   outside the pool, the gateway dispatch and the actuator.
 
 ## Build order (each stage stops for Juniper's review)
 
-1. **Pool core:** YAML + validation, schema, migration, scheduler, HTTP, bus event, client
-   library, tests, eval, Hub read-only panel. Deployed in *observe* mode: it answers, but
-   nobody depends on it yet.
-2. **Gateway cutover:** all LLM traffic leases from the pool; the Hub lend button moves to the
-   pool; the gateway deciders are deleted; #2317 is closed.
-3. **Durable-runs cutover:** admission nodes lease from the pool; `orion/durable_admission` is
-   deleted.
-4. **gpu2 and non-LLM tenants:** world-model and diffusion lease; the actuator becomes the
-   swap executor; the elastic code is deleted.
-5. **Lockdown:** the port-poacher CI gate, the old env keys removed everywhere, and the old
-   tables dropped.
-
-## Recommended next patch
-
-Stage 1, pool core, in `feat/gpu-pool` from this worktree.
+0. **Pre-launch:** roll back the #2317 pollution (with Juniper's go); close #2317.
+1. **Pool core:** YAML + validation, discovery bridge (llamacpp-host announce plus the `/props`
+   poller), schemas and channels, migration, lease graph, scheduler, backlog and replay, client
+   library, tests, eval. Deployed in observe mode: it discovers, answers and shows, but nobody
+   depends on it.
+2. **Operator panel** in Hub: config picture, traffic at three zoom levels live and historical,
+   graph walker, controls.
+3. **Gateway cutover:** all LLM traffic leases; the lend button moves; the gateway deciders are
+   deleted; readers move (the `queue_contention` decision happens here).
+4. **Durable-runs cutover:** hold leases; `orion/durable_admission` is deleted.
+5. **gpu2, world, diffusion and experiment seat:** the actuator becomes the swap executor; the
+   elastic code is deleted.
+6. **Gateway per-call telemetry and grammar reducers** (after the metric gate), then
+   **lockdown:** port gate, old env keys and old tables removed.

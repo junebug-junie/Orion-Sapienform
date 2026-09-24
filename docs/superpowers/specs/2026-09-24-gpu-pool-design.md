@@ -130,15 +130,43 @@ boot instead of degrading.
   updated_at, updated_by`.
 - `gpu_pool_events`: an append-only audit log and outbox for the bus.
 
-**Scheduler:** one loop per tick (default 1s), plus a wake on every acquire or release. It runs
-as a single writer (Postgres advisory lock), so a second replica cannot double-grant. Each tick
-it:
-1. expires dead heartbeats;
-2. aborts recalls past their grace;
-3. walks the queue in rule-5 order and grants free slots;
-4. issues recalls for owners that are starved;
-5. decides gpu2 swaps;
-6. flushes events.
+**Every lease is a LangGraph run (Juniper, 2026-09-24: "let's use langgraph").** `thread_id =
+lease_id`. It is checkpointed by the same `AsyncPostgresSaver` + pool pattern durable-runs
+already uses. Graph:
+
+```text
+admit ──> enqueue ──> wait_grant ──(interrupt until scheduler resumes)──> granted
+                          │                                                 │
+                          └── deadline passed ──> expired                   v
+                                                                  hold (interrupt;
+                                                                  heartbeats resume it)
+                                                                    │     │       │
+                                                          release <─┘  recalled  lost heartbeat
+                                                             │            │          │
+                                                             v            v          v
+                                                          released   grace ──> requeue ──> enqueue
+                                                                           (or aborted)
+```
+
+- A wait is an `interrupt`, not an open socket, so nothing times out. The run holds no task or
+  connection while it waits. The caller is woken by the bus `granted` event.
+- A pool restart resumes every thread from its checkpoint. A failed or recalled lease replays
+  through `requeue` with its original `request_id`, `priority` and `created_at`, so it keeps its
+  place in line.
+- The **scheduler is one node-free deterministic function**, `schedule(yaml, cards, queue,
+  leases) -> [grant | recall | abort | swap]`. A single-writer loop (Postgres advisory lock,
+  1s tick plus a wake on every admit or release) calls it and then resumes the affected threads
+  with `Command(resume=...)`. It is pure, so it is fully unit-testable with a fake clock, and
+  the eval replays traffic through it.
+- The graph's knobs (grace, TTLs, cooldown, priority order) come from `config/gpu_pool.yaml`.
+  The graph shape is code and the policy is YAML.
+- `gpu_pool_leases` becomes a small **materialized projection** of thread state, one row per
+  lease, updated in the same transaction as the scheduler decision. It exists so "what is out
+  there" is one indexed query and so grants are fenced with `FOR UPDATE`. The LangGraph
+  checkpoint remains the source of replay.
+- Cost, measured in stage 1's eval rather than assumed: a request lease is about 4 checkpoint
+  writes (admit, enqueue, granted, released). If metacog/fast volume makes that the bottleneck,
+  the eval will show it before the gateway cutover depends on it.
 
 **HTTP (`orion-gpu-pool`, athena):**
 - `POST /v1/leases`: `{request_id, holder, work_class, priority, kind, deadline_at?,

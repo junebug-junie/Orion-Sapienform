@@ -185,7 +185,7 @@ admit ──> enqueue ──> wait_grant ──(interrupt until scheduler resume
   writes (admit, enqueue, granted, released). If metacog/fast volume makes that the bottleneck,
   the eval will show it before the gateway cutover depends on it.
 
-**HTTP (`orion-gpu-pool`, athena):**
+**Bus RPC (callers) and HTTP (operators and panels only), `orion-gpu-pool` on athena.** The lease verbs below go over the bus: channel `orion:gpu_pool:lease:request` with verb field `acquire|heartbeat|release`. See the Transport section. HTTP keeps only `GET /v1/pool`, `PUT /v1/cards/{card}/lend` and `/health`. The shapes are listed as HTTP for readability:
 - `POST /v1/leases`: `{request_id, holder, work_class, priority, kind, deadline_at?,
   correlation_id}` → `granted {lease_id, generation, model, url, card}` or `queued {position}`.
 - `GET /v1/leases/{id}?wait=25`: long-poll until granted or recalled. Interactive callers loop
@@ -231,8 +231,54 @@ the source without moving these would not error: each is fail-open, so each woul
 | `orion/hub/turn_orchestrator.py`, gateway passthroughs | lease fencing and `lane_gate` refusals | chat hold-while-lent, burst refusals | the lease from the pool; hold-while-lent goes away because chat is the owner |
 | `orion/inner_state_registry.py`, `orion/schemas/field_state.py` | documentation of `queue_contention_*` sources | registry of inner-state fields | updated with the new source |
 
-Transport telemetry (bus RPC health, substrate grammar, signals, field nodes, runtime metrics)
-is being traced separately; a section follows once the live path is confirmed.
+## Transport and telemetry (traced 2026-09-24)
+
+**Today:** cortex-orch → cortex-exec → gateway are bus RPC hops. Each `rpc_request()` records
+per-hop latency and timeouts in the caller's in-memory `RpcHealthAggregator`
+(`orion/core/bus/async_service.py:509-634`). `RpcHealthPublisher` drains that onto
+`orion:rpc_health:snapshot`. signal-gateway turns it into `OrionSignalV1` organs, equilibrium
+reads it for the transport metacog gate, and timeouts also emit `rpc_transport_timeout` grammar.
+Separately, bus-mirror turns every `orion:*` publish that shares a `correlation_id` into
+causal-hop edges, which feed `bus_synaptic_prediction_error` → field node
+`node:substrate.bus_synaptic`.
+
+**Gap found:** the gateway emits **no** per-call bus telemetry, neither rpc_health nor grammar.
+Its waits and refusals (`gateway_overloaded`, capacity rejections, lane-closed) live only in the
+reply payload and an in-process ledger behind `GET /admission`. So where the time actually goes
+(queue wait versus model time versus which card) is invisible downstream today.
+
+**How the pool plugs in, reusing the live helpers and adding no new consumer code except where
+stated:**
+
+1. **Lease calls are bus RPC**, not HTTP. `rpc_request("orion:gpu_pool:lease:request", ...,
+   health_label=<work_class>)` returns `granted` or `queued` immediately. A queued caller then
+   awaits `granted` on `orion:gpu_pool:event` (filtered by its `lease_id`) until its own
+   deadline. The RPC itself never waits in line, so an RPC timeout means the pool is actually
+   unreachable, not busy. Every call carries the caller's `correlation_id`, so the existing
+   per-caller rpc_health, the bus-mirror causal edges and `bus_synaptic_prediction_error` pick up
+   the pool hop automatically.
+2. **The pool runs `RpcHealthPublisher`** (service `gpu-pool`). Hop `gpu_pool:<class>#grant`
+   records **queue wait** as its latency. A lease that hits its deadline without a grant is
+   recorded as a timeout on that hop. signal-gateway turns this into an `rpc_health_gpu_pool`
+   organ signal with no registry change. `RpcHealthSnapshotV1` is `extra="forbid"`, so no new
+   fields are added.
+3. **The gateway gets the telemetry it never had.** It runs `RpcHealthPublisher` with one hop per
+   model (`llm:<model>#call`), carrying model latency and failures, separate from the pool's
+   queue-wait hop. Together with (2), every LLM call splits into *waited N in line* plus
+   *ran M on card X* with success or failure, under one `correlation_id`.
+4. **Grammar.** Lease lifecycle facts (granted after wait, recalled, aborted after grace,
+   expired unserved, gpu2 swap) are emitted as `GrammarEventV1`: `source_service=
+   "orion-gpu-pool"`, trace prefix `gpu_pool.lease:`, and a `semantic_role` per fact. They land
+   in `grammar_events` via sql-writer. **No reducer reads them until a
+   `GRAMMAR_CURSOR_REGISTRY` entry plus a reducer is added** (substrate-runtime
+   `store.py:67-70`). That wiring is a new metric feeding the field, so it goes through the metric
+   quality gate as its own step (stage 5). It is not wired on faith in stage 1.
+5. **Persistence of the lease history goes via bus → sql-writer** (`gpu_pool_events` model,
+   `MODEL_MAP` + `DEFAULT_ROUTE_MAP` + `sql_writer_subscribe_channels`). The one direct Postgres
+   writer is the scheduler's own lease projection and checkpoint, because grants must be fenced
+   in a single transaction. That exception is stated here on purpose.
+6. **equilibrium** keeps reading `rpc_transport_timeout` unchanged. A pool that cannot be reached
+   surfaces there exactly like any other broken hop.
 
 ## Delete list (in the same stage that replaces each piece)
 
@@ -254,7 +300,7 @@ is being traced separately; a section follows once the live path is confirmed.
 
 `config/gpu_pool.yaml` (new); `services/orion-gpu-pool/` (new: app, settings, scheduler, store,
 api, Dockerfile, compose, tests, evals); `orion/gpu_pool/{config,client}.py` (new);
-`orion/schemas/gpu_pool.py`, `orion/schemas/registry.py`, `orion/bus/channels.yaml`;
+`orion/schemas/gpu_pool.py`, `orion/schemas/registry.py`, `orion/bus/channels.yaml`; `services/orion-sql-writer` (route + model + subscribe); `services/orion-substrate-runtime/app/store.py` (stage 5, gated);
 `services/orion-sql-db/manual_migration_gpu_pool_v1.sql`; `services/orion-llm-gateway/app/*`;
 `services/orion-durable-runs/app/*`; `services/orion-world-model/app/main.py`;
 `services/orion-thought/app/visual_chain.py`; `services/orion-hub/{scripts,static,templates}`;

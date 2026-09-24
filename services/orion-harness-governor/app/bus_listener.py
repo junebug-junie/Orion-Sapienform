@@ -42,6 +42,46 @@ class SubstrateAppraisalUnavailableError(Exception):
 # rendered directly in the chat UI.
 _SUBSTRATE_UNAVAILABLE_USER_REASON = "substrate appraisal unavailable (RPC timeout)"
 
+# FCC motor error codes that mean the motor's own deadline killed the subprocess
+# (orion/harness/fcc_motor.py run_fcc_turn: whole-turn timeout or per-step stall).
+_FCC_TIMEOUT_CODES = frozenset({"fcc_timeout", "fcc_stream_stalled"})
+# Codes raised before any subprocess round trip happened -- not transport latency.
+_FCC_PRESPAWN_CODES = frozenset({"fcc_bad_model_label", "fcc_lane_context_too_small", "fcc_spawn_failed"})
+
+
+def fcc_hop_key(served_model: str | None) -> str:
+    """``fcc:<served_model>`` (orion/core/bus/rpc_health.py hop conventions). served_model
+    values come from the configured lanes, so cardinality is bounded; the aggregator's
+    200-key cap backstops it."""
+    model = str(served_model or "").strip()
+    return f"fcc:{model or 'unknown'}"
+
+
+def record_fcc_hop(bus: Any, motor: Any) -> None:
+    """Record the FCC subprocess leg of one motor run on ``bus`` (the dispatch bus the
+    RPC-health publisher drains): success with ``fcc_elapsed_sec`` on a normal exit,
+    timeout on the motor's own timeout-kill. Skips runs with no subprocess round trip
+    (pre-spawn refusal, MCP preflight failure, no elapsed time) and externally killed
+    runs (negative exit code = SIGKILL from a Hub cancel). Never raises."""
+    try:
+        elapsed_sec = getattr(motor, "fcc_elapsed_sec", None)
+        if elapsed_sec is None:
+            return
+        code = str(getattr(motor, "grounding_status", "") or "")
+        hop = fcc_hop_key(getattr(motor, "fcc_served_model", None))
+        elapsed_ms = float(elapsed_sec) * 1000.0
+        if code in _FCC_TIMEOUT_CODES:
+            bus.record_hop_timeout(hop, elapsed_ms)
+            return
+        if code in _FCC_PRESPAWN_CODES or code.startswith("fcc_mcp_"):
+            return
+        exit_code = getattr(motor, "exit_code", None)
+        if isinstance(exit_code, int) and exit_code < 0:
+            return
+        bus.record_hop_success(hop, elapsed_ms)
+    except Exception:
+        logger.debug("fcc_hop_record_failed", exc_info=True)
+
 
 def _source() -> ServiceRef:
     return ServiceRef(
@@ -275,6 +315,7 @@ async def handle_harness_run_request(
         repair_overlay=repair_overlay,
         recall_debug=recall_debug,
     )
+    record_fcc_hop(bus, motor)
     if not motor.draft_text or motor.draft_molecule is None:
         run = HarnessRunV1(
             correlation_id=corr,

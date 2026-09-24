@@ -34,43 +34,18 @@ def _load_executor_module():
     return module
 
 
-def test_metacog_uncertainty_probe_messages_use_patch_fields():
+def test_uncertainty_probe_helpers_are_retired():
+    """2026-09-24: the second (logprob probe) LLM call is gone -- severity no
+    longer reads it. Kill means kill: no helper left behind to re-arm it."""
     executor_module = _load_executor_module()
-    patch = MetacogDraftTextPatchV1(
-        summary="steady focus",
-        mantra="hold the line",
-        what_changed={"summary": "clarity up", "evidence": ["cue"]},
-    )
-    messages = executor_module._metacog_uncertainty_probe_messages(patch)
-    assert messages[0]["role"] == "system"
-    assert "summary" in messages[0]["content"]
-    assert messages[1]["role"] == "user"
-    assert "summary=steady focus" in messages[1]["content"]
-    assert "mantra=hold the line" in messages[1]["content"]
-    assert "what_changed=clarity up" in messages[1]["content"]
-
-
-def test_metacog_uncertainty_probe_messages_truncate_long_fields():
-    executor_module = _load_executor_module()
-    patch = MetacogDraftTextPatchV1(summary="x" * 800)
-    messages = executor_module._metacog_uncertainty_probe_messages(patch)
-    assert len(messages[0]["content"]) <= 512
-    assert len(messages[1]["content"]) <= 512
-    assert messages[1]["content"].endswith("...")
-
-
-def test_should_run_metacog_uncertainty_probe_respects_settings(monkeypatch):
-    executor_module = _load_executor_module()
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_return_logprobs", False)
-    assert executor_module._should_run_metacog_uncertainty_probe() is False
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_return_logprobs", True)
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_logprob_probe_mode", "")
-    assert executor_module._should_run_metacog_uncertainty_probe() is False
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_logprob_probe_mode", "native_completion")
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_uncertainty_probe_enabled", False)
-    assert executor_module._should_run_metacog_uncertainty_probe() is False
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_uncertainty_probe_enabled", True)
-    assert executor_module._should_run_metacog_uncertainty_probe() is True
+    assert not hasattr(executor_module, "_metacog_uncertainty_probe_messages")
+    assert not hasattr(executor_module, "_should_run_metacog_uncertainty_probe")
+    for key in (
+        "cortex_metacog_return_logprobs",
+        "cortex_metacog_logprob_probe_mode",
+        "cortex_metacog_uncertainty_probe_enabled",
+    ):
+        assert key not in type(executor_module.settings).model_fields
 
 
 import asyncio
@@ -113,7 +88,7 @@ def _fake_llm_response(*, content: str = "", meta: dict | None = None):
     return SimpleNamespace(meta=meta or {}, choices=[choice])
 
 
-def test_metacog_draft_pass1_excludes_logprob_flags(monkeypatch):
+def test_metacog_draft_makes_exactly_one_llm_call(monkeypatch):
     executor_module = _load_executor_module()
     captured: list[dict] = []
 
@@ -124,22 +99,12 @@ def test_metacog_draft_pass1_excludes_logprob_flags(monkeypatch):
         async def chat(self, **kwargs):
             req = kwargs["req"]
             captured.append(dict(req.options or {}))
-            if len(captured) == 1:
-                return _fake_llm_response(content=_VALID_DRAFT_JSON)
             return _fake_llm_response(
-                meta={
-                    "llm_uncertainty": {
-                        "schema_version": "v1",
-                        "available": True,
-                        "source": "llamacpp_native_completion",
-                    }
-                }
+                content=_VALID_DRAFT_JSON,
+                meta={"llm_uncertainty": {"available": True, "source": "should_not_be_attached"}},
             )
 
     monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_return_logprobs", True)
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_logprob_probe_mode", "native_completion")
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_uncertainty_probe_enabled", True)
 
     template = _load_template("log_orion_metacognition_draft.j2")
     step = ExecutionStep(
@@ -158,65 +123,15 @@ def test_metacog_draft_pass1_excludes_logprob_flags(monkeypatch):
             source=source,
             step=step,
             ctx=ctx,
-            correlation_id="corr-two-pass-options",
+            correlation_id="corr-one-call",
         )
     )
 
     assert result.status == "success"
-    assert len(captured) == 2
+    assert len(captured) == 1
     assert captured[0]["response_format"] == {"type": "json_object"}
     assert "return_logprobs" not in captured[0]
     assert "logprob_probe_mode" not in captured[0]
-    assert captured[1]["return_logprobs"] is True
-    assert captured[1]["logprob_probe_mode"] == "native_completion"
-    assert captured[1]["max_tokens"] == 128
-    assert "response_format" not in captured[1]
-    telemetry = ctx["collapse_entry"]["state_snapshot"]["telemetry"]
-    assert telemetry["metacog_draft_mode"] == "llm"
-    assert telemetry["llm_uncertainty"]["source"] == "llamacpp_native_completion"
-
-
-def test_metacog_probe_failure_does_not_force_fallback(monkeypatch):
-    executor_module = _load_executor_module()
-
-    class FakeLLMClient:
-        def __init__(self, bus):
-            self.bus = bus
-
-        async def chat(self, **kwargs):
-            req = kwargs["req"]
-            opts = req.options or {}
-            if opts.get("response_format"):
-                return _fake_llm_response(content=_VALID_DRAFT_JSON)
-            raise TimeoutError("probe timeout")
-
-    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_return_logprobs", True)
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_logprob_probe_mode", "native_completion")
-    monkeypatch.setattr(executor_module.settings, "cortex_metacog_uncertainty_probe_enabled", True)
-
-    template = _load_template("log_orion_metacognition_draft.j2")
-    step = ExecutionStep(
-        verb_name="log_orion_metacognition",
-        step_name="draft_entry",
-        order=0,
-        services=["MetacogDraftService"],
-        prompt_template=template,
-    )
-    source = ServiceRef(name="test", node="test", version="1.0")
-    ctx = _draft_ctx()
-
-    result = asyncio.run(
-        executor_module.call_step_services(
-            bus=object(),
-            source=source,
-            step=step,
-            ctx=ctx,
-            correlation_id="corr-probe-fail",
-        )
-    )
-
-    assert result.status == "success"
     telemetry = ctx["collapse_entry"]["state_snapshot"]["telemetry"]
     assert telemetry["metacog_draft_mode"] == "llm"
     assert "llm_uncertainty" not in telemetry

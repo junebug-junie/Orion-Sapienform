@@ -460,7 +460,11 @@ def test_publish_builds_metacog_entry_from_real_artifacts_no_self_report():
     }
 
     ctx = {
-        "trigger": {"trigger_kind": "dense", "reason": "substrate_eventfulness:0.60"},
+        "trigger": {
+            "trigger_kind": "dense",
+            "reason": "substrate_eventfulness:0.60",
+            "upstream": {"substrate_score": 0.6, "reasons": ["execution_pressure_spike"]},
+        },
         "trigger_kind": "dense",
         "substrate_eventfulness_score": 0.6,
         "substrate_eventfulness_reasons": ["execution_pressure_spike"],
@@ -501,20 +505,24 @@ def test_publish_builds_metacog_entry_from_real_artifacts_no_self_report():
     assert payload["trigger_reason"] == "substrate_eventfulness:0.60"
     assert payload["state"]["substrate_eventfulness_score"] == 0.6
     assert payload["state"]["substrate_eventfulness_reasons"] == ["execution_pressure_spike"]
+    # 2026-09-24: causal_density / severity / touches / evidence come from
+    # the TRIGGER's own upstream (orion.metacog.evidence_map), not from the
+    # global state blend or the pipeline step log.
     assert payload["causal_density"]["score"] == pytest.approx(0.6)
+    assert payload["causal_density"]["rationale"].startswith("event_magnitude[dense]")
     assert payload["is_causally_dense"] is True
     assert payload["snapshot_kind"] == "confirmed_dense"
-    # Topology (repurposed field_resonance): mechanically names which real
-    # artifacts are present, not a hardcoded/omitted field.
-    assert payload["touches"] == ["substrate"]
-    # Severity (repurposed observer_state): no failed steps, no llm_uncertainty
-    # signal in this ctx -> nominal, not a silent default masking real signal.
-    assert payload["severity"] == "nominal"
-    # Provenance: dynamic per trigger_kind and per touches, not a hardcoded
-    # constant with impacts always [].
+    assert payload["severity"] == "critical"
+    assert payload["touches"] == ["execution_trajectory"]
     assert payload["provenance"]["source"] == "cortex_exec.metacog_pipeline.dense"
     assert payload["provenance"]["impacts"] == ["execution_trajectory"]
-    assert isinstance(payload["what_changed"]["evidence"], list)
+    evidence = payload["what_changed"]["evidence"]
+    assert "substrate eventfulness 0.60" in evidence
+    # Pipeline step log moved out of evidence into provenance.
+    assert not any(e.startswith(("exec ->", "ok <-", "skip <-", "error <-")) for e in evidence)
+    assert "exec -> MetacogPublishService" in payload["provenance"]["pipeline_steps"]
+    # The writer's logprob probe is gone; nothing fills llm_uncertainty here.
+    assert payload["state"]["llm_uncertainty"] is None
 
 
 def test_publish_severity_and_touches_reflect_failures_and_repair_pressure():
@@ -542,7 +550,17 @@ def test_publish_severity_and_touches_reflect_failures_and_repair_pressure():
     valid_entry["state_snapshot"] = {"telemetry": {"metacog_draft_mode": "llm"}}
 
     ctx = {
-        "trigger": {"trigger_kind": "relational", "reason": "relational_shift:repair:confidence=0.90"},
+        "trigger": {
+            "trigger_kind": "relational",
+            "reason": "repair_pressure:level=0.90:confidence=0.90",
+            "upstream": {
+                "level": 0.9,
+                "level_label": "HIGH",
+                "confidence": 0.9,
+                "evidence": [{"evidence_kind": "trust_rupture", "score": 0.8, "confidence": 0.9}],
+                "behavior_applied": "acknowledge_and_repair",
+            },
+        },
         "trigger_kind": "relational",
         "metadata": {
             "substrate_effect_summary": {
@@ -577,9 +595,11 @@ def test_publish_severity_and_touches_reflect_failures_and_repair_pressure():
     assert result.status == "success"
     envelope = mock_bus.publish.call_args[0][1]
     payload = envelope.payload
-    assert payload["touches"] == ["relational"]
+    assert payload["touches"] == ["repair_pressure", "repair:trust_rupture"]
+    assert payload["severity"] == "critical"
+    assert payload["causal_density"]["score"] == pytest.approx(0.8)
     assert payload["provenance"]["source"] == "cortex_exec.metacog_pipeline.relational"
-    assert payload["provenance"]["impacts"] == ["relationship_thread"]
+    assert payload["provenance"]["impacts"] == ["repair_pressure", "repair:trust_rupture"]
     assert payload["state"]["repair_pressure"]["level"] == pytest.approx(0.9)
     assert payload["state"]["repair_pressure"]["evidence"][0]["evidence_kind"] == "trust_rupture"
 
@@ -614,7 +634,13 @@ def test_publish_output_unaffected_by_enrich_removal_end_to_end(monkeypatch):
 
     template = _load_template("log_orion_metacognition_draft.j2")
     ctx = _draft_ctx()
-    ctx["trigger"] = {"trigger_kind": "dense", "reason": "substrate_eventfulness:0.60", "pressure": 0.6, "zen_state": "not_zen"}
+    ctx["trigger"] = {
+        "trigger_kind": "dense",
+        "reason": "substrate_eventfulness:0.60",
+        "pressure": 0.6,
+        "zen_state": "not_zen",
+        "upstream": {"substrate_score": 0.6, "reasons": ["execution_pressure_spike"]},
+    }
     ctx["trigger_kind"] = "dense"
     ctx["substrate_eventfulness_score"] = 0.6
     ctx["substrate_eventfulness_reasons"] = ["execution_pressure_spike"]
@@ -675,11 +701,16 @@ def test_publish_output_unaffected_by_enrich_removal_end_to_end(monkeypatch):
     assert payload["causal_density"]["score"] == pytest.approx(0.6)
     assert payload["is_causally_dense"] is True
     assert payload["snapshot_kind"] == "confirmed_dense"
-    assert payload["touches"] == ["substrate"]
-    assert payload["severity"] == "nominal"
+    assert payload["touches"] == ["execution_trajectory"]
+    assert payload["severity"] == "critical"
     assert payload["provenance"]["source"] == "cortex_exec.metacog_pipeline.dense"
     assert payload["provenance"]["impacts"] == ["execution_trajectory"]
-    assert isinstance(payload["what_changed"]["evidence"], list)
+    # LLM's what_changed is no longer published; the deterministic one is.
+    assert payload["what_changed"]["evidence"] == [
+        "substrate eventfulness 0.60",
+        "reason execution_pressure_spike",
+    ]
+    assert "spark clarity band high" not in payload["what_changed"]["evidence"]
 
 
 def test_log_orion_metacognition_recall_disabled_by_verb_default():
@@ -693,3 +724,139 @@ def test_log_orion_metacognition_recall_disabled_by_verb_default():
     decision = delivery_safe_recall_decision(recall_cfg, plan.steps, plan_verb_name=plan.verb_name)
     assert str(plan.metadata.get("recall_enabled_default") or "").lower() == "false"
     assert decision["run_recall"] is False
+
+
+def test_draft_prompt_has_no_zen_or_pressure_and_renders_event_evidence():
+    """2026-09-24: zen_state/pressure are flat (zen_score 0.965 +/- 0.01) and
+    drove "zen persists" narration in 57-97% of rows; the prompt now carries
+    the trigger's own deterministic evidence instead."""
+    executor_module = _load_executor_module()
+    raw = _load_template("log_orion_metacognition_draft.j2")
+    assert "zen_state" not in raw
+    assert "trigger.pressure" not in raw
+    assert "{{ metacog_event_evidence }}" in raw
+
+    ctx = _draft_ctx()
+    upstream = {
+        "threshold": 0.01,
+        "recon_loss": 0.03,
+        "top_channels": ["failure_pressure=0.35"],
+        "deviation_direction": "elevated",
+    }
+    ctx["trigger"] = {
+        "trigger_kind": "telemetry_anomaly",
+        "reason": "telemetry_anomaly:elevated",
+        "pressure": 0.9,
+        "zen_state": "zen",
+        "upstream": upstream,
+    }
+    ctx["metacog_event_evidence"] = executor_module._metacog_event_evidence_cue(
+        executor_module.map_metacog_trigger("telemetry_anomaly", "r", upstream)
+    )
+    prompt = executor_module._render_prompt(raw, ctx)
+    assert "zen" not in prompt.lower()
+    assert "Pressure:" not in prompt
+    assert "severity=critical" in prompt
+    assert "recon_loss 0.0300 vs threshold 0.0100 (3.00x), elevated" in prompt
+
+
+def test_publish_uses_deterministic_summary_when_draft_fell_back():
+    executor_module = _load_executor_module()
+    mock_bus = MagicMock()
+    mock_bus.publish = AsyncMock()
+    scratch = CollapseMirrorEntryV2(
+        event_id="evt-fb",
+        id="evt-fb",
+        trigger="transport",
+        observer="orion",
+        observer_state=["metacog"],
+        type="idle",
+        emergent_entity="Fallback Baseline",
+        summary="Fallback mirror draft. Trigger=transport (x); zen=zen.",
+        mantra="Compress truth; keep the imprint.",
+        field_resonance="x",
+        resonance_signature="x",
+        source_service="metacog",
+    ).model_dump(mode="json")
+    scratch["state_snapshot"] = {
+        "telemetry": {"metacog_draft_mode": "fallback", "metacog_draft_fallback_reason": "no_json"}
+    }
+    ctx = {
+        "trigger": {
+            "trigger_kind": "transport",
+            "reason": "transport:cortex-exec:timeout_count=2",
+            "upstream": {
+                "service": "cortex-exec",
+                "success_count": 3,
+                "timeout_count": 2,
+                "channel_counts": {"orion:state:request": 5},
+                "evidence_source": "rpc_health_snapshot",
+                "success_latency_ms_p95": 800.0,
+                "latency_p95_threshold_ms": 5000.0,
+            },
+        },
+        "collapse_entry": scratch,
+    }
+    step = ExecutionStep(
+        step_name="publish", verb_name="log_orion_metacognition", services=["MetacogPublishService"], order=1
+    )
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=mock_bus,
+            source=ServiceRef(name="test", node="test", version="1.0"),
+            step=step,
+            ctx=ctx,
+            correlation_id=str(uuid4()),
+        )
+    )
+    assert result.status == "success"
+    payload = mock_bus.publish.call_args[0][1].payload
+    assert payload["severity"] == "critical"
+    assert payload["summary"].startswith("transport (critical): cortex-exec: 2 RPC timeout(s)")
+    assert "zen" not in payload["summary"].lower()
+    assert "cortex-exec: timeouts 2/5 calls" in payload["what_changed"]["evidence"]
+    assert payload["touches"] == ["cortex-exec", "orion:state:request"]
+    assert "severity_def:event_v1" in payload["tags"]
+
+
+def test_context_service_populates_measured_event_evidence_for_the_prompt():
+    """The MEASURED EVENT block must be filled by MetacogContextService itself,
+    not by a test: if that wiring is dropped the draft prompt would silently
+    render an empty block (default Jinja undefined)."""
+    executor_module = _load_executor_module()
+    mock_bus = MagicMock()
+    mock_bus.rpc_request = AsyncMock(side_effect=TimeoutError("no state service in unit test"))
+    mock_bus.publish = AsyncMock()
+    ctx = {
+        "trigger": {
+            "trigger_kind": "telemetry_anomaly",
+            "reason": "telemetry_anomaly:elevated",
+            "zen_state": "zen",
+            "pressure": 0.9,
+            "upstream": {
+                "threshold": 0.01,
+                "recon_loss": 0.03,
+                "top_channels": ["failure_pressure=0.35"],
+                "deviation_direction": "elevated",
+            },
+        },
+    }
+    step = ExecutionStep(
+        step_name="context", verb_name="log_orion_metacognition", services=["MetacogContextService"], order=0
+    )
+    asyncio.run(
+        executor_module.call_step_services(
+            bus=mock_bus,
+            source=ServiceRef(name="test", node="test", version="1.0"),
+            step=step,
+            ctx=ctx,
+            correlation_id=str(uuid4()),
+        )
+    )
+    cue = ctx.get("metacog_event_evidence") or ""
+    assert cue.startswith("severity=critical magnitude=")
+    assert "recon_loss 0.0300 vs threshold 0.0100 (3.00x), elevated" in cue
+    assert "Pressure:" not in ctx.get("context_summary", "")
+    prompt = executor_module._render_prompt(_load_template("log_orion_metacognition_draft.j2"), ctx)
+    assert "severity=critical" in prompt
+    assert "zen" not in prompt.lower()

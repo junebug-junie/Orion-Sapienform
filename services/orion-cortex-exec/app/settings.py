@@ -119,21 +119,8 @@ class Settings(BaseSettings):
             "replies. Rides the existing OpenAI-compat gateway call (llm_backend.py's "
             "_execute_openai_chat) -- no endpoint switch, no response_format set, no separate "
             "probe request. Feeds chat_history_log.llm_* columns via "
-            "_forward_llm_uncertainty_metadata's existing spark_meta merge. Distinct from "
-            "CORTEX_METACOG_RETURN_LOGPROBS, which gates MetacogDraftService's own separate "
-            "native-completion probe and never touches the user-facing reply."
+            "_forward_llm_uncertainty_metadata's existing spark_meta merge."
         ),
-    )
-    cortex_metacog_return_logprobs: bool = Field(False, alias="CORTEX_METACOG_RETURN_LOGPROBS")
-    cortex_metacog_logprob_probe_mode: str = Field(
-        default="",
-        alias="CORTEX_METACOG_LOGPROB_PROBE_MODE",
-        description="Pass-2 uncertainty probe mode. Only native_completion is supported (llama.cpp /completion). Other values skip pass 2.",
-    )
-    cortex_metacog_uncertainty_probe_enabled: bool = Field(
-        True,
-        alias="CORTEX_METACOG_UNCERTAINTY_PROBE_ENABLED",
-        description="When CORTEX_METACOG_RETURN_LOGPROBS: run pass-2 native probe after successful draft parse.",
     )
     daily_metacog_prompt_max_chars: int = Field(
         8192,

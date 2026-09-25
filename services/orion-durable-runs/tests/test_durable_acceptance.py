@@ -75,7 +75,7 @@ def test_curiosity_receipt_wait_restart_dispatch_and_completion(monkeypatch, wid
             monkeypatch.setattr(main, name, value)
         bus.handlers[DURABLE_RUN_REQUEST_CHANNEL] = main._handle_request
         bus.handlers[RESOURCE_EVENT_CHANNEL] = main._handle_request
-        adapter = build_turn_adapter(monkeypatch, bus, capacity, store, repair_required, authority_app=main.app)
+        adapter = build_turn_adapter(monkeypatch, bus, store, repair_required, authority_app=main.app)
         bus.handlers[CURIOSITY_TURN_REQUEST_CHANNEL] = adapter.handle_turn
         dispatch = cortex_dispatch()
 

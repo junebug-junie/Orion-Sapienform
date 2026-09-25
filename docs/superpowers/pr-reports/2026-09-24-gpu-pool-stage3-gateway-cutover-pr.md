@@ -154,6 +154,17 @@ Round 3 (review of round 2):
   - The passthrough overflow refactor keeps the same retry semantics.
   - Counting an overflow as `ok` does not affect retry or dead-letter handling: gateway leases are non-retryable.
 
+CI round (after opening):
+
+- Finding: the durable-runs acceptance harness still wired the Gateway through the deleted durable-runs capacity path, and CI failed with `ModuleNotFoundError: acceptance_gateway.upstream_admission`.
+  - Fix: the harness now places Gateway calls through a fixture GPU pool at the Gateway's real `gpu_lease` seam. Its "the upstream call holds a permit" assertion is re-pointed to "the upstream call holds a pool lease".
+  - Evidence: durable-runs 135 passed, plus the admission_fairness, gateway_capacity and elastic_fairness evals rc=0, all against a throwaway Postgres 16.
+- Finding: the metric lock's `_last_change` had been computed mid-merge, so the drift `--gate` failed.
+  - Fix: re-ran `--update`. `check_definition_drift.py --gate` now PASSES.
+- Finding: the env sync script would silently skip all five new Gateway keys and every `orion-gpu-pool` key. No prefix matched them, and the pool service was not in its service list.
+  - Fix: added the `GPU_POOL_`, `LLM_GATEWAY_POOL_` and `LLM_GATEWAY_EXECUTOR_` prefixes and the `orion-gpu-pool` service.
+  - Evidence: the new test `test_gpu_pool_keys_are_reached_by_the_default_sync`.
+
 ## Restart required
 
 Order matters: pool first, so the gateway's first leases find it.

@@ -67,6 +67,10 @@ def test_classify_outcome(result, expected):
     assert classify_outcome(result) == expected
 
 
+def test_source_service_literal_matches_the_contract():
+    assert grammar_emit.SOURCE_SERVICE == LLM_INFERENCE_SOURCE_SERVICE
+
+
 def test_node_hint_follows_worker_label_convention():
     assert node_hint("circe-worker-2") == "circe"
     assert node_hint("circe-worker-fast-1") == "circe"

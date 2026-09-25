@@ -32,15 +32,3 @@ producers:
     lane_id: route
     source_service: orion-cortex-orch
     status: planned
-
-  - producer_id: orion-llm-gateway
-    lane_id: llm_inference
-    source_service: orion-llm-gateway
-    trace_prefixes:
-      - "llm_gateway.inference:"
-    field_capability_id: "capability:llm_inference"
-    trusted_channels:
-      - inference_failure_pressure
-    # planned until LLM_GATEWAY_GRAMMAR_ENABLED / ENABLE_LLM_INFERENCE_REDUCER /
-    # ENABLE_LLM_INFERENCE_FIELD_DIGESTION are all flipped on and verified live.
-    status: planned

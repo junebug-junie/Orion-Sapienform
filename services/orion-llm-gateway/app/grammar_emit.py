@@ -32,7 +32,6 @@ from typing import Any
 from orion.cognition.cortex_payload_extract import looks_like_error_text
 from orion.schemas.grammar import GrammarAtomV1, GrammarEventV1, GrammarProvenanceV1
 from orion.schemas.llm_inference_projection import (
-    LLM_INFERENCE_SOURCE_SERVICE,
     LLM_INFERENCE_TRACE_PREFIX,
     OUTCOME_SERVED,
     REFUSAL_CLASSES,
@@ -43,6 +42,10 @@ from orion.schemas.llm_inference_projection import (
 )
 
 logger = logging.getLogger("orion-llm-gateway.grammar")
+
+# A module-level literal (same value as the contract constant, pinned by a test) so
+# static producer-catalog scans can resolve this file's GrammarProvenanceV1 identity.
+SOURCE_SERVICE = "orion-llm-gateway"
 
 _MAX_LATENCY_SAMPLES = 512
 _MAX_LABELS = 8
@@ -202,7 +205,7 @@ def build_window_events(
     emitted_at = datetime.fromtimestamp(window_end, tz=timezone.utc)
     dims = ["inference", "llm"]
     provenance = GrammarProvenanceV1(
-        source_service=LLM_INFERENCE_SOURCE_SERVICE,
+        source_service=SOURCE_SERVICE,
         source_component="inference_window",
         source_trace_id=trace_id,
     )
@@ -287,6 +290,6 @@ async def run_window_publisher(
             for event in build_window_events(
                 gateway_node=gateway_node, window_start=start, window_end=end, buckets=buckets
             ):
-                await publish_grammar_event(bus, event, source_name=LLM_INFERENCE_SOURCE_SERVICE)
+                await publish_grammar_event(bus, event, source_name=SOURCE_SERVICE)
         except Exception:  # noqa: BLE001
             logger.warning("llm_gateway_grammar_publish_failed window_start=%s", start, exc_info=True)

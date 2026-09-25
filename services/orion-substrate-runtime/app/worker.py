@@ -4012,6 +4012,7 @@ class BiometricsSubstrateWorker:
                 save_receipt=self._store.save_receipt,
                 now=now,
                 stream_depth_critical=self._settings.bus_stream_depth_critical,
+                load_trace_events=self._store.fetch_transport_trace_events,
             )
 
         last_id = self._process_events_with_poison_isolation(

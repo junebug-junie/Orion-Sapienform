@@ -261,7 +261,8 @@ curl http://localhost:8210/health
 ```
 ## Inference grammar lane (the gateway reporting on itself)
 
-Off by default (`LLM_GATEWAY_GRAMMAR_ENABLED=false`). When on, every bus-RPC chat
+The code default is off; `.env_example` turns it on (`LLM_GATEWAY_GRAMMAR_ENABLED=true`,
+since 2026-09-25, together with the reducer and field flags). When on, every bus-RPC chat
 reply is classified by what actually happened (`app/grammar_emit.py::classify_outcome`):
 `served`, a backend failure (`upstream_timeout`, `upstream_connect`, `upstream_http_5xx`,
 `upstream_http_4xx`, `upstream_not_found`, `upstream_error`), a gateway refusal

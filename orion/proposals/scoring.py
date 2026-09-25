@@ -147,6 +147,11 @@ PRESSURE_DIMENSIONS = frozenset({
 # dimension addition must explicitly decide whether legacy empty-dimensions
 # templates should also fall back to it -- that is a real, separate
 # decision, not something a frozenset addition should make silently.
+#
+# 2026-09-25: three of those five (the transport templates) were deleted;
+# the empty-dimensions templates are now inspect_field_topology_catalog,
+# inspect_attended_target and analyze_self_study_source, pinned by
+# tests/test_proposal_scoring.py::test_no_new_empty_dimension_templates.
 _LEGACY_EMPTY_DIMENSIONS_FALLBACK = frozenset({
     "execution_pressure",
     "resource_pressure",

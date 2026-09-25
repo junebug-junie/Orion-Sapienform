@@ -131,7 +131,7 @@ explicitly deferred pending live data on whether tension volume drops enough aft
 | `POSTGRES_URI` | (required) | Postgres connection string |
 | `LATTICE_PATH` | `config/field/orion_field_topology.v1.yaml` | Node/capability lattice YAML (canonical) |
 
-`biometrics_lattice.yaml` is retained as a compatibility alias; `orion_field_topology.v1.yaml` is the canonical config. Operators may keep `LATTICE_PATH` pointed at either file.
+`orion_field_topology.v1.yaml` is the only topology file. The old `biometrics_lattice.yaml` compatibility alias was deleted 2026-09-25: nothing live loaded it, and it had silently fallen three edges behind the canonical file.
 | `RECEIPT_POLL_INTERVAL_SEC` | `2.0` | Receipt poll interval |
 | `BIOMETRICS_FIELD_DECAY_RATE` | `0.92` | Per-tick pressure decay multiplier |
 | `BIOMETRICS_FIELD_DIFFUSION_RATE` | `1.0` | Node→capability diffusion strength |
@@ -1473,17 +1473,15 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
 - **Producer**: `transport_bus` delta, via `hints["stream_backlog_pressure"]`,
   `hints["stream_depth_pressure"]`, or `hints["backpressure"]` — all
   mode=`add` (default), targeting a **node** vector. In
-  `NODE_DECAY_CHANNELS` and `CAPABILITY_DECAY_CHANNELS`. As a node channel
-  it is a diffusion source for `capability:orchestration` (`pressure`,
-  weight `0.90`) and `capability:transport` (`pressure`, weight `0.85`), and
-  for the `capability:transport → capability:orchestration` cap-cap edge
-  (`stream_backlog_pressure` → `stream_backlog_pressure`, weight `0.70`) — but that
-  cap-cap edge's own source value (`capability:transport`'s own
-  `stream_backlog_pressure` key) is only ever seeded `0.0` by
-  `DEFAULT_CAPABILITY_VECTOR`, since the `node:athena → capability:transport`
-  edge maps `stream_backlog_pressure` → `"pressure"`, not `"stream_backlog_pressure"`
-  — no edge ever writes a channel literally named `stream_backlog_pressure`
-  directly onto `capability:transport`.
+  `NODE_DECAY_CHANNELS` and `CAPABILITY_DECAY_CHANNELS`. As of 2026-09-25
+  it feeds no topology edge at all: it was dropped from
+  `node:athena → capability:transport` on 2026-07-26 (degenerate census),
+  and its leftover `node:athena → capability:orchestration` mapping and the
+  `capability:transport → capability:orchestration` cap-cap edge (which read
+  `capability:transport`'s own `stream_backlog_pressure`, a key no edge ever
+  wrote) were both deleted 2026-09-25 (chore/transport-lattice-semantics).
+  Neither had moved a single tick in 72h of live data; see the tombstones in
+  `config/field/orion_field_topology.v1.yaml`.
 - **SelfState dimension fed**: not in `channel_dimension_map` directly
   (removed 2026-07-12). `evidence_channel_map`: `stream_backlog_pressure` →
   `resource_pressure` (evidence-only).

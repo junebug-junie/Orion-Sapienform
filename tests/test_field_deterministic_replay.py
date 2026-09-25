@@ -11,7 +11,7 @@ from app.tensor.update_rules import run_digestion_tick
 
 
 def _replay(receipts: list[ReductionReceiptV1], *, decay_rate: float, diffusion_rate: float):
-    lattice = load_lattice(Path("config/field/biometrics_lattice.yaml"))
+    lattice = load_lattice(Path(__file__).resolve().parents[1] / "config" / "field" / "orion_field_topology.v1.yaml")
     now = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
     state = empty_field_state(lattice=lattice, now=now, tick_id="tick_replay")
     seen: set[str] = set()

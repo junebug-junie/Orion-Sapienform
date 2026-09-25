@@ -118,7 +118,26 @@ class PoolRuntime:
                 self.probes[role] = Probe(False, error=f"{type(exc).__name__}: {exc}", checked_at=self.now())
         self._last_probe = self.now()
 
+    def _observe_swap_seats(self) -> None:
+        """Until the pool actuates swaps itself (stage 5), a swap seat is loaded when its worker is
+        really up: announced fresh AND answering /props. Otherwise the pool would refuse to use a
+        27B that the old elastic runtime (or an operator) already brought up on gpu2."""
+        now = self.now()
+        for role, spec in self.cfg.roles.items():
+            if spec.swap is None:
+                continue
+            ann = self.announcements.get(role)
+            probe = self.probes.get(role)
+            alive = bool(ann and (now - ann.announced_at).total_seconds() <= self.announce_stale_sec
+                         and probe and probe.ok and probe.props)
+            for card in spec.cards:
+                if alive:
+                    self.cards[card].swapped_in.add(role)
+                else:
+                    self.cards[card].swapped_in.discard(role)
+
     def _resolve(self) -> None:
+        self._observe_swap_seats()
         before = {d.role: d.status for d in self.discovered}
         self.discovered, self.roles, self.unclaimed = resolve_roles(
             self.cfg, self.profiles, self.announcements, self.probes, self.cards, self.now(),
@@ -412,7 +431,10 @@ class PoolRuntime:
             lease_id=lease_id, generation=max(1, generation), role=role,
             cards=list(self.cfg.roles[role].cards), url=self.cfg.url(role),
             profile_name=disc.profile_name if disc else None, model_file=disc.model_file if disc else None,
-            ctx_per_slot=disc.ctx_per_slot if disc else None, served_by=f"{self.cfg.host.name}-{role}")
+            ctx_per_slot=disc.ctx_per_slot if disc else None,
+            # "{node}-worker-{role}": cortex-exec reads the node before "-worker" to attribute
+            # reasoning_load (executor._normalize_served_by_to_node); any other shape loses it.
+            served_by=f"{self.cfg.host.name}-worker-{role}")
 
     async def _reply_for(self, row: dict) -> GpuLeaseReplyV1:
         status = row["status"]

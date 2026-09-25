@@ -1,4 +1,7 @@
-"""A context-overflowed request retries on a lane that can hold it.
+"""Context-overflow DETECTION (the escalation ladder is gone: main.py re-leases from the GPU pool
+with a larger min_ctx_tokens instead -- see test_pool_dispatch.py).
+
+Historical note kept below: why a retry exists at all.
 
 Orion's journaling ran on circe's 131k-token lane to carry a 1,749-token median prompt. Moving it
 to atlas is right for 97.8% of it -- and would silently fail the 2.2% tail (max observed 4,966
@@ -16,15 +19,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.ctx_overflow import (
-    MAX_ATTEMPTS,
-    build_escalation_ladder,
-    is_context_overflow,
-    next_larger_route,
-)
-
-# The live fleet.
-LADDER = [("metacog", 4096), ("quick", 4096), ("agent", 32768), ("chat", 131072)]
+from app.ctx_overflow import CONTEXT_OVERFLOW_ERROR, is_context_overflow
+from app.llm_backend import _context_overflow_result
 
 
 # ------------------------------------------------------------ what counts as an overflow
@@ -68,173 +64,30 @@ def test_an_empty_or_odd_body_is_not_an_overflow():
         assert is_context_overflow(400, body) is False
 
 
-# ------------------------------------------------------------ escalation
-
-def test_it_skips_a_same_sized_lane():
-    """THE REASON THE LADDER IS DISCOVERED. quick and metacog are both 4,096 today, so
-    quick -> metacog would fail identically and spend one of only three attempts."""
-    assert next_larger_route(LADDER, "quick") == "agent"
-    assert next_larger_route(LADDER, "metacog") == "agent"
-
-
-def test_metacog_becomes_the_fallback_automatically_once_its_context_is_raised():
-    """Juniper's actual preference. Raise metacog's n_ctx and it starts winning with NO code
-    change -- and circe drops out of the journaling path entirely."""
-    raised = [("quick", 4096), ("metacog", 16384), ("agent", 32768), ("chat", 131072)]
-    assert next_larger_route(raised, "quick") == "metacog"
-
-
-def test_it_escalates_to_the_smallest_lane_that_fits_not_the_biggest():
-    """Jumping straight to circe's 131k lane for a 5k prompt would re-create the problem this
-    whole change exists to fix."""
-    assert next_larger_route(LADDER, "agent") == "chat"
-
-
-def test_the_largest_lane_has_nowhere_to_escalate():
-    assert next_larger_route(LADDER, "chat") is None
-
-
-def test_an_unknown_route_escalates_to_the_largest_rather_than_giving_up():
-    """A lane whose /props could not be read is not in the ladder. Something beats a silent
-    failure."""
-    assert next_larger_route(LADDER, "mystery") == "chat"
-
-
-def test_an_empty_ladder_yields_nothing():
-    assert next_larger_route([], "quick") is None
-
-
-# ------------------------------------------------------------ the cap
-
-def test_the_attempt_cap_is_three():
-    """Juniper's cap. TOTAL attempts, not retries after the first."""
-    assert MAX_ATTEMPTS == 3
-
-
-def test_walking_the_ladder_terminates_within_the_cap():
-    """Even from the bottom of a 4-lane ladder, escalation cannot exceed the cap."""
-    route, attempts = "metacog", 1
-    while attempts < MAX_ATTEMPTS:
-        nxt = next_larger_route(LADDER, route)
-        if nxt is None:
-            break
-        route, attempts = nxt, attempts + 1
-    assert attempts <= MAX_ATTEMPTS
-    assert route == "chat"      # metacog -> agent -> chat, exactly 3 attempts
-
-
-# ------------------------------------------------------------ building the ladder
-
-def test_the_ladder_is_ordered_by_real_context_size(monkeypatch):
-    sizes = {"http://q": 4096, "http://c": 131072, "http://m": 4096}
-    monkeypatch.setattr("app.ctx_overflow.probe_context_size", lambda url, **kw: sizes.get(url))
-    ladder = build_escalation_ladder({"quick": "http://q", "chat": "http://c", "metacog": "http://m"})
-    assert [n for _, n in ladder] == sorted(n for _, n in ladder)
-    assert ladder[-1][0] == "chat"
-
-
-def test_an_unprobeable_lane_is_omitted_rather_than_guessed(monkeypatch):
-    """A guessed context window is how a lane ends up carrying prompts it cannot hold. Absent
-    beats assumed -- the same rule the rest of this arc enforces on measurements."""
-    monkeypatch.setattr("app.ctx_overflow.probe_context_size",
-                        lambda url, **kw: 4096 if url == "http://q" else None)
-    ladder = build_escalation_ladder({"quick": "http://q", "dead": "http://d"})
-    assert ladder == [("quick", 4096)]
-
-
-# ------------------------------------------------------------ the wiring, not just the parts
-
 class _Resp:
     def __init__(self, status, body):
-        self.status_code = status
-        self._body = body
+        self.status_code, self._body = status, body
+
     def json(self):
+        if isinstance(self._body, Exception):
+            raise self._body
         return self._body
 
 
-class _Client:
-    """Records every URL posted to, so escalation is observable."""
-    def __init__(self, responses):
-        self._responses = list(responses)
-        self.posted = []
-    def post(self, url, json=None):
-        self.posted.append(url)
-        return self._responses.pop(0)
+def test_overflow_response_becomes_a_typed_error_result():
+    result = _context_overflow_result(
+        _Resp(400, {"error": {"message": "the request exceeds the available context size"}}),
+        route="quick", served_by="circe-worker-fast", spark_meta={},
+    )
+    assert result is not None
+    assert result["raw"]["error"] == CONTEXT_OVERFLOW_ERROR
+    assert result["raw"]["details"]["served_by"] == "circe-worker-fast"
 
 
-OVERFLOW = _Resp(400, {"error": {"message": "the request exceeds the available context size"}})
-OK = _Resp(200, {"choices": [{"message": {"content": "hi"}}]})
-
-
-def _wire(monkeypatch, targets, ladder):
-    import app.llm_backend as b
-    monkeypatch.setattr(b, "get_route_targets", lambda: targets)
-    monkeypatch.setattr(b, "_CTX_LADDER", ladder)
-    return b
-
-
-class _T:
-    def __init__(self, url): self.url = url
-
-
-def test_an_overflow_escalates_and_the_path_is_preserved(monkeypatch):
-    """The whole point end to end: a 4k lane rejects, a bigger lane serves it, and the endpoint
-    path (/v1/chat/completions) survives the host swap."""
-    b = _wire(monkeypatch,
-              {"quick": _T("http://atlas:8013"), "chat": _T("http://circe:8011")},
-              [("quick", 4096), ("chat", 131072)])
-    c = _Client([OVERFLOW, OK])
-    r, route, url = b._post_with_ctx_escalation(
-        c, "http://atlas:8013/v1/chat/completions", {}, "quick", "corr-1")
-    assert r.status_code == 200
-    assert route == "chat"
-    assert c.posted == ["http://atlas:8013/v1/chat/completions",
-                        "http://circe:8011/v1/chat/completions"]
-
-
-def test_a_request_that_fits_is_never_retried(monkeypatch):
-    """97.8% of journal traffic. One post, no probing, no behaviour change."""
-    b = _wire(monkeypatch, {"quick": _T("http://atlas:8013")}, [("quick", 4096)])
-    c = _Client([OK])
-    r, route, _ = b._post_with_ctx_escalation(c, "http://atlas:8013/x", {}, "quick", "c")
-    assert r.status_code == 200 and route == "quick" and len(c.posted) == 1
-
-
-def test_a_non_overflow_error_is_returned_untouched(monkeypatch):
-    """A malformed request must not be retried up every lane in the fleet."""
-    b = _wire(monkeypatch,
-              {"quick": _T("http://atlas:8013"), "chat": _T("http://circe:8011")},
-              [("quick", 4096), ("chat", 131072)])
-    c = _Client([_Resp(400, {"error": {"message": "invalid model parameter"}})])
-    r, route, _ = b._post_with_ctx_escalation(c, "http://atlas:8013/x", {}, "quick", "c")
-    assert r.status_code == 400 and route == "quick" and len(c.posted) == 1
-
-
-def test_attempts_are_capped_at_three(monkeypatch):
-    """Juniper's cap, enforced against a ladder deep enough to exceed it."""
-    b = _wire(monkeypatch,
-              {"a": _T("http://h:1"), "b": _T("http://h:2"), "c": _T("http://h:3"), "d": _T("http://h:4")},
-              [("a", 1000), ("b", 2000), ("c", 3000), ("d", 4000)])
-    c = _Client([OVERFLOW, OVERFLOW, OVERFLOW])
-    r, _, _ = b._post_with_ctx_escalation(c, "http://h:1/x", {}, "a", "c")
-    assert len(c.posted) == 3
-    assert r.status_code == 400
-
-
-def test_overflow_on_the_largest_lane_returns_the_error(monkeypatch):
-    """Nowhere left to go. The error surfaces rather than looping."""
-    b = _wire(monkeypatch, {"chat": _T("http://circe:8011")}, [("chat", 131072)])
-    c = _Client([OVERFLOW])
-    r, route, _ = b._post_with_ctx_escalation(c, "http://circe:8011/x", {}, "chat", "c")
-    assert r.status_code == 400 and route == "chat" and len(c.posted) == 1
-
-
-def test_a_non_json_body_is_not_treated_as_an_overflow(monkeypatch):
-    class _Bad:
-        status_code = 500
-        def json(self): raise ValueError("not json")
-    b = _wire(monkeypatch, {"quick": _T("http://a:1"), "chat": _T("http://c:1")},
-              [("quick", 4096), ("chat", 131072)])
-    c = _Client([_Bad()])
-    r, route, _ = b._post_with_ctx_escalation(c, "http://a:1/x", {}, "quick", "c")
-    assert route == "quick" and len(c.posted) == 1
+@pytest.mark.parametrize("status,body", [
+    (200, {"choices": []}),
+    (400, {"error": {"message": "invalid model parameter"}}),
+    (400, ValueError("not json")),
+])
+def test_non_overflow_responses_are_left_alone(status, body):
+    assert _context_overflow_result(_Resp(status, body), route="quick", served_by=None, spark_meta={}) is None

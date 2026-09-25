@@ -8,29 +8,19 @@ def _resolve(
     options: dict | None,
     body_route: str | None,
     keys: set[str],
-    served_by: dict[str, str | None],
+    served_by: dict[str, str | None] | None = None,
     **kwargs: object,
 ) -> object:
-    defaults = {
-        "llm_lane_default": "chat",
-        "llm_route_default": "chat",
-        "llm_allow_background_to_chat_fallback": False,
-        "llm_route_spark_served_by": None,
-        "llm_route_background_served_by": None,
-        "llm_route_agent_served_by": None,
-    }
+    # served_by is kept in the call sites for readability only: lane resolution picks a route
+    # NAME; the GPU pool's grant supplies served_by later.
+    defaults = {"llm_lane_default": "chat", "llm_route_default": "chat"}
     defaults.update(kwargs)
     return resolve_llm_lane_route(
         options,
         body_route,
         llm_lane_default=str(defaults["llm_lane_default"]),
         llm_route_default=str(defaults["llm_route_default"]),
-        llm_allow_background_to_chat_fallback=bool(defaults["llm_allow_background_to_chat_fallback"]),
-        llm_route_spark_served_by=defaults["llm_route_spark_served_by"],  # type: ignore[arg-type]
-        llm_route_background_served_by=defaults["llm_route_background_served_by"],  # type: ignore[arg-type]
-        llm_route_agent_served_by=defaults["llm_route_agent_served_by"],  # type: ignore[arg-type]
         route_table_keys=keys,
-        route_served_by=served_by,
     )
 
 
@@ -89,24 +79,9 @@ def test_spark_missing_disallows_chat_fallback_by_default() -> None:
         body_route="quick",
         keys={"chat", "quick"},
         served_by={"chat": "c1", "quick": "q1"},
-        llm_allow_background_to_chat_fallback=False,
     )
-    assert d.route_status == "disallowed_chat_fallback"
+    assert d.route_status == "missing_route"
     assert d.route_table_key is None
-
-
-def test_spark_emergency_chat_only_when_both_flags() -> None:
-    d = _resolve(
-        options={"llm_lane": "spark", "allow_chat_fallback": True},
-        body_route="quick",
-        keys={"chat", "quick"},
-        served_by={"chat": "c1", "quick": "q1"},
-        llm_allow_background_to_chat_fallback=True,
-    )
-    assert d.route_table_key in {"chat", "quick"}
-    assert d.resolved_llm_lane == "chat"
-    assert d.fallback_used is True
-    assert "emergency_chat_fallback" in d.reason
 
 
 def test_background_metacog_alias() -> None:
@@ -138,23 +113,22 @@ def test_agent_prefers_agent_then_background() -> None:
     assert d2.fallback_used is True
 
 
-def test_served_by_label_match() -> None:
-    d = _resolve(
-        options={"llm_lane": "spark"},
-        body_route=None,
-        keys={"foo", "bar"},
-        served_by={"foo": "my-spark", "bar": "other"},
-        llm_route_spark_served_by="my-spark",
-    )
-    assert d.route_table_key == "foo"
-
-
 def test_global_fallback_false_request_true_still_blocks() -> None:
     d = _resolve(
         options={"llm_lane": "background", "allow_chat_fallback": True},
         body_route="chat",
         keys={"chat"},
         served_by={"chat": "c1"},
-        llm_allow_background_to_chat_fallback=False,
     )
-    assert d.route_status == "disallowed_chat_fallback"
+    assert d.route_status == "missing_route"
+
+
+def test_no_request_option_can_reach_chat_through_a_lane_fallback() -> None:
+    """The gateway's own chat fallback is gone: the pool spills a class across roles now."""
+    d = _resolve(
+        options={"llm_lane": "agent", "allow_chat_fallback": True},
+        body_route="chat",
+        keys={"chat", "quick"},
+    )
+    assert d.route_table_key is None
+    assert d.route_status == "missing_route"

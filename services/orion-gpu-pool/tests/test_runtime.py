@@ -408,3 +408,29 @@ def test_state_request_can_carry_config_and_a_lease_history():
         assert full.config["routes"]["metacog"]["class"] == "metacog"
         assert [h["event"] for h in full.history] == ["admit", "grant", "release_ok"]
     run(go())
+
+
+def test_grant_served_by_keeps_the_node_worker_shape():
+    async def go():
+        rt, _ = make()
+        await boot(rt)
+        r = await rt.acquire(acq("metacog"))
+        assert r.grant.served_by == "circe-worker-metacog"
+        assert r.grant.served_by.split("-worker")[0] == "circe"      # cortex-exec node attribution
+    run(go())
+
+
+def test_swap_seat_counts_as_loaded_when_its_worker_is_really_up():
+    async def go():
+        rt, clock = make()
+        LIVE["agent-gpu2"] = ("qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex", "Qwen3.8-27B-UD-Q4_K_XL.gguf", 1, 131072)
+        try:
+            await boot(rt)
+            assert {d.role: d.status for d in rt.discovered}["agent-gpu2"] == "confirmed"
+            assert "agent-gpu2" in rt.cards["gpu2"].swapped_in
+            assert {d.role: d.status for d in rt.discovered}["diffusion"] == "evicted"
+        finally:
+            del LIVE["agent-gpu2"]
+        await later(rt, clock, 1)                    # worker gone -> seat unloaded, diffusion back
+        assert "agent-gpu2" not in rt.cards["gpu2"].swapped_in
+    run(go())

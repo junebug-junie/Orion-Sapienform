@@ -5,10 +5,11 @@ See ``orion/schemas/field_state.py``'s ``queue_contention_*`` docstrings and
 
 Runs inline on every hot digester tick (cheap count reads + O(1) EWMA),
 unlike ``update_significance_pressure`` which throttles a real window query.
-Count readers are injectable callables so unit tests never need Postgres or
-the LLM gateway; production readers are SQL counts + ``GET /admission``.
-Gateway failures fail open: that source key is omitted from ``counts`` rather
-than inventing 0 (which would falsely look like calm against a warm EWMA).
+Count readers are injectable callables so unit tests never need Postgres;
+production readers are three SQL counts (reading-seed queue, durable demands,
+GPU pool waiting leases). A failing reader fails open: that source key is
+omitted from ``counts`` rather than inventing 0 (which would falsely look like
+calm against a warm EWMA).
 """
 from __future__ import annotations
 
@@ -16,11 +17,9 @@ import logging
 from collections.abc import Callable, Mapping
 from typing import Any
 
-import requests
-
 from orion.field.queue_contention import (
     SOURCE_DURABLE,
-    SOURCE_GATEWAY,
+    SOURCE_GPU_POOL,
     SOURCE_SEED,
     score_queue_contention,
 )
@@ -49,31 +48,8 @@ def read_queue_contention_counts(
     return counts
 
 
-def gateway_waiting_sum(admission_url: str, *, timeout_sec: float = 2.0) -> float:
-    """Sum ``upstreams[*].waiting`` from LLM gateway ``GET /admission``.
-
-    Raises on HTTP/parse failure so ``read_queue_contention_counts`` can omit
-    the gateway key (fail-open).
-    """
-    response = requests.get(admission_url, timeout=timeout_sec)
-    response.raise_for_status()
-    payload: Any = response.json()
-    upstreams = payload.get("upstreams") if isinstance(payload, dict) else None
-    if not isinstance(upstreams, dict):
-        raise ValueError("admission snapshot missing upstreams map")
-    total = 0.0
-    for lane in upstreams.values():
-        if isinstance(lane, dict):
-            total += float(lane.get("waiting") or 0)
-    return total
-
-
-def default_queue_contention_readers(
-    store,
-    *,
-    gateway_admission_url: str,
-) -> dict[str, Callable[[], float]]:
-    """Production readers: two SQL counts + gateway admission waiting sum."""
+def default_queue_contention_readers(store) -> dict[str, Callable[[], float]]:
+    """Production readers: three SQL counts."""
 
     def _seed() -> float:
         return float(store.count_world_pulse_seed_pending())
@@ -81,13 +57,13 @@ def default_queue_contention_readers(
     def _durable() -> float:
         return float(store.count_durable_demand_pending())
 
-    def _gateway() -> float:
-        return gateway_waiting_sum(gateway_admission_url)
+    def _gpu_pool() -> float:
+        return float(store.count_gpu_pool_waiting())
 
     return {
         SOURCE_SEED: _seed,
         SOURCE_DURABLE: _durable,
-        SOURCE_GATEWAY: _gateway,
+        SOURCE_GPU_POOL: _gpu_pool,
     }
 
 

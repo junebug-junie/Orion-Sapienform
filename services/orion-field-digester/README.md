@@ -307,8 +307,10 @@ Hub hire role-teach **reads** these from latest `substrate_field_state`; digeste
 owns the meter. Spec + §0A gate:
 `docs/superpowers/specs/2026-09-20-hire-handoff-and-queue-pressure-design.md`,
 `docs/superpowers/specs/2026-09-20-queue-contention-metric-gate.md`.
-Env: `FIELD_QUEUE_CONTENTION_HALF_LIFE_SEC`, `FIELD_QUEUE_CONTENTION_FLOOR`,
-`FIELD_DIGESTER_LLM_GATEWAY_URL`.
+Env: `FIELD_QUEUE_CONTENTION_HALF_LIFE_SEC`, `FIELD_QUEUE_CONTENTION_FLOOR`.
+Sources (all SQL counts): `world_pulse_seed_pending`, `durable_demand_pending`, and
+`gpu_pool_waiting` (leases queued/backlogged in `gpu_pool_leases`; replaced the gateway's
+`/admission` waiting sum when the gateway cut over to orion-gpu-pool, 2026-09-24).
 
 ## Telemetry-anomaly metacog trigger (2026-07-21)
 

@@ -50,7 +50,8 @@ classes:   # roles that may serve a class, in preference order; nothing big spil
   diffusion:  {roles: [diffusion], on_unavailable: backlog}
   experiment: {roles: [experiment], on_unavailable: fail}
 
-routes:    # what llm-gateway callers say -> class (+ priority)
+routes:    # what llm-gateway callers say -> class (+ priority). Every gateway route must be listed:
+           # the gateway refuses a route that is not here rather than guess a GPU.
   chat: {class: chat, priority: interactive}
   harness: {class: chat, priority: interactive}
   agent: agent
@@ -58,3 +59,7 @@ routes:    # what llm-gateway callers say -> class (+ priority)
   metacog_background: {class: metacog, priority: background}
   quick: fast
   quick_background: {class: fast, priority: background}
+  # The old "burst" lanes: agent work on a borrowed card. The pool now decides which card
+  # (agent -> gpu2 seat when loaded -> gpu0 when lent), so both are just agent work.
+  agent-burst: {class: agent, priority: system}
+  chat-burst: {class: agent, priority: system}

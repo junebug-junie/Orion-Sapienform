@@ -2,11 +2,12 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 668,
   "_last_change": {
-    "base": "merge base 9bfb2008a (origin/main)",
-    "change_count": 0,
-    "high_severity_count": 0,
+    "base": "merge base d1b145208 (origin/main)",
+    "change_count": 2,
+    "high_severity_count": 2,
     "changes": [
-      "no definition changes relative to the merge base"
+      "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:state:reply:* (declared_consumers: ['orion-hub'] -> ['orion-hub', 'orion-llm-gateway'])",
+      "high   routing_changed metric://bus_channel/orion-hub/orion:gpu_pool:state:request (all_producers: ['orion-hub'] -> ['orion-hub', 'orion-llm-gateway'])"
     ]
   },
   "definitions": {
@@ -1520,7 +1521,8 @@
         "orion-gpu-pool"
       ],
       "declared_consumers": [
-        "orion-hub"
+        "orion-hub",
+        "orion-llm-gateway"
       ],
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -1818,7 +1820,8 @@
     "metric://bus_channel/orion-hub/orion:gpu_pool:state:request": {
       "schema_id": "GpuPoolStateRequestV1",
       "all_producers": [
-        "orion-hub"
+        "orion-hub",
+        "orion-llm-gateway"
       ],
       "declared_consumers": [
         "orion-gpu-pool"

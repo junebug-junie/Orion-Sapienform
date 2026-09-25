@@ -9,11 +9,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from orion.field.queue_contention import SOURCE_DURABLE, SOURCE_GATEWAY, SOURCE_SEED
+from orion.field.queue_contention import SOURCE_DURABLE, SOURCE_GPU_POOL, SOURCE_SEED
 from orion.schemas.field_state import FieldStateV1
 
 from app.digestion.queue_contention import (
-    gateway_waiting_sum,
+    default_queue_contention_readers,
     read_queue_contention_counts,
     update_queue_contention_pressure,
 )
@@ -55,12 +55,12 @@ def test_update_max_driver_across_sources() -> None:
     state.queue_contention_ewma = {
         SOURCE_SEED: 100.0,
         SOURCE_DURABLE: 2.0,
-        SOURCE_GATEWAY: 1.0,
+        SOURCE_GPU_POOL: 1.0,
     }
     state.queue_contention_ewma_n = {
         SOURCE_SEED: 20,
         SOURCE_DURABLE: 20,
-        SOURCE_GATEWAY: 20,
+        SOURCE_GPU_POOL: 20,
     }
 
     state = update_queue_contention_pressure(
@@ -68,7 +68,7 @@ def test_update_max_driver_across_sources() -> None:
         counts={
             SOURCE_SEED: 100.0,
             SOURCE_DURABLE: 10.0,
-            SOURCE_GATEWAY: 1.0,
+            SOURCE_GPU_POOL: 1.0,
         },
         alpha=0.0,
     )
@@ -98,31 +98,26 @@ def test_read_counts_omits_failing_reader() -> None:
         raise RuntimeError("gateway down")
 
     counts = read_queue_contention_counts(
-        readers={SOURCE_DURABLE: _ok, SOURCE_GATEWAY: _boom}
+        readers={SOURCE_DURABLE: _ok, SOURCE_GPU_POOL: _boom}
     )
     assert counts == {SOURCE_DURABLE: 3.0}
-    assert SOURCE_GATEWAY not in counts
+    assert SOURCE_GPU_POOL not in counts
 
 
-def test_gateway_waiting_sums_upstreams(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Resp:
-        def raise_for_status(self) -> None:
-            return None
+def test_default_readers_are_three_sql_counts_with_the_gpu_pool_source() -> None:
+    class Store:
+        def count_world_pulse_seed_pending(self):
+            return 1
 
-        def json(self) -> dict:
-            return {
-                "upstreams": {
-                    "a": {"waiting": 2, "inflight": 1},
-                    "b": {"waiting": 1, "inflight": 0},
-                }
-            }
+        def count_durable_demand_pending(self):
+            return 2
 
-    monkeypatch.setattr(
-        "app.digestion.queue_contention.requests.get",
-        lambda *a, **k: _Resp(),
-    )
-    assert gateway_waiting_sum("http://llm-gateway:8210/admission") == 3.0
+        def count_gpu_pool_waiting(self):
+            return 7
 
+    readers = default_queue_contention_readers(Store())
+    assert set(readers) == {SOURCE_SEED, SOURCE_DURABLE, SOURCE_GPU_POOL}
+    assert read_queue_contention_counts(readers=readers) == {SOURCE_SEED: 1.0, SOURCE_DURABLE: 2.0, SOURCE_GPU_POOL: 7.0}
 
 def test_run_digestion_tick_wires_queue_contention_after_significance() -> None:
     state = _empty_state()
@@ -166,8 +161,8 @@ def test_run_digestion_tick_skips_when_alpha_unset() -> None:
 
 def test_run_digestion_tick_uses_injectable_readers() -> None:
     state = _empty_state()
-    state.queue_contention_ewma = {SOURCE_GATEWAY: 1.0}
-    state.queue_contention_ewma_n = {SOURCE_GATEWAY: 5}
+    state.queue_contention_ewma = {SOURCE_GPU_POOL: 1.0}
+    state.queue_contention_ewma_n = {SOURCE_GPU_POOL: 5}
 
     run_digestion_tick(
         state,
@@ -179,8 +174,8 @@ def test_run_digestion_tick_uses_injectable_readers() -> None:
         significance_window_seconds=900.0,
         significance_check_interval_sec=30.0,
         queue_contention_alpha=0.0,
-        queue_contention_readers={SOURCE_GATEWAY: lambda: 5.0},
+        queue_contention_readers={SOURCE_GPU_POOL: lambda: 5.0},
     )
 
     assert state.queue_contention_score == 10.0
-    assert state.queue_contention_driver == SOURCE_GATEWAY
+    assert state.queue_contention_driver == SOURCE_GPU_POOL

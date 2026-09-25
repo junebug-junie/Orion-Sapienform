@@ -10320,10 +10320,11 @@ document.addEventListener("DOMContentLoaded", () => {
     return null;
   }
 
-  // "Lend chat lane" button: opens/closes the chat-burst operator gate on the gateway.
-  // While open, the chat worker serves the durable burst queue and Hub chat messages are
-  // held + emailed instead of answered (see scripts/chat_lane_lend.py). chat-burst itself
-  // is a `system` route and stays out of the Compute picker above.
+  // "Lend chat GPU" button: lends / takes back gpu0 (chat's card) in orion-gpu-pool.
+  // While lent, other work may borrow gpu0 when chat is idle. Chat still owns the card:
+  // a chat message recalls any borrower (grace period, then it runs). Nothing is held or
+  // emailed any more. State is read from the gateway's route catalog (chat-burst gate_open
+  // mirrors the pool's gpu0 lent flag).
   const CHAT_LANE_LEND_ROUTE = 'chat-burst';
   const chatLaneLendToggle = document.getElementById('chatLaneLendToggle');
   let chatLaneLendOpen = false;
@@ -10332,7 +10333,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!chatLaneLendToggle) return;
     const on = !!(gate && (gate.open === true || gate.gate_open === true));
     chatLaneLendOpen = on;
-    chatLaneLendToggle.textContent = on ? 'Lend chat lane: on' : 'Lend chat lane: off';
+    chatLaneLendToggle.textContent = on ? 'Lend chat GPU: on' : 'Lend chat GPU: off';
     chatLaneLendToggle.classList.toggle('bg-emerald-700', on);
     chatLaneLendToggle.classList.toggle('border-emerald-500', on);
   }
@@ -10349,22 +10350,24 @@ document.addEventListener("DOMContentLoaded", () => {
     const wantOpen = !chatLaneLendOpen;
     chatLaneLendToggle.disabled = true;
     try {
-      const res = await fetch(`${API_BASE_URL}/api/llm-routes/${CHAT_LANE_LEND_ROUTE}/gate`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ open: wantOpen, changed_by: 'hub-ui' }),
+      const res = await fetch(`${API_BASE_URL}/api/gpu-pool/control`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        // X-Requested-With: the pool control route refuses requests without it (CSRF guard).
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'orion-hub' },
+        body: JSON.stringify({ verb: wantOpen ? 'lend' : 'unlend', card: 'gpu0' }),
       });
       const body = await res.json().catch(() => null);
-      if (!res.ok) {
-        const detail = body && body.detail ? body.detail : `HTTP ${res.status}`;
-        throw new Error(String(detail));
+      if (!res.ok || !(body && body.ok)) {
+        const detail = body && (body.detail || body.reason) ? (body.detail || body.reason) : `HTTP ${res.status}`;
+        throw new Error(String(typeof detail === 'string' ? detail : JSON.stringify(detail)));
       }
-      renderChatLaneLend(body);
+      renderChatLaneLend({ open: !!(body.detail && body.detail.lent) });
       updateStatus(chatLaneLendOpen
-        ? 'Chat lane lent to burst queue: Hub chat is held + emailed until you turn this off.'
-        : 'Chat lane returned: Hub chat goes to Orion again.');
+        ? 'Chat GPU lent: other work may use it while chat is idle. Your chat still takes it back.'
+        : 'Chat GPU taken back: only chat uses it.');
     } catch (err) {
-      appendMessage('System', `Lend chat lane failed: ${err && err.message ? err.message : err}`, 'text-red-400');
+      appendMessage('System', `Lend chat GPU failed: ${err && err.message ? err.message : err}`, 'text-red-400');
     } finally {
       chatLaneLendToggle.disabled = false;
     }

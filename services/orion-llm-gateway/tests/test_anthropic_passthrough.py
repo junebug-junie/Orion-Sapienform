@@ -1,54 +1,21 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from app import anthropic_passthrough
-from app.llm_backend import _load_route_targets
 from app.main import app
 from app.settings import settings
 
 
-@pytest.fixture(autouse=True)
-def _clear_route_cache() -> None:
-    _load_route_targets.cache_clear()
-    yield
-    _load_route_targets.cache_clear()
-
-
 @pytest.fixture
-def route_table() -> Dict[str, Dict[str, str]]:
-    return {
-        "chat": {"url": "http://chat:8011", "served_by": "atlas-worker-1", "backend": "llamacpp"},
-        "agent": {
-            "url": "http://agent:8011",
-            "served_by": "atlas-worker-1",
-            "backend": "llamacpp",
-            "model": "qwen-coder-local",
-        },
-        # `harness` (2026-08-20): FCC/Claude Code CLI harness's own route, split off `chat` --
-        # ~/.fcc/.env resolves MODEL=llamacpp/harness through exactly this passthrough path.
-        "harness": {
-            "url": "http://harness:8011",
-            "served_by": "circe-worker-1",
-            "backend": "llamacpp",
-        },
-        "quick": {"url": "http://quick:8013", "served_by": "atlas-worker-fast-1", "backend": "llamacpp"},
-        "metacog": {"url": "http://metacog:8012", "served_by": "atlas-worker-2", "backend": "llamacpp"},
-        "ollama_lane": {"url": "http://ollama:11434", "served_by": "ollama-host", "backend": "ollama"},
-    }
-
-
-@pytest.fixture
-def configured_routes(monkeypatch: pytest.MonkeyPatch, route_table: Dict[str, Dict[str, str]]) -> None:
-    monkeypatch.setattr(settings, "llm_route_table_json", json.dumps(route_table))
+def configured_routes(monkeypatch: pytest.MonkeyPatch, fake_pool) -> Any:
     monkeypatch.setattr(settings, "llm_gateway_anthropic_passthrough_enabled", True)
-    _load_route_targets.cache_clear()
+    return fake_pool
 
 
 def test_normalize_anthropic_model_name() -> None:
@@ -85,115 +52,112 @@ def test_standard_anthropic_body_unchanged() -> None:
     assert anthropic_passthrough.normalize_anthropic_system_messages(body) == body
 
 
-def test_resolve_anthropic_route_resolves_harness(configured_routes: None) -> None:
+def test_resolve_anthropic_route_resolves_harness(configured_routes: Any) -> None:
     # This is the literal live path: ~/.fcc/.env sets MODEL=llamacpp/harness, and this is what
     # a real Claude Code CLI turn's `model` field resolves to via this function.
-    route_key, target, upstream_model, error = anthropic_passthrough.resolve_anthropic_route("llamacpp/harness")
+    route_key, upstream_model, error = anthropic_passthrough.resolve_anthropic_route("llamacpp/harness")
     assert error is None
     assert route_key == "harness"
-    assert target is not None
     assert upstream_model == "harness"
 
 
-def test_resolve_anthropic_route_uses_upstream_model_alias(configured_routes: None) -> None:
-    route_key, target, upstream_model, error = anthropic_passthrough.resolve_anthropic_route("llamacpp/agent")
-    assert error is None
-    assert route_key == "agent"
-    assert target is not None
-    assert upstream_model == "qwen-coder-local"
-
-
 def test_resolve_anthropic_route_missing_returns_error(
-    monkeypatch: pytest.MonkeyPatch, route_table: Dict[str, Dict[str, str]]
+    monkeypatch: pytest.MonkeyPatch, configured_routes: Any
 ) -> None:
-    monkeypatch.setattr(settings, "llm_route_table_json", json.dumps(route_table))
     monkeypatch.setattr(settings, "llm_route_default", "missing-default")
-    _load_route_targets.cache_clear()
-
-    _, _, _, error = anthropic_passthrough.resolve_anthropic_route("unknown-lane")
+    _, _, error = anthropic_passthrough.resolve_anthropic_route("unknown-lane")
     assert error is not None
-    assert error["error"]["type"] == "route_not_configured"
+    assert error["error"]["type"] == "route_not_in_gpu_pool"
     assert "unknown-lane" in error["error"]["message"]
     assert "agent" in error["error"]["available_routes"]
 
 
-def test_resolve_anthropic_route_rejects_incompatible_backend(configured_routes: None) -> None:
-    _, _, _, error = anthropic_passthrough.resolve_anthropic_route("ollama_lane")
-    assert error is not None
-    assert error["error"]["type"] == "backend_incompatible"
-    assert error["error"]["route"] == "ollama_lane"
-
-
 def test_resolve_anthropic_route_falls_back_when_model_missing(
-    monkeypatch: pytest.MonkeyPatch, route_table: Dict[str, Dict[str, str]]
+    monkeypatch: pytest.MonkeyPatch, configured_routes: Any
 ) -> None:
-    monkeypatch.setattr(settings, "llm_route_table_json", json.dumps(route_table))
-    monkeypatch.setattr(settings, "llm_route_default", "chat")
-    _load_route_targets.cache_clear()
-
-    route_key, target, upstream_model, error = anthropic_passthrough.resolve_anthropic_route(None)
+    monkeypatch.setattr(settings, "llm_route_default", "quick")
+    route_key, upstream_model, error = anthropic_passthrough.resolve_anthropic_route(None)
     assert error is None
-    assert route_key == "chat"
-    assert upstream_model == "chat"
+    assert route_key == "quick"
+    assert upstream_model == "quick"
 
 
-def test_build_models_list_payload(configured_routes: None) -> None:
+def test_build_models_list_payload_lists_every_pool_route(configured_routes: Any) -> None:
     payload = anthropic_passthrough.build_models_list_payload()
     ids = [entry["id"] for entry in payload["data"]]
-    assert ids == ["agent", "chat", "harness", "metacog", "quick"]
-    assert "ollama_lane" not in ids
+    assert ids == sorted(["chat", "harness", "agent", "metacog", "metacog_background", "quick",
+                          "quick_background", "agent-burst", "chat-burst"])
+    # Placement is per call, so no static served_by claim.
+    assert all(entry["served_by"] is None for entry in payload["data"])
 
+
+class _StreamUpstream:
+    status_code = 200
+    headers = {"content-type": "text/event-stream"}
+
+    def __init__(self, pool) -> None:
+        self.pool = pool
+        self.active_during_stream: List[int] = []
+
+    async def aiter_bytes(self):
+        self.active_during_stream.append(self.pool.active)
+        yield b"event: message_start\n\n"
+        self.active_during_stream.append(self.pool.active)
+        yield b"event: content_block_delta\n\n"
+
+    async def aread(self) -> bytes:
+        return b""
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _stream_client(upstream: Any) -> MagicMock:
+    mock_client = MagicMock()
+    mock_client.build_request = MagicMock(return_value=MagicMock())
+    mock_client.send = AsyncMock(return_value=upstream)
+    mock_client.aclose = AsyncMock()
+    return mock_client
+
+
+def _post_client(status: int, content: bytes) -> AsyncMock:
+    mock_response = MagicMock()
+    mock_response.status_code = status
+    mock_response.content = content
+    mock_response.headers = {"content-type": "application/json"}
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.__aexit__.return_value = False
+    mock_client.post = AsyncMock(return_value=mock_response)
+    return mock_client
 
 
 class TestAnthropicPassthroughHTTP:
     @pytest.fixture
-    def client(self, configured_routes: None) -> TestClient:
+    def client(self, configured_routes: Any) -> TestClient:
         return TestClient(app)
 
     def test_get_v1_models_returns_route_keys(self, client: TestClient) -> None:
         response = client.get("/v1/models")
         assert response.status_code == 200
-        data = response.json()
-        ids = [entry["id"] for entry in data["data"]]
+        ids = [entry["id"] for entry in response.json()["data"]]
         assert "agent" in ids
         assert "quick" in ids
 
-    def test_post_v1_messages_missing_route(self, client: TestClient) -> None:
+    def test_post_v1_messages_missing_route_takes_no_lease(self, client: TestClient, configured_routes: Any) -> None:
         response = client.post(
             "/v1/messages",
-            json={
-                "model": "does-not-exist",
-                "max_tokens": 8,
-                "messages": [{"role": "user", "content": "hi"}],
-            },
+            json={"model": "does-not-exist", "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]},
         )
         assert response.status_code == 404
-        body = response.json()
-        assert body["error"]["type"] == "route_not_configured"
+        assert response.json()["error"]["type"] == "route_not_in_gpu_pool"
+        assert configured_routes.calls == []
 
-    def test_post_v1_messages_unsupported_backend(self, client: TestClient) -> None:
-        response = client.post(
-            "/v1/messages",
-            json={
-                "model": "ollama_lane",
-                "max_tokens": 8,
-                "messages": [{"role": "user", "content": "hi"}],
-            },
-        )
-        assert response.status_code == 400
-        assert response.json()["error"]["type"] == "backend_incompatible"
-
-    @patch("app.anthropic_passthrough.httpx.AsyncClient")
-    def test_post_v1_messages_non_streaming_proxy(self, mock_client_cls: MagicMock, client: TestClient) -> None:
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.content = b'{"id":"msg_1","content":[{"type":"text","text":"OK"}]}'
-        mock_response.headers = {"content-type": "application/json"}
-
-        mock_client = AsyncMock()
-        mock_client.__aenter__.return_value = mock_client
-        mock_client.__aexit__.return_value = False
-        mock_client.post = AsyncMock(return_value=mock_response)
+    @patch("app.passthrough_proxy.httpx.AsyncClient")
+    def test_post_v1_messages_non_streaming_goes_to_granted_url(
+        self, mock_client_cls: MagicMock, client: TestClient, configured_routes: Any
+    ) -> None:
+        mock_client = _post_client(200, b'{"id":"msg_1","content":[{"type":"text","text":"OK"}]}')
         mock_client_cls.return_value = mock_client
 
         response = client.post(
@@ -203,6 +167,7 @@ class TestAnthropicPassthroughHTTP:
                 "model": "llamacpp/agent",
                 "max_tokens": 64,
                 "stream": False,
+                "system": "s" * 40,
                 "messages": [{"role": "user", "content": "Say OK."},
                              {"role": "system", "content": "SessionStart context"}],
             },
@@ -210,73 +175,57 @@ class TestAnthropicPassthroughHTTP:
 
         assert response.status_code == 200
         assert response.json()["content"][0]["text"] == "OK"
-        mock_client.post.assert_awaited_once()
         call_kwargs = mock_client.post.await_args.kwargs
-        assert call_kwargs["json"]["model"] == "qwen-coder-local"
-        assert call_kwargs["json"]["system"] == [{"type": "text", "text": "SessionStart context"}]
+        assert call_kwargs["json"]["model"] == "agent"
         assert call_kwargs["json"]["messages"] == [{"role": "user", "content": "Say OK."}]
-        assert mock_client.post.await_args.args[0] == "http://agent:8011/v1/messages"
+        assert mock_client.post.await_args.args[0] == "http://pool-agent:8015/v1/messages"
+        pool = configured_routes
+        assert len(pool.calls) == 1
+        assert pool.calls[0]["work_class"] == "agent"
+        assert pool.calls[0]["holder"] == "http:anthropic"
+        # system (40 + hoisted 20 + separator 2 chars) + message 7 chars, /4, + max_tokens
+        assert pool.calls[0]["min_ctx_tokens"] > 64
+        assert pool.releases == ["ok"]
 
     @pytest.mark.parametrize("content", [1, {"text": "invalid block container"}])
-    @patch("app.anthropic_passthrough.CapacityPermit.acquire", new_callable=AsyncMock)
-    def test_invalid_hook_context_never_acquires_permit(
-        self, acquire: AsyncMock, client: TestClient, content: Any
+    def test_invalid_hook_context_never_takes_a_lease(
+        self, client: TestClient, content: Any, configured_routes: Any
     ) -> None:
         response = client.post("/v1/messages", json={
             "model": "agent", "max_tokens": 1,
             "messages": [{"role": "user", "content": "hi"}, {"role": "system", "content": content}],
         })
         assert response.status_code == 400
-        acquire.assert_not_awaited()
+        assert configured_routes.calls == []
 
-    @patch("app.anthropic_passthrough.httpx.AsyncClient")
-    def test_post_v1_messages_streaming_uses_streaming_response(
-        self, mock_client_cls: MagicMock, client: TestClient
+    @patch("app.passthrough_proxy.httpx.AsyncClient")
+    def test_streaming_holds_the_lease_until_the_stream_ends(
+        self, mock_client_cls: MagicMock, client: TestClient, configured_routes: Any
     ) -> None:
-        class _Upstream:
-            status_code = 200
-            headers = {"content-type": "text/event-stream"}
-
-            async def aiter_bytes(self):
-                yield b"event: message_start\n\n"
-                yield b"event: content_block_delta\n\n"
-
-            async def aread(self) -> bytes:
-                return b""
-
-            async def aclose(self) -> None:
-                return None
-
-        mock_upstream = _Upstream()
-        mock_client = MagicMock()
-        mock_client.build_request = MagicMock(return_value=MagicMock())
-        mock_client.send = AsyncMock(return_value=mock_upstream)
-        mock_client.aclose = AsyncMock()
+        pool = configured_routes
+        upstream = _StreamUpstream(pool)
+        mock_client = _stream_client(upstream)
         mock_client_cls.return_value = mock_client
 
         with client.stream(
-            "POST",
-            "/v1/messages",
-            headers={"anthropic-version": "2023-06-01"},
-            json={
-                "model": "agent",
-                "max_tokens": 64,
-                "stream": True,
-                "messages": [{"role": "user", "content": "Say OK."}],
-            },
+            "POST", "/v1/messages", headers={"anthropic-version": "2023-06-01"},
+            json={"model": "agent", "max_tokens": 64, "stream": True,
+                  "messages": [{"role": "user", "content": "Say OK."}]},
         ) as response:
             assert response.status_code == 200
             assert "text/event-stream" in response.headers.get("content-type", "")
             chunks: List[bytes] = list(response.iter_bytes())
             assert b"event: message_start" in b"".join(chunks)
 
-        mock_client_cls.assert_called_once()
-        mock_client.send.assert_awaited_once()
         assert mock_client.send.await_args.kwargs.get("stream") is True
+        assert mock_client.build_request.call_args.args[1] == "http://pool-agent:8015/v1/messages"
+        assert upstream.active_during_stream == [1, 1]  # lease held while bytes flow
+        assert pool.active == 0 and pool.releases == ["ok"]
+        mock_client.aclose.assert_awaited()
 
-    @patch("app.anthropic_passthrough.httpx.AsyncClient")
-    def test_post_v1_messages_streaming_upstream_error_status(
-        self, mock_client_cls: MagicMock, client: TestClient
+    @patch("app.passthrough_proxy.httpx.AsyncClient")
+    def test_streaming_upstream_error_status_releases_as_failure(
+        self, mock_client_cls: MagicMock, client: TestClient, configured_routes: Any
     ) -> None:
         class _Upstream:
             status_code = 503
@@ -288,22 +237,41 @@ class TestAnthropicPassthroughHTTP:
             async def aclose(self) -> None:
                 return None
 
-        mock_client = MagicMock()
-        mock_client.build_request = MagicMock(return_value=MagicMock())
-        mock_client.send = AsyncMock(return_value=_Upstream())
-        mock_client.aclose = AsyncMock()
-        mock_client_cls.return_value = mock_client
-
+        mock_client_cls.return_value = _stream_client(_Upstream())
         response = client.post(
             "/v1/messages",
-            json={
-                "model": "agent",
-                "max_tokens": 8,
-                "stream": True,
-                "messages": [{"role": "user", "content": "hi"}],
-            },
+            json={"model": "agent", "max_tokens": 8, "stream": True, "messages": [{"role": "user", "content": "hi"}]},
         )
         assert response.status_code == 503
+        assert configured_routes.releases == ["upstream_error"]
+
+    @patch("app.passthrough_proxy.httpx.AsyncClient")
+    def test_context_overflow_re_leases_once_with_bigger_min_ctx(
+        self, mock_client_cls: MagicMock, client: TestClient, configured_routes: Any
+    ) -> None:
+        pool = configured_routes
+        pool.choose = lambda kw: "agent" if len(pool.calls) == 1 else "chat"
+        overflow = _post_client(400, b'{"error":{"message":"the request exceeds the available context size"}}')
+        ok = _post_client(200, b'{"id":"msg_2"}')
+        mock_client_cls.side_effect = [overflow, ok]
+
+        response = client.post("/v1/messages", json={
+            "model": "agent", "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]})
+
+        assert response.status_code == 200
+        assert [c["min_ctx_tokens"] for c in pool.calls][1] == 32768 + 1
+        assert pool.releases == ["upstream_error", "ok"]
+        assert ok.post.await_args.args[0] == "http://pool-chat:8011/v1/messages"
+
+    def test_pool_unavailable_is_a_typed_503(self, client: TestClient, configured_routes: Any) -> None:
+        configured_routes.unavailable = "no_serviceable_role"
+        response = client.post("/v1/messages", json={
+            "model": "metacog", "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]})
+        assert response.status_code == 503
+        err = response.json()["error"]
+        assert err["type"] == "gpu_pool_unavailable"
+        assert err["reason"] == "no_serviceable_role"
+        assert err["work_class"] == "metacog"
 
     def test_get_head_and_options_messages(self, client: TestClient) -> None:
         get_resp = client.get("/v1/messages")
@@ -315,17 +283,3 @@ class TestAnthropicPassthroughHTTP:
         assert "POST" in options.headers.get("allow", "").upper() or "POST" in options.headers.get(
             "Access-Control-Allow-Methods", ""
         )
-
-    def test_route_table_model_id_alias(
-        self, monkeypatch: pytest.MonkeyPatch, route_table: Dict[str, Dict[str, str]]
-    ) -> None:
-        table = dict(route_table)
-        table["quick"] = {
-            **table["quick"],
-            "model_id": "fast-local",
-        }
-        monkeypatch.setattr(settings, "llm_route_table_json", json.dumps(table))
-        _load_route_targets.cache_clear()
-        _, _, upstream_model, error = anthropic_passthrough.resolve_anthropic_route("quick")
-        assert error is None
-        assert upstream_model == "fast-local"

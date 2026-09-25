@@ -8,7 +8,7 @@ from pathlib import Path
 from orion.field_coherence import check_field_coherence
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 from orion.field.pressure import collect_field_channel_pressures
-from orion.field.queue_contention import SOURCE_DURABLE, SOURCE_SEED, ewma_alpha
+from orion.field.queue_contention import ewma_alpha
 from orion.telemetry.corpus_sink import InnerStateCorpusSink
 
 from app.anomaly_bus_publish import publish_anomaly_score
@@ -267,18 +267,7 @@ class FieldDigesterWorker:
             dt_sec=self._settings.receipt_poll_interval_sec,
             half_life_sec=self._settings.field_queue_contention_half_life_sec,
         )
-        gateway_base = (self._settings.field_digester_llm_gateway_url or "").rstrip("/")
-        if gateway_base:
-            qc_readers = default_queue_contention_readers(
-                self._store,
-                gateway_admission_url=f"{gateway_base}/admission",
-            )
-        else:
-            # Gateway URL unset: still score SQL sources; omit gateway key.
-            qc_readers = {
-                SOURCE_SEED: lambda: float(self._store.count_world_pulse_seed_pending()),
-                SOURCE_DURABLE: lambda: float(self._store.count_durable_demand_pending()),
-            }
+        qc_readers = default_queue_contention_readers(self._store)
         run_digestion_tick(
             state,
             perturbations=perturbations,

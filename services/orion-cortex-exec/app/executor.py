@@ -1758,15 +1758,13 @@ def _append_memory_digest(prompt: str, memory_digest: str) -> str:
 def gateway_error_step_failure(result_payload: Any) -> Optional[str]:
     """Name the failure when the gateway answered with no text and an error flag.
 
-    orion-llm-gateway never publishes a system.error for a shed or refused chat
-    request. It publishes a normal ``llm.chat.result`` whose ``content`` is empty
-    and whose ``raw.error`` names why: ``_overloaded_result`` in
-    services/orion-llm-gateway/app/main.py (``raw.error="gateway_overloaded"``,
-    ``raw.details.stage`` = ``upstream_queue`` / ``budget_exhausted`` /
-    ``background_queue``) and ``_dispatch_chat``'s CapacityRejected /
-    ResourceLeaseRejected catch (``raw.error="gateway_capacity_rejected"`` or
-    ``"resource_lease_rejected"``, ``raw.details.reason`` = e.g.
-    ``capacity_wait_budget_exhausted``). Its own docstring records that this
+    orion-llm-gateway never publishes a system.error for a refused chat request.
+    It publishes a normal ``llm.chat.result`` whose ``content`` is empty and whose
+    ``raw.error`` names why. Since the 2026-09-24 GPU pool cutover that is
+    ``gpu_pool_unavailable`` (``raw.details.reason`` = e.g. ``deadline`` /
+    ``no_serviceable_role``), ``context_overflow``, ``route_not_in_gpu_pool`` or
+    ``resource_lease_rejected``; before it, ``gateway_overloaded`` /
+    ``gateway_capacity_rejected``. Handled generically: any named ``raw.error``. Its own docstring records that this
     service used to carry that empty answer forward as a *successful* step, so
     every downstream consumer saw a hollow success -- live 2026-09-19, that read
     as "stance_react exec result missing thought payload" on ~70% of autonomous

@@ -443,8 +443,8 @@ or was not redirected is visible without re-deriving the rule.
 ### Perceiving the wait — the `waited` cue (ROADMAP A5)
 
 Yielding is only half of it. Orion also has to be able to *notice* that it yielded, or the price
-is paid by a system that cannot feel it. `app/admission_cue.py` reads orion-llm-gateway's
-`GET /admission` and renders one object into the metacog cue Orion already reads each pass,
+is paid by a system that cannot feel it. `app/admission_cue.py` reads orion-gpu-pool's
+lease history (`gpu_pool_events`; before 2026-09-24 the gateway's `GET /admission`) and renders one object into the metacog cue Orion already reads each pass,
 beside `strain` / `peak` / `fleet_watts`:
 
 | cue | means |

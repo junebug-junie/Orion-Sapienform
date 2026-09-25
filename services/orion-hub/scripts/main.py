@@ -766,10 +766,9 @@ async def startup_event():
             if settings.HUB_RUNTIME_ACTIVITY_ENABLED:
                 runtime_activity_feeds = RuntimeActivityFeeds(
                     activity=get_runtime_activity(),
-                    gateway_url=settings.HUB_LLM_GATEWAY_URL,
                     poll_sec=settings.HUB_RUNTIME_ACTIVITY_GATEWAY_POLL_SEC,
-                    timeout_sec=settings.HUB_LLM_GATEWAY_TIMEOUT_SEC,
                     engine_factory=hub_surface_engine,
+                    pool_feed=gpu_pool_feed,
                 )
                 await runtime_activity_feeds.start()
 

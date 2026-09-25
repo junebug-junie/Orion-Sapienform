@@ -42,20 +42,15 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `CHANNEL_LLM_INTAKE` | `orion:exec:request:LLMGatewayService` | Primary intake. |
 | `CHANNEL_VECTOR_LATENT_UPSERT` | `orion:vector:latent:upsert` | Latent vector upsert channel. |
 | `ORION_VECTOR_LATENT_COLLECTION` | `orion_latent_store` | Latent vector collection. |
-| `ORION_LLM_VLLM_URL` | `None` | URL for vLLM host. |
-| `ORION_LLM_LLAMACPP_URL` | `None` | Legacy single-endpoint llama.cpp URL; route-table mode is primary. |
-| `LLM_GATEWAY_ROUTE_TABLE_JSON` | `None` | Preferred JSON route table for explicit single-subscriber routing. |
-| `LLM_ROUTE_DEFAULT` | `chat` | Default routing key when none provided. |
-| `LLM_LANE_ROUTING_ENABLED` | `true` | Honor trusted logical lane metadata when resolving physical `chat`, `agent`, `quick` (fast), and `metacog` routes. Set `false` only as a rollback to body-route-only behavior. |
-| `LLM_ROUTE_CHAT_URL` | `None` | Fallback URL for `route=chat` (if JSON not set). |
-| `LLM_ROUTE_METACOG_URL` | `None` | Fallback URL for `route=metacog` (if JSON not set). |
-| `LLM_ROUTE_LATENTS_URL` | `None` | Fallback URL for `route=latents` (if JSON not set). |
-| `LLM_ROUTE_SPECIALIST_URL` | `None` | Fallback URL for `route=specialist` (if JSON not set). |
+| `GPU_POOL_CONFIG_PATH` | `/app/config/gpu_pool.yaml` | Route -> pool class/priority map (`routes:`). A route not listed is refused (`route_not_in_gpu_pool`). |
+| `LLM_GATEWAY_POOL_WAIT_SEC` | `300` | Max wait for a pool grant (interactive/system); capped by the caller's own `gateway_read_timeout_sec`. |
+| `LLM_GATEWAY_POOL_BACKGROUND_WAIT_SEC` | `900` | Same, for background-priority routes. |
+| `LLM_GATEWAY_EXECUTOR_WORKERS_PER_ROLE` | `8` | Threads per granted role URL (one executor per GPU role). |
+| `LLM_ROUTE_DEFAULT` | `quick` | Default routing key when none provided. |
+| `LLM_LANE_ROUTING_ENABLED` | `true` | Honor trusted logical lane metadata when resolving a route name (`chat`, `agent`, `quick`, `metacog`, ...). Set `false` only as a rollback to body-route-only behavior. |
 | `LLM_GATEWAY_HEALTH_PORT` | `8210` | Local HTTP health port. |
-| `LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT` | `8` | Per-upstream in-flight cap on the bus chat path; sizes the thread pool. See "Per-upstream isolation" below. |
 | `LLM_GATEWAY_ANTHROPIC_PASSTHROUGH_ENABLED` | `true` | Enable Anthropic Messages passthrough for Claude Code / FCC. |
 | `LLM_GATEWAY_ANTHROPIC_PASSTHROUGH_TIMEOUT_SEC` | `900` | Read timeout for `/v1/messages` upstream proxy (tool calls can be long). |
-| `LLM_ROUTE_HEALTH_TIMEOUT_SEC` | `1.5` | Upstream `/health` probe timeout for route catalog. |
 | `LLM_LOGPROB_SUMMARY_ENABLED` | `false` | Global gate for summary-only `llm_uncertainty` on chat results. |
 | `LLM_LOGPROB_TOP_K_DEFAULT` | `5` | Default `top_logprobs` / `n_probs` depth when `return_logprobs` is set. |
 | `LLM_LOGPROB_LOW_MARGIN_THRESHOLD` | `0.5` | Low top-1 margin token threshold. |
@@ -69,24 +64,24 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | Path | Description |
 | :--- | :--- |
 | `GET /health` | Service liveness and configured route keys. |
-| `GET /routes` | Route catalog from `LLM_GATEWAY_ROUTE_TABLE_JSON` with `default_route=chat` and per-route `id`, `served_by`, `backend`, `status`, `latency_ms`, `last_checked_at`, `model` (live-probed `/v1/models` id of what's actually loaded, `null` if the route is down or the probe fails -- see "Model identity" below). |
+| `GET /routes` | **Compatibility view generated from orion-gpu-pool state** (removed in stage 6). Same shape as before: per-route `id`, `served_by`, `backend`, `status` (`up`/`down`/`operator_closed`/`unknown`), `model` (discovered model file), `n_ctx` (discovered ctx per slot), `vision`, `upstream`, `gate_open`. `unknown` for every route when the pool cannot be reached -- never a fabricated `up`. |
 | `GET /v1/models` | Anthropic-compatible model list from configured route keys (FCC / Claude Code). |
 | `GET /v1/messages` | Anthropic Messages endpoint liveness (same as HEAD). |
-| `POST /v1/messages` | Anthropic Messages passthrough to upstream llama.cpp `/v1/messages` via route table. |
-| `POST /v1/chat/completions` | OpenAI chat passthrough to upstream `/v1/chat/completions` via route table (AI Town, OpenAI clients). |
+| `POST /v1/messages` | Anthropic Messages passthrough to the pool-granted llama.cpp role's `/v1/messages` (lease holder `http:anthropic`). |
+| `POST /v1/chat/completions` | OpenAI chat passthrough to the pool-granted role's `/v1/chat/completions` (lease holder `http:openai`; AI Town, OpenAI clients). |
 | `POST /v1/embeddings` | OpenAI embeddings passthrough to `orion-vector-host` `POST /embedding`. |
 | `HEAD /v1/messages` | Liveness probe for Anthropic Messages endpoint. |
 | `OPTIONS /v1/messages` | CORS/method discovery for Anthropic clients. |
 
 ### Claude Code / free-claude-code (FCC) passthrough
 
-The gateway exposes an Anthropic Messages-compatible HTTP membrane for Claude Code and FCC. Traffic uses the same `LLM_GATEWAY_ROUTE_TABLE_JSON` lanes (`agent`, `chat`, `quick`, `metacog`, etc.) but **does not** go through the bus-native `run_llm_chat()` path.
+The gateway exposes an Anthropic Messages-compatible HTTP membrane for Claude Code and FCC. Traffic uses the same route names (`config/gpu_pool.yaml` `routes:` -- `agent`, `chat`, `harness`, `quick`, `metacog`, etc.) and takes a GPU pool lease like the bus path, but **does not** go through the bus-native `run_llm_chat()` path.
 
 Claude session hooks can append `role=system` context inside `messages` after a
 user turn. Gateway moves those blocks into Anthropic's top-level `system` field
 before forwarding to llama.cpp, whose model template requires system context
 first. Existing system blocks, cache metadata, and conversation/tool ordering
-are preserved. Lease and capacity checks still apply to the request.
+are preserved. Durable-lease validation and a GPU pool lease still apply to the request.
 
 Topology:
 
@@ -154,95 +149,44 @@ Mind (`MIND_LLM_RETURN_LOGPROBS_SEMANTIC` + `MIND_LLM_LOGPROB_PROBE_MODE`) can s
 
 Important routing note:
 
-- `LLM_GATEWAY_ROUTE_TABLE_JSON` is the primary routing mechanism (workers are
-  physically on Circe as of 2026-08-21 -- Atlas is decommissioned, see
-  `config/biometrics/node_catalog.yaml`; route/env names below still say
-  "atlas" as a legacy naming convention, not a live-hardware claim).
-- `served_by` is metadata returned for observability and smoke checks; it does
-  not drive routing.
-- The legacy per-route env aliases only cover `chat`, `metacog`, `latents`,
-  and `specialist`.
-- The `agent` lane therefore requires `LLM_GATEWAY_ROUTE_TABLE_JSON`.
+- Which GPU serves a call is **orion-gpu-pool's** decision. The gateway maps the route name to a
+  pool class + priority (`config/gpu_pool.yaml` `routes:`), takes a lease, and sends the call to
+  the granted role's URL. `served_by` in results is the grant's (`circe-worker-<role>`), so a
+  spilled call is attributed to the card that actually ran it.
 
-### Background admission, and who it now protects (ROADMAP A3)
+### GPU pool placement (2026-09-24, GPU pool spec stage 3)
 
-`priority_admission.py` holds `reserved_free_slots` free for foreground callers on a route
-marked `priority: background`, so a background request is refused admission rather than making
-foreground traffic queue behind it.
+Every LLM call -- bus RPC, `/v1/chat/completions`, `/v1/messages` -- goes through
+`app/pool_placement.py`:
 
-It was originally wired for AI Town NPC speech. **As of A3 it also gates Orion's own
-cognition**: `orion-cortex-exec` redirects low-priority steps that would route to `quick` onto
-`quick_background` instead — same upstream, same model, different admission. See that service's
-README for which steps count as low priority.
+1. **Route -> class.** `config/gpu_pool.yaml` `routes:` gives the pool class and priority. A route
+   not listed is refused with `route_not_in_gpu_pool`; the gateway never guesses a GPU.
+2. **Lease.** `orion.gpu_pool.client.gpu_lease(work_class, priority, holder, min_ctx_tokens,
+   deadline_sec, turn_correlation_id)`. `holder` is the calling service's name on the bus path,
+   `http:openai` / `http:anthropic` on the passthroughs. `min_ctx_tokens` =
+   ceil(prompt chars / 4) + `max_tokens`, so the pool never places a prompt on a role whose
+   per-slot context is smaller. The wait is capped by `LLM_GATEWAY_POOL_[BACKGROUND_]WAIT_SEC`
+   and by the caller's own budget; what is left after the grant becomes the upstream read timeout.
+3. **Run on the grant.** The call goes to `grant.url` on a per-role thread pool
+   (`LLM_GATEWAY_EXECUTOR_WORKERS_PER_ROLE`), never one executor shared across lanes. Streams
+   hold the lease until the stream ends, errors, or the client leaves.
+4. **Release.** `ok` on success; `upstream_error` when the upstream failed (an exception, an HTTP
+   error, or a returned `[Error: ...]`/`raw.error` result).
+5. **Context overflow.** If the granted role rejects the prompt as too long, the lease is released
+   and re-acquired **once** with `min_ctx_tokens = grant.ctx_per_slot + 1`. If that also
+   overflows, or no role is big enough, the overflow error is returned. (Replaces the old
+   escalation ladder, which POSTed straight to other routes' URLs.)
 
-Measured on `atlas-worker-fast-1` over 27.74 h (roadmap A2):
+Failure shape (bus): empty text with `raw.error = "gpu_pool_unavailable"` and
+`raw.details = {reason, route, work_class}` -- `reason` is the pool's (`deadline`,
+`no_serviceable_role`, ...) or `pool_bus_unavailable` / `pool_unreachable:<Error>`. HTTP: 503
+with `error.type = "gpu_pool_unavailable"`.
 
-```text
-P(all busy)      4.01%   <- the lane is completely full this often
-P(bg blocked)    4.84%   <- background admission already refused this often
-burstiness       174x MORE blocking than Poisson at the same offered load
-```
-
-That last figure is the important one: the lane is **hit in batches**, not merely busy, so the
-reservation does real work. ~70 minutes a day of background requests wait at current load.
-
-### Per-upstream isolation, and why a busy `quick` no longer stalls `chat` (2026-09-05)
-
-`app/upstream_admission.py`. Every bus request runs `run_llm_chat` on an executor
-thread for its whole life, upstream HTTP read included. Until 2026-09-05 that was the
-loop's stock default executor -- one pool, capped at min(32, cpu+4), shared by every
-route, FIFO. When `quick`'s 4-slot worker fell behind, topic-foundry and
-memory-consolidation traffic to it filled all 32 threads and *every* later request
-queued behind them, whatever lane it was for. Measured over 05:00-08:00Z that day:
-
-```text
-lane      receipt -> dispatch   p50      p90      max     target worker
-quick                           21.2min  33.4min  36.7min  saturated (4/4 slots)
-metacog                         19.4min  29.9min  31.0min  idle
-stance_react on chat            ~18min                     idle
-never completed in window       ~300 requests
-```
-
-The worker was idle; the request was stuck inside the gateway. Two invariants now
-hold, both in that one module and enforced from `main.py`'s `_dispatch_chat`:
-
-1. **Isolation.** Each distinct route-table URL has its own in-flight cap
-   (`LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT`), and the executor is sized to
-   `distinct upstreams x cap + 4` at startup (`configure_executor`; the startup log
-   prints `executor sized workers=...`). Waiting for a permit happens on an asyncio
-   semaphore, off the pool, so a deep queue on one lane costs no threads and a request
-   for any other lane always finds one.
-2. **No work for callers that already left.** One deadline for the whole stay, from the
-   caller's own stated wait (`options.gateway_read_timeout_sec`, raw -- an 8s caller
-   gets 8s, not the HTTP client's 30s floor; else `READ_TIMEOUT_SEC`). The background
-   gate and the lane permit are each bounded by what is left of it, and what is left
-   after admission becomes the upstream read timeout (floored at 30s for the HTTP
-   client), so a request that queued for most of its budget is not then given the
-   whole budget again to generate. Past the deadline it is returned immediately with
-   `raw.error = "gateway_overloaded"` (same shape as `llm_route_unavailable`, with
-   `raw.details.{stage,route,upstream,served_by,waited_s,budget_s,lane}`; `stage` is
-   `background_queue`, `upstream_queue`, or `budget_exhausted`) and logged as
-   `gateway_overloaded correlation_id=...`. The GPU no longer spends minutes generating
-   replies whose RPC timed out long ago -- which is what turned a busy lane into a
-   20-minute backlog.
-
-Gate order for a `priority: background` route: slack wait first (holding only the
-route's background permit, never a lane permit), then the lane permit. The reverse
-would let a request that is itself waiting for room hold a permit a foreground request
-on the same upstream needs. The lane permit is released when the executor thread
-finishes, not when the awaiting handler ends: a cancelled handler (Rabbit reconnect)
-cannot stop a running thread, and the gauge must count the thread, not the task.
-
-Live depth is on `GET /admission` under `"upstreams"`, one entry per URL:
-`{max_inflight, inflight, waiting, admitted, shed, longest_wait_s, last_shed_age_s}`.
-`waiting > 0` on one lane while `inflight == 0` on another is exactly the pre-fix
-symptom and should now be impossible; `shed > 0` means callers are timing out faster
-than that worker can serve them and the fix is more capacity or fewer callers, not a
-bigger cap.
-
-The blocking `wait_for_slack_sync` that `run_llm_chat` used to call from inside its
-thread is deleted; the bus path now goes through the same async `background_admission`
-as the OpenAI passthrough, tagged `via="bus"` in the ledger.
+Deleted with this cutover: `capacity.py` (durable-runs `/capacity` permits),
+`upstream_admission.py` (per-upstream semaphores), `priority_admission.py` (background `/slots`
+polling -- pool priority replaces it), `lane_gate.py` + `GET/PUT /routes/{id}/gate` (the pool's
+gpu0 lend flag replaces the chat-burst gate), `admission_ledger.py` + `GET /admission`, the
+route table and startup route probes, and the context-overflow ladder.
 
 ## Running & Testing
 
@@ -252,7 +196,7 @@ docker compose -f services/orion-llm-gateway/docker-compose.yml up -d llm-gatewa
 ```
 
 > Note: Only run a single `orion-llm-gateway` subscriber on the shared request topic.
-> Route isolation should be expressed through `LLM_GATEWAY_ROUTE_TABLE_JSON`, not by running multiple gateways.
+> Route isolation is expressed through `config/gpu_pool.yaml` (classes and roles), not by running multiple gateways.
 > **Updated 2026-08-14**: `agent` split off from `chat` as the default. It used to alias
 > `chat`'s worker (merged mode, below) because no distinct agent-lane model existed yet.
 > Now that Muse Glimmer is live on Circe's dedicated agent-lane worker (port 8014),
@@ -286,239 +230,6 @@ docker compose -f services/orion-llm-gateway/docker-compose.yml up -d llm-gatewa
 > Qwen3-8B Q5_K_M, `qwen3-8b-q5km-v100-16gb-atlas-metacog-16k` -- single-GPU, not the
 > 2xGPU qwen3-30b profile that shares the "atlas-metacog" name prefix).
 
-### Route table example (default: split agent mode)
-```bash
-LLM_GATEWAY_ROUTE_TABLE_JSON='{
-  "chat":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp"},
-  "agent":{"url":"http://100.112.254.99:8015","served_by":"circe-worker-agent-1","backend":"llamacpp"},
-  "metacog":{"url":"http://100.112.254.99:8012","served_by":"circe-worker-2","backend":"llamacpp"},
-  "quick":{"url":"http://100.112.254.99:8013","served_by":"circe-worker-fast-1","backend":"llamacpp"}
-}'
-```
-
-`quick` is the FAST lane route used by user-facing quick chat and chat_general pass-1.
-
-> **Update (2026-07-30): circe IS wired into `chat`/`agent` now, and that's**
-> **reserved capacity -- AI Town must never land on it.** The note that used
-> to live here (dated 2026-07-18) described circe as not-yet-wired-in and
-> deprioritized; that's stale. Circe came online, `chat`/`agent` route to it
-> (`served_by: "circe-worker-N"`, correctly labeled since `0e3cae4d`), and it
-> now appears as a real `execution_run` producer as this note originally
-> anticipated. What that old note didn't anticipate: circe is meant to be
-> **reserved for Juniper's direct deep/FCC turns**, not shared with AI Town's
-> NPC dialogue (`2026-07-10`, `cfcb3126`, "Route AI Town and default LLM
-> consumers to quick" -- deliberately pointed AI Town at the `quick` lane
-> instead). That fix only changed a *script default*; it never touched the
-> already-provisioned AI Town world's persisted Convex `LLM_MODEL`, which
-> silently stayed on `chat` (-> circe) for weeks, undetected, until circe
-> went offline and the whole town's NPC dialogue silently stalled for 10+
-> hours (confirmed live 2026-07-30). Fixed by re-pointing that world's
-> `LLM_MODEL` at `quick` and adding
-> `services/orion-ai-town/scripts/check_llm_route_not_circe.py` -- a gate
-> that reads AI Town's *live* configured model, resolves it through this
-> gateway's own `/v1/models`, and refuses to pass if the resolved worker is
-> circe-hosted. It's wired into both `wire_llm_gateway.sh` (hard-fails a
-> fresh wire-up that points at circe) and `compact_convex_data.sh` (which
-> replays whatever `LLM_MODEL` was already set, so it self-corrects instead
-> of quietly re-preserving the same drift on every future compaction). If
-> AI Town's `served_by` for its configured route ever needs to change,
-> update `AITOWN_LLM_CHAT_ROUTE` deliberately -- don't just add a route
-> entry that happens to point at circe.
-
-### Route table example (`harness` split off `chat`, 2026-08-20)
-
-**Updated 2026-08-20**: `harness` is the Anthropic Messages passthrough route the
-FCC/Claude Code CLI harness resolves `MODEL=llamacpp/harness` (`~/.fcc/.env`,
-`config/fcc.env_example`) to. Split off `chat` for the same reason `agent` was
-split off `chat` on 2026-08-14: `chat` carries live Hub chat traffic, has zero
-admission/concurrency throttling (`priority_admission.py` only gates routes
-tagged `"background"`), and its worker is `n_parallel: 1` -- a single FCC
-harness turn (up to `HARNESS_FCC_TIMEOUT_SEC`, whose value lives in the
-harness-governor's env) can occupy the only slot
-for the whole turn, and `37f4fab9c` (2026-08-16) already fixed this exact
-class of problem for one lighter call (the "5b reflection" background LLM
-call) by moving it off `chat`.
-
-As shipped, `harness` is an interim ALIAS of `chat`'s own worker (identical
-`url`/`served_by`) -- a labeling/observability seam, not yet physical
-isolation. A live FCC turn and live chat traffic still share
-`circe-worker-1`'s one slot until `harness` is pointed at a distinct worker
-or gets its own admission policy. Both `chat` and `harness` remain Juniper's
-own reserved capacity per the 2026-07-30 note above (AI Town is the thing
-kept off circe, not FCC) -- this split exists so the gateway, `GET /routes`,
-and admission policy can tell the two apart, not to gate one against the
-other.
-
-`harness` carries `"priority":"system"` -- a route-table value distinct from
-`"background"`. It is never a human's Compute choice (`orion.llm.routes.SYSTEM_LLM_ROUTES`,
-`services/orion-hub/static/js/app.js`'s `isSystemRouteEntry`), but unlike a background
-lane it must dispatch immediately: `"background"` is what `priority_admission.py` gates
-on to make a request wait for upstream slot slack, and an FCC turn cannot do that.
-
-```bash
-LLM_GATEWAY_ROUTE_TABLE_JSON='{
-  "chat":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp"},
-  "agent":{"url":"http://100.112.254.99:8015","served_by":"circe-worker-agent-1","backend":"llamacpp"},
-  "harness":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp","priority":"system"},
-  "metacog":{"url":"http://100.112.254.99:8012","served_by":"circe-worker-2","backend":"llamacpp"},
-  "quick":{"url":"http://100.112.254.99:8013","served_by":"circe-worker-fast-1","backend":"llamacpp"}
-}'
-```
-
-### Route table example (legacy: merged mode, `agent` aliases `chat`)
-
-Use this only if no distinct agent-lane model is deployed yet on your box — it
-re-merges `agent` back into `chat`'s worker, the pre-2026-08-14 default:
-```bash
-LLM_GATEWAY_ROUTE_TABLE_JSON='{
-  "chat":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp"},
-  "agent":{"url":"http://100.112.254.99:8011","served_by":"circe-worker-1","backend":"llamacpp"},
-  "metacog":{"url":"http://100.112.254.99:8012","served_by":"circe-worker-2","backend":"llamacpp"},
-  "quick":{"url":"http://100.112.254.99:8013","served_by":"circe-worker-fast-1","backend":"llamacpp"}
-}'
-```
-
-### Background-priority routes
-
-`"priority"` has one other recognised value: `"system"` (`harness`, above) -- hidden from
-Hub's human Compute picker the same way a background route is, but with none of the
-slot-slack-wait admission behaviour described below. Only `"background"` triggers that;
-`"system"` is otherwise an ordinary foreground route as far as `priority_admission.py` and
-`llm_backend.py`/`openai_passthrough.py`'s dispatch are concerned. See `SYSTEM_LLM_ROUTES` in
-`orion/llm/routes.py`.
-
-A route entry can carry `"priority":"background"` and an optional
-`"reserved_free_slots"` (default `1` if unset) alongside the normal
-`url`/`served_by`/`backend` fields, sharing the exact same upstream as a
-regular route:
-
-```json
-"quick_background": {
-  "url": "http://100.112.254.99:8013",
-  "served_by": "circe-worker-fast-1",
-  "backend": "llamacpp",
-  "priority": "background",
-  "reserved_free_slots": 2
-}
-```
-
-Any request resolved to a background route waits for the upstream's own
-`/slots` endpoint to report at least `reserved_free_slots` idle slots before
-dispatching -- it never competes evenly with foreground traffic sharing the
-same llama.cpp process. It's a fail-open gate, not a hard block: if `/slots`
-is unreachable, or the upstream is permanently busy past
-`LLM_GATEWAY_BACKGROUND_MAX_WAIT_SEC` (default 30s), the request forwards
-anyway with a logged warning -- a background caller never gets its request
-silently dropped.
-
-Two entry points, one implementation (since 2026-09-05): both
-`handle_chat_completions_post` (`openai_passthrough.py`, AI Town's native Convex
-`chatCompletion()` calls, `via="http"`) and `main.py`'s `_dispatch_chat` (the bus
-intake: orion-cortex-exec's RPC path, orion-embodiment's speech, `via="bus"`) go
-through the `background_admission` context manager on the event loop, which
-awaits `wait_for_slack` and caps concurrent background dispatches per route key
-with one shared `asyncio.Semaphore` (`LLM_GATEWAY_BACKGROUND_CONCURRENCY`,
-default 1). Consequence worth knowing: the cap is per route key across BOTH
-entry points, so one AI Town NPC line and one Orion `quick_background` step
-contend for the same single permit. Before this the bus path called a blocking
-`wait_for_slack_sync` from inside its executor thread with no cap at all; that
-function is deleted. On the bus path the wait for this permit is bounded by the
-caller's own budget (see "Per-upstream isolation" above) and sheds with
-`gateway_overloaded` stage `background_queue` past it; the HTTP passthrough has
-no such deadline and waits as long as the client does.
-
-Plain routes (no `priority` field) are completely unaffected on both paths --
-the gate is never invoked for them, zero added latency, zero behavior change.
-
-#### `GET /admission` -- what the gate actually did (ROADMAP A5)
-
-Every admission decision is recorded in a bounded in-process ledger
-(`app/admission_ledger.py`) alongside the existing `[LLM-GW background]` log
-line, and read back here:
-
-```json
-{"window_s":21600.0,"via":null,"checked":294,"deferrals":0,"timeouts":0,
- "unchecked":0,"queued":0,"deferred_s_total":0.0,"longest_wait_s":0.0,
- "last_deferral_ts":null,"truncated":false,"routes":["quick_background"]}
-```
-
-`window_s` is a query parameter (default 6h, clamped to 60s..24h; a non-finite
-value falls back to the default rather than propagating through the clamp).
-`via` filters to one call path -- `bus` is `main.py`'s `_dispatch_chat` (the bus intake), i.e. orion-cortex-exec
-and orion-embodiment (**Orion**); `http` is the OpenAI passthrough, which on
-`quick_background` is AI Town's NPC dialogue (**not Orion**). Both share the
-route key, so `route_key` cannot make that distinction and the cue filters on
-`via=bus` because it renders a first-person claim.
-
-The ledger is in-process and rolling -- it is lost on restart by design; the log
-line is the durable record. `truncated` is `true` when the requested window
-reaches further back than the bounded buffer holds, so a partial denominator is
-never quoted as a full one.
-
-**Two waits, not one.** `background_admission` acquires its per-route
-concurrency permit (`LLM_GATEWAY_BACKGROUND_CONCURRENCY`, default 1) *before*
-`/slots` is ever polled, so a second concurrent background request blocks there
-for the whole of the first one's generation. That wait is recorded as
-`queue_wait_s` and flagged by `queued`, taken from `asyncio.Semaphore.locked()`
-so it is exact rather than thresholded. `longest_wait_s` and
-`deferred_s_total` are over **queue + polls**.
-
-**A first-poll admit is not a deferral, and this is the whole point of the
-endpoint.** Asking `/slots` whether there is room costs an HTTP round trip,
-measured live at 0.012-0.091s. If the answer is yes on the first ask, nothing
-waited:
-
-```text
-deferral := queued              (the concurrency permit was not free)
-         or polls > 1           (a poll interval was actually slept through)
-         or outcome == "timeout_forwarded"
-```
-
-On 2026-08-19, 294 of 294 background admissions over 4h cleared on the first
-poll. Counting those as waits would report ~300 phantom deferrals a day.
-
-`checked` ships beside `deferrals` because `deferrals: 0` alone is ambiguous:
-"asked 294 times and was never made to wait" and "nothing asked" are different
-facts. **`unchecked` is a third**: the gate fails open, so when `/slots` is
-unreachable the request forwards without being measured. Those count toward
-`checked` and can never be deferrals, so a window where `/slots` was down
-throughout reads `{checked: 294, deferrals: 0, unchecked: 294}` -- which is not
-"never constrained", it is "never observed". Consumers must read all three;
-`admission_cue.py` returns *unknown* when `unchecked >= checked`.
-
-The ledger holds timings only -- no prompt, no response, no user or session
-identity -- and structurally cannot hold more: it is called from
-`priority_admission`, which only ever sees a `RouteTarget`. Pinned by
-`test_ledger_holds_no_request_content`.
-
-**Consumer:** orion-cortex-exec renders this into the metacog cue Orion reads
-each pass (`app/admission_cue.py`, `CORTEX_EXEC_ADMISSION_CUE_ENABLED`), so a
-wait for a GPU slot becomes something Orion can perceive rather than something
-only an operator can grep for.
-
-**Pilot instance (2026-07-30):** `quick_background` above started as AI
-Town's native NPC dialogue route (via the async passthrough) and was
-extended the same day to Orion's own in-town speech (via the sync bus path,
-`EMBODIMENT_SPEECH_QUICK_LLM_ROUTE`) -- both now share GPU1's
-`atlas-worker-fast-1` process without competing evenly with `orion-mind`
-(`MIND_SEMANTIC_MODEL_ROUTE`/`MIND_STANCE_MODEL_ROUTE`) and `orion-hub`
-(`MEMORY_GRAPH_SUGGEST_PRIMARY_ROUTE`), both still pointed at plain `quick`
-and unaffected. Reaching Orion's own speech required two more fixes,
-confirmed live: orion-cortex-exec's `llm_route` override only accepted
-`{chat, quick, metacog}` (now includes `quick_background`), and
-orion-embodiment's `_request_utterance_quick` only ever passed
-`extra={"lane": ...}` to cortex-exec, never `extra={"llm_route": ...}` --
-meaning `EMBODIMENT_SPEECH_LANE`/`EMBODIMENT_SPEECH_HUB_LLM_ROUTE` had never
-actually controlled the live gateway route at all; the observed "quick"
-behavior came entirely from cortex-exec's own per-verb default mapping,
-coincidentally matching. No second GPU was available to give AI Town its own
-dedicated small model (confirmed live: both V100s already host one model
-each), so this pattern exists specifically so AI Town's dialogue can share
-the same GPU/model without ever making those other, snappier consumers wait
-behind it. This is meant as a reusable seam -- any other lane can add its
-own `<lane>_background` entry pointed at an existing route's `url`/`served_by`
-to get the same behavior, no gateway code changes required.
-
 ### Smoke Test
 ```bash
 PYTHONPATH=/workspace/Orion-Sapienform python -m scripts.smoke_llm_gateway_routes \
@@ -542,101 +253,24 @@ The interval defaults to 5 seconds and validation timeout to 2 seconds. Missing
 tokens remain valid for existing synchronous traffic; malformed or stale tokens
 are rejected. Tokens never reach the model prompt or backend headers.
 
-The assigned route is resolved using Gateway's existing route machinery. A
-resolved backend that differs from the fenced physical backend fails closed;
-admitted requests do not silently fall back or escalate to another lane.
-With shared capacity disabled, synchronous requests retain their current routing and overflow behavior. A
-cancelled blocking Python HTTP thread retains its existing upstream permit until
-the thread exits; stale results are rejected, but physical inference cannot be
-forcibly stopped by cancelling that thread.
+Since the GPU pool cutover the durable lease is an **admission token only**:
+the lane must match and the broker must still consider the generation current,
+but placement always comes from a GPU pool lease (a burst route is agent work:
+`agent-burst`/`chat-burst` -> class `agent`). The lease's `backend_key` is not
+compared with the granted URL, because the pool may legitimately place the call
+on another role. A cancelled blocking Python HTTP thread keeps its pool lease
+until the thread exits; stale results are rejected, but physical inference
+cannot be forcibly stopped by cancelling that thread.
 
 See [resource admission ownership and rollout](../../docs/architecture/durable-resource-admission.md).
 
-## Shared request capacity
+## Lending chat's card
 
-`LLM_GATEWAY_CAPACITY_ENABLED=true` is the operator-template default. Bus chat,
-Anthropic Messages and OpenAI chat completions acquire a Postgres-backed
-request permit through `LLM_GATEWAY_CAPACITY_URL` (default
-`http://durable-runs:8121/capacity`). This includes requests without durable
-leases: foreground calls can no longer enter a backend held exclusively by a
-durable run. Route aliases share the canonical upstream URL as their resource
-key. Embeddings use their existing separate vector-host path.
-
-`LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT` bounds ordinary concurrent requests per
-physical upstream across Gateway processes. A durable lease owner may hold one
-request permit at a time; its stance, study and finalization calls reuse the same
-lease sequentially. Owner tokens are validated even when the older optional
-lease-validation flag is off. The local bus semaphore still isolates executor
-threads by upstream, but shared admission also covers the two HTTP protocols.
-Shared admission precedes the local bus semaphore. Admitted owners bypass the
-legacy background semaphore so unrelated waiters cannot block their own lease.
-
-Acquisition polls within the caller's remaining budget. Retries after a lost
-acquire acknowledgement retain the same request ID and original request payload.
-The authority's permit TTL determines heartbeat cadence (TTL/3, capped at 15
-seconds); individual authority calls use the existing 2-second validation timeout.
-An unavailable authority fails closed. Permit loss rejects dispatch and stale
-results. Context-overflow escalation is disabled in capacity mode because another
-backend requires its own admission decision.
-
-For bus work, a separate supervisor retains the request permit and heartbeat
-until the real blocking executor future finishes, including after handler
-cancellation or lease loss. For HTTP work, cancellation closes the upstream
-connection before releasing its permit. Streams retain ownership until their
-body completes or closes, and cleanup also runs if sending headers fails before
-body iteration. Closing an HTTP connection does not prove that an arbitrary
-backend stopped computing; a Gateway process crash recovers permits by expiry.
-
-Enable the durable authority first, then enable capacity on every Gateway
-instance serving the protected upstreams. Partial rollout leaves older Gateway
-instances outside the shared capacity count. Direct worker HTTP calls also
-remain outside this Gateway boundary. Disable the capacity flag to restore the
-existing admission behavior; no production activation is performed by this patch.
-
-
-## Lent lane: `chat-burst` and its operator gate
-
-`chat-burst` (2026-09-21) is Juniper's own chat worker (`circe-worker-1`, the same upstream as
-`chat` and `harness`) lent to the durable-runs burst queue. Nothing is physically borrowed the
-way `agent-burst` borrows GPU2; what is borrowed is Juniper's attention, so the lane is
-available only while she says so.
-
-- **Gate state** lives in bus Redis under `orion:llm_gateway:lane_gate:chat-burst`
-  (`app/lane_gate.py`). Missing key, corrupt value, or Redis error all read as **closed**.
-- **Producer**: the Hub's "Lend chat lane" button -> `PUT /routes/chat-burst/gate`
-  `{"open": true|false, "changed_by": "hub-ui"}`. `GET /routes/chat-burst/gate` reads it.
-  Any other route id returns 404 `route_not_operator_gated`.
-- **Catalog**: `GET /routes` carries `gate_open` (null for ungated routes) and reports
-  `chat-burst` as `operator_closed` while the gate is shut, even when the worker probes `up`.
-  Durable admission reads that status as unhealthy, so it never widens onto a closed lane.
-- **Dispatch**: every surface (bus/HTTP chat, `/v1/messages`, `/v1/chat/completions`) refuses a
-  closed gated route with `route_operator_closed` (HTTP 503) before any lease or capacity work.
-  Checked per request, so closing the gate stops the *next* call of a run already leased on it;
-  the in-flight generation finishes.
-- **Lease required**: like `agent-burst`, an unleased call on `chat-burst` is refused by
-  `CapacityPermit` (`chat_burst_requires_durable_capacity_lease`). The only way onto the lane
-  is a durable lease granted by orion-durable-runs after the widening threshold.
-- **Fairness with live chat**: `chat`, `harness` and `chat-burst` share one backend key, so
-  the existing capacity permits already fence them: a chat-burst lease holder makes an unleased
-  `chat` call wait (`durable_lease_active`), and a live chat permit keeps the broker from
-  granting a chat-burst lease (`owner_request_active` / non-zero backend estimate). The Hub
-  additionally holds and emails chat-box messages while the gate is open.
-- **Blast radius while open**: the fence above applies to EVERY unleased caller of
-  `chat`/`harness` on circe-worker-1, not only the Hub -- the allow-listed callers in
-  `scripts/check_chat_route_poachers.py` (vision-council foveal probe, affective-state vision,
-  context-exec, curiosity supervisor readings, the history compactor, harness finalize) wait
-  and then fail with `capacity_wait_budget_exhausted` for as long as a chat-burst lease is
-  held. Lending is a deliberate trade: the whole worker, for the whole window.
-
-Smoke:
-
-```bash
-curl -fsS http://127.0.0.1:8210/routes/chat-burst/gate
-curl -fsS -X PUT http://127.0.0.1:8210/routes/chat-burst/gate -H 'Content-Type: application/json' -d '{"open":true,"changed_by":"smoke"}'
-curl -fsS http://127.0.0.1:8210/routes | python3 -c 'import json,sys; print([r for r in json.load(sys.stdin)["routes"] if r["id"]=="chat-burst"])'
-curl -fsS -X PUT http://127.0.0.1:8210/routes/chat-burst/gate -H 'Content-Type: application/json' -d '{"open":false,"changed_by":"smoke"}'
-```
-
+The old `chat-burst` operator gate (`lane_gate.py`, `PUT /routes/chat-burst/gate`) is gone. Lending
+Juniper's chat card is the GPU pool's `lent` flag on `gpu0` (Hub GPU pool panel -> control RPC).
+Until durable-runs reads pool state (stage 4), `GET /routes` still reports `chat-burst` as
+`operator_closed` (with `gate_open: false`) unless gpu0 is lent, and `agent-burst` as `up` only
+while the `agent-gpu2` swap seat is confirmed.
 
 ## Optional GPU2 elastic admission
 

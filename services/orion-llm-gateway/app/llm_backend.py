@@ -1,11 +1,8 @@
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Any, Dict, Optional, List, Coroutine, Sequence, Tuple
 import asyncio
 import logging
 import os
-import time
-import json
 import re
 
 import httpx
@@ -19,10 +16,10 @@ from app.vision import (
 )
 from orion.core.bus.async_service import OrionBusAsync
 
-from . import ctx_overflow
-from .models import ChatBody, ChatMessage, GenerateBody, ExecStepPayload
+from . import pool_placement
+from .ctx_overflow import CONTEXT_OVERFLOW_ERROR, is_context_overflow
+from .models import ChatBody, ChatMessage
 from .settings import settings
-from .upstream_admission import LEGACY_UPSTREAM
 from .profiles import LLMProfileRegistry, LLMProfile
 from .lane_routes import resolve_llm_lane_route
 from .structured_output import apply_structured_output_to_payload
@@ -61,12 +58,6 @@ class RouteTarget:
     backend: Optional[str] = None
     served_by: Optional[str] = None
     model: Optional[str] = None
-    # "background" (any other value/None == default "foreground" behavior):
-    # requests to this route wait for upstream slot slack before dispatch.
-    # See priority_admission.py and services/orion-llm-gateway/README.md's
-    # "Background-priority routes" section.
-    priority: Optional[str] = None
-    reserved_free_slots: Optional[int] = None
 
 
 def _run_async(coro: asyncio.Future | Coroutine[Any, Any, Any]) -> None:
@@ -85,147 +76,8 @@ def _run_async(coro: asyncio.Future | Coroutine[Any, Any, Any]) -> None:
 _profile_registry: LLMProfileRegistry = settings.load_profile_registry()
 
 
-@lru_cache
-def _load_route_targets() -> Dict[str, RouteTarget]:
-    route_table: Dict[str, RouteTarget] = {}
-    raw_json = settings.llm_route_table_json
-    if raw_json:
-        try:
-            raw = json.loads(raw_json)
-        except json.JSONDecodeError as exc:
-            logger.error("[LLM-GW] Invalid LLM_GATEWAY_ROUTE_TABLE_JSON: %s", exc)
-            return {}
-
-        if not isinstance(raw, dict):
-            logger.error("[LLM-GW] Route table JSON must be a dict, got %s", type(raw))
-            return {}
-
-        for route, value in raw.items():
-            if isinstance(value, str):
-                route_table[str(route)] = RouteTarget(url=value)
-                continue
-            if isinstance(value, dict):
-                url = value.get("url") or value.get("base_url")
-                if not url:
-                    logger.warning("[LLM-GW] Route '%s' missing url/base_url", route)
-                    continue
-                upstream_model = value.get("model") or value.get("model_id")
-                reserved_free_slots = value.get("reserved_free_slots")
-                route_table[str(route)] = RouteTarget(
-                    url=url,
-                    backend=value.get("backend"),
-                    served_by=value.get("served_by"),
-                    model=str(upstream_model) if upstream_model else None,
-                    priority=value.get("priority"),
-                    reserved_free_slots=int(reserved_free_slots) if reserved_free_slots is not None else None,
-                )
-                continue
-            logger.warning("[LLM-GW] Route '%s' ignored (invalid value type %s)", route, type(value))
-    else:
-        for route, url in {
-            "chat": settings.llm_route_chat_url,
-            "metacog": settings.llm_route_metacog_url,
-            "latents": settings.llm_route_latents_url,
-            "specialist": settings.llm_route_specialist_url,
-        }.items():
-            if url:
-                route_table[route] = RouteTarget(url=url)
-
-    served_by_defaults = {
-        "chat": settings.llm_route_chat_served_by or "atlas-worker-1",
-        "metacog": settings.llm_route_metacog_served_by or settings.atlas_metacog_service_name or "atlas-worker-2",
-        "latents": settings.llm_route_latents_served_by or "atlas-worker-2",
-        "specialist": settings.llm_route_specialist_served_by or "atlas-worker-3",
-    }
-    for route, target in list(route_table.items()):
-        if target.served_by or route not in served_by_defaults:
-            continue
-        route_table[route] = RouteTarget(
-            url=target.url,
-            backend=target.backend,
-            served_by=served_by_defaults[route],
-            model=target.model,
-            priority=target.priority,
-            reserved_free_slots=target.reserved_free_slots,
-        )
-    return route_table
-
-
-def get_route_targets() -> Dict[str, RouteTarget]:
-    return _load_route_targets()
-
-
-# --- ROADMAP A4 follow-up: context-overflow escalation -------------------------------------
-# Orion's journaling ran on circe's 131k lane to carry a 1,749-token median prompt (measured,
-# 90 samples/24h). Moving it to atlas is right for 97.8% of it; the 2.2% tail (max 4,966 vs a
-# 4,096 window) must not silently fail. On overflow, retry on the smallest lane that is
-# genuinely larger -- ladder discovered from each upstream's real n_ctx, so raising metacog's
-# context makes it the fallback with no code change. Capped at ctx_overflow.MAX_ATTEMPTS.
-_CTX_LADDER: Optional[List[Tuple[str, int]]] = None
-
-
-def _ctx_ladder() -> List[Tuple[str, int]]:
-    """Lanes ordered by real context size. Probed once, then cached for the process."""
-    global _CTX_LADDER
-    if _CTX_LADDER is None:
-        targets = get_route_targets() or {}
-        _CTX_LADDER = ctx_overflow.build_escalation_ladder(
-            {route: t.url for route, t in targets.items() if getattr(t, "url", None)}
-        )
-        logger.info("[LLM-GW ctx] escalation ladder=%s", _CTX_LADDER)
-    return _CTX_LADDER
-
-
-def _post_with_ctx_escalation(client, url: str, payload: dict, route: str, corr: Any, *, allow_escalation: bool = True):
-    """POST, and on a context overflow retry on a lane that can hold the prompt.
-
-    Returns (response, final_route, final_url). Only a CONTEXT OVERFLOW escalates -- every
-    other status is returned to the caller untouched, so this changes nothing for the 97.8%
-    that fits, and nothing at all for non-overflow errors.
-    """
-    attempts = 1
-    while True:
-        r = client.post(url, json=payload)
-        if not allow_escalation or attempts >= ctx_overflow.MAX_ATTEMPTS:
-            return r, route, url
-        try:
-            body = r.json()
-        except Exception:  # noqa: BLE001 -- a non-JSON body is not an overflow signal
-            return r, route, url
-        if not ctx_overflow.is_context_overflow(r.status_code, body):
-            return r, route, url
-        nxt = ctx_overflow.next_larger_route(_ctx_ladder(), route)
-        if not nxt:
-            logger.warning(
-                "[LLM-GW ctx] corr=%s overflow on route=%s and no larger lane exists -- returning error",
-                corr, route,
-            )
-            return r, route, url
-        target = (get_route_targets() or {}).get(nxt)
-        if not target or not getattr(target, "url", None):
-            return r, route, url
-        new_url = url.replace(_base_of(url), _base_of(target.url), 1) if _base_of(url) else target.url
-        logger.warning(
-            "[LLM-GW ctx] corr=%s context overflow on route=%s attempt=%d -> escalating to route=%s",
-            corr, route, attempts, nxt,
-        )
-        route, url = nxt, new_url
-        attempts += 1
-
-
-def _base_of(url: str) -> str:
-    """scheme://host:port of a full endpoint URL, so the path is preserved on escalation."""
-    try:
-        from urllib.parse import urlsplit
-        parts = urlsplit(url)
-        if parts.scheme and parts.netloc:
-            return f"{parts.scheme}://{parts.netloc}"
-    except Exception:  # noqa: BLE001
-        pass
-    return ""
-
-
-def _resolve_route(body: ChatBody) -> Tuple[str, Optional[RouteTarget], bool, str]:
+def _resolve_route(body: ChatBody) -> Tuple[str, str]:
+    """Route NAME only. Placement (which GPU) is the pool's grant, never decided here."""
     opts = body.options or {}
     route = body.route or opts.get("route") or opts.get("routing_key")
     if body.route:
@@ -236,14 +88,35 @@ def _resolve_route(body: ChatBody) -> Tuple[str, Optional[RouteTarget], bool, st
         route_source = "options.routing_key"
     else:
         route_source = "default"
-    route_table = get_route_targets()
+    return str(route or settings.llm_route_default or "chat"), route_source
 
-    if route_table:
-        resolved_route = str(route or settings.llm_route_default or "chat")
-        return resolved_route, route_table.get(resolved_route), True, route_source
 
-    resolved_route = str(route or settings.llm_route_default or "chat")
-    return resolved_route, None, False, route_source
+def _context_overflow_result(
+    response: Any, *, route: Optional[str], served_by: Optional[str], spark_meta: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """A prompt the granted role could not hold, as a typed error result (None otherwise).
+
+    main.py releases the lease and re-leases ONCE with a larger min_ctx_tokens, so the pool (not
+    this gateway) picks a role that fits. Narrow on purpose: only is_context_overflow's markers.
+    """
+    status = int(getattr(response, "status_code", 0) or 0)
+    if status < 400:
+        return None
+    try:
+        body = response.json()
+    except Exception:  # noqa: BLE001 -- a non-JSON body is not an overflow signal
+        return None
+    if not is_context_overflow(status, body):
+        return None
+    err = body.get("error") if isinstance(body, dict) else None
+    message = str((err.get("message") if isinstance(err, dict) else err) or body)[:500]
+    logger.warning("[LLM-GW ctx] context overflow route=%s served_by=%s status=%s", route, served_by, status)
+    return {
+        "text": f"[Error: context overflow on {served_by or route}: {message}]",
+        "spark_meta": spark_meta,
+        "raw": {"error": CONTEXT_OVERFLOW_ERROR,
+                "details": {"status_code": status, "message": message, "route": route, "served_by": served_by}},
+    }
 
 
 def _timeout_summary(read_sec: Optional[float] = None) -> str:
@@ -992,6 +865,9 @@ def _execute_llamacpp_native_completion(
 
             completion_payload["prompt"] = prompt
             r = client.post(completion_url, json=completion_payload)
+            overflow = _context_overflow_result(r, route=route, served_by=served_by, spark_meta=spark_meta)
+            if overflow is not None:
+                return overflow
             if r.status_code == 404:
                 return {
                     "text": f"[Error: {backend_name} /completion 404 at {completion_url}]",
@@ -1174,9 +1050,10 @@ def _execute_openai_chat(
 
     try:
         with _common_http_client(body) as client:
-            r, route, url = _post_with_ctx_escalation(client, url, payload, route, body.trace_id,
-                allow_escalation=(body.options or {}).get("resource_lease") is None
-                and not settings.llm_gateway_capacity_enabled)
+            r = client.post(url, json=payload)
+            overflow = _context_overflow_result(r, route=route, served_by=served_by, spark_meta=spark_meta)
+            if overflow is not None:
+                return overflow
 
             if r.status_code == 404:
                 return {
@@ -1411,66 +1288,58 @@ def _served_model(result: Dict[str, Any], requested_model: str) -> str:
 
 @dataclass(frozen=True)
 class ChatDispatchPlan:
-    """Where a chat request is going, decided before any thread is taken.
+    """Which route a chat request is for, decided before any thread is taken.
 
-    main.py computes this on the event loop so it can gate admission per upstream
-    (upstream_admission.py) and per background lane (priority_admission.py) without
-    holding an executor thread, then hands the same plan to run_llm_chat so routing
-    is decided exactly once. `error` is the early-return result when lane routing
-    rejects the request outright.
+    main.py computes this on the event loop, takes a GPU pool lease for the route's work class,
+    then hands run_llm_chat a copy with `route_target` filled from the grant (url, served_by).
+    `error` is the early-return result when routing rejects the request outright (lane has no
+    route, or the route is not in config/gpu_pool.yaml).
     """
 
     body: ChatBody
     route: str
     route_target: Optional[RouteTarget] = None
-    has_route_table: bool = False
     route_source: str = "default"
     error: Optional[Dict[str, Any]] = None
+    work_class: Optional[str] = None
+    priority: Optional[str] = None
 
-    @property
-    def upstream(self) -> str:
-        return self.route_target.url if self.route_target else LEGACY_UPSTREAM
+
+def _route_error(error: str, route: Optional[str], details: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "text": "",
+        "content": "",
+        "spark_meta": {},
+        "raw": {"error": error, "details": details},
+        "route": route,
+        "served_by": None,
+    }
 
 
 def plan_llm_chat(body: ChatBody) -> ChatDispatchPlan:
-    """Lane routing (when enabled) plus route-table resolution. Cheap, no I/O."""
-    route_table = get_route_targets()
-    lane_routing = bool(getattr(settings, "llm_lane_routing_enabled", False)) and bool(route_table)
+    """Lane routing (when enabled) to a route name, then the route's pool class. Cheap, no I/O."""
+    pool_routes = pool_placement.pool_routes()
+    lane_routing = bool(getattr(settings, "llm_lane_routing_enabled", False))
     if lane_routing and (body.options or {}).get("resource_lease") is None:
         decision = resolve_llm_lane_route(
             body.options,
             body.route,
             llm_lane_default=str(getattr(settings, "llm_lane_default", "chat") or "chat"),
             llm_route_default=str(getattr(settings, "llm_route_default", "chat") or "chat"),
-            llm_allow_background_to_chat_fallback=bool(
-                getattr(settings, "llm_allow_background_to_chat_fallback", False)
-            ),
-            llm_route_spark_served_by=getattr(settings, "llm_route_spark_served_by", None),
-            llm_route_background_served_by=getattr(settings, "llm_route_background_served_by", None),
-            llm_route_agent_served_by=getattr(settings, "llm_route_agent_served_by", None),
-            route_table_keys=set(route_table.keys()),
-            route_served_by={k: t.served_by for k, t in route_table.items()},
+            route_table_keys=set(pool_routes.keys()),
         )
         corr = getattr(body, "trace_id", None)
         logger.info(
-            "llm_gateway_lane_route corr=%s trace_id=%s requested_lane=%s resolved_lane=%s served_by=%s status=%s reason=%s fallback_used=%s",
+            "llm_gateway_lane_route corr=%s trace_id=%s requested_lane=%s resolved_lane=%s route=%s status=%s reason=%s fallback_used=%s",
             corr,
             corr,
             decision.requested_llm_lane,
             decision.resolved_llm_lane,
-            decision.served_by,
+            decision.route_table_key,
             decision.route_status,
             decision.reason,
             decision.fallback_used,
         )
-        if decision.fallback_used and "emergency_chat_fallback" in decision.reason:
-            logger.warning(
-                "LLM_ALLOW_BACKGROUND_TO_CHAT_FALLBACK emergency path corr=%s trace_id=%s reason=%s served_by=%s",
-                corr,
-                corr,
-                decision.reason,
-                decision.served_by,
-            )
         if decision.route_table_key is None:
             logger.info(
                 "llm_gateway_lane_rejected corr=%s trace_id=%s requested_lane=%s status=%s reason=%s",
@@ -1480,53 +1349,44 @@ def plan_llm_chat(body: ChatBody) -> ChatDispatchPlan:
                 decision.route_status,
                 decision.reason,
             )
-            return ChatDispatchPlan(body=body, route=str(body.route or ""), error={
-                "text": "",
-                "content": "",
-                "spark_meta": {},
-                "raw": {
-                    "error": "llm_route_unavailable",
-                    "details": {
-                        "llm_lane": decision.resolved_llm_lane,
-                        "route_status": decision.route_status,
-                        "reason": decision.reason,
-                        "client_route": body.route,
-                        "chat_fallback_allowed": bool(
-                            getattr(settings, "llm_allow_background_to_chat_fallback", False)
-                            and (body.options or {}).get("allow_chat_fallback")
-                        ),
-                    },
+            return ChatDispatchPlan(body=body, route=str(body.route or ""), error=_route_error(
+                "llm_route_unavailable",
+                body.route,
+                {
+                    "llm_lane": decision.resolved_llm_lane,
+                    "route_status": decision.route_status,
+                    "reason": decision.reason,
+                    "client_route": body.route,
                 },
-                "route": body.route,
-                "served_by": None,
-            })
+            ))
         body = body.model_copy(update={"route": decision.route_table_key})
 
-    route, route_target, has_route_table, route_source = _resolve_route(body)
+    route, route_source = _resolve_route(body)
+    spec = pool_routes.get(route)
+    if spec is None:
+        # Never guess a GPU for a route the pool config does not name.
+        logger.warning("llm_gateway_route_not_in_gpu_pool corr=%s route=%s", body.trace_id, route)
+        return ChatDispatchPlan(body=body, route=route, route_source=route_source, error=_route_error(
+            pool_placement.ROUTE_NOT_IN_POOL, route, pool_placement.route_not_in_pool_details(route),
+        ))
     return ChatDispatchPlan(
         body=body,
         route=route,
-        route_target=route_target,
-        has_route_table=has_route_table,
         route_source=route_source,
+        work_class=spec.work_class,
+        priority=spec.priority,
     )
 
 
 def run_llm_chat(body: ChatBody, plan: Optional[ChatDispatchPlan] = None) -> Dict[str, Any]:
-    """Blocking: resolves the profile/model and calls the upstream. Runs on an executor
-    thread; admission (per-upstream cap, background slack) has already happened on the
-    event loop in main.py, which is why there is no wait here any more."""
+    """Blocking: resolves the profile/model and calls the upstream. Runs on a per-role executor
+    thread with a GPU pool lease already held (main.py); `plan.route_target` is the grant."""
     if plan is None:
         plan = plan_llm_chat(body)
     if plan.error is not None:
         return dict(plan.error)
     body = plan.body
-    route, route_target, has_route_table, route_source = (
-        plan.route,
-        plan.route_target,
-        plan.has_route_table,
-        plan.route_source,
-    )
+    route, route_target, route_source = plan.route, plan.route_target, plan.route_source
     effective_profile_name = body.profile_name
     if (
         route in METACOG_LLM_ROUTES
@@ -1540,12 +1400,13 @@ def run_llm_chat(body: ChatBody, plan: Optional[ChatDispatchPlan] = None) -> Dic
     backend = _pick_backend(body.options, profile)
     model = _resolve_model(body.model, profile)
 
-    if has_route_table and not route_target:
-        logger.error("[LLM-GW] Route '%s' not configured in route table", route)
+    if not route_target:
+        # Nothing reaches an upstream without a pool grant: there is no gateway-side URL.
+        logger.error("[LLM-GW] route '%s' has no GPU pool grant; refusing to guess an upstream", route)
         return {
-            "text": f"[Error: route '{route}' not configured]",
+            "text": f"[Error: route '{route}' has no GPU pool grant]",
             "spark_meta": {},
-            "raw": {"error": "route_not_configured", "route": route},
+            "raw": {"error": "no_pool_grant", "route": route},
             "route": route,
         }
 
@@ -1609,75 +1470,6 @@ def run_llm_chat(body: ChatBody, plan: Optional[ChatDispatchPlan] = None) -> Dic
                 result["route"] = route
                 result["served_by"] = served_by
             return result
-    else:
-        # Normalize aliases if vLLM, harmless if llama.cpp
-        if backend == "vllm":
-            model = _normalize_model_for_vllm(model)
-            base_url = settings.vllm_url
-            route_url = base_url
-
-        elif backend == "ollama":
-            base_url = settings.ollama_url
-            route_url = base_url
-            if settings.ollama_use_openai_compat:
-                logger.info(
-                    "[LLM-GW] route=%s route_source=%s backend=%s served_by=%s url=%s model=%s corr=%s timeouts=%s",
-                    route,
-                    route_source,
-                    backend,
-                    served_by,
-                    base_url,
-                    model,
-                    body.trace_id,
-                    _timeout_summary(_resolve_http_read_timeout_sec(body)),
-                )
-                result = _execute_openai_chat(
-                    body,
-                    model,
-                    base_url,
-                    "ollama",
-                    route=route,
-                    served_by=served_by,
-                )
-                if isinstance(result, dict):
-                    result["backend"] = backend
-                    result["model"] = _served_model(result, model)
-                    result["route"] = route
-                    result["served_by"] = served_by
-                return result
-            logger.info(
-                "[LLM-GW] route=%s route_source=%s backend=%s served_by=%s url=%s model=%s corr=%s timeouts=%s",
-                route,
-                route_source,
-                backend,
-                served_by,
-                base_url,
-                model,
-                body.trace_id,
-                _timeout_summary(_resolve_http_read_timeout_sec(body)),
-            )
-            result = _execute_ollama_chat(
-                body,
-                model,
-                base_url,
-                route=route,
-                served_by=served_by,
-            )
-            if isinstance(result, dict):
-                result["backend"] = backend
-                result["model"] = _served_model(result, model)
-                result["route"] = route
-                result["served_by"] = served_by
-            return result
-
-        elif backend == "llama-cola":
-            base_url = settings.llama_cola_url
-            route_url = base_url
-
-        else:
-            base_url = settings.llamacpp_url
-            route_url = base_url
-
     logger.info(
         "[LLM-GW] route=%s route_source=%s backend=%s served_by=%s url=%s model=%s corr=%s timeouts=%s",
         route,
@@ -1713,85 +1505,3 @@ def run_llm_chat(body: ChatBody, plan: Optional[ChatDispatchPlan] = None) -> Dic
         result["route"] = route
         result["served_by"] = served_by
     return result
-
-
-def run_llm_generate(body: GenerateBody) -> str:
-    """Wrapper to make Generate look like Chat"""
-    chat_body = ChatBody(
-        messages=[ChatMessage(role="user", content=body.prompt)],
-        options=body.options,
-        trace_id=body.trace_id,
-        user_id=body.user_id,
-        session_id=body.session_id,
-        source=body.source,
-        verb=body.verb,
-        profile_name=body.profile_name,
-        # Pass through model implicitly via main logic
-        model=body.model,
-    )
-    result = run_llm_chat(chat_body)
-    return result.get("text") or ""
-
-
-def run_llm_exec_step(body: ExecStepPayload) -> Dict[str, Any]:
-    t0 = time.time()
-
-    # 1. Build Prompt
-    if body.prompt:
-        final_prompt = body.prompt
-    else:
-        ctx_json = json.dumps(body.context or {}, indent=2, ensure_ascii=False)
-        prior_json = json.dumps(body.prior_step_results or [], indent=2, ensure_ascii=False)
-        final_prompt = f"{body.prompt_template or ''}\n\n# Context\n{ctx_json}\n\n# Prior Results\n{prior_json}\n"
-
-    # 2. Resolve Config
-    profile = _select_profile(getattr(body, "profile_name", None))
-    backend = _pick_backend({}, profile)
-    model = _resolve_model(None, profile)
-    if backend == "vllm":
-        model = _normalize_model_for_vllm(model)
-
-    # 3. Execute via Chat Interface
-    chat_body = ChatBody(
-        model=model,
-        messages=[ChatMessage(role="user", content=final_prompt)],
-        raw_user_text=body.raw_user_text or (body.context.get("user_message") if isinstance(body.context, dict) else None),
-        options={},
-        trace_id=body.origin_node,
-        source=f"cortex:{body.service}",
-        verb=body.verb,
-        profile_name=getattr(body, "profile_name", None),
-    )
-
-    if backend == "ollama":
-        result = _execute_ollama_chat(chat_body, model, settings.ollama_url)
-
-    elif backend == "llamacpp":
-        result = _execute_openai_chat(chat_body, model, settings.llamacpp_url, "llamacpp")
-
-    elif backend == "llama-cola":
-        result = _execute_openai_chat(chat_body, model, settings.llama_cola_url, "llama-cola")
-
-    else:
-        result = _execute_openai_chat(chat_body, model, settings.vllm_url, "vllm")
-
-    elapsed_ms = int((time.time() - t0) * 1000)
-
-    # 4. Log
-    logger.info(
-        "[LLM-GW] exec_step verb=%s step=%s service=%s elapsed_ms=%d backend=%s model=%s",
-        body.verb,
-        body.step,
-        body.service,
-        elapsed_ms,
-        backend,
-        model,
-    )
-
-    return {
-        "prompt": final_prompt,
-        "llm_output": result.get("text") or "",
-        "spark_meta": result.get("spark_meta"),
-        "spark_vector": result.get("spark_vector"),
-        "raw_llm": result.get("raw_llm") or result.get("raw"),
-    }

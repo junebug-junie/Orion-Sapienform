@@ -71,25 +71,6 @@ async def fetch_routes() -> dict[str, Any]:
     return _normalize_routes_payload(payload)
 
 
-async def fetch_route_gate(route_id: str) -> dict[str, Any]:
-    """Read one operator gate (open/closed) from the gateway.
-
-    Only routes in OPERATOR_GATED_LLM_ROUTES have a gate; the gateway answers 404
-    `route_not_operator_gated` for anything else, which surfaces here as
-    LlmGatewayClientError.
-    """
-    return await _gateway_json("GET", f"/routes/{route_id}/gate")
-
-
-async def set_route_gate(route_id: str, *, open: bool, changed_by: str) -> dict[str, Any]:
-    """Open or close one operator gate. Returns the gateway's new gate state."""
-    return await _gateway_json(
-        "PUT",
-        f"/routes/{route_id}/gate",
-        json_body={"open": bool(open), "changed_by": str(changed_by)},
-    )
-
-
 def _priority_for(route_id: str, reported: Any) -> str | None:
     """Reported priority, or the route's definitional one -- whichever says 'background'/'system'.
 

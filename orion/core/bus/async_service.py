@@ -447,7 +447,7 @@ class OrionBusAsync:
         (services/orion-hub/scripts/grammar_emit.py, scoped to one harness/thought RPC
         each) to every rpc_request() timeout across all 37+ real call sites sharing this
         one client. Same trace-lane family as the pre-existing bus.transport: grammar
-        producer (config/substrate-lattice/grammar_producer_registry.v1.yaml) but a
+        producer (services/orion-bus/app/grammar_emit.py, cataloged in channels.yaml) but a
         distinct semantic_role. The distinct role alone was NOT enough: the transport
         reducer keys on trace_id and read this as bus node "rpc_timeout" until
         2026-09-25, minting a phantom bus:rpc_timeout / node:rpc_timeout. It is now

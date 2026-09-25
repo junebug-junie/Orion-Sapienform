@@ -1,19 +1,14 @@
 schema_version: gate_policy.v1
 
+# Read by services/orion-hub/scripts/substrate_lattice_routes.py::_compute_gates
+# (the Substrate Lattice tab's gate overlay). Only keys with a live reader are
+# kept: confidence/lineage/action_ceiling gate settings were removed 2026-09-25
+# (docs/superpowers/specs/2026-09-22-substrate-lattice-audit.md) because no
+# process ever read them -- the lineage and action_ceiling gates in the hub are
+# computed from the proof chain directly.
 gates:
   freshness:
     max_age_sec: 30
 
   evidence:
     min_events: 1
-
-  confidence:
-    min_confidence: 0.60
-
-  lineage:
-    require_source_event: true
-    require_projection: true
-
-  action_ceiling:
-    default: dry_run
-    allow_mutation: false

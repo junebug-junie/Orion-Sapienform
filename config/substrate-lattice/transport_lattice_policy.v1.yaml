@@ -2,14 +2,18 @@ schema_version: transport_lattice_policy.v1
 
 lane_id: transport
 
-# channel_id → dimension mapping for salience weighting
-dimension_weights:
-  delivery_integrity: 0.35
-  contract_integrity: 0.30
-  observability_integrity: 0.20
-  topology_integrity: 0.15
-
-# channel → dimension, thresholds, action ceiling
+# Single source of truth for the transport lane's per-channel thresholds.
+# Live readers (2026-09-25):
+#   - services/orion-hub/scripts/substrate_lattice_routes.py -- gate overlay,
+#     lattice-values panel, threshold simulator, draft-policy-patch diff.
+#   - services/orion-mind/app/recall_signal_resolver.py -- bus_synaptic_pressure
+#     watch_at/summarize_at/propose_at rungs for the recall evidence line.
+# `dimension` is a display label only. A former `dimension_weights` block and
+# the hub's hand-copied `_TRANSPORT_CHANNELS` mirror of it were deleted
+# 2026-09-25: no process read the weights, and the mirror was still keyed on
+# the retired stream_backlog_pressure channel. Per-channel `required_windows`
+# and a `healthy_idle` block were deleted in the same pass for the same reason
+# (never read). See docs/superpowers/specs/2026-09-22-substrate-lattice-audit.md.
 channels:
   # Renamed from stream_backlog_pressure 2026-07-27 (PRs #1391-#1396): that
   # channel was fed by a narrow 2-Redis-Stream "world_pulse" census, not real
@@ -36,7 +40,6 @@ channels:
     watch_at: 0.50
     summarize_at: 0.75
     propose_at: null
-    required_windows: 2
     action_ceiling: summarize
 
   catalog_drift_pressure:
@@ -44,7 +47,6 @@ channels:
     watch_at: 0.50
     summarize_at: null
     propose_at: null
-    required_windows: 3
     action_ceiling: watch
 
   observer_failure_pressure:
@@ -53,8 +55,3 @@ channels:
     summarize_at: 0.50
     propose_at: null
     action_ceiling: summarize
-
-healthy_idle:
-  stream_backlog_health_min: 0.90
-  stream_backlog_pressure_max: 0.10
-  action: no_op_motif

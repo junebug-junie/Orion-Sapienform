@@ -901,8 +901,11 @@ sequencing was not what actually happened — the deletion landed before Objecti
   *already-live* Layer 5 attention output instead of a bespoke, now-proven-dead D/W/A
   composite signal.
 - **The transport lattice's salience→action_ceiling shape**
-  (`config/substrate-lattice/transport_lattice_policy.v1.yaml`) — real, working precedent
-  for Objective 2's capability coupling, just narrowly scoped to bus health today.
+  (`config/substrate-lattice/transport_lattice_policy.v1.yaml`) — precedent for
+  Objective 2's capability coupling, narrowly scoped to bus health. Correction 2026-09-25:
+  no runtime process applies its action ceilings; it is read only by the Hub's Substrate
+  Lattice gate overlay/simulator and orion-mind's recall resolver
+  (`docs/superpowers/specs/2026-09-22-substrate-lattice-audit.md`).
 - **`orion/self_state/prediction.py`** — untouched by this halt; it's already part of the
   canonical pipeline, already real, already live, and directly relevant to §9's predictive-
   processing instrument.

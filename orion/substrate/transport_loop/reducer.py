@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Callable
@@ -16,7 +17,9 @@ from .constants import (
     TRANSPORT_REDUCER_ID,
     TRANSPORT_SOURCE_SERVICE,
 )
-from .extract import _ATOM_ROLES, extract_transport_bus_state_from_events, parse_bus_transport_trace_id
+from .extract import ATOM_ROLES, extract_transport_bus_state_from_events, parse_bus_transport_trace_id
+
+logger = logging.getLogger(__name__)
 
 # Loads every stored grammar event of one trace (grammar_events, ordered like
 # the reducer cursor: created_at, event_id).
@@ -120,7 +123,8 @@ def reduce_transport_trace_events(
         return projection, receipt
 
     trace_id = events[0].trace_id or ""
-    if not parse_bus_transport_trace_id(trace_id):
+    parsed = parse_bus_transport_trace_id(trace_id)
+    if not parsed:
         return projection, _noop_receipt(events, reducer_id=reducer_id, clock=clock)
 
     if any(e.provenance.source_service != TRANSPORT_SOURCE_SERVICE for e in events):
@@ -134,9 +138,25 @@ def reduce_transport_trace_events(
     warnings: list[str] = []
     # A piece carrying no observer atom (trace_started/ended, edges, the
     # zscore atom after tick_completed) has nothing to add; skip it before any
-    # trace reload so the tail of an already-written window is not re-written.
-    if not (_roles(events) & _ATOM_ROLES):
+    # trace reload.
+    if not (_roles(events) & ATOM_ROLES):
         warnings.append(f"no bus observer evidence in trace {trace_id}")
+        return projection, _noop_receipt(events, reducer_id=reducer_id, clock=clock, warnings=warnings)
+
+    # Only whole ticks are ever written, so a bus already holding this exact
+    # trace has its final reading. sql-writer commits a trace atomically, so a
+    # head piece usually reloads the whole tick and writes it; the tail piece
+    # (which carries tick_completed) must not write it a second time. A piece
+    # of a window OLDER than the stored one must never replace it either
+    # (sample_window_id is YYYYMMDDTHHMMSSZ, so string order is time order).
+    node_id, sample_window_id = parsed
+    stored = projection.buses.get(f"bus:{node_id}")
+    if stored is not None and stored.source_trace_id == trace_id:
+        warnings.append(f"observer window already applied: {trace_id}")
+        return projection, _noop_receipt(events, reducer_id=reducer_id, clock=clock, warnings=warnings)
+    if stored is not None and stored.sample_window_id > sample_window_id:
+        warnings.append(f"older observer window skipped: {trace_id} < {stored.sample_window_id}")
+        logger.info("transport_older_window_skipped trace_id=%s stored_window=%s", trace_id, stored.sample_window_id)
         return projection, _noop_receipt(events, reducer_id=reducer_id, clock=clock, warnings=warnings)
 
     tick_events = events
@@ -144,10 +164,20 @@ def reduce_transport_trace_events(
         try:
             tick_events = _union_events(load_trace_events(trace_id), events, trace_id)
         except Exception as exc:  # a failed reload must not write a partial window
+            # Broad on purpose: any reload failure holds the piece. If the
+            # reload itself is what fails (grant, bad stored row), every split
+            # window is held and bus:<node> goes stale -- hence the WARNING.
             warnings.append(f"trace reload failed for {trace_id}: {type(exc).__name__}: {exc}")
+            logger.warning("transport_trace_reload_failed trace_id=%s err=%r", trace_id, exc)
             tick_events = events
     if not _is_whole_tick(tick_events):
         warnings.append(f"incomplete observer window held: {trace_id}")
+        logger.info(
+            "transport_incomplete_window_held trace_id=%s events=%d reloaded=%s",
+            trace_id,
+            len(tick_events),
+            load_trace_events is not None,
+        )
         return projection, _noop_receipt(events, reducer_id=reducer_id, clock=clock, warnings=warnings)
 
     try:

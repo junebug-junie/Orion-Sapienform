@@ -199,3 +199,49 @@ def test_rebuilt_tail_cites_the_whole_tick_as_evidence() -> None:
     health_id = next(e.event_id for e in trace if e.atom and e.atom.semantic_role == "bus_health_observed")
     assert health_id in delta.caused_by_event_ids
     assert health_id in delta.after["evidence_event_ids"]
+
+
+@pytest.mark.parametrize("cut", range(1, 13))
+def test_atomic_commit_shape_writes_each_window_exactly_once(cut: int) -> None:
+    """Production shape: sql-writer commits a trace in one transaction, so by
+    the time the cursor hands over the head piece the loader already returns
+    the whole tick. The head writes it; the tail (which carries
+    tick_completed) must not write it again."""
+    trace = _live_trace()
+    stored = {"projection": _projection()}
+    receipts: list = []
+    for batch in (trace[:cut], trace[cut:]):
+        process_transport_grammar_events(
+            events=batch,
+            load_projection=lambda: stored["projection"],
+            save_projection=lambda p: stored.update(projection=p),
+            save_receipt=receipts.append,
+            now=NOW,
+            load_trace_events=lambda _t: list(trace),
+        )
+    deltas = [d for r in receipts for d in r.state_deltas if d.target_id == "bus:athena"]
+    assert len(deltas) == 1, [r.warnings for r in receipts]
+    _assert_honest(deltas[0].after)
+
+
+def test_older_window_never_replaces_a_newer_one() -> None:
+    trace = _live_trace()  # window 20260925T060056Z
+    newer = _prior_window().model_copy(
+        update={"sample_window_id": "20260925T060106Z", "source_trace_id": "bus.transport:athena:20260925T060106Z"}
+    )
+    projection = TransportBusProjectionV1(
+        projection_id=TRANSPORT_BUS_PROJECTION_ID, updated_at=NOW, buses={"bus:athena": newer}
+    )
+    out, receipt = reduce_transport_trace_events(events=trace, projection=projection, now=NOW)
+    assert receipt.state_deltas == []
+    assert out.buses["bus:athena"].sample_window_id == "20260925T060106Z"
+    assert any("older observer window skipped" in w for w in receipt.warnings)
+
+
+def test_reload_failure_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    def boom(trace_id: str) -> list[GrammarEventV1]:
+        raise RuntimeError("permission denied for table grammar_events")
+
+    with caplog.at_level("WARNING", logger="orion.substrate.transport_loop.reducer"):
+        reduce_transport_trace_events(events=_live_trace()[5:], projection=_projection(), now=NOW, load_trace_events=boom)
+    assert any("transport_trace_reload_failed" in r.getMessage() for r in caplog.records)

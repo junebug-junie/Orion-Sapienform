@@ -48,6 +48,7 @@ from orion.substrate.execution_loop.constants import (
 from orion.substrate.transport_loop.constants import (
     TRANSPORT_BUS_PROJECTION_ID,
     TRANSPORT_GRAMMAR_CURSOR_NAME,
+    TRANSPORT_SOURCE_SERVICE,
 )
 from orion.substrate.chat_loop.constants import (
     CHAT_GRAMMAR_CURSOR_NAME,
@@ -403,7 +404,7 @@ class BiometricsSubstrateStore:
             limit=limit,
         )
 
-    def fetch_transport_trace_events(self, trace_id: str, *, limit: int = 200) -> list[GrammarEventV1]:
+    def fetch_transport_trace_events(self, trace_id: str, *, limit: int = 2000) -> list[GrammarEventV1]:
         """Every stored orion-bus event of one bus.transport trace, in cursor
         order. Used only when a cursor batch cut an observer window in two, so
         the transport reducer can reduce the whole tick instead of a piece
@@ -415,13 +416,17 @@ class BiometricsSubstrateStore:
                     SELECT event_json
                     FROM grammar_events
                     WHERE trace_id = :trace_id
-                      AND source_service = 'orion-bus'
+                      AND source_service = :source_service
                     ORDER BY created_at ASC, event_id ASC
                     LIMIT :limit
                     """
                 ),
-                {"trace_id": trace_id, "limit": limit},
+                {"trace_id": trace_id, "source_service": TRANSPORT_SOURCE_SERVICE, "limit": limit},
             ).mappings().all()
+        if len(rows) >= limit:
+            # A truncated trace can lose its tick_completed, and then every
+            # split piece of it is held. Live traces are 13 events.
+            logger.warning("transport_trace_reload_truncated trace_id=%s limit=%d", trace_id, limit)
         events: list[GrammarEventV1] = []
         for r in rows:
             payload = r["event_json"]

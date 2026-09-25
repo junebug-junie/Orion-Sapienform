@@ -255,9 +255,12 @@ async def _status(req: GpuActuateV1, view: dict[str, Any], publish: Publish, cor
     last = view["last"]
     if last is not None and view["in_flight"] is None and (replay := _recorded(last)) is not None:
         await publish(replay, corr)
-    reason = (f"last_generation={view['last_generation']} "
-              f"last_action={(last or {}).get('action_id', 'none')} in_flight={view['in_flight'] or 'none'}")
-    await publish(_result(req, "succeeded", observed=await observe(), reason=reason, phase=view["phase"]), corr)
+    # State travels in the structured status-only fields (schema, stage 4.3); `reason` is for humans.
+    last_id = (last or {}).get("action_id")
+    reason = (f"last generation {view['last_generation']}, last action {last_id or 'none'}, "
+              f"in flight {view['in_flight'] or 'none'}")
+    await publish(_result(req, "succeeded", observed=await observe(), reason=reason, phase=view["phase"],
+                          in_flight=view["in_flight"] is not None, last_action_id=last_id), corr)
 
 
 def _strip(row: dict[str, Any]) -> dict[str, Any]:

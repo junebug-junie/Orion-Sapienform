@@ -95,7 +95,11 @@ at `e5ef19e37` (main, without 4.1's launch blocks).
   `orion.gpu_pool.config`).
 - `services/orion-gpu-lane-controller/README.md`: a stage 4.2 section covering the authority table,
   the result sequence, refusals, fence and ops.
-- `services/orion-gpu-lane-controller/tests/test_actuator_bus.py` (new): 40 tests.
+- `services/orion-gpu-lane-controller/tests/test_actuator_bus.py` (new): 43 tests.
+- `orion/schemas/gpu_pool.py`: 4.3's version of the file, taken as-is (status-only
+  `in_flight`/`last_action_id` on `GpuActuateResultV1`, plus 4.3's other additive fields), so
+  `_status` can set structured state. It is identical to #2352's file, so there is no conflict when
+  the stack merges.
 - `.github/workflows/gpu2-elastic-tests.yml`: also triggers on `orion/schemas/gpu_pool.py`,
   `orion/gpu_pool/config.py` and `config/gpu_pool.yaml`.
 
@@ -111,9 +115,14 @@ at `e5ef19e37` (main, without 4.1's launch blocks).
     no longer calls durable-runs.
   - GPU1 is untouched.
 - Compatibility notes:
-  - `status` replies put the reconcile summary in `reason`
-    (`last_generation=… last_action=… in_flight=…`), because `GpuActuateResultV1` has no structured
-    field for it. The last recorded result is re-published first, under its own `action_id`.
+  - `status` replies carry the reconcile state in the structured, status-only fields
+    `in_flight: bool` and `last_action_id: str | None`. These were added to `GpuActuateResultV1` by
+    4.3 (#2352); this branch carries **only** 4.3's `orion/schemas/gpu_pool.py`, byte-identical, so
+    the stack merges without conflict. `reason` is a human summary only. When no action is running,
+    the last recorded result is re-published first under its own `action_id`.
+  - Deploy order: `in_flight`/`last_action_id` are rejected by a pre-4.3 pool (`extra="forbid"`).
+    Only a 4.3 pool sends `status` at all, so in practice the order is fixed by who asks. Still,
+    deploy this controller after the 4.3 pool, as that schema's consumer-first note says.
   - On a failed load, `restored=None` means no rollback ran because nothing had been evicted yet.
     `observed` shows the containers.
 
@@ -143,7 +152,9 @@ at `e5ef19e37` (main, without 4.1's launch blocks).
 
 ```text
 .venv/bin/python -m pytest services/orion-gpu-lane-controller/tests -q     -> 83 passed
-  (43 pre-existing + 40 new in test_actuator_bus.py)
+  (43 pre-existing + 43 new in test_actuator_bus.py)
+.venv/bin/python -m pytest services/orion-gpu-lane-controller/tests orion/gpu_pool/tests -q
+  -> 218 passed (4.1 contract tests still green on the 4.3 schema file)
 Mutation spot-checks (each reverted): removing the authority_durable gate, `<=` -> `<` on the
   generation fence, dropping the deadline check, dropping the HTTP authority_pool refusal, dropping
   the rolling_back phase -> each fails exactly 1 test.
@@ -270,6 +281,12 @@ runbook and needs a restart of the same container.
     0, so an old replayed generation could be admitted.
   - Mitigation: the volume name is pinned and the README warns about it. The pool's generations only
     increase, and it does not replay old action ids.
+- Follow-up (coordinator, after 4.3 landed): `status` now sets `in_flight` and `last_action_id`
+  and keeps `reason` human-readable only.
+  - Evidence: `test_status_republishes_last_result_then_observed`,
+    `test_status_reports_in_flight_structurally`, `test_status_on_fresh_controller_says_nothing_ran`,
+    `test_non_status_results_never_carry_status_fields`.
+
 - Severity: low.
   - Concern: `restored=None` on a failed load (nothing evicted before the failure) is a third value
     that the spec's pool state machine does not name.

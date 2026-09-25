@@ -142,7 +142,10 @@ yet -- read `observed`.
 - **Idempotency.** A replayed `action_id` gets its recorded terminal result back; a replay of the
   in-flight one gets `progress`. Neither starts a second transition.
 - **`status`** is a read: no digest check, no fence. It re-publishes the card set's last recorded
-  result (so a restarted pool adopts it by its own `action_id`), then answers with `observed`.
+  result (so a restarted pool adopts it by its own `action_id`; skipped while an action is running),
+  then answers with `observed`, `in_flight` (an action for the card set is still running) and
+  `last_action_id` (the last one it finished). Those two structured fields (schema from stage 4.3)
+  are the state; `reason` is only a human summary.
 - **Controller restart mid-action**: on boot (pool authority) the in-flight action is recorded as
   `failed reason=interrupted_by_controller_restart`, never re-run.
 - **Not re-checked here any more under `pool`:** thermal, visual-baseline urgency and lease/permit

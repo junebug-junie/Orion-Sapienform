@@ -365,7 +365,8 @@ def test_status_republishes_last_result_then_observed(repo, monkeypatch):
                                    launch_digest="whatever", reason="reconcile"), sink))
     assert [(r.action_id, r.status) for r in sink.results] == [("a4", "succeeded"), ("s1", "succeeded")]
     assert sink.results[1].observed == {"agent-gpu2": "running", "diffusion": "exited"}
-    assert "last_generation=4" in sink.results[1].reason
+    assert sink.results[1].in_flight is False and sink.results[1].last_action_id == "a4"
+    assert "last generation 4" in sink.results[1].reason
     assert fence.read_state()["generations"] == {"gpu2": 4}
 
 
@@ -589,3 +590,38 @@ def test_lifespan_runs_one_heartbeat_chassis(monkeypatch):
     with TestClient(main_module.app):
         pass
     assert started == ["heartbeat"]
+
+
+def test_status_reports_in_flight_structurally(repo, monkeypatch):
+    async def scenario():
+        release = asyncio.Event()
+
+        async def transition(req):
+            await gpu.phase("draining")
+            await release.wait()
+            return {"status": "success"}
+        monkeypatch.setattr(gpu, "transition", transition)
+        await bus.handle(payload(repo, generation=3, action_id="a3"), Sink())
+        await asyncio.sleep(0)
+        sink = Sink()
+        await bus.handle(payload(repo, action="status", action_id="s1"), sink)
+        # While a load runs: no re-published last result, in_flight=True, phase of the running action.
+        assert [(r.action_id, r.in_flight, r.phase) for r in sink.results] == [("s1", True, "draining")]
+        assert sink.results[0].last_action_id is None
+        release.set()
+        await bus._task
+    asyncio.run(scenario())
+
+
+def test_status_on_fresh_controller_says_nothing_ran(repo):
+    sink = Sink()
+    run(lambda: bus.handle(payload(repo, action="status", action_id="s0"), sink))
+    assert len(sink.results) == 1
+    assert sink.results[0].in_flight is False and sink.results[0].last_action_id is None
+
+
+def test_non_status_results_never_carry_status_fields(repo, monkeypatch):
+    monkeypatch.setattr(gpu, "transition", fake_transition({"status": "success"}))
+    sink = Sink()
+    run(lambda: bus.handle(payload(repo), sink))
+    assert all(r.in_flight is None and r.last_action_id is None for r in sink.results)

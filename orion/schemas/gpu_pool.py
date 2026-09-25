@@ -189,6 +189,14 @@ class GpuCardStateV1(BaseModel):
     # any role of the card until an operator clears it or discovery sees the residents healthy.
     swap_state: Literal["idle", "loading", "unloading", "fault"] = "idle"
     cooldown_until: datetime | None = None
+    # Stage 4.3 actuation engine (all optional; a pre-4.3 pool sends none of them):
+    swap_role: str | None = None              # the seat a loading/unloading/fault state is about
+    residency_until: datetime | None = None   # evicted residents stay until this after an unload
+    loaded_at: datetime | None = None         # when the pool loaded (or adopted) the seat here
+    actuated_roles: list[str] = Field(default_factory=list)   # seats on this card the pool may actuate
+    # The current or last GpuActuateV1 for this card set: action_id, role, action, generation,
+    # sent_at, acked_at, deadline_at, phase, outcome, reason.
+    actuation: dict[str, Any] | None = None
 
 
 class GpuLeaseRowV1(BaseModel):
@@ -207,6 +215,8 @@ class GpuLeaseRowV1(BaseModel):
     granted_at: datetime | None = None
     recall_by: datetime | None = None
     turn_correlation_id: str | None = None
+    generation: int = 0
+    hold_lease_id: str | None = None   # a child call: the durable-run hold whose slot it runs in
 
 
 class GpuPoolStateV1(BaseModel):
@@ -222,6 +232,8 @@ class GpuPoolStateV1(BaseModel):
     leases: list[GpuLeaseRowV1] = Field(default_factory=list)
     queue_depth: dict[str, int] = Field(default_factory=dict)
     backlog_depth: dict[str, int] = Field(default_factory=dict)
+    # Swap-load guards as the pool last read them: name -> None when clear, else why it blocks.
+    swap_guards: dict[str, str | None] = Field(default_factory=dict)
     # Filled only on request (GpuPoolStateRequestV1), never on the periodic broadcast:
     config: dict[str, Any] | None = None          # parsed config/gpu_pool.yaml (the Hub picture)
     config_yaml: str | None = None                # the file as written (the Hub "raw YAML" view)
@@ -243,7 +255,9 @@ class GpuPoolControlV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    verb: Literal["lend", "unlend", "replay", "cancel", "backfill", "hold", "release"]
+    # clear_fault (stage 4.3): take `card` out of swap_state=fault. The pool reconciles with the
+    # actuator (`status`) and adopts what it reports; with no answer it settles from discovery.
+    verb: Literal["lend", "unlend", "replay", "cancel", "backfill", "hold", "release", "clear_fault"]
     card: str | None = None
     lease_id: str | None = None
     backfill: dict[str, Any] | None = None
@@ -313,11 +327,20 @@ class GpuActuateResultV1(BaseModel):
     reason: str | None = Field(None, max_length=2000)
     # role -> container state after the action, so a restarted pool can reconcile from it.
     observed: dict[str, Literal["running", "exited", "absent", "unknown"]] = Field(default_factory=dict)
+    # action=status only (stage 4.3; consumer-first: the pool reads them, the actuator may start
+    # sending them after that pool is deployed). in_flight: True while an action for this card set
+    # is still running (the pool keeps polling and never faults the card for a missed deadline),
+    # False when none is, None when the actuator did not say. last_action_id: the last action it
+    # finished for this card set. Structured so the pool never parses `reason` for state.
+    in_flight: bool | None = None
+    last_action_id: str | None = Field(None, max_length=128)
 
     @model_validator(mode="after")
     def _restored_only_on_failed_load(self):
         if self.restored is not None and (self.status != "failed" or self.action != "load"):
             raise ValueError("restored is only meaningful on a failed load")
+        if (self.in_flight is not None or self.last_action_id is not None) and self.action != "status":
+            raise ValueError("in_flight/last_action_id are only meaningful on a status reply")
         return self
 
 

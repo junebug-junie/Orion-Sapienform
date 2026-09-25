@@ -38,7 +38,6 @@ def test_transport_tick_advances_while_biometrics_tick_blocked() -> None:
     worker._settings.enable_transport_bus_reducer = True
     worker._settings.enable_execution_trajectory_reducer = True
     worker._settings.reducer_poison_max_retries = 99
-    worker._settings.bus_stream_depth_critical = 100_000
     worker._store = MagicMock()
     worker._store.save_receipt = MagicMock()
     worker._store.save_quarantine = MagicMock()
@@ -100,7 +99,6 @@ def test_biometrics_backlog_does_not_block_transport_poll_iteration() -> None:
     worker._settings = MagicMock()
     worker._settings.enable_transport_bus_reducer = True
     worker._settings.grammar_poll_interval_sec = 0.01
-    worker._settings.bus_stream_depth_critical = 100_000
     worker._stop = asyncio.Event()
     worker._store = MagicMock()
     worker._store.save_receipt = MagicMock()

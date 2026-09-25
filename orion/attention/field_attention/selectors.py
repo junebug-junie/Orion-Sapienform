@@ -74,8 +74,6 @@ QUALIFYING_MIN_ROWS: int = 20
 _HIGHER_IS_BETTER_CHANNELS: frozenset[str] = frozenset(
     {
         "availability",  # node
-        "delivery_confidence",  # node (node:athena only, single-observer)
-        "stream_backlog_health",  # node (node:athena only, single-observer)
         "stability",  # node (2026-09-10)
         "confidence",  # capability
         "available_capacity",  # capability

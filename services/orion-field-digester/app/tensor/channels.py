@@ -38,11 +38,8 @@ NODE_CHANNELS = [
     "turn_incompletion",
     "context_gathering_ratio",
     "conversation_load",
-    "stream_backlog_pressure",
     "contract_pressure",
     "catalog_drift_pressure",
-    "delivery_confidence",
-    "stream_backlog_health",
     "observer_failure_pressure",
     # orion-llm-gateway's own view of its calls to this node's backends: share of
     # calls sent upstream that came back without an answer, per gateway window
@@ -59,27 +56,18 @@ CAPABILITY_CHANNELS = [
     "execution_pressure",
     "reasoning_pressure",
     "reliability_pressure",
-    "stream_backlog_pressure",
     "contract_pressure",
 ]
 
 DEFAULT_NODE_VECTOR = {ch: 0.0 for ch in NODE_CHANNELS}
 DEFAULT_NODE_VECTOR["availability"] = 1.0
-# Kept at 1.0 (see SINGLE_OBSERVER_NODE_CHANNELS below): this is the
-# "presumed healthy until first real report" default for node:athena itself
-# the very first time it reconciles, before its own bus-observer has ever
-# reported. It's no longer reached by any other node -- see below.
-DEFAULT_NODE_VECTOR["stream_backlog_health"] = 1.0
-DEFAULT_NODE_VECTOR["delivery_confidence"] = 1.0
-# Same "presumed healthy until first real report" reasoning as the two lines
-# above, for the same reason: NODE_CHANNELS' generic `{ch: 0.0 ...}` default
+# "Presumed healthy until first real report": NODE_CHANNELS' generic `{ch: 0.0 ...}` default
 # is correct for *_pressure channels (0.0 = no load, a fine default) but wrong
 # for stability's opposite polarity (0.0 = presumed maximally volatile before
 # any real reading exists). biometrics_pipeline.py's own _stability_from_
 # induction() already uses 0.5 as its no-data fallback, not 0.0 or 1.0 -- but
 # the field's own convention (this file, not biometrics) for a headroom-style
-# channel with no report yet is 1.0, matching stream_backlog_health/
-# delivery_confidence/availability above, not the producer's own neutral
+# channel with no report yet is 1.0, matching availability above, not the producer's own neutral
 # fallback.
 DEFAULT_NODE_VECTOR["stability"] = 1.0
 
@@ -133,10 +121,12 @@ DEFAULT_NODE_VECTOR["stability"] = 1.0
 # resurrection of this same bug class in a new shape. Pre-existing risk
 # (not introduced by this fix), flagged here since this is now the second
 # place carrying the assumption.
-SINGLE_OBSERVER_NODE_CHANNELS: dict[str, str] = {
-    "stream_backlog_health": "node:athena",
-    "delivery_confidence": "node:athena",
-}
+#
+# 2026-09-25: both channels this map held (stream_backlog_health,
+# delivery_confidence) were retired outright (fix/bus-observer-scope) and moved
+# to RETIRED_NODE_CHANNELS below, which prunes them from every node. The
+# mechanism is kept, empty, for the next genuinely single-observer channel.
+SINGLE_OBSERVER_NODE_CHANNELS: dict[str, str] = {}
 
 # Channel names that were RENAMED and no longer have a producer. reconcile
 # prunes these from every node vector, every tick.
@@ -157,11 +147,38 @@ SINGLE_OBSERVER_NODE_CHANNELS: dict[str, str] = {
 # 0A records: retired in name, still winning slots.
 #
 # Add to this set when retiring a channel name; that is the whole contract.
-RETIRED_NODE_CHANNELS: dict[str, str] = {
-    # old name -> what replaced it
-    "bus_health": "stream_backlog_health",
-    "transport_pressure": "stream_backlog_pressure",
+RETIRED_NODE_CHANNELS: dict[str, str | None] = {
+    # old name -> what replaced it (None: retired with no successor channel)
+    # bus_health / transport_pressure were renamed to stream_backlog_health /
+    # stream_backlog_pressure on 2026-07-24; those successors were themselves
+    # retired 2026-09-25, so neither has a live successor any more.
+    "bus_health": None,
+    "transport_pressure": None,
     "execution_load": "cortex_exec_step_load",
+    # 2026-09-25 (fix/bus-observer-scope, docs/superpowers/specs/2026-09-25-
+    # bus-observer-stream-depth-retirement.md): no successor channel.
+    # stream_backlog_pressure was XLEN on two world_pulse streams (flat 0.0016
+    # over 24,633 ticks). stream_backlog_health / delivery_confidence were the
+    # bus observer's own PING, pinned at 1.0: a failed PING means the Redis it
+    # publishes to is down, so a 0.0 could never arrive. Mesh-wide transport
+    # health lives on capability:transport.pressure (node:substrate.bus_synaptic),
+    # catalog_drift_pressure, observer_failure_pressure and RPC health.
+    "stream_backlog_pressure": None,
+    "stream_backlog_health": None,
+    "delivery_confidence": None,
+}
+
+# Same contract as RETIRED_NODE_CHANNELS, one level over: capability channel
+# names with no producer left. Needed because _ensure_capability_vector()
+# preserves undeclared keys exactly like _ensure_node_vector() does. Found
+# 2026-09-25: `transport_pressure` (renamed 2026-07-24) was still sitting at
+# 0.0 on every live capability vector two months later.
+RETIRED_CAPABILITY_CHANNELS: dict[str, str | None] = {
+    "transport_pressure": None,
+    # Only ever fed by the capability:transport -> capability:orchestration
+    # edge, whose source channel was never written (2026-09-22 audit). Edge
+    # deleted in the same patch.
+    "stream_backlog_pressure": None,
 }
 
 # Node ids that were once real entries in orion_field_topology.v1.yaml's

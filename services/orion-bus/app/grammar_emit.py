@@ -6,9 +6,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from orion.grammar.atom_signals import (
-    clamp01,
     uncertainty_from_abs_zscore,
-    uncertainty_from_backpressure,
     uncertainty_from_catalog_drift,
     uncertainty_from_sample_mismatch,
 )
@@ -191,75 +189,17 @@ class BusTransportGrammarCollector:
                 )
             )
 
-    def record_stream_depth(self, *, stream_key: str, stream_length: int) -> None:
-        role = f"bus_stream_depth_observed:{stream_key}"
-        self._put_atom(
-            role,
-            GrammarAtomV1(
-                atom_id=self._atom_id(role),
-                trace_id=self.trace_id,
-                atom_type="observation",
-                semantic_role="bus_stream_depth_observed",
-                layer="transport",
-                dimensions=["bus", "stream", "depth"],
-                summary=(
-                    f"Observed Redis stream depth stream_key={stream_key} "
-                    f"stream_length={stream_length} sample_window_id={self.sample_window_id}"
-                ),
-                confidence=1.0,
-                salience=0.7,
-                uncertainty=clamp01(stream_length / max(stream_length + 1000, 1)),
-                source_event_id=self.sample_window_id,
-                payload_ref=f"bus.transport.depth:{stream_key}:{self.sample_window_id}",
-            ),
-        )
-        if "bus_health_observed" in self._atoms:
-            self._edge_specs.append(
-                (
-                    self._atoms["bus_health_observed"].atom_id,
-                    self._atoms[role].atom_id,
-                    "contains",
-                )
-            )
-
-    def record_backpressure(
-        self,
-        *,
-        stream_key: str,
-        stream_length: int,
-        threshold: int,
-        severity: str,
-    ) -> None:
-        role = f"bus_backpressure_observed:{stream_key}"
-        self._put_atom(
-            role,
-            GrammarAtomV1(
-                atom_id=self._atom_id(role),
-                trace_id=self.trace_id,
-                atom_type="uncertainty_marker",
-                semantic_role="bus_backpressure_observed",
-                layer="transport",
-                dimensions=["bus", "backpressure", "stream"],
-                summary=(
-                    f"Bus stream depth exceeded threshold stream_key={stream_key} "
-                    f"stream_length={stream_length} threshold={threshold} severity={severity}"
-                ),
-                confidence=0.95,
-                salience=0.85,
-                uncertainty=uncertainty_from_backpressure(stream_length, threshold),
-                source_event_id=self.sample_window_id,
-                payload_ref=f"bus.transport.backpressure:{stream_key}:{self.sample_window_id}",
-            ),
-        )
-        depth_role = f"bus_stream_depth_observed:{stream_key}"
-        if depth_role in self._atoms:
-            self._edge_specs.append(
-                (
-                    self._atoms[depth_role].atom_id,
-                    self._atoms[role].atom_id,
-                    "derived_from",
-                )
-            )
+    # record_stream_depth()/record_backpressure() (semantic roles
+    # bus_stream_depth_observed / bus_backpressure_observed) were retired
+    # 2026-09-25 (fix/bus-observer-scope). They read XLEN on the two
+    # BUS_OBSERVER_STREAMS world_pulse keys: XLEN is a stream's retained
+    # length, not a backlog, and the live bus has 5 Redis Streams total, the
+    # only live consumer group (cg:concept-induction) sitting at lag=0
+    # pending=0. Over 24,633 observer ticks the depth read 157-160 (0.0016 of
+    # the critical threshold) and backpressure never fired once. Bus transport
+    # health lives in the census (bus_census_computed), bus_synaptic z-scores
+    # and RPC health, not here. See
+    # docs/superpowers/specs/2026-09-25-bus-observer-stream-depth-retirement.md.
 
     def record_uncataloged_stream(self, *, stream_key: str) -> None:
         role = f"bus_configured_stream_uncataloged:{stream_key}"

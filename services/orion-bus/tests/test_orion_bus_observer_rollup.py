@@ -18,20 +18,20 @@ from app.bus_observer import (
 from app.settings import Settings
 
 
-@pytest.mark.asyncio
-async def test_rollup_records_depth_and_backpressure() -> None:
-    # model_copy field names — .env may override Settings() kwargs via env_file
+def test_rollup_emits_no_depth_or_backpressure_even_for_a_huge_stream() -> None:
+    """2026-09-25 (fix/bus-observer-scope): XLEN depth and backpressure were
+    retired. Even a snapshot carrying a pre-retirement-shaped stream_lengths
+    entry far past the old 100k critical threshold must produce neither atom;
+    uncataloged detection still works."""
     settings = Settings().model_copy(
         update={
             "bus_observer_node_id": "athena",
-            "bus_stream_depth_warning": 100,
-            "bus_stream_depth_critical": 1000,
             "bus_observer_streams": "orion:evt:gateway",
         }
     )
     snapshot = {
         "ping_ok": True,
-        "stream_lengths": {"orion:evt:gateway": 150},
+        "stream_lengths": {"orion:evt:gateway": 5_000_000},
         "catalog_names": {"orion:grammar:event"},
     }
     rollup = build_rollup_from_redis_snapshot(
@@ -41,12 +41,14 @@ async def test_rollup_records_depth_and_backpressure() -> None:
         sample_window_id="20260525T170000Z",
     )
     assert rollup.ping_ok is True
-    assert rollup.stream_lengths["orion:evt:gateway"] == 150
+    assert rollup.streams_observed == 1
     collector = rollup.to_collector(code_version="0.1.0")
     roles = {a.semantic_role for a in collector._atoms.values()}
-    assert "bus_stream_depth_observed" in roles
-    assert "bus_backpressure_observed" in roles
+    assert "bus_stream_depth_observed" not in roles
+    assert "bus_backpressure_observed" not in roles
     assert "bus_configured_stream_uncataloged" in roles
+    done = next(a for a in collector._atoms.values() if a.semantic_role == "bus_observer_tick_completed")
+    assert "streams_observed=1" in done.summary
 
 
 @pytest.mark.asyncio
@@ -54,7 +56,6 @@ async def test_run_tick_publishes_when_enabled() -> None:
     with patch("app.bus_observer._fetch_redis_snapshot", new_callable=AsyncMock) as snap:
         snap.return_value = {
             "ping_ok": True,
-            "stream_lengths": {"orion:evt:gateway": 1},
             "catalog_names": {"orion:evt:gateway"},
         }
         bus = AsyncMock()
@@ -148,7 +149,6 @@ def test_rollup_records_schema_mismatch_only_for_cataloged_streams_with_bad_samp
     )
     snapshot = {
         "ping_ok": True,
-        "stream_lengths": {"orion:core:events": 10, "orion:no:schema": 5},
         "catalog_names": {"orion:core:events", "orion:no:schema"},
         "catalog_schema_ids": {"orion:core:events": "CoreEventV1"},
         "stream_samples": {
@@ -179,7 +179,6 @@ def test_rollup_omits_schema_mismatch_atom_when_all_samples_valid() -> None:
     )
     snapshot = {
         "ping_ok": True,
-        "stream_lengths": {"orion:core:events": 10},
         "catalog_names": {"orion:core:events"},
         "catalog_schema_ids": {"orion:core:events": "CoreEventV1"},
         "stream_samples": {
@@ -208,7 +207,6 @@ def test_rollup_backward_compatible_without_schema_snapshot_keys() -> None:
     )
     snapshot = {
         "ping_ok": True,
-        "stream_lengths": {"orion:evt:gateway": 1},
         "catalog_names": {"orion:evt:gateway"},
     }
     rollup = build_rollup_from_redis_snapshot(
@@ -256,6 +254,9 @@ async def test_fetch_snapshot_samples_only_cataloged_streams_bounded_by_setting(
     fake_client.xrevrange.assert_awaited_once_with("orion:core:events", count=5)
     assert "orion:core:events" in snapshot["stream_samples"]
     assert "orion:no:schema" not in snapshot["stream_samples"]
+    # Retired 2026-09-25: no XLEN depth read, and no depth key in the snapshot.
+    fake_client.xlen.assert_not_awaited()
+    assert "stream_lengths" not in snapshot
 
 
 @pytest.mark.asyncio
@@ -392,7 +393,6 @@ async def test_shipped_default_produces_nonzero_mismatch_count_for_malformed_sam
     )
     snapshot = {
         "ping_ok": True,
-        "stream_lengths": {sk: 1 for sk in settings.observer_stream_list},
         "catalog_names": load_channel_catalog_names(settings.channels_catalog_path),
         "catalog_schema_ids": load_channel_catalog_schema_ids(settings.channels_catalog_path),
         "stream_samples": {
@@ -445,7 +445,6 @@ async def test_shipped_default_no_mismatch_for_well_formed_sample() -> None:
     )
     snapshot = {
         "ping_ok": True,
-        "stream_lengths": {sk: 1 for sk in settings.observer_stream_list},
         "catalog_names": load_channel_catalog_names(settings.channels_catalog_path),
         "catalog_schema_ids": load_channel_catalog_schema_ids(settings.channels_catalog_path),
         "stream_samples": {
@@ -475,7 +474,6 @@ def test_rollup_threads_undeclared_active_count_into_census_atom() -> None:
     )
     snapshot = {
         "ping_ok": True,
-        "stream_lengths": {"orion:evt:gateway": 1},
         "catalog_names": {"orion:evt:gateway", "orion:other:channel"},
         "undeclared_active_count": 3,
     }
@@ -508,7 +506,6 @@ def test_rollup_omits_census_atom_when_not_measured() -> None:
     )
     snapshot = {
         "ping_ok": True,
-        "stream_lengths": {"orion:evt:gateway": 1},
         "catalog_names": {"orion:evt:gateway"},
     }
     rollup = build_rollup_from_redis_snapshot(
@@ -670,7 +667,6 @@ def test_rollup_threads_total_mesh_publish_rate_through() -> None:
     )
     snapshot = {
         "ping_ok": True,
-        "stream_lengths": {"orion:evt:gateway": 1},
         "catalog_names": {"orion:evt:gateway"},
         "total_mesh_publish_rate": 7.25,
     }
@@ -712,7 +708,6 @@ async def test_run_observer_tick_emits_activity_zscore_atom_when_tracker_given()
     with patch("app.bus_observer._fetch_redis_snapshot", new_callable=AsyncMock) as snap:
         snap.return_value = {
             "ping_ok": True,
-            "stream_lengths": {"orion:evt:gateway": 1},
             "catalog_names": {"orion:evt:gateway"},
             "total_mesh_publish_rate": 12.0,
         }
@@ -741,7 +736,6 @@ async def test_run_observer_tick_without_tracker_omits_activity_zscore_atom() ->
     with patch("app.bus_observer._fetch_redis_snapshot", new_callable=AsyncMock) as snap:
         snap.return_value = {
             "ping_ok": True,
-            "stream_lengths": {"orion:evt:gateway": 1},
             "catalog_names": {"orion:evt:gateway"},
             "total_mesh_publish_rate": 12.0,
         }

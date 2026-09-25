@@ -739,6 +739,22 @@ real failure into a fake calm 0.0 whenever callers stop calling the node. The no
 `ENABLE_LLM_INFERENCE_FIELD_DIGESTION` (default off). Caveat: if callers stop calling a
 dead backend, the last failing reading holds indefinitely -- stale, but not falsely calm.
 
+## Retired: `stream_backlog_pressure` / `stream_backlog_health` / `delivery_confidence` (2026-09-25)
+
+Removed from `NODE_CHANNELS` (and `stream_backlog_pressure` from `CAPABILITY_CHANNELS`), with no
+successor channel. All three came from the bus observer: the first from `XLEN` on the two
+`world_pulse` Redis Streams, the other two from its own Redis `PING`. A live `SCAN ... TYPE stream`
+found 5 Redis Streams on the whole bus and one live consumer group at lag 0; over 24,633 observer
+ticks the depth read 0.0016 of threshold and `PING` never failed (a failed `PING` would also mean the
+observer cannot publish, so 0.0 could never arrive). `RETIRED_NODE_CHANNELS` /
+`RETIRED_CAPABILITY_CHANNELS` in `app/tensor/channels.py` prune the names from every persisted vector
+on the next reconcile, including the stale capability-level `transport_pressure` left over from the
+2026-07-24 rename. The `capability:transport -> capability:orchestration` edge (whose source channel
+was never written) is deleted. Transport health lives on `capability:transport.pressure`
+(`node:substrate.bus_synaptic`), `catalog_drift_pressure`, `observer_failure_pressure` and RPC health.
+Historical sections below still name these channels; they describe the past.
+See `docs/superpowers/specs/2026-09-25-bus-observer-stream-depth-retirement.md`.
+
 ## Field channel glossary
 
 This is the consolidated reference for all 38 channels in

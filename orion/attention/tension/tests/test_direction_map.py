@@ -54,8 +54,7 @@ def test_ships_a_real_map_that_covers_the_live_channels():
     assert dm.worse_for("turn_incompletion") == "up"
     assert dm.worse_for("staleness") == "up"
     assert dm.worse_for("availability") == "down"
-    assert dm.worse_for("delivery_confidence") == "down"
-    assert dm.worse_for("stream_backlog_health") == "down"
+    assert dm.worse_for("stability") == "down"
 
 
 def test_deliberately_unmapped_channels_do_not_vote():
@@ -71,10 +70,10 @@ def test_unknown_channel_is_inert_rather_than_defaulted():
 def test_exact_entry_beats_suffix_rule(tmp_path):
     path = _write(
         tmp_path,
-        "suffix_rules:\n  '*_health': up\nchannels:\n  stream_backlog_health: down\n",
+        "suffix_rules:\n  '*_health': up\nchannels:\n  bus_link_health: down\n",
     )
     dm = load_direction_map(path)
-    assert dm.worse_for("stream_backlog_health") == "down"
+    assert dm.worse_for("bus_link_health") == "down"
     assert dm.worse_for("other_health") == "up"
 
 

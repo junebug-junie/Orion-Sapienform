@@ -32,11 +32,8 @@ node_channels:
   - execution_friction
   - reasoning_load
   - failure_pressure
-  - stream_backlog_pressure
   - contract_pressure
   - catalog_drift_pressure
-  - delivery_confidence
-  - stream_backlog_health
   - observer_failure_pressure
   - conversation_load
   - repair_pressure
@@ -48,7 +45,6 @@ capability_channels:
   - execution_pressure
   - reasoning_pressure
   - reliability_pressure
-  - stream_backlog_pressure
   - contract_pressure
 
 edges:
@@ -264,7 +260,8 @@ edges:
   # reliability_pressure. If that lands and passes the metric gate, a
   # reliability_pressure -> reliability_pressure edge is the honest successor.
   # tests/test_field_topology_edges.py refuses any cap->cap edge whose source
-  # channel nothing writes.
+  # channel nothing writes. stream_backlog_pressure itself is retired end to
+  # end as of fix/bus-observer-scope (2026-09-25).
 
   # capability→capability: inference unavailability raises orchestration pressure
   - source_id: capability:llm_inference

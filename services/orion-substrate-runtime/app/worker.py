@@ -176,24 +176,12 @@ def _prediction_error_nodes_enabled() -> bool:
 
 
 # docs/superpowers/specs/2026-07-22-transport-bus-signal-quality-measurement-design.md
-# item 1: five of the six real transport-bus pressure signals have read as
-# exactly zero in every window checked so far -- honestly, not from a bug (see
-# that spec's "Current architecture" section) -- with the practical effect that
-# a real incident could occur and pass unnoticed, since nothing currently logs
-# it. `stream_depth_pressure` (the sixth) is deliberately excluded from this
-# trigger set for two compounding reasons, not just one: (a) it is structurally
-# nonzero on almost every real tick (any nonzero queue depth divides through
-# DEFAULT_STREAM_DEPTH_CRITICAL=100_000 to a small positive number), so an
-# ">0" check on it would fire constantly rather than flagging a genuine
-# incident; and (b) any depth spike large enough to be worth flagging already
-# trips `backpressure_count > 0` first -- services/orion-bus's own observer
-# (bus_observer.py) marks a stream "backpressure" once its length crosses
-# BUS_STREAM_DEPTH_WARNING (default 25,000 -- 25% of the critical threshold
-# above), and `backpressure` IS in this trigger set. `max_stream_depth` (its
-# raw input) is still surfaced as context below whenever one of the other
-# five signals fires.
+# item 1: log any bus whose incident-bearing pressure signals are nonzero, so a
+# real incident does not pass unnoticed. `backpressure` (and its raw input
+# `max_stream_depth`) left this set 2026-09-25 when the XLEN depth family was
+# retired (fix/bus-observer-scope): it never fired once in 24,633 live ticks
+# and XLEN is retained length, not backlog.
 _TRANSPORT_INCIDENT_FIELDS = (
-    "backpressure",
     "catalog_drift_pressure",
     "contract_pressure",
     "observer_failure_pressure",
@@ -215,10 +203,9 @@ def _log_transport_incident_signals(projection: Any) -> None:
             }
             if nonzero:
                 logger.info(
-                    "transport_incident_signal bus=%s nonzero=%s max_stream_depth=%s",
+                    "transport_incident_signal bus=%s nonzero=%s",
                     bus_id,
                     nonzero,
-                    getattr(bus, "max_stream_depth", None),
                 )
     except Exception:
         logger.warning("failed to check transport incident signals", exc_info=True)
@@ -4011,7 +3998,6 @@ class BiometricsSubstrateWorker:
                 save_projection=self._store.save_transport_bus_projection,
                 save_receipt=self._store.save_receipt,
                 now=now,
-                stream_depth_critical=self._settings.bus_stream_depth_critical,
                 load_trace_events=self._store.fetch_transport_trace_events,
             )
 

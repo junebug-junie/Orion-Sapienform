@@ -59,8 +59,8 @@ HIGHER_IS_BETTER_CHANNELS = frozenset({
     "availability",
     "confidence",
     "available_capacity",
-    "delivery_confidence",
-    "stream_backlog_health",
+    # delivery_confidence / stream_backlog_health retired 2026-09-25
+    # (fix/bus-observer-scope) -- removed here and in the selectors.py copy.
     # stability (2026-09-10): how steady a node's recent strain has been, not
     # how loaded it is right now -- see orion/telemetry/biometrics_pipeline.py
     # ::_stability_from_induction(). Kept in sync with the separate copy in

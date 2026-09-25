@@ -9,7 +9,6 @@ _RULES: tuple[tuple[str, str], ...] = (
     ("cortex_exec_step_load", "cpu_pressure"),
     ("cortex_exec_step_load", "gpu_pressure"),
     ("failure_pressure", "availability"),
-    ("stream_backlog_pressure", "stream_backlog_health"),
     ("reasoning_load", "cpu_pressure"),
 )
 

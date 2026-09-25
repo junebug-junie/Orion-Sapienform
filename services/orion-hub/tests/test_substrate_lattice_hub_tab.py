@@ -84,3 +84,13 @@ def test_lattice_simulator_surfaces_unmeasured_and_ignored() -> None:
     assert "ignored_thresholds" in js
     assert "data-dirty" in js
     assert '.replace(/"/g, "&quot;")' in js
+
+
+def test_m3_card_reads_no_retired_bus_observer_fields() -> None:
+    """stream_backlog_pressure / delivery_confidence were retired from
+    TransportBusStateV1 2026-09-25 (fix/bus-observer-scope). A card still reading
+    them would render "—" forever -- an empty panel that looks like a quiet bus."""
+    js = LATTICE_JS.read_text(encoding="utf-8")
+    for retired in ("b.stream_backlog_pressure", "b.delivery_confidence", "b.stream_backlog_health"):
+        assert retired not in js
+    assert "b.reliability_pressure" in js

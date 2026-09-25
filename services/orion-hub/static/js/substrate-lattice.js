@@ -189,8 +189,8 @@ function _renderProofChain(chain) {
               contract_pressure: <b>${_fmt(b.contract_pressure)}</b> &nbsp;|&nbsp;
               catalog_drift_pressure: <b>${_fmt(b.catalog_drift_pressure)}</b><br>
               observer_failure_pressure: <b>${_fmt(b.observer_failure_pressure)}</b> &nbsp;|&nbsp;
-              delivery_confidence: <b>${_fmt(b.delivery_confidence)}</b> &nbsp;|&nbsp;
-              stream_backlog_pressure <span class="text-gray-600">(world_pulse streams only)</span>: <b>${_fmt(b.stream_backlog_pressure)}</b></div>`;
+              reliability_pressure: <b>${_fmt(b.reliability_pressure)}</b> &nbsp;|&nbsp;
+              redis_ping_ok: <b>${_esc(b.redis_ping_ok)}</b></div>`;
           })
           .join("")
       : '<span class="text-gray-500">no buses in projection</span>'

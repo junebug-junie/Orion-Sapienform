@@ -12,7 +12,6 @@ from orion.schemas.transport_projection import TransportBusProjectionV1
 from orion.substrate.ids import stable_delta_id, stable_receipt_id
 
 from .constants import (
-    DEFAULT_STREAM_DEPTH_CRITICAL,
     TRANSPORT_BUS_PROJECTION_ID,
     TRANSPORT_REDUCER_ID,
     TRANSPORT_SOURCE_SERVICE,
@@ -89,7 +88,6 @@ def reduce_transport_trace_events(
     projection: TransportBusProjectionV1,
     now: datetime | None = None,
     reducer_id: str = TRANSPORT_REDUCER_ID,
-    stream_depth_critical: int = DEFAULT_STREAM_DEPTH_CRITICAL,
     load_trace_events: TraceEventsLoader | None = None,
 ) -> tuple[TransportBusProjectionV1, ReductionReceiptV1]:
     """Reduce one trace group into `buses[bus:<node>]`, which it REPLACES.
@@ -184,7 +182,6 @@ def reduce_transport_trace_events(
         incoming = extract_transport_bus_state_from_events(
             tick_events,
             now=clock,
-            stream_depth_critical=stream_depth_critical,
         )
     except ValueError as exc:
         warnings.append(str(exc))
@@ -212,13 +209,8 @@ def reduce_transport_trace_events(
     after_payload["pressure_hints"] = {
         k: after_payload[k]
         for k in (
-            "stream_backlog_health",
-            "delivery_confidence",
-            "stream_depth_pressure",
-            "backpressure",
             "catalog_drift_pressure",
             "observer_failure_pressure",
-            "stream_backlog_pressure",
             "contract_pressure",
             "reliability_pressure",
         )

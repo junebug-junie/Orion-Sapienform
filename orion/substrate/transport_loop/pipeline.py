@@ -9,7 +9,6 @@ from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.transport_projection import TransportBusProjectionV1
 
 from .constants import (
-    DEFAULT_STREAM_DEPTH_CRITICAL,
     NON_BUS_TRANSPORT_NODE_IDS,
     NON_BUS_TRANSPORT_TARGET_IDS,
     TRANSPORT_BUS_PROJECTION_ID,
@@ -49,7 +48,6 @@ def process_transport_grammar_events(
     save_projection: TransportProjectionSaver,
     save_receipt: ReceiptSaver,
     now: datetime | None = None,
-    stream_depth_critical: int = DEFAULT_STREAM_DEPTH_CRITICAL,
     load_trace_events: TraceEventsLoader | None = None,
 ) -> dict[str, int]:
     """`load_trace_events` lets a trace cut across two cursor batches be
@@ -76,7 +74,6 @@ def process_transport_grammar_events(
             events=trace_events,
             projection=projection,
             now=clock,
-            stream_depth_critical=stream_depth_critical,
             load_trace_events=load_trace_events,
         )
         save_receipt(receipt)

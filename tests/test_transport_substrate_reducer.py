@@ -94,10 +94,15 @@ def test_parse_bus_transport_trace_id() -> None:
 
 def test_extract_live_athena_rollup_pressures() -> None:
     state = extract_transport_bus_state_from_events(_live_events(), now=NOW)
-    pressures = compute_transport_pressures(state, stream_depth_critical=100_000)
-    assert pressures["stream_backlog_health"] == 1.0
+    pressures = compute_transport_pressures(state)
     assert pressures["catalog_drift_pressure"] == 1.0
-    assert pressures["stream_backlog_pressure"] == 0.0
+    # ping ok, no observer failure -> reliability 0.0 (same value the retired
+    # 1 - delivery_confidence formula gave).
+    assert pressures["reliability_pressure"] == 0.0
+    # _live_events() still carries two pre-retirement bus_stream_depth_observed
+    # atoms: they must not count as evidence or produce any depth field.
+    assert "gev_d1" not in state.evidence_event_ids
+    assert "gev_d2" not in state.evidence_event_ids
     # contract_pressure is now genuinely independent of catalog_drift_pressure
     # (see test_contract_pressure_diverges_from_catalog_drift_pressure below):
     # _live_events() has no bus_schema_validation_failed atoms, so
@@ -152,7 +157,7 @@ def test_contract_pressure_diverges_from_catalog_drift_pressure() -> None:
         _event("gev_done", "bus_observer_tick_completed", "streams_observed=2 sample_window_id=20260525T233010Z"),
     ]
     state = extract_transport_bus_state_from_events(events, now=NOW)
-    pressures = compute_transport_pressures(state, stream_depth_critical=100_000)
+    pressures = compute_transport_pressures(state)
     assert state.uncataloged_stream_count == 1
     assert state.schema_mismatch_stream_count == 1
     # Same magnitude here (1/2 each) by coincidence of this fixture, but they
@@ -171,7 +176,7 @@ def test_contract_pressure_diverges_from_catalog_drift_pressure() -> None:
         ),
     ]
     state2 = extract_transport_bus_state_from_events(events_more_mismatch, now=NOW)
-    pressures2 = compute_transport_pressures(state2, stream_depth_critical=100_000)
+    pressures2 = compute_transport_pressures(state2)
     # catalog_drift_pressure is untouched by the extra schema-mismatch atom...
     assert pressures2["catalog_drift_pressure"] == 0.5
     # ...while contract_pressure moves independently.
@@ -218,7 +223,7 @@ class TestCatalogDriftPressureMeshWideFix:
     def test_mesh_wide_census_wins_over_old_formula_when_present(self) -> None:
         events = self._events_with_census(undeclared_active_count=2, catalog_size=264)
         state = extract_transport_bus_state_from_events(events, now=NOW)
-        pressures = compute_transport_pressures(state, stream_depth_critical=100_000)
+        pressures = compute_transport_pressures(state)
 
         assert state.undeclared_active_count == 2
         assert state.catalog_size == 264
@@ -232,7 +237,7 @@ class TestCatalogDriftPressureMeshWideFix:
         # test_extract_live_athena_rollup_pressures, confirming the fallback
         # path is exactly the pre-existing behavior, not a new formula.
         state = extract_transport_bus_state_from_events(_live_events(), now=NOW)
-        pressures = compute_transport_pressures(state, stream_depth_critical=100_000)
+        pressures = compute_transport_pressures(state)
 
         assert state.undeclared_active_count is None
         assert pressures["catalog_drift_pressure"] == 1.0
@@ -240,7 +245,7 @@ class TestCatalogDriftPressureMeshWideFix:
     def test_zero_undeclared_active_is_a_real_measured_zero_not_fallback(self) -> None:
         events = self._events_with_census(undeclared_active_count=0, catalog_size=264)
         state = extract_transport_bus_state_from_events(events, now=NOW)
-        pressures = compute_transport_pressures(state, stream_depth_critical=100_000)
+        pressures = compute_transport_pressures(state)
 
         assert state.undeclared_active_count == 0
         # A real, honest zero -- not the old formula's 1.0.
@@ -256,4 +261,48 @@ def test_reducer_emits_transport_bus_delta_with_pressure_hints() -> None:
     assert delta.target_id == "bus:athena"
     hints = (delta.after or {}).get("pressure_hints") or {}
     assert hints["catalog_drift_pressure"] == 1.0
-    assert hints["stream_backlog_pressure"] == 0.0
+    # Exactly these four survive the 2026-09-25 retirement of the XLEN
+    # depth family (stream_backlog_*/delivery_confidence/stream_depth_pressure/
+    # backpressure). A retired name reappearing here would re-feed the field.
+    assert set(hints) == {
+        "catalog_drift_pressure",
+        "observer_failure_pressure",
+        "contract_pressure",
+        "reliability_pressure",
+    }
+
+
+@pytest.mark.parametrize("ping_ok", [True, None, False])
+@pytest.mark.parametrize("observer_failures", [0, 1])
+def test_reliability_pressure_unchanged_by_delivery_confidence_retirement(
+    ping_ok: bool | None, observer_failures: int
+) -> None:
+    """reliability_pressure used to be max(observer_failure, 1 -
+    delivery_confidence), with delivery_confidence derived from the ping. The
+    2026-09-25 retirement removed delivery_confidence; reliability_pressure
+    must read exactly what it read before in every ping/failure combination,
+    including the non-calm ones (ping failed, observer failed)."""
+    from orion.schemas.transport_projection import TransportBusStateV1
+
+    state = TransportBusStateV1(
+        target_id="bus:athena",
+        node_id="athena",
+        sample_window_id="w",
+        source_trace_id="t",
+        redis_ping_ok=ping_ok,
+        observer_failure_count=observer_failures,
+    )
+    # The pre-retirement formula, verbatim.
+    health = 1.0 if ping_ok is True else (0.0 if ping_ok is False else 0.5)
+    obs = 1.0 if observer_failures > 0 else 0.0
+    if obs > 0.0:
+        dc = 0.0
+    elif health >= 1.0:
+        dc = 1.0
+    elif health == 0.5:
+        dc = 0.5
+    else:
+        dc = 0.0
+    expected = max(obs, 1.0 - dc)
+
+    assert compute_transport_pressures(state)["reliability_pressure"] == expected

@@ -116,6 +116,13 @@ class Settings(BaseSettings):
     llm_lane_routing_enabled: bool = Field(True, alias="LLM_LANE_ROUTING_ENABLED")
     llm_gateway_health_port: int = Field(8210, alias="LLM_GATEWAY_HEALTH_PORT")
     llm_gateway_concurrent_handlers: bool = Field(True, alias="LLM_GATEWAY_CONCURRENT_HANDLERS")
+    # Inference grammar windows (services/orion-llm-gateway/app/grammar_emit.py): the
+    # gateway counts its own bus-RPC call outcomes per serving node and publishes one
+    # grammar trace per window on orion:grammar:event. Off by default: turning it on
+    # adds ~2-4 grammar_events rows per window and nothing else until the substrate
+    # reducer (ENABLE_LLM_INFERENCE_REDUCER) and field flag are also on.
+    llm_gateway_grammar_enabled: bool = Field(False, alias="LLM_GATEWAY_GRAMMAR_ENABLED")
+    llm_gateway_grammar_window_sec: float = Field(60.0, alias="LLM_GATEWAY_GRAMMAR_WINDOW_SEC")
     llm_gateway_anthropic_passthrough_enabled: bool = Field(
         True, alias="LLM_GATEWAY_ANTHROPIC_PASSTHROUGH_ENABLED"
     )

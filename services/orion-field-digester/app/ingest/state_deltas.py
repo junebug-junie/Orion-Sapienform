@@ -614,6 +614,26 @@ def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
         # "stream_backlog_pressure" is always present whenever
         # "stream_depth_pressure"/"backpressure" would have been.
 
+    if delta.target_kind == "llm_inference_node":
+        # orion-llm-gateway's own count of calls it sent to this node's backends
+        # that came back without an answer (orion/substrate/llm_inference_loop/).
+        # One fresh reading per gateway window, so mode="replace", same as the
+        # transport channels above. The reducer omits the hint entirely when the
+        # node got no upstream traffic that window: nothing is written and the last
+        # measured reading holds (not in NODE_DECAY_CHANNELS -- decay would fade a
+        # real failure into a fake calm 0.0), rather than a fabricated 0.0.
+        hints = dict((delta.after or {}).get("pressure_hints") or {})
+        if "inference_failure_pressure" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_id,
+                    channel="inference_failure_pressure",
+                    intensity=max(0.0, min(1.0, float(hints["inference_failure_pressure"]))),
+                    label=delta.delta_id,
+                    mode="replace",
+                )
+            )
+
     if delta.target_kind == "prediction_signal":
         hints = dict((delta.after or {}).get("pressure_hints") or {})
         node_key = _node_key(str((delta.after or {}).get("node_id") or delta.target_id))

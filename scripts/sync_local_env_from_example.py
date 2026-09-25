@@ -164,6 +164,11 @@ SYNC_PREFIXES = (
     "ACTIONS_DAILY_GOAL_ARCHIVE_",
     # Transport substrate stack (PR #648 / M3–M7)
     "ENABLE_TRANSPORT_",
+    # llm_inference grammar lane (2026-09-25): gateway emitter, substrate reducer,
+    # field-digester gate. None matched an existing prefix.
+    "LLM_GATEWAY_GRAMMAR_",
+    "ENABLE_LLM_INFERENCE_",
+    "LLM_INFERENCE_",
     "ENABLE_PRE_TURN_",
     "ENABLE_POST_TURN_",
     "PRE_TURN_APPRAISAL_",

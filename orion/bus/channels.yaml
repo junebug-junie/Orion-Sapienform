@@ -2829,6 +2829,9 @@ channels:
       - orion-gpu-pool
       - orion-harness-governor
       - orion-hub
+      # per-window inference outcome traces (llm_gateway.inference:), gated by
+      # LLM_GATEWAY_GRAMMAR_ENABLED -- services/orion-llm-gateway/app/grammar_emit.py
+      - orion-llm-gateway
       - orion-substrate-runtime
     # orion-equilibrium-service added for the chat_turn metacog trigger's
     # correlator, which filters this stream to semantic_role=="exec_turn_timeout"

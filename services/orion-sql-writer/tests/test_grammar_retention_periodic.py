@@ -313,6 +313,11 @@ class TestTheLaneTableMatchesTheRealConsumers:
             EXECUTION_TRACE_PREFIX,
         )
         from orion.substrate.transport_loop.constants import TRANSPORT_GRAMMAR_CURSOR_NAME
+        from orion.substrate.llm_inference_loop.constants import (
+            LLM_INFERENCE_GRAMMAR_CURSOR_NAME,
+            LLM_INFERENCE_SOURCE_SERVICE,
+            LLM_INFERENCE_TRACE_PREFIX,
+        )
 
         lanes = {name: (set(srcs), pfx) for name, srcs, pfx in grammar_truth.GRAMMAR_LANES}
 
@@ -322,7 +327,12 @@ class TestTheLaneTableMatchesTheRealConsumers:
             set(EXECUTION_SOURCE_SERVICES),
             EXECUTION_TRACE_PREFIX,
         )
+        assert lanes[LLM_INFERENCE_GRAMMAR_CURSOR_NAME] == (
+            {LLM_INFERENCE_SOURCE_SERVICE},
+            LLM_INFERENCE_TRACE_PREFIX,
+        )
         assert set(lanes) == {
+            LLM_INFERENCE_GRAMMAR_CURSOR_NAME,
             CHAT_GRAMMAR_CURSOR_NAME,
             ROUTE_GRAMMAR_CURSOR_NAME,
             GRAMMAR_CURSOR_NAME,

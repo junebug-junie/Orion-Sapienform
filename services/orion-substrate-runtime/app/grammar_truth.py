@@ -16,6 +16,7 @@ REDUCER_KEY_BY_CURSOR: dict[str, str] = {
     "execution_grammar_reducer": "execution_trajectory",
     "transport_grammar_reducer": "transport_bus",
     "route_grammar_consumer": "route_grammar",
+    "llm_inference_grammar_reducer": "llm_inference",
 }
 
 ENABLED_BY_REDUCER_KEY: dict[str, Any] = {
@@ -24,6 +25,7 @@ ENABLED_BY_REDUCER_KEY: dict[str, Any] = {
     "execution_trajectory": lambda s: s.enable_execution_trajectory_reducer,
     "transport_bus": lambda s: s.enable_transport_bus_reducer,
     "route_grammar": lambda s: s.enable_route_grammar_reducer,
+    "llm_inference": lambda s: s.enable_llm_inference_reducer,
 }
 
 # Cursors that only advance on real, externally-triggered traffic rather than a
@@ -166,6 +168,7 @@ def build_substrate_grammar_truth(store: BiometricsSubstrateStore) -> dict[str, 
             "execution_trajectory": settings.enable_execution_trajectory_reducer,
             "transport_bus": settings.enable_transport_bus_reducer,
             "route_grammar": settings.enable_route_grammar_reducer,
+            "llm_inference": settings.enable_llm_inference_reducer,
         },
         "grammar_poll_interval_sec": settings.grammar_poll_interval_sec,
         "cursor_settings": {

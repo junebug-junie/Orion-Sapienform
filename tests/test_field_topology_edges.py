@@ -14,8 +14,11 @@ Why each check exists:
   writes reads a seeded 0.0 forever. That is exactly the
   capability:transport -> capability:orchestration edge deleted 2026-09-25
   (stream_backlog_pressure, 0.0 on 121,114 of 121,114 live ticks).
-- confidence/available_capacity are the one exception: diffusion derives them
-  from `pressure` whenever a capability has a pressure edge.
+- confidence/available_capacity are the one exception: apply_diffusion()
+  derives them from `pressure` for every capability that is the target of any
+  edge (reconcile always seeds `pressure`), so any inbound edge counts.
+- One hop only: a channel written by an edge whose own source is dead still
+  passes. That case needs live data, not YAML.
 - The biometrics_lattice.yaml alias was deleted the same day. It fell three
   edges behind the canonical file without anything noticing; a second copy of
   the topology is how that happens again.
@@ -43,8 +46,7 @@ def _written_channels(edges: list[dict]) -> dict[str, set[str]]:
     for edge in edges:
         written.setdefault(edge["target_id"], set()).update(edge["channel_map"].values())
     for channels in written.values():
-        if "pressure" in channels:
-            channels.update(_DERIVED_FROM_PRESSURE)
+        channels.update(_DERIVED_FROM_PRESSURE)
     return written
 
 
@@ -114,7 +116,7 @@ def test_no_transport_to_orchestration_edge_on_the_dead_channel() -> None:
 
 def test_topology_alias_is_gone_and_unreferenced() -> None:
     assert not (REPO / "config" / "field" / "biometrics_lattice.yaml").exists()
-    hits = subprocess.run(
+    proc = subprocess.run(
         [
             "git",
             "grep",
@@ -132,5 +134,8 @@ def test_topology_alias_is_gone_and_unreferenced() -> None:
         capture_output=True,
         text=True,
         check=False,
-    ).stdout.split()
-    assert hits == []
+    )
+    # 0 = matches, 1 = no matches; anything else (e.g. 128, no work tree)
+    # must not pass silently as "no references".
+    assert proc.returncode in (0, 1), proc.stderr
+    assert proc.stdout.split() == []

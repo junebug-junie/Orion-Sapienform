@@ -200,6 +200,13 @@ proposal_templates:
   # 132 -> 340, watch_reliability 16 -> 240, inspect_execution_pressure
   # 121 -> 284); candidates per tick are unchanged (max_candidates cap).
   # Replay: scripts/analysis/replay_proposal_template_removal.py.
+  # Caveat, disclosed: inspect_transport_status's gain is NOT transport
+  # signal. Its dimension is field-level reliability_pressure, a max over
+  # every node/capability reliability channel, and capability:transport's own
+  # reliability read 0.0 throughout -- so it is currently driven by
+  # llm_inference/orchestration reliability. Kept (not deleted) because the
+  # RPC-health bridge is about to make capability:transport's reliability
+  # real; re-check this template once that lands.
 
   defer_due_to_low_readiness:
     kind: defer

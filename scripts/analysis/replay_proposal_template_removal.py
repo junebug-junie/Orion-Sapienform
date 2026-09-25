@@ -24,6 +24,15 @@ Then:
     python scripts/analysis/replay_proposal_template_removal.py \\
         warranted_fields.jsonl --drop inspect_bus_channel_catalog ...
 
+To reproduce the 2026-09-25 numbers after that deletion merged, point
+--policy at the pre-deletion file, e.g.
+`--policy <(git show origin/main~1:config/proposals/proposal_policy.v1.yaml)`
+with a commit from before chore/transport-lattice-semantics; against the
+current policy the dropped keys no longer exist and before == after.
+
+"top5" is arena rank (the first five candidates by priority), not dispatch
+admission, which also applies reserved slots, aging and the allocator.
+
 Attention is replayed as None, so inspect_attended_target's numbers are the
 no-attention case; external producers (reverie, cognitive hop) are not
 replayed. Both limits apply equally to the before and after columns.

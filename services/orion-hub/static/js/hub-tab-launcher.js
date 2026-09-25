@@ -101,28 +101,56 @@
       else open();
     });
 
-    // Backdrop click (the overlay itself, not the panel) closes.
+    // Backdrop click (the overlay itself, not the panel) closes. The overlay
+    // starts below the header, so a click on another header control (e.g. the
+    // runtime marquee) must close it too.
+    const panel = modal.firstElementChild;
     modal.addEventListener("click", (event) => {
       if (event.target === modal) close(false);
     });
+    doc.addEventListener("click", (event) => {
+      if (!isOpen()) return;
+      const t = event.target;
+      if (button.contains(t) || modal.contains(t)) return;
+      close(false);
+    });
 
     // Picking a tab closes the launcher; app.js's own click handler on the
-    // anchor still runs and switches the panel.
+    // anchor still runs and switches the panel. Focus returns to the button,
+    // since the chosen anchor is now hidden and would drop focus to <body>.
     ordered.forEach(({ anchor }) => {
-      anchor.addEventListener("click", () => close(false));
+      anchor.addEventListener("click", () => close(true));
     });
 
     doc.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && isOpen()) {
+      if (!isOpen()) return;
+      if (event.key === "Escape") {
         event.preventDefault();
         close(true);
+        return;
+      }
+      // aria-modal: keep Tab cycling inside the launcher.
+      if (event.key === "Tab") {
+        const stops = (filter ? [filter] : []).concat(visibleAnchors());
+        if (!stops.length) return;
+        const first = stops[0];
+        const last = stops[stops.length - 1];
+        const at = doc.activeElement;
+        const inside = panel ? panel.contains(at) : stops.includes(at);
+        if (event.shiftKey && (at === first || !inside)) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && (at === last || !inside)) {
+          event.preventDefault();
+          first.focus();
+        }
       }
     });
 
     if (filter) {
       filter.addEventListener("input", applyFilter);
       filter.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter") return;
+        if (event.key !== "Enter" || event.isComposing) return;
         const first = visibleAnchors()[0];
         if (first) {
           event.preventDefault();

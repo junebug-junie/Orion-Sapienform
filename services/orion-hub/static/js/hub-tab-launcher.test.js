@@ -40,6 +40,11 @@ class FakeEl {
     this.hashTarget = hashTarget;
     this.listeners = {};
   }
+  get firstElementChild() { return this.children[0] || null; }
+  contains(other) {
+    for (let n = other; n; n = n.parent) if (n === this) return true;
+    return false;
+  }
   setAttribute(k, v) { this.attrs[k] = String(v); }
   getAttribute(k) { return this.attrs[k]; }
   appendChild(child) {
@@ -69,19 +74,35 @@ function buildDoc(tabs) {
     doc.els[id] = el;
     return el;
   };
-  const nav = make('hubPrimaryNav');
-  make('hubTabLauncherButton');
+  const header = make('header');
+  const button = make('hubTabLauncherButton');
+  header.appendChild(button);
+  button.appendChild(make('hubTabLauncherCurrent'));
+  header.appendChild(make('runtimeMarquee'));
   const modal = make('hubTabLauncherModal');
   modal.hidden = true;
-  make('hubTabLauncherCurrent');
-  make('hubTabLauncherFilter');
-  make('hubTabLauncherEmpty');
+  header.appendChild(modal);
+  const panel = make('panel');
+  modal.appendChild(panel);
+  const nav = make('hubPrimaryNav');
+  panel.appendChild(make('hubTabLauncherFilter'));
+  panel.appendChild(nav);
+  panel.appendChild(make('hubTabLauncherEmpty'));
   tabs.forEach(([id, text, active]) => {
     nav.appendChild(make(id, { text, hashTarget: '#' + id, classes: [active ? 'bg-indigo-600' : 'bg-gray-800'] }));
   });
   doc.getElementById = (id) => doc.els[id] || null;
   doc.addEventListener = (type, fn) => { (doc.listeners[type] ||= []).push(fn); };
-  doc.key = (key) => (doc.listeners.keydown || []).forEach((fn) => fn({ key, preventDefault() {} }));
+  doc.key = (key, extra = {}) => {
+    const ev = { key, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...extra };
+    (doc.listeners.keydown || []).forEach((fn) => fn(ev));
+    return ev;
+  };
+  // Bubble a click from an element up to the document, as a browser would.
+  doc.clickFrom = (el) => {
+    el.click();
+    (doc.listeners.click || []).forEach((fn) => fn({ type: 'click', target: el }));
+  };
   return doc;
 }
 
@@ -176,11 +197,45 @@ test('backdrop click closes, a click inside the panel does not', () => {
   assert.equal(modal.hidden, true);
 });
 
-test('choosing a tab closes the launcher', () => {
-  const { el } = launcher();
+test('choosing a tab closes the launcher and hands focus back to the button', () => {
+  const { doc, el } = launcher();
   el('hubTabLauncherButton').click();
   el('memoryTabButton').click();
   assert.equal(el('hubTabLauncherModal').hidden, true);
+  assert.equal(doc.activeElement, el('hubTabLauncherButton'), 'hidden anchor must not keep focus');
+});
+
+test('a click elsewhere in the header closes it; clicks on the button or panel do not', () => {
+  const { doc, el } = launcher();
+  doc.clickFrom(el('hubTabLauncherButton'));
+  assert.equal(el('hubTabLauncherModal').hidden, false, 'opening click must not self-close');
+  doc.clickFrom(el('hubTabLauncherFilter'));
+  assert.equal(el('hubTabLauncherModal').hidden, false);
+  doc.clickFrom(el('runtimeMarquee'));
+  assert.equal(el('hubTabLauncherModal').hidden, true);
+});
+
+test('Tab cycles inside the open launcher (aria-modal focus trap)', () => {
+  const { doc, el } = launcher();
+  el('hubTabLauncherButton').click();
+  assert.equal(doc.activeElement, el('hubTabLauncherFilter'));
+  el('substrateAtlasTabButton').focus(); // last visible tile
+  let ev = doc.key('Tab');
+  assert.equal(ev.defaultPrevented, true);
+  assert.equal(doc.activeElement, el('hubTabLauncherFilter'));
+  ev = doc.key('Tab', { shiftKey: true });
+  assert.equal(doc.activeElement, el('substrateAtlasTabButton'));
+  el('memoryTabButton').focus(); // middle: browser handles it
+  ev = doc.key('Tab');
+  assert.equal(ev.defaultPrevented, false);
+  el('runtimeMarquee').focus(); // escaped somehow: pulled back in
+  doc.key('Tab');
+  assert.equal(doc.activeElement, el('hubTabLauncherFilter'));
+});
+
+test('Tab is left alone while the launcher is closed', () => {
+  const { doc } = launcher();
+  assert.equal(doc.key('Tab').defaultPrevented, false);
 });
 
 test('typing filters tiles, empty state shows on no match, Enter opens first match', () => {
@@ -203,6 +258,12 @@ test('typing filters tiles, empty state shows on no match, Enter opens first mat
   assert.equal(el('hubTabLauncherModal').hidden, true);
 
   el('hubTabLauncherButton').click();
+  filter.value = 'atlas';
+  filter.dispatch('input');
+  filter.dispatch('keydown', { key: 'Enter', isComposing: true });
+  assert.equal(el('hubTabLauncherModal').hidden, false, 'IME confirm Enter must not navigate');
+  el('hubTabLauncherButton').click();
+  el('hubTabLauncherButton').click();
   assert.equal(filter.value, '', 'reopening clears the old query');
   assert.equal(el('memoryTabButton').hidden, false);
   filter.value = 'zzz';
@@ -222,6 +283,7 @@ test('header label mirrors whichever tab carries the active class', () => {
 test('missing launcher markup is a no-op, not a crash', () => {
   const doc = buildDoc([['hubTabButton', 'Hub', true]]);
   delete doc.els.hubTabLauncherModal;
+  doc.getElementById = (id) => doc.els[id] || null;
   assert.equal(initHubTabLauncher(doc), null);
 });
 

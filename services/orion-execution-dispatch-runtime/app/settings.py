@@ -296,6 +296,21 @@ class Settings(BaseSettings):
     dispatch_reconcile_interval_sec: float = Field(
         900.0, alias="DISPATCH_RECONCILE_INTERVAL_SEC"
     )
+    # 2026-09-25: the frequent sweep above only looks at rows generated inside this window
+    # (seconds). Each probe is a random read, so keep it small; the full sweep covers the rest.
+    dispatch_reconcile_window_sec: float = Field(
+        7200.0, alias="DISPATCH_RECONCILE_WINDOW_SEC", gt=0.0
+    )
+    # How often the FULL-history sweep may run (seconds): one read-only hash anti-join, then
+    # short batched UPDATEs. 0 disables it (the bounded sweep still runs).
+    dispatch_reconcile_full_sweep_interval_sec: float = Field(
+        86400.0, alias="DISPATCH_RECONCILE_FULL_SWEEP_INTERVAL_SEC", ge=0.0
+    )
+    # UTC hour the full sweep is allowed in (9 = 03:00 MDT / 02:00 MST). -1 = any hour, spaced by the
+    # interval alone.
+    dispatch_reconcile_full_sweep_hour_utc: int = Field(
+        9, alias="DISPATCH_RECONCILE_FULL_SWEEP_HOUR_UTC", ge=-1, le=23
+    )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
     @model_validator(mode="after")

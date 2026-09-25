@@ -10,8 +10,20 @@ from pydantic import ValidationError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
+from orion.substrate.pending_marker_reconcile import PendingMarkerReconciler, PendingMarkerSpec
+
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 from orion.schemas.proposal_frame import ProposalFrameV1
+
+_PENDING_MARKER_SPEC = PendingMarkerSpec(
+    parent_table="substrate_proposal_frames",
+    marker_column="policy_pending",
+    child_table="substrate_policy_decision_frames",
+    child_fk_column="source_proposal_frame_id",
+    log_prefix="policy_pending",
+    parent_label="proposals",
+    child_label="policy decision frame",
+)
 
 logger = logging.getLogger("orion.policy_runtime.store")
 
@@ -22,6 +34,9 @@ class PolicyRuntimeStore:
         postgres_uri: str,
         *,
         reconcile_interval_sec: float = 900.0,
+        reconcile_window_sec: float = 7200.0,
+        reconcile_full_sweep_interval_sec: float = 86400.0,
+        reconcile_full_sweep_hour_utc: int = 9,
     ) -> None:
         self._engine: Engine = create_engine(
             postgres_uri,
@@ -29,13 +44,17 @@ class PolicyRuntimeStore:
             json_serializer=json.dumps,
             json_deserializer=json.loads,
         )
-        # The safety net for the `policy_pending` marker. See reconcile_policy_pending.
-        self._reconcile_interval_sec = float(reconcile_interval_sec)
-        # Seeded to NOW, not None: otherwise the expensive full-table anti-join runs on the
-        # first tick of every process start, and a crash loop (this service has documented
-        # schema-incompat stalls) would re-run it on each restart -- defeating the rate limit
-        # that is the entire reason the reconciler is safe to call every tick.
-        self._last_reconcile_mono: float | None = time.monotonic()
+        # The safety net for the pending marker: a bounded frequent sweep plus a rare read-only
+        # full sweep. Seeding/rate-limit semantics live in PendingMarkerReconciler.
+        self._reconciler = PendingMarkerReconciler(
+            _PENDING_MARKER_SPEC,
+            interval_sec=reconcile_interval_sec,
+            window_sec=reconcile_window_sec,
+            full_sweep_interval_sec=reconcile_full_sweep_interval_sec,
+            full_sweep_hour_utc=reconcile_full_sweep_hour_utc,
+            logger=logger,
+            monotonic=time.monotonic,
+        )
 
     # ROADMAP D2 follow-through, 2026-08-19. Same fix as the dispatch->feedback stage; see
     # services/orion-sql-db/manual_migration_substrate_pending_markers.sql for the measurements
@@ -279,36 +298,14 @@ class PolicyRuntimeStore:
             logger.info("policy_pending_bulk_drained cleared=%s", drained)
         return drained
 
-    def reconcile_policy_pending(self, *, force: bool = False) -> int:
-        """Re-queue any proposal whose marker was cleared without a policy decision frame.
+    def reconcile_policy_pending(self, *, force: bool = False, full: bool = False) -> int:
+        """Re-queue rows whose pending marker was cleared without the child frame existing.
 
-        Only ever sets the marker back to TRUE -- it can add work, never remove it, so a bug
-        here costs duplicated effort rather than lost effort. This is the expensive anti-join
-        the marker exists to avoid, so it is rate-limited to once per `reconcile_interval_sec`
-        (default 900s) rather than running on the 2s poll. Returns rows re-queued.
+        Only ever sets the marker TRUE -- it can add work, never remove it. Rate-limited to once
+        per `reconcile_interval_sec`, and BOUNDED to rows generated inside
+        `reconcile_window_sec`; the whole history is checked by one read-only anti-join plus short
+        batched UPDATEs at most once per `reconcile_full_sweep_interval_sec` (see orion/substrate/pending_marker_reconcile.py
+        for why: the unbounded version was athena's top I/O statement, 2026-09-25).
+        Returns the number of rows re-queued.
         """
-        now = time.monotonic()
-        if not force and self._last_reconcile_mono is not None:
-            if (now - self._last_reconcile_mono) < self._reconcile_interval_sec:
-                return 0
-        self._last_reconcile_mono = now
-        with self._engine.begin() as conn:
-            result = conn.execute(
-                text("""
-                    UPDATE substrate_proposal_frames p
-                       SET policy_pending = true
-                     WHERE NOT p.policy_pending
-                       AND NOT EXISTS (
-                             SELECT 1 FROM substrate_policy_decision_frames d
-                              WHERE d.source_proposal_frame_id = p.frame_id
-                       )
-                """)
-            )
-        requeued = int(result.rowcount or 0)
-        if requeued:
-            logger.warning(
-                "policy_pending_reconciled requeued=%s -- proposals had their pending marker "
-                "cleared with no policy decision frame present. Work would have been lost.",
-                requeued,
-            )
-        return requeued
+        return self._reconciler.run(self._engine, force=force, full=full)

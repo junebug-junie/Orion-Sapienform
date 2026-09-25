@@ -262,3 +262,16 @@ def test_gpu_pool_keys_are_reached_by_the_default_sync() -> None:
         assert keys, service
         for key in keys:
             assert should_sync_key(key, all_keys=False), key
+
+
+def test_substrate_reconcile_keys_are_reached_by_the_default_sync() -> None:
+    """The bounded-reconciler keys (2026-09-25) must land in local .env on a default sync."""
+    for service, prefix in (("orion-policy-runtime", "POLICY_RECONCILE_"),
+                            ("orion-execution-dispatch-runtime", "DISPATCH_RECONCILE_"),
+                            ("orion-feedback-runtime", "FEEDBACK_RECONCILE_")):
+        assert service in sync_mod.DEFAULT_SERVICES
+        keys = [k for k in sync_mod.parse_kv(ROOT / "services" / service / ".env_example")
+                if k.startswith(prefix)]
+        assert len(keys) == 4, (service, keys)
+        for key in keys:
+            assert should_sync_key(key, all_keys=False), key

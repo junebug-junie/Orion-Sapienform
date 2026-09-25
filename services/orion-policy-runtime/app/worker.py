@@ -19,6 +19,9 @@ class PolicyRuntimeWorker:
         self._store = PolicyRuntimeStore(
             self._settings.postgres_uri,
             reconcile_interval_sec=self._settings.policy_reconcile_interval_sec,
+            reconcile_window_sec=self._settings.policy_reconcile_window_sec,
+            reconcile_full_sweep_interval_sec=self._settings.policy_reconcile_full_sweep_interval_sec,
+            reconcile_full_sweep_hour_utc=self._settings.policy_reconcile_full_sweep_hour_utc,
         )
         self._policy = load_substrate_policy(Path(self._settings.substrate_policy_path))
         self._stop = asyncio.Event()

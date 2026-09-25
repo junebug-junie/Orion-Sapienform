@@ -21,6 +21,9 @@ worker = PolicyRuntimeWorker()
 store = PolicyRuntimeStore(
     _settings.postgres_uri,
     reconcile_interval_sec=_settings.policy_reconcile_interval_sec,
+    reconcile_window_sec=_settings.policy_reconcile_window_sec,
+    reconcile_full_sweep_interval_sec=_settings.policy_reconcile_full_sweep_interval_sec,
+    reconcile_full_sweep_hour_utc=_settings.policy_reconcile_full_sweep_hour_utc,
 )
 heartbeat_chassis: HeartbeatOnly | None = None
 

@@ -10,6 +10,8 @@ from pydantic import ValidationError
 from sqlalchemy import bindparam, create_engine, text
 from sqlalchemy.engine import Engine
 
+from orion.substrate.pending_marker_reconcile import PendingMarkerReconciler, PendingMarkerSpec
+
 from orion.autonomy.contrast import ControlCell, ControlCellKey, TreatedCellKey
 from orion.autonomy.prediction import EffectPosterior
 from orion.schemas.action_prediction import ActionOutcomeRecordV1
@@ -19,6 +21,16 @@ from orion.schemas.feedback_frame import FeedbackFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 from orion.schemas.proposal_frame import ProposalFrameV1
+
+_PENDING_MARKER_SPEC = PendingMarkerSpec(
+    parent_table="substrate_execution_dispatch_frames",
+    marker_column="feedback_pending",
+    child_table="substrate_feedback_frames",
+    child_fk_column="source_execution_dispatch_frame_id",
+    log_prefix="feedback_pending",
+    parent_label="dispatch frames",
+    child_label="feedback frame",
+)
 
 logger = logging.getLogger("orion.feedback_runtime.store")
 
@@ -37,6 +49,9 @@ class FeedbackRuntimeStore:
         postgres_uri: str,
         *,
         reconcile_interval_sec: float = 900.0,
+        reconcile_window_sec: float = 7200.0,
+        reconcile_full_sweep_interval_sec: float = 86400.0,
+        reconcile_full_sweep_hour_utc: int = 9,
     ) -> None:
         self._engine: Engine = create_engine(
             postgres_uri,
@@ -44,13 +59,17 @@ class FeedbackRuntimeStore:
             json_serializer=json.dumps,
             json_deserializer=json.loads,
         )
-        # The safety net for the `feedback_pending` marker. See reconcile_feedback_pending.
-        self._reconcile_interval_sec = float(reconcile_interval_sec)
-        # Seeded to NOW, not None: otherwise the expensive full-table anti-join runs on the
-        # first tick of every process start, and a crash loop (this service has documented
-        # schema-incompat stalls) would re-run it on each restart -- defeating the rate limit
-        # that is the entire reason the reconciler is safe to call every tick.
-        self._last_reconcile_mono: float | None = time.monotonic()
+        # The safety net for the pending marker: a bounded frequent sweep plus a rare read-only
+        # full sweep. Seeding/rate-limit semantics live in PendingMarkerReconciler.
+        self._reconciler = PendingMarkerReconciler(
+            _PENDING_MARKER_SPEC,
+            interval_sec=reconcile_interval_sec,
+            window_sec=reconcile_window_sec,
+            full_sweep_interval_sec=reconcile_full_sweep_interval_sec,
+            full_sweep_hour_utc=reconcile_full_sweep_hour_utc,
+            logger=logger,
+            monotonic=time.monotonic,
+        )
 
     # ROADMAP D2 follow-through, 2026-08-19. This lookup WAS athena's I/O ceiling.
     #
@@ -166,43 +185,17 @@ class FeedbackRuntimeStore:
             logger.info("feedback_pending_bulk_drained cleared=%s", drained)
         return drained
 
-    def reconcile_feedback_pending(self, *, force: bool = False) -> int:
-        """Re-queue any dispatch frame whose marker was cleared without a feedback frame.
+    def reconcile_feedback_pending(self, *, force: bool = False, full: bool = False) -> int:
+        """Re-queue rows whose pending marker was cleared without the child frame existing.
 
-        The marker is cleared transactionally, so this should find nothing -- but "should" is
-        not a guarantee across manual SQL, restores, or a future bug, and the failure it guards
-        against is silent work loss. It only ever sets the marker back to TRUE: it can add work,
-        never remove it, so a bug here costs duplicated effort rather than lost effort.
-
-        This is the expensive anti-join the marker exists to avoid, which is why it is
-        rate-limited to once per `reconcile_interval_sec` (default 900s) instead of running on
-        the 2s poll. Returns the number of rows re-queued.
+        Only ever sets the marker TRUE -- it can add work, never remove it. Rate-limited to once
+        per `reconcile_interval_sec`, and BOUNDED to rows generated inside
+        `reconcile_window_sec`; the whole history is checked by one read-only anti-join plus short
+        batched UPDATEs at most once per `reconcile_full_sweep_interval_sec` (see orion/substrate/pending_marker_reconcile.py
+        for why: the unbounded version was athena's top I/O statement, 2026-09-25).
+        Returns the number of rows re-queued.
         """
-        now = time.monotonic()
-        if not force and self._last_reconcile_mono is not None:
-            if (now - self._last_reconcile_mono) < self._reconcile_interval_sec:
-                return 0
-        self._last_reconcile_mono = now
-        with self._engine.begin() as conn:
-            result = conn.execute(
-                text("""
-                    UPDATE substrate_execution_dispatch_frames d
-                       SET feedback_pending = true
-                     WHERE NOT d.feedback_pending
-                       AND NOT EXISTS (
-                             SELECT 1 FROM substrate_feedback_frames f
-                              WHERE f.source_execution_dispatch_frame_id = d.frame_id
-                       )
-                """)
-            )
-        requeued = int(result.rowcount or 0)
-        if requeued:
-            logger.warning(
-                "feedback_pending_reconciled requeued=%s -- dispatch frames had their pending "
-                "marker cleared with no feedback frame present. Work would have been lost.",
-                requeued,
-            )
-        return requeued
+        return self._reconciler.run(self._engine, force=force, full=full)
 
     def load_latest_dispatch_frame(self) -> ExecutionDispatchFrameV1 | None:
         with self._engine.connect() as conn:

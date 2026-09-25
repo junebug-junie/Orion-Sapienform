@@ -28,6 +28,9 @@ class FeedbackRuntimeWorker:
         self._store = FeedbackRuntimeStore(
             self._settings.postgres_uri,
             reconcile_interval_sec=self._settings.feedback_reconcile_interval_sec,
+            reconcile_window_sec=self._settings.feedback_reconcile_window_sec,
+            reconcile_full_sweep_interval_sec=self._settings.feedback_reconcile_full_sweep_interval_sec,
+            reconcile_full_sweep_hour_utc=self._settings.feedback_reconcile_full_sweep_hour_utc,
         )
         self._policy = load_feedback_policy(Path(self._settings.feedback_policy_path))
         self._stop = asyncio.Event()

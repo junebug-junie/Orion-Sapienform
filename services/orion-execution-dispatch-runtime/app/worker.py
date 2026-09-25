@@ -244,6 +244,9 @@ class ExecutionDispatchRuntimeWorker:
             reconcile_interval_sec=getattr(
                 self._settings, "dispatch_reconcile_interval_sec", 900.0
             ),
+            reconcile_window_sec=self._settings.dispatch_reconcile_window_sec,
+            reconcile_full_sweep_interval_sec=self._settings.dispatch_reconcile_full_sweep_interval_sec,
+            reconcile_full_sweep_hour_utc=self._settings.dispatch_reconcile_full_sweep_hour_utc,
         )
         self._policy = load_execution_dispatch_policy(
             Path(self._settings.execution_dispatch_policy_path)

@@ -41,6 +41,8 @@ from orion.schemas.pre_turn_appraisal import (
     TurnAppraisalBundleV1,
 )
 from orion.schemas.thought import StanceReactRequestV1, ThoughtEventV1
+from orion.llm.resource_lease import GPU_LEASE_ROUTE
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.substrate.appraisal.turn_window import build_turn_window
 from orion.llm.routes import fcc_model_for_route, is_agent_route_model_label
@@ -1024,6 +1026,12 @@ async def execute_unified_turn(
         if payload.get("resource_lease") is not None
         else None
     )
+    # Stage 4: the durable run's GPU pool hold ref rides the whole turn (stance + harness).
+    turn_gpu_lease = (
+        GpuLeaseRefV1.model_validate(payload["gpu_lease"])
+        if payload.get("gpu_lease") is not None
+        else None
+    )
     appraisal = (mind_appraisal_text or "").strip()
     stance_user_message = appraisal or user_message
     stance_inputs: dict[str, Any] = {"user_message": stance_user_message}
@@ -1044,9 +1052,11 @@ async def execute_unified_turn(
         # the resolved motor preference: agent override or Exec's chat default.
         llm_route=(
             stance_lease.lane if stance_lease is not None
+            else GPU_LEASE_ROUTE if turn_gpu_lease is not None
             else "agent" if is_agent_route_model_label(resolved_fcc_model_label) else None
         ),
         resource_lease=stance_lease,
+        gpu_lease=turn_gpu_lease,
         # endogenous_outreach.py (OUTREACH_TAG="endogenous_outreach") already runs
         # its OWN agent-lane-then-chat-lane fallback around this whole call (PR
         # #2163) -- it re-invokes execute_unified_turn a second time on a fresh
@@ -1375,6 +1385,7 @@ async def execute_unified_turn(
     )
     harness_req = HarnessRunRequestV1(
         resource_lease=payload.get("resource_lease"),
+        gpu_lease=payload.get("gpu_lease"),
         inference_timeout_sec=payload.get("inference_timeout_sec"),
         reading_binding=reading_binding,
         reading_only=reading_only,

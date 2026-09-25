@@ -88,6 +88,8 @@ class ThoughtClient:
             # Preserve every legacy field (including its nulls); only the new
             # optional lease is omitted for consumers that reject extra fields.
             payload.pop("resource_lease", None)
+        if request.gpu_lease is None:
+            payload.pop("gpu_lease", None)  # same rule for the stage-4 hold ref
         envelope = BaseEnvelope(
             kind="stance.react.request.v1",
             source=self._source,

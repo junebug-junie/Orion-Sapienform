@@ -52,6 +52,8 @@ from orion.schemas.telemetry.turn_effect_explanations import (
 )
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.chat_stance import ChatStanceBrief
+from orion.llm.resource_lease import GPU_LEASE_ROUTE
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.substrate.appraisal import REPAIR_PRESSURE_CONTRACT_METADATA_KEY
 from orion.schemas.metacog_patches import MetacogDraftTextPatchV1
@@ -2040,6 +2042,16 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
         # Gateway must reject the mismatch instead of silently rerouting it.
         attempted = str(raw).strip() if raw else None
         return attempted or lease.lane, attempted
+    # Stage 4: a GPU pool hold ref. The gateway attaches the call to the hold's role whatever
+    # route it names; an explicit route is kept, else the hold's work-class route (a role such
+    # as "agent-gpu2" is not a route name and must never be forwarded as one).
+    ref_value = options.get("gpu_lease")
+    if ref_value is None:
+        ref_value = ctx.get("gpu_lease")
+    if ref_value is not None:
+        GpuLeaseRefV1.model_validate(ref_value)
+        attempted = str(raw).strip() if raw else None
+        return attempted or GPU_LEASE_ROUTE, attempted
     # `attempted` keeps the alias-resolved spelling even when it is rejected, so a rejected
     # override stays visible in the llm_route_selected log line (see docstring).
     resolved = str(raw or "").strip().lower()
@@ -4337,6 +4349,7 @@ async def call_step_services(
                 }
                 for _fwd_key in (
                     "resource_lease",
+                    "gpu_lease",
                     "structured_output_schema",
                     "structured_output_schema_name",
                     "structured_output_method",

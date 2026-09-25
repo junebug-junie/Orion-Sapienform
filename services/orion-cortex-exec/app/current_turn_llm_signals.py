@@ -122,6 +122,10 @@ def _balanced_json_array_spans(text: str) -> list[str]:
     return spans
 
 
+# rpc-health hop key suffix for this probe's RPC ("<channel>#current_turn_probe").
+PROBE_HEALTH_LABEL = "current_turn_probe"
+
+
 def _source() -> ServiceRef:
     return ServiceRef(name=settings.service_name, version=settings.service_version, node=settings.node_name)
 
@@ -297,6 +301,12 @@ async def _llm_call(bus: OrionBusAsync, *, prompt: str) -> str:
         env,
         reply_channel=reply_channel,
         timeout_sec=settings.current_turn_signal_probe_timeout_sec,
+        # Own rpc-health hop key. This probe is fail-open with a deadline set
+        # below normal LLM latency on purpose, so its timeouts are a budget
+        # choice, not a delivery failure; the label lets rpc-health consumers
+        # (orion/substrate/rpc_delivery.py) tell it apart from real
+        # LLMGatewayService traffic on the same channel.
+        health_label=PROBE_HEALTH_LABEL,
     )
     decoded = bus.codec.decode(msg.get("data"))
     if not decoded.ok or not isinstance(decoded.envelope.payload, dict):

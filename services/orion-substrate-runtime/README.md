@@ -26,6 +26,17 @@ grammar_events (orion-llm-gateway, llm_gateway.inference:*) → llm inference pr
   → substrate_reduction_receipts → orion-field-digester (when ENABLE_LLM_INFERENCE_FIELD_DIGESTION=true)
   (default off: LLM_GATEWAY_GRAMMAR_ENABLED on the gateway, ENABLE_LLM_INFERENCE_REDUCER
   here. manual_migration_llm_inference_substrate_loop.sql must be applied first.)
+
+orion:rpc_health:snapshot (every service's shared bus client, every 30 s)
+  → RPC delivery bridge (orion/substrate/rpc_delivery.py): rolling 10 min per-hop
+    success/timeout counts, worst bus hop's timeouts / max(calls, 10), hops with
+    2+ timeouts only
+  → StateDeltaV1(target_kind=rpc_delivery) on node:substrate.rpc_delivery, every 30 s
+  → substrate_reduction_receipts → orion-field-digester (when ENABLE_RPC_DELIVERY_FIELD_DIGESTION=true)
+  → capability:transport reliability_pressure
+  (SUBSTRATE_RPC_DELIVERY_BRIDGE_ENABLED, default off in code, on in .env_example.
+  No migration: pub/sub listener + receipts only. Nothing is written when no bus
+  RPC call happened in the window. Evidence: evals/run_rpc_delivery_eval.py.)
 ```
 
 ## Setup

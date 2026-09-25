@@ -57,6 +57,13 @@ class Settings(BaseSettings):
         False,
         alias="ENABLE_LLM_INFERENCE_FIELD_DIGESTION",
     )
+    # rpc_delivery deltas (substrate-runtime's RPC delivery bridge: worst bus
+    # hop's timeout ratio from every service's rpc-health snapshots) -> node
+    # rpc_timeout_pressure -> capability:transport reliability_pressure.
+    enable_rpc_delivery_field_digestion: bool = Field(
+        False,
+        alias="ENABLE_RPC_DELIVERY_FIELD_DIGESTION",
+    )
     enable_idle_tick: bool = Field(True, alias="FIELD_DIGESTER_IDLE_TICK_ENABLED")
     field_state_retention_hours: float = Field(72.0, alias="FIELD_STATE_RETENTION_HOURS")
     field_state_prune_interval_sec: float = Field(3600.0, alias="FIELD_STATE_PRUNE_INTERVAL_SEC")

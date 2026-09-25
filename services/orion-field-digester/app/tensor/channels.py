@@ -46,6 +46,11 @@ NODE_CHANNELS = [
     # (orion/substrate/llm_inference_loop/). Written only for nodes that actually
     # received upstream traffic that window; holds (does not decay) in between.
     "inference_failure_pressure",
+    # Caller-side RPC delivery: worst bus hop's timeouts / max(calls, floor) over
+    # a rolling window of every service's rpc-health snapshots
+    # (orion/substrate/rpc_delivery.py). Only written on node:substrate.rpc_delivery;
+    # holds (not in NODE_DECAY_CHANNELS) when no bus RPC call happened in the window.
+    "rpc_timeout_pressure",
     "field_coherence_warning",
     "prediction_error",
 ]
@@ -122,11 +127,15 @@ DEFAULT_NODE_VECTOR["stability"] = 1.0
 # (not introduced by this fix), flagged here since this is now the second
 # place carrying the assumption.
 #
-# 2026-09-25: both channels this map held (stream_backlog_health,
+# 2026-09-25: both channels this map used to hold (stream_backlog_health,
 # delivery_confidence) were retired outright (fix/bus-observer-scope) and moved
-# to RETIRED_NODE_CHANNELS below, which prunes them from every node. The
-# mechanism is kept, empty, for the next genuinely single-observer channel.
-SINGLE_OBSERVER_NODE_CHANNELS: dict[str, str] = {}
+# to RETIRED_NODE_CHANNELS below, which prunes them from every node.
+SINGLE_OBSERVER_NODE_CHANNELS: dict[str, str] = {
+    # Written only by orion-substrate-runtime's RPC delivery bridge. Every other
+    # node would otherwise be seeded with a never-written 0.0 by
+    # DEFAULT_NODE_VECTOR, which reads as "measured, calm".
+    "rpc_timeout_pressure": "node:substrate.rpc_delivery",
+}
 
 # Channel names that were RENAMED and no longer have a producer. reconcile
 # prunes these from every node vector, every tick.

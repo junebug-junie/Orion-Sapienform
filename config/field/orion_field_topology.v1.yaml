@@ -35,6 +35,7 @@ node_channels:
   - contract_pressure
   - catalog_drift_pressure
   - observer_failure_pressure
+  - rpc_timeout_pressure
   - conversation_load
   - repair_pressure
 
@@ -91,6 +92,27 @@ edges:
     weight: 0.85
     channel_map:
       prediction_error: pressure
+
+  # 2026-09-25: caller-side RPC delivery. node:substrate.rpc_delivery is written
+  # by orion-substrate-runtime's RPC delivery bridge (orion/substrate/
+  # rpc_delivery.py) from every service's rpc-health snapshots: the worst bus
+  # request channel's timeouts / max(calls, 10) over 10 minutes. Before this,
+  # reliability_pressure's only source was node:athena's
+  # observer_failure_pressure (the bus-observer's own failures), which has read
+  # exactly 0 for weeks while LLMGatewayService RPC timeouts ran 30-150/day.
+  # Diffusion takes the max of the two, so neither masks the other.
+  # What it claims: "a part of Orion asked another over the bus and got no
+  # answer before its own deadline" -- lost messages AND slow callees. On live
+  # data nearly all nonzero readings name LLMGatewayService or
+  # orion:cortex:request, so it co-moves with capability:llm_inference load
+  # when inference is slow; the receipt names the hop. It is not the gateway's
+  # inference_failure_pressure (an error reply counts as answered here).
+  - source_id: node:substrate.rpc_delivery
+    target_id: capability:transport
+    edge_type: node_capability
+    weight: 0.85
+    channel_map:
+      rpc_timeout_pressure: reliability_pressure
 
   # 2026-08-13: capability:vision had NO edge at all until this one. Its live
   # vector was therefore fabricated by the no-inbound-edge path -- pressure=0.0,

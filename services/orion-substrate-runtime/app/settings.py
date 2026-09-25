@@ -100,6 +100,34 @@ class Settings(BaseSettings):
     vision_artifacts_channel: str = Field(
         "orion:vision:artifacts", alias="SUBSTRATE_VISION_ARTIFACTS_CHANNEL"
     )
+    # RPC delivery bridge (orion/substrate/rpc_delivery.py): folds every
+    # service's RpcHealthSnapshotV1 (orion:rpc_health:snapshot) into one
+    # worst-hop timeout ratio on node:substrate.rpc_delivery, which the topology
+    # carries to capability:transport reliability_pressure. Off by default in
+    # code; the field only sees it once orion-field-digester's
+    # ENABLE_RPC_DELIVERY_FIELD_DIGESTION is also on.
+    enable_rpc_delivery_bridge: bool = Field(
+        False, alias="SUBSTRATE_RPC_DELIVERY_BRIDGE_ENABLED"
+    )
+    rpc_delivery_tick_interval_sec: float = Field(
+        30.0, alias="SUBSTRATE_RPC_DELIVERY_TICK_INTERVAL_SEC"
+    )
+    rpc_delivery_window_sec: float = Field(600.0, alias="SUBSTRATE_RPC_DELIVERY_WINDOW_SEC")
+    # timeouts / max(calls, this): one timeout alone reads at most 1/this.
+    rpc_delivery_min_denominator: int = Field(
+        10, alias="SUBSTRATE_RPC_DELIVERY_MIN_DENOMINATOR"
+    )
+    # Health labels / whole hop keys never counted. Defaults: metacog's own
+    # dispatch (self-loop), GPU queue wait (capacity, not delivery), and
+    # cortex-exec's fail-open 3 s current-turn probe (deadline below normal
+    # LLM latency by design).
+    rpc_delivery_exclude_labels_raw: str = Field(
+        "log_orion_metacognition,gpu_pool_wait,current_turn_probe",
+        alias="SUBSTRATE_RPC_DELIVERY_EXCLUDE_LABELS",
+    )
+    rpc_health_snapshot_channel: str = Field(
+        "orion:rpc_health:snapshot", alias="SUBSTRATE_RPC_HEALTH_SNAPSHOT_CHANNEL"
+    )
     # Same env var name services/orion-bus-mirror and services/orion-recall
     # already use for the same graph -- not a new name.
     falkordb_bus_graph: str = Field("orion_bus_synapse", alias="FALKORDB_BUS_GRAPH")

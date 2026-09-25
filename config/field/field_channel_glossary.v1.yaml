@@ -291,6 +291,11 @@ channels:
     category: task_execution
     meaning: "Share of the calls the LLM gateway sent to this node's model backends that came back without an answer (timeout, refused connection, HTTP error), per gateway window. Reported by the gateway itself; absent when the node got no calls."
 
+  - channel: rpc_timeout_pressure
+    level: [node]
+    category: infra_transport
+    meaning: "Caller-side 'asked and got no answer in time' on node:substrate.rpc_delivery: the worst bus request channel's share of rpc_request() calls that hit the caller's own deadline over the last 10 minutes, timeouts / max(calls, 10), counted only once a channel has 2+ timeouts in the window, summed across every service's rpc-health snapshots. A deadline fires on a lost message and on a slow callee alike; on live data it is mostly slow LLM or cortex work. 0.0 means every counted call was answered in time; dropped (unmeasured) when no reading has arrived for 120 s."
+
   - channel: field_coherence_warning
     level: [node]
     category: self_monitoring

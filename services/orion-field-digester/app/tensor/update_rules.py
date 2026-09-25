@@ -4,7 +4,7 @@ from collections.abc import Callable, Mapping
 
 from orion.schemas.field_state import FieldStateV1
 
-from app.digestion.decay import apply_decay
+from app.digestion.decay import apply_decay, expire_unrefreshed_channels
 from app.digestion.diffusion import apply_diffusion
 from app.digestion.perturbation import apply_perturbations
 from app.digestion.precision import update_dimension_precision_baseline
@@ -45,6 +45,8 @@ def run_digestion_tick(
         now=state.generated_at,
         staleness_threshold_sec=staleness_threshold_sec,
     )
+    # Before diffusion, so a stopped producer reads as unmeasured this tick.
+    expire_unrefreshed_channels(state, now=state.generated_at)
     apply_diffusion(state, diffusion_rate=diffusion_rate)
     apply_suppression(state)
     # Must run before update_dimension_precision_baseline(): that call scores

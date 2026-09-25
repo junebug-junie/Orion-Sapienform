@@ -80,7 +80,8 @@ async def test_refused_attach_raises_and_does_not_retry_as_acquire():
     with pytest.raises(LeaseUnavailable):
         async with gpu_lease(bus, work_class="agent", holder="http:anthropic", hold=stale, deadline_sec=5):
             pytest.fail("must not be granted")
-    assert {r.verb for r in bus.requests} <= {"attach", "cancel"}
+    # One attach, nothing else: a refusal carries no lease_id, so there is nothing to withdraw.
+    assert [r.verb for r in bus.requests] == ["attach"]
 
 
 @pytest.mark.asyncio

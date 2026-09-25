@@ -147,3 +147,51 @@ def test_completed_run_state_hands_the_door_a_ref_to_outreach():
     env = BaseEnvelope(kind="durable.run.state.v1", source=ServiceRef(name="t"), payload=state)
     asyncio.run(loop._handle_run_state({"data": bus.codec.encode(env)}))
     assert seen["gpu_lease"] == ref() and seen["resource_lease"] is None
+
+
+class _Outreach:
+    def blocked_reason(self, **_kw):
+        return None
+
+
+def _door_a_loop(monkeypatch):
+    loop = _loop(_CortexBus(), kickoff_via_cortex=True)
+    loop.outreach_enabled = True
+    loop._outreach_provider = lambda: _Outreach()
+    skips = []
+    monkeypatch.setattr(loop, "_record_outreach_skip",
+                        lambda outreach, reason, **kw: skips.append((reason, kw["run_id"])))
+    return loop, skips
+
+
+def test_door_a_refuses_a_hold_the_pool_no_longer_grants(monkeypatch):
+    validate = AsyncMock(side_effect=LeaseUnavailable("gpu_lease_unknown_lease"))
+    monkeypatch.setattr(ci, "validate_hold_ref", validate)
+    loop, skips = _door_a_loop(monkeypatch)
+    loop._generate = AsyncMock(side_effect=AssertionError("must not compose"))
+    outcome = ci.TurnOutcome(run_id="run-one", continue_line=False, continue_note="", reach_out=True, reach_out_why="x")
+    result = asyncio.run(loop._maybe_reach_out_inner(
+        outcome=outcome, finding_text="f", run_id="run-one", hop_notes=[], line=ci.LINE_INVESTIGATE,
+        resource_lease=None, correlation_id="c", gpu_lease=ref()))
+    assert result == "gpu_lease_invalid" and skips == [("gpu_lease_invalid", "run-one")]
+    assert validate.await_args.kwargs["expected_holder"] == "durable-runs:run-one"
+
+
+def test_door_a_malformed_ref_skips_and_still_releases(monkeypatch):
+    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+    bus = _CortexBus()
+    loop = _loop(bus, kickoff_via_cortex=True)
+    skips, released = [], []
+    monkeypatch.setattr(loop, "_record_outreach_skip", lambda outreach, reason, **kw: skips.append(reason))
+
+    async def release(run_id):
+        released.append(run_id)
+    monkeypatch.setattr(loop, "_release_outreach_lease", release)
+    loop._maybe_reach_out = AsyncMock(side_effect=AssertionError("never compose without the ref"))
+    state = {"run_id": "run-one", "workflow": "curiosity.investigate", "thread_id": "run-one", "node": "finish",
+             "status": "completed", "correlation_id": "c",
+             "detail": {"reach_out": True, "finding_text": "f", "gpu_lease": {"lease_id": "hold-1"}}}
+    env = BaseEnvelope(kind="durable.run.state.v1", source=ServiceRef(name="t"), payload=state)
+    asyncio.run(loop._handle_run_state({"data": bus.codec.encode(env)}))
+    assert skips == ["gpu_lease_malformed"] and released == ["run-one"]

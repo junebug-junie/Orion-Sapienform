@@ -2050,8 +2050,9 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
         ref_value = ctx.get("gpu_lease")
     if ref_value is not None:
         GpuLeaseRefV1.model_validate(ref_value)
-        attempted = str(raw).strip() if raw else None
-        return attempted or GPU_LEASE_ROUTE, attempted
+        resolved = str(raw or "").strip().lower()
+        attempted = LLM_ROUTE_ALIASES.get(resolved, resolved) or None
+        return normalize_llm_route(raw) or GPU_LEASE_ROUTE, attempted
     # `attempted` keeps the alias-resolved spelling even when it is rejected, so a rejected
     # override stays visible in the llm_route_selected log line (see docstring).
     resolved = str(raw or "").strip().lower()

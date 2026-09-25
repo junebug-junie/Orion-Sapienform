@@ -89,7 +89,9 @@ class ThoughtClient:
             # optional lease is omitted for consumers that reject extra fields.
             payload.pop("resource_lease", None)
         if request.gpu_lease is None:
-            payload.pop("gpu_lease", None)  # same rule for the stage-4 hold ref
+            # Absent stage-4 hold ref: keep the old wire shape. (An un-upgraded orion-thought would
+            # silently DROP a present ref -- no extra="forbid" -- so it must deploy first.)
+            payload.pop("gpu_lease", None)
         envelope = BaseEnvelope(
             kind="stance.react.request.v1",
             source=self._source,

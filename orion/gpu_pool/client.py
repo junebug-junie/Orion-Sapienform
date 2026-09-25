@@ -161,7 +161,7 @@ async def gpu_lease(
         raise LeaseUnavailable(reply.reason or wait_reason
                                or ("deadline" if reply.status == "queued" else reply.status), reply.lease_id)
 
-    beat = asyncio.create_task(_heartbeat(bus, lease, source, heartbeat_sec or (10.0 if kind == "request" else 30.0)))
+    beat = asyncio.create_task(_heartbeat(bus, lease, source, heartbeat_sec or (10.0 if req.kind == "request" else 30.0)))
     outcome, detail = "ok", None
     try:
         yield lease
@@ -248,6 +248,8 @@ async def _withdraw(bus: Any, req: GpuLeaseRequestV1, reply: GpuLeaseReplyV1 | N
     """Best effort, bounded to WITHDRAW_RPC_TIMEOUT_SEC per RPC. When the acquire RPC itself
     timed out, callers run it in the background instead: an unreachable pool must not cost the
     caller a second wait."""
+    if reply is not None and reply.lease_id is None:
+        return  # the pool answered and created nothing (e.g. a refused attach): nothing to withdraw
     lease_id = reply.lease_id if reply is not None else None
     if lease_id is None:
         # The acquire may have landed without us seeing the reply: re-acquire is idempotent on

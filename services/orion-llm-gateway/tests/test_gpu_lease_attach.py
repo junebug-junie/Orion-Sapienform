@@ -23,6 +23,7 @@ from app import llm_backend as backend
 from app import main as gateway
 from app import openai_passthrough as openai
 from app import passthrough_proxy as proxy
+from app import pool_placement
 from app import resource_lease as fencing
 from app.models import ChatBody
 from app.settings import settings
@@ -152,6 +153,9 @@ async def test_anthropic_header_attaches_and_is_not_forwarded_upstream(held, mon
     forwarded = {k.lower() for k in client.post.call_args.kwargs["headers"]}
     assert wire.GPU_LEASE_HEADER.lower() not in forwarded
     assert held.releases == ["ok"]
+    # Interleave may make the child wait one higher-priority inference: the bus budget, not 60s.
+    assert held.calls[0]["deadline_sec"] == pool_placement.wait_budget_sec("system")
+    assert held.calls[0]["deadline_sec"] != pool_placement.passthrough_wait_sec()
 
 
 @pytest.mark.asyncio

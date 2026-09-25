@@ -2962,6 +2962,21 @@ class CuriosityInvestigation:
         else:
             notes = []
 
+        if gpu_lease is not None:
+            # Door-A under a pool hold (stage 4): the pool is the fence, same check as a durable
+            # turn. Never compose without the ref -- a held agent card would queue this behind it.
+            try:
+                await validate_hold_ref(
+                    self._bus, gpu_lease, source=GPU_LEASE_STATUS_SOURCE,
+                    expected_holder=durable_run_holder(run_id),
+                )
+            except LeaseUnavailable as exc:
+                logger.warning("curiosity_outreach_gpu_lease_rejected run=%s reason=%s", run_id, exc.reason)
+                self._record_outreach_skip(
+                    outreach, "gpu_lease_invalid", correlation_id=correlation_id, run_id=run_id, line=line
+                )
+                return "gpu_lease_invalid"
+
         prompt = build_outreach_composition_prompt(
             finding_text=finding_text,
             reach_out_why=outcome.reach_out_why,
@@ -3525,15 +3540,24 @@ class CuriosityInvestigation:
                 )
         gpu_lease = None
         raw_ref = detail.get("gpu_lease")
-        if isinstance(raw_ref, dict) and raw_ref:
+        if raw_ref is not None:
             try:
                 gpu_lease = GpuLeaseRefV1.model_validate(raw_ref)
             except Exception as exc:  # noqa: BLE001
+                # Composing without the ref would queue behind the run's own hold. Skip, and
+                # still hand the grant back so it is not stranded until TTL.
                 logger.warning(
                     "curiosity_outreach_gpu_lease_invalid run=%s err=%s",
                     state.run_id,
                     exc,
                 )
+                self._record_outreach_skip(
+                    None, "gpu_lease_malformed",
+                    correlation_id=str(uuid5(NAMESPACE_URL, f"{OUTREACH_TAG}:{state.run_id}")),
+                    run_id=state.run_id, line=str(detail.get("line") or LINE_INVESTIGATE),
+                )
+                await self._release_outreach_lease(state.run_id)
+                return
         await self._maybe_reach_out(
             outcome=outcome,
             finding_text=str(detail.get("finding_text") or ""),

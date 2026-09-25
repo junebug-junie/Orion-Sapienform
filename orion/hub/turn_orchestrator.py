@@ -45,7 +45,7 @@ from orion.llm.resource_lease import GPU_LEASE_ROUTE
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.substrate.appraisal.turn_window import build_turn_window
-from orion.llm.routes import fcc_model_for_route, is_agent_route_model_label
+from orion.llm.routes import FCC_LLAMACPP_MODEL_PREFIX, fcc_model_for_route, is_agent_route_model_label
 from orion.hub.runtime_activity import get_runtime_activity
 from orion.fcc.context_budget import (
     apply_context_overflow_hint,
@@ -899,6 +899,10 @@ async def execute_unified_turn(
     # already final by this point.
     mode_tag = str(payload.get("mode") or "orion").strip().lower()
     resolved_fcc_model_label = _resolve_fcc_model_label(payload, mode_tag)
+    if payload.get("gpu_lease") is not None and payload.get("resource_lease") is None:
+        # Stage 4: every call of a held turn attaches to the hold's role; name the hold's
+        # work-class route once here so no caller's chat label can send a chat-class attach.
+        resolved_fcc_model_label = f"{FCC_LLAMACPP_MODEL_PREFIX}{GPU_LEASE_ROUTE}"
 
     if emit_observation_fn is not None:
         try:

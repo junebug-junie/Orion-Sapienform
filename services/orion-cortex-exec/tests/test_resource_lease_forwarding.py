@@ -61,7 +61,8 @@ def _run_finalize_step(ctx):
 
 
 @pytest.mark.parametrize("location", ["options", "context"])
-@pytest.mark.parametrize("override,expected_route", [(None, "agent"), ("agent", "agent"), ("chat", "chat")])
+@pytest.mark.parametrize("override,expected_route", [(None, "agent"), ("agent", "agent"), ("chat", "chat"),
+                                                     ("AGENT", "agent"), ("not-a-route", "agent")])
 def test_gpu_pool_hold_ref_reaches_gateway_as_options_gpu_lease(location, override, expected_route):
     """Stage 4.4: the run's hold ref rides to the gateway (which attaches the call to the hold). With
     no explicit route the call names the hold's work-class route, never the role ("agent-gpu2")."""

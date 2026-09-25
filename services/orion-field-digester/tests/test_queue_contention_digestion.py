@@ -349,11 +349,11 @@ def test_age_sql_filters_match_the_queue_they_describe() -> None:
     # Durable: legacy pending demands UNION waiting pool holds (stage 4.4); behaviour is pinned on
     # real Postgres in test_durable_waiting_sql_postgres.py.
     assert "FROM durable_resource_demands d WHERE d.status = 'pending'" in durable_sql
-    assert "h.kind = 'hold' AND h.status IN ('queued', 'backlogged')" in durable_sql
+    assert "h.kind = 'hold' AND h.holder LIKE 'durable-runs:%' AND h.status IN ('queued', 'backlogged')" in durable_sql
     assert "min(waiting_since)" in durable_sql
     # Queued only: backlogged leases may wait up to backlog_max_age_sec by design. Requests only:
     # a waiting hold is durable_demand_pending's, never double-counted here.
-    assert "FROM gpu_pool_leases WHERE status = 'queued' AND kind = 'request'" in pool_sql
+    assert "FROM gpu_pool_leases WHERE status = 'queued' AND (kind = 'request' OR holder NOT LIKE 'durable-runs:%')" in pool_sql
     assert "coalesce(queued_since, created_at)" in pool_sql
 
 
@@ -373,9 +373,9 @@ def test_durable_waiting_sql_joins_on_the_pool_clients_holder_shape() -> None:
     it, every resumed run would be counted twice across the cutover."""
     from app.store import DURABLE_WAITING_SQL
     from orion.gpu_pool.client import DURABLE_RUN_HOLDER_PREFIX, durable_run_holder
-    from orion.schemas.gpu_pool import TERMINAL_STATUSES
+    from app.store import NOT_DURABLE_HOLD_SQL
 
     assert f"h.holder = '{DURABLE_RUN_HOLDER_PREFIX}' || d.run_id" in DURABLE_WAITING_SQL
+    assert f"h.holder LIKE '{DURABLE_RUN_HOLDER_PREFIX}%'" in DURABLE_WAITING_SQL
+    assert f"holder NOT LIKE '{DURABLE_RUN_HOLDER_PREFIX}%'" in NOT_DURABLE_HOLD_SQL
     assert durable_run_holder("r") == f"{DURABLE_RUN_HOLDER_PREFIX}r"
-    for status in TERMINAL_STATUSES:
-        assert f"'{status}'" in DURABLE_WAITING_SQL

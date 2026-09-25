@@ -92,11 +92,14 @@ def test_during_cutover_a_run_with_both_counts_once(store):
     hold(store, "c", "backlogged", age_sec=70)
     # d: only a hold, cooling down after an expiry -> not waiting (same rule as gpu_pool_waiting).
     hold(store, "d", "retry_wait")
-    # e: legacy only, its old hold finished (released) -> still the legacy wait.
-    demand(store, "e", age_sec=1000)
+    # e: re-registered through the pool, held and released; its frozen demand is still 'pending'
+    # until step 6's withdrawal -> NOT waiting (no phantom 4-day-old wait).
+    demand(store, "e", age_sec=300000)
     hold(store, "e", "released")
-    assert store.count_durable_demand_pending() == 3  # a (hold), c (hold), e (legacy)
-    # a's 380000s-old demand is dropped in favour of its hold; oldest is e's legacy demand.
+    # f: legacy only, never re-registered yet -> still the legacy wait.
+    demand(store, "f", age_sec=1000)
+    assert store.count_durable_demand_pending() == 3  # a (hold), c (hold), f (legacy)
+    # a's and e's old demands are superseded by their holds; oldest is f's legacy demand.
     assert 990 <= store.oldest_durable_demand_pending_age_sec() <= 1100
 
 
@@ -117,6 +120,13 @@ def test_waiting_holds_never_enter_gpu_pool_waiting(store):
     # The 5000s hold would pin the 60s-anchored pool age; it belongs to the durable source.
     assert 5 <= store.oldest_gpu_pool_waiting_age_sec() <= 60
     assert store.count_durable_demand_pending() == 2
+
+
+def test_operator_holds_stay_in_gpu_pool_waiting(store):
+    lease(store, "op", kind="hold", status="queued", holder="operator:juniper", queued_age_sec=20)
+    assert store.count_durable_demand_pending() == 0
+    assert store.count_gpu_pool_waiting() == 1
+    assert 20 <= store.oldest_gpu_pool_waiting_age_sec() <= 80
 
 
 def test_empty_is_zero_not_a_failure(store):

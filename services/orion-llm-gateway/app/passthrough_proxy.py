@@ -34,6 +34,7 @@ from .pool_placement import (
     mark_revoked,
     passthrough_wait_sec,
     route_spec,
+    wait_budget_sec,
     stream_cleanup,
     wait_lease_revoked,
 )
@@ -171,6 +172,10 @@ async def proxy_on_pool(
     min_ctx = int(min_ctx_tokens)
     overflow_response: Optional[Response] = None
     clamped = False
+    # Under a hold the child may wait out one higher-priority interleaved inference (spec Decision 1
+    # rule 3), minutes on a 27B: the 60s passthrough budget would turn interleave into a mid-turn
+    # 503. It gets the class's bus wait budget instead (LLM_GATEWAY_POOL_[BACKGROUND_]WAIT_SEC).
+    wait_s = wait_budget_sec(spec.priority or "system") if hold is not None else passthrough_wait_sec()
     if guard is not None:
         # A stale durable token never takes a GPU lease.
         try:
@@ -180,7 +185,7 @@ async def proxy_on_pool(
 
     for _ in range(3):
         handle = PoolLease(route=route_key, spec=spec, holder=holder, turn_correlation_id=correlation_id,
-                           min_ctx_tokens=min_ctx, deadline_sec=passthrough_wait_sec(), hold=hold)
+                           min_ctx_tokens=min_ctx, deadline_sec=wait_s, hold=hold)
         try:
             lease = await _acquire(handle, request)
         except _ClientGone:

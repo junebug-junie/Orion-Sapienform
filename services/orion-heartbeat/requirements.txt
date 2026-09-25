@@ -7,3 +7,5 @@ loguru==0.7.2
 numpy>=1.26
 scipy>=1.11
 quimb==1.14.0
+# orion.substrate's package __init__ imports graphdb_store, which imports requests.
+requests==2.32.3

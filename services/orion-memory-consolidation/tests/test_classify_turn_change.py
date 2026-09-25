@@ -96,11 +96,13 @@ def _llm_raw(content: str, *, novel_lp=-0.2, shift_token="NONE") -> dict:
     }
 
 
-def test_settings_default_classify_route_is_metacog():
+def test_settings_default_classify_route_is_metacog_background():
+    # Default moved from plain metacog to metacog_background on 2026-09-07
+    # (background classification yields to live Mind metacog traffic).
     from app.settings import Settings
 
     s = Settings()
-    assert s.TURN_CHANGE_CLASSIFY_ROUTE == "metacog"
+    assert s.TURN_CHANGE_CLASSIFY_ROUTE == "metacog_background"
 
 
 @pytest.mark.parametrize(
@@ -108,10 +110,11 @@ def test_settings_default_classify_route_is_metacog():
     [
         ("metacog", "metacog"),
         ("METACOG", "metacog"),
+        ("metacog_background", "metacog_background"),
         ("quick", "quick"),
-        (" chat ", "metacog"),  # invalid → fallback
-        ("chat-thinking", "metacog"),
-        ("", "metacog"),
+        (" chat ", "metacog_background"),  # invalid → fallback
+        ("chat-thinking", "metacog_background"),
+        ("", "metacog_background"),
     ],
 )
 def test_resolve_classify_route_allowlist(raw, expected):
@@ -130,12 +133,12 @@ def test_resolve_classify_route_logs_invalid(caplog):
         route = classify_mod._resolve_classify_route(
             Settings(TURN_CHANGE_CLASSIFY_ROUTE="chat-thinking")
         )
-    assert route == "metacog"
+    assert route == "metacog_background"
     assert "invalid TURN_CHANGE_CLASSIFY_ROUTE" in caplog.text
 
 
 @pytest.mark.asyncio
-async def test_classify_turn_rpc_uses_metacog_route_and_disables_thinking():
+async def test_classify_turn_rpc_uses_metacog_background_route_and_disables_thinking():
     bus = AsyncMock()
     content = "NOVEL: NO\nSHIFT: NONE\nMEMORY: NO\nBOUNDARY: NO\n"
     captured: dict = {}
@@ -164,16 +167,16 @@ async def test_classify_turn_rpc_uses_metacog_route_and_disables_thinking():
 
     patch = await classify_mod.classify_turn(bus, turn=turn, prior_turns=prior, settings=app_settings)
     payload = captured["env"].payload
-    assert payload["route"] == "metacog"
-    assert payload["options"]["llm_route"] == "metacog"
+    assert payload["route"] == "metacog_background"
+    assert payload["options"]["llm_route"] == "metacog_background"
     assert payload["options"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert payload["options"]["return_logprobs"] is True
     assert payload["options"]["gateway_read_timeout_sec"] == float(app_settings.MEMORY_CLASSIFY_TIMEOUT_SEC)
-    assert patch["turn_change_classify_route"] == "metacog"
+    assert patch["turn_change_classify_route"] == "metacog_background"
 
 
 @pytest.mark.asyncio
-async def test_classify_turn_invalid_route_falls_back_to_metacog(monkeypatch):
+async def test_classify_turn_invalid_route_falls_back_to_metacog_background(monkeypatch):
     bus = AsyncMock()
     content = "NOVEL: NO\nSHIFT: NONE\nMEMORY: NO\nBOUNDARY: NO\n"
     captured: dict = {}
@@ -201,9 +204,9 @@ async def test_classify_turn_invalid_route_falls_back_to_metacog(monkeypatch):
     bad_settings = Settings(TURN_CHANGE_CLASSIFY_ROUTE="chat-thinking")
     patch = await classify_mod.classify_turn(bus, turn=turn, prior_turns=prior, settings=bad_settings)
     payload = captured["env"].payload
-    assert payload["route"] == "metacog"
+    assert payload["route"] == "metacog_background"
     assert payload["options"]["chat_template_kwargs"] == {"enable_thinking": False}
-    assert patch["turn_change_classify_route"] == "metacog"
+    assert patch["turn_change_classify_route"] == "metacog_background"
 
 
 @pytest.mark.asyncio
@@ -254,7 +257,7 @@ async def test_classify_turn_first_turn_baseline_none():
     assert patch["turn_change_appraisal"]["baseline_mode"] == "none"
     assert patch["turn_change_appraisal"]["turn_change_status"] == "skipped"
     assert patch["turn_change_appraisal"]["novelty_score"] is None
-    assert patch["turn_change_classify_route"] == "metacog"
+    assert patch["turn_change_classify_route"] == "metacog_background"
     bus.rpc_request.assert_not_awaited()
 
 
@@ -333,7 +336,7 @@ async def test_classify_turn_text_fallback_marks_ok():
     appr = patch["turn_change_appraisal"]
     assert appr["turn_change_status"] == "ok"
     assert appr["novelty_score"] == pytest.approx(0.85)
-    assert patch["turn_change_classify_route"] == "metacog"
+    assert patch["turn_change_classify_route"] == "metacog_background"
 
 
 @pytest.mark.asyncio
@@ -384,7 +387,7 @@ async def test_classify_turn_low_margin_triggers_session_window_reappraisal():
     appr = patch["turn_change_appraisal"]
     assert len(captured_envs) == 2
     for env in captured_envs:
-        assert env.payload["route"] == "metacog"
+        assert env.payload["route"] == "metacog_background"
         assert env.payload["options"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert appr["baseline_mode"] == "session_window"
     assert appr["novelty_score"] < 0.5
@@ -403,7 +406,7 @@ async def test_classify_turn_llm_failure_preserves_baseline_context():
     assert appr["turn_change_status"] == "degraded"
     assert appr["baseline_mode"] == "prior_turn"
     assert appr["prior_correlation_id"] == "prev"
-    assert patch["turn_change_classify_route"] == "metacog"
+    assert patch["turn_change_classify_route"] == "metacog_background"
 
 
 @pytest.mark.asyncio

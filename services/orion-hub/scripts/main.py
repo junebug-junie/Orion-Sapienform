@@ -487,16 +487,17 @@ async def startup_event():
             await bus.connect()
             logger.info("OrionBusAsync connection established successfully.")
 
-            # 2026-08-25: lets orion.situational.context.py's
-            # _build_affect_context read Juniper's latest affect capture
-            # (see orion/situational/juniper_affect_state.py) for the
-            # situation brief every "orion" mode chat turn builds via
-            # orion.hub.turn_orchestrator.run_unified_turn -- same bind
-            # pattern services/orion-cortex-exec/app/main.py already uses
-            # for session_turn_phase.py's own module-level bus handle.
-            from orion.situational.juniper_affect_state import bind_juniper_affect_state_bus
+            # Every "orion" mode chat turn builds its situation brief in this
+            # process (orion.hub.turn_orchestrator ->
+            # build_situation_for_ctx), which reads Redis-backed stores that
+            # each need this process's bus bound. Until 2026-09-25 only the
+            # affect store was bound here, so the conversation-phase read was
+            # always unbound: every unified turn said "Conversation phase:
+            # unknown" and never recorded the user's turn. Same helper
+            # orion-cortex-exec calls -- see orion/situational/state_buses.py.
+            from orion.situational.state_buses import bind_situation_state_buses
 
-            bind_juniper_affect_state_bus(bus)
+            bind_situation_state_buses(bus)
 
             # Outbound RPC uses a forked bus + worker so long-lived Hub subscribers
             # (trace/biometrics caches) cannot steal gateway/TTS/embedding replies.

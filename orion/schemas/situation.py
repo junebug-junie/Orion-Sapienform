@@ -82,6 +82,11 @@ class ConversationPhaseContextV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     last_user_turn_at: Optional[datetime] = None
+    # Stamped by cortex-exec's mark_orion_turn when a plan finishes. On a
+    # unified turn that plan is the stance step, which completes BEFORE Hub
+    # builds this brief -- so here it reads as "this turn's stance", seconds
+    # old, not "Orion's previous reply". Informational only: phase bucketing
+    # uses last_user_turn_at alone.
     last_orion_turn_at: Optional[datetime] = None
     time_since_last_user_turn_seconds: Optional[int] = None
     time_since_last_orion_turn_seconds: Optional[int] = None

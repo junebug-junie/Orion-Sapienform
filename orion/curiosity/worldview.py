@@ -54,7 +54,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
 
 logger = logging.getLogger("orion.curiosity.worldview")
 
@@ -990,6 +990,7 @@ def select_priors(
     sample: int,
     stale_after: int,
     rotate_seed: str = "",
+    expected_nats_for: Optional[Callable[[Prior], float]] = None,
 ) -> tuple[list[Prior], list[Prior], int]:
     """Split LIVE priors into (offered, stale, dropped_count).
 
@@ -1007,6 +1008,15 @@ def select_priors(
     list -- but it is still shown, in its own bucket, with the explicit option
     to retire it. Dropping it silently would leave it live in the graph
     forever with nothing able to close it, since Hub never writes.
+
+    `expected_nats_for`, when given, orders the fresh list by EXPECTED BELIEF
+    CHANGE instead of raw uncertainty: entropy times the prior's measured
+    learning yield (`orion/curiosity/value.py`). It is the value arm of the
+    curiosity offer experiment (P1 in
+    docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md). Same
+    tie-breaks, same stale bucket, same sample -- and still only an ORDER:
+    Orion still chooses. With no scored history every yield is 1.0 and the
+    two orders are identical.
     """
     priors: list[Prior] = []
     dropped = 0
@@ -1024,13 +1034,22 @@ def select_priors(
     stale = [p for p in priors if stale_after > 0 and p.times_tested >= stale_after]
     stale_ids = {p.prior_id for p in stale}
     fresh = [p for p in priors if p.prior_id not in stale_ids]
-    fresh.sort(
-        key=lambda p: (
-            p.uncertainty,
-            p.times_tested,
-            _rotation_key(p.prior_id, rotate_seed),
+    if expected_nats_for is None:
+        fresh.sort(
+            key=lambda p: (
+                p.uncertainty,
+                p.times_tested,
+                _rotation_key(p.prior_id, rotate_seed),
+            )
         )
-    )
+    else:
+        fresh.sort(
+            key=lambda p: (
+                -expected_nats_for(p),
+                p.times_tested,
+                _rotation_key(p.prior_id, rotate_seed),
+            )
+        )
     stale.sort(
         key=lambda p: (-p.times_tested, _rotation_key(p.prior_id, rotate_seed))
     )
@@ -1090,6 +1109,7 @@ def read_snapshot(
     recent_runs: int = 4,
     priors_cypher: str = LIVE_PRIORS_CYPHER,
     counts_cypher: str = COUNTS_CYPHER,
+    expected_nats_for: Optional[Callable[[Prior], float]] = None,
 ) -> WorldviewSnapshot:
     """One read of everything the next prompt needs. Never raises.
 
@@ -1140,6 +1160,7 @@ def read_snapshot(
         sample=sample,
         stale_after=stale_after,
         rotate_seed=rotate_seed,
+        expected_nats_for=expected_nats_for,
     )
     if dropped:
         logger.warning(

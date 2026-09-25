@@ -1,8 +1,9 @@
 # Attention with stakes: gaps and proposals
 
 - **Date:** 2026-09-25
-- **Status:** DESIGN, proposal mode (CLAUDE.md 0A: changes cognition loops). Nothing here is built.
-  Two small defects (D1, D2) are worth fixing regardless of the rest.
+- **Status:** DESIGN, proposal mode (CLAUDE.md 0A: changes cognition loops). **Built on this
+  branch (2026-09-25, PR #2355):** D1, D2, and P1 phase 1 (the spend log, plus value ordering
+  behind a default-off flag). See "Phase 1 as built". Everything else is still design.
 - **Evidence basis:** a read-only survey of `main` at `e5ef19e`. This session had no access to the
   live database or hosts. Every live number is quoted from a dated spec or PR report in this repo,
   and says so. Findings from reading code that were not reproduced live are marked `UNVERIFIED`.
@@ -376,14 +377,18 @@ Orion sees first.
 
 **P1a. Hub measures what each run changed, from its own snapshots.** It does not rely on revision
 nodes, because Orion writes those only when a confidence moves (G4).
-- *Before.* Where `_investigate` already reads the worldview (`curiosity_investigation.py:1469-1490`),
-  Hub persists a snapshot of every prior: `prior_id`, `confidence`, `times_tested`, `status`
-  (`ALL_PRIORS_CYPHER`, `orion/curiosity/worldview.py:541`). The snapshot is persisted, not kept in
-  memory, so a Hub restart mid-run loses nothing.
-- *After.* On the durable run's `completed` state for `curiosity.investigate` on the investigation
-  line (`_handle_run_state`, `curiosity_investigation.py:3409-3425`), Hub reads the same fields
-  again and compares.
-- *Scoring.* Every prior whose `times_tested` went up counts as tested. It scores
+- *Before.* When the turn STARTS, Hub persists a snapshot of every prior: `prior_id`,
+  `confidence`, `times_tested`, `status`, `run_id`, `last_run_id`. It uses the Atlas's existing
+  prior query (`ATLAS_PRIORS_CYPHER`). As built, the snapshot is taken in `_run_turn`, the one
+  function every investigation turn passes through, durable or in-process. Taking it at dispatch
+  would have credited this run with moves other turns made while it waited in admission. The
+  snapshot is persisted, not kept in memory, and the first attempt wins, so a retry is scored from
+  where the run began.
+- *After.* When the turn ends, in the same place, Hub reads again and compares.
+- *Attribution.* Only changes this run stamped count: `last_run_id` = run for a test, `run_id` =
+  run for a formation. Anything else between the two snapshots is counted as unattributed and not
+  scored.
+- *Scoring.* Every attributed prior whose `times_tested` went up counts as tested. It scores
   KL(Bern(after) ‖ Bern(before)) in nats, with confidences clamped to [0.01, 0.99]. An unmoved test
   scores exactly 0, and that 0 is recorded: "tested, did not move" is a result.
   - A confidence that is missing, or outside [0, 1], is `null`, not clamped.
@@ -404,16 +409,24 @@ arm, and its propensity. This is the choice set the supervisor has never been ab
 
 ```text
 expected_nats(prior) = H(confidence_now) × yield(prior)
-raw_yield(prior)     = min(1, KL(c_last ‖ c_first) / Σ H(c_before_test))   over its last W tests
+raw_yield(prior)     = min(1, KL(c_last ‖ c_first) × straightness / Σ H(c_before_test))   last W tests
+straightness         = |c_last − c_first| / Σ |after − before|    (net displacement / path length)
 yield(prior)         = (n × raw_yield + k × pool_yield) / (n + k)          n = tests in the window
-pool_yield           = Σ net KL / Σ H   pooled over every prior's window
+pool_yield           = Σ directed progress / Σ H   pooled over every prior's window
 ```
 
-In words, yield is net belief change per unit of uncertainty offered. It is not "the share of
-uncertainty resolved": moving from 0.9 to 0.5 raises entropy, and still counts as a change of mind.
+In words, yield is directed net belief change per unit of uncertainty offered. It is not "the
+share of uncertainty resolved": moving from 0.9 to 0.5 raises entropy, and still counts as a
+change of mind.
+
+*Why straightness* (added during build, from the eval). Net KL alone is blind to parity. A
+flip-flop between 0.7 and 0.3 nets one full swing over any odd-length window, and without the
+discount it scored 0.185 against 0.25 for a genuinely learning belief. Straightness is the
+straightness index of movement ecology (Batschelet 1981; Benhamou 2004). It is 1 for a belief that
+moved one way, and 1/3 for that flip-flop over three tests.
 
 Worked examples:
-- A prior flipping 0.55 → 0.7 → 0.55 → 0.7 has a raw yield of 0.024. It loses value.
+- A prior flipping 0.55 → 0.7 → 0.55 → 0.7 has a raw yield of 0.0079. It loses value.
 - A single test from 0.55 to 0.9 has a raw yield of 0.43.
 - An untested prior gets the pool yield. Offering new beliefs is exploration, and today's ordering
   already puts them near the top, at 0.55.
@@ -666,6 +679,10 @@ Required by proposal mode.
 7. **The midnight cluster.** It is a config choice (`MIN_COOLDOWN_SEC=1800` with the window off),
    and `.env_example` already names the fix. Is it still wanted?
 
+8. **Replace `stale_after` with measured yield?** In the simulation, the live count rule
+   (retire from the ordered list after 3 tests) cuts off beliefs that are still being learned, and
+   masks any difference in ordering. Replacing it changes live behaviour, so it is your call, and
+   it waits for real data from the spend log.
 ## Proposed schema / API changes
 
 P1 adds two tables and one registered metric, and changes no bus contract.
@@ -688,46 +705,58 @@ P1 adds two tables and one registered metric, and changes no bus contract.
   - `per_prior` (jsonb): id, before, after, the change in tested count, nats
   - counts: `n_tested`, `n_moved`, `n_formed`, `n_moved_untested`
   - agreement rates: `revision_agreement`, and `hop_reading_agreement` (nullable)
-- **Models and registration.** Add pydantic models for both rows. Register `realized_nats` in the
-  existing metric semantic layer. `orion/inner_state_registry.py` is keyed by pydantic classes and
-  checked by `make check-inner-state-registry`. Re-lock `config/metrics/metric_definitions.lock.json`
-  with `make check-definition-drift UPDATE=1` in the same patch.
+- **Registration: decided against, as built.** The inner-state registry
+  (`orion/inner_state_registry.py`) tracks inner-state schemas that are published on the bus.
+  These two are Hub-local Postgres tables that only Hub reads. Registering their float fields with
+  no discoverable consumer would also trip the metric gate's orphan ratchet. The metric
+  quality-gate record below stands in for registration. Revisit if the outcome is ever published
+  on the bus, for example for P7.
 - **Bus and channels.** P1 needs no new channel. Phase 2 publishes existing `AttentionSchemaV1`
   rows. `attention_reason` is free-text vocabulary that each process owns
   (`orion/schemas/attention_schema.py`), so no schema change is needed.
 - **P2, later.** `attention_loop_outcome.actor` is already a free string
   (`orion/schemas/attention_salience.py:71`). A new *verdict* value would mean extending the
   `AttentionOutcomeVerdictV1` Literal (`:22`) and rebuilding sql-writer first.
-- **Env, in `services/orion-hub`.** Add `HUB_CURIOSITY_VALUE_ORDER_ENABLED` (default `false` until
-  the replay passes), `HUB_CURIOSITY_VALUE_ORDER_PROPENSITY` (0.5), `HUB_CURIOSITY_YIELD_WINDOW`
-  (`W`) and `HUB_CURIOSITY_YIELD_PSEUDO_TESTS` (`k`). Put each in `.env_example`, sync it into the
-  local `.env` with `scripts/sync_local_env_from_example.py`, and wire it through `settings.py`
-  and compose in the same changeset.
+- **Env, in `services/orion-hub`, as built.** Five keys:
+  - `HUB_CURIOSITY_SPEND_LOG_ENABLED` (default `true`): the measurement's kill switch.
+  - `HUB_CURIOSITY_VALUE_ORDER_ENABLED` (default `false` until the replay passes).
+  - `HUB_CURIOSITY_VALUE_ORDER_PROPENSITY` (0.5).
+  - `HUB_CURIOSITY_YIELD_WINDOW` (`W`, 3).
+  - `HUB_CURIOSITY_YIELD_PSEUDO_TESTS` (`k`, 2.0).
+
+  They are in `.env_example` and `settings.py`, and passed through in `main.py`. Compose needs no
+  entry, because Hub loads its `.env` whole through `env_file`, and the compose file's own comments
+  warn that an explicit `environment:` entry would override it. The local `.env` sync is verified:
+  the default `scripts/sync_local_env_from_example.py` adds all five, since `HUB_CURIOSITY_` is a
+  sync prefix.
 
 ## Files likely to touch
 
 For P1 phase 1, and for D1 and D2.
 
 **P1 phase 1**
-- `orion/curiosity/value.py` (new): pure functions for entropy, Bernoulli KL, net-progress yield and
-  pooling. No I/O.
-- `orion/curiosity/worldview.py`: `select_priors` gains the value-order arm. Reuse `ALL_PRIORS_CYPHER`
-  as it is.
+As built.
+
+- `orion/curiosity/value.py` (new): pure functions for entropy, Bernoulli KL, the snapshot diff and
+  its attribution rule, straightness, directed-progress yield and pooling, and the per-run arm. No
+  I/O.
+- `orion/curiosity/worldview.py`: `select_priors` and `read_snapshot` take `expected_nats_for`.
+- `services/orion-hub/scripts/curiosity_offer_decisions.py` (new): graph snapshot and revision reads
+  (the Atlas's existing Cypher), plus the Postgres reads and writes. Best-effort; never raises.
 - `services/orion-hub/scripts/curiosity_investigation.py`:
-  - persist the snapshot and offer record where `_read_worldview` runs, at `:1469-1490`;
-  - diff the snapshots in `_handle_run_state` on `completed`, for the investigation line, at
-    `:3409-3425`.
-- `services/orion-hub/scripts/curiosity_offer_decisions.py` (new): the writer.
-- `services/orion-sql-db/`: two migrations.
-- `services/orion-hub/app/settings.py`, `.env_example`, the local `.env`, `docker-compose.yml`,
-  `README.md`.
-- Pydantic models, the `inner_state_registry` entry, and the metric lock re-locked.
+  - offer arm, yield model and offer record in `_investigate`;
+  - the start and end snapshots in `_run_turn`, and around the direct in-process turn.
+- `services/orion-sql-db/manual_migration_curiosity_spend_v1.sql` (new): both tables.
+- `services/orion-hub/app/settings.py`, `services/orion-hub/scripts/main.py`, `services/orion-hub/.env_example`,
+  `services/orion-hub/README.md`.
 - Tests:
-  - `value.py`: KL is exactly 0 when before equals after; yield returns `pool_yield` at n = 0; a
-    null or out-of-range confidence gives `null`.
-  - Oscillation eval: a prior flipping 0.3 ↔ 0.7 falls below a steadily moving one within 3 tests.
-  - Snapshot diff: a test that bumps `times_tested` without moving scores 0, and is counted.
-  - A replay script over historical priors and revisions (Acceptance check 1).
+  - `orion/curiosity/tests/test_curiosity_value.py`;
+  - `tests/test_curiosity_worldview.py` (cold-start order identity, demotion);
+  - `services/orion-hub/tests/test_curiosity_spend_log.py` (tick, durable turn, retry, other lines,
+    unreadable graph, switch off, value arm, migration columns).
+- Eval: `services/orion-hub/evals/test_curiosity_value_order_eval.py`.
+- Replay (Acceptance check 1): `scripts/analysis/replay_curiosity_realized_nats.py`, with its
+  tests.
 
 **D1**
 - `orion/attention/field_attention/scoring.py` and `builder.py`
@@ -843,7 +872,9 @@ These are required by CLAUDE.md 0A before anything is wired in.
 
 ## Recommended next patch
 
-Two pull requests. They are independent, and either can land first.
+**Status: both parts are built, in PR #2355.** They were planned as two pull requests. They landed
+as separate commits on one branch, because this session could push only its assigned branch.
+They are independent and can be reviewed commit by commit. The original plan follows.
 
 1. **`fix/attention-novelty-and-peer-claude-meter`: D1 and D2.** Small fixes, each with regression
    tests. D1 changes live attention behaviour, since it removes manufactured novelty. So it gets
@@ -862,6 +893,45 @@ Two pull requests. They are independent, and either can land first.
 3. P3 and P4, sequenced with #2255.
 4. P5 alongside each of the above.
 5. P6 and P7, once there is outcome data.
+
+## Phase 1 as built (2026-09-25, PR #2355)
+
+**What is live after deploy.**
+- The spend log (on by default). Every investigation run records its offer, a start snapshot, and
+  what it moved, in nats.
+- Value ordering is built and **off**. With the switch off, the offer order is unchanged.
+
+**What the simulation eval found** (`services/orion-hub/evals/test_curiosity_value_order_eval.py`).
+The eval runs the production functions over a known population: 4 learnable beliefs, 4
+flip-floppers and 2 settled ones, for 24 runs. It is a simulation, not live evidence.
+
+| | Uncertainty order | Value order |
+|---|---|---|
+| Runs on flip-floppers, no `stale_after` | 20 | 8 |
+| Learnable beliefs resolved, no `stale_after` | 0 of 4 | 4 of 4 |
+| Runs on flip-floppers, `stale_after=3` (the live value) | 12 | 12 (a tie) |
+| Learnable beliefs resolved, `stale_after=3` | 0 of 4 | 0 of 4 |
+
+**The finding under the live setting.** The count rule, not the ordering, decides what gets
+learned. It caps every belief at 3 tests in the ordered list, learnable ones included, so it
+retires beliefs that were still moving before they resolve.
+
+That strengthens the plan to replace `stale_after` with measured yield. But replacing it changes
+live behaviour, so it is a separate decision (Missing question 8), not part of this PR. The
+simulation also shows the limit of ordering alone: once nothing learnable is left, value order
+still spends runs on the best bad option. Refusing to spend needs phase 2's floor.
+
+**Changed during build, from the eval.** Yield now includes the straightness discount (P1c). Net
+KL alone let an odd-length flip-flop score close to a real learner.
+
+**To go live.**
+1. Apply `services/orion-sql-db/manual_migration_curiosity_spend_v1.sql`.
+2. Sync the local `.env` (`python scripts/sync_local_env_from_example.py` adds the five keys).
+3. Restart Hub.
+4. After a week or more of runs, run
+   `python scripts/analysis/replay_curiosity_realized_nats.py --pg --graph`.
+5. Flip `HUB_CURIOSITY_VALUE_ORDER_ENABLED` only if the replay reports USABLE, with a sample size
+   you can reach.
 
 ## Review findings addressed
 

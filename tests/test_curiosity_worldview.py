@@ -1560,3 +1560,61 @@ def test_collapsing_can_drop_a_forked_claim_out_of_the_sample():
     ]
     offered, _, _ = select_priors(rows, sample=3, stale_after=0)
     assert "a" not in [p.prior_id for p in offered]
+
+
+# --- the value-ordered offer (P1, 2026-09-25 attention-with-stakes design) ----
+
+
+def _value_rows():
+    return [
+        _prior_row("sure", confidence="0.95", tested=1),
+        _prior_row("half", confidence="0.5", tested=2),
+        _prior_row("lean", confidence="0.7", tested=0),
+        _prior_row("fresh", confidence="0.55", tested=0),
+        _prior_row("tie_a", confidence="0.6", tested=1),
+        _prior_row("tie_b", confidence="0.4", tested=1),
+        _prior_row("unknown", confidence=None, tested=0),
+    ]
+
+
+def test_value_order_on_a_cold_model_is_identical_to_the_uncertainty_order() -> None:
+    from orion.curiosity.value import build_yield_model
+
+    cold = build_yield_model([], window=3, pseudo_tests=2.0)
+    for seed in ("", "run-a", "run-b"):
+        default = [p.prior_id for p in select_priors(_value_rows(), sample=8, stale_after=5, rotate_seed=seed)[0]]
+        valued = [
+            p.prior_id
+            for p in select_priors(
+                _value_rows(),
+                sample=8,
+                stale_after=5,
+                rotate_seed=seed,
+                expected_nats_for=lambda p: cold.expected_nats(p.prior_id, p.confidence),
+            )[0]
+        ]
+        assert valued == default
+
+
+def test_value_order_demotes_a_prior_that_stopped_teaching() -> None:
+    from orion.curiosity.value import PriorTestRecord, build_yield_model
+
+    # "half" was tested three times and never moved; "lean" moved every time.
+    history = [PriorTestRecord("half", 0.5, 0.5)] * 3 + [
+        PriorTestRecord("lean", 0.55, 0.62),
+        PriorTestRecord("lean", 0.62, 0.7),
+    ]
+    model = build_yield_model(history, window=3, pseudo_tests=2.0)
+    default = [p.prior_id for p in select_priors(_value_rows(), sample=8, stale_after=5)[0]]
+    valued = [
+        p.prior_id
+        for p in select_priors(
+            _value_rows(),
+            sample=8,
+            stale_after=5,
+            expected_nats_for=lambda p: model.expected_nats(p.prior_id, p.confidence),
+        )[0]
+    ]
+    assert default.index("half") < default.index("lean")  # uncertainty says "half" first
+    assert valued.index("lean") < valued.index("half")  # measured progress says otherwise
+    assert set(valued) == set(default)  # an order, never a filter

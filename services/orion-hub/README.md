@@ -1038,6 +1038,46 @@ Orion puts there needs approval.
   message to Juniper. **Absence is the safe default** — no node means no
   continuation and no message. Nothing is inferred from the prose.
 
+**What each run bought: the spend log** (2026-09-25; P1 of
+`docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md`). An
+investigation is Orion's most expensive self-directed act, so Hub now records
+what each one was offered and what it moved:
+
+- **At dispatch**, `curiosity_offer_decisions` gets one row: the offer arm,
+  every prior shown in the order shown, and the expected value it was shown at.
+- **When the turn starts** (`_run_turn`, durable or in-process), the same row
+  gets a snapshot of every prior's confidence, tested count and run stamps.
+  It is taken then, not at dispatch, because a durable run can wait hours in
+  admission while other turns move priors. The first attempt wins, so a retry
+  is scored from where the run began.
+- **When the turn ends**, `curiosity_run_outcomes` gets the diff, in nats of
+  belief change: KL(after ‖ before) for each prior this run tested (stamped
+  `last_run_id` = run and `times_tested` went up). A test that moved nothing
+  scores 0.0. An unreadable graph is `NULL`, never 0. Changes stamped by
+  another run are counted as unattributed and not scored. Agreement with the
+  `:PriorRevision` nodes Orion wrote by hand is recorded as a cross-check.
+
+Measured from Hub's own snapshots because Orion writes a revision only when a
+confidence *moves*: 21 revisions across 94 journaled runs by 2026-09-14.
+
+`HUB_CURIOSITY_VALUE_ORDER_ENABLED` (default off) offers priors by *expected
+belief change* instead of raw uncertainty. Expected value is entropy times the
+prior's measured learning yield: net, straightness-discounted belief change
+per unit of uncertainty over its last `HUB_CURIOSITY_YIELD_WINDOW` tests,
+shrunk toward the pool average by `HUB_CURIOSITY_YIELD_PSEUDO_TESTS`. Orion
+still chooses; only the order changes. Each run draws its arm from a
+deterministic per-run coin with P(value) = `HUB_CURIOSITY_VALUE_ORDER_PROPENSITY`,
+so the two orders can be compared on real outcomes. With no scored history the
+two orders are identical.
+
+The switch stays off until
+`scripts/analysis/replay_curiosity_realized_nats.py --pg` shows the measurement
+is not degenerate and says how many runs per arm the comparison needs.
+`HUB_CURIOSITY_SPEND_LOG_ENABLED=false` stops all three writes. The migration
+must be applied first:
+`services/orion-sql-db/manual_migration_curiosity_spend_v1.sql`. Without it,
+the log warns once and records nothing.
+
 **Gates, in order.** `disabled` → `daily_cap` → `cooldown` → `pg_role_missing`
 → `graph_unavailable` → `stores_not_ready` / `stores_unavailable` /
 `no_approved_material` → `empty_generation` / `no_lookup`. `stores_not_ready`

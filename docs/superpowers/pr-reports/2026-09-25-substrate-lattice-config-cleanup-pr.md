@@ -185,6 +185,6 @@ No other service needs a restart. The bus catalog is data read by gates and test
 
 ## PR link
 
-See the GitHub PR for this branch (`chore/substrate-lattice-config-cleanup`).
+https://github.com/junebug-junie/Orion-Sapienform/pull/2324
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

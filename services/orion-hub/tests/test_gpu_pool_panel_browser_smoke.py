@@ -189,6 +189,7 @@ def test_gpu_pool_panel_shows_swap_fault_guards_and_holds_with_their_calls():
         gpu2 = page.inner_text('[data-card="gpu2"]')
         assert "swap: fault agent-gpu2" in gpu2 and "FAULT" in gpu2 and "pool actuates agent-gpu2" in gpu2
         assert "load agent-gpu2 (g4, demand)" in gpu2 and "failed" in gpu2
+        assert page.locator('[data-card="gpu2"] button[data-verb="clear_fault"][data-card="gpu2"]').count() == 1
         assert "observe only" in page.inner_text('[data-card="gpu0"]') or "swap:" not in page.inner_text('[data-card="gpu0"]')
         guards = page.inner_text("#swapGuards")
         assert "thermal: clear" in guards and "visual_baseline: visual_baseline_urgent" in guards

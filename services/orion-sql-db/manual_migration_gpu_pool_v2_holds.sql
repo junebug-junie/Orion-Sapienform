@@ -21,5 +21,8 @@ ALTER TABLE gpu_pool_cards ADD COLUMN IF NOT EXISTS residency_until timestamptz;
 ALTER TABLE gpu_pool_cards ADD COLUMN IF NOT EXISTS loaded_at timestamptz;
 
 -- Children of one hold (acceptance check 2 joins on it). Partial: almost every lease is not a child.
+-- If this build fails (e.g. lock_timeout) it leaves an INVALID index that IF NOT EXISTS then skips on
+-- every re-run. Check: SELECT indisvalid FROM pg_index WHERE indexrelid='gpu_pool_leases_hold_idx'::regclass;
+-- Recover: DROP INDEX CONCURRENTLY IF EXISTS gpu_pool_leases_hold_idx; then re-run this file.
 CREATE INDEX CONCURRENTLY IF NOT EXISTS gpu_pool_leases_hold_idx ON gpu_pool_leases (hold_lease_id)
     WHERE hold_lease_id IS NOT NULL;

@@ -255,7 +255,9 @@ class GpuPoolControlV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    verb: Literal["lend", "unlend", "replay", "cancel", "backfill", "hold", "release"]
+    # clear_fault (stage 4.3): take `card` out of swap_state=fault. The pool reconciles with the
+    # actuator (`status`) and adopts what it reports; with no answer it settles from discovery.
+    verb: Literal["lend", "unlend", "replay", "cancel", "backfill", "hold", "release", "clear_fault"]
     card: str | None = None
     lease_id: str | None = None
     backfill: dict[str, Any] | None = None

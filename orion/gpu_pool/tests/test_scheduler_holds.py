@@ -225,3 +225,29 @@ def test_mid_load_blocks_the_seat_and_its_evictions_but_not_other_residents():
     crds = cards(gpu2=CardLive("gpu2", swap_state="loading", swap_role="agent-gpu2"))
     assert grants(run([lease("world", lease_id="w"), lease("diffusion", lease_id="d")], crds=crds)) == {"w": "world"}
     assert not of(SwapLoad, schedule(CFG, live(), crds, _demand(), T0, guards=CLEAR))
+
+
+# --- review findings (2026-09-25) --------------------------------------------------------------
+def test_retrying_child_of_a_gone_hold_ends_instead_of_crashing_the_tick():
+    c = child("gone", "retry_wait", lease_id="c", not_before=T0 - timedelta(seconds=1))
+    assert [(u.lease_id, u.reason) for u in of(Unavailable, run([c]))] == [("c", "hold_not_granted")]
+
+
+def test_a_hold_never_takes_a_second_slot_for_its_calls():
+    roles = live(metacog=live()["metacog"].__class__("metacog", True, 4, 4096, False))
+    h = lease("metacog", "granted", "metacog", kind="hold", lease_id="h", priority="background")
+    c1 = lease("metacog", "granted", "metacog", hold_lease_id="h", lease_id="c1", priority="background")
+    c2 = lease("metacog", hold_lease_id="h", lease_id="c2", priority="background")
+    owner = lease("metacog", priority="interactive", lease_id="o", age=100)
+    got = grants(run([h, c1, c2, owner], roles=roles))
+    assert "c2" not in got and got["o"] == "metacog"
+
+
+def test_a_hold_does_not_borrow_a_role_its_owner_is_using():
+    roles = live(chat=live()["chat"].__class__("chat", True, 2, 65536, True))
+    crds = cards(gpu0=CardLive("gpu0", lent=True))
+    busy_agent = lease("agent", "granted", "agent")
+    owner = lease("chat", "granted", "chat", priority="interactive")
+    h = hold(lease_id="h")
+    decisions = run([busy_agent, owner, h], roles=roles, crds=crds)
+    assert "h" not in grants(decisions) and not of(Recall, decisions)

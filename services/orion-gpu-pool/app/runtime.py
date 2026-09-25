@@ -65,6 +65,11 @@ STATUS_POLL_SEC = 30.0
 # faults. Not actuate_ack_sec: the circe actuator answers status only after `docker` has reported
 # the containers (up to ~60s, services/orion-gpu-lane-controller/app/actuator_bus.py).
 STATUS_REPLY_SEC = 90.0
+# Even while the actuator keeps saying "running", a card is faulted this many action timeouts after
+# the action was sent: an actuator wedged mid-transition must not hold a card in `loading` forever.
+MAX_ACTION_TIMEOUTS = 2.0
+# Actions this process issued per seat, newest last: a late result for any of them is still ours.
+RECENT_ACTIONS = 8
 # A status reply that cannot say whether the action is running (an actuator predating the
 # `in_flight` field) and shows a half-done card is re-asked this many times before the card faults.
 MAX_STATUS_EXTENSIONS = 4
@@ -161,6 +166,7 @@ class PoolRuntime:
         # ("unread"): a pool that has not read the thermal sensor yet must not load a model.
         self.guard_states: dict[str, str | None] = {g: "unread" for g in SWAP_GUARDS}
         self._started = False
+        self._recent_actions: dict[str, list[str]] = {}
 
     # --- lifecycle --------------------------------------------------------------------
     async def start(self) -> None:
@@ -325,6 +331,10 @@ class PoolRuntime:
         async with self._locked("attach"):
             existing = await self.store.lease_by_request(req.request_id)
             if existing is not None:
+                if existing.get("hold_lease_id") != req.hold_lease_id:
+                    # A request_id that names some OTHER lease (e.g. the hold's own): never hand
+                    # that lease back -- the caller would release/cancel it on exit.
+                    return GpuLeaseReplyV1(status="unavailable", reason="request_id_conflict")
                 return await self._reply_for(existing)
             if not req.work_class or req.work_class not in self.cfg.classes:
                 return GpuLeaseReplyV1(status="unavailable", reason=f"unknown_class:{req.work_class}")
@@ -346,7 +356,9 @@ class PoolRuntime:
                 return GpuLeaseReplyV1(status="unavailable", reason="replay_payload_too_large")
             lease_id = uuid.uuid4().hex
             request = {**req.model_dump(mode="json", exclude={"verb", "lease_id", "outcome", "detail"}),
-                       "kind": "request", "holder": req.holder or hold["holder"], "operator": False}
+                       # never retryable: a re-grant after the caller left would sit in the run's slot
+                       "kind": "request", "retryable": False, "holder": req.holder or hold["holder"],
+                       "operator": False}
             t = time.monotonic()
             await self._start_thread(lease_id, request, self.now())
             self._phase("start_thread", t)
@@ -436,6 +448,8 @@ class PoolRuntime:
                                          detail=reply.model_dump(mode="json"))
         if ctl.verb == "backfill":
             return await self._backfill(ctl)
+        if ctl.verb == "clear_fault":
+            return await self._clear_fault(ctl)
         return GpuPoolControlReplyV1(ok=False, reason="unknown_verb")
 
     async def _backfill(self, ctl: GpuPoolControlV1) -> GpuPoolControlReplyV1:
@@ -612,6 +626,9 @@ class PoolRuntime:
             c.swap_role = seat
             c.swap_generation = generation
             c.swap_action = act
+        recent = self._recent_actions.setdefault(seat, [])
+        recent.append(msg.action_id)
+        del recent[:-RECENT_ACTIONS]
         # Persisted BEFORE the request leaves: a crash after the send still finds the action and
         # reconciles with `status` instead of sending a second transition.
         await self._save_cards(cards, "actuate")
@@ -719,21 +736,27 @@ class PoolRuntime:
                     await self._finish(seat, state="fault", loaded=None, outcome=f"status_{res.status}",
                                        event="swap_failed", reason=f"status_{res.status}:{res.reason}")
                     return
+                # Any status answer proves the actuator is reachable; without acked_at the ack
+                # timeout would call a live, running action "actuator_unreachable" next tick.
+                acked = act.get("acked_at") or now.isoformat()
                 running = res.in_flight
                 if running is None:   # an actuator that does not say: a reported phase means mid-action
                     running = res.phase is not None
                 if running:
-                    self._set_action(seat, status_action_id=None, phase=res.phase, in_flight=True,
+                    self._set_action(seat, status_action_id=None, phase=res.phase, in_flight=True, acked_at=acked,
                                      deadline_at=(now + timedelta(seconds=STATUS_POLL_SEC)).isoformat())
                     await self._save_cards(cards, "actuate_status")
                     logger.info("gpu_pool_actuate_still_running seat=%s action_id=%s phase=%s",
                                 seat, act.get("action_id"), res.phase)
                     return
                 observed = dict(res.observed)
-                if self._observed_outcome(seat, observed) is None and res.in_flight is None:
+                if res.in_flight is None:
+                    # The actuator cannot say whether our action runs: between `accepted` and its first
+                    # `progress` it reports no phase although it is working. Ask again (a running
+                    # action reports a phase within one poll) before believing the containers.
                     n = int(act.get("extensions") or 0) + 1
                     if n <= MAX_STATUS_EXTENSIONS:
-                        self._set_action(seat, status_action_id=None, extensions=n,
+                        self._set_action(seat, status_action_id=None, extensions=n, acked_at=acked,
                                          deadline_at=(now + timedelta(seconds=STATUS_POLL_SEC)).isoformat())
                         await self._save_cards(cards, "actuate_status")
                         return
@@ -743,10 +766,12 @@ class PoolRuntime:
                 return
 
             if not pending or res.action_id != act.get("action_id"):
-                # A result for an action we already gave up on (unanswered in time). If it is the
-                # last one we issued and the card is idle, believe the containers it reports.
+                # A result for an action we already gave up on (unanswered in time, or superseded by
+                # a refused retry). If this process issued it and the card is idle, believe the
+                # containers it reports.
                 terminal = res.status in ("succeeded", "failed")
-                if terminal and res.action_id == act.get("action_id") and cards[0].swap_state == "idle" \
+                ours = res.action_id == act.get("action_id") or res.action_id in self._recent_actions.get(seat, [])
+                if terminal and ours and cards[0].swap_state == "idle" \
                         and res.observed and self._observed_outcome(seat, dict(res.observed)) is not None:
                     loaded = self._observed_outcome(seat, dict(res.observed))
                     if loaded != all(seat in c.swapped_in for c in cards):
@@ -792,6 +817,11 @@ class PoolRuntime:
         now = self.now()
         ack = self.cfg.defaults.actuate_ack_sec
         for seat, act in self._pending_actions().items():
+            sent0 = _ts(act.get("sent_at"))
+            if sent0 and (now - sent0).total_seconds() >= MAX_ACTION_TIMEOUTS * self._action_timeout(seat):
+                await self._finish(seat, state="fault", loaded=None, outcome="stuck", event="swap_failed",
+                                   reason="actuator_stuck", detail={"phase": act.get("phase")})
+                continue
             if act.get("status_action_id"):
                 sent = _ts(act.get("status_sent_at"))
                 if sent and (now - sent).total_seconds() >= max(ack, STATUS_REPLY_SEC):
@@ -806,6 +836,39 @@ class PoolRuntime:
             deadline = _ts(act.get("deadline_at"))
             if deadline and now >= deadline:
                 await self._send_status(seat, act, reason="deadline")
+
+    async def _clear_fault(self, ctl: GpuPoolControlV1) -> GpuPoolControlReplyV1:
+        """Operator: take a card out of fault. A seat still in the YAML is reconciled with the
+        actuator (`status` -> adopt what it reports; unanswered -> fault again, visibly). A seat the
+        YAML no longer knows, or a card with nothing to ask about, settles from discovery (seat
+        worker alive -> loaded, else not) with a cooldown before any new load."""
+        async with self._locked("control"):
+            card = self.cards.get(ctl.card or "")
+            if card is None:
+                return GpuPoolControlReplyV1(ok=False, reason="unknown_card")
+            if card.swap_state != "fault":
+                return GpuPoolControlReplyV1(ok=False, reason=f"not_faulted:{card.swap_state}")
+            seat = card.swap_role
+            spec = self.cfg.roles.get(seat or "")
+            if spec is not None and spec.swap is not None and spec.launch is not None:
+                for c in self._seat_cards(seat):   # whatever it settles to, no new load right away
+                    c.cooldown_until = self.now() + timedelta(seconds=self.cfg.defaults.swap_cooldown_sec)
+                for c in self._seat_cards(seat):
+                    c.swap_state = "loading" if not all(seat in x.swapped_in for x in self._seat_cards(seat)) \
+                        else "unloading"
+                act = self._set_action(seat, status_action_id=None, extensions=MAX_STATUS_EXTENSIONS,
+                                       sent_at=self.now().isoformat(), acked_at=self.now().isoformat(),
+                                       outcome=None, reason=f"operator_clear:{ctl.actor}")
+                await self._send_status(seat, act, reason=f"operator_clear:{ctl.actor}")
+                return GpuPoolControlReplyV1(ok=True, reason="reconciling", detail={"card": card.card, "seat": seat})
+            loaded_roles = {r for r in card.swapped_in if r in self.cfg.roles and self._seat_alive(r)}
+            card.swapped_in = loaded_roles
+            card.swap_state, card.swap_role = "idle", None
+            card.cooldown_until = self.now() + timedelta(seconds=self.cfg.defaults.swap_cooldown_sec)
+            await self._save_cards([card], f"operator:{ctl.actor}")
+            await self._emit(GpuPoolEventV1(event="swapped", cards=[card.card], holder=ctl.actor,
+                                            reason="fault_cleared:operator", detail={"swap_role": seat}))
+            return GpuPoolControlReplyV1(ok=True, reason="cleared", detail={"card": card.card})
 
     async def _clear_faults(self) -> None:
         """fault -> idle once discovery sees a consistent card: the evicted residents healthy and

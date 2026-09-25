@@ -76,7 +76,7 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
   role for the whole run. It is placed like any lease, **at most one per role**, and reserves one
   slot. Heartbeat window `hold_lease_ttl_sec` (90 s); a hold nobody heartbeats expires, retries and
   re-queues with the **same lease_id** (new generation).
-- **Each call under it attaches** (`verb=attach`, `client.attached_lease`) with the hold's
+- **Each call under it attaches** (`verb=attach`, `client.gpu_lease(..., hold=ref)`) with the hold's
   `lease_id` + `generation`. The child is a request lease (`hold_lease_id` column; never
   `parent_lease_id`, which is backfill lineage) that runs **in the hold's slot**: only on the hold's
   role, ahead of that role's queue. A hold plus its running call is one slot, never two -- a call
@@ -87,7 +87,11 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
   there; a swap seat with `max_hold_sec` (agent-gpu2: 3600 s) drains after being loaded that long.
   A recalled hold gets `hold_clawback_grace_sec` (600 s) to finish its current node, then is
   aborted and re-queued. No cap on a hold on its home role in stage 4.
-- **`status`** is a read with no side effect: resume after restart, Door-A validation.
+- **`status`** is a read with no side effect: resume after restart, Door-A validation
+  (`client.validate_hold_ref`).
+- Client for durable-runs (4.5): `acquire_hold`, `heartbeat_lease`, `lease_status`, `release_lease`,
+  `hold_ref`, `durable_run_holder`. A child is never retryable, and an attach whose request_id
+  names a different lease is refused `request_id_conflict`.
 - Attach refusals (`hold_unknown`, `not_a_hold`, `hold_not_granted:<status>`,
   `stale_hold_generation:<n>`) name the hold only in `reason`, never in `lease_id` -- the client
   cancels a failed reply's `lease_id`.
@@ -109,7 +113,11 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
 4. no terminal result by `deadline_at` (sum of the launch timeouts it touches) -> `status`. A reply
    with `in_flight=true` (or, from an actuator that predates that field, a `phase`) keeps polling
    every 30 s, never faulting; otherwise the pool adopts the observed containers (a half-done card
-   is a fault). A status gets 90 s to answer (the circe actuator asks docker first).
+   is a fault). A status gets 90 s to answer (the circe actuator asks docker first). A reply that
+   cannot say whether the action runs is re-asked 4 times before the pool believes the containers,
+   and any action still unfinished after 2x its timeout faults the card (`actuator_stuck`).
+   `GpuPoolControlV1 verb=clear_fault card=<card>` (Hub button on a faulted card) reconciles with
+   `status` and adopts the answer, then cools down; a fault discovery cannot clear needs this.
 5. On a pool restart, a card left `loading`/`unloading` is reconciled with `status`, never a
    second transition. A seat already loaded by the old path is **adopted** from observation (its
    idle and max-hold clocks start then), not reloaded.

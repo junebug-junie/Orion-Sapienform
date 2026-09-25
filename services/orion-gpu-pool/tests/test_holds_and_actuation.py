@@ -380,7 +380,7 @@ def test_overdue_result_asks_status_and_adopts_what_it_reports():
         assert status.action == "status" and status.role == SEAT
         rt._world.up.add(SEAT)
         rt._world.up.discard("diffusion")
-        await result(rt, status, "succeeded", observed={SEAT: "running", "diffusion": "exited"})
+        await result(rt, status, "succeeded", in_flight=False, observed={SEAT: "running", "diffusion": "exited"})
         assert rt.cards["gpu2"].swap_state == "idle" and SEAT in rt.cards["gpu2"].swapped_in
     run(go())
 
@@ -417,7 +417,8 @@ def test_pool_restart_mid_load_sends_status_never_a_second_transition():
         sent = actuations(rt2)
         assert [(m.action, m.role) for m in sent] == [("status", SEAT)]
         assert rt2.cards["gpu2"].swap_state == "loading"
-        await result(rt2, sent[0], "progress", phase="starting")   # still running: keep waiting
+        # the real 4.2 reply while its transition runs: succeeded + phase, no in_flight field
+        await result(rt2, sent[0], "succeeded", phase="starting", observed={SEAT: "running", "diffusion": "exited"})
         assert rt2.cards["gpu2"].swap_state == "loading"
         await result(rt2, msg, "succeeded", observed={SEAT: "running", "diffusion": "exited"})  # original finishes
         assert rt2.cards["gpu2"].swap_state == "idle" and SEAT in rt2.cards["gpu2"].swapped_in
@@ -595,3 +596,145 @@ def test_in_flight_fields_are_status_only():
         GpuActuateResultV1(action_id="a", generation=1, role=SEAT, action="load", status="succeeded", in_flight=True)
     GpuActuateResultV1(action_id="a", generation=1, role=SEAT, action="status", status="succeeded", in_flight=False,
                        last_action_id="x")
+
+
+# --- review findings: the 4.2 actuator's REAL status reply (no in_flight, phase may be None) ------
+async def overdue(rt, clock, home):
+    [msg] = actuations(rt)
+    return msg
+
+
+def test_restart_before_the_ack_with_a_running_actuator_is_not_unreachable():
+    async def go():
+        store, saver, clock = MemoryStore(), MemorySaver(), Clock()
+        rt1, _ = make(store=store, saver=saver, clock=clock)
+        await boot(rt1)
+        home, _ = await demand_gpu2(rt1, clock)
+        [load] = actuations(rt1)                                  # no ack before the pool dies
+        rt2, _ = make(store=store, saver=saver, clock=clock, bus=FakeBus())
+        rt2._world.up.discard("diffusion")
+        await rt2.start()
+        [status] = actuations(rt2)
+        await result(rt2, status, "succeeded", phase="draining", observed={SEAT: "absent", "diffusion": "running"})
+        await step(rt2, clock, CFG.defaults.actuate_ack_sec + 5, beat=[home.lease_id], every=5)
+        assert rt2.cards["gpu2"].swap_state == "loading" and not rt2.bus.events("swap_failed")
+        await result(rt2, load, "succeeded", observed={SEAT: "running", "diffusion": "exited"})
+        assert rt2.cards["gpu2"].swap_state == "idle" and SEAT in rt2.cards["gpu2"].swapped_in
+    run(go())
+
+
+def test_status_before_the_first_progress_is_not_taken_as_finished():
+    """Accepted but no phase yet: 4.2 reports phase=None and the containers still look unloaded.
+    One such answer must not settle the card; the next poll shows the phase."""
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        home, _ = await demand_gpu2(rt, clock)
+        [msg] = actuations(rt)
+        await result(rt, msg, "accepted")
+        await step(rt, clock, (msg.deadline_at - clock()).total_seconds() + 1, beat=[home.lease_id], every=60)
+        st = actuations(rt)[-1]
+        await result(rt, st, "succeeded", phase=None, observed={SEAT: "absent", "diffusion": "running"})
+        assert rt.cards["gpu2"].swap_state == "loading"
+        await step(rt, clock, STATUS_POLL_SEC + 1, beat=[home.lease_id], every=STATUS_POLL_SEC + 1)
+        st2 = actuations(rt)[-1]
+        assert st2.action == "status" and st2.action_id != st.action_id
+        await result(rt, st2, "succeeded", phase="draining", observed={SEAT: "absent", "diffusion": "exited"})
+        assert rt.cards["gpu2"].swap_state == "loading"
+        await result(rt, msg, "succeeded", observed={SEAT: "running", "diffusion": "exited"})
+        assert rt.cards["gpu2"].swap_state == "idle" and SEAT in rt.cards["gpu2"].swapped_in
+    run(go())
+
+
+def test_status_without_in_flight_adopts_only_after_repeated_answers():
+    async def go():
+        from app.runtime import MAX_STATUS_EXTENSIONS
+        rt, clock = make()
+        await boot(rt)
+        home, _ = await demand_gpu2(rt, clock)
+        [msg] = actuations(rt)
+        await result(rt, msg, "accepted")
+        await step(rt, clock, (msg.deadline_at - clock()).total_seconds() + 1, beat=[home.lease_id], every=60)
+        for _ in range(MAX_STATUS_EXTENSIONS):
+            await result(rt, actuations(rt)[-1], "succeeded", observed={SEAT: "absent", "diffusion": "running"})
+            assert rt.cards["gpu2"].swap_state == "loading"
+            await step(rt, clock, STATUS_POLL_SEC + 1, beat=[home.lease_id], every=STATUS_POLL_SEC + 1)
+        await result(rt, actuations(rt)[-1], "succeeded", observed={SEAT: "absent", "diffusion": "running"})
+        assert rt.cards["gpu2"].swap_state == "idle" and SEAT not in rt.cards["gpu2"].swapped_in
+    run(go())
+
+
+def test_an_action_still_running_after_two_timeouts_faults_the_card():
+    async def go():
+        from app.runtime import MAX_ACTION_TIMEOUTS
+        rt, clock = make()
+        await boot(rt)
+        home, _ = await demand_gpu2(rt, clock)
+        [msg] = actuations(rt)
+        await result(rt, msg, "accepted")
+        rt._world.up.discard("diffusion")
+        limit = MAX_ACTION_TIMEOUTS * (msg.deadline_at - datetime.fromisoformat(rt.cards["gpu2"].swap_action["sent_at"])).total_seconds()
+        t = 0.0
+        while rt.cards["gpu2"].swap_state == "loading" and t < limit + 120:
+            last = actuations(rt)[-1]
+            if last.action == "status":
+                await result(rt, last, "succeeded", phase="ready_wait", observed={SEAT: "running", "diffusion": "exited"})
+            await step(rt, clock, 30, beat=[home.lease_id], every=30)
+            t += 30
+        assert rt.cards["gpu2"].swap_state == "fault"
+        assert rt.bus.events("swap_failed")[-1]["reason"] == "actuator_stuck"
+        assert limit - 30 <= t <= limit + 60
+    run(go())
+
+
+def test_operator_clears_a_fault_discovery_cannot():
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        home, _ = await demand_gpu2(rt, clock)
+        [msg] = actuations(rt)
+        await result(rt, msg, "accepted")
+        rt._world.up.discard("diffusion")
+        await result(rt, msg, "failed", restored=False, reason="rollback_failed",
+                     observed={SEAT: "exited", "diffusion": "exited"})
+        await step(rt, clock, 30, beat=[home.lease_id])
+        assert rt.cards["gpu2"].swap_state == "fault"          # both down: discovery cannot clear it
+        assert (await rt.acquire(acq("world"))).status != "granted"
+        out = await rt.control(GpuPoolControlV1(verb="clear_fault", card="gpu2", actor="juniper"))
+        assert out.ok and out.reason == "reconciling"
+        status = actuations(rt)[-1]
+        assert status.action == "status"
+        rt._world.up.add("diffusion")                          # the actuator's rollback retry worked
+        await result(rt, status, "succeeded", observed={SEAT: "absent", "diffusion": "running"})
+        card = rt.cards["gpu2"]
+        assert card.swap_state == "idle" and SEAT not in card.swapped_in and card.cooldown_until > clock()
+        await step(rt, clock, 30, beat=[home.lease_id])
+        assert len([m for m in actuations(rt) if m.action == "load"]) == 1   # no reload inside the cooldown
+        bad = await rt.control(GpuPoolControlV1(verb="clear_fault", card="gpu2"))
+        assert not bad.ok and bad.reason == "not_faulted:idle"
+    run(go())
+
+
+def test_operator_clear_of_a_fault_whose_seat_left_the_yaml_settles_from_discovery():
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        rt.cards["gpu2"].swap_state, rt.cards["gpu2"].swap_role = "fault", "renamed-seat"
+        await step(rt, clock, 30)
+        assert rt.cards["gpu2"].swap_state == "fault"
+        out = await rt.control(GpuPoolControlV1(verb="clear_fault", card="gpu2"))
+        assert out.ok and out.reason == "cleared" and rt.cards["gpu2"].swap_state == "idle"
+    run(go())
+
+
+def test_attach_never_hands_back_another_lease_and_is_never_retryable():
+    async def go():
+        rt, _ = make(actuate=())
+        await boot(rt)
+        h = await rt.acquire(hold("run1:1"))
+        clash = await rt.attach(attach(h, "run1:1"))           # the hold's own request_id
+        assert clash.status == "unavailable" and clash.reason == "request_id_conflict" and clash.lease_id is None
+        c = await rt.attach(attach(h, "c1", retryable=True))
+        assert (await rt.store.lease(c.lease_id))["retryable"] is False
+        assert (await rt.store.lease(h.lease_id))["status"] == "granted"
+    run(go())

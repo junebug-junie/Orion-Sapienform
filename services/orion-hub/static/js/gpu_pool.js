@@ -54,7 +54,10 @@
   function slotUse(leases) {
     const busy = {};
     const withChild = new Set();
-    (leases || []).forEach((l) => { if (ACTIVE(l) && l.hold_lease_id) withChild.add(l.hold_lease_id); });
+    const holdRole = {};
+    (leases || []).forEach((l) => { if (l.kind === "hold") holdRole[l.lease_id] = l.role; });
+    // merged only when the call runs on its hold's role, as the scheduler counts it
+    (leases || []).forEach((l) => { if (ACTIVE(l) && l.hold_lease_id && holdRole[l.hold_lease_id] === l.role) withChild.add(l.hold_lease_id); });
     (leases || []).forEach((l) => {
       if (!ACTIVE(l) || !l.role) return;
       if (l.kind === "hold" && withChild.has(l.lease_id)) return;
@@ -253,7 +256,8 @@
       if (sw.loadedAt) lines.push(`seat loaded ${esc(fmtAt(sw.loadedAt))}`);
       return `<div class="swapline swap-${esc(sw.swapState)}" data-swap-state="${esc(sw.swapState)}">
         <span class="badge swapstate">swap: ${esc(sw.swapState)}${sw.swapState !== "idle" && sw.swapRole ? ` ${esc(sw.swapRole)}` : ""}</span>
-        ${sw.swapState === "fault" ? '<div class="meta"><strong>FAULT</strong>: no grants on any role of this card until discovery sees it consistent again.</div>' : ""}
+        ${sw.swapState === "fault" ? `<div class="meta"><strong>FAULT</strong>: no grants on any role of this card until discovery sees it consistent again, or an operator clears it.</div>
+          <button type="button" data-verb="clear_fault" data-card="${esc(c.card)}">Clear fault on ${esc(c.card)} (ask the actuator, adopt what it reports)</button>` : ""}
         ${lines.map((l) => `<div class="meta">${l}</div>`).join("")}
       </div>`;
     };
@@ -541,6 +545,7 @@
       if (btn.dataset.card) body.card = btn.dataset.card;
       if (btn.dataset.lease) body.lease_id = btn.dataset.lease;
       if (btn.dataset.class) body.work_class = btn.dataset.class;
+      if (body.verb === "clear_fault" && !confirm(`Clear the fault on ${body.card}? The pool asks the actuator what is loaded and believes it.`)) return;
       if (body.verb === "hold" && !confirm(`Hold ${body.work_class}? Every card it spans is drained first.`)) return;
       btn.disabled = true;   // no double-submit before the next state frame redraws the controls
       try { await control(body); } finally { btn.disabled = false; }

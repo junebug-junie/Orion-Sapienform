@@ -303,6 +303,8 @@ def schedule(
         if lease.status == "retry_wait":
             if lease.deadline_at is not None and lease.deadline_at <= now:
                 out.append(Unavailable(lease.lease_id, "deadline"))
+            elif lease.hold_lease_id is not None and lease.hold_lease_id not in hold_by_id:
+                out.append(Unavailable(lease.lease_id, "hold_not_granted"))   # never re-queue for a gone run
             elif lease.not_before is None or lease.not_before <= now:
                 out.append(Requeue(lease.lease_id, "retry_due"))
                 (children if lease.hold_lease_id else queued).append(lease)
@@ -386,10 +388,18 @@ def schedule(
 
     # H2: a child jumps its role's queue and needs only its hold's slot. Not `fits`: a recalled or
     # draining hold still finishes its current node inside the grace, and that needs its calls.
+    # One slot per hold: while one of its calls is in flight the next waits for it, and never takes
+    # a second slot ahead of the role's queue.
     for lease in sorted(children, key=lambda l: (l.created_at, l.lease_id)):
-        role = hold_by_id[lease.hold_lease_id].role
-        if ctx.usable(role) and ctx.free_for(lease, role) > 0:
-            grant(lease, role)
+        hold = hold_by_id.get(lease.hold_lease_id)
+        if hold is None or lease.hold_lease_id in busy:
+            continue
+        if ctx.usable(hold.role) and ctx.free_for(lease, hold.role) > 0:
+            grant(lease, hold.role)
+
+    # Roles whose owner already has work running there: a hold must not borrow them only to be
+    # recalled on the next tick (the owner-demand recall below).
+    owner_active = {l.role for l in active_now if l.hold_lease_id is None and cfg.owns(l.work_class, l.role)}
 
     for lease in order:
         for role in cfg.classes[lease.work_class].roles:
@@ -408,6 +418,10 @@ def schedule(
             if not ctx.placeable(lease, role) or ctx.free_for(lease, role) <= 0:
                 continue
             if not cfg.owns(lease.work_class, role) and owners_waiting(role):
+                continue
+            if lease.kind == "hold" and not cfg.owns(lease.work_class, role) and (
+                    role in owner_active or any(granted_role.get(q.lease_id) == role
+                                                and cfg.owns(q.work_class, role) for q in order)):
                 continue
             grant(lease, role)
             break

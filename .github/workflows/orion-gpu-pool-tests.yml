@@ -10,6 +10,9 @@ on:
       - "config/llm_profiles.yaml"
       - "services/orion-llamacpp-host/**"
       - "services/orion-sql-db/manual_migration_gpu_pool_v1.sql"
+      - "services/orion-sql-db/manual_migration_gpu_pool_v2_holds.sql"
+      # the visual_baseline swap guard reads this policy (stage 4.3)
+      - "config/proposals/visual_baseline.v1.yaml"
       - "services/orion-equilibrium-service/app/settings.py"
       - "services/orion-equilibrium-service/.env_example"
       - "services/orion-equilibrium-service/docker-compose.yml"
@@ -35,6 +38,8 @@ on:
       - "services/orion-hub/scripts/gpu_pool_routes.py"
       - "services/orion-hub/static/js/gpu_pool*.js"
       - "scripts/check_gpu_pool_config.py"
+      - "services/orion-sql-db/manual_migration_gpu_pool_v*.sql"
+      - "config/proposals/visual_baseline.v1.yaml"
       - "services/orion-diffusion-host/docker-compose.yml"
       - "services/orion-diffusion-host/.env_example"
       - "orion/llm/resource_lease.py"

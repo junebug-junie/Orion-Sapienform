@@ -1,12 +1,14 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 669,
+  "metric_count": 666,
   "_last_change": {
     "base": "merge base a65691c4d (origin/main)",
-    "change_count": 0,
-    "high_severity_count": 0,
+    "change_count": 3,
+    "high_severity_count": 3,
     "changes": [
-      "no definition changes relative to the merge base"
+      "high   removed metric://field_channel/orion-field-digester/delivery_confidence",
+      "high   removed metric://field_channel/orion-field-digester/stream_backlog_health",
+      "high   removed metric://field_channel/orion-field-digester/stream_backlog_pressure"
     ]
   },
   "definitions": {
@@ -3801,14 +3803,6 @@
       "notes": "category=physical_substrate level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
-    "metric://field_channel/orion-field-digester/delivery_confidence": {
-      "meaning": "Confidence that bus messages are actually being delivered end-to-end. Single-observer channel (2026-07-22): only node:athena's bus-observer ever reports this -- atlas/circe/prometheus have no code path that could produce a real reading and are excluded from the merge entirely (SINGLE_OBSERVER_NODE_CHANNELS, services/orion-field-digester/app/tensor/channels.py), not defaulted to a placeholder value.",
-      "feeds_dimensions": [
-        "coherence"
-      ],
-      "notes": "category=sensor_trust_liveness level=node",
-      "registry_source": "config/field/field_channel_glossary.v1.yaml"
-    },
     "metric://field_channel/orion-field-digester/disk_capacity_pressure": {
       "meaning": "How full a node's monitored filesystems are (percent used, max across configured mounts). Distinct from disk_pressure, which measures I/O throughput, not capacity.",
       "feeds_dimensions": [
@@ -3978,22 +3972,6 @@
         "continuity_pressure"
       ],
       "notes": "category=sensor_trust_liveness level=node",
-      "registry_source": "config/field/field_channel_glossary.v1.yaml"
-    },
-    "metric://field_channel/orion-field-digester/stream_backlog_health": {
-      "meaning": "Renamed from bus_health 2026-07-24, same scope-honesty reasoning as stream_backlog_pressure above -- reflects world_pulse's one Redis Stream, not overall bus/transport subsystem health. Single-observer channel (2026-07-22): only node:athena's bus-observer ever reports this -- atlas/circe/prometheus have no code path that could produce a real reading and are excluded from the merge entirely (SINGLE_OBSERVER_NODE_CHANNELS, services/orion-field-digester/app/tensor/channels.py), not defaulted to a placeholder value.",
-      "feeds_dimensions": [
-        "coherence"
-      ],
-      "notes": "category=sensor_trust_liveness level=node",
-      "registry_source": "config/field/field_channel_glossary.v1.yaml"
-    },
-    "metric://field_channel/orion-field-digester/stream_backlog_pressure": {
-      "meaning": "Renamed from transport_pressure 2026-07-24 for scope honesty: this only ever measures world_pulse's one real Redis Stream (orion:stream:world_pulse:run:result) and its dead-letter queue -- the only thing in the architecture with a real backlog/XLEN concept. Everything else on the bus is Pub/Sub, which has no backlog to measure. Not a general bus/transport-layer pressure signal, and not intended to become one without a genuinely different mechanism -- see docs/superpowers/specs/2026-07-22-transport-bus-signal-quality-measurement-design.md and docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md for the real cross-service RPC-health signal being built separately.",
-      "feeds_dimensions": [
-        "resource_pressure"
-      ],
-      "notes": "category=infra_transport level=node,capability",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/tension_deviation_pressure": {

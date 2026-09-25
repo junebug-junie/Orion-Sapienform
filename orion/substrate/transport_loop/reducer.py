@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+from typing import Callable
 
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.reduction_receipt import ProjectionUpdateV1, ReductionReceiptV1
@@ -15,7 +16,40 @@ from .constants import (
     TRANSPORT_REDUCER_ID,
     TRANSPORT_SOURCE_SERVICE,
 )
-from .extract import extract_transport_bus_state_from_events, parse_bus_transport_trace_id
+from .extract import _ATOM_ROLES, extract_transport_bus_state_from_events, parse_bus_transport_trace_id
+
+# Loads every stored grammar event of one trace (grammar_events, ordered like
+# the reducer cursor: created_at, event_id).
+TraceEventsLoader = Callable[[str], list[GrammarEventV1]]
+
+# A bus observer tick is whole only when both ends are present. Every live
+# observer trace carries both (24,634/24,634 bus.transport:athena traces over
+# 2026-09-18..25; services/orion-bus/app/bus_observer.py::run_observer_tick
+# emits tick_started + tick_completed, or tick_started + tick_failed).
+_TICK_STARTED_ROLE = "bus_observer_tick_started"
+_TICK_TERMINAL_ROLES = frozenset({"bus_observer_tick_completed", "bus_observer_tick_failed"})
+
+
+def _roles(events: list[GrammarEventV1]) -> set[str]:
+    return {(e.atom.semantic_role or "").strip() for e in events if e.atom}
+
+
+def _is_whole_tick(events: list[GrammarEventV1]) -> bool:
+    roles = _roles(events)
+    return _TICK_STARTED_ROLE in roles and bool(roles & _TICK_TERMINAL_ROLES)
+
+
+def _union_events(stored: list[GrammarEventV1], batch: list[GrammarEventV1], trace_id: str) -> list[GrammarEventV1]:
+    """Stored trace order first (same order the cursor reads), then any batch
+    event the loader did not return. Deduped by event_id."""
+    out: list[GrammarEventV1] = []
+    seen: set[str] = set()
+    for event in [*stored, *batch]:
+        if event.trace_id != trace_id or event.event_id in seen:
+            continue
+        seen.add(event.event_id)
+        out.append(event)
+    return out
 
 
 def _utc_now(now: datetime | None) -> datetime:
@@ -53,7 +87,23 @@ def reduce_transport_trace_events(
     now: datetime | None = None,
     reducer_id: str = TRANSPORT_REDUCER_ID,
     stream_depth_critical: int = DEFAULT_STREAM_DEPTH_CRITICAL,
+    load_trace_events: TraceEventsLoader | None = None,
 ) -> tuple[TransportBusProjectionV1, ReductionReceiptV1]:
+    """Reduce one trace group into `buses[bus:<node>]`, which it REPLACES.
+
+    Only a whole observer tick (tick_started .. tick_completed/tick_failed) is
+    ever written. The reducer cursor pages grammar events by (created_at,
+    event_id) with a row limit, so one observer window can be cut across two
+    batches. Reducing a piece used to fabricate values: a tail without
+    bus_health_observed read redis_ping_ok=None -> 0.5 backlog health /
+    delivery confidence / reliability pressure over the real bus:athena, and a
+    head without bus_census_computed read "no catalog drift". Now:
+      * a piece that is not a whole tick is rebuilt from the stored trace via
+        `load_trace_events` (the head was already persisted, since the cursor
+        passed it), and
+      * if the rebuilt trace is still not whole (in-flight window, no loader,
+        loader failure), nothing is written and the prior reading stands.
+    """
     clock = _utc_now(now)
     if not events:
         receipt = ReductionReceiptV1(
@@ -82,9 +132,27 @@ def reduce_transport_trace_events(
         updated.projection_id = TRANSPORT_BUS_PROJECTION_ID
 
     warnings: list[str] = []
+    # A piece carrying no observer atom (trace_started/ended, edges, the
+    # zscore atom after tick_completed) has nothing to add; skip it before any
+    # trace reload so the tail of an already-written window is not re-written.
+    if not (_roles(events) & _ATOM_ROLES):
+        warnings.append(f"no bus observer evidence in trace {trace_id}")
+        return projection, _noop_receipt(events, reducer_id=reducer_id, clock=clock, warnings=warnings)
+
+    tick_events = events
+    if not _is_whole_tick(tick_events) and load_trace_events is not None:
+        try:
+            tick_events = _union_events(load_trace_events(trace_id), events, trace_id)
+        except Exception as exc:  # a failed reload must not write a partial window
+            warnings.append(f"trace reload failed for {trace_id}: {type(exc).__name__}: {exc}")
+            tick_events = events
+    if not _is_whole_tick(tick_events):
+        warnings.append(f"incomplete observer window held: {trace_id}")
+        return projection, _noop_receipt(events, reducer_id=reducer_id, clock=clock, warnings=warnings)
+
     try:
         incoming = extract_transport_bus_state_from_events(
-            events,
+            tick_events,
             now=clock,
             stream_depth_critical=stream_depth_critical,
         )
@@ -95,11 +163,8 @@ def reduce_transport_trace_events(
     # A bus state with zero bus-observer evidence is not a reading, it is the
     # extractor's defaults (redis_ping_ok=None -> 0.5 "half health"). Writing
     # it would overwrite/mint a bus entry with fabricated pressures -- exactly
-    # how bus:rpc_timeout was born (2026-09-22 audit). Also covers a split
-    # piece of a real trace holding only trace_started/trace_ended/edge events.
-    # NOT covered (pre-existing, follow-up): a split BETWEEN observer atoms
-    # leaves a tail with evidence but redis_ping_ok=None, which still writes
-    # the 0.5 defaults over bus:athena.
+    # how bus:rpc_timeout was born (2026-09-22 audit). Splits BETWEEN observer
+    # atoms are handled by the whole-tick rule above.
     if not incoming.evidence_event_ids:
         warnings.append(f"no bus observer evidence in trace {incoming.source_trace_id}")
         return projection, _noop_receipt(events, reducer_id=reducer_id, clock=clock, warnings=warnings)
@@ -110,7 +175,7 @@ def reduce_transport_trace_events(
 
     event_ids = [
         e.event_id
-        for e in events
+        for e in tick_events
         if e.atom and (e.atom.semantic_role or "").strip() not in {"", "trace_started", "trace_ended", "edge_emitted"}
     ]
     after_payload = incoming.model_dump(mode="json")

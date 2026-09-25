@@ -403,6 +403,33 @@ class BiometricsSubstrateStore:
             limit=limit,
         )
 
+    def fetch_transport_trace_events(self, trace_id: str, *, limit: int = 200) -> list[GrammarEventV1]:
+        """Every stored orion-bus event of one bus.transport trace, in cursor
+        order. Used only when a cursor batch cut an observer window in two, so
+        the transport reducer can reduce the whole tick instead of a piece
+        (orion/substrate/transport_loop/reducer.py). Indexed on trace_id."""
+        with self._engine.begin() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT event_json
+                    FROM grammar_events
+                    WHERE trace_id = :trace_id
+                      AND source_service = 'orion-bus'
+                    ORDER BY created_at ASC, event_id ASC
+                    LIMIT :limit
+                    """
+                ),
+                {"trace_id": trace_id, "limit": limit},
+            ).mappings().all()
+        events: list[GrammarEventV1] = []
+        for r in rows:
+            payload = r["event_json"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            events.append(GrammarEventV1.model_validate(payload))
+        return events
+
     def fetch_chat_grammar_events(self, *, limit: int = 100) -> list[GrammarEventV1]:
         return self._fetch_grammar_events(
             cursor_name=CHAT_GRAMMAR_CURSOR_NAME,

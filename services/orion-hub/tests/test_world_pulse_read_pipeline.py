@@ -40,6 +40,10 @@ class _FakeRedis:
         self.store[key] = str(int(self.store.get(key, "0")) + 1)
         return int(self.store[key])
 
+    async def decr(self, key):
+        self.store[key] = str(int(self.store.get(key, "0")) - 1)
+        return int(self.store[key])
+
     async def expire(self, key, ttl):
         return True
 
@@ -866,3 +870,97 @@ class _FakeConn(ReadingQueueFakeMixin, _LegacyFakeConn):
     pass
 
 pytestmark = pytest.mark.usefixtures("reading_dns")
+
+
+# --- Wallet A refund: a turn refused before any reading gives its slot back ---
+# Live 2026-09-23/24: six stance-phase capacity refusals spent the whole daily
+# cap (orion:wp_read:wallet_a:count:<day> = 6) without one read, then every tick
+# logged world_pulse_read_blocked reason=daily_cap for the rest of the day.
+
+# Current capacity refusal shape after GPU pool stage 3 (PR #2328): cortex-exec
+# names the gateway's raw.error, stance fails, the turn defers.
+_POOL_REFUSAL = "turn_deferred:stance_react_failed: agent=gpu_pool_unavailable:deadline"
+
+
+def _paced_pipeline(bus, conn, store, **over):
+    # 8-22 window with cap 6 -> paced cooldown 8400s, floor (min) 600s.
+    kwargs = dict(min_cooldown_sec=600.0, window_start_hour=8, window_end_hour=22, max_attempts=3)
+    kwargs.update(over)
+    return _pipeline(bus, conn, store, **kwargs)
+
+
+def _run_failing_tick(bus, pipe, conn, reason: str):
+    async def _boom(seed):
+        raise ValueError(reason)
+
+    pipe._stage1_read = _boom  # type: ignore[method-assign]
+
+    async def _run():
+        await _seed_queue(conn)
+        return await pipe.tick(force=True)
+
+    return asyncio.run(_run())
+
+
+def test_refused_turn_refunds_wallet_a_daily_slot() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    bus.redis.store[_count_key()] = "2"
+    pipe = _paced_pipeline(bus, conn, store)
+
+    _run_failing_tick(bus, pipe, conn, _POOL_REFUSAL)
+
+    assert bus.redis.store[_count_key()] == "2"
+    # Seed is still charged an attempt (bounded retry), only the wallet is refunded.
+    assert conn.rows["finding:r1:x"]["attempts"] == 1
+    assert conn.rows["finding:r1:x"]["status"] == "pending"
+
+
+def test_refused_turn_shortens_cooldown_to_floor_not_paced_spacing() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    long_ago = datetime.now(timezone.utc) - timedelta(hours=10)
+    bus.redis.store[wa.WALLET_A_COOLDOWN_KEY] = long_ago.isoformat()
+    pipe = _paced_pipeline(bus, conn, store)
+    assert pipe.effective_cooldown_sec == 8400
+
+    _run_failing_tick(bus, pipe, conn, _POOL_REFUSAL)
+
+    since, _ = asyncio.run(
+        wa.read_wallet_a_state(bus.redis, now=datetime.now(timezone.utc), timezone_name="UTC")
+    )
+    # Next attempt allowed ~600s (the floor) after the refusal, not 8400s.
+    remaining = pipe.effective_cooldown_sec - since
+    assert 590 <= remaining <= 610
+
+
+def test_stance_timeout_and_legacy_capacity_code_also_refund() -> None:
+    for reason in (
+        "turn_deferred:stance_react_timeout",
+        "turn_deferred:stance_react_failed: agent=gateway_capacity_rejected:capacity_wait_budget_exhausted",
+        "bus_unavailable",
+    ):
+        bus = _FakeBus()
+        conn = _FakeConn()
+        store = InMemorySubstrateGraphStore()
+        _run_failing_tick(bus, _paced_pipeline(bus, conn, store), conn, reason)
+        assert bus.redis.store[_count_key()] == "0", reason
+
+
+def test_turn_that_reached_the_reader_keeps_its_wallet_a_charge() -> None:
+    for reason in ("turn_error:fcc_stream_stalled", "stage1_turn_timeout", "unreadable handoff"):
+        bus = _FakeBus()
+        conn = _FakeConn()
+        store = InMemorySubstrateGraphStore()
+        bus.redis.store[_count_key()] = "2"
+        pipe = _paced_pipeline(bus, conn, store)
+
+        _run_failing_tick(bus, pipe, conn, reason)
+
+        assert bus.redis.store[_count_key()] == "3", reason
+        since, _ = asyncio.run(
+            wa.read_wallet_a_state(bus.redis, now=datetime.now(timezone.utc), timezone_name="UTC")
+        )
+        assert since < 5, reason

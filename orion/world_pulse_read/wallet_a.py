@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from orion.world_pulse_read.wallet_refund import WalletDebit, record_debit, refund_debit
+
 WALLET_A_COOLDOWN_KEY = "orion:wp_read:wallet_a:last_at"
 WALLET_A_COUNT_KEY_PREFIX = "orion:wp_read:wallet_a:count:"
 _STATE_TTL_SEC = 172800
@@ -101,11 +103,34 @@ async def debit_wallet_a(
     now: datetime,
     timezone_name: str,
     ttl_sec: int = _STATE_TTL_SEC,
-) -> None:
-    await redis.setex(WALLET_A_COOLDOWN_KEY, ttl_sec, now.isoformat())
-    key = _daily_key(now, timezone_name)
-    await redis.incr(key)
-    await redis.expire(key, ttl_sec)
+) -> WalletDebit:
+    """Charge one slot. Keep the receipt: :func:`refund_wallet_a` undoes it
+    when the turn was refused before any reading happened."""
+    return await record_debit(
+        redis,
+        cooldown_key=WALLET_A_COOLDOWN_KEY,
+        count_key=_daily_key(now, timezone_name),
+        now=now,
+        ttl_sec=ttl_sec,
+    )
+
+
+async def refund_wallet_a(
+    redis,
+    receipt: WalletDebit | None,
+    *,
+    now: datetime,
+    effective_cooldown_sec: float,
+    retry_floor_sec: float,
+) -> bool:
+    """Undo a Wallet A debit (see :func:`orion.world_pulse_read.wallet_refund.refund_debit`)."""
+    return await refund_debit(
+        redis,
+        receipt,
+        now=now,
+        effective_cooldown_sec=effective_cooldown_sec,
+        retry_floor_sec=retry_floor_sec,
+    )
 
 
 async def read_wallet_a_state(

@@ -41,6 +41,7 @@ from orion.world_pulse_read.queue import (
     mark_stage2_failed,
     reclaim_stale_stage2_claimed,
 )
+from orion.world_pulse_read.retry import is_refused_before_work
 from orion.world_pulse_read.wallet_a import (
     WalletAInputs,
     read_wallet_a_state,
@@ -49,6 +50,7 @@ from orion.world_pulse_read.wallet_a import (
 from orion.world_pulse_read.wallet_b import (
     WalletBInputs,
     debit_wallet_b,
+    refund_wallet_b,
     paced_cooldown_sec,
     read_wallet_b_state,
     wallet_b_block_reason,
@@ -386,9 +388,6 @@ class WorldPulseReadStage2Pipeline:
 
         await publish_lifecycle(self._bus, claim.seed, "stage2_started", source=self._source_ref)
 
-        if redis is not None:
-            await debit_wallet_b(redis, now=now, timezone_name=self.timezone_name)
-
         try:
             handoff = WorldPulseReadHandoffV1.model_validate(claim.handoff_json)
             handoff.seed_ref = claim.seed.model_copy(update={"request": request_for_seed(claim.seed)})
@@ -396,6 +395,12 @@ class WorldPulseReadStage2Pipeline:
             await self._fail_stage2(claim.seed.seed_id, f"handoff_invalid:{exc}")
             await publish_lifecycle(self._bus, claim.seed, "stage2_failed", source=self._source_ref, error="handoff_invalid")
             return "handoff_invalid"
+
+        # Debit only once a turn is actually about to run: an invalid stored
+        # handoff never reaches the model and must not spend a Wallet B slot.
+        receipt = None
+        if redis is not None:
+            receipt = await debit_wallet_b(redis, now=now, timezone_name=self.timezone_name)
 
         try:
             result = _as_stage2_result(
@@ -408,6 +413,7 @@ class WorldPulseReadStage2Pipeline:
             logger.warning(
                 "world_pulse_read_stage2_failed seed=%s err=%s", claim.seed.seed_id, exc
             )
+            await self._refund_if_refused(redis, receipt, str(exc), claim.seed.seed_id)
             await self._fail_stage2(claim.seed.seed_id, str(exc) or "parse_failed")
             await publish_lifecycle(self._bus, claim.seed, "stage2_failed", source=self._source_ref, error=str(exc))
             return "parse_failed"
@@ -481,6 +487,34 @@ class WorldPulseReadStage2Pipeline:
 
     def _note_dropped_keys(self, keys: list[str]) -> None:
         self.unknown_keys_dropped_total += len(keys)
+
+    async def _refund_if_refused(
+        self, redis: Any, receipt: Any, reason: str, seed_id: str
+    ) -> None:
+        """Give the Wallet B slot back when the turn never read anything
+        (stance refusal / GPU capacity / no bus -- see
+        ``orion.world_pulse_read.retry.is_refused_before_work``). Best-effort:
+        a Redis error here must not stop the seed from being marked failed."""
+        if receipt is None or not is_refused_before_work(reason):
+            return
+        try:
+            refunded = await refund_wallet_b(
+                redis,
+                receipt,
+                now=datetime.now(timezone.utc),
+                effective_cooldown_sec=self.effective_cooldown_sec,
+                retry_floor_sec=self.min_cooldown_sec,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("world_pulse_read_stage2_refund_failed seed=%s", seed_id, exc_info=True)
+            return
+        if refunded:
+            logger.info(
+                "world_pulse_read_stage2_wallet_refunded seed=%s day_key=%s reason=%s",
+                seed_id,
+                receipt.count_key,
+                reason[:_FAIL_REASON_DETAIL_MAX_LEN],
+            )
 
     async def _fail_stage2(self, seed_id: str, error: str) -> None:
         outcome = await self._with_conn(

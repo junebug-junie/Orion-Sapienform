@@ -44,6 +44,10 @@ class _FakeRedis:
         self.store[key] = str(int(self.store.get(key, "0")) + 1)
         return int(self.store[key])
 
+    async def decr(self, key):
+        self.store[key] = str(int(self.store.get(key, "0")) - 1)
+        return int(self.store[key])
+
     async def expire(self, key, ttl):
         return True
 
@@ -927,3 +931,59 @@ class _FakeConn(ReadingQueueFakeMixin, _LegacyFakeConn):
     pass
 
 pytestmark = pytest.mark.usefixtures("reading_dns")
+
+
+# --- Wallet B refund: a Stage 2 turn refused before any reading gives its slot back ---
+
+
+def _run_stage2_failing(bus, conn, pipe, reason: str):
+    async def _boom(handoff):
+        raise ValueError(reason)
+
+    pipe._stage2_pass = _boom  # type: ignore[method-assign]
+
+    async def _run():
+        await _ready_stage2(conn)
+        return await pipe.tick(force=True)
+
+    return asyncio.run(_run())
+
+
+def test_stage2_refused_turn_refunds_wallet_b() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    bus.redis.store[_count_key_b()] = "4"
+    pipe = _pipeline(bus, conn, max_attempts=3)
+
+    _run_stage2_failing(
+        bus, conn, pipe, "turn_deferred:stance_react_failed: agent=gpu_pool_unavailable:deadline"
+    )
+
+    assert bus.redis.store[_count_key_b()] == "4"
+    assert conn.rows["finding:r1:x"]["stage2_attempts"] == 1
+
+
+def test_stage2_turn_that_ran_keeps_wallet_b_charge() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    bus.redis.store[_count_key_b()] = "4"
+    pipe = _pipeline(bus, conn, max_attempts=3)
+
+    _run_stage2_failing(bus, conn, pipe, "turn_error:fcc_stream_stalled")
+
+    assert bus.redis.store[_count_key_b()] == "5"
+
+
+def test_stage2_invalid_handoff_is_not_debited() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn)
+
+    async def _run():
+        await _ready_stage2(conn)
+        conn.rows["finding:r1:x"]["handoff_json"] = {"not": "a handoff"}
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) == "handoff_invalid"
+    assert _count_key_b() not in bus.redis.store
+    assert wb.WALLET_B_COOLDOWN_KEY not in bus.redis.store

@@ -34,12 +34,14 @@ from orion.world_pulse_read.queue import (
 )
 from orion.world_pulse_read.urls import validate_source_url
 from orion.world_pulse_read.events import publish_lifecycle
+from orion.world_pulse_read.retry import is_refused_before_work
 from orion.world_pulse_read.url_filters import url_looks_like_section_index
 from orion.world_pulse_read.wallet_a import (
     WalletAInputs,
     debit_wallet_a,
     paced_cooldown_sec,
     read_wallet_a_state,
+    refund_wallet_a,
     wallet_a_block_reason,
     window_is_configured,
 )
@@ -320,13 +322,15 @@ class WorldPulseReadPipeline:
             )
             return "skipped_index_url"
 
+        receipt = None
         if redis is not None:
-            await debit_wallet_a(redis, now=now, timezone_name=self.timezone_name)
+            receipt = await debit_wallet_a(redis, now=now, timezone_name=self.timezone_name)
 
         try:
             handoff = await self._stage1_read(seed)
         except Exception as exc:  # noqa: BLE001
             logger.warning("world_pulse_read_stage1_failed seed=%s err=%s", seed.seed_id, exc)
+            await self._refund_if_refused(redis, receipt, str(exc), seed.seed_id)
             await self._fail_seed(seed.seed_id, str(exc) or "parse_failed")
             await publish_lifecycle(self._bus, seed, "stage1_failed", source=self._source_ref, error=str(exc))
             return "parse_failed"
@@ -395,6 +399,34 @@ class WorldPulseReadPipeline:
             await self._with_conn(lambda conn: enqueue_from_recent_digests(conn, limit_digests=3, bus=self._bus, source=self._source_ref))
         except Exception:  # noqa: BLE001
             logger.warning("world_pulse_read_enqueue_failed", exc_info=True)
+
+    async def _refund_if_refused(
+        self, redis: Any, receipt: Any, reason: str, seed_id: str
+    ) -> None:
+        """Give the Wallet A slot back when the turn never read anything
+        (stance refusal / GPU capacity / no bus -- see
+        ``orion.world_pulse_read.retry.is_refused_before_work``). Best-effort:
+        a Redis error here must not stop the seed from being marked failed."""
+        if receipt is None or not is_refused_before_work(reason):
+            return
+        try:
+            refunded = await refund_wallet_a(
+                redis,
+                receipt,
+                now=datetime.now(timezone.utc),
+                effective_cooldown_sec=self.effective_cooldown_sec,
+                retry_floor_sec=self.min_cooldown_sec,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("world_pulse_read_refund_failed seed=%s", seed_id, exc_info=True)
+            return
+        if refunded:
+            logger.info(
+                "world_pulse_read_wallet_refunded seed=%s day_key=%s reason=%s",
+                seed_id,
+                receipt.count_key,
+                reason[:_FAIL_REASON_DETAIL_MAX_LEN],
+            )
 
     async def _fail_seed(self, seed_id: str, error: str) -> None:
         outcome = await self._with_conn(

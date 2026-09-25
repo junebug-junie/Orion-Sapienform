@@ -510,6 +510,24 @@ class BiometricsSubstrateWorker:
         self._last_chat_prediction_error: float | None = None
         self._last_route_prediction_error: float | None = None
         self._last_bus_synaptic_prediction_error: float | None = None
+        # RPC delivery bridge (orion/substrate/rpc_delivery.py): the listener
+        # folds orion:rpc_health:snapshot into this rolling window, the tick
+        # reads it. Built lazily-cheap here even when the flag is off.
+        from orion.substrate.rpc_delivery import (
+            RpcDeliveryConfig,
+            RpcDeliveryWindow,
+            parse_exclude_labels,
+        )
+
+        self._rpc_delivery_window = RpcDeliveryWindow(
+            RpcDeliveryConfig(
+                window_s=float(self._settings.rpc_delivery_window_sec),
+                min_denominator=int(self._settings.rpc_delivery_min_denominator),
+                exclude_labels=parse_exclude_labels(
+                    self._settings.rpc_delivery_exclude_labels_raw
+                ),
+            )
+        )
 
     @property
     def bus(self):
@@ -637,6 +655,19 @@ class BiometricsSubstrateWorker:
                 asyncio.create_task(
                     self._codebase_delta_listener_loop(),
                     name="substrate-codebase-delta-listener",
+                )
+            )
+        # RPC delivery bridge: listener + tick share one flag. Without the bus
+        # there is nothing to fold, so the tick is not started either.
+        if self._bus is not None and s.enable_rpc_delivery_bridge:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._rpc_health_listener_loop(), name="substrate-rpc-health-listener"
+                )
+            )
+            self._tasks.append(
+                asyncio.create_task(
+                    self._rpc_delivery_tick_loop(), name="substrate-rpc-delivery-tick"
                 )
             )
         # World-model publish tick: the first real producer for
@@ -1419,6 +1450,92 @@ class BiometricsSubstrateWorker:
                 await asyncio.to_thread(self._vision_channel_tick)
             except Exception:
                 logger.exception("substrate_vision_channel_tick_loop_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+    async def _rpc_health_listener_loop(self) -> None:
+        """Subscribe to orion:rpc_health:snapshot and fold each snapshot into
+        the RPC delivery window. Same subscribe shape as the vision listener."""
+        channel = self._settings.rpc_health_snapshot_channel
+        logger.info("substrate_rpc_health_listener subscribing channel=%s", channel)
+        try:
+            async with self._bus.subscribe(channel) as pubsub:
+                while not self._stop.is_set():
+                    try:
+                        msg = await asyncio.wait_for(
+                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                            timeout=1.2,
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+                    except asyncio.CancelledError:
+                        break
+                    if not msg or msg.get("type") not in ("message", "pmessage"):
+                        continue
+                    try:
+                        self._handle_rpc_health_message(msg)
+                    except Exception:
+                        logger.exception("substrate_rpc_health_handle_failed")
+        except asyncio.CancelledError:
+            raise
+        finally:
+            logger.info("substrate_rpc_health_listener stopped channel=%s", channel)
+
+    def _handle_rpc_health_message(self, raw_msg: dict[str, Any]) -> bool:
+        decoded = self._bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            logger.warning("substrate_rpc_health_decode_failed: %s", decoded.error)
+            return False
+        payload = decoded.envelope.payload
+        if not isinstance(payload, dict):
+            return False
+        return self._rpc_delivery_window.fold(payload)
+
+    def _rpc_delivery_tick(self) -> None:
+        """Write node:substrate.rpc_delivery's rpc_timeout_pressure.
+
+        Clock-driven, so a hop that stops answering keeps being re-read every
+        tick instead of freezing at its last value. Writes nothing when no
+        counted bus RPC call happened inside the window: "nothing was called"
+        is not "everything answered". Fail-open: never raises out of a tick.
+        """
+        if not self._settings.enable_rpc_delivery_bridge:
+            return
+        from orion.substrate.rpc_delivery import rpc_delivery_receipt
+
+        try:
+            now = datetime.now(timezone.utc)
+            reading = self._rpc_delivery_window.reading(now.timestamp())
+            if reading is None:
+                logger.info("substrate_rpc_delivery_tick_unmeasured no_counted_calls_in_window")
+                return
+            self._store.save_receipt(rpc_delivery_receipt(reading, now=now))
+            logger.info(
+                "substrate_rpc_delivery_tick_completed pressure=%.4f worst_hop=%s "
+                "worst=%d/%d hops=%d calls=%d timeouts=%d producers=%d",
+                reading.pressure,
+                reading.worst_hop,
+                reading.worst_timeouts,
+                reading.worst_calls,
+                reading.measured_hops,
+                reading.total_calls,
+                reading.total_timeouts,
+                reading.producers,
+            )
+        except Exception:
+            logger.exception("substrate_rpc_delivery_tick_failed")
+
+    async def _rpc_delivery_tick_loop(self) -> None:
+        interval = float(self._settings.rpc_delivery_tick_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._rpc_delivery_tick)
+            except Exception:
+                logger.exception("substrate_rpc_delivery_tick_loop_failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:

@@ -169,6 +169,11 @@ SYNC_PREFIXES = (
     "LLM_GATEWAY_GRAMMAR_",
     "ENABLE_LLM_INFERENCE_",
     "LLM_INFERENCE_",
+    # rpc delivery field bridge (2026-09-25): substrate-runtime producer keys and
+    # the field-digester gate. None matched an existing prefix.
+    "SUBSTRATE_RPC_DELIVERY_",
+    "SUBSTRATE_RPC_HEALTH_",
+    "ENABLE_RPC_DELIVERY_",
     "ENABLE_PRE_TURN_",
     "ENABLE_POST_TURN_",
     "PRE_TURN_APPRAISAL_",

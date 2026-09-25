@@ -49,6 +49,11 @@ NODE_CHANNELS = [
     # (orion/substrate/llm_inference_loop/). Written only for nodes that actually
     # received upstream traffic that window; holds (does not decay) in between.
     "inference_failure_pressure",
+    # Caller-side RPC delivery: worst bus hop's timeouts / max(calls, floor) over
+    # a rolling window of every service's rpc-health snapshots
+    # (orion/substrate/rpc_delivery.py). Only written on node:substrate.rpc_delivery;
+    # holds (not in NODE_DECAY_CHANNELS) when no bus RPC call happened in the window.
+    "rpc_timeout_pressure",
     "field_coherence_warning",
     "prediction_error",
 ]

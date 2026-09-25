@@ -739,6 +739,25 @@ real failure into a fake calm 0.0 whenever callers stop calling the node. The no
 `ENABLE_LLM_INFERENCE_FIELD_DIGESTION` (default off). Caveat: if callers stop calling a
 dead backend, the last failing reading holds indefinitely -- stale, but not falsely calm.
 
+## `rpc_timeout_pressure` (2026-09-25)
+
+Caller-side RPC delivery, written only on `node:substrate.rpc_delivery` by
+orion-substrate-runtime's RPC delivery bridge (`orion/substrate/rpc_delivery.py`). Every
+service's shared bus client counts, per request channel, replies vs deadline misses and
+publishes them on `orion:rpc_health:snapshot` every 30 s. The bridge sums those per hop over
+a rolling 10 min window and reports the worst hop's `timeouts / max(calls, 10)` -- so one
+timeout alone reads at most 0.1, and a hop reads 1.0 only after 10 unanswered calls with no
+success. Only bus `rpc_request()` hops (`orion:*`) count; HTTP polls, GPU queue wait, long
+`verb:`/`fcc:` work, metacog's own dispatch and cortex-exec's fail-open 3 s probe do not.
+`mode="replace"`, NOT in `NODE_DECAY_CHANNELS`: when no counted bus call happened in the
+window the bridge writes nothing and the last reading holds (age in
+`node_vector_updated_at`). The `node:substrate.rpc_delivery` edge maps it to
+`capability:transport` `reliability_pressure`, which until now only had the bus-observer's
+own failure count (0 for weeks). Gated by `ENABLE_RPC_DELIVERY_FIELD_DIGESTION` (default off
+in code, on in `.env_example`). Not the same event as `inference_failure_pressure`: that one
+is the gateway's count of backend calls that came back with an error; this one is callers
+whose reply did not arrive before their own deadline, whatever the reason.
+
 ## Field channel glossary
 
 This is the consolidated reference for all 38 channels in

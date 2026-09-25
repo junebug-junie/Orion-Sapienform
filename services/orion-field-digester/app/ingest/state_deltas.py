@@ -634,6 +634,25 @@ def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                 )
             )
 
+    if delta.target_kind == "rpc_delivery":
+        # orion-substrate-runtime's RPC delivery bridge (orion/substrate/rpc_delivery.py):
+        # the worst bus hop's share of rpc_request() calls that hit their deadline,
+        # over a rolling window of every service's rpc-health snapshots. A fresh
+        # full reading per tick, so mode="replace". Not in NODE_DECAY_CHANNELS:
+        # the bridge writes nothing when no bus call happened, and decaying
+        # would fade a real failure into a fake calm 0.0.
+        hints = dict((delta.after or {}).get("pressure_hints") or {})
+        if "rpc_timeout_pressure" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_id,
+                    channel="rpc_timeout_pressure",
+                    intensity=max(0.0, min(1.0, float(hints["rpc_timeout_pressure"]))),
+                    label=delta.delta_id,
+                    mode="replace",
+                )
+            )
+
     if delta.target_kind == "prediction_signal":
         hints = dict((delta.after or {}).get("pressure_hints") or {})
         node_key = _node_key(str((delta.after or {}).get("node_id") or delta.target_id))

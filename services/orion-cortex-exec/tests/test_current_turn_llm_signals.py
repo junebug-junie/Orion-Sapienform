@@ -310,3 +310,29 @@ async def test_three_failure_modes_use_distinct_log_messages(monkeypatch, caplog
     assert any("rpc_failed" in m for m in rpc_failed_msgs)
     assert any("malformed_output" in m for m in malformed_msgs)
     assert set(unbound_msgs) != set(rpc_failed_msgs) != set(malformed_msgs)
+
+
+def test_probe_rpc_uses_its_own_rpc_health_hop_label():
+    """The probe's deliberate 3 s deadline must not be counted as LLMGatewayService
+    delivery failure (orion/substrate/rpc_delivery.py excludes this label)."""
+    import asyncio
+
+    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+    from orion.core.bus.codec import OrionCodec
+    from orion.substrate.rpc_delivery import DEFAULT_EXCLUDE_LABELS
+
+    seen: dict = {}
+    codec = OrionCodec()
+
+    class _Bus:
+        def __init__(self) -> None:
+            self.codec = codec
+
+        async def rpc_request(self, channel, env, *, reply_channel, timeout_sec, health_label=None):
+            seen.update(channel=channel, health_label=health_label, timeout_sec=timeout_sec)
+            reply = BaseEnvelope(kind="llm.chat.result", source=ServiceRef(name="llm-gateway"), payload={"content": "[]"})
+            return {"data": codec.encode(reply)}
+
+    assert asyncio.run(signals_module._llm_call(_Bus(), prompt="hi")) == "[]"
+    assert seen["health_label"] == signals_module.PROBE_HEALTH_LABEL == "current_turn_probe"
+    assert signals_module.PROBE_HEALTH_LABEL in DEFAULT_EXCLUDE_LABELS

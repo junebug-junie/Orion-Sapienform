@@ -35,14 +35,16 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     emitted anywhere until now; see orion.field.pressure.HIGHER_IS_BETTER_CHANNELS).
     + inference_failure_pressure added 2026-09-25 (orion-llm-gateway reporting
     its own backend failures per serving node, orion/substrate/llm_inference_loop/).
-    Test name/docstring number (48) is now stale by two distinct channels (50);
+    + rpc_timeout_pressure added 2026-09-25 (caller-side RPC delivery,
+    orion/substrate/rpc_delivery.py).
+    Test name/docstring number (48) is now stale by three distinct channels (51);
     not renamed here to keep this diff reviewable against its own history --
     the asserted numbers below are current, that's what matters."""
     glossary = load_glossary()
     entries = glossary["entries"]
-    assert len(entries) == 51
+    assert len(entries) == 52
     names = {e.channel for e in entries}
-    assert len(names) == 50, "a node-qualified entry must not introduce a new distinct channel name"
+    assert len(names) == 51, "a node-qualified entry must not introduce a new distinct channel name"
     assert "cpu_pressure" in names
     assert "reliability_pressure" in names
     assert "tension_deviation_pressure" in names
@@ -52,6 +54,7 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     assert "cabinet_ambient_audio_staleness" in names
     assert "stability" in names
     assert "inference_failure_pressure" in names
+    assert "rpc_timeout_pressure" in names
     # stream_backlog_pressure/contract_pressure are the two node+capability overlaps.
     overlap = [e for e in entries if set(e.level) == {"node", "capability"}]
     assert {e.channel for e in overlap} == {"stream_backlog_pressure", "contract_pressure"}

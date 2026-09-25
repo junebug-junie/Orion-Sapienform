@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 from orion.schemas.state_delta import StateDeltaV1
 
+from app.tensor.channels import RETIRED_PSEUDO_NODES
+
 # atlas removed 2026-08-21 (decommissioned; its GPUs moved to circe, along
 # with athena's old P100 -- see config/biometrics/node_catalog.yaml). athena
 # itself has no GPU now.
@@ -26,6 +28,14 @@ def _node_key(raw: str) -> str:
 
 
 def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
+    # Never write to a retired/phantom pseudo-node (channels.RETIRED_PSEUDO_NODES):
+    # reconcile runs BEFORE perturbations each tick, so a late or replayed
+    # delta (e.g. a pre-fix transport_bus delta for node:rpc_timeout) would
+    # otherwise resurrect the entry and persist it for one more tick.
+    return [p for p in _delta_to_perturbations(delta) if p.node_id not in RETIRED_PSEUDO_NODES]
+
+
+def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
     if delta.operation == "noop":
         return []
     after = delta.after or {}

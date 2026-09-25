@@ -6,7 +6,7 @@
     "change_count": 2,
     "high_severity_count": 1,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026ub', 'orion-vision-edge'\u2026 -> \u2026ub', 'orion-llm-gateway', 'orion-vision-edge'\u2026)",
+      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026ub', 'orion-vision-edge', 'orion-vision-retina', 'orion-vis\u2026 -> \u2026ub', 'orion-llm-gateway', 'orion-substrate-runtime'])",
       "medium added metric://field_channel/orion-field-digester/inference_failure_pressure"
     ]
   },
@@ -525,9 +525,7 @@
         "orion-harness-governor",
         "orion-hub",
         "orion-llm-gateway",
-        "orion-vision-edge",
-        "orion-vision-retina",
-        "orion-vision-window"
+        "orion-substrate-runtime"
       ],
       "declared_consumers": [
         "orion-equilibrium-service",

@@ -876,9 +876,8 @@ class BiometricsSubstrateStore:
         """Append one raw event_json row per real CodebaseDeltaV1 event
         actually consumed; prunes rows beyond retention.
 
-        Unlike `save_receipt`'s `_prediction_error_receipt` call (gated on
-        score > 0.0 -- an audit trail of notable events) this writes
-        unconditionally, every tick -- it exists to give a future Hub
+        Like `save_receipt`'s `_prediction_error_receipt` call (ungated since
+        2026-09-25) this writes unconditionally, every tick -- it exists to give a future Hub
         analytics tab a complete real history of git/pr/graph deltas, not
         just the moments that crossed the surprise threshold. Also distinct
         from `save_codebase_mass_baseline` above, which only ever holds the

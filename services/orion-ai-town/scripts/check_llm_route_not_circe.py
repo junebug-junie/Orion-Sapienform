@@ -18,10 +18,12 @@ stalled for 10+ hours. Nothing had ever checked the *live* value against
 policy -- only the script default had been fixed, not the deployed state.
 
 This script checks the live state directly: it reads AI Town's actual
-deployed `LLM_MODEL`/`LLM_API_URL` from Convex, resolves that model through
-the gateway's own `/v1/models` (the gateway's live, authoritative view of
-which worker actually serves each route), and refuses to pass if that route
-is the chat lane (`LLM_MODEL=chat` or served_by=circe-worker-1).
+deployed `LLM_MODEL`/`LLM_API_URL` from Convex, confirms the gateway lists
+that route (`/v1/models`), and resolves the route to its orion-gpu-pool work
+class in config/gpu_pool.yaml -- the authority on placement since the
+2026-09-24 GPU pool cutover (the gateway no longer pins a route to a worker,
+so served_by is decided per call). It refuses to pass if the route's class is
+`chat`: that is what would let town dialogue claim Juniper's chat GPU.
 """
 from __future__ import annotations
 
@@ -37,9 +39,9 @@ from orion.autonomy.fcc_env import expand_env_path, load_fcc_env as _load_fcc_en
 
 DEFAULT_FCC_ENV_PATH = os.path.expanduser("~/.fcc/.env")
 
-# Gateway route keys / served_by labels for Juniper's chat lane only.
+# Gateway route keys / GPU-pool work classes reserved for Juniper's chat.
 FORBIDDEN_CHAT_MODEL_IDS = frozenset({"chat"})
-FORBIDDEN_CHAT_SERVED_BY = frozenset({"circe-worker-1"})
+FORBIDDEN_WORK_CLASSES = frozenset({"chat"})
 
 
 def load_fcc_env(path: str) -> None:
@@ -91,15 +93,20 @@ def fetch_gateway_models(gateway_url: str, *, timeout_sec: float = 10.0) -> list
     return body.get("data", [])
 
 
-def resolve_served_by(models: list, model_id: str) -> Optional[str]:
-    for entry in models:
-        if entry.get("id") == model_id:
-            served_by = entry.get("served_by")
-            return str(served_by) if served_by is not None else None
-    return None
+def route_listed(models: list, model_id: str) -> bool:
+    return any(entry.get("id") == model_id for entry in models)
 
 
-def check_not_circe(served_by: Optional[str], *, model_id: str, allow_circe: bool) -> Optional[str]:
+def resolve_work_class(model_id: str, config_path: Optional[str] = None) -> Optional[str]:
+    """The orion-gpu-pool work class this gateway route runs as, or None if the route is not in
+    config/gpu_pool.yaml (the gateway refuses such routes)."""
+    from orion.gpu_pool.config import load_pool_config
+
+    route = load_pool_config(config_path).routes.get(model_id)
+    return route.work_class if route else None
+
+
+def check_not_circe(work_class: Optional[str], *, model_id: str, allow_circe: bool) -> Optional[str]:
     """Return an error message if the check fails, else None."""
     if model_id in FORBIDDEN_CHAT_MODEL_IDS and not allow_circe:
         return (
@@ -108,16 +115,15 @@ def check_not_circe(served_by: Optional[str], *, model_id: str, allow_circe: boo
             "services/orion-ai-town/scripts/wire_llm_gateway.sh (defaults to "
             "quick_background)."
         )
-    if served_by is None:
+    if work_class is None:
         return (
-            f"AI Town's configured model {model_id!r} was not found in the gateway's "
-            "/v1/models list -- cannot confirm it's safe. Refusing to pass."
+            f"AI Town's configured model {model_id!r} is not a route in config/gpu_pool.yaml "
+            "(or the gateway does not list it) -- cannot confirm it's safe. Refusing to pass."
         )
-    if served_by.lower() in FORBIDDEN_CHAT_SERVED_BY and not allow_circe:
+    if work_class.lower() in FORBIDDEN_WORK_CLASSES and not allow_circe:
         return (
-            f"AI Town's LLM_MODEL={model_id!r} resolves to served_by={served_by!r} -- "
-            "the chat worker. AI Town must use quick_background (circe-worker-fast-1), "
-            "not chat/circe-worker-1. Fix: re-run "
+            f"AI Town's LLM_MODEL={model_id!r} runs as GPU-pool class {work_class!r} -- Juniper's "
+            "chat GPU. AI Town must use quick_background (class fast). Fix: re-run "
             "services/orion-ai-town/scripts/wire_llm_gateway.sh."
         )
     return None
@@ -159,13 +165,13 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001 -- fail loudly with a clean message, not a traceback
         print(f"check_llm_route_not_circe: could not reach gateway at {gateway_url}: {exc}", file=sys.stderr)
         return 1
-    served_by = resolve_served_by(models, llm_model)
-    error = check_not_circe(served_by, model_id=llm_model, allow_circe=allow_circe)
+    work_class = resolve_work_class(llm_model) if route_listed(models, llm_model) else None
+    error = check_not_circe(work_class, model_id=llm_model, allow_circe=allow_circe)
     if error:
         print(f"check_llm_route_not_circe FAIL: {error}", file=sys.stderr)
         return 1
 
-    print(f"check_llm_route_not_circe: OK -- LLM_MODEL={llm_model!r} served_by={served_by!r}")
+    print(f"check_llm_route_not_circe: OK -- LLM_MODEL={llm_model!r} gpu-pool class={work_class!r}")
     return 0
 
 

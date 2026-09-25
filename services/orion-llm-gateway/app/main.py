@@ -32,7 +32,7 @@ from .llm_backend import (
 )
 from .anthropic_passthrough import register_anthropic_passthrough_routes
 from .openai_passthrough import register_openai_passthrough_routes
-from . import pool_placement
+from . import pool_placement, upstream_cancel
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
 from .resource_lease import LeaseGuard, ResourceLeaseRejected
@@ -112,8 +112,17 @@ async def ready() -> JSONResponse:
         check_heartbeat=False,
     )
     body = bus_consumer_readiness_v1(result, http_alive=True)
+    pool_bus_up = pool_placement.pool_bus_ready()
+    if not pool_bus_up:
+        # Every LLM call leases over the forked pool RPC client; without it each one answers
+        # gpu_pool_unavailable (pool_bus_unavailable), so the gateway is not ready to serve.
+        body = body.model_copy(update={
+            "ok": False, "dependency_status": "unavailable",
+            "error": "; ".join(e for e in (body.error, "gpu_pool_bus_unavailable") if e),
+        })
     status_code = 200 if body.ok else 503
-    return JSONResponse(body.model_dump(mode="json"), status_code=status_code)
+    return JSONResponse(body.model_dump(mode="json"), status_code=status_code,
+                        headers={"X-Gpu-Pool-Bus": "up" if pool_bus_up else "down"})
 
 
 @app.get("/routes")
@@ -242,7 +251,41 @@ def _pool_unavailable_result(plan: ChatDispatchPlan, reason: str) -> Dict[str, A
     }
 
 
+def _revoked_result(plan: ChatDispatchPlan, lease: Lease, reason: str) -> Dict[str, Any]:
+    """The pool took the slot back mid-call and the upstream was stopped. Empty content, raw.error
+    set: consumers that check for empty content treat it as a failed call."""
+    return {
+        "text": "",
+        "content": "",
+        "spark_meta": {},
+        "raw": {
+            "error": pool_placement.POOL_RECALLED,
+            "details": {"reason": f"lease_{reason}", "lease_id": lease.lease_id, "route": plan.route},
+        },
+        "route": plan.route,
+        "served_by": lease.grant.served_by,
+    }
+
+
+def _deadline_result(plan: ChatDispatchPlan, lease: Lease, budget_s: float) -> Dict[str, Any]:
+    return {
+        "text": "",
+        "content": "",
+        "spark_meta": {},
+        "raw": {
+            "error": "timeout",
+            "details": {"reason": "caller_budget_exhausted", "budget_sec": round(budget_s, 3), "route": plan.route},
+        },
+        "route": plan.route,
+        "served_by": lease.grant.served_by,
+    }
+
+
 async def _run_on_grant(plan: ChatDispatchPlan, lease: Lease, read_timeout_s: float) -> Dict[str, Any]:
+    """Run the sync call in the granted role's thread, and stop it from here when the pool takes
+    the lease back (lost, or recalled past its grace), the caller's budget runs out, or this task is
+    cancelled. Stopping = shutting down the worker's upstream sockets (upstream_cancel.py): the
+    blocked read fails, the worker returns, and the slot the pool now counts as free is free."""
     grant = lease.grant
     run_body = plan.body.model_copy(update={"options": {
         **(plan.body.options or {}), "gateway_read_timeout_sec": read_timeout_s,
@@ -252,14 +295,45 @@ async def _run_on_grant(plan: ChatDispatchPlan, lease: Lease, read_timeout_s: fl
         route_target=RouteTarget(url=grant.url, backend=pool_placement.LLAMACPP_BACKEND, served_by=grant.served_by),
     )
     loop = asyncio.get_running_loop()
-    future = loop.run_in_executor(pool_placement.executor_for(grant.url), run_llm_chat, run_body, run_plan)
+    handle = upstream_cancel.UpstreamCancel()
+    future = loop.run_in_executor(pool_placement.executor_for(grant.url), upstream_cancel.run_cancellable,
+                                  handle, run_llm_chat, run_body, run_plan)
+    watch = asyncio.ensure_future(pool_placement.wait_lease_revoked(lease))
+    # The upstream client floors its read timeout at 30s; the caller may have less. Hold the whole
+    # call to what is left of the caller's budget.
+    budget = asyncio.ensure_future(asyncio.sleep(max(0.0, read_timeout_s)))
     try:
-        return await asyncio.shield(future)
-    except asyncio.CancelledError:
-        # The thread cannot be stopped. Keep the lease until it finishes so the pool's view of the
-        # role's busy slots stays true, then let the cancellation through.
-        await asyncio.wait({future})
-        raise
+        try:
+            await asyncio.wait({future, watch, budget}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            # The caller has gone: stop the upstream, keep the lease until the thread is out so the
+            # pool's view of the role's busy slots stays true, then let the cancellation through.
+            handle.cancel("caller_cancelled")
+            await asyncio.wait({future})
+            raise
+        if future.done():
+            return future.result()
+        if watch.done():
+            reason = watch.result()
+            handle.cancel(f"lease_{reason}")
+            logger.warning("gpu_pool_lease_revoked_mid_call lease_id=%s route=%s reason=%s served_by=%s",
+                           lease.lease_id, plan.route, reason, grant.served_by)
+            result = await asyncio.shield(future)
+            if _result_error(result) is None:
+                return result  # it finished before the sockets went down
+            pool_placement.mark_revoked(lease, reason)
+            return _revoked_result(plan, lease, reason)
+        handle.cancel("caller_budget_exhausted")
+        logger.warning("gateway_caller_budget_exhausted route=%s served_by=%s budget_sec=%.1f",
+                       plan.route, grant.served_by, read_timeout_s)
+        result = await asyncio.shield(future)
+        if _result_error(result) is None:
+            return result
+        lease.release_outcome, lease.release_detail = "timeout", "caller_budget_exhausted"
+        return _deadline_result(plan, lease, read_timeout_s)
+    finally:
+        watch.cancel()
+        budget.cancel()
 
 
 async def _dispatch_chat(body: ChatBody, *, correlation_id: str, holder: str = "llm-gateway") -> Dict[str, Any]:
@@ -279,12 +353,19 @@ async def _dispatch_chat(body: ChatBody, *, correlation_id: str, holder: str = "
 
 
 async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, holder: str) -> Dict[str, Any]:
-    """Lease -> run on the granted URL -> release. At most one re-lease, for a context overflow.
+    """Lease -> run on the granted URL -> release. At most three acquires, never a loop:
+
+    * the pool refuses a prompt bigger than every role of its class (``min_ctx_exceeds_class:<max>``)
+      -> re-acquire ONCE at the class's largest ctx, so llama.cpp answers with its real overflow;
+    * the upstream overflows -> release and re-lease ONCE at that role's ctx_per_slot + 1. If the
+      pool then says nothing that big exists, the overflow itself is the answer -- never
+      gpu_pool_unavailable, and never a second clamp. An overflow on the already-clamped (largest)
+      role is returned as is.
 
     One deadline for the whole stay: the caller's own budget (`resolve_caller_budget_sec`). The
     pool wait is capped by it (and by LLM_GATEWAY_POOL_[BACKGROUND_]WAIT_SEC), and whatever is
-    left after the grant becomes the upstream read timeout, so a call that queued for most of its
-    budget is not then given a fresh budget to generate for a caller that has gone.
+    left after the grant bounds the upstream call, so a call that queued for most of its budget is
+    not then given a fresh budget to generate for a caller that has gone.
     """
     budget_s = resolve_caller_budget_sec(plan.body)
     deadline = time.monotonic() + budget_s
@@ -292,7 +373,8 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
     estimate = pool_placement.estimate_min_ctx_tokens(plan.body.messages or [], options.get("max_tokens"))
     min_ctx = estimate
     overflow: Optional[Dict[str, Any]] = None
-    for attempt in (1, 2):
+    clamped = False
+    for _ in range(3):
         remaining = deadline - time.monotonic()
         wait_s = min(pool_placement.wait_budget_sec(plan.priority or "system"), remaining)
         try:
@@ -306,7 +388,7 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
                     return overflow or _pool_unavailable_result(plan, "deadline")
                 result = await _run_on_grant(plan, lease, read_timeout_s)
                 error = _result_error(result)
-                if error == CONTEXT_OVERFLOW_ERROR and attempt == 1:
+                if error == CONTEXT_OVERFLOW_ERROR and overflow is None and not clamped:
                     raise _ContextOverflow(result, lease.grant.ctx_per_slot)
                 if error is not None:
                     raise _UpstreamFailed(result)
@@ -325,6 +407,16 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
             if overflow is not None:
                 # Nothing bigger could take it: the honest answer is the overflow itself.
                 return overflow
+            max_ctx = pool_placement.class_max_ctx(exc.reason)
+            if max_ctx is not None and not clamped and max_ctx < min_ctx:
+                # Bigger than every role of the class by the estimate: place it on the biggest one
+                # anyway and let llama.cpp's own tokenizer decide (chars/4 is only a guess).
+                logger.warning(
+                    "gpu_pool_min_ctx_exceeds_class correlation_id=%s route=%s estimate=%s -> clamp min_ctx=%s",
+                    correlation_id, plan.route, min_ctx, max_ctx,
+                )
+                clamped, min_ctx = True, max_ctx
+                continue
             logger.warning(
                 "gpu_pool_unavailable correlation_id=%s route=%s class=%s reason=%s",
                 correlation_id, plan.route, plan.work_class, exc.reason,

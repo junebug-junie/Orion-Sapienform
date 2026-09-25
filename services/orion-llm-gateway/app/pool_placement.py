@@ -20,6 +20,7 @@ import math
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Iterable, List, Optional
@@ -47,6 +48,15 @@ gpu_lease = _client_gpu_lease
 
 ROUTE_NOT_IN_POOL = "route_not_in_gpu_pool"
 POOL_UNAVAILABLE = "gpu_pool_unavailable"
+# raw.error / error.type when the pool took the lease back mid-call and the upstream was stopped.
+POOL_RECALLED = "gpu_pool_recalled"
+POOL_UNREACHABLE = "pool_unreachable"
+# The pool answers at once with this when no role of the class has a per-slot context that big;
+# the suffix is the largest known ctx_per_slot in the class.
+MIN_CTX_EXCEEDS_PREFIX = "min_ctx_exceeds_class:"
+# After an acquire RPC times out, later calls fail fast for this long instead of each waiting
+# out its own RPC timeout against a pool that is not answering.
+_UNREACHABLE_CACHE_SEC = 5.0
 LLAMACPP_BACKEND = "llamacpp"  # every pool llm role is a llama.cpp server
 
 HOLDER_OPENAI = "http:openai"      # AI Town NPC traffic; cortex-exec's first-person wait cue skips http:*
@@ -107,6 +117,34 @@ def wait_budget_sec(priority: str) -> float:
     if priority == "background":
         return float(settings.llm_gateway_pool_background_wait_sec)
     return float(settings.llm_gateway_pool_wait_sec)
+
+
+def passthrough_wait_sec() -> float:
+    """HTTP passthrough callers hold a socket open while they wait: never the 300/900s bus budgets."""
+    return float(settings.llm_gateway_pool_passthrough_wait_sec)
+
+
+def class_max_ctx(reason: Optional[str]) -> Optional[int]:
+    """The class's largest ctx_per_slot from a ``min_ctx_exceeds_class:<n>`` refusal, else None."""
+    text = str(reason or "")
+    if not text.startswith(MIN_CTX_EXCEEDS_PREFIX):
+        return None
+    try:
+        value = int(text[len(MIN_CTX_EXCEEDS_PREFIX):])
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+_unreachable_until = [0.0]
+
+
+def reset_pool_unreachable() -> None:
+    _unreachable_until[0] = 0.0
+
+
+def pool_bus_ready() -> bool:
+    return _bus is not None
 
 
 # ── min_ctx estimate ────────────────────────────────────────────────────────────────────────
@@ -179,6 +217,8 @@ class PoolLease:
             raise LeaseUnavailable("pool_bus_unavailable")
         if self.deadline_sec <= 0:
             raise LeaseUnavailable("deadline")
+        if time.monotonic() < _unreachable_until[0]:
+            raise LeaseUnavailable(POOL_UNREACHABLE)
         cm = gpu_lease(
             bus, work_class=self.spec.work_class, holder=self.holder, priority=self.spec.priority,
             kind="request", deadline_sec=self.deadline_sec, min_ctx_tokens=self.min_ctx_tokens,
@@ -188,8 +228,15 @@ class PoolLease:
             self.lease = await cm.__aenter__()
         except LeaseUnavailable:
             raise
-        except Exception as exc:  # noqa: BLE001 -- an RPC timeout means the pool is unreachable
-            raise LeaseUnavailable(f"pool_unreachable:{type(exc).__name__}") from exc
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            # The acquire RPC went unanswered: fail the next few seconds of calls fast.
+            _unreachable_until[0] = time.monotonic() + _UNREACHABLE_CACHE_SEC
+            logger.warning("gpu_pool_unreachable route=%s class=%s holder=%s (acquire RPC timed out)",
+                           self.route, self.spec.work_class, self.holder)
+            raise LeaseUnavailable(POOL_UNREACHABLE) from exc
+        except Exception as exc:  # noqa: BLE001 -- any other RPC failure: the pool is not usable
+            logger.warning("gpu_pool_lease_rpc_failed route=%s error=%s: %s", self.route, type(exc).__name__, exc)
+            raise LeaseUnavailable(POOL_UNREACHABLE) from exc
         self._cm = cm
         logger.info(
             "gpu_pool_lease_granted route=%s class=%s priority=%s holder=%s role=%s url=%s ctx_per_slot=%s "
@@ -224,6 +271,41 @@ async def lease_for_route(route: str, *, holder: str, turn_correlation_id: Optio
         await handle.release(exc)
         raise
     await handle.release()
+
+
+async def wait_lease_revoked(lease: Lease) -> str:
+    """Return once the upstream call on ``lease`` must stop: ``"lost"`` as soon as the pool no longer
+    holds the lease (expired/aborted), ``"recalled"`` once a recall's grace (``recall_by``, else the
+    pool's clawback_grace_sec) has run out. A recalled borrower may finish inside the grace."""
+    while True:
+        if lease.lost.is_set():
+            return "lost"
+        if lease.recalled.is_set():
+            if lease.recall_by is not None:
+                remaining = (lease.recall_by - datetime.now(timezone.utc)).total_seconds()
+            else:
+                remaining = float(pool_config().defaults.clawback_grace_sec)
+            if remaining <= 0:
+                return "recalled"
+            try:
+                await asyncio.wait_for(lease.lost.wait(), timeout=remaining)
+                return "lost"
+            except asyncio.TimeoutError:
+                return "recalled"
+        lost = asyncio.ensure_future(lease.lost.wait())
+        recalled = asyncio.ensure_future(lease.recalled.wait())
+        try:
+            await asyncio.wait({lost, recalled}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            lost.cancel()
+            recalled.cancel()
+
+
+def mark_revoked(lease: Lease, reason: str) -> None:
+    """The release reports ``cancelled``: the gateway stopped the call because the pool took the
+    slot back, not because the upstream failed (so the pool's error accounting stays about GPUs)."""
+    lease.release_outcome = "cancelled"
+    lease.release_detail = f"{POOL_RECALLED}:{reason}"
 
 
 def pool_unavailable_error(*, reason: str, route: Optional[str], work_class: Optional[str]) -> Dict[str, Any]:
@@ -400,7 +482,8 @@ def _entry(route_id: str, *, cfg: PoolConfig, role: str, status: str, discovered
         "status": status,
         "latency_ms": None,
         "last_checked_at": checked_at,
-        "model": discovered.get("model_file") if live else None,
+        # Full path when the pool knows it (durable-runs compares against a full activation path).
+        "model": (discovered.get("model_path") or discovered.get("model_file")) if live else None,
         "vision": discovered.get("vision") if live else None,
         "n_ctx": discovered.get("ctx_per_slot") if live else None,
         "priority": _definitional_priority(route_id),

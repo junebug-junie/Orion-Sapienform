@@ -16,7 +16,7 @@ from app.vision import (
 )
 from orion.core.bus.async_service import OrionBusAsync
 
-from . import pool_placement
+from . import pool_placement, upstream_cancel
 from .ctx_overflow import CONTEXT_OVERFLOW_ERROR, is_context_overflow
 from .models import ChatBody, ChatMessage
 from .settings import settings
@@ -173,13 +173,17 @@ def _common_http_client(body: Optional[ChatBody] = None) -> httpx.Client:
     override read timeout via options['gateway_read_timeout_sec'].
     """
     read_sec = _resolve_http_read_timeout_sec(body)
+    # Inside a pool-leased call (main._run_on_grant) the transport lets the event loop stop this
+    # request when the lease is recalled/lost or the caller's budget runs out (upstream_cancel.py).
+    transport = upstream_cancel.cancellable_transport()
     return httpx.Client(
         timeout=httpx.Timeout(
             connect=getattr(settings, "connect_timeout_sec", 10.0),
             read=read_sec,
             write=10.0,
             pool=10.0,
-        )
+        ),
+        **({"transport": transport} if transport is not None else {}),
     )
 
 

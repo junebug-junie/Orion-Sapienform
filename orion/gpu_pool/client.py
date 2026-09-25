@@ -29,6 +29,12 @@ from orion.schemas.gpu_pool import (
 )
 
 REPLY_PREFIX = GPU_POOL_LEASE_REPLY_PREFIX
+# One lease RPC never waits longer than this (and never longer than the caller's own deadline):
+# the pool answers acquire at once (queued/granted), so a silent pool is an unreachable pool.
+LEASE_RPC_TIMEOUT_SEC = 10.0
+LEASE_RPC_MIN_TIMEOUT_SEC = 1.0
+# Withdrawing a failed acquire is best effort; it must not add another full RPC wait on top.
+WITHDRAW_RPC_TIMEOUT_SEC = 2.0
 RPC_HEALTH_LABEL = "gpu_pool_lease"   # the RPC itself answers at once: real transport, not excluded
 # The pool records queue wait under this label; equilibrium excludes it (waiting is not transport).
 WAIT_HOP_LABEL = "gpu_pool_wait"
@@ -54,6 +60,10 @@ class Lease:
     # Set when the pool no longer considers this lease held (expired, aborted, gone): stop using
     # the GPU now. ``recalled`` is set too, so callers watching only that still stop.
     lost: asyncio.Event = field(default_factory=asyncio.Event)
+    # A caller that stopped work on purpose (e.g. aborted its upstream call because the lease was
+    # recalled or lost) sets this so the release reports that outcome instead of ok/upstream_error.
+    release_outcome: str | None = None
+    release_detail: str | None = None
 
 
 async def lease_rpc(bus: Any, req: GpuLeaseRequestV1, *, source: str, timeout_sec: float = 10.0) -> GpuLeaseReplyV1:
@@ -76,14 +86,20 @@ async def gpu_lease(
 ) -> AsyncIterator[Lease]:
     source = holder
     deadline = datetime.now(timezone.utc) + timedelta(seconds=deadline_sec)
+    rpc_timeout = max(LEASE_RPC_MIN_TIMEOUT_SEC, min(LEASE_RPC_TIMEOUT_SEC, float(deadline_sec)))
     req = GpuLeaseRequestV1(verb="acquire", request_id=request_id or uuid.uuid4().hex, holder=holder,
                             work_class=work_class, priority=priority, kind=kind, min_ctx_tokens=min_ctx_tokens,
                             deadline_at=deadline, turn_correlation_id=turn_correlation_id, retryable=retryable)
     lease: Lease | None = None
     reply: GpuLeaseReplyV1 | None = None
+    unreachable = False
     try:
         async with bus.subscribe(GPU_POOL_EVENT_CHANNEL) as pubsub:  # before acquire: no missed grant
-            reply = await lease_rpc(bus, req, source=source)
+            try:
+                reply = await lease_rpc(bus, req, source=source, timeout_sec=rpc_timeout)
+            except (asyncio.TimeoutError, TimeoutError):
+                unreachable = True  # the pool did not answer: a withdraw RPC would not be answered either
+                raise
             if reply.status == "granted" and reply.grant:
                 lease = Lease(reply.lease_id, reply.grant)
             elif reply.status == "queued":
@@ -91,7 +107,8 @@ async def gpu_lease(
     except BaseException:
         # Cancelled or failed mid-acquire: withdraw by request_id (idempotent; works even if the
         # acquire reply never arrived) so nothing is later granted to a caller that has left.
-        await _withdraw(bus, req, reply, source)
+        if not unreachable:
+            await _withdraw(bus, req, reply, source)
         raise
     if lease is None:
         if reply.status == "backlogged" and retryable:
@@ -111,6 +128,8 @@ async def gpu_lease(
         beat.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await beat
+        if lease.release_outcome:
+            outcome, detail = lease.release_outcome, lease.release_detail or detail
         await _quiet(lease_rpc(bus, GpuLeaseRequestV1(verb="release", lease_id=lease.lease_id,
                                                       outcome=outcome, detail=detail), source=source))
 
@@ -151,16 +170,19 @@ async def _heartbeat(bus: Any, lease: Lease, source: str, every: float) -> None:
 
 
 async def _withdraw(bus: Any, req: GpuLeaseRequestV1, reply: GpuLeaseReplyV1 | None, source: str) -> None:
+    """Best effort, bounded to WITHDRAW_RPC_TIMEOUT_SEC per RPC. Callers skip it entirely when the
+    acquire RPC itself timed out: an unreachable pool must not cost a second full wait."""
     lease_id = reply.lease_id if reply is not None else None
     if lease_id is None:
         # The acquire may have landed without us seeing the reply: re-acquire is idempotent on
         # request_id and returns the lease_id, which we then cancel.
         try:
-            lease_id = (await lease_rpc(bus, req, source=source)).lease_id
+            lease_id = (await lease_rpc(bus, req, source=source, timeout_sec=WITHDRAW_RPC_TIMEOUT_SEC)).lease_id
         except BaseException:  # noqa: BLE001
             return
     if lease_id:
-        await _quiet(asyncio.shield(lease_rpc(bus, GpuLeaseRequestV1(verb="cancel", lease_id=lease_id), source=source)))
+        await _quiet(asyncio.shield(lease_rpc(bus, GpuLeaseRequestV1(verb="cancel", lease_id=lease_id),
+                                              source=source, timeout_sec=WITHDRAW_RPC_TIMEOUT_SEC)))
 
 
 async def _quiet(coro) -> None:

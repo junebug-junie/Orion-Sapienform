@@ -118,11 +118,11 @@ async def test_min_ctx_estimate_is_chars_over_four_plus_max_tokens(fake_pool, mo
 
 @pytest.mark.asyncio
 async def test_context_overflow_re_leases_once_with_a_bigger_min_ctx(fake_pool, monkeypatch):
-    fake_pool.choose = lambda kw: "fast" if len(fake_pool.calls) == 1 else "chat"
     results = iter([OVERFLOW, None])
     monkeypatch.setattr(gateway, "run_llm_chat", lambda body, plan: next(results) or _ok(body, plan))
     result = await gateway._dispatch_chat(_body("quick"), correlation_id="c")
-    assert result["text"] == "hello" and result["url"] == "http://pool-chat:8011"
+    # fast (4096/slot) overflowed; the first fast-class role with ctx >= 4097 is agent (131072).
+    assert result["text"] == "hello" and result["url"] == "http://pool-agent:8015"
     assert fake_pool.calls[0]["min_ctx_tokens"] == 10
     assert fake_pool.calls[1]["min_ctx_tokens"] == 4096 + 1  # the overflowed role's ctx_per_slot + 1
     assert fake_pool.releases == ["upstream_error", "ok"]
@@ -139,17 +139,14 @@ async def test_a_second_overflow_returns_the_overflow_error(fake_pool, monkeypat
 
 @pytest.mark.asyncio
 async def test_nothing_big_enough_after_overflow_returns_the_overflow(fake_pool, monkeypatch):
-    from orion.gpu_pool.client import LeaseUnavailable
-
-    def choose(kw):
-        if len(fake_pool.calls) > 1:
-            raise LeaseUnavailable("no_serviceable_role")
-        return "fast"
-
-    fake_pool.choose = choose
+    # chat's class has one role (chat, 65536/slot). It overflows; the re-lease at 65537 is refused
+    # at once with min_ctx_exceeds_class:65536 -- the answer is the overflow, not
+    # gpu_pool_unavailable, and there is no clamp back down to 65536 (no loop).
     monkeypatch.setattr(gateway, "run_llm_chat", lambda body, plan: dict(OVERFLOW))
-    result = await gateway._dispatch_chat(_body("quick"), correlation_id="c")
+    result = await gateway._dispatch_chat(_body("chat"), correlation_id="c")
     assert result["raw"]["error"] == "context_overflow"
+    assert [c["min_ctx_tokens"] for c in fake_pool.calls] == [10, 65536 + 1]
+    assert fake_pool.releases == ["upstream_error"]
 
 
 @pytest.mark.asyncio

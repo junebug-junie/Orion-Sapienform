@@ -210,7 +210,9 @@
     const classesCfg = (view.config && view.config.classes) || {};
     const holdable = m.spanning.concat(...m.cards.map((c) => c.roles)).filter((r) => r.operatorOnly);
     const holds = ((view.state && view.state.leases) || []).filter((l) => l.holder && l.holder.startsWith("operator:"));
+    const enforce = view.state && view.state.mode === "enforce";
     $("holdControls").innerHTML = holdable.map((r) => {
+      if (!enforce) return `<span class="muted">Hold ${esc(r.name)}: needs the pool to load and unload models itself (stage 5); until then a hold would only drain every card.</span>`;
       const cls = holdClassFor(view.config, r.name);
       const held = holds.find((l) => ((classesCfg[l.work_class] || {}).roles || []).includes(r.name));
       if (held) return `<button type="button" data-verb="release" data-lease="${esc(held.lease_id)}">Release ${esc(r.name)} (${esc(held.status)})</button>`;

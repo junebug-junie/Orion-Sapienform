@@ -121,7 +121,10 @@ class PoolRuntime:
     def _observe_swap_seats(self) -> None:
         """Until the pool actuates swaps itself (stage 5), a swap seat is loaded when its worker is
         really up: announced fresh AND answering /props. Otherwise the pool would refuse to use a
-        27B that the old elastic runtime (or an operator) already brought up on gpu2."""
+        27B that the old elastic runtime (or an operator) already brought up on gpu2. Once the pool
+        actuates (mode "enforce"), its own swap state is the truth and observation would fight it."""
+        if self.mode == "enforce":
+            return
         now = self.now()
         for role, spec in self.cfg.roles.items():
             if spec.swap is None:
@@ -227,6 +230,10 @@ class PoolRuntime:
                     await self._emit_row("replayed", new)
                 await self._schedule_and_apply()
             return GpuPoolControlReplyV1(ok=True, detail={"lease_id": row["lease_id"], "status": new["status"]})
+        if ctl.verb == "hold" and self.mode != "enforce":
+            # Until the pool actuates swaps (stage 5), a hold would only drain every card it spans
+            # and never load anything: a full LLM outage until someone clicks release.
+            return GpuPoolControlReplyV1(ok=False, reason="hold_requires_swap_actuation")
         if ctl.verb == "hold":
             # Operator holds (e.g. the multi-card experiment seat): no heartbeat, bounded by the
             # role's max_hold_sec, released with verb=release.

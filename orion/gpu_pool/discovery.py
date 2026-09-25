@@ -98,7 +98,8 @@ def resolve_roles(
         slots = int(props.get("total_slots") or 0)
         ctx = (props.get("default_generation_settings") or {}).get("n_ctx")
         vision = bool((props.get("modalities") or {}).get("vision"))
-        facts = dict(model_file=loaded_file, slots=slots, ctx_per_slot=int(ctx) if ctx else None, vision=vision)
+        facts = dict(model_file=loaded_file, model_path=str(props.get("model_path") or "") or None,
+                     slots=slots, ctx_per_slot=int(ctx) if ctx else None, vision=vision)
 
         if ann is None:
             discovered.append(DiscoveredRoleV1(**base, status="silent", **facts,

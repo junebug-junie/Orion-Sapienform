@@ -45,6 +45,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `GPU_POOL_CONFIG_PATH` | `/app/config/gpu_pool.yaml` | Route -> pool class/priority map (`routes:`). A route not listed is refused (`route_not_in_gpu_pool`). |
 | `LLM_GATEWAY_POOL_WAIT_SEC` | `300` | Max wait for a pool grant (interactive/system); capped by the caller's own `gateway_read_timeout_sec`. |
 | `LLM_GATEWAY_POOL_BACKGROUND_WAIT_SEC` | `900` | Same, for background-priority routes. |
+| `LLM_GATEWAY_POOL_PASSTHROUGH_WAIT_SEC` | `60` | Max pool wait for the HTTP passthroughs (OpenAI/Anthropic); the queued acquire is withdrawn if the client disconnects. |
 | `LLM_GATEWAY_EXECUTOR_WORKERS_PER_ROLE` | `8` | Threads per granted role URL (one executor per GPU role). |
 | `LLM_ROUTE_DEFAULT` | `quick` | Default routing key when none provided. |
 | `LLM_LANE_ROUTING_ENABLED` | `true` | Honor trusted logical lane metadata when resolving a route name (`chat`, `agent`, `quick`, `metacog`, ...). Set `false` only as a rollback to body-route-only behavior. |
@@ -166,20 +167,37 @@ Every LLM call -- bus RPC, `/v1/chat/completions`, `/v1/messages` -- goes throug
    `http:openai` / `http:anthropic` on the passthroughs. `min_ctx_tokens` =
    ceil(prompt chars / 4) + `max_tokens`, so the pool never places a prompt on a role whose
    per-slot context is smaller. The wait is capped by `LLM_GATEWAY_POOL_[BACKGROUND_]WAIT_SEC`
-   and by the caller's own budget; what is left after the grant becomes the upstream read timeout.
+   and by the caller's own budget; what is left after the grant bounds the whole upstream call
+   (enforced from the event loop, since the upstream client floors its read timeout at 30s).
+   The HTTP passthroughs wait at most `LLM_GATEWAY_POOL_PASSTHROUGH_WAIT_SEC` (60), and a queued
+   acquire is withdrawn if the HTTP client disconnects (response status 499). After an acquire
+   RPC goes unanswered, calls fail fast with `pool_unreachable` for 5s.
 3. **Run on the grant.** The call goes to `grant.url` on a per-role thread pool
    (`LLM_GATEWAY_EXECUTOR_WORKERS_PER_ROLE`), never one executor shared across lanes. Streams
    hold the lease until the stream ends, errors, or the client leaves.
 4. **Release.** `ok` on success; `upstream_error` when the upstream failed (an exception, an HTTP
-   error, or a returned `[Error: ...]`/`raw.error` result).
-5. **Context overflow.** If the granted role rejects the prompt as too long, the lease is released
-   and re-acquired **once** with `min_ctx_tokens = grant.ctx_per_slot + 1`. If that also
-   overflows, or no role is big enough, the overflow error is returned. (Replaces the old
+   error, or a returned `[Error: ...]`/`raw.error` result); `cancelled` when the gateway stopped
+   the call because the pool took the lease back (below); `timeout` when the caller's budget ran
+   out mid-call.
+5. **Recall / loss.** When the pool loses the lease (expired/aborted) or recalls it and the grace
+   (`recall_by`) passes, the upstream call is stopped so the slot the pool now counts as free is
+   free: passthroughs cancel the request or close the stream (503 / an SSE `error` event, type
+   `gpu_pool_recalled`); the bus path shuts down the worker thread's upstream sockets
+   (`app/upstream_cancel.py`) and returns empty content with `raw.error = "gpu_pool_recalled"`,
+   `raw.details.reason = lease_lost | lease_recalled`.
+6. **Context overflow.** If the pool answers `min_ctx_exceeds_class:<max>` (the estimate is bigger
+   than every role of the class), the call is re-acquired **once** at `<max>` so it lands on the
+   largest role and llama.cpp's real tokenizer decides. If the granted role rejects the prompt as
+   too long, the lease is released and re-acquired **once** with
+   `min_ctx_tokens = grant.ctx_per_slot + 1`. If that also overflows, if no role is big enough, or
+   if the overflow came from the already-clamped largest role, the overflow error is returned --
+   never `gpu_pool_unavailable`. At most three acquires per call. (Replaces the old
    escalation ladder, which POSTed straight to other routes' URLs.)
 
 Failure shape (bus): empty text with `raw.error = "gpu_pool_unavailable"` and
 `raw.details = {reason, route, work_class}` -- `reason` is the pool's (`deadline`,
-`no_serviceable_role`, ...) or `pool_bus_unavailable` / `pool_unreachable:<Error>`. HTTP: 503
+`no_serviceable_role`, ...) or `pool_bus_unavailable` / `pool_unreachable`. `/ready` answers 503 (`gpu_pool_bus_unavailable`,
+header `X-Gpu-Pool-Bus: down`) until the pool RPC client is connected. HTTP: 503
 with `error.type = "gpu_pool_unavailable"`.
 
 Deleted with this cutover: `capacity.py` (durable-runs `/capacity` permits),

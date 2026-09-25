@@ -168,3 +168,82 @@ def test_deadline_while_queued_cancels_so_nothing_is_left_holding_a_slot():
         release.set()
         await task
     asyncio.run(go())
+
+
+def test_release_outcome_set_by_the_caller_reaches_the_pool():
+    """The gateway stops an upstream call when the pool recalls/loses the lease and sets
+    ``release_outcome="cancelled"``: that, not ok/upstream_error, is what the pool records."""
+    async def go():
+        bus = WiredBus()
+        rt, _ = await pool(bus)
+        sent = []
+        real = main_mod._on_lease
+
+        async def spy(env):
+            sent.append(env.payload)
+            return await real(env)
+
+        main_mod._on_lease = spy
+        try:
+            async with gpu_lease(bus, work_class="fast", holder="t") as lease:
+                lease.release_outcome, lease.release_detail = "cancelled", "gpu_pool_recalled:lost"
+        finally:
+            main_mod._on_lease = real
+        release = [p for p in sent if p.get("verb") == "release"][-1]
+        assert release["outcome"] == "cancelled" and release["detail"] == "gpu_pool_recalled:lost"
+    asyncio.run(go())
+
+
+class SilentBus(WiredBus):
+    """A pool that never answers: every lease RPC times out after its own timeout_sec."""
+
+    def __init__(self):
+        super().__init__()
+        self.rpcs: list[tuple[str, float]] = []
+
+    async def rpc_request(self, request_channel, envelope, *, reply_channel, timeout_sec=60.0, health_label=None):
+        self.rpcs.append((envelope.payload.get("verb"), timeout_sec))
+        raise asyncio.TimeoutError()
+
+
+@pytest.mark.parametrize("deadline_sec, expected", [(60.0, 10.0), (3.0, 3.0), (0.2, 1.0)])
+def test_lease_rpc_timeout_is_bounded_by_the_deadline_and_an_unreachable_pool_is_not_re_asked(deadline_sec, expected):
+    async def go():
+        bus = SilentBus()
+        with pytest.raises(asyncio.TimeoutError):
+            async with gpu_lease(bus, work_class="fast", holder="t", deadline_sec=deadline_sec):
+                pass
+        # exactly one RPC: no withdraw (re-acquire + cancel) against a pool that did not answer
+        assert bus.rpcs == [("acquire", expected)]
+    asyncio.run(go())
+
+
+def test_withdraw_rpcs_are_bounded_short():
+    """Cancelled while queued with the acquire reply in hand: the cancel RPC waits at most 2s."""
+    async def go():
+        bus = WiredBus()
+        rt, _ = await pool(bus)
+        timeouts = []
+        real = bus.rpc_request
+
+        async def spy(request_channel, envelope, *, reply_channel, timeout_sec=60.0, health_label=None):
+            timeouts.append((envelope.payload.get("verb"), timeout_sec))
+            return await real(request_channel, envelope, reply_channel=reply_channel, timeout_sec=timeout_sec,
+                              health_label=health_label)
+
+        bus.rpc_request = spy
+        release = asyncio.Event()
+
+        async def hold():
+            async with gpu_lease(bus, work_class="chat", holder="a", priority="interactive"):
+                await release.wait()
+
+        holder = asyncio.create_task(hold())
+        await asyncio.sleep(0.05)
+        with pytest.raises(LeaseUnavailable):
+            async with gpu_lease(bus, work_class="chat", holder="b", priority="interactive", deadline_sec=0.1):
+                pass
+        assert ("cancel", 2.0) in timeouts
+        release.set()
+        await holder
+    asyncio.run(go())

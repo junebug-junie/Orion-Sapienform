@@ -90,6 +90,11 @@ class Settings(BaseSettings):
     llm_gateway_pool_background_wait_sec: float = Field(
         900.0, gt=0, alias="LLM_GATEWAY_POOL_BACKGROUND_WAIT_SEC"
     )
+    # HTTP passthroughs (OpenAI/Anthropic) hold a client socket open while queued: their pool wait
+    # is this, never the bus budgets above. The queued acquire is withdrawn if the client leaves.
+    llm_gateway_pool_passthrough_wait_sec: float = Field(
+        60.0, gt=0, alias="LLM_GATEWAY_POOL_PASSTHROUGH_WAIT_SEC"
+    )
     # Threads per granted role URL (one executor per role, never one shared across lanes).
     llm_gateway_executor_workers_per_role: int = Field(
         8, ge=1, le=128, alias="LLM_GATEWAY_EXECUTOR_WORKERS_PER_ROLE"

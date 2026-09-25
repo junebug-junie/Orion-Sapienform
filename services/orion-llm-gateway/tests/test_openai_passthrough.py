@@ -94,7 +94,8 @@ class TestOpenAIPassthroughHTTP:
         assert response.status_code == 200
         call = configured_routes.calls[0]
         assert (call["work_class"], call["priority"]) == ("fast", "background")
-        assert call["deadline_sec"] == settings.llm_gateway_pool_background_wait_sec
+        # An HTTP client holds a socket open while queued: never the 900s background bus budget.
+        assert call["deadline_sec"] == settings.llm_gateway_pool_passthrough_wait_sec == 60.0
 
     def test_upstream_http_error_releases_as_failure(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch, configured_routes: Any

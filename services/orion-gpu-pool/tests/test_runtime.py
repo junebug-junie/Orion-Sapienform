@@ -387,6 +387,9 @@ def test_operator_hold_via_control_and_release():
     async def go():
         rt, _ = make()
         await boot(rt)
+        refused = await rt.control(GpuPoolControlV1(verb="hold", work_class="experiment"))
+        assert not refused.ok and refused.reason == "hold_requires_swap_actuation"   # observe mode
+        rt.mode = "enforce"
         held = await rt.control(GpuPoolControlV1(verb="hold", work_class="experiment"))
         assert held.ok and held.detail["status"] == "queued"      # it drains every card first
         rel = await rt.control(GpuPoolControlV1(verb="release",

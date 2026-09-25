@@ -221,8 +221,13 @@ def schedule(
                 queued.append(lease)
             continue
         if lease.status == "queued":
+            too_big = _exceeds_class(cfg, roles, lease)
             if lease.deadline_at is not None and lease.deadline_at <= now:
                 out.append(Unavailable(lease.lease_id, "deadline"))
+            elif too_big is not None:
+                # No card this class can use has a slot that big: say so now, naming the biggest,
+                # instead of queueing until the deadline for a placement that can never happen.
+                out.append(Unavailable(lease.lease_id, f"min_ctx_exceeds_class:{too_big}"))
             else:
                 queued.append(lease)
         elif lease.status == "backlogged":
@@ -395,6 +400,19 @@ def schedule(
         if wanting and residents_idle and not residents_wanted:
             out.append(SwapLoad(seat, "demand"))
     return out
+
+
+def _exceeds_class(cfg: PoolConfig, roles: dict[str, RoleLive], lease: LeaseView) -> int | None:
+    """The largest known per-slot context of the class's LLM roles, when it is smaller than the
+    lease needs; else None. Only KNOWN contexts count: a role not yet probed (down, or a swap seat
+    not loaded) might be bigger, so no known context means "cannot tell yet", never "too big"."""
+    if not lease.min_ctx_tokens:
+        return None
+    known = [roles[r].ctx_per_slot for r in cfg.classes[lease.work_class].roles
+             if cfg.roles[r].kind == "llm" and r in roles and roles[r].ctx_per_slot]
+    if not known or max(known) >= lease.min_ctx_tokens:
+        return None
+    return max(known)
 
 
 def _loadable(ctx: _Ctx, role: str) -> bool:

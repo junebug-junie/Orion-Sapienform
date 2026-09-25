@@ -18,3 +18,5 @@ SQLAlchemy==2.0.43
 psycopg2-binary==2.9.9
 asyncpg==0.29.0
 httpx>=0.27.0,<0.28.0
+# orion.substrate's package __init__ imports graphdb_store, which imports requests.
+requests>=2.32.3

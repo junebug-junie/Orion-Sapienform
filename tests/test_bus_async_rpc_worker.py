@@ -36,8 +36,17 @@ class _FakePubSub:
         self.subscribed: set[str] = set()
         self._queue: asyncio.Queue = asyncio.Queue()
         self.get_message_override = None
+        self._reading = False
 
     async def subscribe(self, *channels: str) -> None:
+        # Models redis-py 5 PubSub.execute_command(): with zero subscriptions it runs
+        # a health-check PING + read_response() on the socket the worker is already
+        # blocked reading -> RuntimeError("read() called while another coroutine is
+        # already waiting for incoming data") in real redis-py.
+        if self.connection is not None and not self.subscribed and self._reading:
+            raise RuntimeError(
+                "read() called while another coroutine is already waiting for incoming data"
+            )
         self.connection = _FakeConnection()
         self.subscribed.update(channels)
 
@@ -53,10 +62,13 @@ class _FakePubSub:
             raise RuntimeError(
                 "pubsub connection not set: did you forget to call subscribe() or psubscribe()?"
             )
+        self._reading = True
         try:
             return await asyncio.wait_for(self._queue.get(), timeout=timeout)
         except asyncio.TimeoutError:
             return None
+        finally:
+            self._reading = False
 
     async def close(self) -> None:
         return None
@@ -590,8 +602,8 @@ async def test_sequential_rpcs_with_unique_reply_channels_leave_no_subscriptions
                 )
                 assert msg is not None
             assert bus._rpc_subscribed == set()
-            assert fake_redis.current.subscribed == set(), (
-                f"{len(fake_redis.current.subscribed)} reply channels still subscribed after their RPCs finished"
+            assert fake_redis.current.subscribed == {bus._rpc_anchor_channel}, (
+                f"{len(fake_redis.current.subscribed) - 1} reply channels still subscribed after their RPCs finished"
             )
             assert bus._pending_rpc == {}
         finally:
@@ -734,6 +746,63 @@ async def test_release_while_new_call_waits_for_lock_resubscribes() -> None:
             ])
             assert all(r is not None for r in results)
             assert bus._rpc_subscribed == set()
-            assert fake_redis.current.subscribed == set()
+            assert fake_redis.current.subscribed == {bus._rpc_anchor_channel}
+        finally:
+            await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_keeps_anchor_so_idle_resubscribe_cannot_race_the_read() -> None:
+    """Review finding 2026-09-25: once every reply channel is released, a pubsub with
+    zero subscriptions makes redis-py health-check (PING + read) inside SUBSCRIBE,
+    racing the worker's blocked read. The worker keeps a permanent anchor
+    subscription so that never happens -- including after an idle gap and after a
+    reconnect."""
+    bus, fake_redis = _make_bus()
+    bus.publish = _auto_reply_publish(fake_redis)
+    with patch.object(bus, "_create_pubsub_redis", return_value=fake_redis):
+        bus.start_rpc_worker()
+        await asyncio.sleep(0.1)
+        try:
+            assert fake_redis.current.subscribed == {bus._rpc_anchor_channel}
+            for i in range(3):
+                corr_id = f"00000000-0000-4000-e000-{i:012d}"
+                reply_channel = f"orion:exec:result:{corr_id}"
+                await asyncio.sleep(0.05)  # worker blocked in get_message between calls
+                msg = await bus.rpc_request(
+                    "orion:test:request", _envelope(corr_id, reply_channel),
+                    reply_channel=reply_channel, timeout_sec=2.0,
+                )
+                assert msg is not None
+            assert not bus._rpc_worker_task.done()
+
+            pubsub_before = fake_redis.current
+            pubsub_before.get_message_override = ConnectionError("simulated transport drop")
+            for _ in range(60):  # fires on the worker's next read (<= 1s get_message timeout)
+                if fake_redis.current is not pubsub_before and fake_redis.current.subscribed:
+                    break
+                await asyncio.sleep(0.05)
+            assert fake_redis.current is not pubsub_before
+            assert bus._rpc_anchor_channel in fake_redis.current.subscribed
+        finally:
+            await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_release_during_outage_does_not_dial_redis_under_the_lock() -> None:
+    bus, fake_redis = _make_bus()
+    with patch.object(bus, "_create_pubsub_redis", return_value=fake_redis):
+        bus.start_rpc_worker()
+        await asyncio.sleep(0.1)
+        try:
+            reply_channel = "orion:test:outage:reply"
+            async with bus._rpc_lock:
+                await bus._rpc_subscribe(reply_channel)
+            pubsub = fake_redis.current
+            pubsub.connection.is_connected = False
+            pubsub.unsubscribe = AsyncMock(side_effect=AssertionError("dialed Redis during outage"))
+            await bus.rpc_release_reply_channel(reply_channel)
+            assert reply_channel not in bus._rpc_subscribed
+            pubsub.unsubscribe.assert_not_awaited()
         finally:
             await bus.close()

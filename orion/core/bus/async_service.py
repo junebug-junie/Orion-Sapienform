@@ -47,6 +47,13 @@ class OrionBusAsync:
         self._rpc_worker_running = False
         self._rpc_lock = asyncio.Lock()
         self._rpc_subscribed: set[str] = set()
+        # Permanent per-worker subscription that nothing publishes to. Keeps the
+        # worker pubsub's `subscribed` flag True after every reply channel has been
+        # released: redis-py 5 PubSub.execute_command() runs a health-check PING +
+        # read_response() when `not self.subscribed`, which races the worker's own
+        # blocked get_message() read on the same socket ("read() called while
+        # another coroutine is already waiting") and tears the connection down.
+        self._rpc_anchor_channel = f"orion:rpc:worker-anchor:{uuid.uuid4().hex}"
         self._pending_rpc: dict[tuple[str, str], asyncio.Future] = {}
         # docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md
         # step 2: in-process only, not shared across fork() children, same as every
@@ -192,7 +199,19 @@ class OrionBusAsync:
                 # connection. Without this guard the worker crashes on its very first
                 # loop iteration, every single startup, before any turn ever runs.
                 if self._rpc_pubsub.connection is None:
-                    await asyncio.sleep(0.05)
+                    # Nothing is reading this pubsub yet, so subscribing here cannot
+                    # race a read. Anchor first, so the worker never sits at zero
+                    # subscriptions once it starts reading (see __init__).
+                    async with self._rpc_lock:
+                        if self._rpc_pubsub.connection is None:
+                            try:
+                                await self._rpc_pubsub.subscribe(self._rpc_anchor_channel)
+                            except Exception as anchor_exc:
+                                logger.warning(
+                                    "[rpc-fork] anchor subscribe failed, will retry: %s", anchor_exc
+                                )
+                    if self._rpc_pubsub.connection is None:
+                        await asyncio.sleep(0.5)
                     continue
                 try:
                     msg = await self._rpc_pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
@@ -224,18 +243,20 @@ class OrionBusAsync:
                             await rpc_redis.close()
                         rpc_redis = self._create_pubsub_redis()
                         self._rpc_pubsub = rpc_redis.pubsub()
-                        if self._rpc_subscribed:
-                            try:
-                                await self._rpc_pubsub.subscribe(*sorted(self._rpc_subscribed))
-                            except Exception as resub_exc:
-                                # Do not suppress-and-forget: if Redis is still down,
-                                # self._rpc_pubsub.connection stays None and the
-                                # top-of-loop guard above retries on its own — but log
-                                # it, or a sustained outage goes completely invisible.
-                                logger.warning(
-                                    "[rpc-fork] resubscribe failed after reconnect, will retry: %s",
-                                    resub_exc,
-                                )
+                        # Anchor always rides along (see __init__).
+                        try:
+                            await self._rpc_pubsub.subscribe(
+                                self._rpc_anchor_channel, *sorted(self._rpc_subscribed)
+                            )
+                        except Exception as resub_exc:
+                            # Do not suppress-and-forget: if Redis is still down,
+                            # self._rpc_pubsub.connection stays None and the
+                            # top-of-loop guard above retries on its own — but log
+                            # it, or a sustained outage goes completely invisible.
+                            logger.warning(
+                                "[rpc-fork] resubscribe failed after reconnect, will retry: %s",
+                                resub_exc,
+                            )
                     await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             raise
@@ -245,8 +266,9 @@ class OrionBusAsync:
         finally:
             if self._rpc_pubsub is not None:
                 with suppress(Exception):
-                    if self._rpc_subscribed:
-                        await self._rpc_pubsub.unsubscribe(*sorted(self._rpc_subscribed))
+                    await self._rpc_pubsub.unsubscribe(
+                        self._rpc_anchor_channel, *sorted(self._rpc_subscribed)
+                    )
                 with suppress(Exception):
                     await self._rpc_pubsub.close()
                 self._rpc_pubsub = None
@@ -281,7 +303,12 @@ class OrionBusAsync:
             logger.info("[rpc] reply-listener already subscribed reply_channel=%s", reply_channel)
             return
         logger.info("[rpc] reply-listener creating reply_channel=%s", reply_channel)
-        await self._rpc_pubsub.subscribe(reply_channel)
+        if self._rpc_pubsub.connection is None:
+            # First subscribe on a fresh worker pubsub (nothing reading yet): take the
+            # anchor with it so this pubsub never drops to zero subscriptions later.
+            await self._rpc_pubsub.subscribe(self._rpc_anchor_channel, reply_channel)
+        else:
+            await self._rpc_pubsub.subscribe(reply_channel)
         self._rpc_subscribed.add(reply_channel)
         logger.info("[rpc] reply-listener ready reply_channel=%s", reply_channel)
 
@@ -300,8 +327,10 @@ class OrionBusAsync:
         channel either (a) is already in ``_pending_rpc`` and keeps it subscribed, or
         (b) takes the lock after us, sees the channel gone from ``_rpc_subscribed``
         and subscribes it again before publishing. Never raises: a failed
-        UNSUBSCRIBE only leaves one stray channel on this connection, which the next
-        reconnect drops (reconnect re-subscribes only ``_rpc_subscribed``).
+        UNSUBSCRIBE, or an outage (connection down: no network call is made under
+        the lock), only leaves one stray server-side subscription on a connection
+        the worker's reconnect replaces (it re-subscribes only the anchor plus
+        ``_rpc_subscribed``); redis-py's own channel bookkeeping is cleared too.
         """
         async with self._rpc_lock:
             if any(ch == reply_channel for ch, _corr in self._pending_rpc):
@@ -312,14 +341,37 @@ class OrionBusAsync:
             pubsub = self._rpc_pubsub
             if pubsub is None:
                 return
+            conn = pubsub.connection
+            if conn is None or not getattr(conn, "is_connected", True):
+                # Outage / mid-reconnect: do not dial Redis while holding _rpc_lock
+                # (up to socket_connect_timeout, blocking every caller and the
+                # worker's reconnect). The worker's reconnect re-subscribes only
+                # _rpc_subscribed, which no longer holds this channel.
+                self._rpc_forget_pubsub_channel(pubsub, reply_channel)
+                return
             try:
                 await pubsub.unsubscribe(reply_channel)
             except Exception as exc:
+                # redis-py keeps the channel in pubsub.channels until the server
+                # confirms; its own on_connect() would silently re-subscribe it.
+                self._rpc_forget_pubsub_channel(pubsub, reply_channel)
                 logger.warning(
                     "[rpc] reply-listener unsubscribe failed reply_channel=%s: %s",
                     reply_channel,
                     exc,
                 )
+
+    @staticmethod
+    def _rpc_forget_pubsub_channel(pubsub: Any, reply_channel: str) -> None:
+        """Drop ``reply_channel`` from redis-py's client-side channel bookkeeping so
+        a redis-py-internal reconnect (PubSub.on_connect) cannot re-subscribe it."""
+        channels = getattr(pubsub, "channels", None)
+        pending = getattr(pubsub, "pending_unsubscribe_channels", None)
+        for key in (reply_channel, reply_channel.encode("utf-8")):
+            if isinstance(channels, dict):
+                channels.pop(key, None)
+            if isinstance(pending, set):
+                pending.discard(key)
 
     async def rpc_release_reply_channel(self, reply_channel: str) -> None:
         """Cancellation-safe wrapper around ``_rpc_release()`` for ``finally`` blocks

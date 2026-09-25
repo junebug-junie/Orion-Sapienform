@@ -1,7 +1,7 @@
 # Attention salience: Candidate A / Candidate B
 
 Status: **both live**, disjoint target universes, no fallback to the killed
-hand-weighted formula. Last updated 2026-07-30.
+hand-weighted formula. Last updated 2026-09-25 (Candidate B novelty fix).
 
 This is the docs home for Orion's Layer 5 attention salience system — what
 decides which real target (a substrate domain, a physical host, a
@@ -133,14 +133,14 @@ channels stayed near default (the normal case). This was a real, live bug
 found and fixed by code review — see [Known gaps](#known-gaps-and-recent-fixes).
 
 **Novelty — a one-tick diff, not a time series:**
-`novelty = |this tick's proxy − last tick's own recorded salience for the
-same target_id|`, read from the *previous persisted attention frame*
-(searching all 5 of its real target buckets — `dominant_targets`,
-`node_targets`, `capability_targets`, `system_targets`,
+`novelty = |this tick's proxy − the same target's proxy last tick|`, where
+last tick's proxy is the `pressure_score` the *previous persisted attention
+frame* recorded (searching all 5 of its real target buckets —
+`dominant_targets`, `node_targets`, `capability_targets`, `system_targets`,
 `suppressed_targets` — not just the "active" ones; also a real bug found
-and fixed, see below). This is structurally shallower than Candidate A: a
-delta against one prior observation, not a variance estimate over real
-history.
+and fixed, see below). A steady input reads 0 from its second tick on. This
+is structurally shallower than Candidate A: a delta against one prior
+observation, not a variance estimate over real history.
 
 **Output:** `salience_score = novelty_score` (already bounded 0–1, no
 separate normalization needed — unlike Candidate A's unbounded raw
@@ -238,6 +238,24 @@ is "more correct."
 
 ## Known gaps and recent fixes
 
+- **Fixed (2026-09-25):** Candidate B novelty diffed this tick's proxy
+  against last tick's `salience_score`, which for these targets *is* last
+  tick's novelty. So a perfectly steady input scored p, 0, p, 0 forever,
+  and the "self-resolving after one tick" transition note further down was
+  wrong for the same reason. It was reproduced with the real functions, a
+  constant 0.8 proxy giving `0.0, 0.8, 0.0, 0.8, ...`. A second path fed
+  the same artifact: active targets past a per-kind cap (5 node,
+  5 capability, 3 system) landed in no bucket of the frame, so on the next
+  tick their whole pressure read as new. Novelty now diffs against the prior
+  `pressure_score`, and over-cap targets are recorded in
+  `suppressed_targets` with an "over the per-kind target cap" reason.
+  Regression tests: `tests/test_attention_field_selectors.py` (steady
+  input, first appearance, real change) and
+  `tests/test_attention_frame_builder.py` (over-cap). Frames persisted
+  before the fix carry the artifact, and
+  `scripts/analysis/measure_candidate_b_novelty_alternation.py` measures
+  it on persisted frames. Design context: D1 in
+  `docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md`.
 - **Fixed (code review, 2026-07-30):** `_current_pressure_proxy()`'s
   `max()` was directionally blind — a calm and a severely overloaded
   target could both read ~1.0 whenever the 5 higher-is-better channels sat
@@ -258,11 +276,14 @@ is "more correct."
   production bug (not yet triggered at observed row volumes, but would
   silently return permanently-stale "current" readings once any reducer
   exceeded 200 real rows within its retention window).
-- **Disclosed, self-resolving, not fixed:** the first live tick after this
-  system deploys diffs Candidate B's new proxy against whatever the
-  *previously-deployed, old-formula* frame recorded — an artificially
-  large one-time "novelty" reading reflecting the formula changeover, not
-  a real event. Resolves itself after exactly one tick.
+- **Superseded (2026-09-25):** this entry used to say the first tick after
+  the 2026-07-30 deploy produced a one-time "novelty" spike that "resolves
+  itself after exactly one tick". It never resolved: every later tick also
+  diffed against the prior novelty (see the first entry above). After the
+  2026-09-25 fix, the first tick after deploy diffs this tick's proxy
+  against the last pre-fix frame's `pressure_score`. That is the same
+  quantity measured on the same scale, so no transition artifact is
+  expected.
 - **Open, not part of this system:** `orion/proposals/scoring.py`'s
   `proposal_priority()` — see [Downstream](#downstream-what-consumes-this)
   above.

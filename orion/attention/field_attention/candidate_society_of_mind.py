@@ -185,7 +185,7 @@ def magnitude_scorer(prediction_errors: dict[str, float]) -> dict[str, float]:
 
 def novelty_scorer(
     target_ids: list[str],
-    current_salience: dict[str, float],
+    current_pressure: dict[str, float],
     previous_frame: FieldAttentionFrameV1 | None,
 ) -> dict[str, float]:
     """Real novelty vote per target -- thin wrapper around the already-live
@@ -197,20 +197,21 @@ def novelty_scorer(
     independent rank-aggregation voter competing on its own terms, not a
     0.20-weighted addend inside one formula). Per this candidate's own
     design brief: "a genuinely different structural role for the same real
-    signal." Requires `current_salience[target_id]` -- the target's
-    *pre-novelty* salience for the current tick (mirrors
-    `selectors.py::_build_target`'s own two-pass compute: pressure/urgency/
-    confidence first, then novelty diffs that pre-novelty salience against
-    the same target's *prior* frame -- computing novelty from a
-    salience that already includes this tick's own novelty contribution
-    would be circular). A `target_id` missing from `current_salience`
-    defaults to 0.0 (no observed pressure this tick), the same convention
+    signal." Requires `current_pressure[target_id]` -- the target's
+    *pre-novelty* pressure proxy for the current tick -- and diffs it
+    against the same target's pre-novelty proxy in the *prior* frame
+    (`pressure_score`). Diffing against the prior frame's `salience_score`
+    instead, as this did until 2026-09-25, compared pressure with last
+    tick's novelty: the circularity warned about here, one tick removed,
+    which made a steady input alternate p, 0, p, 0. A `target_id` missing
+    from `current_pressure` defaults to 0.0 (no observed pressure this
+    tick), the same convention
     `measure_emergent_clustering_probe.py::extract_target_salience_map`
     already uses for tick-level absence.
     """
     return {
         target_id: novelty_for_target(
-            target_id, current_salience.get(target_id, 0.0), previous_frame
+            target_id, current_pressure.get(target_id, 0.0), previous_frame
         )
         for target_id in target_ids
     }

@@ -298,16 +298,25 @@ precision baseline. Pure math lives in `orion/field/queue_contention.py`.
 
 Writes additive FieldState scalars (not a `field_pressures()` dimension):
 
-- `queue_contention_score` — 0.0–10.0 EWMA-relative `max()` over seed / durable /
-  gateway waiting sources (quiet tick can be real `0.0`)
-- `queue_contention_driver` — which source won the `max()`
+- `queue_contention_score` — 0.0–10.0 `max()` over seed / durable / GPU pool
+  sources, two subs each: queue depth vs that source's own EWMA, and (2026-09-25)
+  the oldest waiting item's age vs a fixed expected wait. The age half exists
+  because a depth-vs-own-baseline score reads a frozen queue as calm once the
+  baseline catches up with it. Quiet tick is a real `0.0` (empty queue, or depth at
+  normal and every oldest item younger than its expected wait).
+- `queue_contention_driver` — which sub won the `max()`: `<source>` (depth) or
+  `<source>:oldest_wait` (age); `None` when every sub is 0
 - `queue_contention_ewma` / `queue_contention_ewma_n` / `queue_contention_computed_at`
 
 Hub hire role-teach **reads** these from latest `substrate_field_state`; digester
 owns the meter. Spec + §0A gate:
 `docs/superpowers/specs/2026-09-20-hire-handoff-and-queue-pressure-design.md`,
 `docs/superpowers/specs/2026-09-20-queue-contention-metric-gate.md`.
-Env: `FIELD_QUEUE_CONTENTION_HALF_LIFE_SEC`, `FIELD_QUEUE_CONTENTION_FLOOR`.
+Env: `FIELD_QUEUE_CONTENTION_HALF_LIFE_SEC`, `FIELD_QUEUE_CONTENTION_FLOOR`,
+`FIELD_QUEUE_CONTENTION_{SEED,DURABLE,GPU_POOL}_EXPECTED_WAIT_SEC` (48h / 12h / 60s;
+age sub is 0 up to 1x and 10 at 5x; anchors in the metric gate doc). Raising one of
+these very high mutes that source's age sub without a code change. A driver change
+logs `queue_contention_driver_changed` with the raw counts and oldest waits.
 Sources (all SQL counts): `world_pulse_seed_pending`, `durable_demand_pending`, and
 `gpu_pool_waiting` (leases queued/backlogged in `gpu_pool_leases`; replaced the gateway's
 `/admission` waiting sum when the gateway cut over to orion-gpu-pool, 2026-09-24).

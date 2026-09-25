@@ -242,14 +242,18 @@ class FieldStateV1(BaseModel):
     # handoff-and-queue-pressure-design.md; metric gate docs/superpowers/specs/
     # 2026-09-20-queue-contention-metric-gate.md): shared agent/curiosity
     # capacity backlog — reading-seed pending, durable GPU lease waits, and
-    # LLM gateway admission waiting — scored relative to each source's own
-    # EWMA baseline (max of per-source 0–10 subs). NOT a rebadge of
+    # GPU pool waiting leases — max of per-source 0–10 subs: queue depth vs
+    # the source's own EWMA baseline, and (2026-09-25) the oldest waiting
+    # item's age vs a fixed expected wait, so a frozen queue whose depth has
+    # become its own baseline still reads as backed up. When an age sub wins,
+    # `queue_contention_driver` is "<source>:oldest_wait". The age itself is
+    # not stored here (no new field on this extra="forbid" model -- that is a
+    # consumer-first migration); it is re-derivable from Postgres. NOT a rebadge of
     # `gpu_pressure` (node biometrics), `sustained_load_pressure` (field-channel
     # loaded_steady regime), or `cortex_exec_step_load` (execution step load):
     # different producers, different theory. Quiet-tick `0.0` is a real
-    # "at-or-below each source's recent normal" reading (for the chronically
-    # elevated seed backlog that means "at backlog normal," not "empty
-    # queue"); `driver is None` is a real "no source above baseline" absence,
+    # "at-or-below each source's recent normal depth, and nothing has waited
+    # past its expected wait" reading; `driver is None` is a real "no sub above 0" absence,
     # never a fabricated gap. Written by services/orion-field-digester/
     # app/digestion/queue_contention.py via orion.field.queue_contention.
     # Hub hire disclosure (Task 8) reads score+driver only — raw counts stay

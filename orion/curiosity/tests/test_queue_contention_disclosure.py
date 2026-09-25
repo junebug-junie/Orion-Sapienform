@@ -60,3 +60,43 @@ def test_queue_line_prefers_hire_not_compete_with_gpu() -> None:
     assert "do not take a short local look" in text
     assert "quick look" not in text
     assert "helprequest" in text.replace(" ", "") or "help request" in text
+
+
+def test_oldest_wait_driver_gets_stuck_wording_without_raw_age() -> None:
+    from orion.field.queue_contention import OLDEST_WAIT_SUFFIX, SOURCE_SEED
+
+    lines = format_queue_contention_progress(10.0, SOURCE_SEED + OLDEST_WAIT_SUFFIX)
+    assert len(lines) == 1
+    line = lines[0]
+    assert "10/10 (high)" in line
+    assert "oldest reading seed has waited far longer" in line
+    assert "stuck" in line
+    # Normalized only: no hours/days/seconds or raw counts reach Orion.
+    assert not any(ch.isdigit() for ch in line.replace("10/10", ""))
+
+
+def test_every_oldest_wait_driver_has_its_own_blurb() -> None:
+    from orion.field.queue_contention import OLDEST_WAIT_SUFFIX, SOURCE_KEYS
+
+    generic = "shared agent capacity is under more contention than usual"
+    for src in SOURCE_KEYS:
+        (line,) = format_queue_contention_progress(6.0, src + OLDEST_WAIT_SUFFIX)
+        assert generic not in line
+        assert "oldest" in line
+
+
+def test_stuck_seed_queue_does_not_push_a_hire() -> None:
+    """A frozen seed queue is a stalled pipeline, not capacity: no hire-now nudge."""
+    from orion.field.queue_contention import OLDEST_WAIT_SUFFIX, SOURCE_SEED
+
+    (line,) = format_queue_contention_progress(10.0, SOURCE_SEED + OLDEST_WAIT_SUFFIX)
+    assert "Write hire_cursor" not in line
+    assert "not by itself a reason to hire_cursor" in line
+
+
+def test_capacity_oldest_wait_drivers_keep_the_hire_nudge() -> None:
+    from orion.field.queue_contention import OLDEST_WAIT_SUFFIX, SOURCE_GPU_POOL, SOURCE_SEED
+
+    for driver in (SOURCE_DURABLE + OLDEST_WAIT_SUFFIX, SOURCE_GPU_POOL + OLDEST_WAIT_SUFFIX, SOURCE_SEED):
+        (line,) = format_queue_contention_progress(6.0, driver)
+        assert "Write hire_cursor and HelpRequest now" in line

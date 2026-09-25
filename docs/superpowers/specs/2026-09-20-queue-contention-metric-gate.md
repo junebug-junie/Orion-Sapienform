@@ -117,3 +117,159 @@ re-pointed, not left to go silent. The gate, re-run in full:
    construction). The retired `gateway_waiting` baseline is dropped from state rather than carried
    (`score_queue_contention` keeps only `SOURCE_KEYS`). Disclosure text is updated
    (`orion/curiosity/queue_contention_disclosure.py`).
+
+## Oldest-wait component (2026-09-25, Juniper-approved)
+
+**Why.** The score only compared each queue's depth to its own recent average. A queue that stops
+moving keeps the same depth, the average catches up, and the score reads calm. Live on 2026-09-25:
+the seed queue held 144 pending items, the oldest from 2026-09-07, nothing finished since
+2026-09-15 02:05Z, and the score sat at ~0.14 (driver `world_pulse_seed_pending`, count 144 vs
+EWMA 136) on 1176/1176 ticks, sinking toward 0. Juniper, asked "do you want the backed-up signal to
+count how long the oldest item has waited?", answered "fix all the things".
+
+**What changed.** Each source gets a second sub-score from the age of its oldest waiting item:
+`age_sub = clip(10 * (age / expected_wait - 1) / 4, 0, 10)` (same shape as the depth sub: 0 up to
+1x, 10 at 5x). The score is the max over all six subs. When an age sub wins, the driver is
+`<source>:oldest_wait`. The expected wait is fixed config, not an average, on purpose: an average
+would learn "stuck" as normal, the exact failure being fixed.
+
+### 1. Provenance
+
+| Sub | Producer (`services/orion-field-digester/app/store.py`) | Live 2026-09-25 ~06:10Z |
+| --- | --- | --- |
+| seed head-of-line wait | `oldest_world_pulse_seed_pending_age_sec`: age of the pending seed `CLAIM_SQL` would take next (`ORDER BY priority, attempts, created_at, seed_id LIMIT 1`) | 138 h (a 2026-09-19 seed, attempts 0; the 432 h 09-07 seeds are retries that sort behind it) |
+| durable oldest wait | `oldest_durable_demand_pending_age_sec`: `now() - min(created_at)` over `durable_resource_demands WHERE status='pending'` | 798 s (one fresh demand) |
+| GPU pool oldest queued wait | `oldest_gpu_pool_waiting_age_sec`: `now() - min(coalesce(queued_since, created_at))` over `gpu_pool_leases WHERE status='queued'` | NULL -> 0.0 (queue empty) |
+
+Where the age filter differs from its `count_*` sibling, on purpose (both found in code review):
+
+- **Seeds: head of line, not `min(created_at)`.** Claims go by priority, then attempts, then age
+  (`orion/world_pulse_read/queue.py::CLAIM_SQL`, whose own comment says a retried seed's wait "is
+  NOT bounded"). The oldest seed overall can therefore starve behind fresh work while the queue
+  flows, which would pin the sub at 10 for a reason other than "stuck". The head-of-line item only
+  stays old if the worker is not taking even the next seed. Age still counts from `created_at`, so a
+  seed that was claimed and put back carries its earlier time; the attempts ordering keeps such a seed
+  off the head while fresh ones exist. A test pins the ordering to `CLAIM_SQL`.
+- **GPU pool: queued only.** A `backlogged` lease is waiting for a role to come back and may sit up to
+  `backlog_max_age_sec` (86,400 s, `orion/gpu_pool/config.py`) before being dead-lettered
+  (`orion/gpu_pool/scheduler.py`), which would pin a 60 s expected wait for a day. Queued leases are
+  bounded by their own `deadline_at`, which is what the 60 s anchor is calibrated against. Backlogged
+  leases still count toward depth. The subtraction runs inside Postgres against its own `now()`. `created_at` on seeds and
+durable demands is a DB default; on `gpu_pool_leases` it is written by orion-gpu-pool
+(`services/orion-gpu-pool/app/runtime.py::_row`), which runs on athena, the same host as the
+database, so no cross-host clock enters. Readers go through `app/digestion/queue_contention.py::
+default_queue_contention_age_readers` -> `read_queue_contention_oldest_waits` (fail-open: a failed
+read is omitted, never written as 0.0) -> `orion/field/queue_contention.py::score_queue_contention`.
+`EXPLAIN` (live, 2026-09-25): pool -> `Index Scan using gpu_pool_leases_live_idx`; durable ->
+`Index Only Scan using durable_resource_demands_fifo`; seed -> `Seq Scan` + sort over 145 rows (the
+claim index cannot serve the four-key order; harmless at this size, and the same shape `CLAIM_SQL`
+already runs). A recording-engine test asserts each query's table, status filter and ordering, since
+every other test injects readers.
+
+### 2. Independence
+
+- **Against the depth sub of the same source.** Not a transform of it. Depth counts how many items
+  wait; age is when the oldest one arrived. They split exactly where this fix matters: the seed
+  queue on 2026-09-25 has depth at 1.06x its average (sub 0.15) and age at 9x expected (sub 10). A
+  queue can also be deep and young (a burst just landed: depth high, age 0) or shallow and old (one
+  stuck item: depth ~1x, age high).
+- **Against each other.** Three different tables written by three different services; correlated
+  only when one shared cause (e.g. the agent lane being saturated) backs up more than one. `max()`
+  was already chosen for correlated sources (section 2 above).
+- **Against `gpu_pressure`, `sustained_load_pressure`, `cortex_exec_step_load`.** Unchanged from
+  section 2: different producers (node biometrics, field-channel regime, step telemetry); none reads
+  a queue table.
+- **Against orion-gpu-pool's own `waited_ms`** (`runtime.py`, emitted when a lease is granted).
+  Not the same thing and cannot replace this: it is only computed on the grant event, so a lease that
+  is never granted never reports a wait. That is the event-only blind spot this component exists to
+  close.
+
+### 3. Theory anchor
+
+Queueing theory, specifically head-of-line / oldest-waiter age as the standard backlog-staleness
+signal: under Little's law (L = lambda * W) a queue's length L can hold steady while its wait W grows
+without bound if the service rate lambda drops to zero -- L alone cannot distinguish "steady and
+flowing" from "frozen". The age of the oldest waiting item is a direct lower bound on the current
+wait W of anything behind it, and it grows linearly with wall-clock time when nothing is served,
+whatever the arrival rate. That is the claim the score makes: "work is waiting longer than it
+normally does."
+
+### 4. Live-data sanity, including the rest state
+
+**Rest state by hand.** An empty queue gives `min(created_at)` = NULL -> the reader returns 0.0 ->
+`age / expected = 0` -> `clip(10 * (0 - 1) / 4) = clip(-2.5) = 0.0`. Any oldest item younger than
+the expected wait gives `age / expected < 1` -> a negative pre-clip value -> exactly 0.0. So the rest
+point is a true 0, not a floor like `sqrt(2/pi)`. And it cannot decay into a fake 0: the age is a
+fresh SQL read every tick, never carried forward or multiplied down, and it is not in
+`NODE_DECAY_CHANNELS` (it is not a node vector at all). Tests:
+`tests/test_queue_contention.py::test_empty_queue_rest_point_is_exact_zero`,
+`::test_fresh_items_rest_point_is_exact_zero`.
+
+**Replayed history** (reconstructed from each table's own timestamps; one sample per 10 min for
+durable, per 10 s for the pool):
+
+| Source | Window | Empty (0) | Waiting but under 1x (0) | Above 1x (nonzero) | Saturated (>= 5x) | Worst |
+| --- | --- | --- | --- | --- | --- | --- |
+| durable, expected 12 h | 2026-09-14..09-25, 1604 samples | 715 (45%) | 715 (45%) | 174 (11%) | 0 | 26 h -> sub 2.9 |
+| GPU pool, expected 60 s | 2026-09-24 20:00..09-25 06:10, 3695 samples | 3615 (97.8%) | 62 (1.7%) | 18 (0.5%) | 0 | 231 s -> sub 7.1 |
+| seed (oldest overall), expected 48 h | 2026-09-07..09-25, every 6 h | never empty | first ~2 days | since 2026-09-09 | since 2026-09-17 | 432 h -> sub 10 |
+
+Durable and GPU pool both go quiet at a genuine 0 most of the time, rise when work really waits,
+and never pinned. (The pool replay covered every lease with a wait interval; no backlogged leases
+exist in its history, so it is unchanged by the queued-only filter.)
+
+**Seeds.** The seed queue has never once drained since it was created (296 seeds created, 15 ever
+finished, the last on 2026-09-15). The oldest-overall row above is kept as evidence of that, but it
+is not what ships. The shipped head-of-line age cannot be replayed historically (`attempts` changes
+carry no timestamp), so only the live value is known: 138 h -> sub **4.7**, and while nothing is
+claimed it climbs ~1.25 per day, reaching 10 around 2026-09-29. The rest point is reachable (the
+math above); the queue has simply never been at rest to show it.
+
+**Consequences to know before deploying:**
+
+- The disclosure line for a stuck seed queue says so and explicitly does **not** push a hire
+  (`orion/curiosity/queue_contention_disclosure.py::_STUCK_SEED_NOTE`): a stalled reader pipeline is
+  not shared capacity under contention, and hiring Cursor does not unstick it. Durable and GPU-pool
+  oldest-wait drivers keep the hire nudge, because those waits are capacity.
+- While the seed age sub is the highest, the `max()` hides smaller durable/GPU-pool readings behind
+  it (a capacity sub of, say, 3 is not disclosed while seeds read 5). Accepted for now; the real fix
+  is the stalled seed pipeline. To mute only the seed age sub without code, set
+  `FIELD_QUEUE_CONTENTION_SEED_EXPECTED_WAIT_SEC` very high.
+
+**Expected waits -- knobs, anchored, not findings:**
+
+- **Seeds, 48 h (172,800 s).** p90 claim wait over every seed ever finished = 175,596 s (48.8 h;
+  n=15, p50 13.9 h). Small sample from the only period the queue ever moved; revisit once it moves
+  again.
+- **Durable, 12 h (43,200 s).** p90 time from demand to first grant over 138 granted demands =
+  45,086 s (p50 2.7 h, max 26 h). Note the broker's own burst threshold is 1,200 s
+  (`decision.threshold_seconds`); using it would have scored most real demands > 0, so the observed
+  p90 is used instead.
+- **GPU pool, 60 s.** 10x the worst grant wait seen over 1,275 leases (p99 1.8-3.2 s by class, max
+  5.7 s; ~10 h of history since the pool went live). Scores 10 at 300 s, which is the `deadline_at`
+  most callers put on a lease (fast/agent ~300 s, metacog up to 700 s): full pressure means the oldest
+  waiter is about to give up.
+
+### 5. Existing-mechanism check
+
+`rg` for oldest/age signals over `orion/field`, the digester, orion-gpu-pool and
+`orion/world_pulse_read`: nothing measures the age of waiting work on these queues. The digester's
+`health_monitor` `field_state_oldest_age_hours` is the retention age of `substrate_field_state` rows
+(unrelated). The pool's `waited_ms` is grant-time only (see section 2). World-pulse `/api/status`
+reports retry counts, not age. Extending this metric beats a new one: same sources, same consumer,
+same disclosure line.
+
+### 6. Reversibility
+
+Cheap. No schema change: `FieldStateV1` is `extra="forbid"`, and adding a field there broke two
+readers for two days on 2026-09-20 (`orion/substrate_ladder_liveness.py`), so the raw ages are not
+persisted; they surface in the score, the driver string, and a `queue_contention_driver_changed` log
+line (raw counts + ages, once per driver change). An old Hub reading a new `...:oldest_wait` driver
+falls back to its generic blurb, it does not fail. No EWMA state is added, so reverting leaves
+nothing behind. Per-source mute without code: raise that source's `*_EXPECTED_WAIT_SEC`. Full
+revert: drop the age readers and the six-sub max; the depth path is untouched.
+
+**Expected live change on deploy (UNVERIFIED until deployed):** score ~0.11 -> ~4.7, driver
+`world_pulse_seed_pending` -> `world_pulse_seed_pending:oldest_wait`, on the first tick (no warm-up;
+the expected wait is config, not learned), then climbing while the seed queue stays frozen. Verify
+with the `queue_contention_driver_changed` log line and the latest `substrate_field_state` row.

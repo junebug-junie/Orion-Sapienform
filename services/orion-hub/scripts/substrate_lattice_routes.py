@@ -701,8 +701,8 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
         pressure_state = "watch" if pressure_active else "quiet"
         pressure_reason = (
             # Labels name what is actually read. M4 reliability_pressure is
-            # max(observer_failure, 1 - delivery_confidence), not the M3
-            # observer_failure_pressure channel shown in Lattice Values.
+            # diffused from node:athena's observer_failure_pressure, not the
+            # M3 observer_failure_pressure channel shown in Lattice Values.
             f"bus_synaptic_pressure={transport_p:.2f} [M4 capability:transport.pressure] "
             f"reliability_pressure={observer_p:.2f} [M4, vs observer_failure_pressure watch_at] "
             f"(thresholds: transport={transport_watch_at}, observer={observer_watch_at})"

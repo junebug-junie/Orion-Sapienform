@@ -39,13 +39,6 @@ def _install_fake_clock(monkeypatch: pytest.MonkeyPatch) -> None:
 def _record_full_tick(collector: BusTransportGrammarCollector) -> None:
     collector.record_tick_started()
     collector.record_health_observed(redis_ping_ok=True)
-    collector.record_stream_depth(stream_key="orion:evt:gateway", stream_length=123)
-    collector.record_backpressure(
-        stream_key="orion:evt:gateway",
-        stream_length=50000,
-        threshold=25000,
-        severity="warning",
-    )
     collector.record_uncataloged_stream(stream_key="orion:evt:gateway")
     collector.record_schema_mismatch(
         stream_key="orion:bus:out", mismatch_count=2, sampled_count=5,
@@ -66,13 +59,6 @@ def test_builds_transport_rollup_trace() -> None:
     )
     collector.record_tick_started()
     collector.record_health_observed(redis_ping_ok=True)
-    collector.record_stream_depth(stream_key="orion:evt:gateway", stream_length=123)
-    collector.record_backpressure(
-        stream_key="orion:evt:gateway",
-        stream_length=50000,
-        threshold=25000,
-        severity="warning",
-    )
     collector.record_uncataloged_stream(stream_key="orion:evt:gateway")
     collector.record_schema_mismatch(
         stream_key="orion:bus:out", mismatch_count=1, sampled_count=5,
@@ -90,8 +76,6 @@ def test_builds_transport_rollup_trace() -> None:
     assert roles >= {
         "bus_observer_tick_started",
         "bus_health_observed",
-        "bus_stream_depth_observed",
-        "bus_backpressure_observed",
         "bus_configured_stream_uncataloged",
         "bus_schema_validation_failed",
         "bus_observer_tick_completed",
@@ -158,7 +142,7 @@ def test_no_payload_blobs_in_summaries() -> None:
         observed_at=FIXED_OBS,
     )
     collector.record_tick_started()
-    collector.record_stream_depth(stream_key="orion:bus:out", stream_length=1)
+    collector.record_uncataloged_stream(stream_key="orion:bus:out")
     collector.record_tick_completed(streams_observed=1)
     events = build_bus_transport_grammar_events(collector)
     for event in events:
@@ -174,7 +158,7 @@ def test_summaries_never_include_redis_values_or_envelope_material() -> None:
         observed_at=FIXED_OBS,
     )
     collector.record_tick_started()
-    collector.record_stream_depth(stream_key="orion:bus:out", stream_length=42)
+    collector.record_uncataloged_stream(stream_key="orion:bus:out")
     collector.record_tick_completed(streams_observed=1)
     events = build_bus_transport_grammar_events(collector)
     forbidden_fragments = (
@@ -195,8 +179,8 @@ def test_summaries_never_include_redis_values_or_envelope_material() -> None:
         assert event.atom.text_value is None
         for frag in forbidden_fragments:
             assert frag not in summary, f"forbidden fragment {frag!r} in {summary!r}"
-        if event.atom.semantic_role == "bus_stream_depth_observed":
-            assert "stream_length=42" in summary
+        if event.atom.semantic_role == "bus_configured_stream_uncataloged":
+            assert "stream_key=orion:bus:out" in summary
 
 
 def test_atoms_get_distinct_real_observed_at_not_shared_flush_time(
@@ -364,3 +348,20 @@ def test_all_atoms_emit_non_null_uncertainty() -> None:
         assert atom.uncertainty is not None
     zscore_atom = next(a for a in atoms if a.semantic_role == "bus_activity_zscore_computed")
     assert zscore_atom.uncertainty == pytest.approx(min(1.0, 1.8 / 3.0))
+
+
+def test_retired_depth_and_backpressure_roles_are_gone() -> None:
+    """2026-09-25 (fix/bus-observer-scope): XLEN depth and backpressure were
+    retired. The collector must not offer a way to emit them, and a full tick
+    must not produce either role."""
+    assert not hasattr(BusTransportGrammarCollector, "record_stream_depth")
+    assert not hasattr(BusTransportGrammarCollector, "record_backpressure")
+    collector = BusTransportGrammarCollector(
+        node_id=NODE, sample_window_id=WINDOW, observed_at=FIXED_OBS
+    )
+    _record_full_tick(collector)
+    roles = {
+        e.atom.semantic_role for e in build_bus_transport_grammar_events(collector) if e.atom
+    }
+    assert "bus_stream_depth_observed" not in roles
+    assert "bus_backpressure_observed" not in roles

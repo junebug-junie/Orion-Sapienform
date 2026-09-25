@@ -95,47 +95,62 @@ def test_reconciled_state_validates() -> None:
     assert roundtrip.tick_id == "tick_stale"
 
 
-def test_reconcile_scopes_stream_backlog_health_and_delivery_confidence_to_node_athena_only() -> None:
-    # Design correction (2026-07-22), superseding the 2026-07-17 fix this
-    # test used to guard. That fix (default 0.0 -> 1.0 for non-reporting
-    # nodes) treated the symptom as a data problem, but it only helped
-    # *newly* reconciled nodes -- reconcile's "preserve any existing value"
-    # behavior meant a node with an already-persisted stale 0.0 from before
-    # that patch deployed could never self-correct. Confirmed live: athena's
-    # real, fresh report was stream_backlog_health=1.0, but atlas's persisted 0.0 (never
-    # once perturbed, from before the fix) still won the min()-merge and
-    # permanently masked it in field_channel_corpus.v1 and every SelfStateV1
-    # coherence score (self_state_policy.v1.yaml maps both channels to
-    # `coherence`).
-    #
-    # The real fix: there is exactly one bus, it runs on athena, and only
-    # athena's bus-observer ever produces a real reading -- atlas/circe/
-    # prometheus have no standing to have an opinion on bus health at all.
-    # SINGLE_OBSERVER_NODE_CHANNELS (app/tensor/channels.py) makes this
-    # explicit: only node:athena ever gets these two channels seeded, and
-    # they're actively pruned from every other node on every reconcile tick
-    # -- self-healing for exactly the stale-persisted-value case above,
-    # without needing a manual data migration.
+def test_reconcile_prunes_retired_bus_observer_channels_from_every_node() -> None:
+    """stream_backlog_health / delivery_confidence / stream_backlog_pressure were
+    retired 2026-09-25 (fix/bus-observer-scope). They used to be single-observer
+    channels seeded on node:athena only (2026-07-22 design correction); now no
+    node may carry them, including the persisted 1.0s already sitting on
+    node:athena in the live field state, and the merged field pressures must not
+    report them either."""
     lattice = load_lattice(LATTICE_PATH)
     state = FieldStateV1(
         generated_at=FIXED_TS,
-        tick_id="tick_stream_backlog_health_default",
+        tick_id="tick_retired_bus_observer_channels",
         node_vectors={
-            "node:athena": {"stream_backlog_health": 1.0, "delivery_confidence": 1.0},
-            # Simulates the live bug: a stale pre-fix 0.0 already persisted
-            # on a non-owner node.
-            "node:atlas": {"stream_backlog_health": 0.0, "delivery_confidence": 0.0},
+            # Verbatim live node:athena values, 2026-09-25T05:59:20Z.
+            "node:athena": {
+                "stream_backlog_health": 1.0,
+                "delivery_confidence": 1.0,
+                "stream_backlog_pressure": 0.0016,
+            },
+            "node:circe": {"stream_backlog_health": 0.0, "delivery_confidence": 0.0},
         },
     )
     reconciled = reconcile_field_state_with_lattice(state, lattice=lattice)
-    # Every other lattice node must have no opinion at all -- not a default
-    # value, an absent key -- so it can never win (or lose) the min()-merge.
     for node_id, vec in reconciled.node_vectors.items():
-        if node_id == "node:athena":
-            continue
-        assert "stream_backlog_health" not in vec, f"{node_id} should have no stream_backlog_health entry at all"
-        assert "delivery_confidence" not in vec, f"{node_id} should have no delivery_confidence entry at all"
+        for retired in ("stream_backlog_health", "delivery_confidence", "stream_backlog_pressure"):
+            assert retired not in vec, f"{node_id} still carries retired {retired}"
 
     channels, _ = collect_field_channel_pressures(reconciled)
-    assert channels["stream_backlog_health"] == 1.0
-    assert channels["delivery_confidence"] == 1.0
+    for retired in ("stream_backlog_health", "delivery_confidence", "stream_backlog_pressure"):
+        assert retired not in channels
+
+
+def test_reconcile_prunes_retired_capability_channels() -> None:
+    """Live 2026-09-25: every capability vector still held transport_pressure
+    (renamed 2026-07-24) and capability:orchestration held a dead
+    stream_backlog_pressure. Both must go, provenance included."""
+    lattice = load_lattice(LATTICE_PATH)
+    state = FieldStateV1(
+        generated_at=FIXED_TS,
+        tick_id="tick_retired_capability_channels",
+        capability_vectors={
+            "capability:orchestration": {
+                "pressure": 0.24,
+                "transport_pressure": 0.0,
+                "stream_backlog_pressure": 0.0,
+            },
+            "capability:transport": {"pressure": 0.31, "transport_pressure": 0.0},
+        },
+        capability_provenance={
+            "capability:orchestration": {"stream_backlog_pressure": "capability:transport"},
+        },
+    )
+    reconciled = reconcile_field_state_with_lattice(state, lattice=lattice)
+    for cap_id, vec in reconciled.capability_vectors.items():
+        assert "transport_pressure" not in vec, cap_id
+        assert "stream_backlog_pressure" not in vec, cap_id
+    assert reconciled.capability_vectors["capability:orchestration"]["pressure"] == 0.24
+    assert "stream_backlog_pressure" not in reconciled.capability_provenance.get(
+        "capability:orchestration", {}
+    )

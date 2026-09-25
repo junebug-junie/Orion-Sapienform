@@ -37,12 +37,16 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     its own backend failures per serving node, orion/substrate/llm_inference_loop/).
     Test name/docstring number (48) is now stale by two distinct channels (50);
     not renamed here to keep this diff reviewable against its own history --
-    the asserted numbers below are current, that's what matters."""
+    the asserted numbers below are current, that's what matters.
+    - stream_backlog_pressure/stream_backlog_health/delivery_confidence retired
+    2026-09-25 (fix/bus-observer-scope): 51 -> 48 entries, 50 -> 47 names."""
     glossary = load_glossary()
     entries = glossary["entries"]
-    assert len(entries) == 51
+    assert len(entries) == 48
     names = {e.channel for e in entries}
-    assert len(names) == 50, "a node-qualified entry must not introduce a new distinct channel name"
+    for retired in ("stream_backlog_pressure", "stream_backlog_health", "delivery_confidence"):
+        assert retired not in names
+    assert len(names) == 47, "a node-qualified entry must not introduce a new distinct channel name"
     assert "cpu_pressure" in names
     assert "reliability_pressure" in names
     assert "tension_deviation_pressure" in names
@@ -52,9 +56,10 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     assert "cabinet_ambient_audio_staleness" in names
     assert "stability" in names
     assert "inference_failure_pressure" in names
-    # stream_backlog_pressure/contract_pressure are the two node+capability overlaps.
+    # contract_pressure is the only node+capability overlap since
+    # stream_backlog_pressure was retired (2026-09-25).
     overlap = [e for e in entries if set(e.level) == {"node", "capability"}]
-    assert {e.channel for e in overlap} == {"stream_backlog_pressure", "contract_pressure"}
+    assert {e.channel for e in overlap} == {"contract_pressure"}
 
 
 def test_glossary_path_candidates_prefers_orion_repo_root_env_var(monkeypatch):

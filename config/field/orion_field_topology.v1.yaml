@@ -32,11 +32,8 @@ node_channels:
   - execution_friction
   - reasoning_load
   - failure_pressure
-  - stream_backlog_pressure
   - contract_pressure
   - catalog_drift_pressure
-  - delivery_confidence
-  - stream_backlog_health
   - observer_failure_pressure
   - conversation_load
   - repair_pressure
@@ -48,7 +45,6 @@ capability_channels:
   - execution_pressure
   - reasoning_pressure
   - reliability_pressure
-  - stream_backlog_pressure
   - contract_pressure
 
 edges:
@@ -182,7 +178,6 @@ edges:
       cortex_exec_step_load: execution_pressure
       execution_friction: reliability_pressure
       failure_pressure: reliability_pressure
-      stream_backlog_pressure: pressure
       reasoning_load: reasoning_pressure
 
   - source_id: node:athena
@@ -231,13 +226,13 @@ edges:
       # only input here that can say "inference is failing", not just "busy".
       inference_failure_pressure: reliability_pressure
 
-  # capability→capability: transport degradation bleeds into orchestration
-  - source_id: capability:transport
-    target_id: capability:orchestration
-    edge_type: capability_capability
-    weight: 0.70
-    channel_map:
-      stream_backlog_pressure: stream_backlog_pressure
+  # capability:transport -> capability:orchestration (weight 0.70, channel
+  # stream_backlog_pressure) deleted 2026-09-25 (fix/bus-observer-scope): the
+  # 2026-09-22 substrate-lattice audit found its source channel was never
+  # written on capability:transport, so the edge carried nothing, and the
+  # channel itself is now retired. Re-adding a transport -> orchestration edge
+  # on capability:transport.pressure (bus_synaptic) changes orchestration
+  # pressure live and needs the metric quality gate first.
 
   # capability→capability: inference unavailability raises orchestration pressure
   - source_id: capability:llm_inference

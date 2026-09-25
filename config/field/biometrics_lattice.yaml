@@ -31,11 +31,8 @@ node_channels:
   - execution_friction
   - reasoning_load
   - failure_pressure
-  - stream_backlog_pressure
   - contract_pressure
   - catalog_drift_pressure
-  - delivery_confidence
-  - stream_backlog_health
   - observer_failure_pressure
   - conversation_load
   - repair_pressure
@@ -47,7 +44,6 @@ capability_channels:
   - execution_pressure
   - reasoning_pressure
   - reliability_pressure
-  - stream_backlog_pressure
   - contract_pressure
 
 edges:
@@ -59,11 +55,8 @@ edges:
     edge_type: node_capability
     weight: 0.85
     channel_map:
-      stream_backlog_pressure: pressure
       catalog_drift_pressure: contract_pressure
       observer_failure_pressure: reliability_pressure
-      delivery_confidence: confidence
-      stream_backlog_health: available_capacity
 
   - source_id: node:athena
     target_id: capability:orchestration
@@ -74,7 +67,6 @@ edges:
       cortex_exec_step_load: execution_pressure
       execution_friction: reliability_pressure
       failure_pressure: reliability_pressure
-      stream_backlog_pressure: pressure
 
   - source_id: node:athena
     target_id: capability:storage

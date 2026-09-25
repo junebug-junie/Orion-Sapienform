@@ -164,7 +164,8 @@ def test_zero_evidence_bus_trace_does_not_mint_fabricated_half_health() -> None:
     out, receipt = reduce_transport_trace_events(
         events=[_athena_event("trace_ended")], projection=projection, now=NOW
     )
-    assert out.buses["bus:athena"].delivery_confidence == 1.0
+    assert out.buses["bus:athena"].sample_window_id == "prev"
+    assert out.buses["bus:athena"].redis_ping_ok is True
     assert receipt.state_deltas == []
     assert receipt.warnings and "no bus observer evidence" in receipt.warnings[0]
 

@@ -45,15 +45,6 @@ def uncertainty_from_sample_mismatch(mismatch_count: int, sampled_count: int) ->
     return clamp01(mismatch_count / sampled_count)
 
 
-def uncertainty_from_backpressure(stream_length: int, threshold: int) -> float:
-    """How far stream depth exceeds the configured backpressure threshold."""
-    if threshold <= 0:
-        return 0.5
-    if stream_length <= threshold:
-        return clamp01(stream_length / threshold * 0.25)
-    return clamp01((stream_length - threshold) / threshold)
-
-
 def uncertainty_from_catalog_drift(undeclared_active_count: int, catalog_size: int) -> float:
     """Mesh-wide bus census undeclared-active fraction."""
     if catalog_size <= 0:

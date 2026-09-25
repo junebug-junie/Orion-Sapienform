@@ -36,39 +36,27 @@ class Settings(BaseSettings):
     # reintroducing the bug this whole fix exists to close. Do not let this
     # default drift from .env_example's BUS_OBSERVER_STREAMS value again.
     #
-    # orion:evt:gateway/orion:bus:out were placeholder names from the
-    # original bus-observer commit (ee810551, 2026-05-25), never once
-    # cataloged in orion/bus/channels.yaml at any point in git history, and
-    # verified live TYPE=none (no key exists at all) -- structurally
-    # incapable of ever producing a depth sample, confirmed by 180
-    # substrate_reduction_receipts over 15 days reading transport_pressure/
-    # stream_depth_pressure/backpressure at a flat 0.0 the entire time.
-    # orion:grammar:event is cataloged but Pub/Sub-only (verified live
-    # TYPE=none, delivered via OrionBusAsync.publish() -> redis.publish(),
-    # never XADD'd) -- XLEN/XREVRANGE can never see it regardless of real
-    # traffic. orion-bus today routes almost everything through pub/sub,
-    # which has no persistent backlog to observe; depth/backpressure is only
-    # meaningful for genuinely XADD'd channels. orion/bus/channels.yaml
-    # catalogs exactly two kind="stream" channels, and both are now the
-    # default: orion:stream:world_pulse:run:result (real XADD by
-    # orion-world-pulse, verified live TYPE=stream XLEN=82) and its
-    # dead-letter sibling orion:stream:world_pulse:run:result:dlq (verified
-    # live TYPE=none/XLEN=0 right now -- expected-healthy for a DLQ, not
-    # broken; a nonzero DLQ depth is itself a real failure signal worth
-    # having wired).
+    # What these keys are used for (2026-09-25): catalog membership
+    # (bus_configured_stream_uncataloged, the census-off fallback for
+    # catalog_drift_pressure) and a bounded XREVRANGE schema sample
+    # (contract_pressure). They are NOT sampled for depth any more: the XLEN
+    # depth / backpressure family and BUS_STREAM_DEPTH_WARNING/CRITICAL were
+    # retired (fix/bus-observer-scope). A live SCAN found 5 Redis Streams on
+    # the whole bus; the only live consumer group sat at lag=0 pending=0, and
+    # XLEN is retained length, not backlog. Mesh-wide transport health is the
+    # census (BUS_OBSERVER_CENSUS_ENABLED), bus_synaptic and RPC health.
+    # The DLQ key does not exist live (XLEN of a missing key reads 0).
     bus_observer_streams: str = Field(
         "orion:stream:world_pulse:run:result,"
         "orion:stream:world_pulse:run:result:dlq",
         alias="BUS_OBSERVER_STREAMS",
     )
-    bus_stream_depth_warning: int = Field(25000, alias="BUS_STREAM_DEPTH_WARNING")
-    bus_stream_depth_critical: int = Field(100000, alias="BUS_STREAM_DEPTH_CRITICAL")
     bus_observer_node_id: str = Field("athena", alias="BUS_OBSERVER_NODE_ID")
     # Bounded per-stream XREVRANGE sample size used to check recent entries on
     # each *cataloged* configured stream against that channel's registered
     # schema_id (orion/bus/channels.yaml). Kept small: cost is
     # len(observer_stream_list) * this value extra Redis reads per tick, on
-    # top of the existing 1 PING + len(observer_stream_list) XLEN calls.
+    # top of the existing 1 PING.
     bus_observer_schema_sample_count: int = Field(
         5, alias="BUS_OBSERVER_SCHEMA_SAMPLE_COUNT"
     )

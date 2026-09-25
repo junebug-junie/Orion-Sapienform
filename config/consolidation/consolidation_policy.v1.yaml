@@ -85,8 +85,10 @@ motif_rules:
     label: transport_healthy_idle
     conditions:
       attention_target: capability:transport
-      max_stream_backlog_pressure: 0.10
-      min_stream_backlog_health: 0.90
+      # capability:transport.pressure (bus_synaptic). Was
+      # max_stream_backlog_pressure/min_stream_backlog_health until 2026-09-25;
+      # the second key was never read and both channels are retired.
+      max_pressure: 0.10
 
 tensor:
   enabled: true

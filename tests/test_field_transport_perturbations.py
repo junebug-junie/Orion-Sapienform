@@ -38,7 +38,11 @@ def test_transport_bus_delta_maps_to_node_channels() -> None:
     perturbations = delta_to_perturbations(delta)
     channels = {p.channel: p.intensity for p in perturbations}
     assert channels["contract_pressure"] == 1.0
-    assert channels["stream_backlog_health"] == 1.0
+    assert channels["catalog_drift_pressure"] == 1.0
+    # Retired 2026-09-25: still present in this (pre-retirement-shaped) delta,
+    # but must not reach the field.
+    for retired in ("stream_backlog_health", "delivery_confidence", "stream_backlog_pressure"):
+        assert retired not in channels
     assert perturbations[0].node_id == "node:athena"
 
 

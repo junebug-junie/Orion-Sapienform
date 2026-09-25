@@ -524,9 +524,10 @@ def execution_prediction_error(
 #      killed for exactly that reason: nothing failed when it stayed.
 #   2. The replay case is not lost. It diffed TransportBusProjectionV1's
 #      stream_backlog_health / delivery_confidence / stream_backlog_pressure --
-#      fields still persisted, still readable, and recoverable in ~10 lines by
-#      any script that genuinely needs them. Keeping a live-importable symbol is
-#      not the cheap way to preserve that; git history is.
+#      fields that were themselves retired 2026-09-25 (fix/bus-observer-scope)
+#      but survive in historical substrate_reduction_receipts. Keeping a
+#      live-importable symbol is not the cheap way to preserve that; git
+#      history is.
 #
 # The successor is bus_synaptic_prediction_error() above: mesh-wide real
 # inter-service publish traffic via orion_bus_synapse's per-edge EWMA z-scores,

@@ -9,7 +9,6 @@ from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.transport_projection import TransportBusProjectionV1
 
 from .constants import (
-    DEFAULT_STREAM_DEPTH_CRITICAL,
     NON_BUS_TRANSPORT_NODE_IDS,
     NON_BUS_TRANSPORT_TARGET_IDS,
     TRANSPORT_BUS_PROJECTION_ID,
@@ -49,7 +48,6 @@ def process_transport_grammar_events(
     save_projection: TransportProjectionSaver,
     save_receipt: ReceiptSaver,
     now: datetime | None = None,
-    stream_depth_critical: int = DEFAULT_STREAM_DEPTH_CRITICAL,
 ) -> dict[str, int]:
     clock = now or datetime.now(timezone.utc)
     stats = {"events": 0, "receipts": 0, "traces": 0}
@@ -72,7 +70,6 @@ def process_transport_grammar_events(
             events=trace_events,
             projection=projection,
             now=clock,
-            stream_depth_critical=stream_depth_critical,
         )
         save_receipt(receipt)
         stats["receipts"] += 1

@@ -227,12 +227,12 @@ make stream STREAM=orion:bus:out
 
 Optional `bus-observer` sidecar emits bounded periodic `GrammarEventV1` rollups on `orion:grammar:event` when `PUBLISH_ORION_BUS_GRAMMAR=true` (default **off**).
 
-Observes transport health (`PING`), stream depth (`XLEN`), backpressure thresholds, configured streams missing from `orion/bus/channels.yaml`, and — for streams that ARE in the catalog — a bounded `XREVRANGE` sample checked against that channel's declared `schema_id` (backs `contract_pressure`). Does **not** emit per-message traces: only aggregate `mismatch_count`/`sampled_count` per stream ever leave the process.
+Observes transport health (`PING`), the mesh-wide channel census, configured streams missing from `orion/bus/channels.yaml`, and — for streams that ARE in the catalog — a bounded `XREVRANGE` sample checked against that channel's declared `schema_id` (backs `contract_pressure`). Does **not** emit per-message traces: only aggregate `mismatch_count`/`sampled_count` per stream ever leave the process.
 
 | Variable | Default | Purpose |
 | -------- | ------- | ------- |
 | `PUBLISH_ORION_BUS_GRAMMAR` | `false` | Publish grammar traces to bus |
-| `BUS_OBSERVER_STREAMS` | `orion:stream:world_pulse:run:result,orion:stream:world_pulse:run:result:dlq` | Streams to sample. **2026-07-18 fix**: the prior default (`orion:evt:gateway,orion:bus:out,orion:grammar:event,orion:stream:world_pulse:run:result`) had 3 of 4 keys that were structurally incapable of ever producing a depth sample -- confirmed via `substrate_reduction_receipts`: `transport_pressure`/`stream_depth_pressure`/`backpressure` sat at a flat `0.0` with zero variance across 180 receipts spanning 15 days. `orion:evt:gateway`/`orion:bus:out` were placeholder names from the original bus-observer commit (2026-05-25) that never once appeared in `orion/bus/channels.yaml` (checked full git history, not just current state); `orion:grammar:event` is cataloged but Pub/Sub-only (verified live `TYPE`=`none`, never `XADD`'d -- delivered via `OrionBusAsync.publish()`), so `XLEN`/`XREVRANGE` can never see it. Root cause: `orion-bus` today routes almost everything through pub/sub, which has no persistent backlog to measure -- depth/backpressure is only meaningful for channels that are genuinely `XADD`'d. `orion/bus/channels.yaml` catalogs exactly two `kind: "stream"` channels, and both are now the default: `orion:stream:world_pulse:run:result` (cataloged, `schema_id=WorldPulseRunResultV1`, real `XADD` by `orion-world-pulse`; verified live `TYPE`=`stream`, `XLEN`=82) and its dead-letter sibling `orion:stream:world_pulse:run:result:dlq` (same schema_id; verified live `TYPE`=`none`/`XLEN`=0 right now, which is expected-healthy for a DLQ -- a nonzero DLQ depth is itself a real, meaningful failure signal worth having wired). |
+| `BUS_OBSERVER_STREAMS` | `orion:stream:world_pulse:run:result,orion:stream:world_pulse:run:result:dlq` | Streams checked for catalog membership and schema samples. **Not sampled for depth since 2026-09-25** (see "Stream depth retired" below). **2026-07-18 fix**: the prior default (`orion:evt:gateway,orion:bus:out,orion:grammar:event,orion:stream:world_pulse:run:result`) had 3 of 4 keys that were structurally incapable of ever producing a depth sample -- confirmed via `substrate_reduction_receipts`: `transport_pressure`/`stream_depth_pressure`/`backpressure` sat at a flat `0.0` with zero variance across 180 receipts spanning 15 days. `orion:evt:gateway`/`orion:bus:out` were placeholder names from the original bus-observer commit (2026-05-25) that never once appeared in `orion/bus/channels.yaml` (checked full git history, not just current state); `orion:grammar:event` is cataloged but Pub/Sub-only (verified live `TYPE`=`none`, never `XADD`'d -- delivered via `OrionBusAsync.publish()`), so `XLEN`/`XREVRANGE` can never see it. Root cause: `orion-bus` today routes almost everything through pub/sub, which has no persistent backlog to measure -- depth/backpressure is only meaningful for channels that are genuinely `XADD`'d. `orion/bus/channels.yaml` catalogs exactly two `kind: "stream"` channels, and both are now the default: `orion:stream:world_pulse:run:result` (cataloged, `schema_id=WorldPulseRunResultV1`, real `XADD` by `orion-world-pulse`; verified live `TYPE`=`stream`, `XLEN`=82) and its dead-letter sibling `orion:stream:world_pulse:run:result:dlq` (same schema_id; verified live `TYPE`=`none`/`XLEN`=0 right now, which is expected-healthy for a DLQ -- a nonzero DLQ depth is itself a real, meaningful failure signal worth having wired). |
 | `BUS_OBSERVER_POLL_INTERVAL_SEC` | `10` | Rollup interval |
 | `BUS_OBSERVER_SCHEMA_SAMPLE_COUNT` | `5` | Per-cataloged-stream `XREVRANGE` sample size for the schema-mismatch check |
 
@@ -250,6 +250,16 @@ Confirmed live 2026-07-22: `XLEN orion:stream:world_pulse:run:result` = `91`, ag
 the entire ~18h post-accumulation-bug-fix window, consistent with those 91 messages being
 permanently unconsumed rather than a healthy, actively-drained queue. Not yet determined whether
 that backlog is expected (no consumer by design) or a dead consumer — flagged, not investigated.
+
+**Stream depth retired (2026-09-25, fix/bus-observer-scope).** The `XLEN` depth read, the
+backpressure threshold, `BUS_STREAM_DEPTH_WARNING`/`BUS_STREAM_DEPTH_CRITICAL`, and every derived
+field (`stream_depth_pressure`, `backpressure`, `stream_backlog_pressure`, `stream_backlog_health`,
+`delivery_confidence`) are gone end to end. A live `SCAN ... TYPE stream` found 5 Redis Streams on the
+whole bus; only `orion:stream:world_pulse:run:result` has a live consumer group (`cg:concept-induction`,
+lag 0, pending 0), and the DLQ key does not exist. `XLEN` is retained length, not backlog, so the depth
+number (157-160 over 24,633 ticks) never meant anything. Transport health lives in the census
+(`bus_census_computed` -> `catalog_drift_pressure`), `node:substrate.bus_synaptic`, and RPC health. See
+`docs/superpowers/specs/2026-09-25-bus-observer-stream-depth-retirement.md`.
 
 Smoke: `../../scripts/smoke_orion_bus_substrate_trace.sh`
 

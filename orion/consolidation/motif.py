@@ -294,16 +294,16 @@ def _detect_transport_healthy_idle(
 ) -> MotifObservationV1 | None:
     cond = rule.conditions
     target = str(cond.get("attention_target", "capability:transport"))
-    max_transport = float(cond.get("max_stream_backlog_pressure", 0.1))
+    # Keyed on capability:transport's `pressure` (bus_synaptic) only. The old
+    # stream_backlog_pressure read was a channel never written on
+    # capability:transport (2026-09-22 audit) and is retired (2026-09-25).
+    max_transport = float(cond.get("max_pressure", 0.1))
     matches = []
     for frame in window.attention_frames:
         for t in frame.dominant_targets:
             if t.target_id != target:
                 continue
-            transport_p = max(
-                float(t.dominant_channels.get("stream_backlog_pressure", 0.0)),
-                float(t.dominant_channels.get("pressure", 0.0)),
-            )
+            transport_p = float(t.dominant_channels.get("pressure", 0.0))
             if transport_p <= max_transport:
                 matches.append(frame)
                 break

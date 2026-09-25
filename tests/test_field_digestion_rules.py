@@ -51,11 +51,11 @@ def test_decay_covers_execution_and_transport_channels() -> None:
                 "execution_friction": 1.0,
                 "failure_pressure": 1.0,
                 "reasoning_load": 1.0,
-                "stream_backlog_pressure": 1.0,
+                "catalog_drift_pressure": 1.0,
                 "contract_pressure": 1.0,
                 "reliability_pressure": 1.0,
                 "availability": 1.0,          # must NOT decay
-                "delivery_confidence": 1.0,   # must NOT decay
+                "stability": 1.0,             # must NOT decay
             }
         },
         capability_vectors={
@@ -78,11 +78,11 @@ def test_decay_covers_execution_and_transport_channels() -> None:
     cap = state.capability_vectors["capability:orchestration"]
 
     for ch in ("cortex_exec_step_load", "execution_friction", "failure_pressure",
-               "reasoning_load", "stream_backlog_pressure", "contract_pressure", "reliability_pressure"):
+               "reasoning_load", "catalog_drift_pressure", "contract_pressure", "reliability_pressure"):
         assert node[ch] < 1.0, f"node channel {ch!r} should have decayed"
 
     assert node["availability"] == 1.0, "availability must not decay"
-    assert node["delivery_confidence"] == 1.0, "delivery_confidence must not decay"
+    assert node["stability"] == 1.0, "stability must not decay"
 
     assert cap["pressure"] < 1.0, "capability pressure should decay"
     assert cap["execution_pressure"] < 1.0, "capability execution_pressure should decay"

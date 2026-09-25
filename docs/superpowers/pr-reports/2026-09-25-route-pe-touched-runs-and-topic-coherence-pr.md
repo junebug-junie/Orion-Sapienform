@@ -122,7 +122,23 @@ Not run: no Docker/compose/requirements change. Runtime behaviour changes at res
 
 ## Review findings fixed
 
-(filled in after review)
+Review: code-review subagent, run on branch `fix/route-pe-and-topic-coherence` against merge base a65691c4d.
+
+- Finding (medium): a route decision can arrive split across two ticks (trace-start first, decision next). The first tick creates an all-"unknown" run, and v2 would have read 0.75 twice for one ordinary decision. Latent: 0 of 613 live runs are `unknown`.
+  - Fix: touched runs with no decision are skipped. A run whose previous copy had no decision is compared against the latest *decided* run (`_route_run_has_decision`).
+  - Evidence: `test_route_prediction_error_split_decision_does_not_spike`. Replay numbers unchanged.
+- Finding (low): the column probe was not scoped to a schema, and after a column drop it was never re-probed.
+  - Fix: `table_schema = current_schema()`. Any advance failure clears the cached answer.
+  - Evidence: `test_column_probe_is_scoped_to_the_current_schema`, `test_advance_failure_forces_a_column_re_probe`.
+- Finding (low): receipts skipped for a version mismatch were dropped with no log. A rolled-back producer would leave a target stuck at 0 observations with no visible cause.
+  - Fix: a `node_prediction_error_baseline_version_skipped ... skipped=N` warning.
+  - Evidence: `test_version_skipped_receipts_are_logged`.
+- Finding (low): the definition-drift lock says "no definition changes".
+  - Fix: disclosed under Risks, with Juniper's approval recorded in the Summary. Feeding `PREDICTION_ERROR_DEFINITION_VERSIONS` into the gate is a follow-up.
+- Finding (low, test fidelity): the store tests are MagicMock-based, and the versioned upsert has never run against real Postgres.
+  - Fix: the post-deploy checks below verify it live. The reviewer ran the new read expression read-only on live Postgres, and it returns null before the migration, as intended.
+- Finding (nit): after the reset, chat's fresh v2 baseline folds about 13 scores that were computed against the chat projection's carried-over v1 average (max diff 0.27 in the replay).
+  - Fix: accepted and disclosed here. It washes out at alpha 0.2.
 
 ## Restart required
 
@@ -145,7 +161,8 @@ P="docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc"
 $P "select created_at, receipt_json->'state_deltas'->0->'after'->>'definition_version', receipt_json->'state_deltas'->0->'after'->'pressure_hints'->>'prediction_error' from substrate_reduction_receipts where reducer_name='substrate.route_arbitration' order by created_at desc limit 5"
 # route/chat baselines reset to v2 and refilling; others untouched
 $P "select target_id, definition_version, observation_count, ewma, variance, last_value from substrate_node_prediction_error_baseline order by target_id"
-docker logs orion-attention-runtime 2>&1 | grep -E "definition_reset|definition_version_column_missing"
+# expect exactly two reset lines (route, chat), no column_missing, no version_skipped after the substrate runtime is up
+docker logs orion-attention-runtime 2>&1 | grep -E "definition_reset|definition_version_column_missing|version_skipped"
 # route reads non-calm on the next chat turn (expect 0.25-0.5 once, then 0.0)
 ```
 
@@ -160,6 +177,6 @@ docker logs orion-attention-runtime 2>&1 | grep -E "definition_reset|definition_
 
 ## PR link
 
-(filled in after PR creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2332
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

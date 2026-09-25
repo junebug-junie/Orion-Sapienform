@@ -731,6 +731,25 @@ def test_route_prediction_error_not_diluted_by_a_live_sized_projection() -> None
     assert route_prediction_error(prev, curr) == pytest.approx(0.5)
 
 
+def test_route_prediction_error_split_decision_does_not_spike() -> None:
+    """Review finding: a trace-start event reduced one tick before its decision event
+    creates an all-"unknown" run. Neither tick may read that as a decision change:
+    tick 1 skips the undecided run; tick 2 compares the real decision against the
+    latest decided run (same background decision -> 0.0), not its own unknown copy."""
+    t1, t2 = _NOW + timedelta(seconds=5), _NOW + timedelta(seconds=10)
+    decided = _route_run("r0")
+    undecided = _route_run(
+        "r1", lane="unknown", lane_reason="unknown", output_mode="unknown", last_updated_at=t1
+    )
+    tick1_prev = _route_projection({"r0": decided})
+    tick1_curr = _route_projection({"r0": decided, "r1": undecided})
+    assert route_prediction_error(tick1_prev, tick1_curr) == 0.0
+    tick2_curr = _route_projection({"r0": decided, "r1": _route_run("r1", last_updated_at=t2)})
+    assert route_prediction_error(tick1_curr, tick2_curr) == 0.0
+    flipped = _route_run("r1", lane="chat", last_updated_at=t2)
+    assert route_prediction_error(tick1_curr, _route_projection({"r0": decided, "r1": flipped})) == pytest.approx(0.25)
+
+
 def test_route_prediction_error_zero_when_batch_touched_nothing() -> None:
     """A tick whose events were all no-ops leaves the projection unchanged: no decision
     was made, so the honest reading is 0.0, not an average over stale runs."""

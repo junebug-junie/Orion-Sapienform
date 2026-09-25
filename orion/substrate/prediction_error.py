@@ -374,6 +374,14 @@ def _latest_run(runs) -> Any:
     return best
 
 
+def _route_run_has_decision(run: Any) -> bool:
+    """False for a run created from a trace-start event alone, before any decision
+    event reached it (every categorical decision field still the reducer default)."""
+    return not (
+        run.lane == "unknown" and run.lane_reason == "unknown" and run.output_mode == "unknown"
+    )
+
+
 def _touched_runs(prev_runs, curr_runs) -> list[tuple[str, Any]]:
     """Runs in ``curr_runs`` that the batch between ``prev``/``curr`` actually
     wrote: new trace_ids, plus existing ones whose state changed at all. The
@@ -759,13 +767,26 @@ def route_prediction_error(
     against ``prev``'s latest run, as before. Bumped
     ``orion.schemas.prediction_error_definitions`` so Candidate A's persisted
     baseline, built on v1's near-zero numbers, restarts.
+
+    **Undecided runs are not decisions (review finding, 2026-09-25).** A route
+    decision arrives as a trace-start event plus a decision event. If a batch
+    boundary splits them, the reducer creates the run with ``lane``/``lane_reason``/
+    ``output_mode`` all ``"unknown"``. v1's huge denominator hid this; under v2 it
+    would read 0.75 twice (unknown vs the last decision, then the real decision vs
+    its own unknown copy). So a touched run with no decision yet is skipped, and a
+    run whose previous copy had no decision is compared against the latest
+    *decided* run in ``prev`` instead.
     """
     fields = ("lane", "lane_reason", "output_mode", "mind_requested")
     run_scores: list[float] = []
-    prev_fallback = _latest_run(prev.runs)
+    prev_fallback = _latest_run(
+        {tid: run for tid, run in prev.runs.items() if _route_run_has_decision(run)}
+    )
     for trace_id, curr_run in _touched_runs(prev.runs, curr.runs):
+        if not _route_run_has_decision(curr_run):
+            continue
         prev_run = prev.runs.get(trace_id)
-        if prev_run is None:
+        if prev_run is None or not _route_run_has_decision(prev_run):
             prev_run = prev_fallback
         if prev_run is None:
             continue

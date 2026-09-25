@@ -135,7 +135,8 @@ class AttentionRuntimeStore:
                     """
                     SELECT EXISTS (
                         SELECT 1 FROM information_schema.columns
-                        WHERE table_name = 'substrate_node_prediction_error_baseline'
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'substrate_node_prediction_error_baseline'
                           AND column_name = 'definition_version'
                     ) AS present
                     """
@@ -408,11 +409,13 @@ class AttentionRuntimeStore:
 
                 new_values: list[float] = []
                 newest_created_at = cursor
+                version_skipped = 0
                 for row in new_rows:
                     newest_created_at = row["created_at"]
                     if versioned and (
                         _parse_definition_version(row.get("definition_version")) != live_version
                     ):
+                        version_skipped += 1
                         continue
                     raw = row.get("error")
                     if raw is None:
@@ -421,6 +424,20 @@ class AttentionRuntimeStore:
                         new_values.append(float(raw))
                     except (TypeError, ValueError):
                         continue
+
+                if version_skipped:
+                    # Receipts from a producer running a different formula version
+                    # (deploy skew or a rolled-back substrate runtime). Skipped so
+                    # they cannot seed this baseline -- logged so a target stuck at
+                    # observation_count=0 has a visible cause.
+                    logger.warning(
+                        "node_prediction_error_baseline_version_skipped target_id=%s "
+                        "reducer_key=%s skipped=%s live_version=%s",
+                        target_id,
+                        reducer_key,
+                        version_skipped,
+                        live_version,
+                    )
 
                 advanced = advance_precision_baseline(
                     baseline, new_values, alpha=alpha, min_variance=min_variance
@@ -442,6 +459,9 @@ class AttentionRuntimeStore:
                 )
                 return advanced
         except Exception:
+            # Re-probe the definition_version column next time: a dropped column
+            # (migration rollback) must not wedge every advance until restart.
+            self._definition_version_column = None
             logger.exception(
                 "node_prediction_error_baseline_advance_failed target_id=%s", target_id
             )

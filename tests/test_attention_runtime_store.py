@@ -491,3 +491,36 @@ class TestReceiptLookupsStayIndexEligible:
         for q in receipts:
             assert "WHERE reducer_name = :reducer_id" in q
             assert "'reducer_id'" not in q
+
+
+def test_version_skipped_receipts_are_logged(caplog) -> None:
+    store = AttentionRuntimeStore("postgresql://test:test@localhost/test")
+    later = datetime(2026, 9, 25, 6, 0, tzinfo=timezone.utc)
+    store._engine, _conn, _calls = _mock_engine_for_baseline(
+        existing_row={**_V1_ROUTE_ROW, "definition_version": "2"},
+        new_rows=[{"error": "0.0003", "definition_version": None, "created_at": later}],
+        version_column=True,
+    )
+    with caplog.at_level("WARNING"):
+        _advance(store, "node:substrate.route", "route_arbitration")
+    assert "node_prediction_error_baseline_version_skipped" in caplog.text
+    assert "skipped=1" in caplog.text
+
+
+def test_column_probe_is_scoped_to_the_current_schema() -> None:
+    store = AttentionRuntimeStore("postgresql://test:test@localhost/test")
+    seen: list[str] = []
+    conn = MagicMock()
+    conn.execute.side_effect = lambda stmt, params=None: seen.append(str(stmt)) or MagicMock()
+    store._has_definition_version_column(conn)
+    assert "table_schema = current_schema()" in seen[0]
+
+
+def test_advance_failure_forces_a_column_re_probe() -> None:
+    store = AttentionRuntimeStore("postgresql://test:test@localhost/test")
+    store._definition_version_column = True
+    fake_engine = MagicMock()
+    fake_engine.begin.side_effect = RuntimeError("column does not exist")
+    store._engine = fake_engine
+    _advance(store, "node:substrate.route", "route_arbitration")
+    assert store._definition_version_column is None

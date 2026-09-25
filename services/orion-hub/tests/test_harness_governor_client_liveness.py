@@ -314,6 +314,8 @@ class _FakeWorkerBus:
         self.publish_calls = 0
         self.published_channels: list[str] = []
         self.subscribe_calls = 0
+        self.subscribed_channels: list[str] = []
+        self.released_channels: list[str] = []
         self._rpc_worker_task = rpc_worker_task
         self._rpc_lock = asyncio.Lock()
         self._pending_rpc: dict[tuple[str, str], asyncio.Future] = {}
@@ -322,6 +324,10 @@ class _FakeWorkerBus:
 
     async def _rpc_subscribe(self, reply_channel: str) -> None:
         self.subscribe_calls += 1
+        self.subscribed_channels.append(reply_channel)
+
+    async def rpc_release_reply_channel(self, reply_channel: str) -> None:
+        self.released_channels.append(reply_channel)
 
     async def subscribe(self, *_args, **_kwargs):  # pragma: no cover - must not be used
         raise AssertionError("worker path must not open an ad-hoc subscribe() connection")
@@ -442,6 +448,10 @@ async def test_run_uses_shared_worker_connection_when_available() -> None:
         assert bus.publish_calls == 1
         assert bus.subscribe_calls == 1
         assert bus._pending_rpc == {}  # cleaned up in the finally block
+        # 2026-09-25: the per-turn reply channel must be released from the shared
+        # worker pubsub, or it stays subscribed on the bus Redis forever.
+        assert bus.released_channels == bus.subscribed_channels
+        assert len(bus.released_channels) == 1
     finally:
         worker_task.cancel()
         with pytest.raises(asyncio.CancelledError):

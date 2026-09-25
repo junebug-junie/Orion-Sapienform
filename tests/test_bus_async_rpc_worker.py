@@ -532,3 +532,208 @@ async def test_fork_gets_an_independent_rpc_health_aggregator() -> None:
         assert parent_snap.channel_counts == {"parent:channel": 1}
     finally:
         await child.close()
+
+
+# --- Reply-channel subscriptions must be released after each RPC -----------------
+#
+# Confirmed live 2026-09-25: the bus Redis held 6,668 subscribed pubsub channels
+# (orion:gpu_pool:reply:* 2,719, orion:exec:result:* 1,428, ...). The worker path
+# subscribed each reply channel once, added it to _rpc_subscribed and never
+# unsubscribed, so every caller minting a fresh uuid reply channel per request leaked
+# one subscription per call forever -- and a worker reconnect re-subscribed the lot.
+
+
+def _envelope(corr_id: str, reply_channel: str) -> BaseEnvelope:
+    return BaseEnvelope(
+        kind="test.request.v1",
+        source=ServiceRef(name="test", version="0"),
+        correlation_id=corr_id,
+        reply_to=reply_channel,
+        payload={},
+    )
+
+
+def _reply_msg(corr_id: str, reply_channel: str) -> dict:
+    reply = BaseEnvelope(
+        kind="test.reply.v1",
+        source=ServiceRef(name="test", version="0"),
+        correlation_id=corr_id,
+        payload={"ok": True},
+    )
+    return {"type": "message", "channel": reply_channel.encode("utf-8"), "data": OrionCodec().encode(reply)}
+
+
+def _auto_reply_publish(fake_redis: "_FakeRedis"):
+    """publish() stand-in: the callee answers on envelope.reply_to right away (the
+    reply channel is already subscribed by then -- rpc_request subscribes first)."""
+
+    async def _publish(channel: str, env: BaseEnvelope) -> None:
+        fake_redis.current.push(_reply_msg(str(env.correlation_id), env.reply_to))
+
+    return _publish
+
+
+@pytest.mark.asyncio
+async def test_sequential_rpcs_with_unique_reply_channels_leave_no_subscriptions() -> None:
+    bus, fake_redis = _make_bus()
+    bus.publish = _auto_reply_publish(fake_redis)
+    with patch.object(bus, "_create_pubsub_redis", return_value=fake_redis):
+        bus.start_rpc_worker()
+        await asyncio.sleep(0.05)
+        try:
+            for i in range(20):
+                corr_id = f"00000000-0000-4000-8000-{i:012d}"
+                reply_channel = f"orion:gpu_pool:reply:{corr_id}"
+                msg = await bus.rpc_request(
+                    "orion:test:request", _envelope(corr_id, reply_channel),
+                    reply_channel=reply_channel, timeout_sec=2.0,
+                )
+                assert msg is not None
+            assert bus._rpc_subscribed == set()
+            assert fake_redis.current.subscribed == set(), (
+                f"{len(fake_redis.current.subscribed)} reply channels still subscribed after their RPCs finished"
+            )
+            assert bus._pending_rpc == {}
+        finally:
+            await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_stable_reply_channel_is_resubscribed_on_every_call() -> None:
+    """A caller reusing one reply channel across calls must keep working: the channel
+    is released after each call and subscribed again (before publish) on the next."""
+    bus, fake_redis = _make_bus()
+    bus.publish = _auto_reply_publish(fake_redis)
+    reply_channel = "orion:test:stable:reply"
+    with patch.object(bus, "_create_pubsub_redis", return_value=fake_redis):
+        bus.start_rpc_worker()
+        await asyncio.sleep(0.05)
+        try:
+            for i in range(3):
+                corr_id = f"00000000-0000-4000-9000-{i:012d}"
+                msg = await bus.rpc_request(
+                    "orion:test:request", _envelope(corr_id, reply_channel),
+                    reply_channel=reply_channel, timeout_sec=2.0,
+                )
+                assert msg is not None
+                assert reply_channel not in fake_redis.current.subscribed
+        finally:
+            await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_rpcs_sharing_a_channel_keep_it_until_the_last_finishes() -> None:
+    bus, fake_redis = _make_bus()
+    bus.publish = AsyncMock()  # replies pushed by hand below
+    reply_channel = "orion:test:shared:reply"
+    corr_a = "00000000-0000-4000-a000-00000000000a"
+    corr_b = "00000000-0000-4000-a000-00000000000b"
+    with patch.object(bus, "_create_pubsub_redis", return_value=fake_redis):
+        bus.start_rpc_worker()
+        await asyncio.sleep(0.05)
+        try:
+            task_a = asyncio.create_task(
+                bus.rpc_request("orion:test:request", _envelope(corr_a, reply_channel),
+                                reply_channel=reply_channel, timeout_sec=2.0)
+            )
+            task_b = asyncio.create_task(
+                bus.rpc_request("orion:test:request", _envelope(corr_b, reply_channel),
+                                reply_channel=reply_channel, timeout_sec=2.0)
+            )
+            for _ in range(100):
+                if bus.publish.await_count == 2:
+                    break
+                await asyncio.sleep(0.01)
+            assert bus.publish.await_count == 2
+
+            fake_redis.current.push(_reply_msg(corr_a, reply_channel))
+            assert await asyncio.wait_for(task_a, timeout=2.0) is not None
+            assert reply_channel in bus._rpc_subscribed
+            assert reply_channel in fake_redis.current.subscribed, (
+                "first RPC to finish unsubscribed a channel another pending RPC still waits on"
+            )
+
+            fake_redis.current.push(_reply_msg(corr_b, reply_channel))
+            assert await asyncio.wait_for(task_b, timeout=2.0) is not None
+            assert reply_channel not in bus._rpc_subscribed
+            assert reply_channel not in fake_redis.current.subscribed
+        finally:
+            await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_timeout_path_unsubscribes_reply_channel() -> None:
+    bus, fake_redis = _make_bus()
+    bus.publish = AsyncMock()
+    bus._emit_rpc_timeout_grammar = AsyncMock()
+    corr_id = "00000000-0000-4000-b000-000000000001"
+    reply_channel = f"orion:exec:result:{corr_id}"
+    with patch.object(bus, "_create_pubsub_redis", return_value=fake_redis):
+        bus.start_rpc_worker()
+        await asyncio.sleep(0.05)
+        try:
+            with pytest.raises(TimeoutError):
+                await bus.rpc_request(
+                    "orion:test:request", _envelope(corr_id, reply_channel),
+                    reply_channel=reply_channel, timeout_sec=0.1,
+                )
+            assert reply_channel not in bus._rpc_subscribed
+            assert reply_channel not in fake_redis.current.subscribed
+        finally:
+            await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_rpc_unsubscribes_reply_channel() -> None:
+    bus, fake_redis = _make_bus()
+    bus.publish = AsyncMock()
+    corr_id = "00000000-0000-4000-c000-000000000001"
+    reply_channel = f"orion:cortex:result:{corr_id}"
+    with patch.object(bus, "_create_pubsub_redis", return_value=fake_redis):
+        bus.start_rpc_worker()
+        await asyncio.sleep(0.05)
+        try:
+            task = asyncio.create_task(
+                bus.rpc_request("orion:test:request", _envelope(corr_id, reply_channel),
+                                reply_channel=reply_channel, timeout_sec=5.0)
+            )
+            for _ in range(100):
+                if bus.publish.await_count == 1:
+                    break
+                await asyncio.sleep(0.01)
+            assert reply_channel in fake_redis.current.subscribed
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.sleep(0.05)  # shielded release finishes on its own task
+            assert reply_channel not in bus._rpc_subscribed
+            assert reply_channel not in fake_redis.current.subscribed
+            assert bus._pending_rpc == {}
+        finally:
+            await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_release_while_new_call_waits_for_lock_resubscribes() -> None:
+    """Interleaving: call B registers on a channel only after call A's release
+    dropped it. B must subscribe again (not trust a stale _rpc_subscribed entry)."""
+    bus, fake_redis = _make_bus()
+    bus.publish = _auto_reply_publish(fake_redis)
+    reply_channel = "orion:test:interleave:reply"
+    with patch.object(bus, "_create_pubsub_redis", return_value=fake_redis):
+        bus.start_rpc_worker()
+        await asyncio.sleep(0.05)
+        try:
+            results = await asyncio.gather(*[
+                bus.rpc_request(
+                    "orion:test:request",
+                    _envelope(f"00000000-0000-4000-d000-{i:012d}", reply_channel),
+                    reply_channel=reply_channel, timeout_sec=2.0,
+                )
+                for i in range(10)
+            ])
+            assert all(r is not None for r in results)
+            assert bus._rpc_subscribed == set()
+            assert fake_redis.current.subscribed == set()
+        finally:
+            await bus.close()

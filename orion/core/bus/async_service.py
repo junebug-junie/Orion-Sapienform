@@ -285,6 +285,50 @@ class OrionBusAsync:
         self._rpc_subscribed.add(reply_channel)
         logger.info("[rpc] reply-listener ready reply_channel=%s", reply_channel)
 
+    async def _rpc_release(self, reply_channel: str) -> None:
+        """Unsubscribe ``reply_channel`` from the shared RPC-worker pubsub once no
+        pending RPC is still waiting on it.
+
+        Callers must remove their own ``(reply_channel, corr)`` entry from
+        ``_pending_rpc`` BEFORE calling this; the remaining entries are the refcount.
+        Without this, every per-request reply channel (``<prefix><uuid>``) stayed
+        subscribed forever -- confirmed live 2026-09-25: 6,668 lingering pubsub
+        channels on the bus Redis, and a worker reconnect re-subscribed all of them.
+
+        Takes ``_rpc_lock``, the same lock ``_rpc_subscribe()`` callers and the
+        worker's reconnect path hold, so a concurrent call registering the same
+        channel either (a) is already in ``_pending_rpc`` and keeps it subscribed, or
+        (b) takes the lock after us, sees the channel gone from ``_rpc_subscribed``
+        and subscribes it again before publishing. Never raises: a failed
+        UNSUBSCRIBE only leaves one stray channel on this connection, which the next
+        reconnect drops (reconnect re-subscribes only ``_rpc_subscribed``).
+        """
+        async with self._rpc_lock:
+            if any(ch == reply_channel for ch, _corr in self._pending_rpc):
+                return
+            if reply_channel not in self._rpc_subscribed:
+                return
+            self._rpc_subscribed.discard(reply_channel)
+            pubsub = self._rpc_pubsub
+            if pubsub is None:
+                return
+            try:
+                await pubsub.unsubscribe(reply_channel)
+            except Exception as exc:
+                logger.warning(
+                    "[rpc] reply-listener unsubscribe failed reply_channel=%s: %s",
+                    reply_channel,
+                    exc,
+                )
+
+    async def rpc_release_reply_channel(self, reply_channel: str) -> None:
+        """Cancellation-safe wrapper around ``_rpc_release()`` for ``finally`` blocks
+        of callers that registered in ``_pending_rpc`` and called ``_rpc_subscribe()``.
+
+        Shielded so a caller cancelled while waiting for ``_rpc_lock`` still gets its
+        channel released (the release keeps running as its own task)."""
+        await asyncio.shield(self._rpc_release(reply_channel))
+
     async def connect(self) -> None:
         if not self.enabled:
             return
@@ -607,6 +651,9 @@ class OrionBusAsync:
                 raise TimeoutError(f"RPC timeout waiting on {reply_channel}")
             finally:
                 self._pending_rpc.pop(key, None)
+                # Reply, timeout, publish error, or cancellation: drop the reply
+                # channel's subscription unless another pending call shares it.
+                await self.rpc_release_reply_channel(reply_channel)
 
         async with self.subscribe(reply_channel) as pubsub:
             try:

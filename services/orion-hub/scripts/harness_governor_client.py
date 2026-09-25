@@ -283,6 +283,9 @@ class HarnessGovernorClient:
                     wait = min(poll_sec, remaining)
         finally:
             self.bus._pending_rpc.pop(key, None)
+            # Same shared-worker subscription as rpc_request(): release it or the
+            # per-turn reply channel stays subscribed on the bus forever.
+            await self.bus.rpc_release_reply_channel(reply_to)
 
     async def _run_via_ad_hoc_subscribe(
         self,

@@ -44,6 +44,9 @@ class _FakeRedis:
         self.store[key] = str(int(self.store.get(key, "0")) - 1)
         return int(self.store[key])
 
+    async def delete(self, key):
+        self.store.pop(key, None)
+
     async def expire(self, key, ttl):
         return True
 
@@ -877,90 +880,120 @@ pytestmark = pytest.mark.usefixtures("reading_dns")
 # cap (orion:wp_read:wallet_a:count:<day> = 6) without one read, then every tick
 # logged world_pulse_read_blocked reason=daily_cap for the rest of the day.
 
-# Current capacity refusal shape after GPU pool stage 3 (PR #2328): cortex-exec
-# names the gateway's raw.error, stance fails, the turn defers.
-_POOL_REFUSAL = "turn_deferred:stance_react_failed: agent=gpu_pool_unavailable:deadline"
+# Stance reason after GPU pool stage 3 (PR #2328): cortex-exec names the
+# gateway's raw.error, stance fails, the turn orchestrator returns turn_deferred.
+_POOL_STANCE_REASON = "stance_react_failed: agent=gpu_pool_unavailable:deadline"
 
 
-def _paced_pipeline(bus, conn, store, **over):
-    # 8-22 window with cap 6 -> paced cooldown 8400s, floor (min) 600s.
-    kwargs = dict(min_cooldown_sec=600.0, window_start_hour=8, window_end_hour=22, max_attempts=3)
-    kwargs.update(over)
-    return _pipeline(bus, conn, store, **kwargs)
+def _patch_turn(monkeypatch, frames):
+    async def _turn(**kwargs):
+        return frames
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _turn)
 
 
-def _run_failing_tick(bus, pipe, conn, reason: str):
-    async def _boom(seed):
-        raise ValueError(reason)
-
-    pipe._stage1_read = _boom  # type: ignore[method-assign]
-
+def _tick(pipe, conn, *, force=True):
     async def _run():
         await _seed_queue(conn)
-        return await pipe.tick(force=True)
+        return await pipe.tick(force=force)
 
     return asyncio.run(_run())
 
 
-def test_refused_turn_refunds_wallet_a_daily_slot() -> None:
+def _now():
+    return datetime.now(timezone.utc)
+
+
+def test_real_deferred_frame_refunds_wallet_a_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """End to end through _generate -> _reason_from_non_final_frame ->
+    _stage1_read's ValueError: pins the label the refund keys on."""
     bus = _FakeBus()
     conn = _FakeConn()
     store = InMemorySubstrateGraphStore()
     bus.redis.store[_count_key()] = "2"
-    pipe = _paced_pipeline(bus, conn, store)
+    prior = (_now() - timedelta(hours=10)).isoformat()
+    bus.redis.store[wa.WALLET_A_COOLDOWN_KEY] = prior
+    pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=3)
+    _patch_turn(monkeypatch, [{"type": "turn_deferred", "reason": _POOL_STANCE_REASON}])
 
-    _run_failing_tick(bus, pipe, conn, _POOL_REFUSAL)
+    _tick(pipe, conn)
 
     assert bus.redis.store[_count_key()] == "2"
-    # Seed is still charged an attempt (bounded retry), only the wallet is refunded.
+    # last_at goes back to the last debit that counted (dashboard stays honest).
+    assert bus.redis.store[wa.WALLET_A_COOLDOWN_KEY] == prior
+    # Retry spacing moves to its own key: floor (600s) after the refusal.
+    wait = asyncio.run(wa.read_wallet_a_retry_wait(bus.redis, now=_now()))
+    assert wait is not None and 590 <= wait <= 600
+    # The seed still spends one bounded attempt.
     assert conn.rows["finding:r1:x"]["attempts"] == 1
     assert conn.rows["finding:r1:x"]["status"] == "pending"
 
 
-def test_refused_turn_shortens_cooldown_to_floor_not_paced_spacing() -> None:
+def test_real_turn_error_frame_keeps_wallet_a_charge(monkeypatch: pytest.MonkeyPatch) -> None:
     bus = _FakeBus()
     conn = _FakeConn()
     store = InMemorySubstrateGraphStore()
-    long_ago = datetime.now(timezone.utc) - timedelta(hours=10)
-    bus.redis.store[wa.WALLET_A_COOLDOWN_KEY] = long_ago.isoformat()
-    pipe = _paced_pipeline(bus, conn, store)
-    assert pipe.effective_cooldown_sec == 8400
+    bus.redis.store[_count_key()] = "2"
+    pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=3)
+    _patch_turn(monkeypatch, [{"type": "turn_error", "error_code": "fcc_stream_stalled"}])
 
-    _run_failing_tick(bus, pipe, conn, _POOL_REFUSAL)
+    _tick(pipe, conn)
 
-    since, _ = asyncio.run(
-        wa.read_wallet_a_state(bus.redis, now=datetime.now(timezone.utc), timezone_name="UTC")
-    )
-    # Next attempt allowed ~600s (the floor) after the refusal, not 8400s.
-    remaining = pipe.effective_cooldown_sec - since
-    assert 590 <= remaining <= 610
+    assert bus.redis.store[_count_key()] == "3"
+    assert wa.WALLET_A_RETRY_NOT_BEFORE_KEY not in bus.redis.store
 
 
-def test_stance_timeout_and_legacy_capacity_code_also_refund() -> None:
-    for reason in (
-        "turn_deferred:stance_react_timeout",
-        "turn_deferred:stance_react_failed: agent=gateway_capacity_rejected:capacity_wait_budget_exhausted",
-        "bus_unavailable",
-    ):
+def test_refund_backoff_blocks_the_next_tick_then_doubles(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=5)
+    _patch_turn(monkeypatch, [{"type": "turn_deferred", "reason": _POOL_STANCE_REASON}])
+
+    _tick(pipe, conn)
+    # Unforced tick right after: cooldown was refunded, so the backoff is what blocks.
+    assert asyncio.run(pipe.tick()) == "refund_backoff"
+    # Second consecutive refusal (forced past the backoff) doubles the wait.
+    asyncio.run(pipe.tick(force=True))
+    wait = asyncio.run(wa.read_wallet_a_retry_wait(bus.redis, now=_now()))
+    assert 1190 <= wait <= 1200
+    assert bus.redis.store[wa.WALLET_A_REFUND_STREAK_KEY] == "2"
+
+
+def test_turn_that_reached_reader_resets_refund_streak(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=5)
+    _patch_turn(monkeypatch, [{"type": "turn_deferred", "reason": _POOL_STANCE_REASON}])
+    _tick(pipe, conn)
+    assert bus.redis.store[wa.WALLET_A_REFUND_STREAK_KEY] == "1"
+
+    _patch_turn(monkeypatch, [{"type": "turn_error", "error_code": "fcc_stream_stalled"}])
+    asyncio.run(pipe.tick(force=True))
+
+    assert wa.WALLET_A_REFUND_STREAK_KEY not in bus.redis.store
+
+
+def test_other_stance_deferrals_refund_but_reader_failures_do_not() -> None:
+    cases = {
+        "turn_deferred:stance_react_timeout": "0",
+        "turn_deferred:stance_react_failed: agent=gateway_capacity_rejected:capacity_wait_budget_exhausted": "0",
+        "turn_deferred:empty_imperative": "0",
+        "turn_error:fcc_stream_stalled": "1",
+        "stage1_turn_timeout": "1",
+        "turn_exception:boom": "1",
+        "unreadable handoff": "1",
+    }
+    for reason, expected in cases.items():
         bus = _FakeBus()
         conn = _FakeConn()
         store = InMemorySubstrateGraphStore()
-        _run_failing_tick(bus, _paced_pipeline(bus, conn, store), conn, reason)
-        assert bus.redis.store[_count_key()] == "0", reason
+        pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=3)
 
+        async def _boom(seed, _r=reason):
+            raise ValueError(_r)
 
-def test_turn_that_reached_the_reader_keeps_its_wallet_a_charge() -> None:
-    for reason in ("turn_error:fcc_stream_stalled", "stage1_turn_timeout", "unreadable handoff"):
-        bus = _FakeBus()
-        conn = _FakeConn()
-        store = InMemorySubstrateGraphStore()
-        bus.redis.store[_count_key()] = "2"
-        pipe = _paced_pipeline(bus, conn, store)
-
-        _run_failing_tick(bus, pipe, conn, reason)
-
-        assert bus.redis.store[_count_key()] == "3", reason
-        since, _ = asyncio.run(
-            wa.read_wallet_a_state(bus.redis, now=datetime.now(timezone.utc), timezone_name="UTC")
-        )
-        assert since < 5, reason
+        pipe._stage1_read = _boom  # type: ignore[method-assign]
+        _tick(pipe, conn)
+        assert bus.redis.store[_count_key()] == expected, reason

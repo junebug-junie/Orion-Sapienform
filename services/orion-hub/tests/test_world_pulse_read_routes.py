@@ -269,6 +269,7 @@ def test_status_payload_includes_both_wallets_and_queue_counts(
         wa.WALLET_A_COOLDOWN_KEY: "2026-09-06T15:00:00+00:00",
         f"{wb.WALLET_B_COUNT_KEY_PREFIX}{today}": "1",
         wb.WALLET_B_COOLDOWN_KEY: "2026-09-06T16:00:00+00:00",
+        wa.WALLET_A_RETRY_NOT_BEFORE_KEY: "2026-09-06T17:00:00+00:00",
     }
 
     async def _q(_conn):
@@ -315,6 +316,8 @@ def test_status_payload_includes_both_wallets_and_queue_counts(
     assert payload["wallet_b"]["daily_cap"] == 6
     assert payload["wallet_b"]["cooldown_key"] == wb.WALLET_B_COOLDOWN_KEY
     assert payload["wallet_b"]["count_key_prefix"] == wb.WALLET_B_COUNT_KEY_PREFIX
+    assert payload["wallet_a"]["retry_not_before"] == "2026-09-06T17:00:00+00:00"
+    assert payload["wallet_b"]["retry_not_before"] is None
     assert payload["queue"]["pending"] == 2
     assert payload["queue"]["done"] == 10
     assert payload["stage2_queue"]["pending"] == 4

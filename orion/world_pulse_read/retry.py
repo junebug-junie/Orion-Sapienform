@@ -74,20 +74,15 @@ class FailureOutcome:
 
 
 # Failure reasons that mean the turn stopped *before any reading happened*, so
-# the wallet slot it was debited must be refunded (orion/world_pulse_read/
+# the wallet slot it was debited is refunded (orion/world_pulse_read/
 # wallet_refund.py). `turn_deferred` frames are only built by the stance phase
-# of execute_unified_turn (orion/hub/turn_orchestrator.py: stance timeout,
-# stance defer/refuse, and stance_react_failed -- which is where a GPU capacity
-# refusal lands, today as `gpu_pool_unavailable:<reason>`, before 2026-09-25 as
-# `gateway_capacity_rejected:<stage>`); the harness/FCC reader never started.
-# `bus_unavailable` means no turn was sent at all. Everything else -- including
-# `turn_error:*` (FCC ran and failed), timeouts and parse failures -- happened
-# after the reader started and still costs its slot.
-REFUSED_BEFORE_WORK_PREFIXES: tuple[str, ...] = (
-    "turn_deferred:",
-    "turn_deferred",
-    "bus_unavailable",
-)
+# of execute_unified_turn (orion/hub/turn_orchestrator.py: stance timeout /
+# missing thought, stance defer/refuse, and stance_react_failed -- which is
+# where a GPU capacity refusal lands, today as `gpu_pool_unavailable:<reason>`,
+# before 2026-09-25 as `gateway_capacity_rejected:<stage>`), all of which return
+# before the harness/FCC reader is dispatched. Everything else -- `turn_error:*`
+# (the reader ran and failed), timeouts, exceptions, parse failures -- still
+# costs its slot.
 
 
 def is_refused_before_work(reason: str | None) -> bool:
@@ -95,4 +90,4 @@ def is_refused_before_work(reason: str | None) -> bool:
     if not reason:
         return False
     text = str(reason).strip()
-    return any(text.startswith(prefix) for prefix in REFUSED_BEFORE_WORK_PREFIXES)
+    return text == "turn_deferred" or text.startswith("turn_deferred:")

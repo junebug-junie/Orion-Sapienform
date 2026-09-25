@@ -48,6 +48,9 @@ class _FakeRedis:
         self.store[key] = str(int(self.store.get(key, "0")) - 1)
         return int(self.store[key])
 
+    async def delete(self, key):
+        self.store.pop(key, None)
+
     async def expire(self, key, ttl):
         return True
 
@@ -936,12 +939,14 @@ pytestmark = pytest.mark.usefixtures("reading_dns")
 # --- Wallet B refund: a Stage 2 turn refused before any reading gives its slot back ---
 
 
-def _run_stage2_failing(bus, conn, pipe, reason: str):
-    async def _boom(handoff):
-        raise ValueError(reason)
+def _patch_turn(monkeypatch, frames):
+    async def _turn(**kwargs):
+        return frames
 
-    pipe._stage2_pass = _boom  # type: ignore[method-assign]
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _turn)
 
+
+def _stage2_tick(conn, pipe):
     async def _run():
         await _ready_stage2(conn)
         return await pipe.tick(force=True)
@@ -949,29 +954,35 @@ def _run_stage2_failing(bus, conn, pipe, reason: str):
     return asyncio.run(_run())
 
 
-def test_stage2_refused_turn_refunds_wallet_b() -> None:
+def test_stage2_real_deferred_frame_refunds_wallet_b(monkeypatch: pytest.MonkeyPatch) -> None:
     bus = _FakeBus()
     conn = _FakeConn()
     bus.redis.store[_count_key_b()] = "4"
-    pipe = _pipeline(bus, conn, max_attempts=3)
-
-    _run_stage2_failing(
-        bus, conn, pipe, "turn_deferred:stance_react_failed: agent=gpu_pool_unavailable:deadline"
+    pipe = _pipeline(bus, conn, max_attempts=3, min_cooldown_sec=600.0)
+    _patch_turn(
+        monkeypatch,
+        [{"type": "turn_deferred", "reason": "stance_react_failed: agent=gpu_pool_unavailable:deadline"}],
     )
 
+    _stage2_tick(conn, pipe)
+
     assert bus.redis.store[_count_key_b()] == "4"
+    assert wb.WALLET_B_COOLDOWN_KEY not in bus.redis.store  # no prior debit -> cleared
+    assert wb.WALLET_B_RETRY_NOT_BEFORE_KEY in bus.redis.store
     assert conn.rows["finding:r1:x"]["stage2_attempts"] == 1
 
 
-def test_stage2_turn_that_ran_keeps_wallet_b_charge() -> None:
+def test_stage2_real_turn_error_keeps_wallet_b_charge(monkeypatch: pytest.MonkeyPatch) -> None:
     bus = _FakeBus()
     conn = _FakeConn()
     bus.redis.store[_count_key_b()] = "4"
-    pipe = _pipeline(bus, conn, max_attempts=3)
+    pipe = _pipeline(bus, conn, max_attempts=3, min_cooldown_sec=600.0)
+    _patch_turn(monkeypatch, [{"type": "turn_error", "error_code": "fcc_stream_stalled"}])
 
-    _run_stage2_failing(bus, conn, pipe, "turn_error:fcc_stream_stalled")
+    _stage2_tick(conn, pipe)
 
     assert bus.redis.store[_count_key_b()] == "5"
+    assert wb.WALLET_B_RETRY_NOT_BEFORE_KEY not in bus.redis.store
 
 
 def test_stage2_invalid_handoff_is_not_debited() -> None:

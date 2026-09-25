@@ -50,7 +50,9 @@ from orion.world_pulse_read.wallet_a import (
 from orion.world_pulse_read.wallet_b import (
     WalletBInputs,
     debit_wallet_b,
+    read_wallet_b_retry_wait,
     refund_wallet_b,
+    settle_wallet_b,
     paced_cooldown_sec,
     read_wallet_b_state,
     wallet_b_block_reason,
@@ -62,7 +64,12 @@ logger = logging.getLogger("orion-hub.world_pulse_read_stage2")
 JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 PIPELINE_TAG = "world_pulse_read_stage2"
 _AUTHOR = "orion"
-_FORCE_OVERRIDE = frozenset({"cooldown", "daily_cap", "outside_window"})
+_FORCE_OVERRIDE = frozenset({"cooldown", "daily_cap", "outside_window", "refund_backoff"})
+# Refund backoff (a turn refused before reading) doubles from MIN_COOLDOWN_SEC per
+# consecutive refusal up to max(paced cooldown, this many x MIN_COOLDOWN_SEC). Live
+# 1800s floor -> 0.5h, 1h, 2h, 4h, 4h...: a full-day capacity outage costs ~8 stance
+# calls (and seed attempts), close to the old cap of 6, instead of one per tick.
+_REFUND_BACKOFF_CAP_MULTIPLIER = 8
 # Cap on how much of a raw exception message / non-final-frame error string
 # lands in `fail_reason` -- keep it grep-friendly (short label + a hint of
 # context), not a full stack trace stuffed into the `stage2_error` column.
@@ -348,12 +355,14 @@ class WorldPulseReadStage2Pipeline:
             await publish_lifecycle(self._bus, landed, "landing_completed", source=self._source_ref)
 
         redis = self._redis()
+        retry_wait = None
         if redis is None:
             since, done_today = None, 0
         else:
             since, done_today = await read_wallet_b_state(
                 redis, now=now, timezone_name=self.timezone_name
             )
+            retry_wait = await read_wallet_b_retry_wait(redis, now=now)
 
         local_hour = None
         if window_is_configured(self.window_start_hour, self.window_end_hour) and self._tz_loaded:
@@ -368,6 +377,7 @@ class WorldPulseReadStage2Pipeline:
                 now_hour=local_hour,
                 window_start_hour=self.window_start_hour,
                 window_end_hour=self.window_end_hour,
+                seconds_until_retry=retry_wait,
             )
         )
         if force and reason in _FORCE_OVERRIDE:
@@ -413,10 +423,11 @@ class WorldPulseReadStage2Pipeline:
             logger.warning(
                 "world_pulse_read_stage2_failed seed=%s err=%s", claim.seed.seed_id, exc
             )
-            await self._refund_if_refused(redis, receipt, str(exc), claim.seed.seed_id)
+            await self._settle_wallet(redis, receipt, str(exc), claim.seed.seed_id)
             await self._fail_stage2(claim.seed.seed_id, str(exc) or "parse_failed")
             await publish_lifecycle(self._bus, claim.seed, "stage2_failed", source=self._source_ref, error=str(exc))
             return "parse_failed"
+        await self._settle_wallet(redis, receipt, None, claim.seed.seed_id)
 
         result.request = request_for_seed(claim.seed)
         round_trips = 0
@@ -488,32 +499,41 @@ class WorldPulseReadStage2Pipeline:
     def _note_dropped_keys(self, keys: list[str]) -> None:
         self.unknown_keys_dropped_total += len(keys)
 
-    async def _refund_if_refused(
-        self, redis: Any, receipt: Any, reason: str, seed_id: str
+    async def _settle_wallet(
+        self, redis: Any, receipt: Any, reason: Optional[str], seed_id: str
     ) -> None:
-        """Give the Wallet B slot back when the turn never read anything
-        (stance refusal / GPU capacity / no bus -- see
-        ``orion.world_pulse_read.retry.is_refused_before_work``). Best-effort:
-        a Redis error here must not stop the seed from being marked failed."""
-        if receipt is None or not is_refused_before_work(reason):
+        """Decide what the turn's Wallet B debit cost. A turn refused before any
+        reading (stance refusal / GPU capacity -- see
+        ``orion.world_pulse_read.retry.is_refused_before_work``) gets its slot
+        back plus a backed-off retry time; anything that reached the reader
+        (``reason`` None on success, or a real failure) keeps the charge and
+        resets the refusal streak. Best-effort: a Redis error here must not
+        stop the seed from being marked done/failed."""
+        if receipt is None:
             return
         try:
+            if not is_refused_before_work(reason):
+                await settle_wallet_b(redis, receipt)
+                return
             refunded = await refund_wallet_b(
                 redis,
                 receipt,
                 now=datetime.now(timezone.utc),
-                effective_cooldown_sec=self.effective_cooldown_sec,
-                retry_floor_sec=self.min_cooldown_sec,
+                backoff_base_sec=self.min_cooldown_sec,
+                backoff_cap_sec=max(
+                    self.effective_cooldown_sec,
+                    _REFUND_BACKOFF_CAP_MULTIPLIER * self.min_cooldown_sec,
+                ),
             )
         except Exception:  # noqa: BLE001
-            logger.warning("world_pulse_read_stage2_refund_failed seed=%s", seed_id, exc_info=True)
+            logger.warning("world_pulse_read_stage2_wallet_settle_failed seed=%s", seed_id, exc_info=True)
             return
         if refunded:
             logger.info(
                 "world_pulse_read_stage2_wallet_refunded seed=%s day_key=%s reason=%s",
                 seed_id,
                 receipt.count_key,
-                reason[:_FAIL_REASON_DETAIL_MAX_LEN],
+                str(reason)[:_FAIL_REASON_DETAIL_MAX_LEN],
             )
 
     async def _fail_stage2(self, seed_id: str, error: str) -> None:

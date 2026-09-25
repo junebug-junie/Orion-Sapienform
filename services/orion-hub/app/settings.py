@@ -784,6 +784,12 @@ class Settings(BaseSettings):
     HUB_WORLD_PULSE_READ_MAX_ATTEMPTS: int = Field(
         default=3, ge=1, le=10, alias="HUB_WORLD_PULSE_READ_MAX_ATTEMPTS"
     )
+    # Pending digest_item seeds older than this many days are marked
+    # skipped/stale_digest_item on every Stage 1 tick. 0 disables.
+    # See orion/world_pulse_read/queue.py skip_stale_digest_items.
+    HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS: float = Field(
+        default=5.0, ge=0.0, alias="HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS"
+    )
     # --- World-pulse Stage 2 (Wallet B) -----------------------------------
     # Sibling of Stage 1. Isolated Redis prefix orion:wp_read:wallet_b:*.
     # Default True alongside Stage 1; operator can set false to pause.

@@ -549,6 +549,50 @@ async def mark_seed_skipped(conn: Any, seed_id: str, *, reason: str) -> None:
     )
 
 
+# Digest items are the low-priority tail (priority 10) behind findings/readings
+# (priority 0). Live 2026-09-25: 104 pending digest items, oldest 2026-09-07,
+# ~5 new per day against a 6-reads/day Wallet A that the priority-0 rows
+# (39, 32 of them retries) spend first -- the tail could never drain, so it
+# only grew staler. `created_at` is when the seed was enqueued, which is within
+# one tick of its digest run (enqueue_from_recent_digests only reads the last
+# few digests). Only never-claimed `pending` rows move; a claimed row is left
+# to its turn. Aliases (`duplicate_of`) are already `skipped` at insert.
+STALE_DIGEST_ITEM_LAST_ERROR = "stale_digest_item"
+
+SKIP_STALE_DIGEST_ITEMS_SQL = """
+UPDATE world_pulse_read_seed
+SET status = 'skipped', last_error = $2, completed_at = now()
+WHERE status = 'pending'
+  AND kind = 'digest_item'
+  AND created_at < now() - ($1 * interval '1 second')
+"""
+
+
+async def skip_stale_digest_items(conn: Any, *, max_age_sec: float) -> int:
+    """Mark pending ``digest_item`` seeds older than ``max_age_sec`` as
+    ``skipped`` / ``stale_digest_item``. Runs every Stage 1 tick (normal
+    operation, not a backfill). ``max_age_sec <= 0`` is a no-op."""
+    if max_age_sec <= 0:
+        return 0
+    status = await conn.execute(
+        SKIP_STALE_DIGEST_ITEMS_SQL, float(max_age_sec), STALE_DIGEST_ITEM_LAST_ERROR
+    )
+    return _update_rowcount(status)
+
+
+async def mark_stage2_skipped(conn: Any, seed_id: str, *, reason: str) -> None:
+    """Stage 2 sibling of :func:`mark_seed_skipped` -- no Wallet B debit."""
+    await conn.execute(
+        """
+        UPDATE world_pulse_read_seed
+        SET stage2_status = 'skipped', stage2_error = $2, stage2_completed_at = now()
+        WHERE seed_id = $1
+        """,
+        seed_id,
+        reason[:2000],
+    )
+
+
 async def claim_next_stage2_seed(conn: Any) -> Stage2Claim | None:
     row = await conn.fetchrow(CLAIM_STAGE2_SQL)
     if not row:

@@ -1398,3 +1398,40 @@ async def test_resource_lease_and_inference_budget_reach_governor(assigned_lane)
     stance_request = react_mock.await_args.args[0]
     assert stance_request.resource_lease == token
     assert stance_request.llm_route == assigned_lane
+
+
+def test_success_frames_final_carries_source_fetches_when_reported() -> None:
+    from orion.schemas.reading import SourceFetchEvidenceV1
+
+    run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="answer",
+        finalize_ran=True,
+        step_count=5,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+        source_fetches=[
+            SourceFetchEvidenceV1(url="https://ex.com/a", tool_name="WebFetch", content_chars=900)
+        ],
+    )
+    final_frame = next(f for f in _success_frames(run, correlation_id="c") if f["type"] == "final")
+    assert final_frame["harness_source_fetches"] == [
+        {"url": "https://ex.com/a", "tool_name": "WebFetch", "content_chars": 900}
+    ]
+
+    empty = run.model_copy(update={"source_fetches": []})
+    final_empty = next(f for f in _success_frames(empty, correlation_id="c") if f["type"] == "final")
+    assert final_empty["harness_source_fetches"] == []
+
+
+def test_success_frames_final_omits_source_fetches_from_an_older_governor() -> None:
+    run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="answer",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    final_frame = next(f for f in _success_frames(run, correlation_id="c") if f["type"] == "final")
+    assert "harness_source_fetches" not in final_frame

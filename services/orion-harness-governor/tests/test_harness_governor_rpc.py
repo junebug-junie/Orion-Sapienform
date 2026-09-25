@@ -872,3 +872,69 @@ async def test_a_motor_that_produced_no_draft_still_reports_its_leg_duration() -
     assert run.final_text is None
     assert run.grounding_status == "fcc_timeout"
     assert run.fcc_elapsed_sec == 1600.2
+
+
+@pytest.mark.asyncio
+async def test_harness_run_carries_source_fetches_from_the_motor() -> None:
+    """World-pulse Stage 1 refuses a `done` without tool-trace read evidence
+    (orion/world_pulse_read/read_evidence.py). The governor is the only place
+    that sees the raw tool_use/tool_result pairs, so dropping the field here
+    would turn every real read into `no_read_evidence:harness_unreported`."""
+    from app import bus_listener
+    from orion.schemas.reading import SourceFetchEvidenceV1
+
+    thought = make_thought()
+    req = HarnessRunRequestV1(
+        correlation_id="c-fetches",
+        thought_event=thought,
+        user_message="read this",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    appraisal = make_appraisal()
+    reflection = make_reflection()
+    motor = _motor_result(thought)
+    motor.source_fetches = [
+        SourceFetchEvidenceV1(url="https://ex.com/a", tool_name="WebFetch", content_chars=1500)
+    ]
+
+    async def _fake_finalize_chain(**_: object) -> HarnessFinalizeChainResult:
+        from orion.harness.finalize import emit_turn_outcome_molecule, emit_verdict_molecule
+
+        verdict = await emit_verdict_molecule(
+            correlation_id="c-fetches", reflection=reflection, publish_fn=AsyncMock()
+        )
+        outcome = await emit_turn_outcome_molecule(
+            correlation_id="c-fetches",
+            thought=thought,
+            substrate_appraisal=appraisal,
+            reflection=reflection,
+            verdict_molecule=verdict,
+            draft_text="internal draft",
+            final_text="final",
+            finalize_changed=False,
+            publish_fn=AsyncMock(),
+        )
+        return HarnessFinalizeChainResult(
+            final_text="final",
+            substrate_appraisal=appraisal,
+            reflection=reflection,
+            verdict_molecule=verdict,
+            outcome_molecule=outcome,
+            finalize_changed=False,
+            quick_lane_skipped_5b=True,
+            verdict_molecule_id="verdict-1",
+        )
+
+    with patch.object(
+        bus_listener,
+        "HarnessRunner",
+        return_value=AsyncMock(run=AsyncMock(return_value=motor)),
+    ), patch.object(bus_listener, "run_harness_finalize_chain", _fake_finalize_chain), patch.object(
+        bus_listener, "emit_post_turn_closure", AsyncMock(return_value=AsyncMock())
+    ):
+        run = await bus_listener.handle_harness_run_request(
+            AsyncMock(), req, reply_to="orion:harness:run:result:c-fetches"
+        )
+
+    assert run.source_fetches == motor.source_fetches

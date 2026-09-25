@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from orion.core.bus.bus_schemas import ServiceRef
+from orion.schemas.reading import SourceFetchEvidenceV1
 from orion.schemas.world_pulse_read import (
     WorldPulseReadConceptCandidateV1,
     WorldPulseReadHandoffV1,
@@ -222,6 +223,11 @@ def _seed() -> WorldPulseReadSeedV1:
     )
 
 
+def _fetched(url: str, chars: int = 1200) -> SourceFetchEvidenceV1:
+    """What the governor reports for a WebFetch that returned the page."""
+    return SourceFetchEvidenceV1(url=url, tool_name="WebFetch", content_chars=chars)
+
+
 def _handoff(seed: WorldPulseReadSeedV1 | None = None) -> WorldPulseReadHandoffV1:
     seed = seed or _seed()
     return WorldPulseReadHandoffV1(
@@ -234,6 +240,7 @@ def _handoff(seed: WorldPulseReadSeedV1 | None = None) -> WorldPulseReadHandoffV
         ],
         trace_id="tr-pipeline-1",
         created_at=NOW,
+        read_evidence=[_fetched(seed.url)],
     )
 
 
@@ -1014,3 +1021,156 @@ def test_forced_tick_overrides_refund_backoff_and_real_turn_clears_it(
     assert asyncio.run(pipe.tick(force=True)) != "refund_backoff"
 
     assert wa.WALLET_A_RETRY_NOT_BEFORE_KEY not in bus.redis.store
+
+
+# --- Read evidence: a Stage 1 turn is `done` only if it actually fetched the
+# source. Live 2026-09-25: finding:60d59b10...:9b084fc0f1583da0 was marked done
+# with zero tool calls; its handoff began with the text below.
+
+_LIVE_HOLLOW_LEARNING = (
+    "Metadata-only extraction; I did not fetch or read the article body this "
+    "turn, and no claim about the page's content is grounded."
+)
+
+
+def _final_frame(learning: str, fetches=None, **extra_json):
+    import json as _json
+
+    body = {"what_i_learned": learning, "candidate_priors": [], **extra_json}
+    frame = {"type": "final", "llm_response": "```json\n" + _json.dumps(body) + "\n```"}
+    if fetches is not None:
+        frame["harness_source_fetches"] = fetches
+    return frame
+
+
+def test_hollow_read_with_no_fetch_is_failed_not_done(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store, max_attempts=3)
+    _patch_turn(monkeypatch, [_final_frame(_LIVE_HOLLOW_LEARNING, fetches=[])])
+
+    assert _tick(pipe, conn) == "no_read_evidence"
+
+    row = conn.rows["finding:r1:x"]
+    assert row["status"] == "failed"  # terminal: the reader ran and did not read
+    assert row["last_error"] == "no_read_evidence"
+    assert row.get("handoff_json") is None
+    assert store.snapshot().nodes == {}
+    assert bus.journal == []
+    # The turn reached the reader, so its Wallet A slot stays spent.
+    assert bus.redis.store[_count_key()] == "1"
+
+
+def test_fetch_of_a_different_site_is_not_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore())
+    other = {"url": "https://coverage.example.org/story", "tool_name": "WebFetch", "content_chars": 5000}
+    _patch_turn(monkeypatch, [_final_frame("Read a different outlet's story.", fetches=[other])])
+
+    assert _tick(pipe, conn) == "no_read_evidence"
+    assert conn.rows["finding:r1:x"]["last_error"] == "no_read_evidence"
+
+
+def test_near_empty_fetch_result_is_not_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore())
+    blocked = {"url": "https://ex.com/a", "tool_name": "WebFetch", "content_chars": 38}
+    _patch_turn(monkeypatch, [_final_frame("Tried the page.", fetches=[blocked])])
+
+    assert _tick(pipe, conn) == "no_read_evidence"
+
+
+def test_model_cannot_supply_its_own_read_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore())
+    forged = [{"url": "https://ex.com/a", "tool_name": "WebFetch", "content_chars": 9000}]
+    _patch_turn(
+        monkeypatch,
+        [_final_frame("I fetched it, honest.", fetches=[], read_evidence=forged)],
+    )
+
+    assert _tick(pipe, conn) == "no_read_evidence"
+    assert conn.rows["finding:r1:x"]["status"] == "failed"
+
+
+def test_unreported_fetches_are_a_retryable_infra_gap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A governor that predates HarnessRunV1.source_fetches sends no report:
+    never treated as a read, but the seed is not burned either."""
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore(), max_attempts=3)
+    _patch_turn(monkeypatch, [_final_frame("Read the page.", fetches=None)])
+
+    assert _tick(pipe, conn) == "no_read_evidence"
+    row = conn.rows["finding:r1:x"]
+    assert row["last_error"] == "no_read_evidence:harness_unreported"
+    assert row["status"] == "pending"
+
+
+def test_real_fetch_marks_done_and_stores_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+    fetches = [
+        {"url": "https://ex.com/a", "tool_name": "WebFetch", "content_chars": 2400},
+        {"url": "https://elsewhere.example.net/x", "tool_name": "WebFetch", "content_chars": 900},
+    ]
+    _patch_turn(monkeypatch, [_final_frame("The page says packaging costs rose.", fetches=fetches)])
+
+    assert _tick(pipe, conn) is None
+
+    row = conn.rows["finding:r1:x"]
+    assert row["status"] == "done"
+    assert row["handoff_json"]["read_evidence"] == [
+        {"url": "https://ex.com/a", "tool_name": "WebFetch", "content_chars": 2400}
+    ]
+    assert len(bus.journal) == 1
+
+
+def test_injected_reader_without_evidence_is_still_gated() -> None:
+    """The tick-level check holds even when _stage1_read is replaced."""
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore())
+    bare = _handoff().model_copy(update={"read_evidence": []})
+
+    async def _fake_read(seed):
+        return bare
+
+    pipe._stage1_read = _fake_read  # type: ignore[method-assign]
+    assert _tick(pipe, conn) == "no_read_evidence"
+    assert conn.rows["finding:r1:x"]["status"] == "failed"
+
+
+# --- Stale digest items: skipped on the live loop, not by one-off SQL ---
+
+
+def _stale_sql_calls(conn):
+    return [
+        args
+        for sql, args in conn.executed
+        if "kind = 'digest_item'" in sql and "SET status = 'skipped'" in sql
+    ]
+
+
+def test_tick_skips_stale_digest_items_with_configured_age() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    bus.redis.store[_count_key()] = "6"  # blocked: the sweep must still run
+    pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore(), digest_item_max_age_days=5)
+
+    assert asyncio.run(pipe.tick()) == "daily_cap"
+    assert _stale_sql_calls(conn) == [(5 * 86400.0, "stale_digest_item")]
+
+
+def test_zero_max_age_disables_the_stale_sweep() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore(), digest_item_max_age_days=0)
+    asyncio.run(pipe.tick())
+    assert _stale_sql_calls(conn) == []

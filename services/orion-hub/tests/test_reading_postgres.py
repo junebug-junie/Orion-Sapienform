@@ -372,3 +372,36 @@ def test_missing_journals_replay_saved_artifacts_without_model_or_wallet(local_p
         assert (await queue.reading_status(conn, req.request_id))["status"] == "completed"
         await conn.close()
     asyncio.run(run())
+
+
+def test_stale_digest_items_skipped_by_real_sql(local_pg):
+    """Only never-claimed `pending` digest_item rows older than the cutoff
+    move; findings, readings, claimed rows and fresh digest items stay."""
+    async def run():
+        conn, _schema = await db(local_pg)
+        rows = [
+            ("digest_item:old", "digest_item", "pending", "6 days"),
+            ("digest_item:fresh", "digest_item", "pending", "1 day"),
+            ("digest_item:claimed-old", "digest_item", "claimed", "9 days"),
+            ("finding:old", "finding", "pending", "18 days"),
+        ]
+        for seed_id, kind, status, age in rows:
+            await conn.execute(
+                "INSERT INTO world_pulse_read_seed(seed_id, kind, run_id, url, status, priority, created_at) "
+                "VALUES($1, $2, 'r', $3, $4, 10, now() - $5::text::interval)",
+                seed_id, kind, f"https://example.org/{seed_id}", status, age,
+            )
+        assert await queue.skip_stale_digest_items(conn, max_age_sec=0) == 0
+        assert await queue.skip_stale_digest_items(conn, max_age_sec=5 * 86400) == 1
+        got = {r["seed_id"]: (r["status"], r["last_error"]) for r in await conn.fetch(
+            "SELECT seed_id, status, last_error FROM world_pulse_read_seed")}
+        assert got == {
+            "digest_item:old": ("skipped", "stale_digest_item"),
+            "digest_item:fresh": ("pending", None),
+            "digest_item:claimed-old": ("claimed", None),
+            "finding:old": ("pending", None),
+        }
+        # Idempotent on the next tick.
+        assert await queue.skip_stale_digest_items(conn, max_age_sec=5 * 86400) == 0
+        await conn.close()
+    asyncio.run(run())

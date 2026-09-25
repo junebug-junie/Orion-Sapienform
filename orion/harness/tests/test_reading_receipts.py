@@ -368,3 +368,49 @@ async def test_harness_runner_replaces_false_success_transcript_after_two_failur
     assert "did not read" in result.draft_text
     assert len(result.reading_receipts) == 1
     assert result.reading_receipts[0].attempt_count == 2
+
+
+# --- source_fetches: tool-trace evidence that a turn read a source ---------
+# Consumed by world-pulse Stage 1 (orion/world_pulse_read/read_evidence.py) to
+# refuse a `done` for a turn that never fetched (live 2026-09-25 hollow read).
+
+
+def test_source_fetches_records_only_usable_fetch_results():
+    tracker = ReadingReceiptTracker(None)
+    tracker.observe(_tool_use("ok-1", name="WebFetch", url=URL))
+    tracker.observe(_tool_result("ok-1", "The paper describes three agent systems. " * 10))
+    tracker.observe(_tool_use("err-1", name="WebFetch", url="https://example.org/blocked"))
+    tracker.observe(_tool_result("err-1", "Request failed with status code 403", is_error=True))
+    tracker.observe(_tool_use("empty-1", name="WebFetch", url="https://example.org/empty"))
+    tracker.observe(_tool_result("empty-1", "   "))
+
+    fetches = tracker.source_fetches()
+
+    assert [(f.url, f.tool_name) for f in fetches] == [(URL, "WebFetch")]
+    assert fetches[0].content_chars == len(("The paper describes three agent systems. " * 10).strip())
+
+
+def test_source_fetches_empty_when_turn_made_no_tool_calls():
+    tracker = ReadingReceiptTracker(None)
+    tracker.observe({"type": "system", "raw": {"type": "system", "subtype": "init"}})
+    assert tracker.source_fetches() == []
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_reports_source_fetches_on_the_motor_result():
+    async def reading_turn(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "step", "step": _tool_use("f-1", name="WebFetch", url=URL)}
+        yield {"type": "step", "step": _tool_result("f-1", "Body of the source. " * 20)}
+        yield {"type": "final", "llm_response": '{"what_i_learned": "x"}', "metadata": {"exit_code": 0}}
+
+    request = HarnessRunRequestV1(
+        correlation_id="wp-read-turn",
+        thought_event=make_thought(),
+        user_message=f"Read {URL}",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    result = await HarnessRunner(AsyncMock(), fcc_runner=reading_turn).run(request)
+
+    assert [(f.url, f.tool_name) for f in result.source_fetches] == [(URL, "WebFetch")]
+    assert result.source_fetches[0].content_chars > 200

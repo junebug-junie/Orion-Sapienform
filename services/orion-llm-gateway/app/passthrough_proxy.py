@@ -5,6 +5,9 @@ and releases the lease when the response is done -- for a stream, when the strea
 or the client goes away (LeaseStreamingResponse + stream_cleanup). A context overflow re-leases
 once with a larger ``min_ctx_tokens``, same as the bus path. The pool wait is
 LLM_GATEWAY_POOL_PASSTHROUGH_WAIT_SEC and a queued acquire is withdrawn if the client disconnects.
+
+A request carrying ``X-Orion-Gpu-Lease`` (stage 4: FCC under a durable run's hold) attaches to that
+hold instead of acquiring; its overflow is returned as is, since the child cannot leave the hold's role.
 """
 from __future__ import annotations
 
@@ -19,6 +22,7 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
 from orion.gpu_pool.client import Lease, LeaseUnavailable
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 
 from .ctx_overflow import is_context_overflow
 from .pool_placement import (
@@ -150,6 +154,7 @@ async def proxy_on_pool(
     min_ctx_tokens: int,
     anthropic: bool,
     on_dispatch: Optional[Callable[[str, str, bool], None]] = None,
+    hold: Optional[GpuLeaseRefV1] = None,
 ) -> Response:
     """Same placement rules as the bus path (main._dispatch_on_pool): at most three acquires --
     one clamp to the class's largest ctx on ``min_ctx_exceeds_class``, one re-lease after a real
@@ -175,7 +180,7 @@ async def proxy_on_pool(
 
     for _ in range(3):
         handle = PoolLease(route=route_key, spec=spec, holder=holder, turn_correlation_id=correlation_id,
-                           min_ctx_tokens=min_ctx, deadline_sec=passthrough_wait_sec())
+                           min_ctx_tokens=min_ctx, deadline_sec=passthrough_wait_sec(), hold=hold)
         try:
             lease = await _acquire(handle, request)
         except _ClientGone:
@@ -198,7 +203,7 @@ async def proxy_on_pool(
                 reason=exc.reason, route=route_key, work_class=spec.work_class,
             ), status_code=503)
 
-        may_release = overflow_response is None and not clamped
+        may_release = overflow_response is None and not clamped and hold is None
         upstream_url = f"{lease.grant.url.rstrip('/')}{path}"
         if on_dispatch is not None:
             on_dispatch(upstream_url, lease.grant.served_by, stream)

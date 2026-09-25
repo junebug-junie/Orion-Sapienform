@@ -1324,7 +1324,9 @@ def plan_llm_chat(body: ChatBody) -> ChatDispatchPlan:
     """Lane routing (when enabled) to a route name, then the route's pool class. Cheap, no I/O."""
     pool_routes = pool_placement.pool_routes()
     lane_routing = bool(getattr(settings, "llm_lane_routing_enabled", False))
-    if lane_routing and (body.options or {}).get("resource_lease") is None:
+    # A call under a durable lease (old token) or a GPU pool hold ref keeps the caller's route:
+    # the run's lane was already decided, lane routing must not move it.
+    if lane_routing and (body.options or {}).get("resource_lease") is None and (body.options or {}).get("gpu_lease") is None:
         decision = resolve_llm_lane_route(
             body.options,
             body.route,

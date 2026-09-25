@@ -44,7 +44,7 @@ kind of evidence that mechanism can honestly produce:
 
 1. **Node-vector-sourced** (the channel is a raw entry in the winning
    node's OWN `node_vectors[node_id]`, e.g. `reliability_pressure` on
-   `node:athena`/`node:rpc_timeout`, confirmed 100% node-sourced and 100%
+   `node:athena`/`node:rpc_timeout` (the latter a phantom, pruned 2026-09-25), confirmed 100% node-sourced and 100%
    `node_vector_updated_at`-stamped over 3,000 live ticks, 2026-08-16):
    reuse `orion.field.regime._refresh_from_timestamps` verbatim -- the same
    tested mechanism R2 shipped for the Hub glossary panel, comparing the

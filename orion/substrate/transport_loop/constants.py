@@ -22,3 +22,4 @@ DEFAULT_STREAM_DEPTH_CRITICAL = 100_000
 # RpcHealthSnapshotV1 (orion:rpc_health:snapshot) -- this reducer has no
 # business turning them into a bus.
 NON_BUS_TRANSPORT_NODE_IDS: frozenset[str] = frozenset({"rpc_timeout"})
+NON_BUS_TRANSPORT_TARGET_IDS: frozenset[str] = frozenset(f"bus:{n}" for n in NON_BUS_TRANSPORT_NODE_IDS)

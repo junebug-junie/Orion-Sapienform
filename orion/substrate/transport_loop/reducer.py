@@ -95,8 +95,11 @@ def reduce_transport_trace_events(
     # A bus state with zero bus-observer evidence is not a reading, it is the
     # extractor's defaults (redis_ping_ok=None -> 0.5 "half health"). Writing
     # it would overwrite/mint a bus entry with fabricated pressures -- exactly
-    # how bus:rpc_timeout was born (2026-09-22 audit). Also covers a trace
-    # whose observer atoms landed in a different batch than its trace_ended.
+    # how bus:rpc_timeout was born (2026-09-22 audit). Also covers a split
+    # piece of a real trace holding only trace_started/trace_ended/edge events.
+    # NOT covered (pre-existing, follow-up): a split BETWEEN observer atoms
+    # leaves a tail with evidence but redis_ping_ok=None, which still writes
+    # the 0.5 defaults over bus:athena.
     if not incoming.evidence_event_ids:
         warnings.append(f"no bus observer evidence in trace {incoming.source_trace_id}")
         return projection, _noop_receipt(events, reducer_id=reducer_id, clock=clock, warnings=warnings)

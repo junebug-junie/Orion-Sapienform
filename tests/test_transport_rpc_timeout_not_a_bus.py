@@ -23,10 +23,7 @@ from orion.schemas.grammar import GrammarAtomV1, GrammarEventV1, GrammarProvenan
 from orion.schemas.transport_projection import TransportBusProjectionV1, TransportBusStateV1
 from orion.substrate.transport_loop.constants import TRANSPORT_BUS_PROJECTION_ID
 from orion.substrate.transport_loop.extract import parse_bus_transport_trace_id
-from orion.substrate.transport_loop.pipeline import (
-    process_transport_grammar_events,
-    prune_non_bus_entries,
-)
+from orion.substrate.transport_loop.pipeline import process_transport_grammar_events
 from orion.substrate.transport_loop.reducer import reduce_transport_trace_events
 
 NOW = datetime(2026, 9, 22, 5, 39, 30, tzinfo=timezone.utc)
@@ -199,6 +196,10 @@ def test_persisted_phantom_is_pruned_on_next_batch_and_real_bus_kept() -> None:
 
 
 def test_prune_non_bus_entries_reports_what_it_dropped() -> None:
+    # Imported here so the file's behavioural tests still collect (and fail
+    # for the real reason) against pre-fix code that lacks this helper.
+    from orion.substrate.transport_loop.pipeline import prune_non_bus_entries
+
     projection = TransportBusProjectionV1(
         projection_id=TRANSPORT_BUS_PROJECTION_ID,
         updated_at=NOW,

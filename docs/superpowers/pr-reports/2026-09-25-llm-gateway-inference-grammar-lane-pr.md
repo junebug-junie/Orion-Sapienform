@@ -62,8 +62,8 @@ the flip, a backend that answers with errors pushes `capability:llm_inference`
 - **substrate-runtime**: `REDUCER_SPECS[5]` `llm_inference`, its own cursor
   `llm_inference_grammar_reducer`, a poll loop, `_llm_inference_tick`, store
   fetch/advance/load/save, and grammar_truth maps.
-- **field-digester**: new node channel `inference_failure_pressure` (decays, and is
-  written with `mode="replace"`), plus a `llm_inference_node` branch in
+- **field-digester**: new node channel `inference_failure_pressure` (written with
+  `mode="replace"`, deliberately does not decay), plus a `llm_inference_node` branch in
   `delta_to_perturbations` behind a per-lane gate `delta_digestion_enabled()`.
 - **Topology**: `node:circe -> capability:llm_inference` gains
   `inference_failure_pressure: reliability_pressure` in both lattice files.
@@ -83,6 +83,14 @@ the flip, a backend that answers with errors pushes `capability:llm_inference`
   projection for inspection. Admission and lease belong to the GPU pool
   (gpu-pool spec stage 3 moves or deletes them), so they are not duplicated into the
   field.
+- **Only the backend's fault counts.** Upstream 4xx (e.g. an oversized prompt),
+  image-on-text-route refusals and unreadable attachments count as `request_invalid`.
+  Model prose that merely starts with "Error:" is `served`; only `[Error: ...`
+  gateway framing is ever a failure.
+- **The reading holds instead of decaying.** Decay would fade a real failure to a
+  fake calm 0.0 whenever callers stop calling circe (the `node:substrate.route`
+  decayed-to-zero artifact). With replace-mode writes, the next window that has
+  traffic moves it back down, so holding does not ratchet.
 - **`upstream_empty` is not counted as a failure.** A reply that is empty with no
   reasoning content is recorded but excluded, because how common empty completions are
   at rest has not been measured live.
@@ -133,8 +141,8 @@ the flip, a backend that answers with errors pushes `capability:llm_inference`
    - No existing mechanism reports backend outcomes from the gateway.
 6. **Reversibility.** It is cheap to undo:
    - three flags off stops it at any stage;
-   - the channel is one line in each of `channels.py`, `decay.py` and both lattice
-     files, plus one glossary entry;
+   - the channel is one line in `channels.py` and in each lattice file, plus one
+     glossary entry;
    - the projection table is standalone;
    - the anomaly autoencoder reads a fixed trained manifest, so this channel never
      enters its input width.
@@ -266,10 +274,10 @@ and it complements this lane rather than replacing it.
 ## Tests run
 
 ```text
-services/orion-llm-gateway/tests                      392 passed
+services/orion-llm-gateway/tests + evals               401 passed
 services/orion-llm-gateway/evals                      2 passed
-tests/test_llm_inference_substrate_reducer.py         18 passed
-services/orion-field-digester/tests                   235 passed (from repo root)
+tests/test_llm_inference_substrate_reducer.py         19 passed
+services/orion-field-digester/tests                   236 passed (from repo root)
 services/orion-substrate-runtime/tests (non-integration, POSTGRES_URI dummy)
     branch 9 failed / 350 passed vs parent 10 failed / 349 passed -- identical
     failure set minus the stale poll-task test this PR fixes (all env/DB-bound)
@@ -290,7 +298,7 @@ check_service_env_compose_parity.py orion-substrate-runtime   18 pre-existing BR
 
 ```text
 docker logs --timestamps orion-llm-gateway | python services/orion-llm-gateway/evals/run_inference_outcome_eval.py
-  131 one-minute windows with traffic, circe: 131/131 at 0.0, max 0.0 (rest state reached;
+  134 one-minute windows with traffic, circe: 134/134 at 0.0, max 0.0 (rest state reached;
   nonzero movement UNVERIFIED live -- no backend failure in the retained window)
 ```
 
@@ -308,7 +316,38 @@ No image was built and nothing was deployed.
 
 ## Review findings fixed
 
-REVIEW_FINDINGS_PLACEHOLDER
+The review ran as a subagent against `origin/main...HEAD` and found no blockers.
+
+- **Finding:** model prose ("Connection refused usually means...", "Error: that
+  value...", "A read timeout happens when...") was classified as a backend failure,
+  because the canonical detector matches markers anywhere in the head.
+  - **Fix:** only `[Error:`-framed text can be a failure. Everything else is `served`.
+  - **Evidence:** three prose cases were added to `test_classify_outcome`; they pass.
+- **Finding:** image-on-text-route refusals were counted as `upstream_error`.
+  - **Fix:** they now map to `request_invalid`.
+  - **Evidence:** two new classifier cases.
+- **Finding:** upstream 4xx (oversized prompt) raised circe's failure pressure.
+  - **Fix:** `upstream_http_4xx` moved to `REQUEST_INVALID_CLASSES`.
+  - **Evidence:** `test_upstream_4xx_is_a_bad_request_not_a_node_failure`.
+- **Finding:** decay would fade a real failure to a fake calm 0.0 during idle time.
+  - **Fix:** removed from `NODE_DECAY_CHANNELS`, so the reading holds.
+  - **Evidence:** `test_failure_reading_survives_idle_minutes_and_clears_on_next_window`
+    (300 idle ticks leave 1.0; the next window's 0.0 clears it).
+- **Finding:** calls that raised inside dispatch were never counted.
+  - **Fix:** they are recorded as `gateway_exception` (unattributed), then re-raised
+    unchanged.
+- **Finding:** the log-replay eval turned `served_by=None` into a fake node.
+  - **Fix:** it now maps to `unrouted`. The eval docstring also states its low-bias
+    gaps.
+- **Finding:** a mid-window publish failure dropped the rest silently.
+  - **Fix:** the log line now carries `dropped=N of M`.
+- **Documented, not changed:**
+  - timeouts caused by a short caller budget;
+  - latency includes admission wait;
+  - one gateway per node assumed;
+  - no shutdown flush;
+  - a window split across reducer batches mis-states `window_sec` and
+    `last_unattributed_calls` (cosmetic; the pressure value is correct).
 
 ## Restart required
 
@@ -371,12 +410,17 @@ only shows when a backend actually fails.
   The classifier is pinned to today's error strings. A new error return with different
   wording still reads as `upstream_error` via the canonical `looks_like_error_text`,
   never as served.
-- **Severity: low.** If callers stop calling a dead backend, no new failures arrive
-  and the value decays toward 0. The field cannot tell "no calls" from "healthy after
-  the fact". The gateway's own RPC timeouts on the caller side still show it.
-- **Severity: low.** Model output that itself starts with `Error:` or `[error` would
-  count as a backend failure. This is the same accepted trade-off as every other
-  caller of `looks_like_error_text`.
+- **Severity: low.** If callers stop calling a dead backend, the last failing reading
+  holds indefinitely. It is stale, but never falsely calm; its age is
+  `node_vector_updated_at`.
+- **Severity: low.** `upstream_timeout` also counts timeouts where the read timeout was
+  the caller's own short leftover budget, so a short-budget caller on a busy but
+  healthy lane can register one. Documented in the README; not split out yet.
+- **Severity: low.** State is keyed by serving node only. This assumes one gateway
+  reports on a node, which is true today. A second gateway would overwrite the first
+  gateway's windows.
+- **Severity: low.** Model output that itself begins with the literal `[Error:`
+  would count as a failure. Plain "Error: ..." prose does not, and a test pins that.
 - **Severity: low.** The OpenAI/Anthropic HTTP passthroughs (AI Town, operator tools)
   are not counted, only the bus path.
 - **Severity: low (pre-existing, not this PR).** `sync_local_env_from_example.py`

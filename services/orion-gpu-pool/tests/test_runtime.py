@@ -449,7 +449,7 @@ def test_a_briefly_down_role_keeps_its_context_so_big_prompts_wait_for_it():
         await rt.control(GpuPoolControlV1(verb="lend", card="gpu0"))
         down.add("agent")
         await later(rt, clock, 1)
-        assert not rt.roles["agent"].healthy and rt.roles["agent"].ctx_per_slot == 131072
+        assert not rt.roles["agent"].healthy and rt._ctx_seen["agent"] == 131072
         r = await rt.acquire(acq_r("agent", min_ctx_tokens=100_000))
         assert r.status == "backlogged", r.reason
     run(go())

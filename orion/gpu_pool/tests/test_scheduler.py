@@ -333,3 +333,16 @@ def test_unknown_contexts_never_count_as_too_big():
     unknown = live(chat=RoleLive("chat", False, 1, None))
     chat = lease("chat", lease_id="c", min_ctx_tokens=10**9)
     assert of(Unavailable, run([chat], roles=unknown)) == []
+
+
+def test_a_down_roles_last_seen_context_only_stops_a_false_too_big():
+    """agent (131072) is restarting and agent-gpu2 is an unloaded swap seat; chat (65536, lent) is
+    the only live role of the agent class. A 100k lease must wait for agent -- not be refused as
+    bigger than the class -- and the remembered size must not trigger a swap load on its own."""
+    down = live(agent=RoleLive("agent", False, 0, None), **{"agent-gpu2": RoleLive("agent-gpu2", False, 0, None)})
+    big = lease("agent", lease_id="a", min_ctx_tokens=100_000)
+    refused = schedule(CFG, down, cards(), [big], T0)
+    assert [u.reason for u in of(Unavailable, refused)] == ["min_ctx_exceeds_class:65536"]
+    waiting = schedule(CFG, down, cards(), [big], T0, seen_ctx={"agent": 131072})
+    assert of(Unavailable, waiting) == [] and not grants(waiting)
+    assert of(SwapLoad, waiting) == of(SwapLoad, schedule(CFG, down, cards(), [lease("agent")], T0))

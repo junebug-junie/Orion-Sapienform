@@ -207,7 +207,7 @@ class SilentBus(WiredBus):
 
 
 @pytest.mark.parametrize("deadline_sec, expected", [(60.0, 10.0), (3.0, 3.0), (0.2, 1.0)])
-def test_lease_rpc_timeout_is_bounded_by_the_deadline_and_an_unreachable_pool_is_not_re_asked(deadline_sec, expected):
+def test_lease_rpc_timeout_is_bounded_by_the_deadline_and_withdraws_in_the_background(deadline_sec, expected):
     async def go():
         bus = SilentBus()
         with pytest.raises(asyncio.TimeoutError) as err:

@@ -458,9 +458,18 @@ class SubstrateAdaptationWorker:
             return {"acquired": True, "engine": None, "conn": None}
         try:
             from sqlalchemy import create_engine, text
+            from sqlalchemy.pool import NullPool
 
-            engine = create_engine(self.store.postgres_url)
-            conn = engine.connect()
+            # AUTOCOMMIT, not SQLAlchemy 2's default autobegin: the advisory
+            # lock is session-level, so it needs no transaction -- but a plain
+            # connect()+execute() opened one and left this connection "idle in
+            # transaction" for the whole cycle (7+ min live, 2026-09-25),
+            # which stalls CREATE INDEX CONCURRENTLY anywhere in the database
+            # (orion-gpu-pool's LangGraph saver.setup() hung ~10 min at boot).
+            # NullPool so close() really disconnects: a pooled connection
+            # returned while still holding the lock would keep it forever.
+            engine = create_engine(self.store.postgres_url, poolclass=NullPool)
+            conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
             row = conn.execute(text("SELECT pg_try_advisory_lock(:lock_id)"), {"lock_id": self.lock_id}).fetchone()
             acquired = bool(row and row[0])
             if not acquired:

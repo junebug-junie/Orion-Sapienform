@@ -467,6 +467,13 @@ These override the text elsewhere in this document.
 5. **`cuda_env` only works if compose lets the device be set from outside.** `atlas-agent-burst` hard-codes `CUDA_VISIBLE_DEVICES_OVERRIDE=2`. Stage 5 must make it `${...}`, or the gate must require it. The 4.2 bridge is unaffected.
 6. **The Hub must show `swap_state`, including `fault`**, in 4.3. Acceptance check 7 depends on it.
 
+## Corrections from building 4.2 (PR #2350)
+
+1. **The runbook order is a safety dependency.** Once the controller is in `GPU2_AUTHORITY=pool`, it stops re-checking thermal, visual-baseline urgency and durable leases/permits on gpu2. The pool's 4.3 guards and recall must be live before step 3 of the 4.5 runbook flips it.
+2. **Circe must move with athena.** `launch_digest` is computed by the image's parser over circe's `/repo` YAML. Circe must pull 4.1 or later, or every pool request is refused (`role_not_on_this_actuator`). A mismatch fails safe.
+3. **The fence state lives on the named volume `orion-gpu-lane-controller-state`.** `docker compose down -v` resets it to generation 0.
+4. **Circe's `services/orion-gpu-lane-controller/.env` needs three new keys:** `GPU2_AUTHORITY=durable`, `GPU_POOL_ACTUATOR_NAME=circe`, `GPU2_POOL_FENCE_STATE_PATH=/state/gpu2_pool_fence.json`.
+
 ## Juniper's answers (2026-09-25)
 
 1. **Gaps are shared.** While a run holds a card, higher-priority single calls may use it between the run's own calls. The run keeps its card and model for the whole run; at worst it waits one call's length.

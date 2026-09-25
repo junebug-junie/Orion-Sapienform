@@ -7,7 +7,19 @@ PR #648 — Phases/Layers 1–11.
 ## How to prove the stack is live
 
 Each milestone (M) has a feature flag, a database artifact to check, and a smoke command.
-All flags default **off**; set them in `services/<service>/.env` and force-recreate the container.
+Compose defaults are **off**, but as of 2026-09-22 every flag below is **on in production**
+(checked with `docker exec <container> env`):
+
+| Container | Setting |
+|-----------|---------|
+| `orion-athena-substrate-runtime` | `ENABLE_TRANSPORT_BUS_REDUCER=true`, `TRANSPORT_SUBSTRATE_MATURITY=full_observe` |
+| `orion-athena-field-digester` | `ENABLE_TRANSPORT_FIELD_DIGESTION=true` |
+| `orion-athena-proposal-runtime` | `ENABLE_TRANSPORT_PROPOSALS=true`, `TRANSPORT_PROPOSAL_MODE=read_only` |
+| `orion-athena-execution-dispatch-runtime` | `EXECUTION_DISPATCH_MODE=dispatch_read_only` |
+
+A flag being on is not proof a layer is live: M5 was dead 2026-09-20 21:58Z to 2026-09-23 with
+every flag on (a `FieldStateV1` schema-skew rejection). Check freshness, not flags. Audit:
+`docs/superpowers/specs/2026-09-22-substrate-lattice-audit.md`.
 
 ---
 
@@ -52,14 +64,11 @@ creating a `capability:transport` entry in `substrate_field_state.field_json -> 
 
 ## M5 — Attention frame includes transport
 
-**Flag:** `ENABLE_TRANSPORT_ATTENTION_VISIBILITY=true` in `services/orion-attention-runtime/.env`
-
-**What happens when flag is OFF:** `capability:transport` is removed from `dominant_targets`
-and `capability_targets` and placed into `suppressed_targets`. This is normal and expected
-when transport is healthy and below salience threshold.
-
-**What happens when flag is ON:** transport can surface in `dominant_targets` or
-`capability_targets` if salience warrants it; otherwise stays in `suppressed_targets`.
+**Flag:** none. `ENABLE_TRANSPORT_ATTENTION_VISIBILITY` was removed 2026-07-30
+(`services/orion-attention-runtime/.env_example`). Capability targets, including
+`capability:transport`, are scored by novelty against the previous frame
+(`orion/attention/field_attention/selectors.py::select_capability_targets` ->
+`_novelty_targets`), so transport surfaces when its field vector changes, not when it is high.
 
 **M5 is satisfied if `capability:transport` appears in ANY bucket.**
 
@@ -80,18 +89,22 @@ dominant   = transport is high-priority right now
 
 ---
 
-## Layers 6–11 — Full observe
+## Layers 7–11 — Full observe
 
-Layers 6–11 activate once M3/M4/M5 are proven. Each layer reads the previous layer's DB output.
+Layers 7–11 activate once M3/M4/M5 are proven. Each layer reads the previous layer's DB output.
+
+There is no L6 any more. L6 was the `transport_integrity` dimension of `SelfStateV1`, written by
+`orion-self-state-runtime`; that service and `config/self_state/` were deleted 2026-07-22 (commit
+`bcc72f6a0`). M5 feeds L7 directly. `orion/schemas/self_state.py` is still imported by other modules
+and was not deleted.
 
 | Layer | Service | Flag | Evidence table |
 |-------|---------|------|----------------|
-| L6 self-state | `orion-self-state-runtime` | `ENABLE_TRANSPORT_SELF_STATE_INFLUENCE=true` | `substrate_self_state.self_state_json -> 'dimensions' -> 'transport_integrity'` |
 | L7 proposals | `orion-proposal-runtime` | `ENABLE_TRANSPORT_PROPOSALS=true` + `TRANSPORT_PROPOSAL_MODE=read_only` | `substrate_proposal_frames` — transport inspect candidates, no destructive actions |
 | L8 policy | `orion-policy-runtime` | *(no env flag; controlled by policy YAML)* | `substrate_policy_decision_frames` — approved transport inspect decisions |
-| L9 dispatch | `orion-execution-dispatch-runtime` | *(no env flag; uses `EXECUTION_DISPATCH_MODE=dry_run`)* | `substrate_execution_dispatch_frames` — dispatch_mode must be `dry_run` |
+| L9 dispatch | `orion-execution-dispatch-runtime` | *(no env flag; `EXECUTION_DISPATCH_MODE`, production = `dispatch_read_only`)* | `substrate_execution_dispatch_frames` — dispatch_mode must be a read-only/dry-run mode |
 | L10 feedback | `orion-feedback-runtime` | *(no env flag)* | `substrate_feedback_frames` — outcome_status reflects dry_run result |
-| L11 consolidation | `orion-consolidation-runtime` | *(no env flag)* | `substrate_consolidation_frames` — `transport_contract_drift_loop` motif |
+| L11 consolidation | `orion-consolidation-runtime` | *(no env flag)* | `substrate_consolidation_frames` — `transport_contract_drift_loop` motif (needs contract_pressure ≥ 0.70; 7-day max observed 0.018, never fired in 30 days — see the audit) |
 
 **Safety constraint:** `TRANSPORT_PROPOSAL_MODE=read_only` (default) blocks
 `restart_bus`, `purge_stream`, `replay_stream`, `change_catalog`, `change_bus_config` proposals.
@@ -122,15 +135,11 @@ echo "ENABLE_TRANSPORT_FIELD_DIGESTION=true" >> services/orion-field-digester/.e
 docker compose -f services/orion-field-digester/docker-compose.yml up -d --force-recreate
 ./scripts/smoke_orion_bus_transport_full_stack.sh --mode=m4
 
-# 3. Enable M5
-echo "ENABLE_TRANSPORT_ATTENTION_VISIBILITY=true" >> services/orion-attention-runtime/.env
-docker compose -f services/orion-attention-runtime/docker-compose.yml up -d --force-recreate
+# 3. M5 has no flag; just check it
 ./scripts/smoke_orion_bus_transport_full_stack.sh --mode=m5
 
-# 4. Layers 6–11 — enable self-state influence + proposals, then full-observe
-echo "ENABLE_TRANSPORT_SELF_STATE_INFLUENCE=true" >> services/orion-self-state-runtime/.env
+# 4. Layers 7–11 — enable proposals, then full-observe
 echo "ENABLE_TRANSPORT_PROPOSALS=true" >> services/orion-proposal-runtime/.env
-docker compose -f services/orion-self-state-runtime/docker-compose.yml up -d --force-recreate
 docker compose -f services/orion-proposal-runtime/docker-compose.yml up -d --force-recreate
 ./scripts/smoke_orion_bus_transport_full_stack.sh --mode=full-observe
 ```

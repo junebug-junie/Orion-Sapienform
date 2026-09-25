@@ -125,9 +125,10 @@ def test_bus_synaptic_tick_no_edges_still_writes_calm_node(monkeypatch):
     below left `node:substrate.bus_synaptic` frozen at a stale nonzero value
     for hours (confirmed live) while orion-equilibrium-service polled that
     frozen value with no staleness check of its own, producing permanent
-    false "Bus Anomaly Detected" alerts. The receipt stays gated on
-    error > 0.0 -- it's an audit trail of notable events, not a polled
-    current-state read, so no receipt on a calm tick is correct."""
+    false "Bus Anomaly Detected" alerts. The receipt is written every tick
+    too (2026-09-25): it is the only path into the field's prediction_error
+    channel, so a gated receipt froze that channel at its last non-zero
+    value."""
     worker = _make_worker(monkeypatch, enabled=True)
     worker._bus_synaptic_client = _client_returning([], [])
     with patch.object(worker, "_write_prediction_error_node") as write_node:
@@ -137,7 +138,9 @@ def test_bus_synaptic_tick_no_edges_still_writes_calm_node(monkeypatch):
     assert kwargs["node_id"] == "node:substrate.bus_synaptic"
     assert kwargs["error"] == 0.0
     assert kwargs["reducer_key"] == "bus_synaptic"
-    worker._store.save_receipt.assert_not_called()
+    worker._store.save_receipt.assert_called_once()
+    receipt = worker._store.save_receipt.call_args[0][0]
+    assert receipt.state_deltas[0].after["pressure_hints"]["prediction_error"] == 0.0
 
 
 def test_bus_synaptic_tick_aggregates_both_edge_kinds_and_writes(monkeypatch):

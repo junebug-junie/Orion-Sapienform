@@ -28,10 +28,14 @@ OperatorKind = Literal["amplitude", "phase", "rotation", "projection"]
 # orion/bus/channels.yaml's orion:grammar:event producer list against
 # services/orion-substrate-runtime/app/worker.py's five real reducer cursors
 # (GRAMMAR_CURSOR_NAME/EXECUTION_GRAMMAR_CURSOR_NAME/TRANSPORT_GRAMMAR_CURSOR_NAME/
-# CHAT_GRAMMAR_CURSOR_NAME/ROUTE_GRAMMAR_CURSOR_NAME). Vision (x3) and
-# harness-governor also publish to the channel but have no reducer precedent
-# anywhere -- deliberately excluded from v0, see the design doc's "Organ list
-# -- resolved" section.
+# CHAT_GRAMMAR_CURSOR_NAME/ROUTE_GRAMMAR_CURSOR_NAME). harness-governor also
+# publishes to the channel but had no reducer precedent -- deliberately excluded
+# from v0, see the design doc's "Organ list -- resolved" section. (This comment
+# used to also name vision x3 as publishers, copied from a channels.yaml
+# producer list that was wrong: no vision service has ever emitted grammar
+# events. orion-substrate-runtime and orion-gpu-pool, which joined the channel
+# after v0, are not routed either; tests/test_grammar_event_producer_catalog.py
+# gates the current producer list.)
 #
 # Site ordering is boundary-block-then-bulk-block (sites 0-4 boundary, 5-9
 # bulk) so `HeartbeatSubstrate.entropy_profile()` can read the boundary/bulk

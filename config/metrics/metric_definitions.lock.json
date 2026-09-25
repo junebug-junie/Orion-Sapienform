@@ -3,9 +3,10 @@
   "metric_count": 668,
   "_last_change": {
     "base": "merge base d1b145208 (origin/main)",
-    "change_count": 2,
-    "high_severity_count": 2,
+    "change_count": 3,
+    "high_severity_count": 3,
     "changes": [
+      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026ub', 'orion-vision-edge', 'orion-vision-retina', 'orion-vis\u2026 -> \u2026ub', 'orion-substrate-runtime'])",
       "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:state:reply:* (declared_consumers: ['orion-hub'] -> ['orion-hub', 'orion-llm-gateway'])",
       "high   routing_changed metric://bus_channel/orion-hub/orion:gpu_pool:state:request (all_producers: ['orion-hub'] -> ['orion-hub', 'orion-llm-gateway'])"
     ]
@@ -524,9 +525,7 @@
         "orion-gpu-pool",
         "orion-harness-governor",
         "orion-hub",
-        "orion-vision-edge",
-        "orion-vision-retina",
-        "orion-vision-window"
+        "orion-substrate-runtime"
       ],
       "declared_consumers": [
         "orion-equilibrium-service",

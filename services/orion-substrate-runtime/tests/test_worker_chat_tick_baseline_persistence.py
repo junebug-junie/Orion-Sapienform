@@ -64,7 +64,10 @@ def test_chat_tick_persists_baseline_even_when_error_is_zero(monkeypatch) -> Non
     worker._chat_tick()
 
     worker._store.save_chat_session_projection.assert_called_once_with(projection)
-    worker._store.save_receipt.assert_not_called()
+    # Calm tick still sends a 0.0 receipt so the field value refreshes (2026-09-25).
+    worker._store.save_receipt.assert_called_once()
+    receipt = worker._store.save_receipt.call_args[0][0]
+    assert receipt.state_deltas[0].after["pressure_hints"]["prediction_error"] == 0.0
 
 
 def test_chat_tick_still_writes_receipt_when_error_is_nonzero(monkeypatch) -> None:

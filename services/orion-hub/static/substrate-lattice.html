@@ -139,18 +139,10 @@
       <div id="replaySimulator" class="bg-gray-900 border border-gray-800 rounded-lg p-3 flex flex-col gap-2">
         <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wide">Simulate Thresholds</h2>
         <div class="flex flex-col gap-2">
-          <label class="text-[10px] text-gray-500">contract_pressure watch_at</label>
-          <input id="simContractWatchAt" type="number" min="0" max="1" step="0.05" value="0.50"
-            class="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 w-full" />
-          <label class="text-[10px] text-gray-500">stream_backlog_pressure watch_at</label>
-          <input id="simTransportWatchAt" type="number" min="0" max="1" step="0.05" value="0.25"
-            class="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 w-full" />
-          <label class="text-[10px] text-gray-500">catalog_drift_pressure watch_at</label>
-          <input id="simCatalogWatchAt" type="number" min="0" max="1" step="0.05" value="0.50"
-            class="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 w-full" />
-          <label class="text-[10px] text-gray-500">observer_failure_pressure watch_at</label>
-          <input id="simObserverWatchAt" type="number" min="0" max="1" step="0.05" value="0.25"
-            class="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 w-full" />
+          <!-- One watch_at input per channel, rendered by substrate-lattice.js from
+               /transport/latest's lattice_channels (read from
+               config/substrate-lattice/transport_lattice_policy.v1.yaml). -->
+          <div id="simThresholdInputs" class="flex flex-col gap-2 text-[10px] text-gray-500">Loading...</div>
           <button id="simRunBtn" type="button"
             class="text-xs bg-indigo-700 hover:bg-indigo-600 text-white rounded px-3 py-1 border border-indigo-600 mt-1">
             Run Simulation

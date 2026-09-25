@@ -10,7 +10,7 @@ from app.tensor.channels import (
     DEFAULT_CAPABILITY_VECTOR,
     DEFAULT_NODE_VECTOR,
     NODE_CHANNELS,
-    RETIRED_LATTICE_NODES,
+    PRUNED_NODE_IDS,
     RETIRED_NODE_CHANNELS,
     SINGLE_OBSERVER_NODE_CHANNELS,
 )
@@ -67,7 +67,8 @@ def _prune_every_node_vector(state: FieldStateV1) -> None:
 
     `_ensure_node_vector()` above only runs for `lattice.nodes`, so its
     single-observer pruning has never reached a pseudo-node. Confirmed live
-    2026-08-14: `node:rpc_timeout` is not in the lattice (which holds exactly
+    2026-08-14: `node:rpc_timeout` (since retired outright, see
+    RETIRED_PSEUDO_NODES) is not in the lattice (which holds exactly
     atlas/athena/circe/prometheus) and had been carrying `delivery_confidence`
     and `stream_backlog_health` at 0.5 with a write 774s old, while
     `node:athena` -- the declared single observer -- reported 1.0 fresh. Both
@@ -102,17 +103,19 @@ def _prune_every_node_vector(state: FieldStateV1) -> None:
 def _prune_retired_lattice_nodes(state: FieldStateV1) -> None:
     """Drop the whole node_vectors/node_vector_updated_at entry for a node
     that has been permanently removed from the lattice (RETIRED_LATTICE_NODES
-    in channels.py), not just a renamed channel on a still-live node.
+    in channels.py) or a retired/phantom pseudo-node (RETIRED_PSEUDO_NODES),
+    not just a renamed channel on a still-live node.
 
     _ensure_node_vector() above only ever runs for `lattice.nodes`, so once a
     node_id leaves the yaml nothing seeds, decays-with-intent, or perturbs its
     entry again -- it just sits in node_vectors forever at whatever value
     decay last left it, which every generic consumer iterating node_vectors
-    reads as a real (if quiet) node. Unlike a pseudo-node (node:rpc_timeout,
-    node:substrate.*), which is off-lattice by design and must be left alone,
-    a retired lattice node has no reason to still be reported at all.
+    reads as a real (if quiet) node. Unlike a live pseudo-node
+    (node:substrate.*), which is off-lattice by design and must be left alone,
+    a retired lattice node or a named retired pseudo-node has no reason to
+    still be reported at all.
     """
-    for node_id in RETIRED_LATTICE_NODES:
+    for node_id in PRUNED_NODE_IDS:
         state.node_vectors.pop(node_id, None)
         state.node_vector_updated_at.pop(node_id, None)
 

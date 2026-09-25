@@ -2811,17 +2811,25 @@ channels:
     schema_id: "GrammarEventV1"
     message_kind: "grammar.event.v1"
     description: "Canonical grammar ingress channel for sql-writer ledger persistence"
+    # producer_services lists GrammarProvenanceV1.source_service identities, and
+    # is gated by tests/test_grammar_event_producer_catalog.py (static scan of
+    # every non-test GrammarProvenanceV1(...) call site). 2026-09-25: removed
+    # orion-vision-retina/-edge/-window (no grammar code in any of the three
+    # services; zero grammar_events rows in 60 days) and added
+    # orion-substrate-runtime (pressure organ, system-one appraisal, cabinet
+    # ambient spikes; 12.7k rows in 7 days). orion-bus is a source identity,
+    # not only a process: orion/core/bus/async_service.py stamps
+    # source_service="orion-bus" on rpc_transport_timeout markers published from
+    # whichever service's bus client timed out.
     producer_services:
-      - orion-gpu-pool
-      - orion-vision-retina
-      - orion-hub
-      - orion-vision-edge
-      - orion-vision-window
       - orion-biometrics
-      - orion-cortex-exec
       - orion-bus
-      - orion-harness-governor
+      - orion-cortex-exec
       - orion-cortex-orch
+      - orion-gpu-pool
+      - orion-harness-governor
+      - orion-hub
+      - orion-substrate-runtime
     # orion-equilibrium-service added for the chat_turn metacog trigger's
     # correlator, which filters this stream to semantic_role=="exec_turn_timeout"
     # only (services/orion-hub/scripts/grammar_emit.py::build_turn_timeout_grammar_events,

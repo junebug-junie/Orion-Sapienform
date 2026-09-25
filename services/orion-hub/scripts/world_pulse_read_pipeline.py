@@ -39,7 +39,7 @@ from orion.world_pulse_read.events import publish_lifecycle
 from orion.world_pulse_read.retry import is_refused_before_work
 from orion.world_pulse_read.read_evidence import (
     NO_READ_EVIDENCE,
-    NO_READ_EVIDENCE_UNREPORTED,
+    no_evidence_reason,
     parse_source_fetches,
     source_read_evidence,
 )
@@ -146,8 +146,10 @@ def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
 
 def _build_stage1_prompt(seed: WorldPulseReadSeedV1, trace_id: str) -> str:
     return (
-        "Read this source and return ONLY one fenced ```json block "
-        "(no greeting, no Juniper-facing prose).\n"
+        "Fetch the url below with WebFetch (ask it for the article's full text and main "
+        "points) before answering, then return ONLY one fenced ```json block "
+        "(no greeting, no Juniper-facing prose). A turn with no successful fetch of this "
+        "url is discarded, however good the JSON is.\n"
         f"seed_id={seed.seed_id} kind={seed.kind} run_id={seed.run_id}\n"
         f"url={seed.url}\ntitle={seed.title}\nsection={seed.section}\n"
         f"reading_request={request_for_seed(seed).model_dump(mode='json')}\n"
@@ -163,8 +165,9 @@ def _build_stage1_prompt(seed: WorldPulseReadSeedV1, trace_id: str) -> str:
         '  "created_at": "ISO-8601 UTC"\n'
         "}\n"
         "candidate_priors MUST be objects with claim (not bare strings). "
-        "If the URL is thin/teaser-only, still return the JSON with low-confidence "
-        "priors and note gaps in open_threads. producer_hint is forced server-side."
+        "If the fetched page is thin/teaser-only, still return the JSON with low-confidence "
+        "priors and note gaps in open_threads. producer_hint and read_evidence are "
+        "set server-side."
     )
 
 
@@ -549,10 +552,8 @@ class WorldPulseReadPipeline:
             len(evidence),
             ",".join(f"{f.tool_name}:{f.content_chars}" for f in (fetches or [])),
         )
-        if fetches is None:
-            raise NoReadEvidenceError(NO_READ_EVIDENCE_UNREPORTED)
-        if not handoff.read_evidence:
-            raise NoReadEvidenceError(NO_READ_EVIDENCE)
+        if fetches is None or not handoff.read_evidence:
+            raise NoReadEvidenceError(no_evidence_reason(seed.url, fetches))
         return handoff
 
     async def _generate(self, prompt: str, correlation_id: str) -> GenerateOutcome:

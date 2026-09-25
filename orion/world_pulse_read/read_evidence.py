@@ -17,6 +17,7 @@ from typing import Any, Iterable, Optional
 from urllib.parse import urlsplit
 
 from orion.schemas.reading import SourceFetchEvidenceV1
+from orion.world_pulse_read.url_filters import url_looks_like_section_index
 
 # last_error labels. Plain `no_read_evidence` is terminal (the model ran and
 # chose not to / could not fetch the source -- a retry spends another slot on
@@ -25,6 +26,12 @@ from orion.schemas.reading import SourceFetchEvidenceV1
 # condition, listed as transient in orion/world_pulse_read/retry.py.
 NO_READ_EVIDENCE = "no_read_evidence"
 NO_READ_EVIDENCE_UNREPORTED = "no_read_evidence:harness_unreported"
+# The turn did fetch a page on the seed's site, but every such result was under
+# MIN_SOURCE_CONTENT_CHARS. Terminal like plain no_read_evidence; a separate
+# label only so the floor can be calibrated from real rows (a WebFetch result
+# is the fetch tool's answer to a prompt the reader wrote, so a short one may
+# be a narrow question rather than an empty page).
+NO_READ_EVIDENCE_THIN = "no_read_evidence:thin_fetch"
 
 # Floor on the tool_result text the model received. A WebFetch result is the
 # fetch tool's own multi-sentence digest of the page; refusal/blocked strings
@@ -40,6 +47,21 @@ def _site(url: str) -> str:
     except ValueError:
         return ""
     return host[4:] if host.startswith("www.") else host
+
+
+def source_page_candidates(
+    seed_url: str, fetches: Iterable[SourceFetchEvidenceV1]
+) -> list[SourceFetchEvidenceV1]:
+    """Fetches that could be this seed's page: same site, and not the site's
+    homepage or a listing page (a fetch of ``/`` or ``/news`` after the article
+    404s is not a read of the article). Exact-path matching is deliberately not
+    required -- live reads legitimately reach the content through a sibling
+    endpoint (YouTube oembed, the arXiv export API)."""
+    return [
+        f
+        for f in fetches
+        if same_site(seed_url, f.url) and not url_looks_like_section_index(f.url)
+    ]
 
 
 def same_site(seed_url: str, fetched_url: str) -> bool:
@@ -71,9 +93,21 @@ def parse_source_fetches(raw: Any) -> Optional[list[SourceFetchEvidenceV1]]:
 def source_read_evidence(
     seed_url: str, fetches: Iterable[SourceFetchEvidenceV1]
 ) -> list[SourceFetchEvidenceV1]:
-    """The subset of ``fetches`` that shows this seed's source was read."""
+    """The subset of ``fetches`` that shows this seed's source was read: a
+    non-listing page on the seed's site that returned real content."""
     return [
         f
-        for f in fetches
-        if f.content_chars >= MIN_SOURCE_CONTENT_CHARS and same_site(seed_url, f.url)
+        for f in source_page_candidates(seed_url, fetches)
+        if f.content_chars >= MIN_SOURCE_CONTENT_CHARS
     ]
+
+
+def no_evidence_reason(
+    seed_url: str, fetches: Optional[list[SourceFetchEvidenceV1]]
+) -> str:
+    """last_error label for a turn with no read evidence."""
+    if fetches is None:
+        return NO_READ_EVIDENCE_UNREPORTED
+    if source_page_candidates(seed_url, fetches):
+        return NO_READ_EVIDENCE_THIN
+    return NO_READ_EVIDENCE

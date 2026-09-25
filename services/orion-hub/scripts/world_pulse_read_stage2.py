@@ -422,6 +422,11 @@ class WorldPulseReadStage2Pipeline:
             logger.info(
                 "world_pulse_read_stage2_skipped_unread seed=%s", claim.seed.seed_id
             )
+            # `stage2_started` was already published at claim; close it.
+            await publish_lifecycle(
+                self._bus, claim.seed, "stage2_failed", source=self._source_ref,
+                error=NO_READ_EVIDENCE,
+            )
             return NO_READ_EVIDENCE
 
         # Debit only once a turn is actually about to run: an invalid stored

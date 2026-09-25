@@ -414,3 +414,16 @@ async def test_harness_runner_reports_source_fetches_on_the_motor_result():
 
     assert [(f.url, f.tool_name) for f in result.source_fetches] == [(URL, "WebFetch")]
     assert result.source_fetches[0].content_chars > 200
+
+
+def test_webfetch_redirect_notice_is_not_source_content():
+    tracker = ReadingReceiptTracker(None)
+    tracker.observe(_tool_use("r-1", name="WebFetch", url=URL))
+    tracker.observe(_tool_result(
+        "r-1",
+        "REDIRECT DETECTED: The URL redirects to a different host.\n\n"
+        "Original URL: https://example.org/papers/agent-systems\n"
+        "Redirect URL: https://consent.example.net/?continue=... Please use WebFetch again "
+        "with these parameters to fetch the content from the redirect URL.",
+    ))
+    assert tracker.source_fetches() == []

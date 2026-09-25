@@ -405,3 +405,24 @@ def test_stale_digest_items_skipped_by_real_sql(local_pg):
         assert await queue.skip_stale_digest_items(conn, max_age_sec=5 * 86400) == 0
         await conn.close()
     asyncio.run(run())
+
+
+def test_stale_sweep_keeps_a_digest_item_a_request_is_aliased_to(local_pg):
+    """A finding / reading request for a URL already pending as a digest item
+    is stored as an alias of that row; sweeping the row would drop the request."""
+    async def run():
+        conn, _schema = await db(local_pg)
+        await conn.execute(
+            "INSERT INTO world_pulse_read_seed(seed_id, kind, run_id, url, status, priority, created_at) "
+            "VALUES('digest_item:shared', 'digest_item', 'r', 'https://example.org/shared', 'pending', 10, now() - interval '9 days'),"
+            "      ('digest_item:alone', 'digest_item', 'r', 'https://example.org/alone', 'pending', 10, now() - interval '9 days')"
+        )
+        await conn.execute(
+            "INSERT INTO world_pulse_read_seed(seed_id, kind, run_id, url, status, stage2_status, priority, duplicate_of) "
+            "VALUES('reading:alias', 'reading', 'r', 'https://example.org/shared', 'skipped', 'skipped', 0, 'digest_item:shared')"
+        )
+        assert await queue.skip_stale_digest_items(conn, max_age_sec=5 * 86400) == 1
+        got = dict(await conn.fetch("SELECT seed_id, status FROM world_pulse_read_seed WHERE kind = 'digest_item'"))
+        assert got == {"digest_item:shared": "pending", "digest_item:alone": "skipped"}
+        await conn.close()
+    asyncio.run(run())

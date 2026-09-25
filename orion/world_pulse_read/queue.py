@@ -367,7 +367,9 @@ async def reading_status(conn: Any, request_id: UUID) -> dict[str, Any]:
     status = "queued"
     if s1 == "failed" or (s1 == "done" and s2 == "failed"):
         status = "failed"
-    elif s1 == "skipped":
+    elif s1 == "skipped" or (s1 == "done" and s2 == "skipped"):
+        # Stage 2 skips a Stage 1 handoff with no read evidence; that request
+        # is finished, not waiting at "stage1_completed" forever.
         status = "skipped"
     elif row["landing_at"]:
         status = "completed"
@@ -555,8 +557,10 @@ async def mark_seed_skipped(conn: Any, seed_id: str, *, reason: str) -> None:
 # (39, 32 of them retries) spend first -- the tail could never drain, so it
 # only grew staler. `created_at` is when the seed was enqueued, which is within
 # one tick of its digest run (enqueue_from_recent_digests only reads the last
-# few digests). Only never-claimed `pending` rows move; a claimed row is left
-# to its turn. Aliases (`duplicate_of`) are already `skipped` at insert.
+# few digests). Only `pending` rows move (including one waiting on a transient
+# retry); a claimed row is left to its turn. A digest item that a finding or
+# reading request was aliased onto (`duplicate_of`, ACTIVE_URL_SQL) is kept:
+# skipping it would silently drop that higher-priority request with it.
 STALE_DIGEST_ITEM_LAST_ERROR = "stale_digest_item"
 
 SKIP_STALE_DIGEST_ITEMS_SQL = """
@@ -565,6 +569,11 @@ SET status = 'skipped', last_error = $2, completed_at = now()
 WHERE status = 'pending'
   AND kind = 'digest_item'
   AND created_at < now() - ($1 * interval '1 second')
+  AND NOT EXISTS (
+      SELECT 1 FROM world_pulse_read_seed AS alias
+      WHERE alias.duplicate_of = world_pulse_read_seed.seed_id
+        AND alias.kind <> 'digest_item'
+  )
 """
 
 

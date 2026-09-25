@@ -122,8 +122,18 @@ def _has_source_content(value: Any) -> bool:
     return False
 
 
+# Claude Code's WebFetch answers a cross-host redirect with a notice telling
+# the model to fetch the new URL; it is not is_error, and it carries none of
+# the page. It must not count as having read the source.
+_WEBFETCH_NON_CONTENT_PREFIXES = ("redirect detected",)
+
+
 def _usable_fetch_result(tool_name: str, body: str) -> bool:
     if not body.strip():
+        return False
+    if tool_name == "WebFetch" and body.lstrip().lower().startswith(
+        _WEBFETCH_NON_CONTENT_PREFIXES
+    ):
         return False
     if tool_name == _CONTEXT_FETCH_TOOL:
         # A cache hit explicitly tells the model to use ctx_search and does

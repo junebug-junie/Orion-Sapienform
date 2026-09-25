@@ -1081,6 +1081,26 @@ def test_near_empty_fetch_result_is_not_evidence(monkeypatch: pytest.MonkeyPatch
     _patch_turn(monkeypatch, [_final_frame("Tried the page.", fetches=[blocked])])
 
     assert _tick(pipe, conn) == "no_read_evidence"
+    assert conn.rows["finding:r1:x"]["last_error"] == "no_read_evidence:thin_fetch"
+
+
+def test_fetch_of_the_sites_homepage_is_not_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore())
+    home = {"url": "https://ex.com/", "tool_name": "WebFetch", "content_chars": 6000}
+    _patch_turn(monkeypatch, [_final_frame("Article 404'd; read the homepage.", fetches=[home])])
+
+    assert _tick(pipe, conn) == "no_read_evidence"
+    assert conn.rows["finding:r1:x"]["last_error"] == "no_read_evidence"
+
+
+def test_stage1_prompt_tells_the_reader_to_fetch() -> None:
+    from scripts.world_pulse_read_pipeline import _build_stage1_prompt
+
+    prompt = _build_stage1_prompt(_seed(), "tr-1")
+    assert "Fetch the url below with WebFetch" in prompt
+    assert "no successful fetch of this url is discarded" in prompt
 
 
 def test_model_cannot_supply_its_own_read_evidence(monkeypatch: pytest.MonkeyPatch) -> None:

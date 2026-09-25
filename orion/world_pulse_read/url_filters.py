@@ -49,8 +49,13 @@ _LISTING_WORDS = frozenset(
 )
 
 # "latest" next to a news-ish word marks a roundup hub even inside an
-# article-shaped slug (networkworld ".../nvidia-latest-news-and-insights").
+# article-shaped slug (networkworld ".../nvidia-latest-news-and-insights") --
+# but only when the slug is otherwise just listing words plus at most one topic
+# word, so a real article slug ("nvidia_latest_gpu_news",
+# "latest-updates-on-merger-with-x") is not caught.
 _ROUNDUP_PARTNERS = frozenset({"news", "updates", "insights", "headlines", "stories"})
+_ROUNDUP_FILLER = _LISTING_WORDS | _ROUNDUP_PARTNERS | {"and"}
+_ROUNDUP_MAX_TOPIC_WORDS = 1
 
 # An immediate parent that names a collection of *items* makes the leaf one
 # item, whatever it looks like (bbc.co.uk/news/articles/cvgykzgljlyo,
@@ -99,7 +104,11 @@ def url_looks_like_section_index(url: str) -> bool:
     if leaf in _INDEX_SEGMENTS:
         return True
     tokens = _leaf_tokens(leaf)
-    if "latest" in tokens and any(t in _ROUNDUP_PARTNERS for t in tokens):
+    if (
+        "latest" in tokens
+        and any(t in _ROUNDUP_PARTNERS for t in tokens)
+        and sum(t not in _ROUNDUP_FILLER for t in tokens) <= _ROUNDUP_MAX_TOPIC_WORDS
+    ):
         return True
     parents = cleaned[:-1]
     if parents and parents[-1] in _ITEM_PARENTS:

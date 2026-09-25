@@ -1075,3 +1075,6 @@ def test_stage2_skips_unread_handoff_before_wallet_b_debit() -> None:
     assert called == []
     assert _count_key_b() not in bus.redis.store
     assert bus.journal == []
+    # stage2_started (published at claim) is closed by a terminal event.
+    stages = [e.payload.get("stage") for c, e in bus.published if c != JOURNAL_WRITE_CHANNEL]
+    assert stages[-1] == "stage2_failed"

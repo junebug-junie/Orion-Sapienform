@@ -76,3 +76,13 @@ def test_item_parent_does_not_rescue_a_roundup_slug():
     assert url_looks_like_section_index(
         "https://example.com/article/1/amd-latest-updates"
     )
+
+
+@pytest.mark.parametrize("url", [
+    # Real article slugs that merely contain "latest" + a news word.
+    "https://www.theregister.com/2026/09/20/nvidia_latest_gpu_news/",
+    "https://example.com/news/latest-updates-on-merger-with-x",
+    "https://example.com/2026/latest-news-and-updates-from-nvidia-q3-earnings",
+])
+def test_latest_news_article_slugs_are_not_roundups(url):
+    assert not url_looks_like_section_index(url)

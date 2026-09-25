@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     feedback_reconcile_full_sweep_interval_sec: float = Field(
         86400.0, alias="FEEDBACK_RECONCILE_FULL_SWEEP_INTERVAL_SEC", ge=0.0
     )
-    # UTC hour the full sweep is allowed in (9 = 03:00 MDT). -1 = any hour, spaced by the
+    # UTC hour the full sweep is allowed in (9 = 03:00 MDT / 02:00 MST). -1 = any hour, spaced by the
     # interval alone.
     feedback_reconcile_full_sweep_hour_utc: int = Field(
         9, alias="FEEDBACK_RECONCILE_FULL_SWEEP_HOUR_UTC", ge=-1, le=23

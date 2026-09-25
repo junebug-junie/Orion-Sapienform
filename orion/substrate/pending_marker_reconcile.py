@@ -17,14 +17,20 @@ This module keeps the guarantee but splits it in two:
 * The FREQUENT sweep (every ``interval_sec``) is one short UPDATE over parent rows generated
   inside ``window_sec``. It rides the parent's ``generated_at`` index and probes the child's
   foreign-key index per row, so its cost is O(rows in the window), not O(history). Those
-  probes are random reads, which is why the default window is small (2 h): each parent row is
-  re-checked window/interval times, and the marker is cleared minutes after generation in
-  practice.
+  probes are random reads, which is why the default window is small (2 h). The window is
+  measured from the PARENT's generation, not from when the marker was cleared, so it only
+  covers rows processed within ``window_sec`` of being generated. Measured live 2026-09-25
+  (parent generated_at -> child created_at): policy p99 41 s, dispatch p99 217 s, feedback
+  max 700 s (newest 400 rows) -- the 2 h window has >10x margin. If a stage's backlog grows
+  past the window, markers lost on those rows are caught by the full sweep instead (<= ~24 h).
 * The FULL sweep (at most once per ``full_sweep_interval_sec``, optionally only during
-  ``full_sweep_hour_utc``) still covers all history, but as a READ-ONLY hash anti-join SELECT
+  ``full_sweep_hour_utc``) still covers all history, as a READ-ONLY hash anti-join SELECT
   (sequential scans -- the cheap access pattern on a spinning disk, unlike a history-long
-  chain of random index probes) that returns candidate ids, followed by short batched
-  UPDATEs that re-check the condition per id. No write transaction ever spans the history.
+  chain of random index probes) whose ids are streamed in batches into short UPDATEs that
+  re-check the condition per id. No write transaction ever spans the history. It is checked
+  on every call (not only when the frequent sweep is due) so a long ``interval_sec`` cannot
+  keep skipping its hour, but never within ``interval_sec`` of process start, so a crash
+  loop cannot re-run it. A restart inside the hour after that much uptime can repeat it.
 """
 from __future__ import annotations
 
@@ -137,7 +143,8 @@ class PendingMarkerReconciler:
         # Seeded to NOW, not None: otherwise a sweep runs on the first tick of every process
         # start, and a crash loop would re-run it per restart. The full sweep is only ever
         # evaluated inside a due frequent sweep, so it inherits this protection.
-        self.last_sweep_mono: float | None = monotonic()
+        self._boot_mono = monotonic()
+        self.last_sweep_mono: float | None = self._boot_mono
         # Hour-gated: None, so the first matching hour after >= one interval_sec of uptime
         # runs it. Ungated: seeded to now, so it first runs one full interval after boot.
         self.last_full_sweep_mono: float | None = (
@@ -154,7 +161,8 @@ class PendingMarkerReconciler:
             return last is None or (now_mono - last) >= self.full_sweep_interval_sec
         if self._utcnow().hour != self.full_sweep_hour_utc:
             return False
-        min_gap = max(0.0, self.full_sweep_interval_sec - _HOUR_GATE_SLACK_SEC)
+        # Never less than the slack itself: an hour gate means at most one run per hour window.
+        min_gap = max(_HOUR_GATE_SLACK_SEC, self.full_sweep_interval_sec - _HOUR_GATE_SLACK_SEC)
         return last is None or (now_mono - last) >= min_gap
 
     # -- execution ------------------------------------------------------------------------
@@ -162,16 +170,18 @@ class PendingMarkerReconciler:
     def run(self, engine: Engine, *, force: bool = False, full: bool = False) -> int:
         """Rate-limited entry point, safe to call every tick. Returns rows re-queued.
 
-        ``force`` bypasses the frequent-sweep rate limit; ``full`` forces a full sweep.
+        ``force`` bypasses the frequent-sweep rate limit; ``full`` runs a full sweep now.
         """
         now = self._monotonic()
+        uptime_ok = (now - self._boot_mono) >= self.interval_sec
+        if full or (uptime_ok and self.full_sweep_due(now)):
+            self.last_sweep_mono = now
+            self.last_full_sweep_mono = now
+            return self.full_sweep(engine)
         if not force and self.last_sweep_mono is not None:
             if (now - self.last_sweep_mono) < self.interval_sec:
                 return 0
         self.last_sweep_mono = now
-        if full or self.full_sweep_due(now):
-            self.last_full_sweep_mono = now
-            return self.full_sweep(engine)
         return self.bounded_sweep(engine)
 
     def bounded_sweep(self, engine: Engine) -> int:
@@ -185,23 +195,27 @@ class PendingMarkerReconciler:
 
     def full_sweep(self, engine: Engine) -> int:
         started = time.monotonic()
-        with engine.connect() as conn:
-            ids = [str(i) for i in conn.execute(text(full_candidates_sql(self.spec))).scalars()]
-        requeued = 0
-        batches = 0
-        for i in range(0, len(ids), FULL_SWEEP_UPDATE_BATCH):
-            with engine.begin() as conn:
-                result = conn.execute(
-                    text(full_requeue_batch_sql(self.spec)),
-                    {"ids": ids[i : i + FULL_SWEEP_UPDATE_BATCH]},
-                )
-            requeued += int(result.rowcount or 0)
-            batches += 1
+        candidates = requeued = batches = 0
+        # Server-side cursor: ids are streamed in batches, never all held in memory. Each batch
+        # is re-queued on a separate pooled connection in its own short write transaction.
+        with engine.connect() as read_conn:
+            result = read_conn.execution_options(
+                stream_results=True, yield_per=FULL_SWEEP_UPDATE_BATCH
+            ).execute(text(full_candidates_sql(self.spec)))
+            for part in result.partitions(FULL_SWEEP_UPDATE_BATCH):
+                ids = [str(r[0]) for r in part]
+                if not ids:
+                    continue
+                candidates += len(ids)
+                with engine.begin() as conn:
+                    res = conn.execute(text(full_requeue_batch_sql(self.spec)), {"ids": ids})
+                requeued += int(res.rowcount or 0)
+                batches += 1
         self._warn_if_requeued(requeued, scope="full")
         self._log.info(
             "%s_full_sweep_done candidates=%s batches=%s requeued=%s elapsed_ms=%.0f",
             self.spec.log_prefix,
-            len(ids),
+            candidates,
             batches,
             requeued,
             (time.monotonic() - started) * 1000.0,

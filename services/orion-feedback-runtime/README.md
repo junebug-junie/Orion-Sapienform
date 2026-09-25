@@ -70,8 +70,9 @@ exist -- it can only add work, never remove it. Shared implementation:
 - Every `FEEDBACK_RECONCILE_INTERVAL_SEC` (900): one short UPDATE over rows generated in the last
   `FEEDBACK_RECONCILE_WINDOW_SEC` (7200) -- index scan on `generated_at` plus a per-row index probe.
 - At most once per `FEEDBACK_RECONCILE_FULL_SWEEP_INTERVAL_SEC` (86400; 0 disables), only during UTC
-  hour `FEEDBACK_RECONCILE_FULL_SWEEP_HOUR_UTC` (9 = 03:00 MDT; -1 = any hour): one read-only
-  whole-history anti-join SELECT, then UPDATEs in batches of 5000 ids that re-check the condition.
+  hour `FEEDBACK_RECONCILE_FULL_SWEEP_HOUR_UTC` (9 = 03:00 MDT / 02:00 MST; -1 = any hour): one read-only
+  whole-history anti-join SELECT streamed in batches of 5000 ids into short UPDATEs that re-check
+  the condition. Never within one interval of process start (crash-loop safe).
 - Logs: `feedback_pending_reconciled requeued=N scope=window|full` (WARNING, only when work was recovered) and
   `feedback_pending_full_sweep_done candidates=N batches=N requeued=N elapsed_ms=N` (INFO, every full sweep).
 

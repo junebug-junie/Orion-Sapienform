@@ -15,6 +15,9 @@ from orion.substrate.tests.pending_marker_fake import DAY, NOW, Clock, FakeDb, R
 
 
 def _store(**kw):
+    # Hour gate off unless a test is about scheduling: otherwise the suite would take the
+    # full-sweep path whenever CI happens to run during 09:xx UTC.
+    kw.setdefault("reconcile_full_sweep_hour_utc", -1)
     store = FeedbackRuntimeStore("postgresql://u:p@127.0.0.1:1/none", **kw)
     return store
 
@@ -28,7 +31,7 @@ def _pin_clock(store, clock, *, wall=NOW):
     r = store._reconciler
     r._monotonic = clock
     r._utcnow = lambda: wall
-    r.last_sweep_mono = clock()
+    r._boot_mono = r.last_sweep_mono = clock()
     if r.full_sweep_hour_utc < 0:
         r.last_full_sweep_mono = clock()
 

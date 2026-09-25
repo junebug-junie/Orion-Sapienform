@@ -155,6 +155,49 @@ class TestFullSweep:
         rec.run(db)
         assert old.pending is True
 
+    def test_a_long_frequent_interval_cannot_skip_the_sweep_hour(self):
+        """The full sweep is checked on every call, not only when the frequent sweep is due,
+        so a 2 h interval whose ticks keep landing outside hour 9 still sweeps in hour 9."""
+        clock = Clock()
+        wall = {"now": NOW.replace(hour=8, minute=0)}
+        rec = PendingMarkerReconciler(
+            SPEC, interval_sec=7200, window_sec=DAY, full_sweep_interval_sec=DAY,
+            full_sweep_hour_utc=9, monotonic=clock, utcnow=lambda: wall["now"],
+        )
+        old = Row("old", 10)
+        db = FakeDb([old])
+        clock.t += 7200
+        rec.run(db)  # frequent sweep at 08:00, next one not due until 10:00
+        wall["now"] = NOW.replace(hour=9, minute=5)
+        clock.t += 3900
+        rec.run(db)
+        assert old.pending is True
+
+    def test_no_full_sweep_before_one_interval_of_uptime(self):
+        """Crash-loop protection: a process that dies within interval_sec never full-sweeps."""
+        clock = Clock()
+        rec = PendingMarkerReconciler(
+            SPEC, interval_sec=900, full_sweep_hour_utc=9, monotonic=clock, utcnow=lambda: NOW,
+        )
+        old = Row("old", 10)
+        db = FakeDb([old])
+        clock.t += 899
+        rec.run(db)
+        assert db.statements == [] and old.pending is False
+
+    def test_short_full_interval_still_runs_at_most_once_per_hour_window(self):
+        clock = Clock()
+        rec = PendingMarkerReconciler(
+            SPEC, interval_sec=900, full_sweep_interval_sec=600, full_sweep_hour_utc=9,
+            monotonic=clock, utcnow=lambda: NOW,
+        )
+        db = FakeDb([])
+        for _ in range(4):
+            clock.t += 900
+            rec.run(db)
+        scans = [s for s in db.statements if s[1].startswith("SELECT")]
+        assert len(scans) == 1
+
     def test_zero_interval_disables_full_sweep(self):
         clock = Clock()
         rec = _reconciler(clock, hour=-1, full_interval=0)

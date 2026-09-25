@@ -5,6 +5,7 @@ It honours only the restrictions the statement itself names:
 
 * ``generated_at >= now() - make_interval(secs => :window_sec)`` -> only rows inside the window,
 * ``frame_id = ANY(:ids)`` -> only those ids,
+* ``NOT p.<marker>`` / ``NOT EXISTS`` -> skip already-pending rows / rows with a child,
 * neither (the pre-2026-09-25 unbounded anti-join UPDATE) -> every row in history.
 
 So the "old rows are left to the full sweep" tests fail against the old statement shape.
@@ -29,8 +30,10 @@ class _Result:
     def __init__(self, rowcount=0, values=()):
         self.rowcount, self._values = rowcount, list(values)
 
-    def scalars(self):
-        return iter(self._values)
+    def partitions(self, size):
+        vals = self._values
+        for i in range(0, len(vals), size):
+            yield [(v,) for v in vals[i : i + size]]
 
 
 class FakeDb:
@@ -54,8 +57,13 @@ class FakeDb:
                     continue
             if "= ANY(:ids)" in sql and r.frame_id not in params["ids"]:
                 continue
-            if not r.pending and not r.has_child:
-                out.append(r)
+            # Apply each guard ONLY if the statement actually contains it, so a statement that
+            # drops its re-check really does re-queue the wrong rows here.
+            if "NOT p." in sql and r.pending:
+                continue
+            if "NOT EXISTS" in sql and r.has_child:
+                continue
+            out.append(r)
         return out
 
 
@@ -68,6 +76,9 @@ class _Conn:
 
     def __exit__(self, *a):
         return False
+
+    def execution_options(self, **_kw):  # stream_results/yield_per: no-op in the fake
+        return self
 
     def execute(self, stmt, params=None):
         sql = " ".join(str(stmt).split())

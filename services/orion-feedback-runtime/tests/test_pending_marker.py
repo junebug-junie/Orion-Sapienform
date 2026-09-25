@@ -67,7 +67,9 @@ def _store(engine, **kw):
     s = FeedbackRuntimeStore.__new__(FeedbackRuntimeStore)
     s._engine = engine
     s._reconciler = PendingMarkerReconciler(
-        _PENDING_MARKER_SPEC, interval_sec=kw.get("reconcile_interval_sec", 900.0)
+        _PENDING_MARKER_SPEC,
+        interval_sec=kw.get("reconcile_interval_sec", 900.0),
+        full_sweep_hour_utc=-1,  # not about scheduling; keeps 09:xx UTC CI runs deterministic
     )
     s._reconciler.last_sweep_mono = kw.get("last_reconcile_mono")
     return s

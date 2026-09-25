@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     announce_stale_sec: float = Field(120.0, alias="GPU_POOL_ANNOUNCE_STALE_SEC")
     state_publish_sec: float = Field(5.0, alias="GPU_POOL_STATE_PUBLISH_SEC")
     replay_payload_max_bytes: int = Field(262144, alias="GPU_POOL_REPLAY_PAYLOAD_MAX_BYTES")
+    lease_retention_hours: float = Field(168.0, gt=0, alias="GPU_POOL_LEASE_RETENTION_HOURS")
 
 
 @lru_cache

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -31,7 +31,7 @@ from orion.schemas.gpu_pool import (
 
 from app.runtime import PoolRuntime
 from app.settings import get_settings
-from app.store import PostgresStore
+from app.store import CHECKPOINT_SCHEMA, PostgresStore, ensure_checkpoint_schema, pool_kwargs
 
 _settings = get_settings()
 logging.basicConfig(level=getattr(logging, _settings.log_level.upper(), logging.INFO))
@@ -118,6 +118,26 @@ async def _on_announce(env: BaseEnvelope) -> None:
         logger.warning("gpu_pool_announce_invalid err=%s", exc)
 
 
+PRUNE_EVERY_SEC = 600.0
+
+
+async def _prune_forever() -> None:
+    """Bound the checkpoint tables: one lease per inference is tens of thousands of threads a
+    day. Outside the runtime lock -- released threads are never resumed."""
+    while not _stop.is_set():
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=_settings.lease_retention_hours)
+            forgotten = await _store.prune_checkpoints(cutoff)
+            if forgotten:
+                logger.info("gpu_pool_leases_pruned leases=%s older_than=%s", forgotten, cutoff.isoformat())
+        except Exception:  # noqa: BLE001 -- retention must never take the pool down
+            logger.exception("gpu_pool_checkpoint_prune_failed")
+        try:
+            await asyncio.wait_for(_stop.wait(), timeout=PRUNE_EVERY_SEC)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def _tick_forever() -> None:
     import os
 
@@ -144,7 +164,6 @@ async def _tick_forever() -> None:
 async def lifespan(app: FastAPI):
     global runtime, _bus, _publisher, _pool, _store
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-    from psycopg.rows import dict_row
     from psycopg_pool import AsyncConnectionPool
 
     cfg = load_pool_config(_settings.config_path)
@@ -157,8 +176,9 @@ async def lifespan(app: FastAPI):
     _chassis.append(heartbeat)
 
     # One pool for the checkpointer and the projection (see feedback: the saver needs a pool).
+    await ensure_checkpoint_schema(_settings.postgres_uri)
     _pool = AsyncConnectionPool(conninfo=_settings.postgres_uri, min_size=2, max_size=10, open=False,
-                                kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row})
+                                kwargs=pool_kwargs())
     await _pool.open()
     saver = AsyncPostgresSaver(_pool)
     await saver.setup()
@@ -167,6 +187,9 @@ async def lifespan(app: FastAPI):
     logger.info("gpu_pool_waiting_for_leader_lock")
     await _store.leader()
     logger.info("gpu_pool_leader_acquired")
+    moved = await _store.adopt_public_checkpoints()  # only now: the previous writer has exited
+    if moved:
+        logger.info("gpu_pool_checkpoints_adopted rows=%s schema=%s", moved, CHECKPOINT_SCHEMA)
 
     _bus = OrionBusAsync(url=_settings.orion_bus_url, enabled=_settings.orion_bus_enabled)
     await _bus.connect()
@@ -200,6 +223,7 @@ async def lifespan(app: FastAPI):
     _chassis.append(hunter)
     _stop.clear()
     _tasks.append(asyncio.create_task(_tick_forever()))
+    _tasks.append(asyncio.create_task(_prune_forever()))
     logger.info("gpu_pool_ready channels=%s", [GPU_POOL_LEASE_REQUEST_CHANNEL, GPU_POOL_STATE_REQUEST_CHANNEL,
                                               GPU_POOL_CONTROL_REQUEST_CHANNEL, LLM_WORKER_ANNOUNCE_CHANNEL])
     try:

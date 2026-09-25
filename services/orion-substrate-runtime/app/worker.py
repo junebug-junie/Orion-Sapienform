@@ -268,6 +268,24 @@ def _prediction_error_evidence_event_ids(
     return [e.event_id for e in events if e.atom and e.event_id not in quarantined]
 
 
+# Every prediction-error domain saves this receipt on EVERY tick, including a
+# calm tick whose value is exactly 0.0 (2026-09-25). It used to be gated on
+# `error > 0.0` as an "audit trail of notable events", but the receipt is not
+# only an audit trail -- it is the ONLY path into two current-state reads:
+#   1. orion-field-digester's field node vector `prediction_error` channel
+#      (state_deltas.py's `target_kind == "prediction_signal"` perturbation,
+#      mode="replace", which also stamps node_vector_updated_at), and
+#   2. orion-attention-runtime's Candidate A precision baseline
+#      (substrate_node_prediction_error_baseline, folded one receipt at a time,
+#      with `last_value` used as the target's current error).
+# A gated receipt left both frozen at the last NON-ZERO value. Confirmed live
+# 2026-09-24/25: node:substrate.route's field value sat at 0.0003 with
+# node_vector_updated_at 12h+ old while its tick kept running and writing a
+# real 0.0 to the FalkorDB node every time. `prediction_error` is not decayed
+# (absent from NODE_DECAY_CHANNELS), so nothing else ever corrected it.
+# vision/perception already emitted every tick for this reason; this extends
+# it to biometrics/execution/chat/route/bus_synaptic/codebase.
+# tests/test_prediction_error_receipt_not_gated.py enforces it structurally.
 def _prediction_error_receipt(
     *,
     reducer_key: str,
@@ -1117,16 +1135,15 @@ class BiometricsSubstrateWorker:
             evidence_event_ids = _prediction_error_evidence_event_ids(
                 events, quarantined_event_ids=quarantined
             )
-            if error > 0.0:
-                self._store.save_receipt(
-                    _prediction_error_receipt(
-                        reducer_key="node_biometrics",
-                        node_id="node:substrate.biometrics",
-                        prediction_error=error,
-                        now=now,
-                        caused_by_event_ids=evidence_event_ids,
-                    )
+            self._store.save_receipt(
+                _prediction_error_receipt(
+                    reducer_key="node_biometrics",
+                    node_id="node:substrate.biometrics",
+                    prediction_error=error,
+                    now=now,
+                    caused_by_event_ids=evidence_event_ids,
                 )
+            )
             # Write the node on every tick, not just when error > 0.0 -- the
             # same fix already applied to bus_synaptic (2026-07-30), extended
             # here after `route` was found frozen at a stale 0.00025 while its
@@ -1136,9 +1153,9 @@ class BiometricsSubstrateWorker:
             # raw current value (orion-equilibrium-service, AST/HOT's
             # prediction_error_by_domain) then read a stale high-water mark as
             # if it were a current reading -- a value that can rise but never
-            # come back down to a genuine calm 0.0. The receipt above stays
-            # gated: it is an audit trail of notable events, not a polled
-            # "current state" read, so skipping it on a calm tick is correct.
+            # come back down to a genuine calm 0.0. The receipt above is
+            # likewise written every tick -- see the comment on
+            # _prediction_error_receipt for why it is not an audit-only write.
             # evidence_event_ids passed unconditionally too (2026-08-11) --
             # same reasoning: this is the durable copy of the receipt's
             # evidence, so it must not lag the node's own prediction_error
@@ -1329,7 +1346,8 @@ class BiometricsSubstrateWorker:
             counts = list(self._vision_object_counts)
             yield_value = perceptual_yield(counts)
 
-            # Receipt on EVERY tick, unlike _bus_synaptic_tick's fault-gated one.
+            # Receipt on EVERY tick (as every domain now does -- see the comment on
+            # _prediction_error_receipt).
             # The receipt is the only path to the field node vector
             # (state_deltas.py turns pressure_hints into the perturbation the
             # digester folds in), and this signal's healthy state is exactly
@@ -1713,23 +1731,22 @@ class BiometricsSubstrateWorker:
             # group (world_model_features.py) -- see _execution_tick's
             # identical comment.
             self._last_bus_synaptic_prediction_error = error
-            if error > 0.0:
-                # caused_by_event_ids intentionally left at its default `()`
-                # (2026-07-31, PR #1547 proposal) -- unlike the four grammar-
-                # event-driven domains above, this tick has no GrammarEventV1
-                # batch in scope at all; it reads FalkorDB edge z-scores
-                # fresh each call (see this method's own docstring). There is
-                # no real per-tick event to name here, and fabricating one
-                # would violate CLAUDE.md's "if you cannot trace it, do not
-                # invent it."
-                self._store.save_receipt(
-                    _prediction_error_receipt(
-                        reducer_key="bus_synaptic",
-                        node_id="node:substrate.bus_synaptic",
-                        prediction_error=error,
-                        now=now,
-                    )
+            # caused_by_event_ids intentionally left at its default `()`
+            # (2026-07-31, PR #1547 proposal) -- unlike the four grammar-
+            # event-driven domains above, this tick has no GrammarEventV1
+            # batch in scope at all; it reads FalkorDB edge z-scores
+            # fresh each call (see this method's own docstring). There is
+            # no real per-tick event to name here, and fabricating one
+            # would violate CLAUDE.md's "if you cannot trace it, do not
+            # invent it."
+            self._store.save_receipt(
+                _prediction_error_receipt(
+                    reducer_key="bus_synaptic",
+                    node_id="node:substrate.bus_synaptic",
+                    prediction_error=error,
+                    now=now,
                 )
+            )
             # Write the node on every tick, not just when error > 0.0 (confirmed
             # live 2026-07-30: gating this the same way as the receipt above left
             # `node:substrate.bus_synaptic` frozen at a stale prediction_error=1.0
@@ -1739,10 +1756,8 @@ class BiometricsSubstrateWorker:
             # (transport_metacog_gate.py), so a value that can only ever go up
             # and never refresh back down to a genuine calm reading produces
             # permanent false "Bus Anomaly Detected" alerts once any real spike
-            # ever occurs. The receipt above stays gated -- it's an audit trail
-            # of notable prediction-error events, not a polled "current state"
-            # read, so skipping a receipt for a calm (error == 0.0) tick is
-            # correct and not the bug.
+            # ever occurs. The receipt above is likewise written every tick --
+            # see the comment on _prediction_error_receipt.
             self._write_prediction_error_node(
                 node_id="node:substrate.bus_synaptic",
                 error=error,
@@ -2523,28 +2538,29 @@ class BiometricsSubstrateWorker:
         # (target_kind="prediction_signal"), NOT the FalkorDB node written
         # below -- a completely separate path every other prediction_error
         # domain's own tick already feeds (confirmed by reading the
-        # biometrics tick in this same file). Gated on error > 0.0, same
-        # audit-trail convention as every sibling domain -- a calm tick
-        # still writes the FalkorDB node every time, just skips this.
-        if result.score > 0.0:
-            # caused_by_event_ids intentionally left at its default `()`
-            # (review finding, 2026-07-31, PR #1547 proposal) -- unlike
-            # biometrics/execution/chat/route above, this domain has its own
-            # explicit, dated Phase-3-deferral comment already on file
-            # (docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md,
-            # cited near _PREDICTION_ERROR_DOMAIN_NODE_IDS above) explaining
-            # why downstream consumer-wiring for `codebase` stays deferred
-            # until Phase 1's replay reads MET. Populating evidence here
-            # would be a drive-by fix on top of that deliberate scoping
-            # decision, not a completion of it.
-            self._store.save_receipt(
-                _prediction_error_receipt(
-                    reducer_key="codebase",
-                    node_id="node:substrate.codebase",
-                    prediction_error=result.score,
-                    now=now,
-                )
+        # biometrics tick in this same file). Written on every scored
+        # delta including score == 0.0, same as every sibling domain (see
+        # the comment on _prediction_error_receipt): a gated receipt left the
+        # field's node:substrate.codebase prediction_error frozen at its last
+        # non-zero score between deltas.
+        # caused_by_event_ids intentionally left at its default `()`
+        # (review finding, 2026-07-31, PR #1547 proposal) -- unlike
+        # biometrics/execution/chat/route above, this domain has its own
+        # explicit, dated Phase-3-deferral comment already on file
+        # (docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md,
+        # cited near _PREDICTION_ERROR_DOMAIN_NODE_IDS above) explaining
+        # why downstream consumer-wiring for `codebase` stays deferred
+        # until Phase 1's replay reads MET. Populating evidence here
+        # would be a drive-by fix on top of that deliberate scoping
+        # decision, not a completion of it.
+        self._store.save_receipt(
+            _prediction_error_receipt(
+                reducer_key="codebase",
+                node_id="node:substrate.codebase",
+                prediction_error=result.score,
+                now=now,
             )
+        )
         self._write_prediction_error_node(
             node_id="node:substrate.codebase",
             error=result.score,
@@ -2556,9 +2572,8 @@ class BiometricsSubstrateWorker:
         )
         # Unconditional raw-event history (docs/superpowers/specs/2026-07-30-
         # codebase-mass-signal-design.md follow-on: real per-tick payload for
-        # a future Hub "cocreation signals" analytics tab). Deliberately not
-        # gated on score > 0.0 like the receipt above -- this is meant to be
-        # a complete history, not a curated audit trail.
+        # a future Hub "cocreation signals" analytics tab). Not gated on
+        # score > 0.0 -- this is meant to be a complete history.
         self._store.save_codebase_delta_log(
             event, score=result.score,
             retention_days=self._settings.codebase_delta_log_retention_days,
@@ -3704,16 +3719,15 @@ class BiometricsSubstrateWorker:
             evidence_event_ids = _prediction_error_evidence_event_ids(
                 events, quarantined_event_ids=quarantined
             )
-            if error > 0.0:
-                self._store.save_receipt(
-                    _prediction_error_receipt(
-                        reducer_key="execution_trajectory",
-                        node_id="node:substrate.execution",
-                        prediction_error=error,
-                        now=now,
-                        caused_by_event_ids=evidence_event_ids,
-                    )
+            self._store.save_receipt(
+                _prediction_error_receipt(
+                    reducer_key="execution_trajectory",
+                    node_id="node:substrate.execution",
+                    prediction_error=error,
+                    now=now,
+                    caused_by_event_ids=evidence_event_ids,
                 )
+            )
             # Write the node on every tick, not just when error > 0.0 -- the
             # same fix already applied to bus_synaptic (2026-07-30), extended
             # here after `route` was found frozen at a stale 0.00025 while its
@@ -3723,9 +3737,9 @@ class BiometricsSubstrateWorker:
             # raw current value (orion-equilibrium-service, AST/HOT's
             # prediction_error_by_domain) then read a stale high-water mark as
             # if it were a current reading -- a value that can rise but never
-            # come back down to a genuine calm 0.0. The receipt above stays
-            # gated: it is an audit trail of notable events, not a polled
-            # "current state" read, so skipping it on a calm tick is correct.
+            # come back down to a genuine calm 0.0. The receipt above is
+            # likewise written every tick -- see the comment on
+            # _prediction_error_receipt for why it is not an audit-only write.
             self._write_prediction_error_node(
                 node_id="node:substrate.execution",
                 error=error,
@@ -3801,16 +3815,15 @@ class BiometricsSubstrateWorker:
             evidence_event_ids = _prediction_error_evidence_event_ids(
                 events, quarantined_event_ids=quarantined
             )
-            if error > 0.0:
-                self._store.save_receipt(
-                    _prediction_error_receipt(
-                        reducer_key="chat_session",
-                        node_id="node:substrate.chat",
-                        prediction_error=error,
-                        now=now,
-                        caused_by_event_ids=evidence_event_ids,
-                    )
+            self._store.save_receipt(
+                _prediction_error_receipt(
+                    reducer_key="chat_session",
+                    node_id="node:substrate.chat",
+                    prediction_error=error,
+                    now=now,
+                    caused_by_event_ids=evidence_event_ids,
                 )
+            )
             # Write the node on every tick, not just when error > 0.0 -- the
             # same fix already applied to bus_synaptic (2026-07-30), extended
             # here after `route` was found frozen at a stale 0.00025 while its
@@ -3820,9 +3833,9 @@ class BiometricsSubstrateWorker:
             # raw current value (orion-equilibrium-service, AST/HOT's
             # prediction_error_by_domain) then read a stale high-water mark as
             # if it were a current reading -- a value that can rise but never
-            # come back down to a genuine calm 0.0. The receipt above stays
-            # gated: it is an audit trail of notable events, not a polled
-            # "current state" read, so skipping it on a calm tick is correct.
+            # come back down to a genuine calm 0.0. The receipt above is
+            # likewise written every tick -- see the comment on
+            # _prediction_error_receipt for why it is not an audit-only write.
             self._write_prediction_error_node(
                 node_id="node:substrate.chat",
                 error=error,
@@ -3877,16 +3890,15 @@ class BiometricsSubstrateWorker:
             evidence_event_ids = _prediction_error_evidence_event_ids(
                 events, quarantined_event_ids=quarantined
             )
-            if error > 0.0:
-                self._store.save_receipt(
-                    _prediction_error_receipt(
-                        reducer_key="route_arbitration",
-                        node_id="node:substrate.route",
-                        prediction_error=error,
-                        now=now,
-                        caused_by_event_ids=evidence_event_ids,
-                    )
+            self._store.save_receipt(
+                _prediction_error_receipt(
+                    reducer_key="route_arbitration",
+                    node_id="node:substrate.route",
+                    prediction_error=error,
+                    now=now,
+                    caused_by_event_ids=evidence_event_ids,
                 )
+            )
             # Write the node on every tick, not just when error > 0.0 -- the
             # same fix already applied to bus_synaptic (2026-07-30), extended
             # here after `route` was found frozen at a stale 0.00025 while its
@@ -3896,9 +3908,9 @@ class BiometricsSubstrateWorker:
             # raw current value (orion-equilibrium-service, AST/HOT's
             # prediction_error_by_domain) then read a stale high-water mark as
             # if it were a current reading -- a value that can rise but never
-            # come back down to a genuine calm 0.0. The receipt above stays
-            # gated: it is an audit trail of notable events, not a polled
-            # "current state" read, so skipping it on a calm tick is correct.
+            # come back down to a genuine calm 0.0. The receipt above is
+            # likewise written every tick -- see the comment on
+            # _prediction_error_receipt for why it is not an audit-only write.
             self._write_prediction_error_node(
                 node_id="node:substrate.route",
                 error=error,

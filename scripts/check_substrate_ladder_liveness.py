@@ -466,9 +466,8 @@ def print_human(report: ll.LadderReport, verbose: bool = False) -> None:
     counts: dict[str, int] = {}
     for s in report.skew:
         counts[s.status] = counts.get(s.status, 0) + 1
-        if s.status == "ok" and not verbose:
-            continue
-        if s.status == "not_running" and not verbose:
+        # ok / not_running / no_writer are thousands of rows on a healthy host.
+        if s.status in ("ok", "not_running", "no_writer") and not verbose:
             continue
         mark = "RED " if s.red else ("ok  " if s.status == "ok" else "warn")
         print(f"{mark}skew {s.schema} {s.producer or '?'} -> {s.service_dir} [{s.container or '-'}] {s.status}: {s.detail}")

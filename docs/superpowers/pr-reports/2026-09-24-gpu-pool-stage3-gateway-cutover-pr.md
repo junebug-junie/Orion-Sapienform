@@ -165,6 +165,18 @@ CI round (after opening):
   - Fix: added the `GPU_POOL_`, `LLM_GATEWAY_POOL_` and `LLM_GATEWAY_EXECUTOR_` prefixes and the `orion-gpu-pool` service.
   - Evidence: the new test `test_gpu_pool_keys_are_reached_by_the_default_sync`.
 
+Merge with #2327 (the gateway grammar lane, which landed on main while this PR was open):
+
+- Conflict in `services/orion-llm-gateway/app/main.py`, resolved as follows:
+  - The chat handler keeps stage 3's `holder` and wraps the dispatch in #2327's outcome recording.
+  - Startup runs both the pool bus task and the grammar window publisher.
+- Finding: stage 3's new gateway outcomes had no class in #2327's contract, so they would have fallen through to `upstream_error` and been counted as the serving GPU node failing.
+  - Fix:
+    - Pool-unavailable, route-not-in-pool, no-grant and recalled are now refusals.
+    - `context_overflow` is request-invalid, like an HTTP 4xx.
+    - A caller-budget `timeout` is `upstream_timeout`.
+  - Evidence: `test_every_error_code_the_gateway_emits_has_a_class` scans the dispatch code for every literal error code and fails on any unclassified one.
+
 ## Restart required
 
 Order matters: pool first, so the gateway's first leases find it.

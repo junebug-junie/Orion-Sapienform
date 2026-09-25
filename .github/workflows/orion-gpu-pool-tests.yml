@@ -26,6 +26,25 @@ on:
       - "services/orion-hub/static/js/gpu_pool*.js"
       - "services/orion-hub/tests/test_gpu_pool_*.py"
       - ".github/workflows/orion-gpu-pool-tests.yml"
+      # stage 4.4: consumers of the GPU lease ref (the "consumers" job below)
+      - "orion/harness/fcc_motor.py"
+      - "orion/harness/finalize.py"
+      - "orion/harness/runner.py"
+      - "orion/harness/tests/test_gpu_lease_transport.py"
+      - "orion/hub/turn_orchestrator.py"
+      - "orion/schemas/harness_finalize.py"
+      - "orion/schemas/thought.py"
+      - "orion/schemas/durable_run.py"
+      - "orion/field/queue_contention.py"
+      - "services/orion-field-digester/app/store.py"
+      - "services/orion-field-digester/tests/test_queue_contention_digestion.py"
+      - "services/orion-field-digester/tests/test_durable_waiting_sql_postgres.py"
+      - "services/orion-thought/app/bus_listener.py"
+      - "services/orion-cortex-exec/app/executor.py"
+      - "services/orion-harness-governor/app/bus_listener.py"
+      - "services/orion-hub/scripts/curiosity_investigation.py"
+      - "services/orion-hub/scripts/thought_client.py"
+      - "services/orion-hub/tests/test_curiosity_gpu_lease.py"
   push:
     branches: [main]
     paths:
@@ -43,6 +62,25 @@ on:
       - "services/orion-diffusion-host/docker-compose.yml"
       - "services/orion-diffusion-host/.env_example"
       - "orion/llm/resource_lease.py"
+      # stage 4.4: consumers of the GPU lease ref (the "consumers" job below)
+      - "orion/harness/fcc_motor.py"
+      - "orion/harness/finalize.py"
+      - "orion/harness/runner.py"
+      - "orion/harness/tests/test_gpu_lease_transport.py"
+      - "orion/hub/turn_orchestrator.py"
+      - "orion/schemas/harness_finalize.py"
+      - "orion/schemas/thought.py"
+      - "orion/schemas/durable_run.py"
+      - "orion/field/queue_contention.py"
+      - "services/orion-field-digester/app/store.py"
+      - "services/orion-field-digester/tests/test_queue_contention_digestion.py"
+      - "services/orion-field-digester/tests/test_durable_waiting_sql_postgres.py"
+      - "services/orion-thought/app/bus_listener.py"
+      - "services/orion-cortex-exec/app/executor.py"
+      - "services/orion-harness-governor/app/bus_listener.py"
+      - "services/orion-hub/scripts/curiosity_investigation.py"
+      - "services/orion-hub/scripts/thought_client.py"
+      - "services/orion-hub/tests/test_curiosity_gpu_lease.py"
 
 jobs:
   pool:
@@ -98,3 +136,48 @@ jobs:
           cd services/orion-hub && python -m pytest tests/test_gpu_pool_routes.py -q -p no:cacheprovider
       - name: Policy eval (owner starvation, lost leases, spill-down violations)
         run: python services/orion-gpu-pool/evals/run_pool_day_eval.py
+
+  consumers:
+    name: gpu-pool stage 4.4 — callers carry the lease ref (gateway attach is in durable-runs' gateway job)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: gpu-pool-test
+          POSTGRES_DB: gpu_pool_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      GPU_POOL_TEST_POSTGRES_URI: postgresql://postgres:gpu-pool-test@127.0.0.1:5432/gpu_pool_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip install fastapi==0.111.0 httpx==0.27.2 pydantic==2.11.5 pydantic-settings==2.5.2 \
+            SQLAlchemy==2.0.43 aiohttp==3.12.15 python-multipart requests python-dotenv loguru numpy==1.26.4
+      - name: Pool client attach/status + harness/FCC ref transport
+        run: python -m pytest orion/gpu_pool/tests/test_client_attach.py orion/harness/tests/test_gpu_lease_transport.py -q -p no:cacheprovider
+      - name: field-digester durable_demand_pending across the hold cutover (real Postgres)
+        run: cd services/orion-field-digester && python -m pytest tests/test_queue_contention_digestion.py tests/test_durable_waiting_sql_postgres.py -q -p no:cacheprovider
+      - name: orion-thought stance carries the ref
+        run: cd services/orion-thought && python -m pytest tests/test_stance_context_llm_route.py -q -p no:cacheprovider
+      - name: cortex-exec forwards options.gpu_lease
+        run: cd services/orion-cortex-exec && python -m pytest tests/test_resource_lease_forwarding.py -q -p no:cacheprovider
+      - name: harness-governor admits hold-carrying turns
+        run: cd services/orion-harness-governor && python -m pytest tests/test_lane_dispatch_channels.py -q -p no:cacheprovider
+      - name: Hub fences the ref with pool status and runs the turn under it
+        run: |
+          cd services/orion-hub && python -m pytest tests/test_curiosity_gpu_lease.py tests/test_thought_client.py \
+            tests/test_turn_orchestrator_ws_frames.py -q -p no:cacheprovider

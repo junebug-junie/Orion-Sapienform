@@ -58,11 +58,15 @@ from typing import Mapping
 from orion.bus.ewma import compute_ewma_update
 
 SOURCE_SEED = "world_pulse_seed_pending"
+# Durable runs waiting for their GPU. Stage 4.4 (GPU pool): legacy durable_resource_demands pending
+# UNION durable-run pool holds queued/backlogged, a run with both counted once as its hold -- same
+# key and meaning across the cutover (services/orion-field-digester/app/store.py DURABLE_WAITING_SQL).
 SOURCE_DURABLE = "durable_demand_pending"
 # Leases queued or backlogged in orion-gpu-pool (gpu_pool_leases). Replaces "gateway_waiting" (the
 # LLM gateway's in-process admission ledger, deleted when the gateway cut over to the pool,
 # 2026-09-24). Same meaning -- work waiting for a GPU -- now counted where the waiting happens.
 # Gate: docs/superpowers/specs/2026-09-20-queue-contention-metric-gate.md, "Re-point" section.
+# Request leases only since stage 4.4: a waiting hold is SOURCE_DURABLE's, never counted twice.
 SOURCE_GPU_POOL = "gpu_pool_waiting"
 
 SOURCE_KEYS: tuple[str, ...] = (SOURCE_SEED, SOURCE_DURABLE, SOURCE_GPU_POOL)

@@ -196,11 +196,16 @@ class HarnessAttachmentV1(BaseModel):
 
 
 from orion.schemas.reading import ReadingToolBindingV1
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.resource_admission import ResourceLeaseV1
 
 
 class HarnessRunRequestV1(BaseModel):
     resource_lease: ResourceLeaseV1 | None = None
+    # Stage 4: the durable run's GPU pool hold. Every LLM call of the turn (FCC via
+    # X-Orion-Gpu-Lease, finalize via options.gpu_lease) attaches to it. Coexists with
+    # resource_lease until stage 4.6 deletes the durable token.
+    gpu_lease: GpuLeaseRefV1 | None = None
     inference_timeout_sec: float | None = Field(default=None, gt=0)
     reading_binding: ReadingToolBindingV1 | None = None
     reading_only: bool = False

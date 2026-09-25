@@ -2556,7 +2556,7 @@ def test_completed_run_state_with_reach_out_triggers_outreach_here() -> None:
     loop = _loop(bus, kickoff_via_cortex=True)
     seen = []
 
-    async def fake_reach_out(*, outcome, finding_text, run_id, line=None, resource_lease=None):
+    async def fake_reach_out(*, outcome, finding_text, run_id, line=None, resource_lease=None, gpu_lease=None):
         seen.append((outcome.reach_out, outcome.reach_out_why, finding_text, run_id))
         return None
 

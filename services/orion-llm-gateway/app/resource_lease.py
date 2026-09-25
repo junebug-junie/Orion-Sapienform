@@ -1,4 +1,9 @@
-"""Durable-run lease validation (bus ``options.resource_lease``, HTTP ``X-Orion-Resource-Lease``).
+"""Durable-run lease validation (bus ``options.resource_lease``, HTTP ``X-Orion-Resource-Lease``),
+and parsing of the stage-4 GPU pool lease ref (bus ``options.gpu_lease``, HTTP ``X-Orion-Gpu-Lease``).
+
+The two coexist until stage 4.6 deletes the durable half. A GPU lease ref is not validated here:
+the pool is its fencing authority, reached by ``attach`` in pool_placement (a stale or unknown
+hold makes attach refuse, and the call gets ``gpu_pool_unavailable``).
 
 Until stage 4 durable-runs still issues these leases, so the gateway keeps checking them with the
 broker. They are an ADMISSION TOKEN only: where the call runs is always a GPU pool grant
@@ -10,11 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, AsyncIterator, Awaitable, TypeVar
+from typing import Any, AsyncIterator, Awaitable, Optional, TypeVar
 
 from orion.llm.resource_lease import (
-    LEASE_HEADER, ResourceLeaseRejected, decode_lease_header, validate_resource_lease,
+    GPU_LEASE_HEADER, GPU_LEASE_OPTION, LEASE_HEADER, ResourceLeaseRejected, decode_gpu_lease_header,
+    decode_lease_header, validate_resource_lease,
 )
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 
 from .settings import settings
 
@@ -74,6 +81,23 @@ class LeaseGuard:
                 await self.check()
                 checked_at = time.monotonic()
             yield chunk
+
+
+def gpu_lease_from_options(options: Any) -> Optional[GpuLeaseRefV1]:
+    """``options.gpu_lease`` (a GpuLeaseRefV1 dict) or None. Malformed -> ResourceLeaseRejected,
+    never None: a call that meant to run under a hold must not silently take a lease of its own."""
+    value = (options or {}).get(GPU_LEASE_OPTION) if isinstance(options, dict) else None
+    if value is None:
+        return None
+    try:
+        return GpuLeaseRefV1.model_validate(value)
+    except ValueError as exc:
+        raise ResourceLeaseRejected("malformed_gpu_lease") from exc
+
+
+def gpu_lease_from_headers(headers: Any) -> Optional[GpuLeaseRefV1]:
+    value = headers.get(GPU_LEASE_HEADER)
+    return decode_gpu_lease_header(value) if value is not None else None
 
 
 def lease_error(reason: str) -> dict[str, Any]:

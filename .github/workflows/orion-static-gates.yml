@@ -93,6 +93,12 @@ jobs:
       - name: Field topology has no dead cap-cap edges
         run: python -m pytest tests/test_field_topology_edges.py -q -p no:cacheprovider
 
+      # A service importing orion.substrate must declare requests (package __init__
+      # imports graphdb_store -> requests). 2026-09-25: feedback/policy runtimes
+      # crash-looped on exactly this after #2343.
+      - name: Services using orion.substrate declare requests
+        run: python -m pytest tests/test_substrate_services_declare_requests.py -q -p no:cacheprovider
+
       # Each gate is its own step so a failure names itself in the UI rather
       # than surfacing as one opaque red block.
       - name: Metric lineage gate (consumer existence, orphan ratchet)

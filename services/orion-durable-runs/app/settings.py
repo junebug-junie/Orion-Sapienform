@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     retry_max_attempts: int = Field(3, ge=1, le=20, alias="DURABLE_RUNS_RETRY_MAX_ATTEMPTS")
     retry_base_sec: float = Field(30.0, gt=0.0, alias="DURABLE_RUNS_RETRY_BASE_SEC")
     retry_max_sec: float = Field(300.0, gt=0.0, alias="DURABLE_RUNS_RETRY_MAX_SEC")
+    # Admitted runs: failures resuming ONE graph checkpoint (no progress in
+    # between) before the run is failed terminally with the error attached.
+    # Each failure is one reconcile tick apart (DURABLE_RUNS_ADMISSION_TICK_SEC).
+    resume_max_failures: int = Field(10, ge=1, le=1000, alias="DURABLE_RUNS_RESUME_MAX_FAILURES")
 
     # self_study.reflect's llm_call node only: the SAME channel cortex-exec's
     # own self_study.py reads via its CORTEX_REQUEST_CHANNEL env var

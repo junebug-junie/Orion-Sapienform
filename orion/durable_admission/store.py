@@ -163,7 +163,10 @@ class PostgresAdmissionStore:
             if row["terminal"] or row["control"]:
                 raise ValueError("run cannot request capacity while controlled or terminal")
             existing = await (await conn.execute("SELECT * FROM durable_resource_demands WHERE run_id=%s", (run_id,))).fetchone()
-            if existing and (existing["demand_id"] != demand_id or existing["requirement"] != requirement):
+            # Compare by meaning: a demand stored before a defaulted field
+            # existed is the same demand once re-read through the contract.
+            if existing and (existing["demand_id"] != demand_id or ResourceRequirementV1.model_validate(
+                    existing["requirement"]).model_dump(mode="json") != requirement):
                 raise SubmissionConflict("run demand is immutable")
             now = await self.now(conn)
             demand = await (await conn.execute("INSERT INTO durable_resource_demands(demand_id,run_id,requirement,created_at,status) VALUES (%s,%s,%s,%s,'pending') ON CONFLICT(run_id) DO UPDATE SET status=CASE WHEN durable_resource_demands.status='suspended' THEN 'pending' ELSE durable_resource_demands.status END RETURNING *",
@@ -253,6 +256,16 @@ class PostgresAdmissionStore:
     async def record_event(self, run_id: str, event: str, detail: dict[str, Any], event_id: str | None = None) -> dict[str, Any]:
         async with self.transaction() as conn:
             return await self._event(conn, run_id, event, detail, event_id=event_id)
+
+    async def resume_failure_count(self, run_id: str, checkpoint_id: str) -> int:
+        """Resume failures recorded at one graph checkpoint (progress resets it)."""
+        async with self.pool.connection() as conn:
+            row = await (await conn.execute(
+                "SELECT count(*) AS n FROM durable_resource_events WHERE run_id=%s "
+                "AND event='run.checkpoint_resume_failed' AND payload->'detail'->>'checkpoint_id'=%s",
+                (run_id, checkpoint_id),
+            )).fetchone()
+            return int(row["n"])
 
     async def history(self, run_id: str, limit: int = 200) -> list[dict[str, Any]]:
         async with self.pool.connection() as conn:

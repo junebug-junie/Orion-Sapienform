@@ -220,6 +220,17 @@ the admission runtime owns the actual inference/overall deadline. Replies must
 match the expected kind, run and attempt correlation before becoming graph state.
 Legacy turns retain their configured RPC timeout.
 
+Demand re-registration (every resume that passes `resource_request`, lease
+expiry, guarded tails) registers the accepted request row's `admission`, not the
+checkpoint's copy, and the store compares demands by meaning (re-read through
+`ResourceRequirementV1`). A resume that still fails is retried on the next
+reconcile tick, but `DURABLE_RUNS_RESUME_MAX_FAILURES` (default 10) failures at
+the same graph checkpoint fail the run terminally: `run.failed` carries
+`error: "checkpoint_resume_failed: <exception> (xN at node <node>)"`, the lease
+is released and the demand withdrawn. Each `run.checkpoint_resume_failed`
+event records its `checkpoint_id` and `error`; progress to a new checkpoint
+resets the count. Live 2026-09-22..25, one run failed 53k times without this.
+
 Apply `services/orion-sql-db/manual_migration_durable_resource_admission_v1.sql`
 to the same Postgres database as the existing checkpointer before enabling
 `DURABLE_RUNS_ADMISSION_ENABLED`. Admission tables are operator-managed; startup

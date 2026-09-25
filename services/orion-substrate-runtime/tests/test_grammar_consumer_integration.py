@@ -164,3 +164,43 @@ def test_transport_cursor_fetches_only_events_after_tail(
 
     delete_trace(grammar_engine, seed_trace_id)
     delete_trace(grammar_engine, new_trace_id)
+
+
+def test_fetch_transport_trace_events_returns_the_whole_stored_trace(
+    grammar_engine: Engine,
+    substrate_store,
+) -> None:
+    """The transport reducer rebuilds a window cut across two cursor batches
+    from this read; it must return every stored event of that one trace, in
+    cursor order, and nothing from any other trace."""
+    suffix = uuid.uuid4().hex[:12]
+    trace = bus_transport_trace_batch(trace_suffix=f"whole_{suffix}")
+    other = bus_transport_trace_batch(trace_suffix=f"other_{suffix}")
+    session = sessionmaker(bind=grammar_engine)()
+    try:
+        apply_grammar_trace_batch(session, trace)
+        apply_grammar_trace_batch(session, other)
+        session.commit()
+    finally:
+        session.close()
+
+    try:
+        got = substrate_store.fetch_transport_trace_events(trace[0].trace_id)
+        assert {e.event_id for e in got} == {e.event_id for e in trace}
+        assert all(e.trace_id == trace[0].trace_id for e in got)
+        with grammar_engine.connect() as conn:
+            order = conn.execute(
+                text(
+                    """
+                    SELECT event_id FROM grammar_events
+                    WHERE trace_id = :trace_id
+                    ORDER BY created_at ASC, event_id ASC
+                    """
+                ),
+                {"trace_id": trace[0].trace_id},
+            ).scalars().all()
+        assert [e.event_id for e in got] == list(order)
+        assert substrate_store.fetch_transport_trace_events("bus.transport:athena:nope") == []
+    finally:
+        delete_trace(grammar_engine, trace[0].trace_id)
+        delete_trace(grammar_engine, other[0].trace_id)

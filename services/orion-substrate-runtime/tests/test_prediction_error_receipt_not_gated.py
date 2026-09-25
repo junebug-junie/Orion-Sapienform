@@ -134,3 +134,21 @@ def test_route_tick_calm_error_saves_zero_receipt(monkeypatch) -> None:
     worker._write_prediction_error_node.assert_called_once()
     assert worker._write_prediction_error_node.call_args.kwargs["error"] == 0.0
 
+
+
+def test_receipt_stamps_the_live_definition_version() -> None:
+    """The attention runtime restarts a target's precision baseline when this stamp
+    moves (orion/schemas/prediction_error_definitions.py). It sits beside
+    pressure_hints, not inside it, so the field digester never makes it a channel."""
+    from orion.schemas.prediction_error_definitions import prediction_error_definition_version
+
+    for reducer_key, expected in (("route_arbitration", 2), ("chat_session", 2), ("execution_trajectory", 1)):
+        receipt = worker_module._prediction_error_receipt(
+            reducer_key=reducer_key,
+            node_id="node:substrate.x",
+            prediction_error=0.25,
+            now=_NOW,
+        )
+        after = receipt.state_deltas[0].after
+        assert after["definition_version"] == expected == prediction_error_definition_version(reducer_key)
+        assert set(after["pressure_hints"]) == {"prediction_error"}

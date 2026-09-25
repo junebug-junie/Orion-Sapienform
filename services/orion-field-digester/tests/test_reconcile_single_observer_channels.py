@@ -26,8 +26,13 @@ def _state(node_vectors: dict[str, dict[str, float]] | None = None) -> FieldStat
 
 def test_owner_node_gets_seeded_with_single_observer_channels() -> None:
     vec = _ensure_node_vector({}, "node:athena")
-    for channel in SINGLE_OBSERVER_NODE_CHANNELS:
-        assert channel in vec
+    # rpc_timeout_pressure's owner is the off-lattice node:substrate.rpc_delivery,
+    # which reconcile never seeds (it only exists once the bridge writes it).
+    for channel, owner in SINGLE_OBSERVER_NODE_CHANNELS.items():
+        if owner == "node:athena":
+            assert channel in vec
+        else:
+            assert channel not in vec
 
 
 def test_non_owner_node_never_gets_single_observer_channels_seeded() -> None:

@@ -47,9 +47,22 @@ def _reading(win: RpcDeliveryWindow, at: datetime):
 
 def test_one_timeout_in_one_call_does_not_read_one():
     assert hop_pressure(1, 0, 10) == 0.1
-    win = RpcDeliveryWindow()
+    win = RpcDeliveryWindow(RpcDeliveryConfig(min_timeouts=1))
     win.fold(_snap(T0, {"orion:state:request": (0, 1)}))
     assert _reading(win, T0).pressure == 0.1
+
+
+def test_a_lone_timeout_is_below_the_hysteresis_and_two_are_not():
+    """Default min_timeouts=2: one isolated timeout in the window reads 0.0, so it
+    cannot produce a step that the window roll-off later 'recovers' from."""
+    assert hop_pressure(1, 3, 10, 2) == 0.0
+    win = RpcDeliveryWindow()
+    win.fold(_snap(T0, {"orion:state:request": (3, 1)}))
+    r = _reading(win, T0)
+    assert r.pressure == 0.0 and r.worst_hop is None and r.total_timeouts == 1
+    win.fold(_snap(T0 + timedelta(seconds=30), {"orion:state:request": (5, 1)}))
+    r = _reading(win, T0 + timedelta(seconds=30))
+    assert r.pressure == 0.2 and r.worst_hop == "orion:state:request"
 
 
 def test_full_outage_reaches_one_once_the_floor_is_met():
@@ -98,6 +111,15 @@ def test_same_hop_is_summed_across_producers():
     assert r.worst_calls == 20 and r.worst_timeouts == 2
     assert r.pressure == 0.1
     assert r.producers == 2
+
+
+def test_same_service_on_two_nodes_has_separate_replay_guards():
+    win = RpcDeliveryWindow()
+    a = _snap(T0, {"orion:state:request": (1, 1)}, service="orion-mind", instance="main")
+    b = dict(a, node="local-dev")
+    assert win.fold(a) is True
+    assert win.fold(b) is True
+    assert _reading(win, T0).producers == 2
 
 
 def test_only_bus_rpc_hops_count():
@@ -154,7 +176,7 @@ def test_replay_and_out_of_order_are_ignored_per_producer():
     assert win.fold(s) is True
     assert win.fold(s) is False
     assert win.fold(_snap(T0 - timedelta(seconds=30), {"orion:state:request": (0, 5)})) is False
-    assert _reading(win, T0).worst_calls == 2
+    assert _reading(win, T0).total_calls == 2
 
 
 def test_window_expiry_returns_to_unmeasured_and_calm_recovers():
@@ -169,12 +191,12 @@ def test_window_expiry_returns_to_unmeasured_and_calm_recovers():
 
 def test_tie_break_is_deterministic():
     win = RpcDeliveryWindow()
-    win.fold(_snap(T0, {"orion:b:request": (0, 1), "orion:a:request": (0, 1), "orion:c:request": (8, 2)}))
+    win.fold(_snap(T0, {"orion:b:request": (0, 2), "orion:a:request": (0, 2), "orion:c:request": (7, 3)}))
     r = _reading(win, T0)
-    # a and b: 0.1 with 1 timeout; c: 2/10 = 0.2 wins outright
-    assert r.worst_hop == "orion:c:request" and r.pressure == 0.2
+    # a and b: 0.2 with 2 timeouts; c: 3/10 = 0.3 wins outright
+    assert r.worst_hop == "orion:c:request" and r.pressure == 0.3
     win2 = RpcDeliveryWindow()
-    win2.fold(_snap(T0, {"orion:b:request": (0, 1), "orion:a:request": (0, 1)}))
+    win2.fold(_snap(T0, {"orion:b:request": (0, 2), "orion:a:request": (0, 2)}))
     assert _reading(win2, T0).worst_hop == "orion:b:request"
 
 
@@ -186,10 +208,10 @@ def test_parse_exclude_labels():
 
 def test_receipt_shape_is_what_the_field_digester_reads():
     win = RpcDeliveryWindow()
-    win.fold(_snap(T0, {"orion:state:request": (9, 1)}))
+    win.fold(_snap(T0, {"orion:state:request": (8, 2)}))
     receipt = rpc_delivery_receipt(_reading(win, T0), now=T0)
     (delta,) = receipt.state_deltas
     assert delta.target_kind == "rpc_delivery"
     assert delta.after["node_id"] == "node:substrate.rpc_delivery"
-    assert delta.after["pressure_hints"] == {RPC_DELIVERY_CHANNEL: 0.1}
+    assert delta.after["pressure_hints"] == {RPC_DELIVERY_CHANNEL: 0.2}
     assert "orion:state:request" in delta.explanation

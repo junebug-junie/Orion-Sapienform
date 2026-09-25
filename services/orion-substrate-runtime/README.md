@@ -29,7 +29,8 @@ grammar_events (orion-llm-gateway, llm_gateway.inference:*) → llm inference pr
 
 orion:rpc_health:snapshot (every service's shared bus client, every 30 s)
   → RPC delivery bridge (orion/substrate/rpc_delivery.py): rolling 10 min per-hop
-    success/timeout counts, worst bus hop's timeouts / max(calls, 10)
+    success/timeout counts, worst bus hop's timeouts / max(calls, 10), hops with
+    2+ timeouts only
   → StateDeltaV1(target_kind=rpc_delivery) on node:substrate.rpc_delivery, every 30 s
   → substrate_reduction_receipts → orion-field-digester (when ENABLE_RPC_DELIVERY_FIELD_DIGESTION=true)
   → capability:transport reliability_pressure

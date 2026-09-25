@@ -71,25 +71,66 @@ def test_pseudo_node_survives_reconcile_and_reaches_transport_reliability():
     assert cap["pressure"] == 0.0
 
 
-def test_calm_reading_is_a_measured_zero_with_provenance():
+def test_calm_reading_is_a_measured_zero_attributed_to_the_bridge():
     lattice = _lattice()
     state = empty_field_state(lattice=lattice, now=NOW, tick_id="t")
+    # Remove the other reliability_pressure source so only the new edge can
+    # attribute the channel -- otherwise node:athena would satisfy provenance.
+    state.node_vectors["node:athena"].pop("observer_failure_pressure", None)
     apply_perturbations(state, delta_to_perturbations(_delta(40, 0)), now=NOW)
     apply_diffusion(state, diffusion_rate=1.0)
     assert state.capability_vectors["capability:transport"]["reliability_pressure"] == 0.0
-    # observer_failure_pressure (node:athena) and this edge both feed it; a
-    # measured zero is still attributed, not left anonymous.
-    assert state.capability_provenance["capability:transport"]["reliability_pressure"] in {
-        NODE,
-        "node:athena",
-    }
+    assert state.capability_provenance["capability:transport"]["reliability_pressure"] == NODE
 
 
-def test_failure_holds_through_idle_ticks_and_clears_on_next_reading():
+def test_channel_is_never_seeded_on_other_nodes():
+    lattice = _lattice()
+    state = reconcile_field_state_with_lattice(
+        empty_field_state(lattice=lattice, now=NOW, tick_id="t"), lattice=lattice
+    )
+    for node_id, vec in state.node_vectors.items():
+        assert "rpc_timeout_pressure" not in vec, node_id
+
+
+def test_stopped_bridge_expires_to_unmeasured_not_held():
+    """If the bridge stops writing (service down, flag off, bus outage), the last
+    value must not read as a live measurement: the channel is dropped after
+    120 s, diffusion sees nothing, and provenance no longer names the bridge."""
+    from app.tensor.update_rules import run_digestion_tick
+
+    lattice = _lattice()
+    state = empty_field_state(lattice=lattice, now=NOW, tick_id="t")
+    state.node_vectors["node:athena"].pop("observer_failure_pressure", None)
+    state.generated_at = NOW
+    apply_perturbations(state, delta_to_perturbations(_delta(4, 6)), now=NOW)
+
+    def tick(at):
+        state.generated_at = at
+        run_digestion_tick(
+            state,
+            perturbations=[],
+            decay_rate=0.92,
+            diffusion_rate=1.0,
+            staleness_threshold_sec=90.0,
+            store=None,
+            significance_window_seconds=60.0,
+            significance_check_interval_sec=1e9,
+        )
+
+    tick(NOW + timedelta(seconds=100))
+    assert state.node_vectors[NODE]["rpc_timeout_pressure"] == 0.6
+    assert state.capability_provenance["capability:transport"]["reliability_pressure"] == NODE
+    tick(NOW + timedelta(seconds=121))
+    assert "rpc_timeout_pressure" not in state.node_vectors[NODE]
+    assert state.capability_vectors["capability:transport"]["reliability_pressure"] == 0.0
+    assert "reliability_pressure" not in state.capability_provenance["capability:transport"]
+
+
+def test_failure_holds_between_bridge_ticks_and_clears_on_next_reading():
     lattice = _lattice()
     state = empty_field_state(lattice=lattice, now=NOW, tick_id="t")
     apply_perturbations(state, delta_to_perturbations(_delta(4, 6)), now=NOW)
-    for i in range(1, 300):
+    for i in range(1, 50):  # ~100 s of 2 s ticks: under the 120 s expiry
         apply_decay(state, decay_rate=0.92, now=NOW + timedelta(seconds=2 * i), staleness_threshold_sec=90.0)
     assert state.node_vectors[NODE]["rpc_timeout_pressure"] == 0.6
     apply_perturbations(state, delta_to_perturbations(_delta(30, 0)), now=NOW)

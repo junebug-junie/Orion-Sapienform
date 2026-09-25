@@ -200,7 +200,7 @@ Log-only by default. Look for `transport_baseline_obs` (per-key z, ratio, calls,
 |-----|---------|---------|
 | `EQUILIBRIUM_TRANSPORT_BASELINE_ENABLE` | `true` | Fold + persist + log. Publishes nothing on its own |
 | `EQUILIBRIUM_TRANSPORT_BASELINE_EMIT` | `false` | Publish episode triggers; also retires the legacy Option A timeout branch |
-| `EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS` | `log_orion_metacognition` | Baselined but never trigger |
+| `EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS` | `log_orion_metacognition,gpu_pool_wait,current_turn_probe` | Baselined but never trigger |
 | `EQUILIBRIUM_TRANSPORT_BASELINE_STATE_KEY` | `equilibrium:transport_baseline_state:v1` | Redis key for reducer state + config fingerprint |
 | `EQUILIBRIUM_TRANSPORT_BASELINE_MIN_CALLS` | `5` | Calls needed (pooled across windows if sparse) before latency is judged |
 | `EQUILIBRIUM_TRANSPORT_BASELINE_N_WARM` | `10` | Judged windows before any latency condition may fire |

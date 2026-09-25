@@ -1,6 +1,7 @@
 """Replay live rpc-health data through the RPC delivery bridge's reducer.
 
-Two fixtures, both captured 2026-09-25 from production (no synthetic rows):
+Two fixtures, both captured 2026-09-25 from production. Every row is real; in the
+first one, 46 probe timeouts were re-attributed to a different hop key (below).
 
 - ``fixtures/rpc_health_obs_2026-09-25.jsonl.gz``: 2 h 03 min (03:54-05:58 UTC)
   of per-producer, per-hop success/timeout counts, recovered from
@@ -15,7 +16,9 @@ Two fixtures, both captured 2026-09-25 from production (no synthetic rows):
   producer publishes after this patch. The probe's *successes* could not be
   separated and stay on the unlabelled hop (this makes the unlabelled hop's
   ratio slightly lower than it will be live). 3 probe timeouts were not
-  matched and stay unlabelled (this makes it slightly higher).
+  matched and stay unlabelled (this makes it slightly higher). Net effect: the
+  "shipped" zero-fraction is an optimistic bound until the cortex-exec label is
+  deployed; resting at zero live is UNVERIFIED until then.
 - ``fixtures/rpc_health_wire_2026-09-25.jsonl.gz``: 93 raw payloads captured
   off ``orion:rpc_health:snapshot`` (05:56-06:00 UTC), unmodified. Used to prove
   the reducer reads the real wire shape.
@@ -132,8 +135,10 @@ def run() -> dict:
         # What the field would read WITHOUT the cortex-exec probe label:
         # probe timeouts folded back into the unlabelled LLMGatewayService hop.
         "probe_unlabelled": summarize(replay(unlabel_probe(obs), RpcDeliveryConfig())),
+        # Without the min_timeouts=2 hysteresis (one lone timeout counts).
+        "no_hysteresis": summarize(replay(obs, RpcDeliveryConfig(min_timeouts=1))),
         "floor_sensitivity": {
-            n0: summarize(replay(obs, RpcDeliveryConfig(min_denominator=n0)))["max"]
+            n0: summarize(replay(obs, RpcDeliveryConfig(min_denominator=n0, min_timeouts=1)))["max"]
             for n0 in (1, 5, 10, 20)
         },
         "wire": summarize(replay(load_wire(), RpcDeliveryConfig())),

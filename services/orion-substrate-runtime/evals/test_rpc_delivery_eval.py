@@ -27,26 +27,30 @@ RESULT = ev.run()
 def test_shipped_config_rests_at_a_measured_zero():
     s = RESULT["shipped"]
     assert s["unmeasured_ticks"] == 0
-    assert s["zero_fraction"] >= 0.6
-    assert s["p50"] == 0.0
+    assert s["zero_fraction"] >= 0.9
+    assert s["p50"] == 0.0 and s["p90"] == 0.0
 
 
 def test_shipped_config_moves_on_real_timeouts_and_names_the_hop():
     s = RESULT["shipped"]
     assert 0.0 < s["max"] <= 0.1
-    assert set(s["nonzero_worst_hops"]) <= {
-        "orion:exec:request:LLMGatewayService",
-        "orion:cortex:request",
-    }
+    assert set(s["nonzero_worst_hops"]) == {"orion:exec:request:LLMGatewayService"}
+
+
+def test_hysteresis_removes_lone_timeout_steps():
+    """Without min_timeouts=2, ~30% of ticks carry one lone timeout that steps back
+    to 0 exactly one window later (a clock artifact feedback would credit)."""
+    assert RESULT["no_hysteresis"]["zero_fraction"] <= 0.75
+    assert RESULT["shipped"]["zero_fraction"] - RESULT["no_hysteresis"]["zero_fraction"] >= 0.2
 
 
 def test_unlabelled_probe_would_pin_a_floor_under_calm():
     """Before the cortex-exec label, the probe's by-design 3 s deadline kept the
     reading off zero almost all the time: not a metric that can read calm."""
     p = RESULT["probe_unlabelled"]
-    assert p["zero_fraction"] < 0.1
+    assert p["zero_fraction"] < 0.5
     assert p["p50"] > 0.05
-    assert p["nonzero_worst_hops"].get("orion:exec:request:LLMGatewayService", 0) > 200
+    assert p["nonzero_worst_hops"].get("orion:exec:request:LLMGatewayService", 0) > 100
 
 
 def test_denominator_floor_caps_isolated_timeouts():

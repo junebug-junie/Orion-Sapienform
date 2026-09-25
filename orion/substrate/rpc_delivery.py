@@ -16,6 +16,7 @@ Over a rolling window (default 10 min of snapshot ``window_end`` time), per hop
 key, summed across every producer that called it::
 
     hop_pressure = timeouts / max(successes + timeouts, min_denominator)
+                   (0.0 while timeouts < min_timeouts)
 
 and the reading is the WORST hop. ``max`` over hops, not a mesh-wide pooled
 ratio: pooling lets one high-volume hop dilute a dead one (a hop answering 0 of
@@ -24,9 +25,27 @@ diffusion already combines inputs with ``max``. The worst hop is named in the
 reading, so the number always says which target it is about.
 
 The denominator floor is what keeps a 1-of-1 timeout from reading 1.0: with the
-default 10, one timeout reads at most 0.1, and a hop only reaches 1.0 after 10
-timeouts in a window with no successes. It is a chosen constant, not a
-calibrated one; the eval shows the readings it produces on live data.
+default 10, a hop only reaches 1.0 after 10 timeouts in a window with no
+successes. It is a chosen constant, not a calibrated one; the eval shows the
+readings it produces on live data.
+
+``min_timeouts`` (default 2) is the hysteresis: a single isolated timeout in
+10 minutes reads 0.0. Without it, ~30% of replayed ticks carried one lone
+timeout (0.05-0.1) that then stepped back to 0 exactly ``window_s`` later -- a
+clock artifact that feedback credit would score as a reliability improvement
+for whatever action was in flight. Two timeouts on one hop inside the window
+is the smallest thing this reports.
+
+What the number claims
+----------------------
+"A part of Orion asked another part over the bus and got no answer before its
+own deadline." That is not only network delivery: a deadline also fires when
+the callee is slow (an LLM call past 120 s, a cortex run past 420 s), and on
+live data almost every nonzero reading names ``LLMGatewayService`` or
+``orion:cortex:request``. So when inference is slow this moves together with
+``capability:llm_inference`` load. The evidence is still distinct from the
+gateway's own ``inference_failure_pressure`` (an error *reply* counts as a
+success here), and the receipt names the hop so the two can be told apart.
 
 Scope: which hops count
 -----------------------
@@ -68,12 +87,16 @@ Pure and deterministic apart from a lock that makes ``fold`` (bus listener) and
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
+from orion.core.bus.rpc_health import OVERFLOW_HOP_KEY
 from orion.metacog.transport_baseline import _parse_ts, is_excluded
+
+logger = logging.getLogger("orion.substrate.rpc_delivery")
 
 RPC_DELIVERY_NODE_ID = "node:substrate.rpc_delivery"
 RPC_DELIVERY_TARGET_KIND = "rpc_delivery"
@@ -96,6 +119,7 @@ DEFAULT_EXCLUDE_LABELS: tuple[str, ...] = (
 class RpcDeliveryConfig:
     window_s: float = 600.0
     min_denominator: int = 10
+    min_timeouts: int = 2
     exclude_labels: tuple[str, ...] = DEFAULT_EXCLUDE_LABELS
     # Bounds. 14 producer instances publish every 30 s today, so a 10 min
     # window holds ~280 snapshots; the cap only matters if something floods.
@@ -115,6 +139,7 @@ class RpcDeliveryReading:
     producers: int
     window_s: float
     min_denominator: int
+    min_timeouts: int = 1
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -128,6 +153,7 @@ class RpcDeliveryReading:
             "producers": self.producers,
             "window_s": self.window_s,
             "min_denominator": self.min_denominator,
+            "min_timeouts": self.min_timeouts,
         }
 
 
@@ -154,9 +180,11 @@ def counted_hop(hop: str, exclude_labels: Iterable[str]) -> bool:
     return not is_excluded(hop, exclude_labels)
 
 
-def hop_pressure(timeouts: int, successes: int, min_denominator: int) -> float:
+def hop_pressure(
+    timeouts: int, successes: int, min_denominator: int, min_timeouts: int = 1
+) -> float:
     calls = timeouts + successes
-    if calls <= 0:
+    if calls <= 0 or timeouts < max(1, int(min_timeouts)):
         return 0.0
     return timeouts / float(max(calls, int(min_denominator), 1))
 
@@ -187,7 +215,18 @@ class RpcDeliveryWindow:
         end_ts = _parse_ts(payload.get("window_end"))
         if end_ts is None:
             return False
-        producer = f"{payload.get('service') or ''}|{payload.get('instance') or ''}"
+        producer = (
+            f"{payload.get('service') or ''}|{payload.get('node') or ''}"
+            f"|{payload.get('instance') or ''}"
+        )
+        overflow = latency.get(OVERFLOW_HOP_KEY)
+        if isinstance(overflow, Mapping) and (
+            _as_count(overflow.get("success_count")) or _as_count(overflow.get("timeout_count"))
+        ):
+            # Past MAX_DISTINCT_HOPS a producer folds new hop keys into
+            # "_overflow"; bus traffic in there cannot be attributed to a hop,
+            # so it is not counted. Say so rather than drop it silently.
+            logger.warning("rpc_delivery_overflow_hop_uncounted producer=%s", producer)
         hops: dict[str, tuple[int, int]] = {}
         for hop, stats in latency.items():
             if not isinstance(stats, Mapping) or not counted_hop(hop, self.config.exclude_labels):
@@ -246,7 +285,7 @@ class RpcDeliveryWindow:
         worst_hop: str | None = None
         worst = (-1.0, -1, "")
         for hop, (s, t) in totals.items():
-            p = hop_pressure(t, s, n0)
+            p = hop_pressure(t, s, n0, self.config.min_timeouts)
             # Highest pressure wins; ties go to more timeouts, then name, so the
             # named hop is deterministic.
             key = (p, t, hop)
@@ -269,6 +308,7 @@ class RpcDeliveryWindow:
             producers=len(producers),
             window_s=float(self.config.window_s),
             min_denominator=n0,
+            min_timeouts=int(self.config.min_timeouts),
         )
 
 

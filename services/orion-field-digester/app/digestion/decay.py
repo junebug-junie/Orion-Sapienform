@@ -84,6 +84,35 @@ CAPABILITY_DECAY_CHANNELS = {
 }
 
 
+# Channels that are DROPPED (not decayed, not held) once their last write is
+# older than the given seconds. For a reading whose producer rewrites it every
+# few seconds, "not written lately" means the producer stopped (service down,
+# flag rolled back, bus outage) -- and a held last value then reads as a live
+# measurement to diffusion, capability provenance, and feedback credit's
+# write-backed check (orion/field/credit_integrity.py), none of which can tell
+# it apart from a fresh one. Dropping the key makes every consumer see
+# "unmeasured" instead.
+#
+# rpc_timeout_pressure: the bridge writes every 30 s whenever any bus RPC call
+# happened in the last 10 min; 120 s = four missed ticks.
+EXPIRING_NODE_CHANNELS: dict[str, float] = {
+    "rpc_timeout_pressure": 120.0,
+}
+
+
+def expire_unrefreshed_channels(state: FieldStateV1, *, now: datetime) -> None:
+    now_aware = _aware_utc(now)
+    for node_id, vec in state.node_vectors.items():
+        stamps = state.node_vector_updated_at.get(node_id) or {}
+        for ch, max_age in EXPIRING_NODE_CHANNELS.items():
+            if ch not in vec:
+                continue
+            ts = stamps.get(ch)
+            if ts is None or (now_aware - _aware_utc(ts)).total_seconds() > max_age:
+                vec.pop(ch, None)
+                stamps.pop(ch, None)
+
+
 def _aware_utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 

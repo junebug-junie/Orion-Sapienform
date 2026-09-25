@@ -141,6 +141,10 @@ DEFAULT_NODE_VECTOR["stability"] = 1.0
 SINGLE_OBSERVER_NODE_CHANNELS: dict[str, str] = {
     "stream_backlog_health": "node:athena",
     "delivery_confidence": "node:athena",
+    # Written only by orion-substrate-runtime's RPC delivery bridge. Every other
+    # node would otherwise be seeded with a never-written 0.0 by
+    # DEFAULT_NODE_VECTOR, which reads as "measured, calm".
+    "rpc_timeout_pressure": "node:substrate.rpc_delivery",
 }
 
 # Channel names that were RENAMED and no longer have a producer. reconcile

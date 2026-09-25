@@ -239,7 +239,11 @@ class Settings(BaseSettings):
         # gpu_pool_wait: orion-gpu-pool's grant hop, whose latency IS queue wait. Waiting in line
         # is a capacity fact, not transport; a baseline that "cannot learn busy" would read it as
         # saturation (docs/superpowers/specs/2026-09-24-gpu-pool-design.md, impacts item 2).
-        "log_orion_metacognition,gpu_pool_wait", alias="EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS"
+        # current_turn_probe: cortex-exec's fail-open current-turn probe, whose 3 s deadline
+        # sits below normal LLM latency by design; one probe timeout with no probe success in
+        # a window would otherwise open a zero_success episode on its own hop key.
+        "log_orion_metacognition,gpu_pool_wait,current_turn_probe",
+        alias="EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS",
     )
     transport_baseline_state_key: str = Field(
         "equilibrium:transport_baseline_state:v1",

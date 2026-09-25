@@ -155,3 +155,43 @@ def test_tick_never_raises_on_store_failure():
     )
     worker._store.save_receipt.side_effect = RuntimeError("db down")
     worker._rpc_delivery_tick()  # logged, not raised
+
+
+def test_listener_resubscribes_after_a_subscription_failure():
+    """A dead subscription must not stop the bridge for good."""
+    import asyncio
+    import contextlib
+
+    worker = _worker()
+    worker._settings.rpc_health_snapshot_channel = "orion:rpc_health:snapshot"
+    worker._stop = asyncio.Event()
+    calls = {"n": 0}
+    msg = _raw_message(datetime.now(timezone.utc) - timedelta(seconds=1), {"orion:state:request": (3, 0)})
+
+    class _PubSub:
+        def __init__(self) -> None:
+            self.sent = False
+
+        async def get_message(self, ignore_subscribe_messages=True, timeout=1.0):
+            if not self.sent:
+                self.sent = True
+                return msg
+            worker._stop.set()
+            return None
+
+    @contextlib.asynccontextmanager
+    async def subscribe(channel):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ConnectionError("bus down")
+        yield _PubSub()
+
+    worker._bus.subscribe = subscribe
+
+    async def run():
+        await asyncio.wait_for(worker._rpc_health_listener_loop(), timeout=10)
+
+    asyncio.run(run())
+    assert calls["n"] == 2
+    reading = worker._rpc_delivery_window.reading(datetime.now(timezone.utc).timestamp())
+    assert reading is not None and reading.total_calls == 3

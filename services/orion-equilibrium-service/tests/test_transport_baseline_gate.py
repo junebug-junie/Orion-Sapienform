@@ -107,7 +107,10 @@ def test_config_from_settings_maps_tunables(monkeypatch):
 
 
 def test_default_exclude_labels_cover_metacog_self_loop():
-    assert settings.transport_exclude_labels() == ["log_orion_metacognition"]
+    # Was pinned to ["log_orion_metacognition"] and already stale on main once
+    # gpu_pool_wait joined the default; assert membership of each required label.
+    labels = settings.transport_exclude_labels()
+    assert {"log_orion_metacognition", "gpu_pool_wait", "current_turn_probe"} <= set(labels)
 
 
 def test_gate_load_logs_cold_start_on_config_change(caplog):

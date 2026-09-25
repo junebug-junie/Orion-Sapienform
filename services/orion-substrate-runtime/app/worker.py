@@ -1461,29 +1461,44 @@ class BiometricsSubstrateWorker:
         """Subscribe to orion:rpc_health:snapshot and fold each snapshot into
         the RPC delivery window. Same subscribe shape as the vision listener."""
         channel = self._settings.rpc_health_snapshot_channel
-        logger.info("substrate_rpc_health_listener subscribing channel=%s", channel)
-        try:
-            async with self._bus.subscribe(channel) as pubsub:
-                while not self._stop.is_set():
-                    try:
-                        msg = await asyncio.wait_for(
-                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                            timeout=1.2,
-                        )
-                    except asyncio.TimeoutError:
-                        continue
-                    except asyncio.CancelledError:
-                        break
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
-                        continue
-                    try:
-                        self._handle_rpc_health_message(msg)
-                    except Exception:
-                        logger.exception("substrate_rpc_health_handle_failed")
-        except asyncio.CancelledError:
-            raise
-        finally:
-            logger.info("substrate_rpc_health_listener stopped channel=%s", channel)
+        backoff = 1.0
+        while not self._stop.is_set():
+            logger.info("substrate_rpc_health_listener subscribing channel=%s", channel)
+            try:
+                async with self._bus.subscribe(channel) as pubsub:
+                    backoff = 1.0
+                    while not self._stop.is_set():
+                        try:
+                            msg = await asyncio.wait_for(
+                                pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                                timeout=1.2,
+                            )
+                        except asyncio.TimeoutError:
+                            continue
+                        if not msg or msg.get("type") not in ("message", "pmessage"):
+                            continue
+                        try:
+                            self._handle_rpc_health_message(msg)
+                        except Exception:
+                            logger.exception("substrate_rpc_health_handle_failed")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A dead subscription must not leave the field holding the last
+                # reading: resubscribe. (Meanwhile the tick finds the window
+                # empty, writes nothing, and the field digester expires the
+                # channel after 120 s -- unmeasured, not calm.)
+                logger.exception(
+                    "substrate_rpc_health_listener_failed channel=%s retry_in=%.0fs",
+                    channel,
+                    backoff,
+                )
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=backoff)
+                except asyncio.TimeoutError:
+                    pass
+                backoff = min(backoff * 2.0, 60.0)
+        logger.info("substrate_rpc_health_listener stopped channel=%s", channel)
 
     def _handle_rpc_health_message(self, raw_msg: dict[str, Any]) -> bool:
         decoded = self._bus.codec.decode(raw_msg.get("data"))

@@ -105,6 +105,12 @@ edges:
   # observer_failure_pressure (the bus-observer's own failures), which has read
   # exactly 0 for weeks while LLMGatewayService RPC timeouts ran 30-150/day.
   # Diffusion takes the max of the two, so neither masks the other.
+  # What it claims: "a part of Orion asked another over the bus and got no
+  # answer before its own deadline" -- lost messages AND slow callees. On live
+  # data nearly all nonzero readings name LLMGatewayService or
+  # orion:cortex:request, so it co-moves with capability:llm_inference load
+  # when inference is slow; the receipt names the hop. It is not the gateway's
+  # inference_failure_pressure (an error reply counts as answered here).
   - source_id: node:substrate.rpc_delivery
     target_id: capability:transport
     edge_type: node_capability

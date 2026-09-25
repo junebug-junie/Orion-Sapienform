@@ -114,9 +114,13 @@ def build_prompt(pair: Pair) -> str:
 
 _JSON_RE = re.compile(r"\{.*\}", re.S)
 
+# The model answered, and its answer was "no link". Distinct from None
+# (unparseable) so an honest decline is not inflated by format failures.
+NO_LINK = "no_link"
 
-def parse_link(text: str) -> Optional[tuple[str, str]]:
-    """(claim, why) or None for 'no link' / unusable output."""
+
+def parse_link(text: str):
+    """(claim, why), NO_LINK for an explicit decline, or None if unparseable."""
     m = _JSON_RE.search(text or "")
     if not m:
         return None
@@ -124,7 +128,11 @@ def parse_link(text: str) -> Optional[tuple[str, str]]:
         data = json.loads(m.group(0))
     except json.JSONDecodeError:
         return None
-    if not isinstance(data, dict) or data.get("link") is not True:
+    if not isinstance(data, dict):
+        return None
+    if data.get("link") is False:
+        return NO_LINK
+    if data.get("link") is not True:
         return None
     claim = " ".join(str(data.get("claim") or "").split())
     why = " ".join(str(data.get("why") or "").split())[:400]
@@ -143,6 +151,7 @@ def _echoes(claim: str, pair: Pair) -> bool:
 class RecombineResult:
     hypotheses: list[DreamHypothesisV1]
     no_link: int = 0
+    unparseable: int = 0
     failures: int = 0
 
 
@@ -164,7 +173,10 @@ async def recombine(
             result.failures += 1
             continue
         parsed = parse_link(text)
-        if parsed is None or _echoes(parsed[0], pair):
+        if parsed is None:
+            result.unparseable += 1
+            continue
+        if parsed == NO_LINK or _echoes(parsed[0], pair):
             result.no_link += 1
             continue
         claim, why = parsed

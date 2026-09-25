@@ -59,7 +59,15 @@ IDLE_MINUTES_SQL = """
       FROM chat_history_log
 """
 
-LAST_CYCLE_END_SQL = "SELECT max(ended_at) AS ended_at FROM dream_cycle"
+# Two different clocks, on purpose (review finding, 2026-09-25):
+#   window start = the last NON-failed cycle's started_at. started_at, not
+#     ended_at, so rows written while a cycle ran (minutes of LLM calls) land
+#     in the next window instead of falling between them; non-failed, so a
+#     gateway outage does not throw the backlog away.
+#   attempt end  = the last cycle of ANY status. Gates the min interval, so an
+#     outage retries after DREAM_MIN_INTERVAL_HOURS instead of every tick.
+LAST_WINDOW_START_SQL = "SELECT max(started_at) AS at FROM dream_cycle WHERE status <> 'failed'"
+LAST_ATTEMPT_END_SQL = "SELECT max(ended_at) AS at FROM dream_cycle"
 
 _engine = None
 
@@ -105,16 +113,24 @@ def load_idle_minutes() -> Optional[float]:
         return None
 
 
-def load_last_cycle_end() -> Optional[datetime]:
+def _load_at(sql: str) -> Optional[datetime]:
     try:
         from sqlalchemy import text
 
         with _get_engine().connect() as conn:
-            row = conn.execute(text(LAST_CYCLE_END_SQL)).mappings().first()
-        return row["ended_at"] if row else None
+            row = conn.execute(text(sql)).mappings().first()
+        return row["at"] if row else None
     except Exception as exc:
         logger.warning("dream_cycle last-cycle read failed err=%s", exc)
         return None
+
+
+def load_last_window_start() -> Optional[datetime]:
+    return _load_at(LAST_WINDOW_START_SQL)
+
+
+def load_last_attempt_end() -> Optional[datetime]:
+    return _load_at(LAST_ATTEMPT_END_SQL)
 
 
 def persist_cycle(cycle: DreamCycleV1) -> bool:
@@ -128,12 +144,12 @@ def persist_cycle(cycle: DreamCycleV1) -> bool:
                     """
                     INSERT INTO dream_cycle
                         (cycle_id, trigger, status, started_at, ended_at, pressure,
-                         replay_count, hypothesis_count, no_link_count, llm_failures,
-                         compaction_delta_id, cycle_json)
+                         replay_count, hypothesis_count, no_link_count, unparseable_count,
+                         llm_failures, compaction_delta_id, cycle_json)
                     VALUES
                         (:cycle_id, :trigger, :status, :started_at, :ended_at, :pressure,
-                         :replay_count, :hypothesis_count, :no_link_count, :llm_failures,
-                         :compaction_delta_id, CAST(:cycle_json AS jsonb))
+                         :replay_count, :hypothesis_count, :no_link_count, :unparseable_count,
+                         :llm_failures, :compaction_delta_id, CAST(:cycle_json AS jsonb))
                     ON CONFLICT (cycle_id) DO NOTHING
                     """
                 ),
@@ -147,6 +163,7 @@ def persist_cycle(cycle: DreamCycleV1) -> bool:
                     "replay_count": len(cycle.replay),
                     "hypothesis_count": len(cycle.hypotheses),
                     "no_link_count": cycle.no_link_count,
+                    "unparseable_count": cycle.unparseable_count,
                     "llm_failures": cycle.llm_failures,
                     "compaction_delta_id": cycle.compaction_delta_id,
                     "cycle_json": json.dumps(cycle.model_dump(mode="json")),

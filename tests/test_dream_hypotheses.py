@@ -137,3 +137,40 @@ def test_scorecard_verdict(d_adopt, c_adopt, expect):
     priors = [{"formed_from": f"{FORMED_FROM_PREFIX}d{i}", "status": "open"} for i in range(d_adopt)]
     priors += [{"formed_from": f"{FORMED_FROM_PREFIX}c{i}", "status": "open"} for i in range(c_adopt)]
     assert score_hypotheses(offered, priors).verdict().startswith(expect)
+
+
+@pytest.mark.parametrize(
+    "formed_from,expected",
+    [
+        ("dream_hypothesis:dh-abc123", "dh-abc123"),
+        ("dream_hypothesis:dh-abc123,", "dh-abc123"),
+        ("dream_hypothesis:dh-abc123;crystallization:x", "dh-abc123"),
+        ("dream_hypothesis: dh-abc123 (tired)", "dh-abc123"),
+        ("dream_hypothesis:", None),
+        ("crystallization:dh-abc123", None),
+    ],
+)
+def test_formed_from_parse(formed_from, expected):
+    assert dh.hypothesis_id_from_formed_from(formed_from) == expected
+
+
+def test_unmatched_priors_count_distinct_hypotheses():
+    priors = [{"formed_from": "dream_hypothesis:dh-x", "status": "open"}] * 3
+    assert score_hypotheses([], priors).unmatched_priors == 1
+
+
+class _ExecConn:
+    def __init__(self):
+        self.calls = []
+
+    async def execute(self, sql, *args):
+        self.calls.append((sql, args))
+
+
+def test_release_unclaims_only_that_run():
+    conn = _ExecConn()
+    asyncio.run(dh.release_hypotheses_for_run(_Pool(conn), run_id="run1"))
+    sql, args = conn.calls[0]
+    assert "SET offered_at = NULL" in sql and "WHERE offered_run_id = $1" in sql
+    assert args == ("run1",)
+    asyncio.run(dh.release_hypotheses_for_run(None, run_id="run1"))  # silent

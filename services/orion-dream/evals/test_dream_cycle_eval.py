@@ -41,6 +41,7 @@ def _corpus():
 class _World:
     def __init__(self, answer):
         self.rows = _corpus()
+        self.last_start = None
         self.last_end = None
         self.answer = answer
         self.prompts = []
@@ -57,6 +58,8 @@ class _World:
 
         def persist(cycle):
             self.last_end = cycle.ended_at
+            if cycle.status != "failed":
+                self.last_start = cycle.started_at
             return True
 
         async def complete(prompt):
@@ -66,7 +69,8 @@ class _World:
         return CycleDeps(
             load_source_rows=load,
             load_idle_minutes=lambda: 600.0,
-            load_last_cycle_end=lambda: self.last_end,
+            load_last_window_start=lambda: self.last_start,
+            load_last_attempt_end=lambda: self.last_end,
             persist_cycle=persist,
             complete=complete,
         )
@@ -80,20 +84,33 @@ def test_pressure_rest_point_is_exactly_zero_after_a_cycle_and_rises_with_new_ro
     from app.cycle import read_pressure, run_cycle_once
 
     world = _World(_linker)
-    before, _ = read_pressure(world.deps(), datetime.now(timezone.utc), world.last_end)
+    before, _ = read_pressure(world.deps(), datetime.now(timezone.utc), world.last_start)
     assert before.pressure > before.threshold
 
     cycle = asyncio.run(run_cycle_once(world.deps()))
     assert cycle is not None and cycle.status == "completed"
 
-    after, _ = read_pressure(world.deps(), datetime.now(timezone.utc), world.last_end)
+    after, _ = read_pressure(world.deps(), datetime.now(timezone.utc), world.last_start)
     assert after.pressure == 0.0 and after.counts == {}
 
     world.rows.append(("metacog", datetime.now(timezone.utc) + timedelta(seconds=1), {
         "id": "late", "summary": "new surprise", "severity": "critical", "trigger_kind": "x", "tags": [],
     }))
-    later, _ = read_pressure(world.deps(), datetime.now(timezone.utc), world.last_end)
+    later, _ = read_pressure(world.deps(), datetime.now(timezone.utc), world.last_start)
     assert later.pressure == 1.0
+
+
+def test_gateway_outage_keeps_the_backlog():
+    from app.cycle import read_pressure, run_cycle_once
+
+    def down(_p):
+        raise RuntimeError("gateway down")
+
+    world = _World(down)
+    cycle = asyncio.run(run_cycle_once(world.deps()))
+    assert cycle.status == "failed"
+    still, _ = read_pressure(world.deps(), datetime.now(timezone.utc), world.last_start)
+    assert still.pressure > still.threshold  # nothing was thrown away
 
 
 def test_refusing_llm_yields_no_hypotheses_and_counts_no_link():

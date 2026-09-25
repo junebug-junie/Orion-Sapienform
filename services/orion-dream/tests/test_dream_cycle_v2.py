@@ -111,9 +111,10 @@ def test_control_pairs_are_seeded_and_exclude_dream_pairs():
 @pytest.mark.parametrize(
     "text,expected",
     [
-        ('{"link": false}', None),
+        ('{"link": false}', "no_link"),
+        ('{"maybe": 1}', None),
         ("no json at all", None),
-        ('{"link": true, "claim": "too short"}', None),
+        ('{"link": true, "claim": "too short"}', None),  # malformed, not a decline
         ('sure! {"link": true, "claim": "Recall empties cluster right after GPU5 contention", "why": "timing"}',
          ("Recall empties cluster right after GPU5 contention", "timing")),
     ],
@@ -148,6 +149,7 @@ def test_recombine_counts_no_link_failures_and_rejects_echo():
     assert len(res.hypotheses) == 1
     assert res.no_link == 2  # explicit no + echo
     assert res.failures == 1
+    assert res.unparseable == 0
     h = res.hypotheses[0]
     assert h.arm == "dream" and h.cycle_id == "dc-1"
     assert h.expires_at == NOW + timedelta(hours=72)
@@ -157,8 +159,8 @@ def test_recombine_counts_no_link_failures_and_rejects_echo():
 
 
 class _Fakes:
-    def __init__(self, rows, idle=120.0, last_end=None, answer=None):
-        self.rows, self.idle, self.last_end = rows, idle, last_end
+    def __init__(self, rows, idle=120.0, last_end=None, answer=None, last_start=None):
+        self.rows, self.idle, self.last_end, self.last_start = rows, idle, last_end, last_start
         self.persisted, self.prompts = [], []
         self.answer = answer or json.dumps(
             {"link": True, "claim": "These two recur together more often than chance would allow", "why": "w"}
@@ -179,7 +181,8 @@ class _Fakes:
         return CycleDeps(
             load_source_rows=load,
             load_idle_minutes=lambda: self.idle,
-            load_last_cycle_end=lambda: self.last_end,
+            load_last_window_start=lambda: self.last_start,
+            load_last_attempt_end=lambda: self.last_end,
             persist_cycle=lambda c: self.persisted.append(c) or True,
             complete=complete,
         )
@@ -242,6 +245,55 @@ def test_window_is_last_cycle_end_but_capped_by_lookback():
     assert window_start(NOW, ancient) == NOW - timedelta(hours=settings.DREAM_LOOKBACK_HOURS)
 
 
+def test_all_llm_calls_failing_marks_cycle_failed():
+    from app.cycle import run_cycle_once
+
+    f = _Fakes(_rows())
+
+    async def boom(_p):
+        raise RuntimeError("gateway down")
+
+    deps = f.deps()
+    deps.complete = boom
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert cycle.status == "failed" and cycle.llm_failures > 0 and cycle.hypotheses == []
+
+
+def test_unparseable_answers_are_not_counted_as_declines():
+    from app.cycle import run_cycle_once
+
+    f = _Fakes(_rows(), answer="I think they are related, honestly")
+    cycle = asyncio.run(run_cycle_once(f.deps()))
+    assert cycle.status == "completed"
+    assert cycle.no_link_count == 0 and cycle.unparseable_count > 0
+
+
+def test_window_uses_last_good_cycle_start_not_attempt_end():
+    from app.cycle import run_cycle_once
+
+    start = datetime.now(timezone.utc) - timedelta(hours=10)
+    f = _Fakes(_rows(), last_start=start, last_end=start + timedelta(hours=3))
+    asyncio.run(run_cycle_once(f.deps()))
+    assert f.seen_since == start
+
+
+def test_rem_receives_window_since():
+    from app.cycle import run_cycle_once
+
+    seen = {}
+
+    async def rem(cycle_id, since):
+        seen["args"] = (cycle_id, since)
+        return "compaction-delta:x"
+
+    f = _Fakes(_rows())
+    deps = f.deps()
+    deps.rem_compaction = rem
+    cycle = asyncio.run(run_cycle_once(deps))
+    assert seen["args"] == (cycle.cycle_id, cycle.pressure.since)
+    assert cycle.compaction_delta_id == "compaction-delta:x"
+
+
 # --- write surface -----------------------------------------------------------
 
 
@@ -251,3 +303,26 @@ def test_cycle_store_writes_only_v2_tables():
     src = Path(__file__).resolve().parents[1].joinpath("app", "cycle_store.py").read_text()
     written = set(re.findall(r"(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+([a-z_]+)", src, re.I))
     assert written == set(CYCLE_WRITE_TABLES)
+
+
+def test_process_floors_hold_when_persist_fails(monkeypatch):
+    """Migration not applied: db reads 'never slept', floors must still hold."""
+    from app import cycle_store, main
+    from orion.schemas.dream_cycle import DreamCycleV1, SleepPressureV1
+
+    main._CYCLE_STATE.clear()
+    monkeypatch.setattr(cycle_store, "load_last_window_start", lambda: None)
+    monkeypatch.setattr(cycle_store, "load_last_attempt_end", lambda: None)
+    monkeypatch.setattr(cycle_store, "persist_cycle", lambda c: False)
+    deps = main.build_cycle_deps()
+    p = SleepPressureV1(since=NOW, pressure=0, threshold=1, idle_required_minutes=1)
+
+    def cyc(status, start):
+        return DreamCycleV1(cycle_id=f"dc-{status}", trigger="pressure", status=status,
+                            started_at=start, ended_at=start + timedelta(minutes=5), pressure=p)
+
+    deps.persist_cycle(cyc("completed", NOW))
+    deps.persist_cycle(cyc("failed", NOW + timedelta(hours=1)))
+    assert deps.load_last_window_start() == NOW  # failed cycle does not advance the window
+    assert deps.load_last_attempt_end() == NOW + timedelta(hours=1, minutes=5)
+    main._CYCLE_STATE.clear()

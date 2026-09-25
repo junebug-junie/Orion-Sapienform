@@ -18,12 +18,17 @@ Three seams, one module, so the contract cannot drift between them:
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional, Sequence
 
 from orion.schemas.dream_cycle import FORMED_FROM_PREFIX
 
 logger = logging.getLogger("orion.dream.hypotheses")
+
+# Hypothesis ids are `dh-<hex>`; anything after (comma, "; crystallization:x",
+# prose) is Orion's own annotation and must not break the join.
+_HID_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 # Worldview prior statuses (orion/curiosity/worldview.py). Duplicated as
 # literals, not imported, to keep this module importable without Hub's graph
@@ -44,6 +49,13 @@ UPDATE dream_hypothesis
          LIMIT $2
          FOR UPDATE SKIP LOCKED)
 RETURNING hypothesis_id, claim, why
+"""
+
+
+RELEASE_FOR_RUN_SQL = """
+UPDATE dream_hypothesis
+   SET offered_at = NULL, offered_run_id = NULL
+ WHERE offered_run_id = $1
 """
 
 
@@ -79,6 +91,21 @@ async def take_hypotheses_for_offer(pool: Any, *, run_id: str, limit: int) -> tu
     # carries no arm signal.
     out.sort(key=lambda h: h.hypothesis_id)
     return tuple(out)
+
+
+async def release_hypotheses_for_run(pool: Any, *, run_id: str) -> None:
+    """Un-claim a run's hypotheses when the run was cancelled before Orion saw it.
+
+    Keeps `offered` meaning "shown to Orion" -- otherwise a Hub restart mid-turn
+    inflates the scorecard's denominator for both arms. Never raises.
+    """
+    if pool is None or not run_id:
+        return
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(RELEASE_FOR_RUN_SQL, run_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("dream_hypotheses_release_failed run=%s err=%s", run_id, exc)
 
 
 def format_dream_section(hypotheses: Sequence[OfferedHypothesis]) -> list[str]:
@@ -172,8 +199,8 @@ def hypothesis_id_from_formed_from(formed_from: Any) -> Optional[str]:
     text = str(formed_from or "").strip()
     if not text.startswith(FORMED_FROM_PREFIX):
         return None
-    rest = text[len(FORMED_FROM_PREFIX):].split()
-    return rest[0] if rest else None
+    m = _HID_RE.match(text[len(FORMED_FROM_PREFIX):].strip())
+    return m.group(0) if m else None
 
 
 def score_hypotheses(
@@ -199,18 +226,20 @@ def score_hypotheses(
         card.arms[arm].offered += 1
 
     best: dict[str, dict[str, Any]] = {}
+    unmatched: set[str] = set()
     for row in prior_rows:
         hid = hypothesis_id_from_formed_from(row.get("formed_from"))
         if hid is None:
             continue
         if hid not in arm_of:
-            card.unmatched_priors += 1
+            unmatched.add(hid)
             continue
         tested = _as_int(row.get("times_tested"))
         cur = best.get(hid)
         if cur is None or tested > _as_int(cur.get("times_tested")):
             best[hid] = row
 
+    card.unmatched_priors = len(unmatched)
     for hid, row in best.items():
         score = card.arms[arm_of[hid]]
         score.adopted += 1

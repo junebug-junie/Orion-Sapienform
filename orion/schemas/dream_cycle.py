@@ -121,6 +121,9 @@ class DreamCycleV1(BaseModel):
     # Pairs the LLM declined to link (answered "no link"). Counted, not hidden:
     # a dream that links everything is manufacturing significance.
     no_link_count: int = 0
+    # LLM answered but not in the requested shape. Kept apart from no_link so
+    # "the model honestly declined" is not overstated by format failures.
+    unparseable_count: int = 0
     llm_failures: int = 0
     compaction_delta_id: Optional[str] = None
     note: str = ""

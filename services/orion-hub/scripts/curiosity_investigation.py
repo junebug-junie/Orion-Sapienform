@@ -91,7 +91,7 @@ from orion.curiosity.kickoff_prompt import (
     build_kickoff_prompt,
     build_resume_preamble,
 )
-from orion.dream.hypotheses import take_hypotheses_for_offer
+from orion.dream.hypotheses import release_hypotheses_for_run, take_hypotheses_for_offer
 from orion.curiosity.peer_briefs import (
     REFUSED_OR_FAILED_RECENT_CYPHER,
     UNUSED_OK_BRIEFS_CYPHER,
@@ -1577,6 +1577,8 @@ class CuriosityInvestigation:
                 # cooldown stamp spent for a run cortex never confirmed.
                 if not self.durable_admission_enabled:
                     await self._refund_investigation(previous_stamp)
+                    if dream_hypotheses:
+                        await release_hypotheses_for_run(self._pool_provider(), run_id=run_id)
                 raise
             if dispatched:
                 return "dispatched"
@@ -1616,6 +1618,8 @@ class CuriosityInvestigation:
             # cancellation continue -- swallowing it would leave a task the
             # shutdown is waiting on.
             await self._refund_investigation(previous_stamp)
+            if dream_hypotheses:
+                await release_hypotheses_for_run(self._pool_provider(), run_id=run_id)
             raise
         if not text:
             logger.info("curiosity_investigation_no_text run=%s debug=%s", run_id, debug)

@@ -22,6 +22,7 @@ create table if not exists dream_cycle (
     replay_count integer not null default 0,
     hypothesis_count integer not null default 0,
     no_link_count integer not null default 0,
+    unparseable_count integer not null default 0,
     llm_failures integer not null default 0,
     compaction_delta_id text,
     cycle_json jsonb not null,
@@ -29,6 +30,7 @@ create table if not exists dream_cycle (
 );
 
 create index if not exists idx_dream_cycle_ended_at on dream_cycle (ended_at desc);
+create index if not exists idx_dream_cycle_started_at on dream_cycle (started_at desc);
 
 create table if not exists dream_replay_item (
     cycle_id text not null references dream_cycle(cycle_id) on delete cascade,

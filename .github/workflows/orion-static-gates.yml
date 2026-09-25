@@ -75,14 +75,23 @@ jobs:
       # of the 2026-09-20 FieldStateV1 extra_forbidden incident. The live check
       # itself (make substrate-ladder-check) needs Postgres + docker, so it runs
       # from host cron, not here.
+      # Includes discovery of every cross-service forbid schema: fails when a
+      # strict schema some service validates has no found or declared writer.
       - name: Substrate ladder liveness logic replays the 09-20 incident red
-        run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py -q
+        run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py tests/scripts/test_schema_skew_discovery.py -q
 
       # orion:grammar:event's producer list in channels.yaml vs a static scan of
       # every GrammarProvenanceV1(source_service=...) call site. The list had
       # three phantom vision producers and was missing substrate-runtime.
       - name: Grammar event producer catalog matches emitting code
         run: python -m pytest tests/test_grammar_event_producer_catalog.py -q -p no:cacheprovider
+
+      # Field topology: every capability->capability edge must read a channel
+      # some edge actually writes, and there is one topology file, not two.
+      # The transport->orchestration edge read a never-written channel for
+      # months; the test that should have caught drift could not be collected.
+      - name: Field topology has no dead cap-cap edges
+        run: python -m pytest tests/test_field_topology_edges.py -q -p no:cacheprovider
 
       # Each gate is its own step so a failure names itself in the UI rather
       # than surfacing as one opaque red block.

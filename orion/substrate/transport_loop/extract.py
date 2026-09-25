@@ -22,13 +22,13 @@ _IGNORED_ROLES = frozenset(
         "bus_observer_tick_started",
         # Retired 2026-09-25 (fix/bus-observer-scope): XLEN depth/backpressure.
         # Named here so a pre-deploy trace still in the reducer backlog is
-        # skipped on purpose, not by falling through _ATOM_ROLES.
+        # skipped on purpose, not by falling through ATOM_ROLES.
         "bus_stream_depth_observed",
         "bus_backpressure_observed",
     }
 )
 
-_ATOM_ROLES = frozenset(
+ATOM_ROLES = frozenset(
     {
         "bus_health_observed",
         "bus_configured_stream_uncataloged",
@@ -168,7 +168,7 @@ def extract_transport_bus_state_from_events(
         role = (atom.semantic_role or "").strip()
         if not role or role in _IGNORED_ROLES:
             continue
-        if role not in _ATOM_ROLES:
+        if role not in ATOM_ROLES:
             continue
 
         evidence_event_ids.append(event.event_id)

@@ -46,7 +46,8 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, NamedTuple, Optional
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
@@ -55,6 +56,7 @@ if sys.path and sys.path[0] == _SCRIPT_DIR:
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+from orion import schema_skew_discovery as ssd  # noqa: E402
 from orion import substrate_ladder_liveness as ll  # noqa: E402
 
 EXIT_OK = 0
@@ -131,28 +133,72 @@ def _parse_ts(value: Optional[str]) -> Optional[datetime]:
 
 
 # Locate the top-level ``orion`` package without importing it (find_spec on a
-# top-level name only searches sys.path), then hash the file by path. Nothing
-# from the repo executes inside the production container.
-_HASH_SNIPPET = (
-    "import hashlib,importlib.util as u,os,sys;"
-    "s=u.find_spec('orion');"
-    "p=os.path.join(s.submodule_search_locations[0],*sys.argv[1].split('/')[1:]);"
-    "print(hashlib.sha256(open(p,'rb').read()).hexdigest())"
+# top-level name only searches sys.path), then read the requested files by
+# path and print them as one JSON object. Nothing from the repo executes
+# inside the production container; one exec per container covers every
+# schema file that container's service reads or writes.
+_READ_SNIPPET = (
+    "import importlib.util as u,json,os,sys\n"
+    "s=u.find_spec('orion')\n"
+    "b=s.submodule_search_locations[0] if s and s.submodule_search_locations else None\n"
+    "out={'__orion__':b is not None}\n"
+    "for rel in json.loads(sys.argv[1]):\n"
+    "    try:\n"
+    "        out[rel]=open(os.path.join(b,*rel.split('/')[1:]),encoding='utf-8').read() if b else None\n"
+    "    except (OSError,UnicodeDecodeError):\n"
+    "        out[rel]=None\n"
+    "sys.stdout.write(json.dumps(out))\n"
 )
 
 
-def container_schema_sha(container: str, schema_path: str) -> Optional[str]:
+NO_ORION = "no-orion"
+
+
+def container_sources(container: str, paths: list[str]):
+    """``{repo-relative path: file text or None}`` as ``container`` sees them.
+
+    ``NO_ORION`` when the container has no Python or its Python has no
+    ``orion`` package (a sidecar such as redis/grafana in the same compose
+    file; it cannot be running a reader or writer). ``None`` when the read
+    itself failed (timeout, restarting container, daemon error): the caller
+    reports that as could-not-check rather than guessing.
+    """
+    arg = json.dumps(sorted(paths))
+    no_python = 0
     for py in ("python", "python3"):
         try:
-            out = _run(["docker", "exec", container, py, "-c", _HASH_SNIPPET, schema_path]).strip()
+            out = _run(["docker", "exec", container, py, "-c", _READ_SNIPPET, arg], timeout=DOCKER_TIMEOUT_SEC)
+        except subprocess.CalledProcessError as exc:
+            # docker exec exits 127 (126) when the command is not found (not
+            # executable) in the image: no such interpreter (redis, grafana,
+            # bus-core). The message goes to the terminal, not stderr, so the
+            # exit code is the signal. Anything else -- a restarting
+            # container, a daemon error -- is a failed read.
+            if exc.returncode in (126, 127):
+                no_python += 1
+            continue
         except (subprocess.SubprocessError, OSError):
             continue
-        if len(out) == 64:
-            return out
-    return None
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        if not data.pop("__orion__", False):
+            return NO_ORION
+        return {p: (v if isinstance(v, str) else None) for p, v in data.items()}
+    return NO_ORION if no_python == 2 else None
 
 
-def read_containers(services: set[str], schema_path: str) -> list[ll.RunningContainer]:
+class ContainerMeta(NamedTuple):
+    name: str
+    service_dir: str
+    image_created: Optional[datetime]
+    started_at: Optional[datetime]
+
+
+def list_containers(services: set[str]) -> list[ContainerMeta]:
     names = [n for n in _run(["docker", "ps", "--format", "{{.Names}}"]).split() if n]
     if not names:
         return []
@@ -168,17 +214,31 @@ def read_containers(services: set[str], schema_path: str) -> list[ll.RunningCont
         svc = ll.service_dir_from_compose_files(labels.get("com.docker.compose.project.config_files"))
         if svc not in services:
             continue
-        name = (c.get("Name") or "").lstrip("/")
         out.append(
-            ll.RunningContainer(
-                name=name,
+            ContainerMeta(
+                name=(c.get("Name") or "").lstrip("/"),
                 service_dir=svc,
                 image_created=created.get(c.get("Image")),
                 started_at=_parse_ts((c.get("State") or {}).get("StartedAt")),
-                schema_sha256=container_schema_sha(name, schema_path),
             )
         )
     return out
+
+
+def read_all_sources(
+    metas: list[ContainerMeta], paths_by_service: dict[str, set[str]], workers: int
+) -> dict[str, Optional[dict[str, Optional[str]]]]:
+    """container name -> sources, one exec per container, run in parallel."""
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futs = {
+            m.name: pool.submit(container_sources, m.name, sorted(paths_by_service.get(m.service_dir, ())))
+            for m in metas
+        }
+        return {name: f.result() for name, f in futs.items()}
+
+
+def _sha(text: Optional[str]) -> Optional[str]:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest() if text is not None else None
 
 
 # -------------------------------------------------------------------------- git
@@ -201,6 +261,27 @@ def schema_commit(repo: str, ref: str, path: str) -> tuple[datetime, str, str]:
         raise RuntimeError(f"no commit touches {path} on {ref}")
     body = subprocess.run(["git", "-C", repo, "show", f"{ref}:{path}"], capture_output=True, check=True).stdout
     return datetime.fromisoformat(log[0]), log[1], hashlib.sha256(body).hexdigest()
+
+
+def ref_file_shas(repo: str, ref: str, paths: list[str]) -> dict[str, Optional[str]]:
+    """sha256 of each file on ``ref`` in one ``git cat-file --batch`` call."""
+    if not paths:
+        return {}
+    req = "".join(f"{ref}:{p}\n" for p in paths).encode()
+    raw = subprocess.run(["git", "-C", repo, "cat-file", "--batch"], input=req, capture_output=True, check=True).stdout
+    out: dict[str, Optional[str]] = {}
+    pos = 0
+    for p in paths:
+        nl = raw.index(b"\n", pos)
+        header = raw[pos:nl].split()
+        pos = nl + 1
+        if len(header) == 3 and header[1] == b"blob":
+            size = int(header[2])
+            out[p] = hashlib.sha256(raw[pos : pos + size]).hexdigest()
+            pos += size + 1
+        else:
+            out[p] = None
+    return out
 
 
 # ----------------------------------------------------------------------- notify
@@ -317,37 +398,102 @@ def build_report(args) -> ll.LadderReport:
             report.cannot_check.append(f"postgres: {exc.__class__.__name__}: {str(exc).strip()}")
 
     if not args.skip_docker:
-        repo = args.repo
-        ref = args.ref or default_ref(repo)
-        for schema in ll.STRICT_SCHEMAS:
-            try:
-                commit_time, commit_sha, ref_sha = schema_commit(repo, ref, schema.path)
-                consumers = set(ll.schema_consumer_services(Path(repo), schema))
-                containers = read_containers(consumers | {schema.producer_service}, schema.path)
-                report.skew += ll.evaluate_skew(
-                    schema,
-                    schema_commit_time=commit_time,
-                    schema_sha256_on_ref=ref_sha,
-                    consumer_services=consumers,
-                    containers=containers,
-                )
-                if args.verbose:
-                    print(f"{schema.path} @ {ref} last changed {commit_sha} {commit_time.isoformat()}", file=sys.stderr)
-            except Exception as exc:  # noqa: BLE001
-                report.cannot_check.append(f"skew:{schema.symbol}: {exc.__class__.__name__}: {str(exc).strip()}")
+        try:
+            skew, notes = check_skew(args)
+            report.skew += skew
+            report.cannot_check += notes
+        except Exception as exc:  # noqa: BLE001
+            report.cannot_check.append(f"skew: {exc.__class__.__name__}: {str(exc).strip()}")
     return report
 
 
-def print_human(report: ll.LadderReport) -> None:
+def check_skew(args) -> tuple[list[ll.SkewResult], list[str]]:
+    repo = args.repo
+    ref = args.ref or default_ref(repo)
+    schemas, disc = ll.discovered_schemas(Path(repo))
+    if not args.include_loose:
+        schemas = [s for s in schemas if s.strict]
+    notes = [f"skew: unresolved writer for {u.key} (declare it in DECLARED_WRITERS)" for u in disc.unresolved]
+
+    paths_by_service: dict[str, set[str]] = {}
+    for sc in schemas:
+        files = {sc.path, *sc.deps}
+        for svc in {sc.producer_service, *(r for r, _ in sc.reader_models)}:
+            paths_by_service.setdefault(svc, set()).update(files)
+    metas = list_containers(set(paths_by_service))
+    sources = read_all_sources(metas, paths_by_service, args.docker_workers)
+    skipped = sorted(m.name for m in metas if sources.get(m.name) == NO_ORION)
+    failed = sorted(m.name for m in metas if sources.get(m.name) is None)
+    notes += [f"skew: could not read schema files in container {n} (docker exec failed)" for n in failed]
+    metas = [m for m in metas if isinstance(sources.get(m.name), dict)]
+    if args.verbose and skipped:
+        print(f"skew: {len(skipped)} containers have no orion package (sidecars), skipped: {', '.join(skipped)}", file=sys.stderr)
+    shapes = {m.name: ssd.shapes_from_sources({p: t for p, t in sources[m.name].items() if t is not None}) for m in metas}
+    ref_shas = ref_file_shas(repo, ref, sorted({sc.path for sc in schemas}))
+    commit_cache: dict[str, Optional[datetime]] = {}
+
+    def commit_time(path: str) -> Optional[datetime]:
+        if path not in commit_cache:
+            try:
+                commit_cache[path] = schema_commit(repo, ref, path)[0]
+            except Exception:  # noqa: BLE001
+                commit_cache[path] = None
+        return commit_cache[path]
+
+    results: list[ll.SkewResult] = []
+    for sc in schemas:
+        svcs = {sc.producer_service, *(r for r, _ in sc.reader_models)}
+        files = (sc.path, *sc.deps)
+        containers = []
+        for m in metas:
+            if m.service_dir not in svcs:
+                continue
+            src = sources[m.name]
+            complete = all(src.get(f) is not None for f in files)
+            containers.append(
+                ll.RunningContainer(
+                    name=m.name,
+                    service_dir=m.service_dir,
+                    image_created=m.image_created,
+                    started_at=m.started_at,
+                    schema_sha256=_sha(src.get(sc.path)),
+                    shapes=shapes[m.name] if complete else None,
+                )
+            )
+        needs_time = any(c.shapes is None and c.schema_sha256 is None for c in containers)
+        results += ll.evaluate_skew(
+            sc,
+            schema_commit_time=commit_time(sc.path) if needs_time else None,
+            schema_sha256_on_ref=ref_shas.get(sc.path),
+            consumer_services=[r for r, _ in sc.reader_models],
+            containers=containers,
+        )
+    if args.verbose:
+        print(
+            f"skew: {len(schemas)} (file, writer) pairs over {len({s.path for s in schemas})} files, "
+            f"{sum(len(s.reader_models) for s in schemas)} writer->reader pairs, {len(metas)} containers read",
+            file=sys.stderr,
+        )
+    return results, notes
+
+
+def print_human(report: ll.LadderReport, verbose: bool = False) -> None:
     for r in report.rungs:
         mark = "RED " if r.red else "ok  "
         if r.rung == "consolidation:motifs":
             print(f"{mark}consolidation:motifs: {'last %d frames empty' % int(r.max_age_sec) if r.red else 'motifs present'}")
         else:
             print(f"{mark}{r.summary()}")
+    counts: dict[str, int] = {}
     for s in report.skew:
+        counts[s.status] = counts.get(s.status, 0) + 1
+        # ok / not_running / no_writer are thousands of rows on a healthy host.
+        if s.status in ("ok", "not_running", "no_writer") and not verbose:
+            continue
         mark = "RED " if s.red else ("ok  " if s.status == "ok" else "warn")
-        print(f"{mark}skew {s.schema} {s.service_dir} [{s.container or '-'}] {s.status}: {s.detail}")
+        print(f"{mark}skew {s.schema} {s.producer or '?'} -> {s.service_dir} [{s.container or '-'}] {s.status}: {s.detail}")
+    if report.skew:
+        print("skew rows: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     for c in report.cannot_check:
         print(f"CANNOT CHECK {c}")
     print("RED" if report.red else ("CANNOT CHECK" if report.cannot_check else "GREEN"))
@@ -363,24 +509,42 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--skip-docker", action="store_true")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--verbose", action="store_true")
-    ap.add_argument("--list-consumers", action="store_true", help="print derived schema consumers and exit")
+    ap.add_argument(
+        "--list-candidates", "--list-consumers", dest="list_candidates", action="store_true",
+        help="print discovered (schema file, writer, readers) triples and exit",
+    )
+    ap.add_argument("--include-loose", action=argparse.BooleanOptionalAction, default=True,
+                    help="also check non-forbid models (silent field drops; never red unless a required field is missing)")
+    ap.add_argument("--docker-workers", type=int, default=8)
     ap.add_argument("--notify", action="store_true", help="raise a Hub Pending Attention card on new red (debounced)")
     ap.add_argument("--notify-base-url", default=DEFAULT_NOTIFY_BASE_URL)
     ap.add_argument("--notify-api-token", default=os.getenv("NOTIFY_API_TOKEN"))
     ap.add_argument("--state-file", default=None)
     args = ap.parse_args(argv)
 
-    if args.list_consumers:
-        for schema in ll.STRICT_SCHEMAS:
-            for svc, files in ll.schema_consumer_services(Path(args.repo), schema).items():
-                print(f"{schema.symbol}\t{svc}\t{', '.join(files[:3])}{' ...' if len(files) > 3 else ''}")
+    if args.list_candidates:
+        schemas, disc = ll.discovered_schemas(Path(args.repo))
+        for sc in schemas:
+            cls = "forbid" if sc.strict else "loose"
+            for reader, models in sc.reader_models:
+                print(f"{cls}\t{sc.path}\t{sc.producer_service}\t{reader}\t{','.join(models)}")
+        for u in disc.unresolved:
+            print(f"UNRESOLVED\t{u.path}\t?\t{','.join(u.readers)}\t{u.key}")
+        strict = [s for s in schemas if s.strict]
+        print(
+            f"# {disc.strict_models} forbid models; {len({s.path for s in strict})} files / "
+            f"{sum(len(s.reader_models) for s in strict)} writer->reader pairs cross services (forbid); "
+            f"{sum(len(s.reader_models) for s in schemas if not s.strict)} loose pairs; "
+            f"{len(disc.unresolved)} unresolved",
+            file=sys.stderr,
+        )
         return EXIT_OK
 
     report = build_report(args)
     if args.json:
         print(json.dumps(report.to_dict(), indent=2))
     else:
-        print_human(report)
+        print_human(report, verbose=args.verbose)
 
     if args.notify:
         try:

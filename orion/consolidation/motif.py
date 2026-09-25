@@ -226,108 +226,6 @@ def _detect_stable_after_dry_run(
     )
 
 
-def _attention_target_pressure(
-    frames: list[FieldAttentionFrameV1],
-    *,
-    target_id: str,
-    channel: str,
-) -> list[FieldAttentionFrameV1]:
-    matches: list[FieldAttentionFrameV1] = []
-    for frame in frames:
-        for target in frame.dominant_targets:
-            if target.target_id != target_id:
-                continue
-            if float(target.dominant_channels.get(channel, 0.0)) >= 0.05:
-                matches.append(frame)
-                break
-    return matches
-
-
-def _detect_transport_contract_drift_loop(
-    *,
-    window: ConsolidationWindowData,
-    rule: MotifRuleV1,
-    policy: ConsolidationPolicyV1,
-) -> MotifObservationV1 | None:
-    cond = rule.conditions
-    target = str(cond.get("attention_target", "capability:transport"))
-    min_pressure = float(cond.get("min_contract_pressure", 0.7))
-    matches = [
-        f
-        for f in _attention_target_pressure(
-            window.attention_frames,
-            target_id=target,
-            channel="contract_pressure",
-        )
-        if any(
-            float(t.dominant_channels.get("contract_pressure", 0.0)) >= min_pressure
-            for t in f.dominant_targets
-            if t.target_id == target
-        )
-    ]
-    if len(matches) < policy.window.min_support_count:
-        return None
-    support, confidence = _score_motif(
-        match_count=len(matches),
-        total=len(window.attention_frames) or len(matches),
-        policy=policy,
-    )
-    return MotifObservationV1(
-        motif_id=_motif_id(rule.label, policy.policy_id),
-        motif_kind=rule.kind,
-        label=rule.label,
-        recurrence_count=len(matches),
-        support_score=support,
-        confidence_score=confidence,
-        evidence_frame_ids=[m.frame_id for m in matches],
-        reasons=["transport_contract_drift_attention_pattern"],
-        first_seen_at=min(m.generated_at for m in matches),
-        last_seen_at=max(m.generated_at for m in matches),
-    )
-
-
-def _detect_transport_healthy_idle(
-    *,
-    window: ConsolidationWindowData,
-    rule: MotifRuleV1,
-    policy: ConsolidationPolicyV1,
-) -> MotifObservationV1 | None:
-    cond = rule.conditions
-    target = str(cond.get("attention_target", "capability:transport"))
-    # Keyed on capability:transport's `pressure` (bus_synaptic) only. The old
-    # stream_backlog_pressure read was a channel never written on
-    # capability:transport (2026-09-22 audit) and is retired (2026-09-25).
-    max_transport = float(cond.get("max_pressure", 0.1))
-    matches = []
-    for frame in window.attention_frames:
-        for t in frame.dominant_targets:
-            if t.target_id != target:
-                continue
-            transport_p = float(t.dominant_channels.get("pressure", 0.0))
-            if transport_p <= max_transport:
-                matches.append(frame)
-                break
-    if len(matches) < policy.window.min_support_count:
-        return None
-    support, confidence = _score_motif(
-        match_count=len(matches),
-        total=len(window.attention_frames) or len(matches),
-        policy=policy,
-    )
-    return MotifObservationV1(
-        motif_id=_motif_id(rule.label, policy.policy_id),
-        motif_kind=rule.kind,
-        label=rule.label,
-        recurrence_count=len(matches),
-        support_score=support,
-        confidence_score=confidence,
-        evidence_frame_ids=[m.frame_id for m in matches],
-        reasons=["transport_healthy_idle_attention_pattern"],
-        first_seen_at=min(m.generated_at for m in matches),
-        last_seen_at=max(m.generated_at for m in matches),
-    )
-
-
 _DETECTORS = {
     # "loaded_but_reliable" removed 2026-07-22, SelfStateV1 burn
     # (docs/superpowers/specs/2026-07-22-self-state-phi-endo-origination-burn-
@@ -337,6 +235,8 @@ _DETECTORS = {
     "dry_run_feedback_loop": _detect_dry_run_feedback_loop,
     "blocked_review_loop": _detect_blocked_review_loop,
     "stable_after_dry_run": _detect_stable_after_dry_run,
-    "transport_contract_drift_loop": _detect_transport_contract_drift_loop,
-    "transport_healthy_idle": _detect_transport_healthy_idle,
+    # transport_contract_drift_loop / transport_healthy_idle deleted
+    # 2026-09-25: both read dominant_channels, which capability attention
+    # targets never populate -- see config/consolidation/
+    # consolidation_policy.v1.yaml's tombstone.
 }

@@ -46,6 +46,7 @@ def test_pipeline_groups_by_trace_and_persists_receipts() -> None:
 
     stats = process_transport_grammar_events(
         events=[
+            _event("gev_s", "bus_observer_tick_started"),
             _event("gev_h", "bus_health_observed"),
             _event("gev_done", "bus_observer_tick_completed"),
         ],
@@ -55,7 +56,7 @@ def test_pipeline_groups_by_trace_and_persists_receipts() -> None:
         now=FIXED_TS,
     )
 
-    assert stats["events"] == 2
+    assert stats["events"] == 3
     assert stats["receipts"] == 1
     assert "bus:athena" in state["projection"].buses
     assert state["receipts"][0].state_deltas[0].target_kind == "transport_bus"

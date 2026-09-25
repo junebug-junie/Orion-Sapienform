@@ -114,7 +114,8 @@ crontab -e
 make substrate-ladder-check            # human-readable; exit 1 = red, 2 = could not check
 make substrate-ladder-check JSON=1     # machine-readable
 make substrate-ladder-watch            # same, plus a debounced Hub Pending Attention card
-python scripts/check_substrate_ladder_liveness.py --list-consumers
+python scripts/check_substrate_ladder_liveness.py --list-candidates   # every (file, writer, reader) pair
+python scripts/check_substrate_ladder_liveness.py --skip-db --verbose  # skew only, every row
 ```
 
 Catches the 2026-09-20 shape: a forbid-model schema (`FieldStateV1`) gained
@@ -125,11 +126,21 @@ writing for ~48h while every container read "Up". Two checks:
    attention -> proposal -> policy -> dispatch -> feedback -> consolidation)
    has a row newer than its limit, via bounded index scans; plus consolidation
    is flagged when its last 3 hourly frames have zero motif observations;
-2. every running container of a service whose code reaches the schema
-   (derived by an import scan, not a list) has the same schema file bytes as
-   the running producer (for `FieldStateV1`, orion-field-digester); a mismatch
-   on a consumer image older than the producer's is red. A producer that
-   differs from `origin/main` is reported, not red.
+2. every schema one service writes and another validates is readable by the
+   reader's running container. `orion/schema_skew_discovery.py` finds the
+   pairs from code (an AST pass over `orion/` and `services/`): readers call
+   `X.model_validate*`/`parse_obj`/`X(**data)`, writers call `X(field=...)`,
+   shared-library call sites count for services that call that function,
+   `channels.yaml` producers are writers, nested models go with their outer
+   model. One `docker exec` per container reads all its schema copies; the
+   host parses them and compares fields. A writer field that a forbid reader
+   lacks (the exact `extra_forbidden` break), or a field a reader requires that
+   the writer lacks, is red whatever the image ages; a non-forbid reader that
+   would silently drop a field is reported, not red. When a copy cannot be
+   parsed it falls back to bytes + image age. A forbid model somebody reads
+   but nobody is found writing must be declared in `DECLARED_WRITERS`
+   (`tests/scripts/test_schema_skew_discovery.py` fails otherwise). A writer
+   that differs from `origin/main` is reported, not red.
 
 Read-only against Postgres, docker, and git. Cron, same shape as the other
 watchdogs (`crontab -e`, then paste):

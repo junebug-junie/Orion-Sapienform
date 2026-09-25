@@ -15,12 +15,21 @@ from orion.attention.field_attention.candidate_precision_weighted import (
 from orion.attention.field_attention.goal_provenance import DominanceStreak
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
+from orion.schemas.prediction_error_definitions import (
+    UNSTAMPED_DEFINITION_VERSION,
+    prediction_error_definition_version,
+)
 
 logger = logging.getLogger("orion.attention.runtime.store")
 
 # Singleton row id for the one real node-target dominance streak this service
 # tracks (see load_node_dominance_streak/save_node_dominance_streak below).
 _NODE_DOMINANCE_STREAK_ID = "node_target_dominance_streak"
+
+# How long a "definition_version column is missing" answer is trusted before
+# re-checking (the column arrives via a manual migration that may land while
+# this service is running).
+_DEFINITION_VERSION_COLUMN_RECHECK_SEC = 300.0
 
 # Batched, guard-railed prune: never deletes the newest frame (by generated_at,
 # matching load_latest_attention_frame's ordering).
@@ -40,6 +49,59 @@ WHERE ctid IN (
 """
 
 
+_UPSERT_BASELINE_SQL = """
+INSERT INTO substrate_node_prediction_error_baseline (
+    target_id, reducer_key, ewma, variance,
+    observation_count, last_value, last_receipt_created_at,
+    updated_at
+) VALUES (
+    :target_id, :reducer_key, :ewma, :variance,
+    :observation_count, :last_value, :last_receipt_created_at,
+    :updated_at
+)
+ON CONFLICT (target_id) DO UPDATE SET
+    reducer_key = EXCLUDED.reducer_key,
+    ewma = EXCLUDED.ewma,
+    variance = EXCLUDED.variance,
+    observation_count = EXCLUDED.observation_count,
+    last_value = EXCLUDED.last_value,
+    last_receipt_created_at = EXCLUDED.last_receipt_created_at,
+    updated_at = EXCLUDED.updated_at
+"""
+
+_UPSERT_BASELINE_VERSIONED_SQL = """
+INSERT INTO substrate_node_prediction_error_baseline (
+    target_id, reducer_key, ewma, variance,
+    observation_count, last_value, last_receipt_created_at,
+    updated_at, definition_version
+) VALUES (
+    :target_id, :reducer_key, :ewma, :variance,
+    :observation_count, :last_value, :last_receipt_created_at,
+    :updated_at, :definition_version
+)
+ON CONFLICT (target_id) DO UPDATE SET
+    reducer_key = EXCLUDED.reducer_key,
+    ewma = EXCLUDED.ewma,
+    variance = EXCLUDED.variance,
+    observation_count = EXCLUDED.observation_count,
+    last_value = EXCLUDED.last_value,
+    last_receipt_created_at = EXCLUDED.last_receipt_created_at,
+    updated_at = EXCLUDED.updated_at,
+    definition_version = EXCLUDED.definition_version
+"""
+
+
+def _parse_definition_version(raw) -> int:
+    """A stamped version, or ``UNSTAMPED_DEFINITION_VERSION`` for a missing/garbled one
+    (receipts and rows written before versions existed carry none)."""
+    if raw is None:
+        return UNSTAMPED_DEFINITION_VERSION
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return UNSTAMPED_DEFINITION_VERSION
+
+
 class AttentionRuntimeStore:
     def __init__(self, postgres_uri: str) -> None:
         self._engine: Engine = create_engine(
@@ -48,6 +110,49 @@ class AttentionRuntimeStore:
             json_serializer=json.dumps,
             json_deserializer=json.loads,
         )
+        self._definition_version_column: bool | None = None
+        self._definition_version_checked_at: datetime | None = None
+
+    def _has_definition_version_column(self, conn) -> bool:
+        """Whether ``substrate_node_prediction_error_baseline.definition_version``
+        exists (services/orion-sql-db/manual_migration_node_prediction_error_
+        baseline_v2_definition_version.sql). Cached once found; a missing answer is
+        re-checked every ``_DEFINITION_VERSION_COLUMN_RECHECK_SEC``."""
+        cached = getattr(self, "_definition_version_column", None)
+        checked_at = getattr(self, "_definition_version_checked_at", None)
+        now = datetime.now(timezone.utc)
+        if cached is True:
+            return True
+        if (
+            cached is False
+            and checked_at is not None
+            and (now - checked_at).total_seconds() < _DEFINITION_VERSION_COLUMN_RECHECK_SEC
+        ):
+            return False
+        present = bool(
+            conn.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'substrate_node_prediction_error_baseline'
+                          AND column_name = 'definition_version'
+                    ) AS present
+                    """
+                )
+            ).scalar()
+        )
+        if not present:
+            logger.warning(
+                "node_prediction_error_baseline_definition_version_column_missing "
+                "apply services/orion-sql-db/manual_migration_node_prediction_error_"
+                "baseline_v2_definition_version.sql; baselines are NOT reset on a "
+                "prediction-error definition change until it is applied"
+            )
+        self._definition_version_column = present
+        self._definition_version_checked_at = now
+        return present
 
     def load_latest_field(self) -> FieldStateV1 | None:
         with self._engine.connect() as conn:
@@ -198,16 +303,30 @@ class AttentionRuntimeStore:
         persisted baseline again. A baseline-advance failure must never crash the
         attention tick, same contract as `load_prediction_error_history`'s `[]`
         degrade.
+
+        **Definition-version reset (2026-09-25).** A baseline summarises one
+        formula's numbers. ``orion.schemas.prediction_error_definitions`` names the
+        live formula version per ``reducer_key``, and the substrate runtime stamps
+        it on every receipt (``after.definition_version``; unstamped = 1). If the
+        persisted row was built on a different version, it restarts cold (the
+        cursor is kept), and only receipts stamped with the live version are
+        folded -- so a receipt the old producer wrote before a deploy cannot seed
+        the new baseline, whichever service restarts first. Until the
+        ``definition_version`` column exists this falls back to the pre-2026-09-25
+        behaviour (fold everything, never reset) and logs a warning.
         """
+        live_version = prediction_error_definition_version(reducer_key)
         try:
             with self._engine.begin() as conn:
+                versioned = self._has_definition_version_column(conn)
                 existing = (
                     conn.execute(
                         text(
                             """
                             SELECT ewma, variance, observation_count, last_value,
-                                   last_receipt_created_at
-                            FROM substrate_node_prediction_error_baseline
+                                   last_receipt_created_at,
+                                   to_jsonb(b) ->> 'definition_version' AS definition_version
+                            FROM substrate_node_prediction_error_baseline b
                             WHERE target_id = :target_id
                             """
                         ),
@@ -232,6 +351,23 @@ class AttentionRuntimeStore:
                     )
                     cursor = existing["last_receipt_created_at"]
 
+                reset = False
+                if versioned and existing is not None:
+                    stored_version = _parse_definition_version(existing.get("definition_version"))
+                    if stored_version != live_version:
+                        logger.info(
+                            "node_prediction_error_baseline_definition_reset target_id=%s "
+                            "reducer_key=%s stored_version=%s live_version=%s "
+                            "discarded_observation_count=%s",
+                            target_id,
+                            reducer_key,
+                            stored_version,
+                            live_version,
+                            baseline.observation_count,
+                        )
+                        baseline = PrecisionEwmaBaseline()
+                        reset = True
+
                 # Strict `>` cursor comparison (code review, 2026-07-30): if two real
                 # receipts for the same reducer ever land with an exactly identical
                 # `created_at` (same microsecond) and only one is captured before
@@ -248,6 +384,8 @@ class AttentionRuntimeStore:
                             SELECT
                                 receipt_json -> 'state_deltas' -> 0 -> 'after'
                                     -> 'pressure_hints' ->> 'prediction_error' AS error,
+                                receipt_json -> 'state_deltas' -> 0 -> 'after'
+                                    ->> 'definition_version' AS definition_version,
                                 created_at
                             FROM substrate_reduction_receipts
                             WHERE reducer_name = :reducer_id
@@ -266,13 +404,19 @@ class AttentionRuntimeStore:
                     .all()
                 )
 
-                if not new_rows:
+                if not new_rows and not reset:
                     return baseline
 
                 new_values: list[float] = []
                 newest_created_at = cursor
+                version_skipped = 0
                 for row in new_rows:
                     newest_created_at = row["created_at"]
+                    if versioned and (
+                        _parse_definition_version(row.get("definition_version")) != live_version
+                    ):
+                        version_skipped += 1
+                        continue
                     raw = row.get("error")
                     if raw is None:
                         continue
@@ -281,33 +425,28 @@ class AttentionRuntimeStore:
                     except (TypeError, ValueError):
                         continue
 
+                if version_skipped:
+                    # Receipts from a producer running a different formula version
+                    # (deploy skew or a rolled-back substrate runtime). Skipped so
+                    # they cannot seed this baseline -- logged so a target stuck at
+                    # observation_count=0 has a visible cause.
+                    logger.warning(
+                        "node_prediction_error_baseline_version_skipped target_id=%s "
+                        "reducer_key=%s skipped=%s live_version=%s",
+                        target_id,
+                        reducer_key,
+                        version_skipped,
+                        live_version,
+                    )
+
                 advanced = advance_precision_baseline(
                     baseline, new_values, alpha=alpha, min_variance=min_variance
                 )
 
                 conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_node_prediction_error_baseline (
-                            target_id, reducer_key, ewma, variance,
-                            observation_count, last_value, last_receipt_created_at,
-                            updated_at
-                        ) VALUES (
-                            :target_id, :reducer_key, :ewma, :variance,
-                            :observation_count, :last_value, :last_receipt_created_at,
-                            :updated_at
-                        )
-                        ON CONFLICT (target_id) DO UPDATE SET
-                            reducer_key = EXCLUDED.reducer_key,
-                            ewma = EXCLUDED.ewma,
-                            variance = EXCLUDED.variance,
-                            observation_count = EXCLUDED.observation_count,
-                            last_value = EXCLUDED.last_value,
-                            last_receipt_created_at = EXCLUDED.last_receipt_created_at,
-                            updated_at = EXCLUDED.updated_at
-                        """
-                    ),
+                    text(_UPSERT_BASELINE_VERSIONED_SQL if versioned else _UPSERT_BASELINE_SQL),
                     {
+                        "definition_version": live_version,
                         "target_id": target_id,
                         "reducer_key": reducer_key,
                         "ewma": advanced.ewma,
@@ -320,6 +459,9 @@ class AttentionRuntimeStore:
                 )
                 return advanced
         except Exception:
+            # Re-probe the definition_version column next time: a dropped column
+            # (migration rollback) must not wedge every advance until restart.
+            self._definition_version_column = None
             logger.exception(
                 "node_prediction_error_baseline_advance_failed target_id=%s", target_id
             )

@@ -290,6 +290,7 @@ def _prediction_error_receipt(
     now: datetime,
     caused_by_event_ids: Sequence[str] = (),
 ) -> Any:
+    from orion.schemas.prediction_error_definitions import prediction_error_definition_version
     from orion.schemas.reduction_receipt import ReductionReceiptV1
     from orion.schemas.state_delta import StateDeltaV1
     import uuid
@@ -308,6 +309,12 @@ def _prediction_error_receipt(
                 after={
                     "node_id": node_id,
                     "pressure_hints": {"prediction_error": round(prediction_error, 4)},
+                    # Which formula produced this number. The attention runtime
+                    # restarts its precision baseline for this target when the
+                    # version moves and folds only matching receipts
+                    # (orion/schemas/prediction_error_definitions.py). Kept out of
+                    # pressure_hints so no digester channel is created for it.
+                    "definition_version": prediction_error_definition_version(reducer_key),
                 },
                 caused_by_event_ids=list(
                     caused_by_event_ids[:_PREDICTION_ERROR_EVIDENCE_CAP]
@@ -3991,6 +3998,7 @@ class BiometricsSubstrateWorker:
                 save_projection=self._store.save_transport_bus_projection,
                 save_receipt=self._store.save_receipt,
                 now=now,
+                load_trace_events=self._store.fetch_transport_trace_events,
             )
 
         last_id = self._process_events_with_poison_isolation(

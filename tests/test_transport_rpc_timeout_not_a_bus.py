@@ -181,6 +181,7 @@ def test_persisted_phantom_is_pruned_on_next_batch_and_real_bus_kept() -> None:
     process_transport_grammar_events(
         events=[
             _live_event(),
+            _athena_event("bus_observer_tick_started"),
             _athena_event("bus_health_observed"),
             _athena_event("bus_observer_tick_completed"),
         ],

@@ -467,10 +467,12 @@ postgres-headroom-watch:
 # Substrate ladder liveness (2026-09-20 incident: a FieldStateV1 forbid-field was
 # added, only the producer redeployed, attention/proposal wrote nothing for ~48h
 # while every container read "Up"). Two checks: every rung table still has a
-# recent row (bounded index scans), and every container that validates a strict
-# cross-service schema runs the same copy its producer writes (import-scan
-# derived consumer list; `--list-consumers` shows it). Read-only against
-# Postgres, docker, and git. Exit 1 = red, 2 = could not check.
+# recent row (bounded index scans), and every container that validates a
+# schema another service writes can read what that writer's container writes
+# (orion/schema_skew_discovery.py finds every forbid-model (file, writer,
+# readers) triple from call sites; `--list-candidates` shows them; one docker
+# exec per container reads its copies, fields compared on the host). Read-only
+# against Postgres, docker, and git. Exit 1 = red, 2 = could not check.
 # substrate-ladder-watch adds a debounced Hub Pending Attention card via
 # orion-notify, the same path disk-threshold-watchdog/postgres-headroom-watch use
 # from host cron. See scripts/check_substrate_ladder_liveness.py.

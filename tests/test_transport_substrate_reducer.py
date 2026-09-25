@@ -56,7 +56,10 @@ def _event(event_id: str, role: str, summary: str) -> GrammarEventV1:
 
 
 def _live_events() -> list[GrammarEventV1]:
+    # Real observer ticks open with bus_observer_tick_started; the reducer
+    # only writes whole ticks (started .. completed/failed).
     return [
+        _event("gev_s", "bus_observer_tick_started", "node_id=athena sample_window_id=20260525T233010Z"),
         _event("gev_h", "bus_health_observed", "redis_ping_ok=true node_id=athena sample_window_id=20260525T233010Z"),
         _event(
             "gev_d1",

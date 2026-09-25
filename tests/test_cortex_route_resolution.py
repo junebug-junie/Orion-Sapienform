@@ -63,7 +63,7 @@ def _route(verb: str, *, kind: str = "maintain") -> CortexRouteTemplateV1:
     "kind,template",
     [
         ("maintain", "prune_build_cache"),
-        ("inspect", "inspect_bus_channel_catalog"),
+        ("inspect", "inspect_transport_status"),
         ("summarize", "summarize_loaded_state"),
         ("observe", "watch_reliability"),
         # An externally-produced candidate with no template at all -- reverie

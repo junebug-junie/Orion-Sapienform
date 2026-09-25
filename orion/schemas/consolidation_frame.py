@@ -54,7 +54,12 @@ class ExpectationV1(BaseModel):
         "reliability_clear",
         "execution_pressure_high",
         "resource_pressure_high",
-        "contract_drift_persists",
+        # "contract_drift_persists" removed 2026-09-25 with its only producer
+        # (the transport_contract_drift_loop motif), which never fired.
+        # "transport_stable" has no producer either since that date
+        # (transport_healthy_idle deleted), but stays: one stored
+        # substrate_expectations row and the 2026-09-25 04:00 consolidation
+        # frame carry it and must still parse.
         "transport_stable",
         "unknown",
     ]

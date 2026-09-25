@@ -17,6 +17,8 @@ on:
       - "services/orion-sql-writer/**"
       - "services/orion-substrate-runtime/**"
       - "tests/test_sql_writer_*.py"
+      - "tests/test_transport_*.py"
+      - "tests/fixtures/transport_*"
       - ".github/workflows/orion-sql-writer-tests.yml"
   push:
     branches: [main]
@@ -30,6 +32,8 @@ on:
       - "services/orion-sql-writer/**"
       - "services/orion-substrate-runtime/**"
       - "tests/test_sql_writer_*.py"
+      - "tests/test_transport_*.py"
+      - "tests/fixtures/transport_*"
       - ".github/workflows/orion-sql-writer-tests.yml"
 
 jobs:
@@ -47,6 +51,13 @@ jobs:
           python -m pip install -r services/orion-sql-writer/requirements.txt
           python -m pip install -r requirements-dev.txt
           python -m pip install pytest-asyncio
+      - name: Run transport reducer unit tests
+        run: |
+          PYTHONPATH=. python -m pytest -q \
+            tests/test_transport_split_window_no_fake_health.py \
+            tests/test_transport_substrate_reducer.py \
+            tests/test_transport_substrate_pipeline.py \
+            tests/test_transport_rpc_timeout_not_a_bus.py
       - name: Run sql-writer unit tests
         run: |
           PYTHONPATH=.:services/orion-sql-writer python -m pytest -q \

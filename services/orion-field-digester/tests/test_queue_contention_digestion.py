@@ -346,10 +346,14 @@ def test_age_sql_filters_match_the_queue_they_describe() -> None:
     assert "FROM world_pulse_read_seed WHERE status = 'pending'" in seed_sql
     # Head of line in CLAIM_SQL's own order.
     assert "ORDER BY priority ASC, attempts ASC, created_at ASC, seed_id ASC LIMIT 1" in seed_sql
-    assert "FROM durable_resource_demands WHERE status = 'pending'" in durable_sql
-    assert "min(created_at)" in durable_sql
-    # Queued only: backlogged leases may wait up to backlog_max_age_sec by design.
-    assert "FROM gpu_pool_leases WHERE status = 'queued'" in pool_sql
+    # Durable: legacy pending demands UNION waiting pool holds (stage 4.4); behaviour is pinned on
+    # real Postgres in test_durable_waiting_sql_postgres.py.
+    assert "FROM durable_resource_demands d WHERE d.status = 'pending'" in durable_sql
+    assert "h.kind = 'hold' AND h.status IN ('queued', 'backlogged')" in durable_sql
+    assert "min(waiting_since)" in durable_sql
+    # Queued only: backlogged leases may wait up to backlog_max_age_sec by design. Requests only:
+    # a waiting hold is durable_demand_pending's, never double-counted here.
+    assert "FROM gpu_pool_leases WHERE status = 'queued' AND kind = 'request'" in pool_sql
     assert "coalesce(queued_since, created_at)" in pool_sql
 
 
@@ -362,3 +366,16 @@ def test_seed_age_order_matches_claim_sql() -> None:
 def test_age_sql_empty_queue_is_zero_and_negative_clamped() -> None:
     assert _store_with(None).oldest_gpu_pool_waiting_age_sec() == 0.0
     assert _store_with(-3.0).oldest_durable_demand_pending_age_sec() == 0.0
+
+
+def test_durable_waiting_sql_joins_on_the_pool_clients_holder_shape() -> None:
+    """The hold side is found by holder text; if durable-runs (4.5) and this reader disagreed on
+    it, every resumed run would be counted twice across the cutover."""
+    from app.store import DURABLE_WAITING_SQL
+    from orion.gpu_pool.client import DURABLE_RUN_HOLDER_PREFIX, durable_run_holder
+    from orion.schemas.gpu_pool import TERMINAL_STATUSES
+
+    assert f"h.holder = '{DURABLE_RUN_HOLDER_PREFIX}' || d.run_id" in DURABLE_WAITING_SQL
+    assert durable_run_holder("r") == f"{DURABLE_RUN_HOLDER_PREFIX}r"
+    for status in TERMINAL_STATUSES:
+        assert f"'{status}'" in DURABLE_WAITING_SQL

@@ -76,6 +76,34 @@ class PendingDelta:
     receipt_id: str
 
 
+# Durable runs waiting for a GPU, one row per waiting run, across the stage-4 cutover (GPU pool
+# stage 4.4; spec docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md):
+#
+# * legacy half -- durable-runs' own broker queue (durable_resource_demands pending). Frozen at
+#   cutover (4.5) and deleted in 4.6. A pending demand whose run already has a live pool hold is
+#   left out: between 4.5's deploy and the withdrawal of the frozen demands a resumed run has
+#   both, and must count once, as its hold (waiting or not);
+# * pool half -- that run's hold (kind='hold', holder 'durable-runs:<run_id>', orion.gpu_pool.client
+#   .durable_run_holder) while it waits: queued or backlogged. retry_wait / granted / recalling are
+#   not waiting, the same rule gpu_pool_waiting uses.
+#
+# Before cutover the pool half is empty; after the migration the legacy half is.
+DURABLE_WAITING_SQL = """
+    SELECT d.created_at AS waiting_since
+    FROM durable_resource_demands d
+    WHERE d.status = 'pending'
+      AND NOT EXISTS (
+        SELECT 1 FROM gpu_pool_leases h
+        WHERE h.kind = 'hold' AND h.holder = 'durable-runs:' || d.run_id
+          AND h.status NOT IN ('released', 'unavailable', 'dead_letter')
+      )
+    UNION ALL
+    SELECT coalesce(h.queued_since, h.created_at) AS waiting_since
+    FROM gpu_pool_leases h
+    WHERE h.kind = 'hold' AND h.status IN ('queued', 'backlogged')
+"""
+
+
 class FieldDigesterStore:
     def __init__(self, postgres_uri: str) -> None:
         self._engine: Engine = create_engine(
@@ -465,13 +493,17 @@ class FieldDigesterStore:
     def count_gpu_pool_waiting(self) -> int:
         """Leases waiting for a GPU in orion-gpu-pool (queue contention source ``gpu_pool_waiting``):
         queued for a slot, or backlogged until a role that can serve them comes back. Not retry_wait
-        (cooling down after a failure) and not granted/recalling (holding a GPU, not waiting)."""
+        (cooling down after a failure) and not granted/recalling (holding a GPU, not waiting).
+
+        Request leases only (stage 4.4): a waiting durable-run HOLD is counted by
+        ``durable_demand_pending`` instead, so no hold is counted twice and each source keeps its
+        own calibrated expected-wait anchor (60s here, 12h there)."""
         with self._engine.connect() as conn:
             value = conn.execute(
                 text(
                     """
                     SELECT count(*) FROM gpu_pool_leases
-                    WHERE status IN ('queued', 'backlogged')
+                    WHERE status IN ('queued', 'backlogged') AND kind = 'request'
                     """
                 )
             ).scalar()
@@ -518,27 +550,24 @@ class FieldDigesterStore:
         return self._oldest_age_sec(
             """
             SELECT EXTRACT(EPOCH FROM now() - min(coalesce(queued_since, created_at)))
-            FROM gpu_pool_leases WHERE status = 'queued'
+            FROM gpu_pool_leases WHERE status = 'queued' AND kind = 'request'
             """
         )
 
     def oldest_durable_demand_pending_age_sec(self) -> float:
+        """Oldest durable run waiting for its GPU, across the stage-4 cutover (see
+        DURABLE_WAITING_SQL): a legacy demand's created_at, or a waiting hold's queued_since."""
         return self._oldest_age_sec(
-            """
-            SELECT EXTRACT(EPOCH FROM now() - min(created_at))
-            FROM durable_resource_demands WHERE status = 'pending'
+            f"""
+            SELECT EXTRACT(EPOCH FROM now() - min(waiting_since))
+            FROM ({DURABLE_WAITING_SQL}) AS durable_waiting
             """
         )
 
     def count_durable_demand_pending(self) -> int:
-        """Pending durable resource demands (queue contention source)."""
+        """Durable runs waiting for their GPU (queue contention source ``durable_demand_pending``)."""
         with self._engine.connect() as conn:
             value = conn.execute(
-                text(
-                    """
-                    SELECT count(*) FROM durable_resource_demands
-                    WHERE status = 'pending'
-                    """
-                )
+                text(f"SELECT count(*) FROM ({DURABLE_WAITING_SQL}) AS durable_waiting")
             ).scalar()
         return int(value or 0)

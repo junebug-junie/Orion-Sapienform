@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import os
 import sqlite3
@@ -100,6 +101,113 @@ _ROLLBACK_COOLDOWN_MULTIPLIER: dict[str, float] = {
 SURFACE_RELIABILITY_MIN_SAMPLES = 3
 
 
+# 2026-09-25 live incident: `_persist_to_postgres` used to re-UPSERT every
+# in-memory row of every table (550k+ signals) inside ONE transaction, one
+# statement at a time, on every `_persist()` call. That transaction sat "idle
+# in transaction" for 7+ minutes between statements; `CREATE INDEX
+# CONCURRENTLY` anywhere in the database (LangGraph saver.setup() at
+# orion-gpu-pool boot) waited on it, and the LLM lane was down ~10 minutes
+# until the sessions were terminated by hand. Persisting now writes only rows
+# whose serialized payload differs from what this store last wrote/loaded, in
+# transactions of at most this many rows each.
+_PERSIST_BATCH_ROWS = 500
+
+# Row-per-record tables, in the order the pre-2026-09-25 full sweep wrote
+# them. (table, id column, timestamp column, store attribute, model class).
+# The id/timestamp column names are also the model attribute names.
+_ROW_TABLES: tuple[tuple[str, str, str, str, type], ...] = (
+    ("substrate_mutation_pressure", "pressure_id", "updated_at", "_pressures", MutationPressureV1),
+    ("substrate_mutation_proposal", "proposal_id", "created_at", "_proposals", MutationProposalV1),
+    ("substrate_mutation_queue", "queue_item_id", "created_at", "_queue", MutationQueueItemV1),
+    ("substrate_mutation_trial", "trial_id", "created_at", "_trials", MutationTrialV1),
+    ("substrate_mutation_decision", "decision_id", "created_at", "_decisions", MutationDecisionV1),
+    ("substrate_mutation_adoption", "adoption_id", "created_at", "_adoptions", MutationAdoptionV1),
+    ("substrate_mutation_rollback", "rollback_id", "created_at", "_rollbacks", MutationRollbackV1),
+    ("substrate_mutation_cognitive_review", "review_id", "created_at", "_cognitive_reviews", CognitiveProposalReviewV1),
+    ("substrate_mutation_cognitive_draft", "draft_id", "created_at", "_cognitive_drafts", CognitiveDraftRecommendationV1),
+    ("substrate_mutation_cognitive_proposal_draft", "draft_id", "updated_at", "_cognitive_proposal_drafts", CognitiveProposalDraftV1),
+    ("substrate_mutation_cognitive_stance_note", "stance_note_id", "updated_at", "_cognitive_stance_notes", CognitiveStanceNoteV1),
+    ("substrate_mutation_recall_strategy_profile", "profile_id", "updated_at", "_recall_strategy_profiles", RecallStrategyProfileV1),
+    ("substrate_mutation_recall_shadow_eval_run", "run_id", "completed_at", "_recall_shadow_eval_runs", RecallShadowEvalRunV1),
+    (
+        "substrate_mutation_recall_production_candidate_review",
+        "review_id",
+        "updated_at",
+        "_recall_production_candidate_reviews",
+        RecallProductionCandidateReviewV1,
+    ),
+    ("substrate_mutation_recall_canary_run", "canary_run_id", "updated_at", "_recall_canary_runs", RecallCanaryRunV1),
+    ("substrate_mutation_recall_canary_judgment", "judgment_id", "created_at", "_recall_canary_judgments", RecallCanaryJudgmentRecordV1),
+    (
+        "substrate_mutation_recall_canary_review_artifact",
+        "review_artifact_id",
+        "created_at",
+        "_recall_canary_review_artifacts",
+        RecallCanaryReviewArtifactV1,
+    ),
+)
+_SIGNAL_TABLE = ("substrate_mutation_signal", "signal_id", "detected_at")
+_APPLY_BLOCK_TABLE = ("substrate_mutation_apply_block", "block_key", "created_at")
+_ACTIVE_SURFACE_TABLE = "substrate_mutation_active_surface"
+
+
+def _payload_json(item: Any) -> str:
+    """The exact payload string every writer in this module persists."""
+    data = item.model_dump(mode="json") if hasattr(item, "model_dump") else item
+    return json.dumps(data, ensure_ascii=False, sort_keys=True)
+
+
+def _digest(payload: str) -> bytes:
+    """What the persisted-state maps keep per row: a 16-byte digest of the
+    payload string, not the (KB-sized) string itself."""
+    return hashlib.blake2b(payload.encode("utf-8"), digest_size=16).digest()
+
+
+def _normalize_payload_text(raw: Any) -> str:
+    """A loaded payload re-serialized the same way `_payload_json` writes one,
+    so an unchanged row compares equal to what was loaded."""
+    data = json.loads(raw) if isinstance(raw, (str, bytes, bytearray)) else raw
+    return json.dumps(data, ensure_ascii=False, sort_keys=True)
+
+
+def _upsert_sql(backend: str, table: str, id_col: str, ts_col: str) -> str:
+    if backend == "postgres":
+        return (
+            f"INSERT INTO {table}({id_col}, {ts_col}, payload_json) "
+            f"VALUES (:id, :ts, CAST(:payload AS JSONB)) "
+            f"ON CONFLICT ({id_col}) DO UPDATE SET {ts_col} = EXCLUDED.{ts_col}, payload_json = EXCLUDED.payload_json"
+        )
+    return (
+        f"INSERT INTO {table}({id_col}, {ts_col}, payload_json) VALUES (?, ?, ?) "
+        f"ON CONFLICT({id_col}) DO UPDATE SET {ts_col}=excluded.{ts_col}, payload_json=excluded.payload_json"
+    )
+
+
+def _sqlite_ts(value: Any) -> str:
+    return value.isoformat() if isinstance(value, datetime) else str(value)
+
+
+@dataclass
+class _WriteRow:
+    table: str
+    row_id: str
+    ts: Any
+    payload: str
+    #: Position in `_signals` for signal rows (advances the signal mark on
+    #: commit); None for every other table.
+    signal_index: int | None = None
+
+
+@dataclass
+class _WriteOp:
+    table: str
+    sql: str
+    rows: list[_WriteRow]
+    #: Active-surface rewrite: DELETE-all then INSERT, never split across
+    #: transactions (a split would expose an empty lock table to a reload).
+    active_surface: bool = False
+
+
 @dataclass
 class SubstrateMutationStore:
     sql_db_path: str | None = None
@@ -138,6 +246,26 @@ class SubstrateMutationStore:
     _recall_canary_review_artifacts: dict[str, RecallCanaryReviewArtifactV1] = field(default_factory=dict, init=False)
     _retention_max_blocked_applies: int = field(default=500, init=False)
     _retention_max_rollbacks: int = field(default=500, init=False)
+    #: What each backend is known to hold, per table: row id -> digest of the
+    #: exact payload string last written or loaded. `_persist()` only writes rows
+    #: whose current payload differs. Keyed by backend because the Postgres
+    #: and sqlite mirrors are written independently (sqlite only on fallback).
+    _persisted_payloads: dict[str, dict[str, dict[str, bytes]]] = field(default_factory=dict, init=False, repr=False)
+    #: `_signals` is append-only; per backend, (the list object, count of its
+    #: leading entries already persisted). Keeping the list object detects a
+    #: wholesale reassignment (reload), which resets the mark to 0.
+    _signal_marks: dict[str, tuple[list[MutationSignalV1], int]] = field(default_factory=dict, init=False, repr=False)
+    #: Serializes every database write (full `_persist()` and the single-row
+    #: helpers) from snapshot through commit to recording what was written.
+    #: Without it, two overlapping saves (mutation worker thread vs. hub
+    #: event loop) could commit an older row version last while recording the
+    #: newer digest -- after which the row is never rewritten. Transactions
+    #: are short now, so serializing saves is cheap. Always taken OUTSIDE
+    #: `_lock` (no caller persists while holding `_lock`).
+    _persist_io_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
+    #: One cached SQLAlchemy engine per store (was: create_engine per call).
+    _engine: Any = field(default=None, init=False, repr=False)
+    _engine_url: str | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._retention_max_blocked_applies = self._env_int("SUBSTRATE_MUTATION_RETENTION_MAX_BLOCKED_APPLIES", 500, low=50, high=100000)
@@ -893,6 +1021,10 @@ class SubstrateMutationStore:
         return [row.model_dump(mode="json") for row in rows[:limit]]
 
     def _persist(self) -> None:
+        with self._persist_io_lock:
+            self._persist_locked()
+
+    def _persist_locked(self) -> None:
         self._compact_artifacts()
         if self.postgres_url:
             try:
@@ -946,296 +1078,245 @@ class SubstrateMutationStore:
             )
             conn.commit()
 
+    # ------------------------------------------------------------------
+    # Dirty-only, batched persistence (2026-09-25; see _PERSIST_BATCH_ROWS)
+    # ------------------------------------------------------------------
+
+    def _pg_engine(self) -> Any:
+        """The store's one cached engine. Rebuilt only if postgres_url changes."""
+        from sqlalchemy import create_engine
+
+        with self._lock:
+            if self._engine is None or self._engine_url != self.postgres_url:
+                old = self._engine
+                self._engine = create_engine(self.postgres_url, pool_pre_ping=True, pool_size=2, max_overflow=3)
+                # A different database: nothing we recorded about the old
+                # one applies, so the next persist fully sweeps the new one.
+                if old is not None:
+                    self._persisted_payloads.pop("postgres", None)
+                    self._signal_marks.pop("postgres", None)
+                self._engine_url = self.postgres_url
+                if old is not None:
+                    try:
+                        old.dispose()
+                    except Exception:
+                        pass
+            return self._engine
+
+    def _known_payloads(self, backend: str, table: str) -> dict[str, bytes]:
+        return self._persisted_payloads.setdefault(backend, {}).setdefault(table, {})
+
+    def _forget_persisted(self, backend: str, table: str, row_id: str) -> None:
+        """After a single-row helper writes a row, drop what we knew about it.
+
+        The helper serialized the object itself, and the object can be
+        mutated in place, so we cannot be sure which version landed. Forgetting
+        is the safe direction: the next `_persist()` rewrites this one row
+        (idempotent), where recording a digest could mark a stale row current
+        forever.
+        """
+        with self._lock:
+            self._known_payloads(backend, table).pop(row_id, None)
+
+    def _note_signal_persisted(self, backend: str, signal: MutationSignalV1) -> None:
+        """Advance the signal mark past `signal` if it is the next unpersisted one."""
+        with self._lock:
+            lst = self._signals
+            mark = self._signal_marks.get(backend)
+            if mark is None or mark[0] is not lst:
+                return
+            idx = mark[1]
+            if idx < len(lst) and lst[idx] is signal:
+                self._signal_marks[backend] = (lst, idx + 1)
+
+    def _dirty_write_ops(self, backend: str) -> list[_WriteOp]:
+        """Every row whose current payload differs from what `backend` holds.
+
+        Signals are append-only facts: only entries past the backend's mark
+        are written (O(new), not O(550k) -- no per-signal serialization of
+        history). Every other table is small (thousands of rows) and mutated
+        via model_copy or in place, so it is diffed by serialized payload.
+        The active-surface lock table is always rewritten, exactly as before
+        (DELETE-all + INSERT, in one transaction), since its updated_at is
+        stamped per write and it holds a handful of rows.
+        """
+        ops: list[_WriteOp] = []
+        with self._lock:
+            signals = self._signals
+            end = len(signals)
+            mark = self._signal_marks.get(backend)
+            start = mark[1] if mark is not None and mark[0] is signals and mark[1] <= end else 0
+            new_signals = signals[start:end]
+            tables = [(table, id_col, ts_col, list(getattr(self, attr).values())) for table, id_col, ts_col, attr, _model in _ROW_TABLES]
+            active_surfaces = list(self._active_surface_by_target.items())
+            blocked = list(self._blocked_applies.values())
+        table, id_col, ts_col = _SIGNAL_TABLE
+        if new_signals:
+            ops.append(
+                _WriteOp(
+                    table,
+                    _upsert_sql(backend, table, id_col, ts_col),
+                    [_WriteRow(table, s.signal_id, s.detected_at, _payload_json(s), start + i) for i, s in enumerate(new_signals)],
+                )
+            )
+        for table, id_col, ts_col, items in tables:
+            known = self._known_payloads(backend, table)
+            rows = []
+            for item in items:
+                payload = _payload_json(item)
+                row_id = getattr(item, id_col)
+                if known.get(row_id) != _digest(payload):
+                    rows.append(_WriteRow(table, row_id, getattr(item, ts_col), payload))
+            if rows:
+                ops.append(_WriteOp(table, _upsert_sql(backend, table, id_col, ts_col), rows))
+        now = _utc_now()
+        ops.append(
+            _WriteOp(
+                _ACTIVE_SURFACE_TABLE,
+                "",
+                [_WriteRow(_ACTIVE_SURFACE_TABLE, surface, now, adoption_id) for surface, adoption_id in active_surfaces],
+                active_surface=True,
+            )
+        )
+        table, id_col, ts_col = _APPLY_BLOCK_TABLE
+        known = self._known_payloads(backend, table)
+        rows = []
+        for item in blocked:
+            payload = _payload_json(item)
+            row_id = str(item.get("block_key"))
+            if known.get(row_id) != _digest(payload):
+                rows.append(_WriteRow(table, row_id, str(item.get("created_at")), payload))
+        if rows:
+            ops.append(_WriteOp(table, _upsert_sql(backend, table, id_col, ts_col), rows))
+        return ops
+
+    @staticmethod
+    def _chunk_ops(ops: list[_WriteOp], limit: int = _PERSIST_BATCH_ROWS) -> list[list[_WriteOp]]:
+        """Pack ops into transactions of at most `limit` rows, in order."""
+        txns: list[list[_WriteOp]] = []
+        current: list[_WriteOp] = []
+        count = 0
+        for op in ops:
+            if op.active_surface:
+                size = max(1, len(op.rows))
+                if current and count + size > limit:
+                    txns.append(current)
+                    current, count = [], 0
+                current.append(op)
+                count += size
+                continue
+            i = 0
+            while i < len(op.rows):
+                room = limit - count
+                if room <= 0:
+                    txns.append(current)
+                    current, count = [], 0
+                    room = limit
+                part = op.rows[i : i + room]
+                current.append(_WriteOp(op.table, op.sql, part))
+                count += len(part)
+                i += len(part)
+        if current:
+            txns.append(current)
+        return txns
+
+    def _mark_committed(self, backend: str, txn: list[_WriteOp]) -> None:
+        with self._lock:
+            for op in txn:
+                if op.active_surface:
+                    continue
+                for row in op.rows:
+                    if row.signal_index is not None:
+                        mark = self._signal_marks.get(backend)
+                        base = mark[1] if mark is not None and mark[0] is self._signals else 0
+                        if row.signal_index + 1 > base:
+                            self._signal_marks[backend] = (self._signals, row.signal_index + 1)
+                    else:
+                        self._known_payloads(backend, row.table)[row.row_id] = _digest(row.payload)
+
+    def _seed_persisted_state(self, backend: str, raw: dict[str, list[tuple[str, Any]]]) -> None:
+        """After a load, record what `backend` holds so the next persist is a no-op."""
+        with self._lock:
+            self._persisted_payloads[backend] = {
+                table: {str(row_id): _digest(_normalize_payload_text(payload)) for row_id, payload in rows}
+                for table, rows in raw.items()
+                if table != _SIGNAL_TABLE[0]
+            }
+            self._signal_marks[backend] = (self._signals, len(self._signals))
+
+    def _apply_loaded_rows(self, raw: dict[str, list[tuple[str, Any]]]) -> None:
+        """Rebuild in-memory state from raw (row_id, payload) rows per table.
+
+        Parsing happens here, outside any database transaction.
+        """
+        def _parse(payload: Any) -> Any:
+            return json.loads(payload) if isinstance(payload, (str, bytes, bytearray)) else payload
+
+        self._signals = [MutationSignalV1.model_validate(_parse(p)) for _row_id, p in raw.get(_SIGNAL_TABLE[0], [])]
+        for table, id_col, _ts_col, attr, model in _ROW_TABLES:
+            items = [model.model_validate(_parse(p)) for _row_id, p in raw.get(table, [])]
+            if attr == "_pressures":
+                setattr(self, attr, {self._pressure_key(item): item for item in items})
+            else:
+                setattr(self, attr, {getattr(item, id_col): item for item in items})
+        self._active_surface_by_target = {str(surface): str(adoption_id) for surface, adoption_id in raw.get(_ACTIVE_SURFACE_TABLE, [])}
+        self._blocked_applies = {
+            str(item.get("block_key")): item
+            for item in [_parse(p) for _row_id, p in raw.get(_APPLY_BLOCK_TABLE[0], [])]
+            if isinstance(item, dict) and item.get("block_key")
+        }
+
+    @staticmethod
+    def _load_queries(backend: str) -> list[tuple[str, str]]:
+        cast = "::text" if backend == "postgres" else ""
+        queries = [(_SIGNAL_TABLE[0], f"SELECT {_SIGNAL_TABLE[1]}, payload_json{cast} FROM {_SIGNAL_TABLE[0]} ORDER BY {_SIGNAL_TABLE[2]} ASC")]
+        for table, id_col, ts_col, _attr, _model in _ROW_TABLES:
+            queries.append((table, f"SELECT {id_col}, payload_json{cast} FROM {table} ORDER BY {ts_col} ASC"))
+        queries.append((_ACTIVE_SURFACE_TABLE, f"SELECT target_surface, adoption_id FROM {_ACTIVE_SURFACE_TABLE}"))
+        queries.append(
+            (_APPLY_BLOCK_TABLE[0], f"SELECT {_APPLY_BLOCK_TABLE[1]}, payload_json{cast} FROM {_APPLY_BLOCK_TABLE[0]} ORDER BY {_APPLY_BLOCK_TABLE[2]} ASC")
+        )
+        return queries
+
     def _persist_to_sql(self) -> None:
         if not self.sql_db_path:
             return
-        with sqlite3.connect(self.sql_db_path) as conn:
-            for item in self._signals:
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_signal(signal_id, detected_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(signal_id) DO UPDATE SET
-                        detected_at=excluded.detected_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.signal_id, item.detected_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._pressures.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_pressure(pressure_id, updated_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(pressure_id) DO UPDATE SET
-                        updated_at=excluded.updated_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.pressure_id, item.updated_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._proposals.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_proposal(proposal_id, created_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(proposal_id) DO UPDATE SET
-                        created_at=excluded.created_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.proposal_id, item.created_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._queue.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_queue(queue_item_id, created_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(queue_item_id) DO UPDATE SET
-                        created_at=excluded.created_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.queue_item_id, item.created_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._trials.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_trial(trial_id, created_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(trial_id) DO UPDATE SET
-                        created_at=excluded.created_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.trial_id, item.created_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._decisions.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_decision(decision_id, created_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(decision_id) DO UPDATE SET
-                        created_at=excluded.created_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.decision_id, item.created_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._adoptions.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_adoption(adoption_id, created_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(adoption_id) DO UPDATE SET
-                        created_at=excluded.created_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.adoption_id, item.created_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._rollbacks.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_rollback(rollback_id, created_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(rollback_id) DO UPDATE SET
-                        created_at=excluded.created_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.rollback_id, item.created_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._cognitive_reviews.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_cognitive_review(review_id, created_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(review_id) DO UPDATE SET
-                        created_at=excluded.created_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.review_id, item.created_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._cognitive_drafts.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_cognitive_draft(draft_id, created_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(draft_id) DO UPDATE SET
-                        created_at=excluded.created_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.draft_id, item.created_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._cognitive_proposal_drafts.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_cognitive_proposal_draft(draft_id, updated_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(draft_id) DO UPDATE SET
-                        updated_at=excluded.updated_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.draft_id, item.updated_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._cognitive_stance_notes.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_cognitive_stance_note(stance_note_id, updated_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(stance_note_id) DO UPDATE SET
-                        updated_at=excluded.updated_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.stance_note_id, item.updated_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._recall_strategy_profiles.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_recall_strategy_profile(profile_id, updated_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(profile_id) DO UPDATE SET
-                        updated_at=excluded.updated_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.profile_id, item.updated_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._recall_shadow_eval_runs.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_recall_shadow_eval_run(run_id, completed_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(run_id) DO UPDATE SET
-                        completed_at=excluded.completed_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.run_id, item.completed_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._recall_production_candidate_reviews.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_recall_production_candidate_review(review_id, updated_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(review_id) DO UPDATE SET
-                        updated_at=excluded.updated_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.review_id, item.updated_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._recall_canary_runs.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_recall_canary_run(canary_run_id, updated_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(canary_run_id) DO UPDATE SET
-                        updated_at=excluded.updated_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.canary_run_id, item.updated_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._recall_canary_judgments.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_recall_canary_judgment(judgment_id, created_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(judgment_id) DO UPDATE SET
-                        created_at=excluded.created_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.judgment_id, item.created_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for item in self._recall_canary_review_artifacts.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_recall_canary_review_artifact(review_artifact_id, created_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(review_artifact_id) DO UPDATE SET
-                        created_at=excluded.created_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (item.review_artifact_id, item.created_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
-                )
-            for surface, adoption_id in self._active_surface_by_target.items():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_active_surface(target_surface, adoption_id, updated_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(target_surface) DO UPDATE SET
-                        adoption_id=excluded.adoption_id,
-                        updated_at=excluded.updated_at
-                    """,
-                    (surface, adoption_id, _utc_now().isoformat()),
-                )
-            if self._active_surface_by_target:
-                placeholders = ",".join("?" for _ in self._active_surface_by_target)
-                conn.execute(
-                    f"DELETE FROM substrate_mutation_active_surface WHERE target_surface NOT IN ({placeholders})",
-                    tuple(self._active_surface_by_target.keys()),
-                )
-            else:
-                conn.execute("DELETE FROM substrate_mutation_active_surface")
-            for item in self._blocked_applies.values():
-                conn.execute(
-                    """
-                    INSERT INTO substrate_mutation_apply_block(block_key, created_at, payload_json)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(block_key) DO UPDATE SET
-                        created_at=excluded.created_at,
-                        payload_json=excluded.payload_json
-                    """,
-                    (str(item.get("block_key")), str(item.get("created_at")), json.dumps(item, ensure_ascii=False, sort_keys=True)),
-                )
-            conn.commit()
+        conn = sqlite3.connect(self.sql_db_path)
+        try:
+            for txn in self._chunk_ops(self._dirty_write_ops("sqlite")):
+                with conn:  # one short transaction per batch; commits on exit
+                    for op in txn:
+                        if op.active_surface:
+                            conn.execute(f"DELETE FROM {_ACTIVE_SURFACE_TABLE}")
+                            if op.rows:
+                                conn.executemany(
+                                    f"INSERT INTO {_ACTIVE_SURFACE_TABLE}(target_surface, adoption_id, updated_at) VALUES (?, ?, ?)",
+                                    [(row.row_id, row.payload, _sqlite_ts(row.ts)) for row in op.rows],
+                                )
+                        else:
+                            conn.executemany(op.sql, [(row.row_id, _sqlite_ts(row.ts), row.payload) for row in op.rows])
+                self._mark_committed("sqlite", txn)
+        finally:
+            conn.close()
 
     def _load_from_sql(self) -> None:
         if not self.sql_db_path:
             return
-        with sqlite3.connect(self.sql_db_path) as conn:
-            self._signals = [MutationSignalV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_signal ORDER BY detected_at ASC").fetchall()]
-            loaded_pressures = [MutationPressureV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_pressure ORDER BY updated_at ASC").fetchall()]
-            self._pressures = {self._pressure_key(item): item for item in loaded_pressures}
-            self._proposals = {item.proposal_id: item for item in [MutationProposalV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_proposal ORDER BY created_at ASC").fetchall()]}
-            self._queue = {item.queue_item_id: item for item in [MutationQueueItemV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_queue ORDER BY created_at ASC").fetchall()]}
-            self._trials = {item.trial_id: item for item in [MutationTrialV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_trial ORDER BY created_at ASC").fetchall()]}
-            self._decisions = {item.decision_id: item for item in [MutationDecisionV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_decision ORDER BY created_at ASC").fetchall()]}
-            self._adoptions = {item.adoption_id: item for item in [MutationAdoptionV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_adoption ORDER BY created_at ASC").fetchall()]}
-            self._rollbacks = {item.rollback_id: item for item in [MutationRollbackV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_rollback ORDER BY created_at ASC").fetchall()]}
-            self._cognitive_reviews = {item.review_id: item for item in [CognitiveProposalReviewV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_cognitive_review ORDER BY created_at ASC").fetchall()]}
-            self._cognitive_drafts = {item.draft_id: item for item in [CognitiveDraftRecommendationV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_cognitive_draft ORDER BY created_at ASC").fetchall()]}
-            self._cognitive_proposal_drafts = {item.draft_id: item for item in [CognitiveProposalDraftV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_cognitive_proposal_draft ORDER BY updated_at ASC").fetchall()]}
-            self._cognitive_stance_notes = {item.stance_note_id: item for item in [CognitiveStanceNoteV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_cognitive_stance_note ORDER BY updated_at ASC").fetchall()]}
-            self._recall_strategy_profiles = {
-                item.profile_id: item
-                for item in [RecallStrategyProfileV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_recall_strategy_profile ORDER BY updated_at ASC").fetchall()]
-            }
-            self._recall_shadow_eval_runs = {
-                item.run_id: item
-                for item in [RecallShadowEvalRunV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_recall_shadow_eval_run ORDER BY completed_at ASC").fetchall()]
-            }
-            self._recall_production_candidate_reviews = {
-                item.review_id: item
-                for item in [RecallProductionCandidateReviewV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_recall_production_candidate_review ORDER BY updated_at ASC").fetchall()]
-            }
-            self._recall_canary_runs = {
-                item.canary_run_id: item
-                for item in [RecallCanaryRunV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_recall_canary_run ORDER BY updated_at ASC").fetchall()]
-            }
-            self._recall_canary_judgments = {
-                item.judgment_id: item
-                for item in [RecallCanaryJudgmentRecordV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_recall_canary_judgment ORDER BY created_at ASC").fetchall()]
-            }
-            self._recall_canary_review_artifacts = {
-                item.review_artifact_id: item
-                for item in [RecallCanaryReviewArtifactV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_recall_canary_review_artifact ORDER BY created_at ASC").fetchall()]
-            }
-            self._active_surface_by_target = {surface: adoption_id for (surface, adoption_id) in conn.execute("SELECT target_surface, adoption_id FROM substrate_mutation_active_surface").fetchall()}
-            self._blocked_applies = {
-                str(item.get("block_key")): item
-                for item in [json.loads(p) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_apply_block ORDER BY created_at ASC").fetchall()]
-                if isinstance(item, dict) and item.get("block_key")
-            }
+        conn = sqlite3.connect(self.sql_db_path)
+        try:
+            raw = {table: conn.execute(query).fetchall() for table, query in self._load_queries("sqlite")}
+        finally:
+            conn.close()
+        self._apply_loaded_rows(raw)
+        self._seed_persisted_state("sqlite", {k: v for k, v in raw.items() if k != _ACTIVE_SURFACE_TABLE})
         self._recover_active_surfaces()
         self._compact_artifacts()
-
     def _ensure_postgres_schema(self) -> None:
         if not self.postgres_url:
             return
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
 
-        engine = create_engine(self.postgres_url)
+        engine = self._pg_engine()
         ddl = [
             "CREATE TABLE IF NOT EXISTS substrate_mutation_signal (signal_id TEXT PRIMARY KEY, detected_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
             "CREATE TABLE IF NOT EXISTS substrate_mutation_pressure (pressure_id TEXT PRIMARY KEY, updated_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
@@ -1265,326 +1346,44 @@ class SubstrateMutationStore:
     def _persist_to_postgres(self) -> None:
         if not self.postgres_url:
             return
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
 
-        engine = create_engine(self.postgres_url)
-        with engine.begin() as conn:
-            for item in self._signals:
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_signal(signal_id, detected_at, payload_json)
-                        VALUES (:id, :created_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (signal_id) DO UPDATE SET
-                            detected_at = EXCLUDED.detected_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.signal_id, "created_at": item.detected_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._pressures.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_pressure(pressure_id, updated_at, payload_json)
-                        VALUES (:id, :created_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (pressure_id) DO UPDATE SET
-                            updated_at = EXCLUDED.updated_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.pressure_id, "created_at": item.updated_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._proposals.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_proposal(proposal_id, created_at, payload_json)
-                        VALUES (:id, :created_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (proposal_id) DO UPDATE SET
-                            created_at = EXCLUDED.created_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.proposal_id, "created_at": item.created_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._queue.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_queue(queue_item_id, created_at, payload_json)
-                        VALUES (:id, :created_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (queue_item_id) DO UPDATE SET
-                            created_at = EXCLUDED.created_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.queue_item_id, "created_at": item.created_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._trials.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_trial(trial_id, created_at, payload_json)
-                        VALUES (:id, :created_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (trial_id) DO UPDATE SET
-                            created_at = EXCLUDED.created_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.trial_id, "created_at": item.created_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._decisions.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_decision(decision_id, created_at, payload_json)
-                        VALUES (:id, :created_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (decision_id) DO UPDATE SET
-                            created_at = EXCLUDED.created_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.decision_id, "created_at": item.created_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._adoptions.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_adoption(adoption_id, created_at, payload_json)
-                        VALUES (:id, :created_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (adoption_id) DO UPDATE SET
-                            created_at = EXCLUDED.created_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.adoption_id, "created_at": item.created_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._rollbacks.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_rollback(rollback_id, created_at, payload_json)
-                        VALUES (:id, :created_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (rollback_id) DO UPDATE SET
-                            created_at = EXCLUDED.created_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.rollback_id, "created_at": item.created_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._cognitive_reviews.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_cognitive_review(review_id, created_at, payload_json)
-                        VALUES (:id, :created_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (review_id) DO UPDATE SET
-                            created_at = EXCLUDED.created_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.review_id, "created_at": item.created_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._cognitive_drafts.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_cognitive_draft(draft_id, created_at, payload_json)
-                        VALUES (:id, :created_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (draft_id) DO UPDATE SET
-                            created_at = EXCLUDED.created_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.draft_id, "created_at": item.created_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._cognitive_proposal_drafts.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_cognitive_proposal_draft(draft_id, updated_at, payload_json)
-                        VALUES (:id, :updated_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (draft_id) DO UPDATE SET
-                            updated_at = EXCLUDED.updated_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.draft_id, "updated_at": item.updated_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._cognitive_stance_notes.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_cognitive_stance_note(stance_note_id, updated_at, payload_json)
-                        VALUES (:id, :updated_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (stance_note_id) DO UPDATE SET
-                            updated_at = EXCLUDED.updated_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.stance_note_id, "updated_at": item.updated_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._recall_strategy_profiles.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_recall_strategy_profile(profile_id, updated_at, payload_json)
-                        VALUES (:id, :updated_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (profile_id) DO UPDATE SET
-                            updated_at = EXCLUDED.updated_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.profile_id, "updated_at": item.updated_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._recall_shadow_eval_runs.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_recall_shadow_eval_run(run_id, completed_at, payload_json)
-                        VALUES (:id, :completed_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (run_id) DO UPDATE SET
-                            completed_at = EXCLUDED.completed_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.run_id, "completed_at": item.completed_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._recall_production_candidate_reviews.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_recall_production_candidate_review(review_id, updated_at, payload_json)
-                        VALUES (:id, :updated_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (review_id) DO UPDATE SET
-                            updated_at = EXCLUDED.updated_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.review_id, "updated_at": item.updated_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._recall_canary_runs.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_recall_canary_run(canary_run_id, updated_at, payload_json)
-                        VALUES (:id, :updated_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (canary_run_id) DO UPDATE SET
-                            updated_at = EXCLUDED.updated_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.canary_run_id, "updated_at": item.updated_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._recall_canary_judgments.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_recall_canary_judgment(judgment_id, created_at, payload_json)
-                        VALUES (:id, :created_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (judgment_id) DO UPDATE SET
-                            created_at = EXCLUDED.created_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.judgment_id, "created_at": item.created_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            for item in self._recall_canary_review_artifacts.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_recall_canary_review_artifact(review_artifact_id, created_at, payload_json)
-                        VALUES (:id, :created_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (review_artifact_id) DO UPDATE SET
-                            created_at = EXCLUDED.created_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {"id": item.review_artifact_id, "created_at": item.created_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
-                )
-            conn.execute(text("DELETE FROM substrate_mutation_active_surface"))
-            for surface, adoption_id in self._active_surface_by_target.items():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_active_surface(target_surface, adoption_id, updated_at)
-                        VALUES (:surface, :adoption_id, :updated_at)
-                        ON CONFLICT (target_surface) DO UPDATE SET
-                            adoption_id = EXCLUDED.adoption_id,
-                            updated_at = EXCLUDED.updated_at
-                        """
-                    ),
-                    {"surface": surface, "adoption_id": adoption_id, "updated_at": _utc_now()},
-                )
-            for item in self._blocked_applies.values():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO substrate_mutation_apply_block(block_key, created_at, payload_json)
-                        VALUES (:block_key, :created_at, CAST(:payload AS JSONB))
-                        ON CONFLICT (block_key) DO UPDATE SET
-                            created_at = EXCLUDED.created_at,
-                            payload_json = EXCLUDED.payload_json
-                        """
-                    ),
-                    {
-                        "block_key": str(item.get("block_key")),
-                        "created_at": str(item.get("created_at")),
-                        "payload": json.dumps(item, ensure_ascii=False, sort_keys=True),
-                    },
-                )
+        engine = self._pg_engine()
+        for txn in self._chunk_ops(self._dirty_write_ops("postgres")):
+            # One short transaction per <= _PERSIST_BATCH_ROWS rows, one
+            # executemany per table slice: no transaction stays open across
+            # the whole sweep, and none is ever idle between statements for
+            # longer than it takes to send the next batch.
+            with engine.begin() as conn:
+                for op in txn:
+                    if op.active_surface:
+                        conn.execute(text(f"DELETE FROM {_ACTIVE_SURFACE_TABLE}"))
+                        if op.rows:
+                            conn.execute(
+                                text(
+                                    f"INSERT INTO {_ACTIVE_SURFACE_TABLE}(target_surface, adoption_id, updated_at) "
+                                    "VALUES (:surface, :adoption_id, :updated_at) "
+                                    "ON CONFLICT (target_surface) DO UPDATE SET adoption_id = EXCLUDED.adoption_id, updated_at = EXCLUDED.updated_at"
+                                ),
+                                [{"surface": row.row_id, "adoption_id": row.payload, "updated_at": row.ts} for row in op.rows],
+                            )
+                    else:
+                        conn.execute(text(op.sql), [{"id": row.row_id, "ts": row.ts, "payload": row.payload} for row in op.rows])
+            self._mark_committed("postgres", txn)
 
     def _load_from_postgres(self) -> None:
         if not self.postgres_url:
             return
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
 
-        engine = create_engine(self.postgres_url)
+        engine = self._pg_engine()
+        # Fetch raw rows only inside the transaction; the (slow, 550k-row)
+        # pydantic parse happens after it has closed, so the load never sits
+        # "idle in transaction" while Python works.
         with engine.begin() as conn:
-            self._signals = [MutationSignalV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_signal ORDER BY detected_at ASC")).fetchall()]
-            loaded_pressures = [MutationPressureV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_pressure ORDER BY updated_at ASC")).fetchall()]
-            self._pressures = {self._pressure_key(item): item for item in loaded_pressures}
-            self._proposals = {item.proposal_id: item for item in [MutationProposalV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_proposal ORDER BY created_at ASC")).fetchall()]}
-            self._queue = {item.queue_item_id: item for item in [MutationQueueItemV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_queue ORDER BY created_at ASC")).fetchall()]}
-            self._trials = {item.trial_id: item for item in [MutationTrialV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_trial ORDER BY created_at ASC")).fetchall()]}
-            self._decisions = {item.decision_id: item for item in [MutationDecisionV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_decision ORDER BY created_at ASC")).fetchall()]}
-            self._adoptions = {item.adoption_id: item for item in [MutationAdoptionV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_adoption ORDER BY created_at ASC")).fetchall()]}
-            self._rollbacks = {item.rollback_id: item for item in [MutationRollbackV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_rollback ORDER BY created_at ASC")).fetchall()]}
-            self._cognitive_reviews = {item.review_id: item for item in [CognitiveProposalReviewV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_cognitive_review ORDER BY created_at ASC")).fetchall()]}
-            self._cognitive_drafts = {item.draft_id: item for item in [CognitiveDraftRecommendationV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_cognitive_draft ORDER BY created_at ASC")).fetchall()]}
-            self._cognitive_proposal_drafts = {item.draft_id: item for item in [CognitiveProposalDraftV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_cognitive_proposal_draft ORDER BY updated_at ASC")).fetchall()]}
-            self._cognitive_stance_notes = {item.stance_note_id: item for item in [CognitiveStanceNoteV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_cognitive_stance_note ORDER BY updated_at ASC")).fetchall()]}
-            self._recall_strategy_profiles = {
-                item.profile_id: item
-                for item in [RecallStrategyProfileV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_recall_strategy_profile ORDER BY updated_at ASC")).fetchall()]
-            }
-            self._recall_shadow_eval_runs = {
-                item.run_id: item
-                for item in [RecallShadowEvalRunV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_recall_shadow_eval_run ORDER BY completed_at ASC")).fetchall()]
-            }
-            self._recall_production_candidate_reviews = {
-                item.review_id: item
-                for item in [RecallProductionCandidateReviewV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_recall_production_candidate_review ORDER BY updated_at ASC")).fetchall()]
-            }
-            self._recall_canary_runs = {
-                item.canary_run_id: item
-                for item in [RecallCanaryRunV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_recall_canary_run ORDER BY updated_at ASC")).fetchall()]
-            }
-            self._recall_canary_judgments = {
-                item.judgment_id: item
-                for item in [RecallCanaryJudgmentRecordV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_recall_canary_judgment ORDER BY created_at ASC")).fetchall()]
-            }
-            self._recall_canary_review_artifacts = {
-                item.review_artifact_id: item
-                for item in [RecallCanaryReviewArtifactV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_recall_canary_review_artifact ORDER BY created_at ASC")).fetchall()]
-            }
-            self._active_surface_by_target = {surface: adoption_id for (surface, adoption_id) in conn.execute(text("SELECT target_surface, adoption_id FROM substrate_mutation_active_surface")).fetchall()}
-            self._blocked_applies = {
-                str(item.get("block_key")): item
-                for item in [json.loads(p) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_apply_block ORDER BY created_at ASC")).fetchall()]
-                if isinstance(item, dict) and item.get("block_key")
-            }
+            raw = {table: [tuple(r) for r in conn.execute(text(query)).fetchall()] for table, query in self._load_queries("postgres")}
+        self._apply_loaded_rows(raw)
+        self._seed_persisted_state("postgres", {k: v for k, v in raw.items() if k != _ACTIVE_SURFACE_TABLE})
         self._recover_active_surfaces()
         self._compact_artifacts()
 
@@ -1638,15 +1437,21 @@ class SubstrateMutationStore:
                 self._adoptions = {k: v for k, v in self._adoptions.items() if k not in drop}
 
     def _persist_signal(self, signal: MutationSignalV1) -> bool:
+        with self._persist_io_lock:
+            return self._persist_signal_locked(signal)
+
+    def _persist_signal_locked(self, signal: MutationSignalV1) -> bool:
         if self.postgres_url:
             try:
                 self._persist_signal_postgres(signal)
+                self._note_signal_persisted("postgres", signal)
                 return True
             except Exception:
                 pass
         if self.sql_db_path:
             try:
                 self._persist_signal_sqlite(signal)
+                self._note_signal_persisted("sqlite", signal)
                 return True
             except Exception:
                 pass
@@ -1671,9 +1476,9 @@ class SubstrateMutationStore:
     def _persist_signal_postgres(self, signal: MutationSignalV1) -> None:
         if not self.postgres_url:
             raise RuntimeError("postgres_disabled")
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
 
-        engine = create_engine(self.postgres_url)
+        engine = self._pg_engine()
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -1693,6 +1498,10 @@ class SubstrateMutationStore:
             )
 
     def _persist_pressure(self, pressure: MutationPressureV1) -> bool:
+        with self._persist_io_lock:
+            return self._persist_pressure_locked(pressure)
+
+    def _persist_pressure_locked(self, pressure: MutationPressureV1) -> bool:
         # Mirrors `_persist()`'s own postgres-success clearing (source_kind
         # set, last_error cleared) -- review caught that `_persist_signal`'s
         # existing fast path never did this, so a store that had drifted to
@@ -1703,6 +1512,7 @@ class SubstrateMutationStore:
         if self.postgres_url:
             try:
                 self._persist_pressure_postgres(pressure)
+                self._forget_persisted("postgres", "substrate_mutation_pressure", pressure.pressure_id)
                 self._source_kind = "postgres"
                 self._last_error = None
                 return True
@@ -1711,6 +1521,7 @@ class SubstrateMutationStore:
         if self.sql_db_path:
             try:
                 self._persist_pressure_sqlite(pressure)
+                self._forget_persisted("sqlite", "substrate_mutation_pressure", pressure.pressure_id)
                 return True
             except Exception:
                 pass
@@ -1735,9 +1546,9 @@ class SubstrateMutationStore:
     def _persist_pressure_postgres(self, pressure: MutationPressureV1) -> None:
         if not self.postgres_url:
             raise RuntimeError("postgres_disabled")
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
 
-        engine = create_engine(self.postgres_url)
+        engine = self._pg_engine()
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -1757,9 +1568,14 @@ class SubstrateMutationStore:
             )
 
     def _persist_proposal(self, proposal: MutationProposalV1) -> bool:
+        with self._persist_io_lock:
+            return self._persist_proposal_locked(proposal)
+
+    def _persist_proposal_locked(self, proposal: MutationProposalV1) -> bool:
         if self.postgres_url:
             try:
                 self._persist_proposal_postgres(proposal)
+                self._forget_persisted("postgres", "substrate_mutation_proposal", proposal.proposal_id)
                 self._source_kind = "postgres"
                 self._last_error = None
                 return True
@@ -1768,6 +1584,7 @@ class SubstrateMutationStore:
         if self.sql_db_path:
             try:
                 self._persist_proposal_sqlite(proposal)
+                self._forget_persisted("sqlite", "substrate_mutation_proposal", proposal.proposal_id)
                 return True
             except Exception:
                 pass
@@ -1792,9 +1609,9 @@ class SubstrateMutationStore:
     def _persist_proposal_postgres(self, proposal: MutationProposalV1) -> None:
         if not self.postgres_url:
             raise RuntimeError("postgres_disabled")
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
 
-        engine = create_engine(self.postgres_url)
+        engine = self._pg_engine()
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -1816,6 +1633,12 @@ class SubstrateMutationStore:
     def _persist_proposal_and_queue_item(
         self, proposal: MutationProposalV1, queue_item: MutationQueueItemV1
     ) -> bool:
+        with self._persist_io_lock:
+            return self._persist_proposal_and_queue_item_locked(proposal, queue_item)
+
+    def _persist_proposal_and_queue_item_locked(
+        self, proposal: MutationProposalV1, queue_item: MutationQueueItemV1
+    ) -> bool:
         """Write a brand-new proposal and its queue row in one transaction.
 
         Same fallback contract as `_persist_pressure`/`_persist_signal`: try
@@ -1826,6 +1649,8 @@ class SubstrateMutationStore:
         if self.postgres_url:
             try:
                 self._persist_proposal_and_queue_item_postgres(proposal, queue_item)
+                self._forget_persisted("postgres", "substrate_mutation_proposal", proposal.proposal_id)
+                self._forget_persisted("postgres", "substrate_mutation_queue", queue_item.queue_item_id)
                 self._source_kind = "postgres"
                 self._last_error = None
                 return True
@@ -1834,6 +1659,8 @@ class SubstrateMutationStore:
         if self.sql_db_path:
             try:
                 self._persist_proposal_and_queue_item_sqlite(proposal, queue_item)
+                self._forget_persisted("sqlite", "substrate_mutation_proposal", proposal.proposal_id)
+                self._forget_persisted("sqlite", "substrate_mutation_queue", queue_item.queue_item_id)
                 return True
             except Exception:
                 pass
@@ -1872,9 +1699,9 @@ class SubstrateMutationStore:
     ) -> None:
         if not self.postgres_url:
             raise RuntimeError("postgres_disabled")
-        from sqlalchemy import create_engine, text
+        from sqlalchemy import text
 
-        engine = create_engine(self.postgres_url)
+        engine = self._pg_engine()
         with engine.begin() as conn:
             conn.execute(
                 text(

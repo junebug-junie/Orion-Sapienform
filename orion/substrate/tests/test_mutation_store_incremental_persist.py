@@ -30,7 +30,6 @@ from orion.core.schemas.substrate_mutation import (
 )
 from orion.substrate import mutation_queue as mutation_queue_module
 from orion.substrate.mutation_queue import SubstrateMutationStore
-from orion.substrate.mutation_proposals import ProposalFactory
 
 
 def _pressure(*, target_surface: str = "routing", pressure_score: float = 8.0) -> MutationPressureV1:
@@ -45,13 +44,28 @@ def _pressure(*, target_surface: str = "routing", pressure_score: float = 8.0) -
     )
 
 
-def _routing_surface(value: float = 0.50):
-    return lambda: {"value": value, "raw": {"value": value}, "degraded": False}
-
-
 def _proposal(*, proposal_id: str | None = None) -> MutationProposalV1:
-    made = ProposalFactory(routing_surface_reader=_routing_surface()).from_pressure(_pressure())
-    assert made is not None
+    # Built directly rather than via ProposalFactory: the "routing" surface
+    # was retired 2026-09-05, so ProposalFactory.from_pressure() now returns
+    # None for it and every test using this helper failed on main. These
+    # tests exercise persistence, not proposal planning.
+    made = MutationProposalV1(
+        mutation_class="routing_threshold_patch",
+        risk_tier="low",
+        target_surface="routing",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        evidence_refs=["telemetry:1"],
+        source_signal_ids=["signal-1"],
+        source_pressure_id="pressure-1",
+        patch=MutationPatchV1(
+            mutation_class="routing_threshold_patch",
+            target_surface="routing",
+            target_ref="chat_reflective_lane_threshold",
+            patch={"value": 0.55},
+            rollback_payload={"value": 0.50},
+        ),
+    )
     if proposal_id is not None:
         made = made.model_copy(update={"proposal_id": proposal_id})
     return made
@@ -240,6 +254,9 @@ def test_record_pressure_sql_cost_does_not_scale_with_store_size(tmp_path, monke
     # `_persist()`, used for the multi-table mutators) really does scale with
     # everything accumulated above -- this is what record_pressure used to
     # call on every invocation.
+    # (Since 2026-09-25 `_persist()` writes only rows the database doesn't
+    # already hold; the 300 signals here were injected in memory only and
+    # never written, so they are all genuinely new to it.)
     counter.statements.clear()
     store._persist()
     assert len(counter.statements) >= 300, (

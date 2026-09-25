@@ -685,6 +685,7 @@ async def _build_situation_prompt_fragment(
     payload: dict[str, Any],
     settings: Any,
     correlation_id: str,
+    record_user_turn: bool = False,
 ) -> dict[str, Any]:
     """Orion capability: local time-of-day/day-phase/conversation-phase/presence
     context for the unified-turn prompt.
@@ -724,6 +725,11 @@ async def _build_situation_prompt_fragment(
         situation_ctx: dict[str, Any] = {
             "session_id": session_id or "anonymous",
             "raw_user_text": user_message,
+            # Only Juniper's own messages stamp "the user just spoke" into
+            # the conversation-phase store; Orion-authored turns in her
+            # session (endogenous outreach) read the phase without moving it.
+            # See orion.situational.context._records_user_turn.
+            "record_user_turn": bool(record_user_turn),
         }
         # Carry the browser's surface_context through so a SPOKEN turn is
         # distinguishable from a typed one. Confirmed live 2026-08-25: Hub
@@ -1216,6 +1222,7 @@ async def execute_unified_turn(
         payload=payload,
         settings=cfg,
         correlation_id=correlation_id,
+        record_user_turn=utterance_origin == "juniper",
     )
     situation_prompt_fragment = situation_bundle.get("compact_text")
     if isinstance(situation_prompt_fragment, str) and not situation_prompt_fragment.strip():

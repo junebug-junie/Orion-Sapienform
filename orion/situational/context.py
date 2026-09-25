@@ -642,7 +642,26 @@ def _situation_cache_key(ctx: dict[str, Any], cfg: SituationSettings) -> str:
     # the field observable is what made the key wrong -- a real review
     # finding, not a hypothetical.
     modality = _build_surface_context(ctx).input_modality
-    return f"{session_key}:{modality}:{_presence_cache_fingerprint(ctx, cfg)}"
+    key = f"{session_key}:{modality}:{_presence_cache_fingerprint(ctx, cfg)}"
+    # A read-only build (an Orion-authored unified turn, e.g. outreach) must
+    # not share an entry with the user's own turns: a cache hit skips
+    # _build_conversation_phase entirely, so an outreach-built entry would
+    # silently swallow the user-turn record of her real reply minutes later.
+    return key if _records_user_turn(ctx) else f"{key}:no_user_turn"
+
+
+def _records_user_turn(ctx: dict[str, Any]) -> bool:
+    """Whether building this brief means the user just took a turn.
+
+    Defaults to True -- every legacy cortex-exec chat-verb build is a user
+    turn. The Hub unified-turn path sets ``record_user_turn`` explicitly:
+    only Juniper's own messages record; turns Orion authors itself
+    (endogenous outreach, curiosity, world-pulse reads) still READ the phase
+    but must not stamp "Juniper just spoke" -- otherwise an outreach tick
+    six hours into her absence makes her reply 30 minutes later read as
+    resumed_thread instead of long_gap.
+    """
+    return ctx.get("record_user_turn", True) is not False
 
 
 async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -899,8 +918,9 @@ async def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1
     # empty, and writing it back would silently clobber a real value on a
     # field this call never intended to touch. Losing this turn's
     # last_user_turn_at update is an acceptable, strictly-better-than-before
-    # degradation -- clobbering last_orion_turn_at would not be.
-    if state.ok:
+    # degradation -- clobbering last_orion_turn_at would not be. A turn the
+    # user did not author (see _records_user_turn) reads but never writes.
+    if state.ok and _records_user_turn(ctx):
         await write_session_turn_state(
             session_id,
             last_user_turn_at=now_utc,

@@ -1,14 +1,16 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 666,
+  "metric_count": 667,
   "_last_change": {
     "base": "merge base a65691c4d (origin/main)",
-    "change_count": 3,
-    "high_severity_count": 3,
+    "change_count": 5,
+    "high_severity_count": 4,
     "changes": [
       "high   removed metric://field_channel/orion-field-digester/delivery_confidence",
       "high   removed metric://field_channel/orion-field-digester/stream_backlog_health",
-      "high   removed metric://field_channel/orion-field-digester/stream_backlog_pressure"
+      "high   removed metric://field_channel/orion-field-digester/stream_backlog_pressure",
+      "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:rpc_health:snapshot (declared_consumers: \u2026nal-gateway'] -> \u2026nal-gateway', 'orion-substrate-runtime'])",
+      "medium added metric://field_channel/orion-field-digester/rpc_timeout_pressure"
     ]
   },
   "definitions": {
@@ -985,7 +987,8 @@
       ],
       "declared_consumers": [
         "orion-equilibrium-service",
-        "orion-signal-gateway"
+        "orion-signal-gateway",
+        "orion-substrate-runtime"
       ],
       "notes": "kind=telemetry stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -3956,6 +3959,11 @@
         "social_pressure"
       ],
       "notes": "category=social_conversational level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/rpc_timeout_pressure": {
+      "meaning": "Caller-side 'asked and got no answer in time' on node:substrate.rpc_delivery: the worst bus request channel's share of rpc_request() calls that hit the caller's own deadline over the last 10 minutes, timeouts / max(calls, 10), counted only once a channel has 2+ timeouts in the window, summed across every service's rpc-health snapshots. A deadline fires on a lost message and on a slow callee alike; on live data it is mostly slow LLM or cortex work. 0.0 means every counted call was answered in time; dropped (unmeasured) when no reading has arrived for 120 s.",
+      "notes": "category=infra_transport level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/stability": {

@@ -553,6 +553,19 @@ Counts, latency percentiles and token totals only -- no prompt or reply text lea
 the process. Only the bus path (`handle_chat`) is counted; the OpenAI/Anthropic HTTP
 passthroughs are not.
 
+What counts as a backend failure: only replies framed `[Error: ...` that are a
+timeout, refused/failed connection, HTTP 5xx, 404 or other backend error. Upstream
+4xx (e.g. an oversized prompt), image-to-text-route refusals and unreadable
+attachments are the caller's request, counted as `request_invalid`. A call that
+raises inside dispatch is counted as `gateway_exception` (unattributed). Known limits:
+- `upstream_timeout` includes calls whose read timeout was the caller's own leftover
+  budget, so a short-budget caller on a busy-but-healthy lane can register one.
+- latency p50/p95 is the whole stay in the gateway (admission wait + generation).
+- the reducer keys state by serving node only; it assumes ONE gateway reports on a
+  node (true today). A second gateway would overwrite the first's windows.
+- the publisher has no shutdown hook: the partial window at SIGTERM is lost, and a
+  publish failure mid-window drops the rest of that window (logged).
+
 Downstream: substrate-runtime's `llm_inference` reducer
 (`ENABLE_LLM_INFERENCE_REDUCER`) turns each window into node
 `inference_failure_pressure` = backend failures / (served + backend failures), which

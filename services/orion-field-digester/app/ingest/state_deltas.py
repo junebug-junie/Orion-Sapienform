@@ -609,9 +609,9 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
         # that came back without an answer (orion/substrate/llm_inference_loop/).
         # One fresh reading per gateway window, so mode="replace", same as the
         # transport channels above. The reducer omits the hint entirely when the
-        # node got no upstream traffic that window: nothing is written, the last
-        # reading holds until it goes stale and then decays (NODE_DECAY_CHANNELS),
-        # rather than a fabricated calm 0.0 being injected for "not measured".
+        # node got no upstream traffic that window: nothing is written and the last
+        # measured reading holds (not in NODE_DECAY_CHANNELS -- decay would fade a
+        # real failure into a fake calm 0.0), rather than a fabricated 0.0.
         hints = dict((delta.after or {}).get("pressure_hints") or {})
         if "inference_failure_pressure" in hints:
             out.append(

@@ -543,7 +543,20 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     )
 
     dispatch_started = time.monotonic()
-    result = await _dispatch_chat(body, correlation_id=str(typed_req.correlation_id))
+    try:
+        result = await _dispatch_chat(body, correlation_id=str(typed_req.correlation_id))
+    except Exception:
+        # A crashed call is still an outcome; count it, then let it propagate as before.
+        if settings.llm_gateway_grammar_enabled:
+            try:
+                grammar_emit.get_recorder().record(
+                    {"text": "", "raw": {"error": "gateway_exception"}},
+                    served_by=None,
+                    elapsed_s=time.monotonic() - dispatch_started,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        raise
     if settings.llm_gateway_grammar_enabled:
         try:
             grammar_emit.get_recorder().record(

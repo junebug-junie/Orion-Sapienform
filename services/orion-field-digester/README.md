@@ -729,13 +729,13 @@ ever revised, same convention as the first six.
 
 Share of the calls orion-llm-gateway sent to a node's model backends that came back
 without an answer, one reading per gateway window
-(`orion/substrate/llm_inference_loop/`). `mode="replace"`, in `NODE_DECAY_CHANNELS`.
+(`orion/substrate/llm_inference_loop/`). `mode="replace"`, deliberately NOT in `NODE_DECAY_CHANNELS`.
 Written only when the node actually got upstream traffic that window; otherwise the
-last reading holds, then decays. The node:circe edge maps it to
+last measured reading holds (its age is `node_vector_updated_at`). Decay would fade a
+real failure into a fake calm 0.0 whenever callers stop calling the node. The node:circe edge maps it to
 `capability:llm_inference` `reliability_pressure`. Gated by
 `ENABLE_LLM_INFERENCE_FIELD_DIGESTION` (default off). Caveat: if callers stop calling a
-dead backend, no new failures are counted and the value decays toward 0 -- silence is
-not evidence of health here either.
+dead backend, the last failing reading holds indefinitely -- stale, but not falsely calm.
 
 ## Field channel glossary
 

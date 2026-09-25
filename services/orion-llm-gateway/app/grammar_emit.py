@@ -64,7 +64,7 @@ def classify_outcome(result: Any) -> str:
     raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
     err = str(raw.get("error") or "").strip()
     if err:
-        if err in REFUSAL_CLASSES or err in REQUEST_INVALID_CLASSES:
+        if err in REFUSAL_CLASSES or err in REQUEST_INVALID_CLASSES or err == "gateway_exception":
             return err
         return "upstream_error"
     text = str(result.get("text") or "")
@@ -74,10 +74,15 @@ def classify_outcome(result: Any) -> str:
         # Counted for inspection only, not as a backend failure: whether an empty
         # completion is common at rest has not been measured live yet.
         return "upstream_empty"
-    if not looks_like_error_text(text):
-        return OUTCOME_SERVED
     low = text.strip().lower()
-    if "attachments could not be read" in low:
+    # Every gateway-originated failure text is framed "[Error: ..." (llm_backend.py).
+    # Model prose that merely starts with "Error:" or explains a "connection refused"
+    # is an answer, not a failure -- review finding, 2026-09-25. The canonical
+    # detector stays as a guard so a framing change there cannot widen this.
+    if not low.startswith("[error:") or not looks_like_error_text(text):
+        return OUTCOME_SERVED
+    if "attachments could not be read" in low or "cannot accept image" in low:
+        # the caller sent something the route cannot take; the backend was never asked
         return "request_invalid"
     if "not configured" in low:
         return "route_not_configured"
@@ -286,10 +291,16 @@ async def run_window_publisher(
         except asyncio.TimeoutError:
             pass
         start, end, buckets = recorder.drain()
+        events = build_window_events(
+            gateway_node=gateway_node, window_start=start, window_end=end, buckets=buckets
+        )
+        sent = 0
         try:
-            for event in build_window_events(
-                gateway_node=gateway_node, window_start=start, window_end=end, buckets=buckets
-            ):
+            for event in events:
                 await publish_grammar_event(bus, event, source_name=SOURCE_SERVICE)
+                sent += 1
         except Exception:  # noqa: BLE001
-            logger.warning("llm_gateway_grammar_publish_failed window_start=%s", start, exc_info=True)
+            logger.warning(
+                "llm_gateway_grammar_publish_failed window_start=%s dropped=%d of %d",
+                start, len(events) - sent, len(events), exc_info=True,
+            )

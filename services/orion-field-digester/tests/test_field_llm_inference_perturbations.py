@@ -49,9 +49,27 @@ def test_intensity_is_clamped():
     assert delta_to_perturbations(_delta({"inference_failure_pressure": 7.0}))[0].intensity == 1.0
 
 
-def test_channel_is_declared_and_decays():
+def test_channel_is_declared_and_holds_instead_of_decaying():
+    """Decay would fade a real failure reading into a fake calm 0.0 whenever callers
+    stop calling the node. replace-mode writes still move it back down on the next
+    measured window, so holding is not a ratchet."""
     assert "inference_failure_pressure" in NODE_CHANNELS
-    assert "inference_failure_pressure" in NODE_DECAY_CHANNELS
+    assert "inference_failure_pressure" not in NODE_DECAY_CHANNELS
+
+
+def test_failure_reading_survives_idle_minutes_and_clears_on_next_window():
+    from datetime import timedelta
+
+    from app.digestion.decay import apply_decay
+
+    lattice = load_lattice(REPO / "config" / "field" / "orion_field_topology.v1.yaml")
+    state = empty_field_state(lattice=lattice, now=NOW, tick_id="t")
+    apply_perturbations(state, delta_to_perturbations(_delta({"inference_failure_pressure": 1.0})), now=NOW)
+    for i in range(1, 300):  # ten idle minutes of 2s ticks
+        apply_decay(state, decay_rate=0.92, now=NOW + timedelta(seconds=2 * i), staleness_threshold_sec=90.0)
+    assert state.node_vectors["node:circe"]["inference_failure_pressure"] == 1.0
+    apply_perturbations(state, delta_to_perturbations(_delta({"inference_failure_pressure": 0.0})), now=NOW)
+    assert state.node_vectors["node:circe"]["inference_failure_pressure"] == 0.0
 
 
 def test_live_topology_carries_failures_to_llm_inference_reliability_only():

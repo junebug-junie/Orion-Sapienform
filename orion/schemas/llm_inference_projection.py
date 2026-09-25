@@ -33,7 +33,6 @@ UPSTREAM_FAILURE_CLASSES = frozenset(
         "upstream_timeout",
         "upstream_connect",
         "upstream_http_5xx",
-        "upstream_http_4xx",
         "upstream_not_found",
         "upstream_error",
     }
@@ -54,7 +53,10 @@ REFUSAL_CLASSES = frozenset(
 )
 # The caller's request was unusable (bad attachment, unknown route). Not the
 # backend's health either way.
-REQUEST_INVALID_CLASSES = frozenset({"request_invalid", "route_not_configured"})
+# upstream_http_4xx lives here, not in UPSTREAM_FAILURE_CLASSES: llama.cpp answers
+# 400 for an oversized or malformed request from one caller while the node is fine
+# (review finding, 2026-09-25).
+REQUEST_INVALID_CLASSES = frozenset({"request_invalid", "route_not_configured", "upstream_http_4xx"})
 
 
 class LlmInferenceNodeStateV1(BaseModel):

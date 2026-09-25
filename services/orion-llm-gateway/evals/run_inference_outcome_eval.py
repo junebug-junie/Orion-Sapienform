@@ -11,9 +11,13 @@ what the live lane actually published.
     docker logs --timestamps orion-llm-gateway 2>&1 | \\
         python services/orion-llm-gateway/evals/run_inference_outcome_eval.py --window-sec 60
 
-Log-derived counts are an approximation of the emitter, not a copy of it: the
-emitter classifies the reply dict itself, the logs only show the failure lines
-llm_backend.py happens to write. The eval says so in its output.
+Log-derived counts are an approximation of the emitter, not a copy of it, and
+all of the known gaps bias the replayed value LOW (so a 0.0 here is weaker rest-
+state evidence than the live lane's own 0.0 will be):
+  * the denominator is every reply (route_selected), refusals and bad requests
+    included, where the emitter uses served + backend failures;
+  * only TIMEOUT lines carry served_by; other backend failure lines are counted
+    as unattributed, never against a node.
 """
 
 from __future__ import annotations
@@ -33,7 +37,10 @@ _OVERLOADED = re.compile(_TS + r".*gateway_overloaded .*?stage=(?P<stage>\S+)")
 
 
 def _node(served_by: str) -> str:
-    return (served_by or "").strip().lower().split("-worker")[0] or "unrouted"
+    raw = (served_by or "").strip().lower()
+    if raw in {"", "none", "null"}:
+        return "unrouted"
+    return raw.split("-worker")[0] or "unrouted"
 
 
 def replay(lines, *, window_sec: int) -> dict:

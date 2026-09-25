@@ -114,6 +114,14 @@ def test_refusals_do_not_dilute_or_inflate_the_failure_share():
     assert receipt.state_deltas[0].after["pressure_hints"] == {"inference_failure_pressure": 0.5}
 
 
+def test_upstream_4xx_is_a_bad_request_not_a_node_failure():
+    bad = {"text": "[Error: llamacpp failed: Client error '400 Bad Request' for url 'u'", "raw": {}}
+    _, receipt = _reduce(_window([(bad, "circe-worker-2"), (OK, "circe-worker-2")]))
+    after = receipt.state_deltas[0].after
+    assert after["request_invalid"] == 1
+    assert after["pressure_hints"] == {"inference_failure_pressure": 0.0}
+
+
 def test_unknown_and_unrouted_labels_never_mint_a_field_node():
     events = _window([(TIMEOUT, "atlas-worker-1"), (TIMEOUT, None), (TIMEOUT, "mystery"), (OK, "circe-worker-2")])
     projection, receipt = _reduce(events)

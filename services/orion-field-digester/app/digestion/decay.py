@@ -66,8 +66,11 @@ NODE_DECAY_CHANNELS = {
     "catalog_drift_pressure",
     "observer_failure_pressure",
     "reliability_pressure",
-    # llm inference (gateway-reported)
-    "inference_failure_pressure",
+    # inference_failure_pressure (gateway-reported) is deliberately NOT here: it is
+    # written mode="replace" only when a node got upstream traffic, so decaying it
+    # would turn "nobody called circe for a few minutes" into a fake calm 0.0
+    # (the node:substrate.route decayed-to-zero artifact). It holds its last
+    # measured reading; node_vector_updated_at carries its age.
     "field_coherence_warning",
 }
 

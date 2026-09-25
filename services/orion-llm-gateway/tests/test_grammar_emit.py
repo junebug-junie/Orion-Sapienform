@@ -36,6 +36,13 @@ from app.grammar_emit import (
     [
         ({"text": "Hello there.", "raw": {}}, "served"),
         ({"text": "the codebase is throwing errors I can't map yet", "raw": {}}, "served"),
+        # model prose that the canonical detector alone would flag (review finding)
+        ({"text": "Connection refused usually means nothing is listening on that port.", "raw": {}}, "served"),
+        ({"text": "Error: that value must be positive -- here's why.", "raw": {}}, "served"),
+        ({"text": "A read timeout happens when the server accepts but never answers.", "raw": {}}, "served"),
+        ({"text": "[Error: route 'chat' cannot accept images (vision=false)]", "raw": {}}, "request_invalid"),
+        ({"text": "[Error: /v1/chat cannot accept image attachments]", "raw": {}}, "request_invalid"),
+        ({"text": "", "raw": {"error": "gateway_exception"}}, "gateway_exception"),
         ({"text": "", "reasoning_content": "thinking only", "raw": {}}, "served"),
         ({"text": "", "raw": {}}, "upstream_empty"),
         ({"text": "[Error: llamacpp timed out after waiting]", "raw": {}}, "upstream_timeout"),

@@ -91,6 +91,7 @@ from orion.curiosity.kickoff_prompt import (
     build_kickoff_prompt,
     build_resume_preamble,
 )
+from orion.dream.hypotheses import take_hypotheses_for_offer
 from orion.curiosity.peer_briefs import (
     REFUSED_OR_FAILED_RECENT_CYPHER,
     UNUSED_OK_BRIEFS_CYPHER,
@@ -561,6 +562,9 @@ class CuriosityInvestigation:
         cortex_result_prefix: str = "orion:cortex:result",
         # --- contractor peer soft-nudge ------------------------------------
         contractor_peer_enabled: bool = False,
+        # --- dream hypotheses (orion/dream/hypotheses.py) -------------------
+        dream_hypotheses_enabled: bool = False,
+        dream_hypotheses_per_run: int = 3,
         # --- the self-inquiry line -----------------------------------------
         self_inquiry_enabled: bool = False,
         self_inquiry_daily_cap: int = 3,
@@ -669,6 +673,8 @@ class CuriosityInvestigation:
         self.pg_readonly_role = pg_readonly_role
         self.outreach_enabled = outreach_enabled
         self.contractor_peer_enabled = bool(contractor_peer_enabled)
+        self.dream_hypotheses_enabled = bool(dream_hypotheses_enabled)
+        self.dream_hypotheses_per_run = max(0, int(dream_hypotheses_per_run))
         # Per-run dedupe: durable admission completes via `_handle_run_state`,
         # while non-durable / dispatch-fallback journals in-process. Both call
         # `_enqueue_help_requests_after_run`; a run that hits both must not
@@ -903,6 +909,21 @@ class CuriosityInvestigation:
             return WorldviewSnapshot(
                 unavailable_reason=f"{type(exc).__name__}: {str(exc)[:160]}"
             )
+
+    async def _take_dream_hypotheses(self, view: WorldviewSnapshot, run_id: str) -> tuple:
+        """Claim this run's dream hypotheses. () unless Orion could adopt one.
+
+        Claiming stamps `offered_at`, and each hypothesis is offered once, so
+        claim only when the prompt will actually show them: the same
+        writable condition `build_kickoff_prompt` gates the section on.
+        """
+        if not self.dream_hypotheses_enabled or self.dream_hypotheses_per_run <= 0:
+            return ()
+        if not self.graph_enabled or view.is_unavailable or not run_id:
+            return ()
+        return await take_hypotheses_for_offer(
+            self._pool_provider(), run_id=run_id, limit=self.dream_hypotheses_per_run
+        )
 
     async def _read_peer_briefs_for_nudge(self) -> tuple:
         """Unused PeerBriefs for kickoff soft-nudge (RO_QUERY only).
@@ -1506,6 +1527,7 @@ class CuriosityInvestigation:
         peer_briefs = ()
         if self.contractor_peer_enabled:
             peer_briefs = await self._read_peer_briefs_for_nudge()
+        dream_hypotheses = await self._take_dream_hypotheses(view, run_id)
         prompt = build_kickoff_prompt(
             material,
             view=view,
@@ -1522,7 +1544,14 @@ class CuriosityInvestigation:
             graph_enabled=self.graph_enabled,
             contractor_peer_enabled=self.contractor_peer_enabled,
             peer_briefs=peer_briefs,
+            dream_hypotheses=dream_hypotheses,
         )
+        if dream_hypotheses:
+            logger.info(
+                "curiosity_dream_hypotheses_offered run=%s ids=%s",
+                run_id,
+                ",".join(h.hypothesis_id for h in dream_hypotheses),
+            )
         # Claim is unset at kickoff (Orion has not chosen). Continuation note
         # rides on Mind; the HelpRequest teach block stays on the harness prompt.
         self._mind_appraisal_by_run_id[run_id] = _investigation_subject_from_view(view)

@@ -3,6 +3,7 @@
 # ==================================================
 import asyncio
 import logging
+from datetime import timezone
 from fastapi import FastAPI
 from fastapi import HTTPException
 from contextlib import asynccontextmanager
@@ -28,9 +29,82 @@ async def lifespan(app: FastAPI):
     """
     logger.info("🌙 Orion Dream module starting up (readout façade; triggers go to cortex-orch)…")
 
+    stop = asyncio.Event()
+    loop_task = None
+    cycle_bus = None
+    if settings.ORION_DREAM_CYCLE_ENABLED:
+        from app.cycle import sleep_loop
+
+        try:
+            cycle_bus = await _connect_cycle_bus()
+            app.state.cycle_bus = cycle_bus
+            loop_task = asyncio.create_task(sleep_loop(build_cycle_deps(cycle_bus), stop))
+            logger.info("dream cycle v2 sleep loop started")
+        except Exception:
+            logger.exception("dream cycle v2 sleep loop failed to start")
+
     yield
 
+    stop.set()
+    if loop_task is not None:
+        try:
+            await asyncio.wait_for(loop_task, timeout=settings.SHUTDOWN_GRACE_SEC)
+        except Exception:
+            loop_task.cancel()
+    if cycle_bus is not None:
+        await cycle_bus.close()
     logger.info("💤 Orion Dream module shutting down…")
+
+
+async def _connect_cycle_bus():
+    if not settings.ORION_BUS_ENABLED:
+        return None
+    bus = OrionBusAsync(settings.ORION_BUS_URL)
+    await bus.connect()
+    return bus
+
+
+_LAST_CYCLE_END: dict = {}
+
+
+def build_cycle_deps(bus):
+    """Real IO for the dream cycle. Tests build CycleDeps with fakes instead."""
+    from app import cycle_store, llm
+    from app.cycle import CycleDeps
+
+    async def _complete(prompt: str) -> str:
+        if bus is None:
+            raise RuntimeError("bus disabled: no LLM for recombination")
+        return await llm.complete(bus, prompt)
+
+    async def _rem(cycle_id: str):
+        from app.rem_compaction import run_rem_compaction_once
+
+        delta = await run_rem_compaction_once(bus, dream_id=cycle_id)
+        return delta.delta_id if delta is not None else None
+
+    # The in-process floor keeps MIN_INTERVAL honest when persistence fails
+    # (e.g. migration not applied): without it the db reads "never slept" and
+    # the loop would spend LLM calls on a fresh cycle every tick.
+    def _last_end():
+        db = cycle_store.load_last_cycle_end()
+        mem = _LAST_CYCLE_END.get("at")
+        if db is not None and db.tzinfo is None:
+            db = db.replace(tzinfo=timezone.utc)
+        return max((d for d in (db, mem) if d is not None), default=None)
+
+    def _persist(cycle) -> bool:
+        _LAST_CYCLE_END["at"] = cycle.ended_at
+        return cycle_store.persist_cycle(cycle)
+
+    return CycleDeps(
+        load_source_rows=cycle_store.load_source_rows,
+        load_idle_minutes=cycle_store.load_idle_minutes,
+        load_last_cycle_end=_last_end,
+        persist_cycle=_persist,
+        complete=_complete,
+        rem_compaction=_rem,
+    )
 
 app = FastAPI(
     title="Orion Dream Module",
@@ -144,4 +218,54 @@ async def rem_preview_endpoint():
         "cards_out": delta.metrics.cards_out,
         "proposal_marked": delta.proposal_marked,
         "applied": False,
+    }
+
+
+@app.get("/dreams/cycle/pressure", summary="Current sleep pressure (read-only)")
+async def cycle_pressure_endpoint():
+    """What the sleep loop would see right now. Reads only; runs nothing."""
+    from datetime import datetime, timezone
+
+    from app.cycle import read_pressure, too_soon
+
+    deps = build_cycle_deps(None)
+    now = datetime.now(timezone.utc)
+    last_end = await asyncio.to_thread(deps.load_last_cycle_end)
+    pressure, candidates = await asyncio.to_thread(read_pressure, deps, now, last_end)
+    return {
+        "enabled": settings.ORION_DREAM_CYCLE_ENABLED,
+        "pressure": pressure.model_dump(mode="json"),
+        "is_idle": pressure.is_idle,
+        "should_sleep": pressure.should_sleep,
+        "too_soon": too_soon(now, last_end),
+        "candidates": len(candidates),
+    }
+
+
+@app.post("/dreams/cycle/run", summary="Run one dream cycle v2 now")
+async def cycle_run_endpoint(force: bool = False):
+    """Run one sleep. `force=true` skips the pressure/idle/interval gates.
+
+    Still refuses when ORION_DREAM_CYCLE_ENABLED is false: the flag is the
+    kill switch for the whole cycle, not just the background loop.
+    """
+    if not settings.ORION_DREAM_CYCLE_ENABLED:
+        return {"status": "disabled", "reason": "ORION_DREAM_CYCLE_ENABLED is false"}
+    from app.cycle import run_cycle_once
+
+    bus = getattr(app.state, "cycle_bus", None)
+    cycle = await run_cycle_once(build_cycle_deps(bus), trigger="manual", force=force)
+    if cycle is None:
+        return {"status": "not_due"}
+    return {
+        "status": cycle.status,
+        "cycle_id": cycle.cycle_id,
+        "pressure": cycle.pressure.pressure,
+        "replay": len(cycle.replay),
+        "hypotheses": [
+            {"hypothesis_id": h.hypothesis_id, "claim": h.claim, "ref_a": h.ref_a, "ref_b": h.ref_b}
+            for h in cycle.hypotheses
+        ],
+        "no_link": cycle.no_link_count,
+        "llm_failures": cycle.llm_failures,
     }

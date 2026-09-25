@@ -68,7 +68,12 @@ gateway cutover (stage 3).
 ## Deploy (athena)
 
 ```bash
-# 1. once: the projection tables (the LangGraph checkpoint tables create themselves)
+# 1. once: the projection tables. The LangGraph checkpoint tables create themselves, in their
+#    own `gpu_pool` schema (the pool connects with search_path=gpu_pool,public). They must not
+#    share public.checkpoints with durable-runs: its resume sweep lists every row there. On boot
+#    the pool moves any lease threads it finds in public into its schema, then deletes
+#    released leases' history after GPU_POOL_CHECKPOINT_RETENTION_HOURS (default 7 days, the
+#    reach of backfill replay and the Hub walker).
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_gpu_pool_v1.sql
 # 2. equilibrium must exclude the queue-wait hop BEFORE the pool publishes rpc_health:
 #    EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS=log_orion_metacognition,gpu_pool_wait

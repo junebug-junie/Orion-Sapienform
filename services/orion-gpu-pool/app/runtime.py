@@ -267,11 +267,13 @@ class PoolRuntime:
                 since=_ts(spec.get("since")), until=_ts(spec.get("until")), limit=limit)
             if spec.get("preview", True):
                 return GpuPoolControlReplyV1(ok=True, detail={"would_replay": len(rows)})
-            children = []
+            children, skipped = [], []
             for parent in rows:
                 snap = await self.graph.aget_state(self._thread(parent["lease_id"]))
                 request = dict((snap.values or {}).get("request") or {})
                 if not request:
+                    # history pruned (GPU_POOL_CHECKPOINT_RETENTION_HOURS): say so, don't drop it
+                    skipped.append(parent["lease_id"])
                     continue
                 request.update(request_id=uuid.uuid4().hex, parent_lease_id=parent["lease_id"],
                                deadline_at=None)
@@ -279,7 +281,8 @@ class PoolRuntime:
                 await self._start_thread(child, request, self.now(), parent_lease_id=parent["lease_id"])
                 children.append(child)
             await self._schedule_and_apply()
-        return GpuPoolControlReplyV1(ok=True, detail={"replayed": len(children), "children": children})
+        return GpuPoolControlReplyV1(ok=True, detail={"replayed": len(children), "children": children,
+                                                       "skipped_no_history": skipped})
 
     # --- the tick ---------------------------------------------------------------------
     async def tick(self) -> None:

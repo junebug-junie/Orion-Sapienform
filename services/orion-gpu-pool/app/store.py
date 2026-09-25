@@ -19,8 +19,36 @@ LEASE_COLUMNS = (
 )
 CARD_COLUMNS = ("card", "lent", "swapped_in", "swap_state", "cooldown_until", "last_active_at",
                 "updated_at", "updated_by")
+# LangGraph's checkpoint tables for lease threads live in their own schema. They used to share
+# public.checkpoints with durable-runs, whose resume sweep lists EVERY checkpoint in that table
+# (alist(None)) every 2 minutes: at one lease per inference the pool's threads became most of
+# the table within minutes, the sweep's full scan ran 8+ s, and lease RPCs stalled behind it
+# until callers timed out and left granted leases nobody held (2026-09-25).
+CHECKPOINT_SCHEMA = "gpu_pool"
+CHECKPOINT_TABLES = ("checkpoints", "checkpoint_blobs", "checkpoint_writes")
+THREAD_PREFIX = "gpu_pool:"
 LIVE_STATUSES = ("queued", "backlogged", "granted", "recalling", "retry_wait", "dead_letter", "unavailable")
 ADVISORY_KEY = 0x6770755F706F6F6C  # "gpu_pool"
+
+
+def pool_kwargs() -> dict[str, Any]:
+    """Connection settings for the pool's Postgres pool. The search_path puts LangGraph's
+    unqualified checkpoint tables in CHECKPOINT_SCHEMA; the projection tables (public) still
+    resolve through the second entry."""
+    from psycopg.rows import dict_row
+
+    return {"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row,
+            "options": f"-c search_path={CHECKPOINT_SCHEMA},public"}
+
+
+async def ensure_checkpoint_schema(conninfo: str) -> None:
+    """Before the saver's setup(): a schema missing from search_path is skipped, so setup would
+    silently create the tables in public again."""
+    import psycopg
+
+    async with await psycopg.AsyncConnection.connect(conninfo, autocommit=True) as conn:
+        await conn.execute("SET lock_timeout = '10s'")
+        await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {CHECKPOINT_SCHEMA}")
 
 
 class Store(Protocol):
@@ -33,10 +61,14 @@ class Store(Protocol):
                           since: datetime | None, until: datetime | None, limit: int) -> list[dict[str, Any]]: ...
     async def cards(self) -> list[dict[str, Any]]: ...
     async def upsert_card(self, row: dict[str, Any]) -> None: ...
+    async def prune_checkpoints(self, older_than: datetime) -> int: ...
 
 
 class MemoryStore:
     """Same contract, in memory: tests and the eval."""
+
+    async def prune_checkpoints(self, older_than):
+        return 0  # the in-memory saver belongs to the test
 
     def __init__(self) -> None:
         self.leases: dict[str, dict[str, Any]] = {}
@@ -116,6 +148,46 @@ class PostgresStore:
                 await self._leader_conn.close()  # ending the session releases the lock
             finally:
                 self._leader_conn = None
+
+    async def adopt_public_checkpoints(self) -> int:
+        """Move lease threads written before CHECKPOINT_SCHEMA existed out of public's shared
+        tables (idempotent; a no-op once done). Runs after saver.setup(), before any lease is
+        resumed, so a lease granted by the previous process keeps its history."""
+        moved = 0
+        async with self.pool.connection() as conn:
+            await conn.execute("SET lock_timeout = '10s'")
+            for table in CHECKPOINT_TABLES:
+                exists = await (await conn.execute("SELECT to_regclass(%s) AS t", (f"public.{table}",))).fetchone()
+                if not exists["t"]:
+                    continue
+                cols = [r["column_name"] for r in await (await conn.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_schema=%s AND table_name=%s "
+                    "AND column_name IN (SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name=%s) ORDER BY ordinal_position",
+                    (CHECKPOINT_SCHEMA, table, table))).fetchall()]
+                collist = ", ".join(cols)
+                async with conn.transaction():
+                    cur = await conn.execute(
+                        f"INSERT INTO {CHECKPOINT_SCHEMA}.{table} ({collist}) SELECT {collist} FROM public.{table} "
+                        f"WHERE thread_id LIKE %s ON CONFLICT DO NOTHING", (THREAD_PREFIX + "%",))
+                    moved += cur.rowcount or 0
+                    await conn.execute(f"DELETE FROM public.{table} WHERE thread_id LIKE %s", (THREAD_PREFIX + "%",))
+        return moved
+
+    async def prune_checkpoints(self, older_than):
+        """Drop the checkpoint history of leases released before ``older_than``. Only released
+        leases: a dead letter keeps its thread for operator replay. Backfill and the history
+        walker need the thread, so this bounds how far back they reach."""
+        deleted = 0
+        async with self.pool.connection() as conn:
+            for table in reversed(CHECKPOINT_TABLES):
+                cur = await conn.execute(
+                    f"DELETE FROM {CHECKPOINT_SCHEMA}.{table} c USING gpu_pool_leases l "
+                    f"WHERE c.thread_id = %s || l.lease_id AND l.status = 'released' AND l.updated_at < %s",
+                    (THREAD_PREFIX, older_than))
+                if table == "checkpoints":
+                    deleted = cur.rowcount or 0
+        return deleted
 
     async def check_schema(self) -> None:
         """The migration is operator-applied (services/orion-sql-db/manual_migration_gpu_pool_v1.sql).

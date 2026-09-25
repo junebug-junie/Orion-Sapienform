@@ -42,7 +42,7 @@ def _package(monkeypatch, name, path):
     return package
 
 
-def build_turn_adapter(monkeypatch, bus, store, repair_required, *, authority_app):
+def build_turn_adapter(monkeypatch, bus, store, repair_required, *, authority_app, pool=None):
     """Install the real turn adapters on a TypedBus; caller owns DB and authority.
 
     Return has handle_turn(envelope), stages (actual dispatched lease identities),
@@ -53,6 +53,10 @@ def build_turn_adapter(monkeypatch, bus, store, repair_required, *, authority_ap
     fixture pool's live holds (lease_id -> GpuLeaseRefV1): Hub's ``status`` fence reads it over the
     bus, and a gateway ``attach`` (``hold=``) is granted only against it. A stage row then records
     the ref (``hold_lease_id``/``hold_generation``) alongside any durable token.
+
+    Stage 4.5: ``pool`` (tests/pool_fixture.InProcessPool) replaces both fixture pools with the REAL
+    pool runtime: the gateway places each call on it (``attach`` under a carried hold, else a plain
+    ``acquire`` that must be granted at once) and Hub's ``status`` fence reads it over the bus.
     """
     hub_root = ROOT / "services/orion-hub"
     monkeypatch.setenv("SUBSTRATE_CONTROL_PLANE_DETACHED", "1")
@@ -171,7 +175,23 @@ def build_turn_adapter(monkeypatch, bus, store, repair_required, *, authority_ap
         finally:
             pool_held.discard(grant.url)
 
-    monkeypatch.setattr(placement, "gpu_lease", fixture_gpu_lease)
+    if pool is not None:
+        agent_roles = {"agent", "agent-gpu2", "chat"}
+        real = pool.gateway_gpu_lease(pool_grants, url_for_role=lambda role: (
+            "http://fixture-backend" if role in agent_roles else "http://fixture-metacog"))
+
+        @contextlib.asynccontextmanager
+        async def pooled_gpu_lease(_bus, **kw):
+            async with real(_bus, **kw) as lease:
+                pool_held.add(lease.grant.url)
+                try:
+                    yield lease
+                finally:
+                    pool_held.discard(lease.grant.url)
+
+        monkeypatch.setattr(placement, "gpu_lease", pooled_gpu_lease)
+    else:
+        monkeypatch.setattr(placement, "gpu_lease", fixture_gpu_lease)
     monkeypatch.setattr(placement, "_bus", object())
     placement.reset_pool_config_cache()
     placement.reset_pool_unreachable()
@@ -313,7 +333,10 @@ def build_turn_adapter(monkeypatch, bus, store, repair_required, *, authority_ap
     bus.handlers[thought.settings.channel_cortex_exec_request] = handle_plan
     bus.handlers[governor.settings.channel_cortex_exec_request] = handle_plan
     bus.handlers[executor.settings.channel_llm_intake] = handle_llm
-    bus.handlers[GPU_POOL_LEASE_REQUEST_CHANNEL] = handle_pool_lease
+    if pool is not None:
+        pool.install(bus)
+    else:
+        bus.handlers[GPU_POOL_LEASE_REQUEST_CHANNEL] = handle_pool_lease
 
     loop = curiosity.CuriosityInvestigation(enabled=True, tick_interval_sec=60, min_cooldown_sec=0,
         daily_cap=10, timeout_sec=30, session_id="isolated-durable-acceptance", llm_route="agent",

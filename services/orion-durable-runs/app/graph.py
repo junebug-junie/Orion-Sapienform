@@ -26,6 +26,7 @@ from typing import Any, Awaitable, Callable, TypedDict
 from uuid import NAMESPACE_URL, uuid5
 
 from orion.curiosity.journal import MaterialCounts, build_investigation_journal_entry
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.durable_run import (
     CURIOSITY_NODES,
     CuriosityRunBriefV1,
@@ -83,7 +84,12 @@ class CuriosityRunState(TypedDict, total=False):
     # finish
     status: str
     admission: dict[str, Any]
+    # Admitted runs (stage 4.5): the granted GPU pool hold's GpuLeaseRefV1 fields
+    # (lease_id, generation, role, holder) -- see app/admitted_graph.py for hold/hold_seq/turn_fence.
     lease: dict[str, Any] | None
+    hold: dict[str, Any] | None
+    hold_seq: int
+    turn_fence: int
     retry_at: str | None
     last_error: str | None
     requested_at: str
@@ -109,6 +115,13 @@ def _brief(state: CuriosityRunState) -> CuriosityRunBriefV1:
     return CuriosityRunBriefV1.model_validate(state["brief"])
 
 
+def _gpu_lease(state: dict[str, Any]) -> GpuLeaseRefV1 | None:
+    lease = state.get("lease")
+    if not lease:
+        return None
+    return GpuLeaseRefV1.model_validate({key: lease[key] for key in ("lease_id", "generation", "role", "holder")})
+
+
 def turn_correlation_id(state: CuriosityRunState) -> str:
     """Fence the subprocess identity while keeping run-level lineage stable.
 
@@ -120,6 +133,11 @@ def turn_correlation_id(state: CuriosityRunState) -> str:
     if not lease:
         return state["correlation_id"]
     identity = f"orion:durable:turn:{state['run_id']}:{state['correlation_id']}:{lease['lease_id']}:{lease['generation']}"
+    # A pool hold keeps its lease_id and generation across a durable-runs restart, so a replay
+    # after the restarted driver fenced the old turn needs its own identity (turn_fence).
+    fence = int(state.get("turn_fence") or 0)
+    if fence:
+        identity += f":fence:{fence}"
     return str(uuid5(NAMESPACE_URL, identity))
 
 
@@ -206,8 +224,10 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[CuriosityRunState], Awaitable[
             timeout_sec=brief.timeout_sec,
             source_tag=brief.source_tag,
             attempt=attempt,
-            lease=state.get("lease"),
-            assigned_lane=(state.get("lease") or {}).get("lane"),
+            # The run's pool hold: Hub fences it with the pool and every LLM call of the turn
+            # attaches to it. The hold's role is where the pool put the run, not a route, so it is
+            # never sent as ``assigned_lane`` (Hub names the ``agent`` route for a held turn).
+            gpu_lease=_gpu_lease(state),
         )
         result, meta = await timed_turn(deps.run_turn, request)
         if not result.ok or not result.text.strip():
@@ -325,10 +345,10 @@ def finish_detail(state: CuriosityRunState) -> dict[str, Any]:
         "finding_text": text[:FINDING_TEXT_CAP],
         "journal_entry_id": state.get("journal_entry_id"),
         "attempts": int(state.get("attempt") or 0),
-        # Door-A: when finish deferred release, Hub composes under this grant.
+        # Door-A: when finish kept the run's pool hold, Hub composes under it (GpuLeaseRefV1).
         **(
-            {"resource_lease": dict(state["lease"])}
-            if bool(outcome.get("reach_out")) and isinstance(state.get("lease"), dict) and state.get("lease")
+            {"gpu_lease": {key: state["lease"][key] for key in ("lease_id", "generation", "role", "holder")}}
+            if bool(outcome.get("reach_out")) and isinstance(state.get("lease"), dict) and state["lease"].get("holder")
             else {}
         ),
         **harness_meta_detail(state),

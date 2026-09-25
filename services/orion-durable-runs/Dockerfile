@@ -18,6 +18,9 @@ COPY config/proposals/visual_baseline.v1.yaml /app/config/proposals/visual_basel
 # the exact same root cause that crashed orion-hub in production the same
 # day (missing this file's copy there too; same fix, see that Dockerfile).
 COPY config/field /app/config/field
+# Stage 4.5: a run's GPU pool hold is placed by its route's class (orion.gpu_pool.config reads
+# /app/config/gpu_pool.yaml: routes -> class, and hold_lease_ttl_sec for the heartbeat check).
+COPY config/gpu_pool.yaml /app/config/gpu_pool.yaml
 COPY services/orion-durable-runs /app
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8121"]

@@ -11,6 +11,7 @@ from app.settings import Settings
 from orion.schemas.durable_run import DURABLE_RUN_STATE_KIND
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_admission_runtime_postgres import DSN, Runner, request, runtime, with_database
+from pool_fixture import InProcessPool
 
 pytestmark = pytest.mark.skipif(not DSN, reason="isolated ORION_ADMISSION_TEST_DSN required")
 
@@ -32,11 +33,11 @@ def test_other_replica_control_after_inference_stops_tail_and_preserves_resume(m
                 return entry.entry_id
             return Deps(original.run_turn, read, original.publish_attention_row, journal)
         monkeypatch.setattr(Runner, "_curiosity_deps", deps)
-        owner = runtime(pool, saver, store)
-        remote = runtime(pool, saver, store)
+        gpu = InProcessPool()   # both replicas talk to the one pool
+        owner = runtime(pool, saver, store, gpu=gpu)
+        remote = runtime(pool, saver, store, gpu=gpu)
         req = request("review-control-"+action)
         await owner.submit(req)
-        await owner.broker.tick()
         active = asyncio.create_task(owner._drive(await store.get_run(req.run_id)))
         try:
             await asyncio.wait_for(entered.wait(), 2)
@@ -46,6 +47,8 @@ def test_other_replica_control_after_inference_stops_tail_and_preserves_resume(m
             await asyncio.wait_for(active, 2)
             assert journal_calls == []
             assert not any(e["event"] == "run.completed" for e in await store.history(req.run_id))
+            # The control released the run's pool hold at once (Juniper's pause frees the card).
+            assert all(r["status"] == "released" for r in gpu.leases(holder=f"durable-runs:{req.run_id}"))
             if action == "cancel":
                 await remote._drive(await store.get_run(req.run_id))
                 assert (await remote.status(req.run_id))["status"] == "cancelled"
@@ -53,7 +56,6 @@ def test_other_replica_control_after_inference_stops_tail_and_preserves_resume(m
                 assert (await store.get_run(req.run_id))["terminal"] is None
                 await remote.control(req.run_id, "resume")
                 for _ in range(3):
-                    await remote.broker.tick()
                     await remote._drive(await store.get_run(req.run_id))
                     if (await store.get_run(req.run_id))["terminal"]:
                         break
@@ -109,7 +111,6 @@ def test_control_wins_at_terminal_commit_without_false_completion(monkeypatch, c
         original = store.finish_projection
         async def control_at_boundary(run_id, status, detail):
             await store.set_control(run_id, control)
-            await store.suspend_demand(run_id)
             return await original(run_id, status, detail)
         monkeypatch.setattr(store, "finish_projection", control_at_boundary)
         state = {"run_id": req.run_id, "brief": req.brief.model_dump(mode="json"),
@@ -119,10 +120,8 @@ def test_control_wins_at_terminal_commit_without_false_completion(monkeypatch, c
         assert row["terminal"] == ("cancelled" if control == "cancelled" else None)
         assert not any(event["event"] == "run.completed" for event in await store.history(req.run_id))
         if control == "paused":
-            assert (await store.get_demand(req.run_id))["status"] == "suspended"
             await store.set_control(req.run_id, None)
-            await store.register_demand(req.run_id, req.admission.model_dump(mode="json"))
-            assert (await store.get_demand(req.run_id))["status"] == "pending"
+            assert req.run_id in {r["run_id"] for r in await store.list_pending()}   # resumable
         await rt.close()
     asyncio.run(with_database(scenario))
 
@@ -154,13 +153,12 @@ def test_overall_deadline_expiring_mid_graph_fails_without_retry_or_journal(monk
         req = request("review-deadline-"+phase)
         req.admission.deadline_at = now[0]+timedelta(seconds=10)
         await rt.submit(req)
-        await rt.broker.tick()
         await rt._drive(await store.get_run(req.run_id))
         assert (await store.get_run(req.run_id))["terminal"] == "failed"
         checkpoint = await rt.graph.aget_state(rt.config(req.run_id))
         assert checkpoint.values["last_error"] == "workflow_deadline"
         assert journal_calls == []
-        assert await store.get_lease(req.run_id) is None
+        assert [r["status"] for r in rt.gpu.leases(holder=f"durable-runs:{req.run_id}")] == ["released"]
         assert not any(event["event"] == "run.retrying" for event in await store.history(req.run_id))
         await rt.close()
     asyncio.run(with_database(scenario))
@@ -171,45 +169,9 @@ def test_terminal_lifecycle_has_one_atomic_completion_event():
         rt = runtime(pool, saver, store)
         req = request("review-terminal-001")
         await rt.submit(req)
-        await rt.broker.tick()
         await rt._drive(await store.get_run(req.run_id))
         completed = [event for event in await store.history(req.run_id) if event["event"] == "run.completed"]
         assert [event["entry_id"] for event in completed] == [f"{req.run_id}:terminal:completed"]
-        await rt.close()
-    asyncio.run(with_database(scenario))
-
-
-def test_retry_preserves_first_assigned_lane_across_multiple_waiting_ticks():
-    async def scenario(pool, saver, store):
-        now = [datetime(2026, 9, 12, tzinfo=timezone.utc)]
-        store.clock = lambda: now[0]
-        rt = runtime(pool, saver, store)
-        rt.broker.widening_enabled = True
-        rt.broker.lanes["metacog"] = {"backend_key": "http://alternative", "configured": True,
-            "healthy": True, "compatible_with": ["agent"], "capabilities": {}, "external_busy": True}
-        study = request("review-pinned-study")
-        study.admission.alternatives = ["metacog"]
-        await rt.submit(study)
-        original = (await rt.broker.tick())[0]
-        assert original["lane"] == "agent"
-        await store.release(original, "attempt_failed")
-        holder = request("review-pinned-holder")
-        holder.brief.timeout_sec = 3500
-        await rt.submit(holder)
-        holder_lease = (await rt.broker.tick())[0]
-        assert holder_lease["run_id"] == holder.run_id
-        await store.renew(holder_lease, 2000)
-        now[0] += timedelta(seconds=1201)
-        await store.register_demand(study.run_id, study.admission.model_dump(mode="json"))
-        assert await rt.broker.tick() == []  # both lanes occupied
-        rt.broker.lanes["metacog"]["external_busy"] = False
-        assert await rt.broker.tick() == []  # prior waiting decision must not erase first assignment
-        assert await store.get_lease(study.run_id) is None
-        demand = await store.get_demand(study.run_id)
-        assert demand["decision"]["requested_lane"] == "agent"
-        assert demand["decision"]["retained_assigned_lane"] == "agent"
-        assert demand["decision"]["suppressed"]["metacog"] == "run_assignment_locked"
-        assert demand["requirement"]["pinned_lane"] is None  # preserve immutable operator request
         await rt.close()
     asyncio.run(with_database(scenario))
 
@@ -224,59 +186,28 @@ def test_status_initial_wait_stops_at_first_grant_across_release_and_retry():
         await rt.submit(req)
         now[0] += timedelta(seconds=12)
         assert (await rt.status(req.run_id))["queue_wait_seconds"] == 12
-        first = (await rt.broker.tick())[0]
-        now[0] += timedelta(seconds=5)
-        assert (await rt.status(req.run_id))["queue_wait_seconds"] == 12
-        await store.release(first, "attempt_failed")
-        now[0] += timedelta(seconds=200)
-        assert (await rt.status(req.run_id))["queue_wait_seconds"] == 12
-        await store.register_demand(req.run_id, req.admission.model_dump(mode="json"))
-        retry = (await rt.broker.tick())[0]
-        assert retry["generation"] > first["generation"]
-        assert (await rt.status(req.run_id))["queue_wait_seconds"] == 12
-        await store.finish_projection(req.run_id, "completed", {})
+        await rt._drive(await store.get_run(req.run_id))   # the pool grants: the wait ends here
         now[0] += timedelta(seconds=500)
-        assert (await rt.status(req.run_id))["queue_wait_seconds"] == 12
+        status = await rt.status(req.run_id)
+        assert status["status"] == "completed" and status["queue_wait_seconds"] == 12
         await rt.close()
     asyncio.run(with_database(scenario))
 
 
-def test_concurrent_policy_versions_share_first_committed_candidate_set(monkeypatch):
-    import json
+def test_duplicate_receipt_of_a_pre_cutover_row_ignores_broker_lane_fields():
+    """Rows accepted before 4.5 carry broker-derived ``alternatives``; a producer's duplicate
+    receipt (which never sends them) is the same run, not a conflict. Any real change still is."""
     from orion.durable_admission.store import SubmissionConflict
+
     async def scenario(pool, saver, store):
-        first, second = runtime(pool, saver, store), runtime(pool, saver, store)
-        first.settings.lane_policy_json = json.dumps({"metacog": {"compatible_with": ["agent"]}})
-        second.settings.lane_policy_json = json.dumps({"chat": {"compatible_with": ["agent"]}})
-        req = request("review-policy-race")
-        original_get = store.get_run
-        both_read = asyncio.Event()
-        reads = 0
-        async def synchronized_read(run_id):
-            nonlocal reads
-            value = await original_get(run_id)
-            reads += 1
-            if reads <= 2:
-                assert value is None
-                if reads == 2:
-                    both_read.set()
-                await both_read.wait()
-            return value
-        monkeypatch.setattr(store, "get_run", synchronized_read)
-        receipts = await asyncio.gather(first.submit(req), second.submit(req))
-        assert [receipt["run_id"] for receipt in receipts] == [req.run_id, req.run_id]
-        row = await store.get_run(req.run_id)
-        candidates = row["request"]["admission"]["alternatives"]
-        assert candidates in (["metacog"], ["chat"])
-        assert (await store.get_demand(req.run_id))["requirement"]["alternatives"] == candidates
-        assert req.admission.alternatives == []
+        rt = runtime(pool, saver, store)
+        req = request("review-pre-cutover")
+        stored = req.model_dump(mode="json")
+        stored["admission"].update(alternatives=["agent-burst", "chat-burst"], allow_elastic_activation=True)
+        await store.submit(stored)
+        assert (await rt.submit(req))["status"] == "waiting_resource"
         changed = req.model_copy(update={"brief": req.brief.model_copy(update={"prompt": "Different study"})})
         with pytest.raises(SubmissionConflict):
-            await first.submit(changed)
-        explicit = req.model_copy(update={"admission": req.admission.model_copy(update={
-            "alternatives": ["chat"] if candidates == ["metacog"] else ["metacog"]})})
-        with pytest.raises(SubmissionConflict):
-            await first.submit(explicit)
-        await first.close()
-        await second.close()
+            await rt.submit(changed)
+        await rt.close()
     asyncio.run(with_database(scenario))

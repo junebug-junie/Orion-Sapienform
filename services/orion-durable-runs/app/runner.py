@@ -85,6 +85,7 @@ from orion.schemas.durable_run import (
     DurableRunStateV1,
 )
 from orion.schemas.self_sense import CHANNEL_SELF_SENSE_EVAL_WRITE, KIND_SELF_SENSE_EVAL_WRITE, SelfSenseEvalV1
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.evals.self_sense_runner import envelope_correlation_id as self_sense_envelope_correlation_id
 
 from app.graph import CuriosityRunState, Deps, build_curiosity_graph, failed_turn_correlation_id, finish_detail
@@ -236,7 +237,7 @@ class DurableRunner:
         return ReflectDeps(call_reflect_llm=self._call_reflect_llm)
 
     async def _call_reflect_llm(
-        self, self_study_reflect_input: dict[str, Any], llm_route: str
+        self, self_study_reflect_input: dict[str, Any], llm_route: str, gpu_lease: GpuLeaseRefV1 | None = None,
     ) -> list[dict[str, Any]] | None:
         """The real verb-dispatch RPC to cortex-orch -- the exact same
         request shape cortex-exec's own `_call_self_study_reflect_llm` built
@@ -245,7 +246,12 @@ class DurableRunner:
         from moved, not its shape. Returns a list of raw finding dicts on
         success, or None on ANY failure (bad input, RPC error/timeout,
         non-ok result, empty/unparseable text, wrong JSON shape) -- same
-        "produce nothing on failure" contract, never raises for those."""
+        "produce nothing on failure" contract, never raises for those.
+
+        ``gpu_lease`` (admitted reflect runs, stage 4.5): the run's GPU pool hold, sent as
+        ``options.gpu_lease`` so cortex-exec forwards it and the gateway attaches this call to the
+        hold. Without it the call would take a plain agent lease and queue behind the run's own
+        hold (spec, "Corrections from building 4.4" item 4). ``llm_route`` is unchanged by it."""
         from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
 
         request = CortexClientRequest(
@@ -255,6 +261,7 @@ class DurableRunner:
             options={
                 "policy_dispatch_only": True,
                 **({"llm_route": llm_route} if llm_route else {}),
+                **({"gpu_lease": gpu_lease.model_dump(mode="json")} if gpu_lease is not None else {}),
             },
             recall=RecallDirective(enabled=False, required=False),
             context=CortexClientContext(
@@ -327,7 +334,8 @@ class DurableRunner:
             # turn that valid long attempt into an early retry. Queue waiting
             # never reaches this RPC at all.
             rpc_timeout = self._settings.turn_rpc_timeout_sec
-            if request.lease is not None:
+            admitted = request.lease is not None or request.gpu_lease is not None
+            if admitted:
                 rpc_timeout = max(rpc_timeout, request.timeout_sec)
             raw = await self._bus.rpc_request(
                 CURIOSITY_TURN_REQUEST_CHANNEL,
@@ -345,7 +353,7 @@ class DurableRunner:
             decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
             payload = decoded.envelope.payload if decoded.ok else None
             result = CuriosityTurnResultV1.model_validate(payload or {})
-            if request.lease is not None:
+            if admitted:
                 if decoded.envelope.kind != CURIOSITY_TURN_RESULT_KIND:
                     raise ValueError("unexpected admitted turn reply kind")
                 if (decoded.envelope.correlation_id != envelope.correlation_id

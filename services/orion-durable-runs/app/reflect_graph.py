@@ -38,6 +38,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, TypedDict
 
+from orion.schemas.gpu_pool import GpuLeaseRefV1
+
 logger = logging.getLogger("orion-durable-runs.reflect_graph")
 
 SELF_STUDY_REFLECT_VERB = "self_study.reflect"
@@ -82,7 +84,10 @@ class ReflectRunState(TypedDict, total=False):
     # finish
     status: str
     admission: dict[str, Any]
-    lease: dict[str, Any] | None
+    lease: dict[str, Any] | None  # granted GPU pool hold ref (admitted runs)
+    hold: dict[str, Any] | None
+    hold_seq: int
+    turn_fence: int
     retry_at: str | None
     last_error: str | None
     requested_at: str
@@ -102,8 +107,8 @@ class ReflectLlmCallFailed(RuntimeError):
 
 @dataclass
 class Deps:
-    call_reflect_llm: Callable[[dict[str, Any], str], Awaitable[list[dict[str, Any]] | None]]
-    """(self_study_reflect_input, llm_route) -> raw findings list, or None on
+    call_reflect_llm: Callable[..., Awaitable[list[dict[str, Any]] | None]]
+    """(self_study_reflect_input, llm_route[, gpu_lease=GpuLeaseRefV1]) -> raw findings list, or None on
     any non-transport failure (bad input, non-ok result, empty/unparseable
     text, wrong JSON shape) -- mirrors `_call_self_study_reflect_llm`'s own
     return contract exactly."""
@@ -115,8 +120,14 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[ReflectRunState], Awaitable[di
         attempt = int(state.get("attempt") or 0) + 1
         reflect_input = brief.get("self_study_reflect_input") or {}
         llm_route = brief.get("llm_route") or ""
+        # Admitted (stage 4.5): the run holds a GPU pool hold and the call must attach to it --
+        # without the ref the gateway would queue it behind the run's own hold. llm_route stays
+        # the brief's route; the hold's role is never sent as one.
+        lease = state.get("lease")
+        held = ({"gpu_lease": GpuLeaseRefV1.model_validate(
+            {key: lease[key] for key in ("lease_id", "generation", "role", "holder")})} if lease else {})
         try:
-            findings = await deps.call_reflect_llm(reflect_input, llm_route)
+            findings = await deps.call_reflect_llm(reflect_input, llm_route, **held)
         except Exception as exc:  # noqa: BLE001 -- transport failure, resumable
             raise ReflectLlmCallFailed(f"{type(exc).__name__}: {exc}") from exc
         if findings is None:

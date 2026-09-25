@@ -1,7 +1,6 @@
 """Late cancellations cannot address a successor lease's FCC subprocess."""
 import asyncio
 import sys
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -15,14 +14,13 @@ from orion.harness import fcc_motor
 from orion.schemas.durable_run import CuriosityTurnResultV1
 
 
-def state(generation=1):
-    now = datetime.now(timezone.utc)
+def state(generation=1, fence=0):
+    # A granted GPU pool hold's ref (stage 4.5): lease_id + generation fence the turn identity.
     return {"run_id": "study-generation-001", "correlation_id": "original-study-lineage", "attempt": 0,
         "brief": {"prompt": "Investigate the evidence", "session_id": "study-session", "timeout_sec": 100},
-        "lease": {"lease_id": f"lease-{generation}", "run_id": "study-generation-001",
-            "demand_id": "study-generation-001:turn", "resource_key": "llm.route.agent", "lane": "agent",
-            "backend_key": "http://worker", "generation": generation, "granted_at": now.isoformat(),
-            "expires_at": (now+timedelta(seconds=90)).isoformat(), "heartbeat_at": now.isoformat(), "status": "active"}}
+        "lease": {"lease_id": "hold-1", "generation": generation, "role": "agent",
+                  "holder": "durable-runs:study-generation-001"},
+        **({"turn_fence": fence} if fence else {})}
 
 
 def test_harness_identity_changes_per_lease_but_run_lineage_stays_stable():
@@ -77,3 +75,12 @@ def test_legacy_cancellation_identity_remains_unchanged():
     runtime.runner = SimpleNamespace(_publish=AsyncMock(return_value=True), _corr_for_admission=lambda value: value)
     asyncio.run(runtime._cancel_harness(legacy, "cancel"))
     assert runtime.runner._publish.await_args.args[2].correlation_id == legacy["correlation_id"]
+
+
+def test_a_restart_fence_under_the_same_hold_generation_gets_a_new_identity():
+    """A pool hold keeps lease_id + generation across a durable-runs restart; the restarted driver
+    bumps turn_fence so the replay never shares the fenced turn's identity (a late cancel for the
+    old one cannot kill it). Fence 0 is the pre-fence identity, so old checkpoints are unchanged."""
+    same_hold = [turn_correlation_id(state(1, fence)) for fence in (0, 1, 2)]
+    assert len(set(same_hold)) == 3
+    assert turn_correlation_id(state(1, 0)) == turn_correlation_id(state(1))

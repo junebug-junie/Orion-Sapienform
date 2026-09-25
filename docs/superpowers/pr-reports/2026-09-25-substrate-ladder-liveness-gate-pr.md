@@ -139,6 +139,6 @@ With the current live state, the first cron tick would raise one critical card f
 
 ## PR link
 
-(filled in on creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2325
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

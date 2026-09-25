@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from orion.core.bus.bus_schemas import ServiceRef
+from orion.schemas.reading import SourceFetchEvidenceV1
 from orion.schemas.world_pulse_read import (
     WorldPulseReadHandoffV1,
     WorldPulseReadPriorCandidateV1,
@@ -179,6 +180,12 @@ class _LegacyFakeConn:
                 self.rows[seed_id]["stage2_trace_id"] = trace_id
                 self.rows[seed_id]["stage2_error"] = None
             return "UPDATE 1"
+        if "SET stage2_status = 'skipped'" in sql_n:
+            seed_id, reason = args[0], args[1]
+            if seed_id in self.rows:
+                self.rows[seed_id]["stage2_status"] = "skipped"
+                self.rows[seed_id]["stage2_error"] = reason
+            return "UPDATE 1"
         if "SET stage2_status = 'failed'" in sql_n:
             seed_id, error = args[0], args[1]
             if seed_id in self.rows:
@@ -231,6 +238,11 @@ def _seed() -> WorldPulseReadSeedV1:
     )
 
 
+def _fetched(url: str, chars: int = 1200) -> SourceFetchEvidenceV1:
+    """What the governor reports for a WebFetch that returned the page."""
+    return SourceFetchEvidenceV1(url=url, tool_name="WebFetch", content_chars=chars)
+
+
 def _handoff(seed: WorldPulseReadSeedV1 | None = None) -> WorldPulseReadHandoffV1:
     seed = seed or _seed()
     return WorldPulseReadHandoffV1(
@@ -238,6 +250,7 @@ def _handoff(seed: WorldPulseReadSeedV1 | None = None) -> WorldPulseReadHandoffV
         what_i_learned="Learned about packaging.",
         trace_id="tr-pipeline-1",
         created_at=NOW,
+        read_evidence=[_fetched(seed.url)],
     )
 
 
@@ -1016,3 +1029,52 @@ def test_stage2_turn_that_reached_reader_resets_refund_streak(monkeypatch: pytes
 
     assert wb.WALLET_B_REFUND_STREAK_KEY not in bus.redis.store
     assert wb.WALLET_B_RETRY_NOT_BEFORE_KEY not in bus.redis.store
+
+
+# --- Stage 2 never builds on a Stage 1 handoff that has no read evidence ---
+
+
+def _live_hollow_handoff(seed: WorldPulseReadSeedV1) -> WorldPulseReadHandoffV1:
+    """Shape of the live 2026-09-25 networkworld handoff: schema-valid, no
+    read_evidence (every row written before this fix looks like this)."""
+    return WorldPulseReadHandoffV1(
+        seed_ref=seed,
+        what_i_learned=(
+            "Metadata-only extraction; I did not fetch or read the article body "
+            "this turn, and no claim about the page's content is grounded."
+        ),
+        trace_id="tr-hollow",
+        created_at=NOW,
+    )
+
+
+def test_stage2_skips_unread_handoff_before_wallet_b_debit() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn)
+    called: list = []
+
+    async def _pass(handoff):
+        called.append(handoff)
+        return _result()
+
+    pipe._stage2_pass = _pass  # type: ignore[method-assign]
+
+    async def _run():
+        seed = _seed()
+        await enqueue_seeds(conn, [seed])
+        await mark_seed_done(
+            conn, seed.seed_id, trace_id="tr-hollow", handoff=_live_hollow_handoff(seed)
+        )
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) == "no_read_evidence"
+    row = conn.rows["finding:r1:x"]
+    assert row["stage2_status"] == "skipped"
+    assert row["stage2_error"] == "no_read_evidence"
+    assert called == []
+    assert _count_key_b() not in bus.redis.store
+    assert bus.journal == []
+    # stage2_started (published at claim) is closed by a terminal event.
+    stages = [e.payload.get("stage") for c, e in bus.published if c != JOURNAL_WRITE_CHANNEL]
+    assert stages[-1] == "stage2_failed"

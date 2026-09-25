@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.context_exec import ContextExecPermissionV1
 from orion.schemas.pre_turn_appraisal import TurnWindowMessageV1
-from orion.schemas.reading import ReadingRecommendationOutcomeV1
+from orion.schemas.reading import ReadingRecommendationOutcomeV1, SourceFetchEvidenceV1
 from orion.schemas.thought import CoalitionSnapshotV1, ThoughtEventV1
 
 # Bounded cap for HarnessRunRequestV1.recent_turns -- reused, not invented:
@@ -321,3 +321,9 @@ class HarnessRunV1(BaseModel):
     # Derived from raw FCC tool_use/tool_result IDs and validated queue
     # receipts. This is evidence about persistence, not model-authored prose.
     reading_receipts: list[ReadingRecommendationOutcomeV1] = Field(default_factory=list)
+    # Fetch tool calls that returned usable source content this turn (see
+    # SourceFetchEvidenceV1). ``None`` means the producing governor predates
+    # this field -- distinct from ``[]`` ("reported, and nothing was fetched").
+    # Consumers that gate on evidence must treat ``None`` as "no evidence",
+    # never as "assume it was read".
+    source_fetches: list[SourceFetchEvidenceV1] | None = None

@@ -40,6 +40,11 @@ TRANSIENT_FAILURE_PREFIXES: tuple[str, ...] = (
     "bus_unavailable",
     "journal_bus_unavailable",
     "concept_atlas_store_unavailable",
+    # The governor that ran the turn predates HarnessRunV1.source_fetches, so
+    # there is no way to tell whether the source was read. Infra, not the seed.
+    # Plain `no_read_evidence` (orion/world_pulse_read/read_evidence.py) is
+    # deliberately NOT here: the model ran and did not read the source.
+    "no_read_evidence:harness_unreported",
 )
 
 

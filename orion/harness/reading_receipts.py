@@ -18,6 +18,7 @@ from orion.schemas.reading import (
     ReadingRecommendationOutcomeV1,
     ReadingToolBindingV1,
     ReadingToolResultV1,
+    SourceFetchEvidenceV1,
 )
 from orion.world_pulse_read.tools import deterministic_reading_request_id
 from orion.world_pulse_read.urls import normalize_source_url
@@ -121,8 +122,18 @@ def _has_source_content(value: Any) -> bool:
     return False
 
 
+# Claude Code's WebFetch answers a cross-host redirect with a notice telling
+# the model to fetch the new URL; it is not is_error, and it carries none of
+# the page. It must not count as having read the source.
+_WEBFETCH_NON_CONTENT_PREFIXES = ("redirect detected",)
+
+
 def _usable_fetch_result(tool_name: str, body: str) -> bool:
     if not body.strip():
+        return False
+    if tool_name == "WebFetch" and body.lstrip().lower().startswith(
+        _WEBFETCH_NON_CONTENT_PREFIXES
+    ):
         return False
     if tool_name == _CONTEXT_FETCH_TOOL:
         # A cache hit explicitly tells the model to use ctx_search and does
@@ -149,6 +160,7 @@ class ReadingReceiptTracker:
         self._pending: dict[str, _PendingCall] = {}
         self._recommendations: dict[str, _Recommendation] = {}
         self._successful_fetch_urls: list[str] = []
+        self._successful_fetches: list[SourceFetchEvidenceV1] = []
         self._anonymous_id = 0
 
     def observe(self, step: dict[str, Any]) -> None:
@@ -210,6 +222,13 @@ class ReadingReceiptTracker:
                 pending.tool_name, body
             ):
                 self._successful_fetch_urls.append(pending.url)
+                self._successful_fetches.append(
+                    SourceFetchEvidenceV1(
+                        url=pending.url,
+                        tool_name=pending.tool_name,
+                        content_chars=len(body.strip()),
+                    )
+                )
             return
 
         recommendation = self._recommendations[pending.key]
@@ -234,6 +253,12 @@ class ReadingReceiptTracker:
             recommendation.failure_kind = "malformed_receipt"
             return
         recommendation.receipt = receipt
+
+    def source_fetches(self) -> list[SourceFetchEvidenceV1]:
+        """Every fetch-tool call this turn whose tool_result carried usable
+        source content (same rule ``outcomes()`` uses for ``source_read``).
+        Tool-trace evidence, not model prose -- see SourceFetchEvidenceV1."""
+        return list(self._successful_fetches)
 
     def outcomes(self) -> list[ReadingRecommendationOutcomeV1]:
         outcomes: list[ReadingRecommendationOutcomeV1] = []

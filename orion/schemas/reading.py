@@ -141,6 +141,27 @@ class ReadingRecommendationOutcomeV1(BaseModel):
         return self
 
 
+class SourceFetchEvidenceV1(BaseModel):
+    """One fetch tool call in an FCC turn that returned usable source content.
+
+    Derived by the harness from raw tool_use/tool_result pairs
+    (orion/harness/reading_receipts.py), never from model prose: a model can
+    write "I fetched the page" without having done so (live 2026-09-25,
+    world-pulse seed finding:60d59b10...:9b084fc0f1583da0 -- zero tool calls,
+    marked done). ``content_chars`` is the length of the tool_result text the
+    model actually received (for WebFetch that is the fetch tool's own digest
+    of the page, not raw HTML bytes).
+
+    Nested inside HarnessRunV1, which Hub parses on every unified turn, so this
+    stays default ``extra`` (ignore) on purpose: a later producer-side field
+    must never make an older Hub reject the whole run.
+    """
+
+    url: str = Field(min_length=1)
+    tool_name: str = Field(min_length=1)
+    content_chars: int = Field(ge=0)
+
+
 class ReadingLifecycleV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request: ReadingRequestedV1

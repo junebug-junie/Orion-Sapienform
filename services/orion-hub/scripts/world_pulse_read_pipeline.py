@@ -18,6 +18,7 @@ from orion.core.bus.bus_schemas import ServiceRef
 from orion.core.llm_json import parse_json_object
 from orion.world_pulse_read.journal import publish_journal
 from orion.llm.routes import fcc_model_for_route
+from orion.schemas.reading import SourceFetchEvidenceV1
 from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseReadSeedV1
 from orion.substrate.adapters.world_pulse_read import map_world_pulse_read_handoff_to_substrate
 from orion.substrate.materializer import SubstrateGraphMaterializer
@@ -26,6 +27,7 @@ from orion.world_pulse_read.queue import (
     RECLAIM_REASON_STALE_TIMEOUT,
     claim_next_seed,
     enqueue_from_recent_digests,
+    skip_stale_digest_items,
     mark_seed_done,
     mark_seed_failed,
     mark_seed_skipped,
@@ -35,6 +37,12 @@ from orion.world_pulse_read.queue import (
 from orion.world_pulse_read.urls import validate_source_url
 from orion.world_pulse_read.events import publish_lifecycle
 from orion.world_pulse_read.retry import is_refused_before_work
+from orion.world_pulse_read.read_evidence import (
+    NO_READ_EVIDENCE,
+    no_evidence_reason,
+    parse_source_fetches,
+    source_read_evidence,
+)
 from orion.world_pulse_read.url_filters import url_looks_like_section_index
 from orion.world_pulse_read.wallet_a import (
     WalletAInputs,
@@ -84,6 +92,14 @@ class GenerateOutcome(NamedTuple):
 
     text: str
     fail_reason: Optional[str] = None
+    # `harness_source_fetches` off the final frame, parsed. None when the frame
+    # carried no report (governor predates the field) -- see read_evidence.py.
+    source_fetches: Optional[list[SourceFetchEvidenceV1]] = None
+
+
+class NoReadEvidenceError(ValueError):
+    """Stage 1 produced a schema-valid handoff but the tool trace shows no
+    read of the seed's source. ``str(exc)`` is the last_error label."""
 
 
 def _reason_from_non_final_frame(frames: list[Any]) -> str:
@@ -130,8 +146,10 @@ def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
 
 def _build_stage1_prompt(seed: WorldPulseReadSeedV1, trace_id: str) -> str:
     return (
-        "Read this source and return ONLY one fenced ```json block "
-        "(no greeting, no Juniper-facing prose).\n"
+        "Fetch the url below with WebFetch (ask it for the article's full text and main "
+        "points) before answering, then return ONLY one fenced ```json block "
+        "(no greeting, no Juniper-facing prose). A turn with no successful fetch of this "
+        "url is discarded, however good the JSON is.\n"
         f"seed_id={seed.seed_id} kind={seed.kind} run_id={seed.run_id}\n"
         f"url={seed.url}\ntitle={seed.title}\nsection={seed.section}\n"
         f"reading_request={request_for_seed(seed).model_dump(mode='json')}\n"
@@ -147,8 +165,9 @@ def _build_stage1_prompt(seed: WorldPulseReadSeedV1, trace_id: str) -> str:
         '  "created_at": "ISO-8601 UTC"\n'
         "}\n"
         "candidate_priors MUST be objects with claim (not bare strings). "
-        "If the URL is thin/teaser-only, still return the JSON with low-confidence "
-        "priors and note gaps in open_threads. producer_hint is forced server-side."
+        "If the fetched page is thin/teaser-only, still return the JSON with low-confidence "
+        "priors and note gaps in open_threads. producer_hint and read_evidence are "
+        "set server-side."
     )
 
 
@@ -167,6 +186,7 @@ class WorldPulseReadPipeline:
         llm_route: str = "",
         timezone_name: str = "UTC",
         max_attempts: int = 1,
+        digest_item_max_age_days: float = 0.0,
         pool_provider: Callable[[], Any],
         source_ref: ServiceRef,
         step_relay_provider: Optional[Callable[[], Any]] = None,
@@ -186,6 +206,9 @@ class WorldPulseReadPipeline:
         # Bounded retry for transient turn failures (orion/world_pulse_read/retry.py).
         # 1 == legacy terminal-on-first-failure.
         self.max_attempts = max(1, int(max_attempts))
+        # Pending digest_item seeds older than this are skipped as
+        # `stale_digest_item` every tick (0 disables). See skip_stale_digest_items.
+        self.digest_item_max_age_days = max(0.0, float(digest_item_max_age_days or 0.0))
         try:
             self._tz = ZoneInfo(timezone_name)
             self._tz_loaded = True
@@ -268,6 +291,7 @@ class WorldPulseReadPipeline:
         now = datetime.now(timezone.utc)
         await self._reclaim_stale_claimed()
         await self._maybe_enqueue_recent()
+        await self._skip_stale_digest_items()
 
         redis = self._redis()
         retry_wait = None
@@ -338,6 +362,22 @@ class WorldPulseReadPipeline:
 
         try:
             handoff = await self._stage1_read(seed)
+            if handoff is not None and not handoff.read_evidence:
+                # Belt and braces for any reader that skips _stage1_read's own
+                # check: a handoff with no tool-trace read is never `done`.
+                raise NoReadEvidenceError(NO_READ_EVIDENCE)
+        except NoReadEvidenceError as exc:
+            reason = str(exc) or NO_READ_EVIDENCE
+            logger.warning(
+                "world_pulse_read_no_read_evidence seed=%s url=%s reason=%s",
+                seed.seed_id,
+                seed.url,
+                reason,
+            )
+            await self._settle_wallet(redis, receipt, reason, seed.seed_id)
+            await self._fail_seed(seed.seed_id, reason)
+            await publish_lifecycle(self._bus, seed, "stage1_failed", source=self._source_ref, error=reason)
+            return NO_READ_EVIDENCE
         except Exception as exc:  # noqa: BLE001
             logger.warning("world_pulse_read_stage1_failed seed=%s err=%s", seed.seed_id, exc)
             await self._settle_wallet(redis, receipt, str(exc), seed.seed_id)
@@ -411,6 +451,25 @@ class WorldPulseReadPipeline:
         except Exception:  # noqa: BLE001
             logger.warning("world_pulse_read_enqueue_failed", exc_info=True)
 
+    async def _skip_stale_digest_items(self) -> None:
+        if self.digest_item_max_age_days <= 0:
+            return
+        try:
+            skipped = await self._with_conn(
+                lambda conn: skip_stale_digest_items(
+                    conn, max_age_sec=self.digest_item_max_age_days * 86400.0
+                )
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("world_pulse_read_skip_stale_failed", exc_info=True)
+            return
+        if skipped:
+            logger.info(
+                "world_pulse_read_skipped_stale_digest_items n=%s max_age_days=%s",
+                skipped,
+                self.digest_item_max_age_days,
+            )
+
     async def _settle_wallet(
         self, redis: Any, receipt: Any, reason: Optional[str], seed_id: str
     ) -> None:
@@ -478,7 +537,24 @@ class WorldPulseReadPipeline:
         parsed["seed_ref"] = seed.model_dump(mode="json")
         parsed.setdefault("created_at", created_at.isoformat())
         parsed["producer_hint"] = "world_pulse_read_pipeline"
-        return WorldPulseReadHandoffV1.model_validate(parsed)
+        fetches = outcome.source_fetches
+        evidence = source_read_evidence(seed.url, fetches or [])
+        # Server-side, overwriting anything the model wrote under this key.
+        parsed["read_evidence"] = [f.model_dump(mode="json") for f in evidence]
+        # Schema errors first: a malformed handoff is a parse failure, not an
+        # evidence gap.
+        handoff = WorldPulseReadHandoffV1.model_validate(parsed)
+        logger.info(
+            "world_pulse_read_fetch_evidence seed=%s reported=%s fetches=%s matched=%s chars=%s",
+            seed.seed_id,
+            fetches is not None,
+            len(fetches or []),
+            len(evidence),
+            ",".join(f"{f.tool_name}:{f.content_chars}" for f in (fetches or [])),
+        )
+        if fetches is None or not handoff.read_evidence:
+            raise NoReadEvidenceError(no_evidence_reason(seed.url, fetches))
+        return handoff
 
     async def _generate(self, prompt: str, correlation_id: str) -> GenerateOutcome:
         """Real unified-turn generation. Every failure path returns a distinct,
@@ -526,4 +602,6 @@ class WorldPulseReadPipeline:
             return GenerateOutcome("", "blank_final_response")
         if looks_like_error_text(text):
             return GenerateOutcome("", "looks_like_error_text")
-        return GenerateOutcome(text, None)
+        return GenerateOutcome(
+            text, None, parse_source_fetches(final.get("harness_source_fetches"))
+        )

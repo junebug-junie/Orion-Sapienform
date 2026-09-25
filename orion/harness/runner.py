@@ -52,7 +52,7 @@ from orion.schemas.harness_finalize import (
     HarnessRunRequestV1,
 )
 from orion.schemas.pre_turn_appraisal import TurnWindowMessageV1
-from orion.schemas.reading import ReadingRecommendationOutcomeV1
+from orion.schemas.reading import ReadingRecommendationOutcomeV1, SourceFetchEvidenceV1
 from orion.schemas.thought import CoalitionSnapshotV1, ThoughtEventV1
 
 logger = logging.getLogger("orion.harness.runner")
@@ -120,6 +120,9 @@ class HarnessMotorResult:
     # fast-fail before any assistant turn).
     fcc_served_model: str | None = None
     reading_receipts: list[ReadingRecommendationOutcomeV1] = field(default_factory=list)
+    # Fetch tool calls that returned usable source content (tool-trace evidence,
+    # see SourceFetchEvidenceV1). Empty on every path that never ran the motor.
+    source_fetches: list[SourceFetchEvidenceV1] = field(default_factory=list)
 
 
 def _default_harness_node_name() -> str:
@@ -646,6 +649,7 @@ class HarnessRunner:
                 fcc_served_model=fcc_served_model,
                 probed_served_model=current_served_model,
                 reading_receipts=reading_receipts,
+                source_fetches=reading_tracker.source_fetches(),
             )
 
         await _publish_motor_lifecycle(
@@ -707,4 +711,5 @@ class HarnessRunner:
             fcc_served_model=fcc_served_model,
             probed_served_model=current_served_model,
             reading_receipts=reading_receipts,
+            source_fetches=reading_tracker.source_fetches(),
         )

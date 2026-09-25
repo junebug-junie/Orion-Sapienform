@@ -38,10 +38,12 @@ from orion.world_pulse_read.queue import (
     _json_object,
     request_for_seed,
     mark_stage2_done,
+    mark_stage2_skipped,
     mark_stage2_failed,
     reclaim_stale_stage2_claimed,
 )
 from orion.world_pulse_read.retry import is_refused_before_work
+from orion.world_pulse_read.read_evidence import NO_READ_EVIDENCE
 from orion.world_pulse_read.wallet_a import (
     WalletAInputs,
     read_wallet_a_retry_wait,
@@ -406,6 +408,26 @@ class WorldPulseReadStage2Pipeline:
             await self._fail_stage2(claim.seed.seed_id, f"handoff_invalid:{exc}")
             await publish_lifecycle(self._bus, claim.seed, "stage2_failed", source=self._source_ref, error="handoff_invalid")
             return "handoff_invalid"
+
+        if not handoff.read_evidence:
+            # A Stage 1 handoff with no tool-trace read of its source (every
+            # row written before 2026-09-25, and live the hollow networkworld
+            # `finding:60d59b10...` read) has nothing for a second pass to
+            # build on. Skip before the debit; not a failure of Stage 2.
+            await self._with_conn(
+                lambda conn: mark_stage2_skipped(
+                    conn, claim.seed.seed_id, reason=NO_READ_EVIDENCE
+                )
+            )
+            logger.info(
+                "world_pulse_read_stage2_skipped_unread seed=%s", claim.seed.seed_id
+            )
+            # `stage2_started` was already published at claim; close it.
+            await publish_lifecycle(
+                self._bus, claim.seed, "stage2_failed", source=self._source_ref,
+                error=NO_READ_EVIDENCE,
+            )
+            return NO_READ_EVIDENCE
 
         # Debit only once a turn is actually about to run: an invalid stored
         # handoff never reaches the model and must not spend a Wallet B slot.

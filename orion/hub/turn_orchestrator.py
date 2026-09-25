@@ -495,6 +495,15 @@ def _success_frames(
         # legs on either side of this one.
         "harness_fcc_elapsed_sec": run.fcc_elapsed_sec,
     }
+    if run.source_fetches is not None:
+        # Tool-trace evidence of which sources this turn actually fetched
+        # (SourceFetchEvidenceV1). Absent from the frame when the governor
+        # predates the field, so a consumer can tell "not reported" from
+        # "reported, nothing fetched" -- world_pulse_read_pipeline.py gates
+        # a Stage 1 `done` on this.
+        final_frame["harness_source_fetches"] = [
+            item.model_dump(mode="json") for item in run.source_fetches
+        ]
     if fcc_model_label:
         # The identity that actually produced this response -- previously not
         # exposed on the frame at all, so callers that consume frames

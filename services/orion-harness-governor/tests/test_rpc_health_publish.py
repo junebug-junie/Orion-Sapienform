@@ -161,6 +161,7 @@ async def test_handle_run_records_fcc_hop_on_the_bus_it_was_given() -> None:
                 fcc_served_model="m1",
                 fcc_elapsed_sec=30.0,
                 reading_receipts=[],
+                source_fetches=[],
             )
         )
     )

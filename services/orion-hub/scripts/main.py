@@ -676,6 +676,7 @@ async def startup_event():
                 llm_route=settings.HUB_WORLD_PULSE_READ_LLM_ROUTE,
                 timezone_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ,
                 max_attempts=settings.HUB_WORLD_PULSE_READ_MAX_ATTEMPTS,
+                digest_item_max_age_days=settings.HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS,
                 pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
                 source_ref=ServiceRef(
                     name=settings.SERVICE_NAME,

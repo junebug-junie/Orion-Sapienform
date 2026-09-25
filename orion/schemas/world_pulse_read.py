@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from orion.schemas.reading import ReadingRequestedV1
+from orion.schemas.reading import ReadingRequestedV1, SourceFetchEvidenceV1
 
 
 class _Base(BaseModel):
@@ -190,6 +190,11 @@ class WorldPulseReadHandoffV1(_Base):
     trace_id: str = Field(min_length=1)
     created_at: datetime
     producer_hint: Literal["world_pulse_read_pipeline"] = "world_pulse_read_pipeline"
+    # Tool-trace proof the Stage 1 turn fetched this seed's source
+    # (orion/world_pulse_read/read_evidence.py). Set server-side, never by the
+    # model. Empty on rows written before 2026-09-25; Stage 1 refuses to mark a
+    # seed `done` without it and Stage 2 skips a handoff that lacks it.
+    read_evidence: list[SourceFetchEvidenceV1] = Field(default_factory=list)
 
     @field_validator("what_i_learned")
     @classmethod

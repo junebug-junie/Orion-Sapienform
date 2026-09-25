@@ -197,7 +197,11 @@ def schedule(
     cards: dict[str, CardLive],
     leases: list[LeaseView],
     now: datetime,
+    seen_ctx: dict[str, int] | None = None,
 ) -> list[Decision]:
+    """``seen_ctx``: each role's last-seen per-slot context, kept by the caller across restarts of
+    the role. Used ONLY to decide "too big for this class" -- a briefly-down big role must not make
+    its class look small. Placement, swaps and serviceability use live ``roles`` alone."""
     d = cfg.defaults
     out: list[Decision] = []
 
@@ -221,8 +225,13 @@ def schedule(
                 queued.append(lease)
             continue
         if lease.status == "queued":
+            too_big = _exceeds_class(cfg, roles, lease, seen_ctx or {})
             if lease.deadline_at is not None and lease.deadline_at <= now:
                 out.append(Unavailable(lease.lease_id, "deadline"))
+            elif too_big is not None:
+                # No card this class can use has a slot that big: say so now, naming the biggest,
+                # instead of queueing until the deadline for a placement that can never happen.
+                out.append(Unavailable(lease.lease_id, f"min_ctx_exceeds_class:{too_big}"))
             else:
                 queued.append(lease)
         elif lease.status == "backlogged":
@@ -395,6 +404,26 @@ def schedule(
         if wanting and residents_idle and not residents_wanted:
             out.append(SwapLoad(seat, "demand"))
     return out
+
+
+def _exceeds_class(cfg: PoolConfig, roles: dict[str, RoleLive], lease: LeaseView,
+                   seen_ctx: dict[str, int]) -> int | None:
+    """The largest known per-slot context of the class's LLM roles, when it is smaller than the
+    lease needs; else None. Known = live now, or last seen (a role restarting keeps its size). A
+    role never seen (a swap seat not yet loaded) might be bigger, so no known context means
+    "cannot tell yet", never "too big"."""
+    if not lease.min_ctx_tokens:
+        return None
+    known = []
+    for r in cfg.classes[lease.work_class].roles:
+        if cfg.roles[r].kind != "llm":
+            continue
+        size = (roles[r].ctx_per_slot if r in roles else None) or seen_ctx.get(r)
+        if size:
+            known.append(size)
+    if not known or max(known) >= lease.min_ctx_tokens:
+        return None
+    return max(known)
 
 
 def _loadable(ctx: _Ctx, role: str) -> bool:

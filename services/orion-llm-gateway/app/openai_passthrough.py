@@ -1,114 +1,62 @@
 """OpenAI-compatible HTTP passthrough for external clients (e.g. AI Town Convex actions).
 
 Chat completions resolve Orion route keys (chat, quick, agent, …) through the same
-LLM_GATEWAY_ROUTE_TABLE_JSON used by cortex bus RPC and Anthropic FCC passthrough.
-Embeddings proxy to ORION_LLM_OLLAMA_URL when configured (AI Town memory vectors).
+config/gpu_pool.yaml `routes:` the bus RPC and Anthropic passthrough use; each call takes a GPU
+pool lease (holder "http:openai") and goes to the granted role's URL.
+Embeddings proxy to ORION_VECTOR_HOST_URL (not a GPU pool role).
 """
 from __future__ import annotations
 
 import hashlib
-import asyncio
 import json
 import logging
-from typing import Any, AsyncIterator, Dict, Optional, Tuple
-from uuid import uuid4
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 from fastapi import APIRouter, Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
 from .anthropic_passthrough import (
     _extract_correlation_id,
-    _forwardable_request_headers,
-    _forwardable_response_headers,
     _httpx_timeout,
-    _passthrough_read_timeout_sec,
     normalize_anthropic_model_name,
 )
-from .llm_backend import RouteTarget, get_route_targets
-from .priority_admission import background_admission
+from . import pool_placement
+from .passthrough_proxy import proxy_on_pool
 from .settings import settings
-from .capacity import CapacityPermit, CapacityRejected, CapacityStreamingResponse, capacity_error, stream_cleanup
 from .resource_lease import LeaseGuard, ResourceLeaseRejected, lease_error
-from . import lane_gate
-from orion.llm.routes import OPERATOR_GATED_LLM_ROUTES
 
 logger = logging.getLogger("orion-llm-gateway.openai")
 
-_OPENAI_COMPAT_BACKENDS = frozenset({"llamacpp", "llama-cpp", "llama-cola", "vllm", "ollama"})
-
-
-def _normalize_backend_name(backend: Optional[str]) -> str:
-    normalized = str(backend or "llamacpp").replace("_", "-").lower()
-    if normalized == "llama-cpp":
-        return "llamacpp"
-    return normalized
-
-
-def _backend_supports_openai_chat(backend: Optional[str]) -> bool:
-    return _normalize_backend_name(backend) in _OPENAI_COMPAT_BACKENDS
-
 
 def _available_route_keys() -> list[str]:
-    return sorted(get_route_targets().keys())
-
-
-def _resolve_upstream_model(route_key: str, target: RouteTarget) -> str:
-    if target.model:
-        return target.model
-    return route_key
+    return sorted(pool_placement.pool_routes().keys())
 
 
 def resolve_openai_route(
     requested_model: Optional[str],
-) -> Tuple[Optional[str], Optional[RouteTarget], Optional[str], Optional[Dict[str, Any]]]:
-    route_table = get_route_targets()
-    if not route_table:
-        return None, None, None, {
-            "error": {
-                "message": "No LLM gateway route table configured",
-                "type": "route_not_configured",
-                "available_routes": [],
-            }
-        }
+) -> Tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
+    """Route key from the OpenAI `model` field. Returns (route_key, upstream_model, error_payload).
 
+    The route must be in config/gpu_pool.yaml; the model forwarded upstream is the route key (the
+    pool role's llama.cpp server serves one model and echoes its real name back)."""
+    routes = pool_placement.pool_routes()
     normalized = normalize_anthropic_model_name(requested_model)
-    route_key = normalized
-    target = route_table.get(route_key) if route_key else None
-
-    if target is None and not route_key:
+    route_key = normalized or None
+    if route_key is None:
         default_key = str(settings.llm_route_default or "chat")
-        if default_key in route_table:
+        if default_key in routes:
             route_key = default_key
-            target = route_table[default_key]
-
-    if target is None:
+    if route_key is None or route_key not in routes:
         label = normalized or str(requested_model or "")
-        return None, None, None, {
+        return None, None, {
             "error": {
-                "message": f"OpenAI passthrough route '{label}' is not configured",
-                "type": "route_not_configured",
+                "message": f"OpenAI passthrough route '{label}' is not in config/gpu_pool.yaml routes",
+                "type": pool_placement.ROUTE_NOT_IN_POOL,
                 "available_routes": _available_route_keys(),
             }
         }
-
-    if not _backend_supports_openai_chat(target.backend):
-        backend_label = _normalize_backend_name(target.backend)
-        return route_key, target, None, {
-            "error": {
-                "message": (
-                    f"Route '{route_key}' backend '{backend_label}' does not expose "
-                    "OpenAI chat (/v1/chat/completions)"
-                ),
-                "type": "backend_incompatible",
-                "route": route_key,
-                "backend": backend_label,
-                "available_routes": _available_route_keys(),
-            }
-        }
-
-    upstream_model = _resolve_upstream_model(route_key, target)
-    return route_key, target, upstream_model, None
+    return route_key, route_key, None
 
 
 def _disabled_response() -> JSONResponse:
@@ -132,125 +80,6 @@ def _embedding_texts_from_body(body: Dict[str, Any]) -> list[str]:
     return [str(raw_input or "")]
 
 
-async def _proxy_upstream_json(
-    *,
-    request: Request,
-    upstream_url: str,
-    forward_body: Dict[str, Any],
-    route_key: str,
-    correlation_id: Optional[str],
-    log_event: str,
-    capacity: CapacityPermit | None = None,
-    guard: LeaseGuard | None = None,
-) -> Response:
-    stream = bool(forward_body.get("stream"))
-    headers = _forwardable_request_headers(request)
-    timeout = _httpx_timeout()
-    stream_transferred = False
-
-    async def run(operation):
-        if guard is not None:
-            operation = guard.run(operation)
-        if capacity is not None:
-            operation = capacity.run(operation)
-        return await operation
-
-    logger.info(
-        "%s corr=%s route=%s upstream=%s stream=%s",
-        log_event,
-        correlation_id or "-",
-        route_key,
-        upstream_url,
-        stream,
-    )
-
-    try:
-        if capacity is not None:
-            await capacity.acquire()
-        if guard is not None:
-            await guard.check()
-        if stream:
-            client = httpx.AsyncClient(timeout=timeout)
-            try:
-                upstream_request = client.build_request(
-                    "POST", upstream_url, headers=headers, json=forward_body
-                )
-                upstream = await run(client.send(upstream_request, stream=True))
-            except httpx.TimeoutException:
-                await client.aclose()
-                return JSONResponse(
-                    {"error": {"message": "Upstream OpenAI request timed out", "type": "timeout"}},
-                    status_code=504,
-                )
-            except httpx.HTTPError as exc:
-                await client.aclose()
-                return JSONResponse(
-                    {"error": {"message": f"Upstream request failed: {exc}", "type": "upstream_error"}},
-                    status_code=502,
-                )
-            except BaseException:
-                await client.aclose()
-                raise
-
-            response_headers = _forwardable_response_headers(upstream.headers)
-            media_type = upstream.headers.get("content-type") or "text/event-stream"
-            close_stream = stream_cleanup(upstream, client, capacity)
-
-            async def _body() -> AsyncIterator[bytes]:
-                try:
-                    chunks = upstream.aiter_bytes()
-                    if guard is not None:
-                        chunks = guard.chunks(chunks)
-                    if capacity is not None:
-                        chunks = capacity.chunks(chunks)
-                    async for chunk in chunks:
-                        yield chunk
-                except (CapacityRejected, ResourceLeaseRejected) as exc:
-                    error = capacity_error(str(exc)) if isinstance(exc, CapacityRejected) else lease_error(str(exc))
-                    yield ("data: " + json.dumps(error) + "\n\n").encode()
-                finally:
-                    await close_stream()
-
-            stream_transferred = True
-            return CapacityStreamingResponse(
-                _body(),
-                cleanup=close_stream,
-                status_code=upstream.status_code,
-                headers=response_headers,
-                media_type=media_type,
-            )
-
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            upstream = await run(client.post(upstream_url, headers=headers, json=forward_body))
-            response_headers = _forwardable_response_headers(upstream.headers)
-            content_type = response_headers.pop("content-type", None) or response_headers.pop(
-                "Content-Type", None
-            )
-            return Response(
-                content=upstream.content,
-                status_code=upstream.status_code,
-                headers=response_headers,
-                media_type=content_type or "application/json",
-            )
-    except CapacityRejected as exc:
-        return JSONResponse(capacity_error(str(exc)), status_code=503)
-    except ResourceLeaseRejected as exc:
-        return JSONResponse(lease_error(str(exc)), status_code=409)
-    except httpx.TimeoutException:
-        return JSONResponse(
-            {"error": {"message": "Upstream OpenAI request timed out", "type": "timeout"}},
-            status_code=504,
-        )
-    except httpx.HTTPError as exc:
-        return JSONResponse(
-            {"error": {"message": f"Upstream request failed: {exc}", "type": "upstream_error"}},
-            status_code=502,
-        )
-    finally:
-        if capacity is not None and not stream_transferred:
-            await capacity.close()
-
-
 async def handle_chat_completions_post(request: Request) -> Response:
     if not settings.llm_gateway_openai_passthrough_enabled:
         return _disabled_response()
@@ -269,66 +98,41 @@ async def handle_chat_completions_post(request: Request) -> Response:
         )
 
     requested_model = body.get("model")
-    route_key, target, upstream_model, error_payload = resolve_openai_route(
+    route_key, upstream_model, error_payload = resolve_openai_route(
         str(requested_model) if requested_model is not None else None
     )
     if error_payload is not None:
-        err_type = error_payload.get("error", {}).get("type", "route_not_configured")
-        status = 404 if err_type == "route_not_configured" else 400
-        return JSONResponse(error_payload, status_code=status)
+        return JSONResponse(error_payload, status_code=404)
 
-    assert target is not None and route_key is not None and upstream_model is not None
-    if route_key in OPERATOR_GATED_LLM_ROUTES and not await lane_gate.is_open(route_key):
-        return JSONResponse(lane_gate.route_operator_closed_error(route_key), status_code=503)
+    assert route_key is not None and upstream_model is not None
     forward_body = dict(body)
     if forward_body.get("model") != upstream_model:
         forward_body["model"] = upstream_model
-    upstream_url = f"{target.url.rstrip('/')}/v1/chat/completions"
     try:
-        guard = LeaseGuard.from_headers(request.headers, lane=route_key, backend_key=target.url)
+        guard = LeaseGuard.from_headers(request.headers, lane=route_key)
     except ResourceLeaseRejected as exc:
         return JSONResponse(lease_error(str(exc)), status_code=409)
-    capacity = CapacityPermit(lane=route_key, backend_key=target.url,
-                              correlation_id=_extract_correlation_id(request) or str(uuid4()),
-                              budget_sec=_passthrough_read_timeout_sec(), lease=guard.lease)
+    max_tokens = body.get("max_tokens", body.get("max_completion_tokens"))
+    correlation_id = _extract_correlation_id(request)
 
-    if target.priority == "background" and not (capacity.enabled and guard.lease is not None):
-        # See priority_admission.py's docstring: wait for upstream slot slack
-        # before dispatching so a background-tagged route (e.g. AI Town's
-        # quick_background) never competes evenly with foreground traffic
-        # sharing the same llama.cpp process. Fail-open -- always forwards
-        # eventually, never drops the request.
-        try:
-            async with asyncio.timeout(capacity.remaining if capacity.enabled else None):
-                async with background_admission(
-                    route_key,
-                    target,
-                    concurrency=settings.llm_gateway_background_concurrency,
-                    poll_interval_sec=settings.llm_gateway_background_poll_interval_sec,
-                    max_wait_sec=settings.llm_gateway_background_max_wait_sec,
-                ):
-                    return await _proxy_upstream_json(
-                        request=request,
-                        upstream_url=upstream_url,
-                        forward_body=forward_body,
-                        route_key=route_key,
-                        correlation_id=_extract_correlation_id(request),
-                        log_event="openai_chat_passthrough",
-                        capacity=capacity,
-                        guard=guard,
-                    )
-        except TimeoutError:
-            return JSONResponse(capacity_error("capacity_wait_budget_exhausted"), status_code=503)
+    def _log(upstream_url: str, served_by: str, stream: bool) -> None:
+        logger.info("openai_chat_passthrough corr=%s route=%s upstream=%s served_by=%s stream=%s",
+                    correlation_id or "-", route_key, upstream_url, served_by, stream)
 
-    return await _proxy_upstream_json(
+    return await proxy_on_pool(
         request=request,
-        upstream_url=upstream_url,
-        forward_body=forward_body,
         route_key=route_key,
-        correlation_id=_extract_correlation_id(request),
-        log_event="openai_chat_passthrough",
-        capacity=capacity,
+        forward_body=forward_body,
+        path="/v1/chat/completions",
+        holder=pool_placement.HOLDER_OPENAI,
         guard=guard,
+        correlation_id=correlation_id,
+        min_ctx_tokens=pool_placement.estimate_min_ctx_tokens(
+            body.get("messages") or [], max_tokens,
+            extra=json.dumps(body["tools"]) if body.get("tools") else None,
+        ),
+        anthropic=False,
+        on_dispatch=_log,
     )
 
 

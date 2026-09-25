@@ -8,8 +8,8 @@ No socket transport or production bus is reachable from this helper.
 """
 from __future__ import annotations
 
+import contextlib
 import importlib
-import json
 import sys
 import tempfile
 from pathlib import Path
@@ -42,7 +42,7 @@ def _package(monkeypatch, name, path):
     return package
 
 
-def build_turn_adapter(monkeypatch, bus, capacity, store, repair_required, *, authority_app):
+def build_turn_adapter(monkeypatch, bus, store, repair_required, *, authority_app):
     """Install the real turn adapters on a TypedBus; caller owns DB and authority.
 
     Return has handle_turn(envelope), stages (actual dispatched lease identities),
@@ -105,8 +105,7 @@ def build_turn_adapter(monkeypatch, bus, capacity, store, repair_required, *, au
             service_import.setitem(sys.modules, "app", sys.modules["acceptance_gateway"])
             service_import.setitem(sys.modules, "app.settings", importlib.import_module("acceptance_gateway.settings"))
             gateway = importlib.import_module("acceptance_gateway.main")
-        backend = importlib.import_module("acceptance_gateway.llm_backend")
-        upstream = importlib.import_module("acceptance_gateway.upstream_admission")
+        placement = importlib.import_module("acceptance_gateway.pool_placement")
         from orion.hub import turn_orchestrator
         import orion.harness.runner as runner_module
         import orion.mind.substrate_emit as substrate_emit
@@ -125,23 +124,43 @@ def build_turn_adapter(monkeypatch, bus, capacity, store, repair_required, *, au
     monkeypatch.setattr(runner_module, "read_last_tool_fetch", AsyncMock(return_value=None))
 
     for name, value in {
-        "llm_gateway_capacity_enabled": True,
-        "llm_gateway_capacity_url": "http://fixture-authority/capacity",
         "llm_gateway_lease_validation_enabled": True,
         "llm_gateway_lease_validation_url": "http://fixture-authority/leases/validate",
-        "llm_gateway_upstream_max_inflight": 1,
-        "llm_gateway_background_poll_interval_sec": 0.001,
         "llm_lane_routing_enabled": False,
         "llm_gateway_anthropic_passthrough_enabled": True,
         "llm_gateway_openai_passthrough_enabled": True,
-        "llm_route_table_json": json.dumps({lane: {
-            "url": url, "backend": "llamacpp", "model": "fixture-model"}
-            for lane, url in (("agent", "http://fixture-backend"), ("metacog", "http://fixture-metacog"), ("agent-burst", "http://fixture-metacog"))}),
+        "gpu_pool_config_path": str(ROOT / "config/gpu_pool.yaml"),
     }.items():
         monkeypatch.setattr(gateway.settings, name, value)
-    backend._load_route_targets.cache_clear()
-    upstream.reset_upstream_admission_for_tests()
-    gateway.reset_executor_for_tests()
+
+    # Placement is a GPU pool lease (stage 3): the gateway sends each call to the URL the pool
+    # grants. The pool itself is not under test here, so a fixture grants the class's own card
+    # at once. Durable-runs' permits (the run's admission) stay the real, separate authority.
+    from orion.gpu_pool.client import Lease
+    from orion.schemas.gpu_pool import GpuLeaseGrantV1
+
+    pool_grants = []
+    pool_held = set()
+
+    @contextlib.asynccontextmanager
+    async def fixture_gpu_lease(_bus, **kw):
+        role = "agent" if kw["work_class"] == "agent" else "metacog"
+        grant = GpuLeaseGrantV1(
+            lease_id=f"pool-{len(pool_grants) + 1}", generation=1, role=role, cards=["gpu-fixture"],
+            url="http://fixture-backend" if role == "agent" else "http://fixture-metacog",
+            profile_name="fixture-profile", model_file="fixture-model.gguf", ctx_per_slot=131072,
+            served_by=f"fixture-worker-{role}")
+        pool_grants.append(kw)
+        pool_held.add(grant.url)
+        try:
+            yield Lease(grant.lease_id, grant)
+        finally:
+            pool_held.discard(grant.url)
+
+    monkeypatch.setattr(placement, "gpu_lease", fixture_gpu_lease)
+    monkeypatch.setattr(placement, "_bus", object())
+    placement.reset_pool_config_cache()
+    placement.reset_pool_unreachable()
 
     stages = []
     runs = []
@@ -183,8 +202,8 @@ def build_turn_adapter(monkeypatch, bus, capacity, store, repair_required, *, au
                 assert LEASE_HEADER not in request.headers, "Gateway must not leak its authority token upstream"
                 token = http_owners[request.headers["x-request-id"]]
                 observe("fcc_primary", token)
-                active = (await capacity.snapshot())["active_permits"]
-                assert any(row["lease_id"] == token["lease_id"] for row in active)
+                # The upstream call happens only while the Gateway holds a GPU pool lease on it.
+                assert f"http://{request.url.host}" in pool_held, "upstream call without a pool lease"
                 return httpx.Response(200, request=request, json={
                     "id": "fixture-message", "type": "message", "role": "assistant",
                     "model": "fixture-model", "content": [{"type": "text", "text": DRAFT}],
@@ -272,10 +291,8 @@ def build_turn_adapter(monkeypatch, bus, capacity, store, repair_required, *, au
         await loop._handle_turn_request({"data": bus.codec.encode(env)})
 
     async def close():
-        gateway.reset_executor_for_tests()
-        upstream.reset_upstream_admission_for_tests()
-        backend._load_route_targets.cache_clear()
+        placement.reset_pool_config_cache()
         policy_directory.cleanup()
 
     return SimpleNamespace(handle_turn=handle_turn, stages=stages, runs=runs, requests=requests,
-                           loop=loop, gateway_app=gateway.app, close=close)
+                           loop=loop, gateway_app=gateway.app, pool_grants=pool_grants, close=close)

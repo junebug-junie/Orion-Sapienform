@@ -1,4 +1,4 @@
-"""Fencing reaches actual bus dispatch and FCC HTTP without changing legacy calls."""
+"""Durable-run leases are still validated (admission token), but placement is a pool lease."""
 import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
@@ -11,6 +11,7 @@ from orion.llm import resource_lease as wire
 from app import anthropic_passthrough as anthropic
 from app import llm_backend as backend
 from app import main as gateway
+from app import passthrough_proxy as proxy
 from app import resource_lease as fencing
 from app.models import ChatBody
 from app.settings import settings
@@ -26,14 +27,10 @@ def token():
 
 
 @pytest.fixture
-def configured(monkeypatch):
+def configured(monkeypatch, fake_pool):
     monkeypatch.setattr(settings, "llm_gateway_lease_validation_enabled", True)
     monkeypatch.setattr(settings, "llm_gateway_anthropic_passthrough_enabled", True)
-    targets = {"agent": backend.RouteTarget(url="http://agent:8015", backend="llamacpp"),
-               "metacog": backend.RouteTarget(url="http://metacog:8012", backend="llamacpp")}
-    monkeypatch.setattr(backend, "get_route_targets", lambda: targets)
-    monkeypatch.setattr(anthropic, "get_route_targets", lambda: targets)
-    return targets
+    return fake_pool
 
 
 def test_wire_roundtrip(token):
@@ -81,10 +78,22 @@ async def test_legacy_call_does_not_consult_broker(monkeypatch):
     monkeypatch.setattr(settings, "llm_gateway_lease_validation_enabled", True)
     validator = AsyncMock(side_effect=AssertionError("legacy must not validate"))
     monkeypatch.setattr(fencing, "validate_resource_lease", validator)
-    guard = fencing.LeaseGuard(None, lane="agent", backend_key="http://agent:8015")
+    guard = fencing.LeaseGuard(None, lane="agent")
     await guard.check()
     assert await guard.run(AsyncMock(return_value="ordinary")()) == "ordinary"
     validator.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_guard_validates_against_the_leases_own_backend_key(token, monkeypatch):
+    """The pool may place the call on another role than durable admission saw in /routes, so
+    the durable token is checked for lane + broker generation, not against the granted URL."""
+    monkeypatch.setattr(settings, "llm_gateway_lease_validation_enabled", True)
+    validator = AsyncMock()
+    monkeypatch.setattr(fencing, "validate_resource_lease", validator)
+    await fencing.LeaseGuard(token, lane="agent").check()
+    assert validator.await_args.kwargs["lane"] == "agent"
+    assert validator.await_args.kwargs["backend_key"] == token["backend_key"]
 
 
 @pytest.mark.asyncio
@@ -99,7 +108,7 @@ async def test_periodic_check_cancels_idle_operation(configured, token, monkeypa
         await asyncio.sleep(0)
         return set(), tasks
     monkeypatch.setattr(fencing.asyncio, "wait", tick)
-    guard = fencing.LeaseGuard(token, lane="agent", backend_key=token["backend_key"])
+    guard = fencing.LeaseGuard(token, lane="agent")
     monkeypatch.setattr(guard, "check", AsyncMock(side_effect=wire.ResourceLeaseRejected("expired")))
     with pytest.raises(wire.ResourceLeaseRejected, match="expired"):
         await guard.run(operation())
@@ -108,7 +117,7 @@ async def test_periodic_check_cancels_idle_operation(configured, token, monkeypa
 
 @pytest.mark.asyncio
 async def test_stale_result_is_not_returned(configured, token, monkeypatch):
-    guard = fencing.LeaseGuard(token, lane="agent", backend_key=token["backend_key"])
+    guard = fencing.LeaseGuard(token, lane="agent")
     monkeypatch.setattr(guard, "check", AsyncMock(side_effect=wire.ResourceLeaseRejected("generation_changed")))
     with pytest.raises(wire.ResourceLeaseRejected, match="generation_changed"):
         await guard.run(AsyncMock(return_value="late answer")())
@@ -119,51 +128,58 @@ def test_assignment_preserves_route_over_legacy_lane_hint(configured, token, mon
     body = ChatBody(route="agent", messages=[{"role": "user", "content": "study"}],
                     options={"llm_lane": "background", "resource_lease": token})
     plan = backend.plan_llm_chat(body)
-    assert plan.route == "agent" and plan.upstream == token["backend_key"]
-
-
-def test_context_overflow_cannot_migrate_a_leased_run(monkeypatch):
-    response = MagicMock(status_code=400)
-    response.json.return_value = {"error": {"message": "context overflow"}}
-    client = MagicMock()
-    client.post.return_value = response
-    monkeypatch.setattr(backend.ctx_overflow, "is_context_overflow", lambda *a: True)
-    ladder = MagicMock(side_effect=AssertionError("lease must not migrate"))
-    monkeypatch.setattr(backend, "_ctx_ladder", ladder)
-    assert backend._post_with_ctx_escalation(client, "http://agent:8015/v1/chat/completions", {}, "agent", "corr", allow_escalation=False)[1] == "agent"
-    assert client.post.call_count == 1
+    assert plan.route == "agent" and plan.work_class == "agent"
 
 
 @pytest.mark.asyncio
-async def test_bus_rejects_stale_lease_before_generation(configured, token, monkeypatch):
+async def test_bus_rejects_stale_lease_before_any_pool_lease(configured, token, monkeypatch):
     monkeypatch.setattr(fencing.LeaseGuard, "check", AsyncMock(side_effect=wire.ResourceLeaseRejected("expired")))
-    dispatch = AsyncMock(side_effect=AssertionError("stale lease must not execute"))
-    monkeypatch.setattr(gateway, "_dispatch_chat_unfenced", dispatch)
+    run = MagicMock(side_effect=AssertionError("stale lease must not execute"))
+    monkeypatch.setattr(gateway, "run_llm_chat", run)
     body = ChatBody(route="agent", messages=[{"role": "user", "content": "study"}], options={"resource_lease": token})
     result = await gateway._dispatch_chat(body, correlation_id="corr")
     assert result["text"] == "" and result["raw"]["error"] == "resource_lease_rejected"
-    dispatch.assert_not_called()
+    assert configured.calls == []
+    run.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_burst_route_with_durable_lease_is_validated_and_takes_a_pool_lease(configured, token, monkeypatch):
+    token["lane"] = "agent-burst"
+    check = AsyncMock()
+    monkeypatch.setattr(fencing.LeaseGuard, "check", check)
+    monkeypatch.setattr(gateway, "run_llm_chat", lambda body, plan: {
+        "text": "ok", "raw": {}, "route": plan.route, "served_by": plan.route_target.served_by})
+    body = ChatBody(route="agent-burst", messages=[{"role": "user", "content": "study"}],
+                    options={"resource_lease": token})
+    result = await gateway._dispatch_chat(body, correlation_id="corr")
+    assert result["text"] == "ok"
+    assert check.await_count >= 2  # before the pool lease and on the result
+    assert configured.calls[0]["work_class"] == "agent"
+    assert result["served_by"] == "circe-worker-agent"
+    assert configured.releases == ["ok"]
 
 
 @pytest.mark.asyncio
 async def test_bus_discards_result_after_lease_loss(configured, token, monkeypatch):
     monkeypatch.setattr(fencing.LeaseGuard, "check", AsyncMock(side_effect=[None, wire.ResourceLeaseRejected("cancelled")]))
-    monkeypatch.setattr(gateway, "_dispatch_chat_unfenced", AsyncMock(return_value={"text": "stale work"}))
+    monkeypatch.setattr(gateway, "run_llm_chat", lambda body, plan: {"text": "stale work", "raw": {}})
     body = ChatBody(route="agent", messages=[{"role": "user", "content": "study"}], options={"resource_lease": token})
     result = await gateway._dispatch_chat(body, correlation_id="corr")
     assert result["text"] == "" and result["raw"]["error"] == "resource_lease_rejected"
 
 
 @pytest.mark.asyncio
-async def test_fcc_http_rejects_stale_before_upstream(configured, token, monkeypatch):
+async def test_fcc_http_rejects_stale_before_pool_or_upstream(configured, token, monkeypatch):
     monkeypatch.setattr(fencing.LeaseGuard, "check", AsyncMock(side_effect=wire.ResourceLeaseRejected("expired")))
     client = MagicMock(side_effect=AssertionError("must not call upstream"))
-    monkeypatch.setattr(anthropic.httpx, "AsyncClient", client)
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", client)
     request = SimpleNamespace(headers={wire.LEASE_HEADER: wire.encode_lease_header(token)},
                               json=AsyncMock(return_value={"model": "llamacpp/agent", "messages": []}))
     response = await anthropic.handle_messages_post(request)
     assert response.status_code == 409
     client.assert_not_called()
+    assert configured.calls == []
 
 
 @pytest.mark.asyncio
@@ -172,16 +188,18 @@ async def test_fcc_http_discards_stale_response_and_does_not_forward_token(confi
     client = AsyncMock()
     client.__aenter__.return_value = client
     client.post.return_value = httpx.Response(200, json={"content": "late answer"})
-    monkeypatch.setattr(anthropic.httpx, "AsyncClient", lambda **kwargs: client)
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kwargs: client)
     request = SimpleNamespace(headers={wire.LEASE_HEADER: wire.encode_lease_header(token)},
                               json=AsyncMock(return_value={"model": "llamacpp/agent", "messages": []}))
     response = await anthropic.handle_messages_post(request)
     assert response.status_code == 409
     assert wire.LEASE_HEADER not in client.post.call_args.kwargs["headers"]
+    assert client.post.call_args.args[0] == "http://pool-agent:8015/v1/messages"
+    assert configured.releases == ["ok"] and configured.active == 0
 
 
 @pytest.mark.asyncio
-async def test_fcc_stream_fence_closes_upstream_and_emits_error(configured, token, monkeypatch):
+async def test_fcc_stream_fence_closes_upstream_emits_error_and_releases(configured, token, monkeypatch):
     monkeypatch.setattr(fencing.LeaseGuard, "check", AsyncMock())
     async def chunks(self, source):
         yield b"data: first\n\n"
@@ -192,11 +210,13 @@ async def test_fcc_stream_fence_closes_upstream_and_emits_error(configured, toke
     client = MagicMock()
     client.send = AsyncMock(return_value=upstream)
     client.aclose = AsyncMock()
-    monkeypatch.setattr(anthropic.httpx, "AsyncClient", lambda **kwargs: client)
+    monkeypatch.setattr(proxy.httpx, "AsyncClient", lambda **kwargs: client)
     request = SimpleNamespace(headers={wire.LEASE_HEADER: wire.encode_lease_header(token)},
                               json=AsyncMock(return_value={"model": "llamacpp/agent", "messages": [], "stream": True}))
     response = await anthropic.handle_messages_post(request)
+    assert configured.active == 1  # held while the stream is open
     body = b"".join([chunk async for chunk in response.body_iterator])
     assert b"event: error" in body and b"resource_lease_rejected" in body
     upstream.aclose.assert_awaited_once()
     client.aclose.assert_awaited_once()
+    assert configured.active == 0 and configured.releases == ["ok"]

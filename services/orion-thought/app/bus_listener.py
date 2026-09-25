@@ -193,41 +193,15 @@ def build_stance_react_plan_request(
     request: StanceReactRequestV1,
     *,
     mind_coloring: dict[str, Any] | None = None,
-    llm_route_override: str | None = None,
-    step_timeout_cap_sec: float | None = None,
-    request_id: str | None = None,
 ) -> PlanExecutionRequest:
-    """Build the cortex-exec plan request for one stance_react attempt.
-
-    ``llm_route_override`` replaces the context's gateway route for this attempt
-    only (never when the request carries a resource_lease -- admission owns the
-    lane then). ``step_timeout_cap_sec`` caps every step's ``timeout_ms``: the
-    plan travels on the wire, and cortex-exec enforces the step's own
-    ``timeout_ms`` as the real LLM-call cutoff (executor.py's
-    ``step_timeout_sec = (step.timeout_ms or 60000) / 1000.0``) and forwards
-    ``timeout_ms - 5s`` (floor 45s) to the gateway as the caller budget the
-    capacity wait is bounded by -- so this is what actually bounds a short
-    agent-lane attempt, not this service's RPC wait. ``request_id`` stamps the
-    plan args for a fallback attempt that runs under a fresh correlation id.
-    """
+    """Build the cortex-exec plan request for the stance_react verb (one attempt, on the turn's own
+    route and correlation id; which GPU serves it is orion-gpu-pool's decision)."""
     plan = build_plan_for_verb("stance_react", mode="brain")
-    if step_timeout_cap_sec is not None:
-        cap_ms = max(1, int(step_timeout_cap_sec * 1000))
-        plan = plan.model_copy(
-            update={
-                "steps": [
-                    step.model_copy(update={"timeout_ms": min(int(step.timeout_ms), cap_ms)})
-                    for step in plan.steps
-                ]
-            }
-        )
     context = build_stance_react_context(request, mind_coloring=mind_coloring)
-    if llm_route_override and request.resource_lease is None:
-        context["llm_route"] = llm_route_override
     return PlanExecutionRequest(
         plan=plan,
         args=PlanExecutionArgs(
-            request_id=request_id or request.correlation_id,
+            request_id=request.correlation_id,
             trigger_source=settings.service_name,
             extra={
                 "llm_profile": request.llm_profile,
@@ -238,192 +212,30 @@ def build_stance_react_plan_request(
     )
 
 
-# Wall-clock slack this service's RPC wait allows around a capped LLM step, for
-# cortex-exec's own work either side of the gateway call (prompt render, JSON
-# validation, grammar/trace publish -- 32s measured once on an 11 KB prompt,
-# services/orion-thought/.env_example). The agent attempt's RPC wait is
-# `agent budget + this`; the chat attempt's step cap is `remaining - this`.
-STANCE_REACT_ATTEMPT_RPC_MARGIN_SEC = 30.0
-# cortex-exec floors the gateway read timeout at 45s (executor.py's
-# `max(45.0, min(timeout - 5.0, 900.0))`); a chat fallback with less budget
-# than that would only generate for a caller that has already given up.
-STANCE_REACT_MIN_STEP_TIMEOUT_SEC = 45.0
-
-
-def lane_fallback_applies(request: StanceReactRequestV1, *, agent_lane_budget_sec: float) -> bool:
-    """Whether this request gets the bounded agent attempt + chat fallback.
-
-    Only turns that PREFER the agent lane without OWNING it: an explicit
-    ``llm_route="agent"`` (orion.hub.turn_orchestrator sets this for every
-    agent-model turn, i.e. autonomous reading and curiosity) and no
-    ``resource_lease`` (a durable lease means admission already reserved the
-    lane -- there is nothing to fall back from). A caller that runs its own
-    caller-side lane fallback (endogenous outreach, PR #2163) opts out via
-    ``caller_handles_lane_fallback`` so one outreach tick cannot stack four
-    stance attempts. A non-positive budget disables the fallback outright.
-    """
-    return (
-        request.llm_route == "agent"
-        and request.resource_lease is None
-        and not request.caller_handles_lane_fallback
-        and agent_lane_budget_sec > 0
-    )
-
-
-async def _run_stance_react_attempt(
-    request: StanceReactRequestV1,
-    *,
-    client: CortexExecClient,
-    mind_coloring: dict[str, Any] | None,
-    lane: str,
-    llm_route_override: str | None,
-    correlation_id: str,
-    step_timeout_cap_sec: float | None,
-    rpc_timeout_sec: float,
-) -> tuple[tuple[dict[str, Any], dict[str, Any] | str] | None, str | None]:
-    """One cortex-exec round trip. Returns ((exec_result, raw_payload), None) on
-    success or (None, reason) on any failure -- RPC timeout, decode error, a
-    named step failure, or an empty payload."""
-    started = asyncio.get_running_loop().time()
-    try:
-        plan_request = build_stance_react_plan_request(
-            request,
-            mind_coloring=mind_coloring,
-            llm_route_override=llm_route_override,
-            step_timeout_cap_sec=step_timeout_cap_sec,
-            request_id=correlation_id,
-        )
-        exec_result = await client.execute_plan(
-            source=_source(),
-            req=plan_request,
-            correlation_id=correlation_id,
-            timeout_sec=rpc_timeout_sec,
-        )
-        raw_payload = extract_stance_react_payload(exec_result)
-    except Exception as exc:  # noqa: BLE001 -- every failure shape is a fallback trigger
-        reason = str(exc).strip() or type(exc).__name__
-        logger.warning(
-            "stance_react_attempt corr=%s attempt_corr=%s lane=%s step_cap_sec=%s rpc_sec=%.0f "
-            "elapsed=%.1fs outcome=failed reason=%s",
-            request.correlation_id,
-            correlation_id,
-            lane,
-            step_timeout_cap_sec,
-            rpc_timeout_sec,
-            asyncio.get_running_loop().time() - started,
-            reason,
-        )
-        return None, reason
-    logger.info(
-        "stance_react_attempt corr=%s attempt_corr=%s lane=%s step_cap_sec=%s rpc_sec=%.0f "
-        "elapsed=%.1fs outcome=ok",
-        request.correlation_id,
-        correlation_id,
-        lane,
-        step_timeout_cap_sec,
-        rpc_timeout_sec,
-        asyncio.get_running_loop().time() - started,
-    )
-    return (exec_result, raw_payload), None
-
-
-async def execute_stance_react_with_lane_fallback(
+async def execute_stance_react(
     request: StanceReactRequestV1,
     *,
     client: CortexExecClient,
     mind_coloring: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | str]:
-    """Run the stance_react plan; for agent-preferring turns without a lease,
-    try the agent lane briefly, then the chat lane once.
+    """Run the stance_react plan once, on the turn's own route and correlation id, with the whole
+    STANCE_REACT_TIMEOUT_SEC budget.
 
-    Why (live 2026-09-19, corr 5258cae8): both GPU lanes are single-slot. A
-    reading/curiosity stance asked for the agent lane and waited 235s behind a
-    long autonomous agent turn, until the gateway shed it
-    (``capacity_wait_budget_exhausted``) -- the verb's whole 240s budget spent
-    queueing, nothing generated, and the chat lane idle the entire time.
-    Outreach already had exactly this two-attempt shape caller-side (PR #2163);
-    reading and curiosity got the agent preference without the bounded attempt
-    or the fallback. This is the one seam every stance RPC passes through.
-
-    Attempt 1 (agent): step cap ``STANCE_REACT_AGENT_LANE_BUDGET_SEC``, RPC
-    wait ``cap + STANCE_REACT_ATTEMPT_RPC_MARGIN_SEC``, the turn's own
-    correlation id. Attempt 2 (chat): only on failure, on a FRESH correlation
-    id (the gateway keys capacity acquires by correlation id, and the abandoned
-    attempt may still be queued there under the original), with whatever is
-    left of ``STANCE_REACT_TIMEOUT_SEC``. Both fail -> one ValueError naming
-    both reasons, e.g. ``agent=gateway_capacity_rejected:
-    capacity_wait_budget_exhausted; chat=...``.
+    This used to try the agent lane briefly and then retry on the chat lane under a fresh
+    correlation id (live 2026-09-19: a reading stance spent its whole budget queued behind a long
+    agent turn while chat sat idle). Since 2026-09-24 every LLM call leases from orion-gpu-pool,
+    which spills agent work onto any card the YAML allows -- the gpu2 agent seat, or chat's gpu0
+    while it is lent -- and returns a typed "unavailable" instead of a silent shed. A second
+    caller-side placement decision on top would only fight the pool, so it is gone.
     """
-    total_budget = float(settings.stance_react_timeout_sec)
-    agent_budget = float(settings.stance_react_agent_lane_budget_sec)
-    if 0 < agent_budget < STANCE_REACT_MIN_STEP_TIMEOUT_SEC:
-        # Review finding (2026-09-19): cortex-exec floors its own gateway read
-        # timeout at 45s (executor.py's `max(45.0, min(timeout - 5.0, 900.0))`)
-        # regardless of what this service asks for. A configured budget below
-        # that floor would make cortex-exec's RPC wait shorter than the
-        # generation time it simultaneously tells the gateway it can use --
-        # this call would time out here before the gateway's own shed/serve
-        # decision could land. Clamp up to the floor instead of honoring a
-        # misconfiguration that can only ever look like a spurious timeout.
-        logger.warning(
-            "stance_react_agent_lane_budget_below_gateway_floor configured=%.1fs floor=%.1fs "
-            "-- clamping up",
-            agent_budget,
-            STANCE_REACT_MIN_STEP_TIMEOUT_SEC,
-        )
-        agent_budget = STANCE_REACT_MIN_STEP_TIMEOUT_SEC
-    if not lane_fallback_applies(request, agent_lane_budget_sec=agent_budget):
-        plan_request = build_stance_react_plan_request(request, mind_coloring=mind_coloring)
-        exec_result = await client.execute_plan(
-            source=_source(),
-            req=plan_request,
-            correlation_id=request.correlation_id,
-            timeout_sec=total_budget,
-        )
-        return exec_result, extract_stance_react_payload(exec_result)
-
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    agent_cap = min(agent_budget, total_budget)
-    outcome, agent_reason = await _run_stance_react_attempt(
-        request,
-        client=client,
-        mind_coloring=mind_coloring,
-        lane="agent",
-        llm_route_override="agent",
+    plan_request = build_stance_react_plan_request(request, mind_coloring=mind_coloring)
+    exec_result = await client.execute_plan(
+        source=_source(),
+        req=plan_request,
         correlation_id=request.correlation_id,
-        step_timeout_cap_sec=agent_cap,
-        rpc_timeout_sec=min(agent_cap + STANCE_REACT_ATTEMPT_RPC_MARGIN_SEC, total_budget),
+        timeout_sec=float(settings.stance_react_timeout_sec),
     )
-    if outcome is not None:
-        return outcome
-
-    remaining = total_budget - (loop.time() - started)
-    if remaining <= STANCE_REACT_MIN_STEP_TIMEOUT_SEC:
-        raise ValueError(f"agent={agent_reason}; chat=skipped:budget_remaining={remaining:.0f}s")
-    chat_cap = max(STANCE_REACT_MIN_STEP_TIMEOUT_SEC, remaining - STANCE_REACT_ATTEMPT_RPC_MARGIN_SEC)
-    fallback_correlation_id = str(uuid4())
-    logger.info(
-        "stance_react_lane_fallback corr=%s fallback_corr=%s from=agent to=chat agent_reason=%s "
-        "remaining_sec=%.0f",
-        request.correlation_id,
-        fallback_correlation_id,
-        agent_reason,
-        remaining,
-    )
-    outcome, chat_reason = await _run_stance_react_attempt(
-        request,
-        client=client,
-        mind_coloring=mind_coloring,
-        lane="chat",
-        llm_route_override="chat",
-        correlation_id=fallback_correlation_id,
-        step_timeout_cap_sec=chat_cap,
-        rpc_timeout_sec=remaining,
-    )
-    if outcome is not None:
-        return outcome
-    raise ValueError(f"agent={agent_reason}; chat={chat_reason}")
+    return exec_result, extract_stance_react_payload(exec_result)
 
 
 MISSING_THOUGHT_PAYLOAD = "stance_react exec result missing thought payload"
@@ -589,7 +401,7 @@ async def run_stance_react(
     """
     client = cortex_client or CortexExecClient(bus)
     mind_coloring = await _maybe_build_mind_coloring(request, bus=bus)
-    exec_result, raw_payload = await execute_stance_react_with_lane_fallback(
+    exec_result, raw_payload = await execute_stance_react(
         request, client=client, mind_coloring=mind_coloring
     )
     thought = parse_stance_react_payload(

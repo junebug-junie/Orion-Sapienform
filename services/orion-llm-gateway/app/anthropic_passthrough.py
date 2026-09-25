@@ -2,19 +2,16 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, AsyncIterator, Dict, Mapping, Optional, Tuple
-from uuid import uuid4
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 import httpx
 from fastapi import APIRouter, Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
-from .llm_backend import RouteTarget, get_route_targets
+from . import pool_placement
+from .passthrough_proxy import proxy_on_pool
 from .settings import settings
 from .resource_lease import LeaseGuard, ResourceLeaseRejected, lease_error
-from . import lane_gate
-from orion.llm.routes import OPERATOR_GATED_LLM_ROUTES
-from .capacity import CapacityPermit, CapacityRejected, CapacityStreamingResponse, capacity_error, stream_cleanup
 
 logger = logging.getLogger("orion-llm-gateway.anthropic")
 
@@ -100,96 +97,50 @@ def normalize_anthropic_model_name(model: Optional[str]) -> str:
     return raw
 
 
-def _normalize_backend_name(backend: Optional[str]) -> str:
-    normalized = str(backend or "llamacpp").replace("_", "-").lower()
-    if normalized == "llama-cpp":
-        return "llamacpp"
-    return normalized
-
-
-def _backend_supports_anthropic_messages(backend: Optional[str]) -> bool:
-    return _normalize_backend_name(backend) in _ANTHROPIC_COMPAT_BACKENDS
-
-
 def _available_route_keys() -> list[str]:
-    return sorted(get_route_targets().keys())
-
-
-def _resolve_upstream_model(route_key: str, target: RouteTarget) -> str:
-    if target.model:
-        return target.model
-    return route_key
+    return sorted(pool_placement.pool_routes().keys())
 
 
 def resolve_anthropic_route(
     requested_model: Optional[str],
-) -> Tuple[Optional[str], Optional[RouteTarget], Optional[str], Optional[Dict[str, Any]]]:
+) -> Tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
     """
     Resolve Orion route from Anthropic model field.
 
-    Returns (route_key, target, upstream_model, error_payload).
+    Returns (route_key, upstream_model, error_payload). The route must be in
+    config/gpu_pool.yaml; which GPU serves it is the pool lease's grant.
     """
-    route_table = get_route_targets()
-    if not route_table:
-        return None, None, None, {
-            "error": {
-                "type": "route_not_configured",
-                "message": "No LLM gateway route table configured",
-                "available_routes": [],
-            }
-        }
-
+    routes = pool_placement.pool_routes()
     normalized = normalize_anthropic_model_name(requested_model)
-    route_key = normalized
-    target = route_table.get(route_key) if route_key else None
-
-    if target is None and not route_key:
+    route_key = normalized or None
+    if route_key is None:
         default_key = str(settings.llm_route_default or "chat")
-        if default_key in route_table:
+        if default_key in routes:
             route_key = default_key
-            target = route_table[default_key]
-
-    if target is None:
+    if route_key is None or route_key not in routes:
         label = normalized or str(requested_model or "")
-        return None, None, None, {
+        return None, None, {
             "error": {
-                "type": "route_not_configured",
-                "message": f"Anthropic passthrough route '{label}' is not configured",
+                "type": pool_placement.ROUTE_NOT_IN_POOL,
+                "message": f"Anthropic passthrough route '{label}' is not in config/gpu_pool.yaml routes",
                 "available_routes": _available_route_keys(),
             }
         }
-
-    if not _backend_supports_anthropic_messages(target.backend):
-        backend_label = _normalize_backend_name(target.backend)
-        return route_key, target, None, {
-            "error": {
-                "type": "backend_incompatible",
-                "message": (
-                    f"Route '{route_key}' backend '{backend_label}' does not expose "
-                    "Anthropic Messages (/v1/messages)"
-                ),
-                "route": route_key,
-                "backend": backend_label,
-                "available_routes": _available_route_keys(),
-            }
-        }
-
-    upstream_model = _resolve_upstream_model(route_key, target)
-    return route_key, target, upstream_model, None
+    return route_key, route_key, None
 
 
 def build_models_list_payload() -> Dict[str, Any]:
-    route_table = get_route_targets()
+    """Every pool route is a llama.cpp role, so every route speaks /v1/messages. served_by is
+    per call (the grant), so it is not claimed here."""
     data = [
         {
             "id": route_key,
             "type": "model",
             "display_name": route_key,
-            "backend": _normalize_backend_name(target.backend),
-            "served_by": target.served_by,
+            "backend": pool_placement.LLAMACPP_BACKEND,
+            "served_by": None,
         }
-        for route_key, target in sorted(route_table.items())
-        if _backend_supports_anthropic_messages(target.backend)
+        for route_key in _available_route_keys()
     ]
     return {"data": data, "object": "list"}
 
@@ -300,26 +251,19 @@ async def handle_messages_post(request: Request) -> Response:
         )
 
     requested_model = body.get("model")
-    route_key, target, upstream_model, error_payload = resolve_anthropic_route(
+    route_key, upstream_model, error_payload = resolve_anthropic_route(
         str(requested_model) if requested_model is not None else None
     )
     if error_payload is not None:
-        err_type = error_payload.get("error", {}).get("type", "route_not_configured")
-        status = 404 if err_type == "route_not_configured" else 400
         logger.warning(
             "anthropic_passthrough_error type=%s model=%s routes=%s",
-            err_type,
+            error_payload.get("error", {}).get("type"),
             requested_model,
             _available_route_keys(),
         )
-        return JSONResponse(error_payload, status_code=status)
+        return JSONResponse(error_payload, status_code=404)
 
-    assert target is not None and route_key is not None and upstream_model is not None
-    if route_key in OPERATOR_GATED_LLM_ROUTES and not await lane_gate.is_open(route_key):
-        # A lent lane (chat-burst) is closed until the Hub opens it. Checked per request, so
-        # closing the gate stops the NEXT FCC call of a run already leased onto it.
-        logger.warning("route_operator_closed route=%s corr=%s", route_key, _extract_correlation_id(request))
-        return JSONResponse(lane_gate.route_operator_closed_error(route_key), status_code=503)
+    assert route_key is not None and upstream_model is not None
     try:
         forward_body = normalize_anthropic_system_messages(body)
     except ValueError as exc:
@@ -327,180 +271,40 @@ async def handle_messages_post(request: Request) -> Response:
             {"error": {"type": "invalid_request", "message": str(exc)}}, status_code=400
         )
     try:
-        guard = LeaseGuard.from_headers(request.headers, lane=route_key, backend_key=target.url)
-        await guard.check()
+        guard = LeaseGuard.from_headers(request.headers, lane=route_key)
     except ResourceLeaseRejected as exc:
         return JSONResponse(lease_error(str(exc)), status_code=409)
-    capacity = CapacityPermit(lane=route_key, backend_key=target.url,
-                              correlation_id=_extract_correlation_id(request) or str(uuid4()),
-                              budget_sec=_passthrough_read_timeout_sec(), lease=guard.lease)
-    try:
-        await capacity.acquire()
-    except CapacityRejected as exc:
-        await capacity.close()
-        return JSONResponse(capacity_error(str(exc)), status_code=503)
-    stream_transferred = False
-    upstream_url = f"{target.url.rstrip('/')}/v1/messages"
     if forward_body.get("model") != upstream_model:
         forward_body["model"] = upstream_model
 
-    stream = bool(forward_body.get("stream"))
     correlation_id = _extract_correlation_id(request)
-    _log_passthrough_request(
-        correlation_id=correlation_id,
-        requested_model=str(requested_model) if requested_model is not None else None,
+
+    def _log(upstream_url: str, served_by: str, stream: bool) -> None:
+        _log_passthrough_request(
+            correlation_id=correlation_id,
+            requested_model=str(requested_model) if requested_model is not None else None,
+            route_key=route_key,
+            upstream_url=upstream_url,
+            served_by=served_by,
+            stream=stream,
+            body=forward_body,
+        )
+
+    return await proxy_on_pool(
+        request=request,
         route_key=route_key,
-        upstream_url=upstream_url,
-        served_by=target.served_by,
-        stream=stream,
-        body=forward_body,
+        forward_body=forward_body,
+        path="/v1/messages",
+        holder=pool_placement.HOLDER_ANTHROPIC,
+        guard=guard,
+        correlation_id=correlation_id,
+        min_ctx_tokens=pool_placement.estimate_min_ctx_tokens(
+            forward_body.get("messages") or [], forward_body.get("max_tokens"),
+            extra=[forward_body.get("system"), json.dumps(forward_body["tools"]) if forward_body.get("tools") else None],
+        ),
+        anthropic=True,
+        on_dispatch=_log,
     )
-
-    headers = _forwardable_request_headers(request)
-    timeout = _httpx_timeout()
-
-    try:
-        if stream:
-            client = httpx.AsyncClient(timeout=timeout)
-            try:
-                upstream_request = client.build_request(
-                    "POST", upstream_url, headers=headers, json=forward_body
-                )
-                upstream = await capacity.run(guard.run(client.send(upstream_request, stream=True)))
-            except CapacityRejected as exc:
-                await client.aclose()
-                return JSONResponse(capacity_error(str(exc)), status_code=503)
-            except ResourceLeaseRejected as exc:
-                await client.aclose()
-                return JSONResponse(lease_error(str(exc)), status_code=409)
-            except httpx.TimeoutException:
-                await client.aclose()
-                logger.error(
-                    "anthropic_passthrough_timeout route=%s upstream=%s corr=%s",
-                    route_key,
-                    upstream_url,
-                    correlation_id,
-                )
-                return JSONResponse(
-                    {"error": {"type": "timeout", "message": "Upstream Anthropic Messages timed out"}},
-                    status_code=504,
-                )
-            except httpx.HTTPError as exc:
-                await client.aclose()
-                logger.error(
-                    "anthropic_passthrough_upstream_error route=%s upstream=%s corr=%s error=%s",
-                    route_key,
-                    upstream_url,
-                    correlation_id,
-                    exc,
-                )
-                return JSONResponse(
-                    {"error": {"type": "upstream_error", "message": f"Upstream request failed: {exc}"}},
-                    status_code=502,
-                )
-            except BaseException:
-                await client.aclose()
-                raise
-
-            if upstream.status_code >= 400:
-                logger.error(
-                    "anthropic_passthrough_upstream_error route=%s upstream=%s corr=%s status=%s",
-                    route_key,
-                    upstream_url,
-                    correlation_id,
-                    upstream.status_code,
-                )
-                response_headers = _forwardable_response_headers(upstream.headers)
-                content_type = response_headers.pop("content-type", None) or response_headers.pop(
-                    "Content-Type", None
-                )
-                try:
-                    error_body = await capacity.run(guard.run(upstream.aread()))
-                finally:
-                    await upstream.aclose()
-                    await client.aclose()
-                return Response(
-                    content=error_body,
-                    status_code=upstream.status_code,
-                    headers=response_headers,
-                    media_type=content_type or "application/json",
-                )
-
-            response_headers = _forwardable_response_headers(upstream.headers)
-            media_type = upstream.headers.get("content-type") or "text/event-stream"
-            close_stream = stream_cleanup(upstream, client, capacity)
-
-            async def _body() -> AsyncIterator[bytes]:
-                try:
-                    async for chunk in capacity.chunks(guard.chunks(upstream.aiter_bytes())):
-                        yield chunk
-                except ResourceLeaseRejected as exc:
-                    payload = {"type": "error", **lease_error(str(exc))}
-                    yield ("event: error\ndata: " + json.dumps(payload) + "\n\n").encode()
-                except CapacityRejected as exc:
-                    payload = {"type": "error", **capacity_error(str(exc))}
-                    yield ("event: error\ndata: " + json.dumps(payload) + "\n\n").encode()
-                finally:
-                    await close_stream()
-
-            stream_transferred = True
-            return CapacityStreamingResponse(
-                _body(),
-                cleanup=close_stream,
-                status_code=upstream.status_code,
-                headers=response_headers,
-                media_type=media_type,
-            )
-
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            upstream = await capacity.run(guard.run(client.post(upstream_url, headers=headers, json=forward_body)))
-            if upstream.status_code == 404:
-                logger.error(
-                    "anthropic_passthrough_upstream_404 route=%s upstream=%s corr=%s",
-                    route_key,
-                    upstream_url,
-                    correlation_id,
-                )
-            response_headers = _forwardable_response_headers(upstream.headers)
-            content_type = response_headers.pop("content-type", None) or response_headers.pop(
-                "Content-Type", None
-            )
-            return Response(
-                content=upstream.content,
-                status_code=upstream.status_code,
-                headers=response_headers,
-                media_type=content_type or "application/json",
-            )
-    except CapacityRejected as exc:
-        return JSONResponse(capacity_error(str(exc)), status_code=503)
-    except ResourceLeaseRejected as exc:
-        return JSONResponse(lease_error(str(exc)), status_code=409)
-    except httpx.TimeoutException:
-        logger.error(
-            "anthropic_passthrough_timeout route=%s upstream=%s corr=%s",
-            route_key,
-            upstream_url,
-            correlation_id,
-        )
-        return JSONResponse(
-            {"error": {"type": "timeout", "message": "Upstream Anthropic Messages timed out"}},
-            status_code=504,
-        )
-    except httpx.HTTPError as exc:
-        logger.error(
-            "anthropic_passthrough_upstream_error route=%s upstream=%s corr=%s error=%s",
-            route_key,
-            upstream_url,
-            correlation_id,
-            exc,
-        )
-        return JSONResponse(
-            {"error": {"type": "upstream_error", "message": f"Upstream request failed: {exc}"}},
-            status_code=502,
-        )
-    finally:
-        if not stream_transferred:
-            await capacity.close()
 
 
 def handle_messages_get() -> Response:

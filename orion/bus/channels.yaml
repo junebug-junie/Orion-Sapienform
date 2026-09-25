@@ -3145,7 +3145,7 @@ channels:
     schema_id: "GpuPoolStateV1"
     message_kind: "gpu_pool.state.v1"
     producer_services: ["orion-gpu-pool"]
-    consumer_services: ["orion-hub"]
+    consumer_services: ["orion-hub", "orion-llm-gateway"]
     stability: "experimental"
     since: "2026-09-24"
     description: "Per-request reply to orion:gpu_pool:state:request (orion.schemas.gpu_pool.GPU_POOL_STATE_REPLY_PREFIX)."
@@ -3174,7 +3174,7 @@ channels:
     kind: "request"
     schema_id: "GpuPoolStateRequestV1"
     message_kind: "gpu_pool.state.request.v1"
-    producer_services: ["orion-hub"]
+    producer_services: ["orion-hub", "orion-llm-gateway"]
     consumer_services: ["orion-gpu-pool"]
     stability: "experimental"
     since: "2026-09-24"

@@ -379,23 +379,12 @@ def test_route_without_url_is_skipped():
     ]
 
 
-def test_read_route_table_prefers_environment(monkeypatch):
-    monkeypatch.setenv(rlo.ROUTE_TABLE_KEY, json.dumps({"quick": {"url": "http://env:1"}}))
-    assert rlo.read_route_table(("/nonexistent",))["quick"]["url"] == "http://env:1"
-
-
-def test_read_route_table_strips_shell_quotes(monkeypatch, tmp_path):
-    p = tmp_path / ".env"
-    p.write_text(f"OTHER=1\n{rlo.ROUTE_TABLE_KEY}='{json.dumps({'q': {'url': 'u'}})}'\n")
-    monkeypatch.delenv(rlo.ROUTE_TABLE_KEY, raising=False)
-    assert rlo.read_route_table((str(p),)) == {"q": {"url": "u"}}
-
-
-def test_review_bad_json_exits_cleanly_rather_than_raising_a_traceback(monkeypatch):
-    """Finding 10: a raw JSONDecodeError traceback instead of a diagnosable message."""
-    monkeypatch.setenv(rlo.ROUTE_TABLE_KEY, "{not json")
-    with pytest.raises(SystemExit, match="not valid JSON"):
-        rlo.read_route_table(("/nonexistent",))
+def test_read_route_table_comes_from_the_gpu_pool_config():
+    """Since the 2026-09-24 GPU pool cutover the gateway has no route table env var; lanes are each
+    route's home role in config/gpu_pool.yaml."""
+    table = rlo.read_route_table(())
+    assert table["metacog"] == {"url": "http://100.112.254.99:8012", "served_by": "circe-worker-metacog"}
+    assert table["quick_background"]["url"] == table["quick"]["url"]   # same lane, polled once
 
 
 # ----------------------------------------------------------------- report gating

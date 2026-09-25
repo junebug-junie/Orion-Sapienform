@@ -17,7 +17,7 @@ from app.llm_backend import (  # noqa: E402
     _serialize_messages,
     _execute_llamacpp_native_completion,
     _execute_openai_chat,
-    _load_route_targets,
+    RouteTarget,
     plan_llm_chat,
     run_llm_chat,
 )
@@ -127,9 +127,6 @@ class TestLLMBackendHelpers(unittest.TestCase):
 
 
 class TestLLMBackendExecution(unittest.TestCase):
-    def tearDown(self) -> None:
-        _load_route_targets.cache_clear()
-
     @patch("app.llm_backend._common_http_client")
     def test_execute_openai_chat_passes_response_format_for_llamacpp(self, mock_client_factory):
         # Setup mock
@@ -250,233 +247,73 @@ class TestLLMBackendExecution(unittest.TestCase):
         self.assertIn("response_format", payload)
         self.assertEqual(payload["response_format"], {"type": "json_object"})
 
-    def test_route_table_accepts_agent_route_in_merged_mode(self):
-        original = settings.llm_route_table_json
-        try:
-            settings.llm_route_table_json = (
-                '{"chat":{"url":"http://atlas:8011","served_by":"atlas-worker-1","backend":"llamacpp"},'
-                '"agent":{"url":"http://atlas:8011","served_by":"atlas-worker-1","backend":"llamacpp"},'
-                '"metacog":{"url":"http://atlas:8012","served_by":"atlas-worker-2","backend":"llamacpp"},'
-                '"quick":{"url":"http://atlas:8013","served_by":"atlas-worker-fast-1","backend":"llamacpp"}}'
-            )
-            _load_route_targets.cache_clear()
-            targets = _load_route_targets()
-            self.assertEqual(targets["chat"].served_by, "atlas-worker-1")
-            self.assertIn("agent", targets)
-            self.assertEqual(targets["agent"].served_by, "atlas-worker-1")
-            self.assertEqual(targets["metacog"].served_by, "atlas-worker-2")
-            self.assertEqual(targets["quick"].served_by, "atlas-worker-fast-1")
-        finally:
-            settings.llm_route_table_json = original
-            _load_route_targets.cache_clear()
+    def test_plan_llm_chat_maps_route_to_pool_class_and_priority(self):
+        """Routing is decided once, on the event loop, and names a pool CLASS -- never a URL."""
+        plan = plan_llm_chat(
+            ChatBody(route="quick_background", messages=[ChatMessage(role="user", content="hello")])
+        )
+        self.assertIsNone(plan.error)
+        self.assertEqual(plan.route, "quick_background")
+        self.assertEqual((plan.work_class, plan.priority), ("fast", "background"))
+        self.assertIsNone(plan.route_target)
 
-    def test_route_table_accepts_agent_route_in_split_mode(self):
-        original = settings.llm_route_table_json
-        try:
-            settings.llm_route_table_json = (
-                '{"chat":{"url":"http://atlas:8011","served_by":"atlas-worker-1","backend":"llamacpp"},'
-                '"agent":{"url":"http://atlas:8014","served_by":"atlas-worker-agent-1","backend":"llamacpp"},'
-                '"metacog":{"url":"http://atlas:8012","served_by":"atlas-worker-2","backend":"llamacpp"},'
-                '"quick":{"url":"http://atlas:8013","served_by":"atlas-worker-fast-1","backend":"llamacpp"}}'
-            )
-            _load_route_targets.cache_clear()
-            targets = _load_route_targets()
-            self.assertIn("agent", targets)
-            self.assertEqual(targets["agent"].served_by, "atlas-worker-agent-1")
-            self.assertEqual(targets["quick"].served_by, "atlas-worker-fast-1")
-        finally:
-            settings.llm_route_table_json = original
-            _load_route_targets.cache_clear()
+    @patch.object(settings, "llm_lane_routing_enabled", False)
+    def test_route_not_in_gpu_pool_is_refused_not_guessed(self):
+        plan = plan_llm_chat(ChatBody(route="specialist", messages=[ChatMessage(role="user", content="hi")]))
+        self.assertEqual(plan.error["raw"]["error"], "route_not_in_gpu_pool")
+        self.assertIn("quick", plan.error["raw"]["details"]["available_routes"])
+        self.assertEqual(run_llm_chat(plan.body, plan)["raw"]["error"], "route_not_in_gpu_pool")
 
-    def test_route_table_parses_background_priority_fields(self):
-        original = settings.llm_route_table_json
-        try:
-            settings.llm_route_table_json = (
-                '{"quick":{"url":"http://atlas:8013","served_by":"atlas-worker-fast-1","backend":"llamacpp"},'
-                '"quick_background":{"url":"http://atlas:8013","served_by":"atlas-worker-fast-1",'
-                '"backend":"llamacpp","priority":"background","reserved_free_slots":2}}'
-            )
-            _load_route_targets.cache_clear()
-            targets = _load_route_targets()
-            self.assertIsNone(targets["quick"].priority)
-            self.assertIsNone(targets["quick"].reserved_free_slots)
-            self.assertEqual(targets["quick_background"].priority, "background")
-            self.assertEqual(targets["quick_background"].reserved_free_slots, 2)
-        finally:
-            settings.llm_route_table_json = original
-            _load_route_targets.cache_clear()
-
-    def test_route_table_metacog_served_by_defaults_from_atlas_service_name(self):
-        original_table = settings.llm_route_table_json
-        original_service = settings.atlas_metacog_service_name
-        try:
-            settings.atlas_metacog_service_name = "atlas-worker-2"
-            settings.llm_route_table_json = (
-                '{"metacog":{"url":"http://atlas:8012","backend":"llamacpp"}}'
-            )
-            _load_route_targets.cache_clear()
-            targets = _load_route_targets()
-            self.assertEqual(targets["metacog"].served_by, "atlas-worker-2")
-        finally:
-            settings.llm_route_table_json = original_table
-            settings.atlas_metacog_service_name = original_service
-            _load_route_targets.cache_clear()
+    @patch.object(settings, "llm_lane_routing_enabled", False)
+    def test_run_llm_chat_without_a_grant_never_guesses_an_upstream(self):
+        body = ChatBody(route="quick", messages=[ChatMessage(role="user", content="hello")])
+        result = run_llm_chat(body, plan_llm_chat(body))
+        self.assertEqual(result["raw"]["error"], "no_pool_grant")
 
     @patch("app.llm_backend._select_profile")
     @patch("app.llm_backend._execute_openai_chat")
-    def test_run_llm_chat_injects_atlas_metacog_profile_when_missing(
-        self,
-        mock_execute,
-        mock_select_profile,
-    ):
-        original_table = settings.llm_route_table_json
-        original_profile = settings.atlas_metacog_profile_name
-        try:
-            settings.atlas_metacog_profile_name = "llama3-8b-instruct-q4km-atlas-metacog"
-            settings.llm_route_table_json = (
-                '{"metacog":{"url":"http://atlas:8012","served_by":"atlas-worker-2","backend":"llamacpp"}}'
-            )
-            mock_select_profile.return_value = None
-            mock_execute.return_value = {"text": "OK", "raw": {}}
-            _load_route_targets.cache_clear()
-            run_llm_chat(
-                ChatBody(
-                    route="metacog",
-                    messages=[ChatMessage(role="user", content="hello")],
-                )
-            )
-            mock_select_profile.assert_called_once_with("llama3-8b-instruct-q4km-atlas-metacog")
-        finally:
-            settings.llm_route_table_json = original_table
-            settings.atlas_metacog_profile_name = original_profile
-            _load_route_targets.cache_clear()
+    def test_run_llm_chat_injects_atlas_metacog_profile_when_missing(self, mock_execute, mock_select_profile):
+        mock_select_profile.return_value = None
+        mock_execute.return_value = {"text": "OK", "raw": {}}
+        with patch.object(settings, "atlas_metacog_profile_name", "llama3-8b-instruct-q4km-atlas-metacog"):
+            body = ChatBody(route="metacog", messages=[ChatMessage(role="user", content="hello")])
+            run_llm_chat(body, _granted(body))
+        mock_select_profile.assert_called_once_with("llama3-8b-instruct-q4km-atlas-metacog")
 
     @patch("app.llm_backend._select_profile")
     @patch("app.llm_backend._execute_openai_chat")
     def test_run_llm_chat_injects_atlas_metacog_profile_on_metacog_background_route(
-        self,
-        mock_execute,
-        mock_select_profile,
+        self, mock_execute, mock_select_profile
     ):
-        """Regression (review caught this live 2026-08-29): this pin used to be an exact
-        `route == "metacog"` string match, so `metacog_background` (reverie.py's
-        `_metacog_route()`, once ORION_REVERIE_METACOG_BACKGROUND_ENABLED is on) would silently
-        stop being pinned and fall through to the generic default profile instead -- both share
-        circe-worker-2, see orion/llm/routes.py's METACOG_LLM_ROUTES."""
-        original_table = settings.llm_route_table_json
-        original_profile = settings.atlas_metacog_profile_name
-        try:
-            settings.atlas_metacog_profile_name = "llama3-8b-instruct-q4km-atlas-metacog"
-            settings.llm_route_table_json = (
-                '{"metacog_background":{"url":"http://atlas:8012","served_by":"atlas-worker-2",'
-                '"backend":"llamacpp","priority":"background","reserved_free_slots":1}}'
-            )
-            mock_select_profile.return_value = None
-            mock_execute.return_value = {"text": "OK", "raw": {}}
-            _load_route_targets.cache_clear()
-            run_llm_chat(
-                ChatBody(
-                    route="metacog_background",
-                    messages=[ChatMessage(role="user", content="hello")],
-                )
-            )
-            mock_select_profile.assert_called_once_with("llama3-8b-instruct-q4km-atlas-metacog")
-        finally:
-            settings.llm_route_table_json = original_table
-            settings.atlas_metacog_profile_name = original_profile
-            _load_route_targets.cache_clear()
+        """Regression (review caught this live 2026-08-29): the pin used to be an exact
+        `route == "metacog"` match, so `metacog_background` fell through to the generic default
+        profile -- see orion/llm/routes.py's METACOG_LLM_ROUTES."""
+        mock_select_profile.return_value = None
+        mock_execute.return_value = {"text": "OK", "raw": {}}
+        with patch.object(settings, "atlas_metacog_profile_name", "llama3-8b-instruct-q4km-atlas-metacog"):
+            body = ChatBody(route="metacog_background", messages=[ChatMessage(role="user", content="hello")])
+            run_llm_chat(body, _granted(body))
+        mock_select_profile.assert_called_once_with("llama3-8b-instruct-q4km-atlas-metacog")
 
     @patch("app.llm_backend._select_profile")
     @patch("app.llm_backend._execute_openai_chat")
-    def test_run_llm_chat_keeps_explicit_profile_on_metacog_route(
-        self,
-        mock_execute,
-        mock_select_profile,
-    ):
-        original_table = settings.llm_route_table_json
-        original_profile = settings.atlas_metacog_profile_name
-        try:
-            settings.atlas_metacog_profile_name = "llama3-8b-instruct-q4km-atlas-metacog"
-            settings.llm_route_table_json = (
-                '{"metacog":{"url":"http://atlas:8012","served_by":"atlas-worker-2","backend":"llamacpp"}}'
-            )
-            mock_select_profile.return_value = None
-            mock_execute.return_value = {"text": "OK", "raw": {}}
-            _load_route_targets.cache_clear()
-            run_llm_chat(
-                ChatBody(
-                    route="metacog",
-                    profile_name="custom-profile",
-                    messages=[ChatMessage(role="user", content="hello")],
-                )
-            )
-            mock_select_profile.assert_called_once_with("custom-profile")
-        finally:
-            settings.llm_route_table_json = original_table
-            settings.atlas_metacog_profile_name = original_profile
-            _load_route_targets.cache_clear()
-
-    @patch.object(settings, "llm_lane_routing_enabled", False)
-    def test_missing_route_fails_closed_when_route_table_active(self):
-        original = settings.llm_route_table_json
-        try:
-            settings.llm_route_table_json = '{"chat":{"url":"http://atlas:8011","served_by":"atlas-worker-1","backend":"llamacpp"}}'
-            _load_route_targets.cache_clear()
-            result = run_llm_chat(
-                ChatBody(
-                    route="agent",
-                    messages=[ChatMessage(role="user", content="hello")],
-                )
-            )
-            self.assertEqual(result["raw"]["error"], "route_not_configured")
-            self.assertEqual(result["route"], "agent")
-        finally:
-            settings.llm_route_table_json = original
-            _load_route_targets.cache_clear()
-
-    def test_plan_llm_chat_resolves_the_background_target_for_main_to_gate(self):
-        """Admission moved out of this thread-bound function on 2026-09-05: main.py gates on
-        the plan's target (priority + reserved_free_slots + url) on the event loop, then hands
-        the same plan back in, so routing is decided once and never inside a pool thread."""
-        original = settings.llm_route_table_json
-        try:
-            settings.llm_route_table_json = (
-                '{"quick_background":{"url":"http://atlas:8013","served_by":"atlas-worker-fast-1",'
-                '"backend":"llamacpp","priority":"background","reserved_free_slots":2}}'
-            )
-            _load_route_targets.cache_clear()
-            plan = plan_llm_chat(
-                ChatBody(route="quick_background", messages=[ChatMessage(role="user", content="hello")])
-            )
-            self.assertIsNone(plan.error)
-            self.assertEqual(plan.route, "quick_background")
-            self.assertEqual(plan.route_target.priority, "background")
-            self.assertEqual(plan.route_target.reserved_free_slots, 2)
-            self.assertEqual(plan.upstream, "http://atlas:8013")
-        finally:
-            settings.llm_route_table_json = original
-            _load_route_targets.cache_clear()
+    def test_run_llm_chat_keeps_explicit_profile_on_metacog_route(self, mock_execute, mock_select_profile):
+        mock_select_profile.return_value = None
+        mock_execute.return_value = {"text": "OK", "raw": {}}
+        with patch.object(settings, "atlas_metacog_profile_name", "llama3-8b-instruct-q4km-atlas-metacog"):
+            body = ChatBody(route="metacog", profile_name="custom-profile",
+                            messages=[ChatMessage(role="user", content="hello")])
+            run_llm_chat(body, _granted(body))
+        mock_select_profile.assert_called_once_with("custom-profile")
 
     @patch("app.llm_backend._execute_openai_chat")
-    def test_run_llm_chat_uses_the_plan_it_is_handed_and_never_waits(self, mock_execute):
-        original = settings.llm_route_table_json
-        try:
-            settings.llm_route_table_json = (
-                '{"quick_background":{"url":"http://atlas:8013","served_by":"atlas-worker-fast-1",'
-                '"backend":"llamacpp","priority":"background","reserved_free_slots":2}}'
-            )
-            mock_execute.return_value = {"text": "OK", "raw": {}}
-            _load_route_targets.cache_clear()
-            body = ChatBody(route="quick_background", messages=[ChatMessage(role="user", content="hello")])
-            plan = plan_llm_chat(body)
-            import app.priority_admission as pa
-            self.assertFalse(hasattr(pa, "wait_for_slack_sync"), "the blocking wait must stay deleted")
-            result = run_llm_chat(body, plan)
-            self.assertEqual(result["text"], "OK")
-            mock_execute.assert_called_once()
-        finally:
-            settings.llm_route_table_json = original
-            _load_route_targets.cache_clear()
+    def test_run_llm_chat_sends_to_the_grant_and_reports_its_served_by(self, mock_execute):
+        mock_execute.return_value = {"text": "OK", "raw": {}}
+        body = ChatBody(route="metacog", messages=[ChatMessage(role="user", content="hello")])
+        result = run_llm_chat(body, _granted(body, url="http://pool-agent:8015", served_by="circe-worker-agent"))
+        self.assertEqual(mock_execute.call_args.args[2], "http://pool-agent:8015")
+        self.assertEqual(result["served_by"], "circe-worker-agent")
+        self.assertEqual(result["backend"], "llamacpp")
 
     @patch("app.llm_backend._common_http_client")
     def test_execute_openai_chat_forwards_logprobs_when_requested(self, mock_client_factory):
@@ -669,87 +506,45 @@ class TestLLMBackendExecution(unittest.TestCase):
     @patch("app.llm_backend._execute_llamacpp_native_completion")
     @patch("app.llm_backend._execute_openai_chat")
     def test_run_llm_chat_routes_native_completion_when_opted_in(self, mock_openai, mock_native):
-        mock_native.return_value = {
-            "text": "native",
-            "spark_meta": {},
-            "raw": {},
-            "llm_uncertainty": {"available": True},
-        }
-        original = settings.llm_route_table_json
-        try:
-            settings.llm_route_table_json = (
-                '{"chat":{"url":"http://llamacpp:8080","served_by":"atlas","backend":"llamacpp"}}'
-            )
-            _load_route_targets.cache_clear()
-            with patch.object(settings, "llm_logprob_summary_enabled", True), patch.object(
-                settings, "llm_logprob_native_completion_enabled", True
-            ):
-                run_llm_chat(
-                    ChatBody(
-                        messages=[ChatMessage(role="user", content="hi")],
-                        options={
-                            "return_logprobs": True,
-                            "logprob_probe_mode": "native_completion",
-                        },
-                    )
-                )
-            mock_native.assert_called_once()
-            mock_openai.assert_not_called()
-        finally:
-            settings.llm_route_table_json = original
-            _load_route_targets.cache_clear()
+        mock_native.return_value = {"text": "native", "spark_meta": {}, "raw": {},
+                                    "llm_uncertainty": {"available": True}}
+        with patch.object(settings, "llm_logprob_summary_enabled", True), patch.object(
+            settings, "llm_logprob_native_completion_enabled", True
+        ):
+            body = ChatBody(messages=[ChatMessage(role="user", content="hi")], route="chat",
+                            options={"return_logprobs": True, "logprob_probe_mode": "native_completion"})
+            run_llm_chat(body, _granted(body))
+        mock_native.assert_called_once()
+        mock_openai.assert_not_called()
 
     @patch("app.llm_backend._execute_llamacpp_native_completion")
     @patch("app.llm_backend._execute_openai_chat")
     def test_response_format_blocks_native_completion_detour(self, mock_openai, mock_native):
         mock_openai.return_value = {"text": "{}", "spark_meta": {}, "raw": {}}
-        original = settings.llm_route_table_json
-        try:
-            settings.llm_route_table_json = (
-                '{"chat":{"url":"http://llamacpp:8080","served_by":"atlas","backend":"llamacpp"}}'
-            )
-            _load_route_targets.cache_clear()
-            with patch.object(settings, "llm_logprob_summary_enabled", True), patch.object(
-                settings, "llm_logprob_native_completion_enabled", True
-            ):
-                run_llm_chat(
-                    ChatBody(
-                        messages=[ChatMessage(role="user", content="hi")],
-                        options={
-                            "return_logprobs": True,
-                            "logprob_probe_mode": "native_completion",
-                            "response_format": {"type": "json_object"},
-                        },
-                    )
-                )
-            mock_openai.assert_called_once()
-            mock_native.assert_not_called()
-        finally:
-            settings.llm_route_table_json = original
-            _load_route_targets.cache_clear()
+        with patch.object(settings, "llm_logprob_summary_enabled", True), patch.object(
+            settings, "llm_logprob_native_completion_enabled", True
+        ):
+            body = ChatBody(messages=[ChatMessage(role="user", content="hi")], route="chat",
+                            options={"return_logprobs": True, "logprob_probe_mode": "native_completion",
+                                     "response_format": {"type": "json_object"}})
+            run_llm_chat(body, _granted(body))
+        mock_openai.assert_called_once()
+        mock_native.assert_not_called()
 
-    @patch("app.llm_backend._execute_openai_chat")
-    def test_no_route_still_uses_default_chat_when_route_table_active(self, mock_execute):
-        original = settings.llm_route_table_json
-        original_default = settings.llm_route_default
-        try:
-            settings.llm_route_default = "chat"
-            settings.llm_route_table_json = (
-                '{"chat":{"url":"http://atlas:8011","served_by":"atlas-worker-1","backend":"llamacpp"}}'
-            )
-            mock_execute.return_value = {"text": "OK", "raw": {}}
-            _load_route_targets.cache_clear()
-            result = run_llm_chat(
-                ChatBody(
-                    messages=[ChatMessage(role="user", content="hello")],
-                )
-            )
-            self.assertEqual(result["route"], "chat")
-            self.assertEqual(result["served_by"], "atlas-worker-1")
-        finally:
-            settings.llm_route_table_json = original
-            settings.llm_route_default = original_default
-            _load_route_targets.cache_clear()
+    @patch.object(settings, "llm_lane_routing_enabled", False)
+    def test_no_route_uses_the_default_route(self):
+        with patch.object(settings, "llm_route_default", "quick"):
+            plan = plan_llm_chat(ChatBody(messages=[ChatMessage(role="user", content="hello")]))
+        self.assertEqual(plan.route, "quick")
+        self.assertEqual(plan.work_class, "fast")
+
+
+def _granted(body, *, url="http://pool:8011", served_by="circe-worker-x"):
+    import dataclasses
+
+    plan = plan_llm_chat(body)
+    assert plan.error is None, plan.error
+    return dataclasses.replace(plan, route_target=RouteTarget(url=url, backend="llamacpp", served_by=served_by))
 
 
 if __name__ == "__main__":

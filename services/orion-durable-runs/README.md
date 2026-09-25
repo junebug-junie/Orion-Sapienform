@@ -278,16 +278,15 @@ are explicit isolated fixtures; this is not evidence of production cognition.
 `DURABLE_RUNS_LANE_POLICY_JSON` declares `chat-burst` as `compatible_with: ["agent"]`, so every
 new `agent`-preferring run derives it as an alternative at submission. It needs no
 `allow_elastic_activation`: nothing is physically borrowed. Eligibility follows the gateway
-catalog: while the Hub gate is closed the gateway reports the route `operator_closed`, which
+catalog, which since the 2026-09-24 GPU pool cutover mirrors orion-gpu-pool: while gpu0 is not
+lent (Hub "Lend chat GPU" / GPU pool tab) the gateway reports `chat-burst` as `operator_closed`, which
 `refresh_lanes` maps to `healthy=False` (`health_unknown_or_unavailable` in the run's
 `suppressed` map). Runs already queued before this policy change keep their frozen
 alternatives and will not widen onto it. A run first granted `chat-burst` stays pinned to it
-(`run_assignment_locked`). Closing the gate mid-run makes the run's next gateway call fail
-(`route_operator_closed`), which `admitted_graph.py` records as one failed attempt: the lease
-is released, the partial FCC turn is lost, and the run waits on the closed lane for its next
-attempt (up to `DURABLE_RUNS_RETRY_MAX_ATTEMPTS`, then `failed`). Prefer closing the gate when
-no chat-burst lease is active (`GET /admission` shows active leases). Follow-up: exempt
-`route_operator_closed` from the attempt count.
+(`run_assignment_locked`). Where each call actually runs is orion-gpu-pool's decision: the durable lease is an admission
+token only, and every gateway call also takes a pool lease. Taking gpu0 back (unlend) mid-run
+recalls a borrower on chat's card (grace, then abort), and the next call is placed on whatever
+card the pool allows; the GPU pool tab shows active leases.
 
 
 ## Alternatives are policy-additive

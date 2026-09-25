@@ -462,6 +462,21 @@ class FieldDigesterStore:
             ).scalar()
         return int(value or 0)
 
+    def count_gpu_pool_waiting(self) -> int:
+        """Leases waiting for a GPU in orion-gpu-pool (queue contention source ``gpu_pool_waiting``):
+        queued for a slot, or backlogged until a role that can serve them comes back. Not retry_wait
+        (cooling down after a failure) and not granted/recalling (holding a GPU, not waiting)."""
+        with self._engine.connect() as conn:
+            value = conn.execute(
+                text(
+                    """
+                    SELECT count(*) FROM gpu_pool_leases
+                    WHERE status IN ('queued', 'backlogged')
+                    """
+                )
+            ).scalar()
+        return int(value or 0)
+
     def count_durable_demand_pending(self) -> int:
         """Pending durable resource demands (queue contention source)."""
         with self._engine.connect() as conn:

@@ -1,6 +1,5 @@
 import argparse
 import asyncio
-import json
 import os
 import uuid
 from typing import Dict
@@ -12,80 +11,39 @@ from orion.llm.routes import ACCEPTED_LLM_ROUTES, LLM_ROUTE_DISPLAY_ORDER, norma
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 
 
-DEFAULT_ROUTE_SERVERS = {
-    "chat": "atlas-worker-1",
-    "agent": "atlas-worker-1",
-    "metacog": "atlas-worker-2",
-    "quick": "atlas-worker-fast-1",
-    # Same llama.cpp process as `quick` under a background admission policy -- one worker, two
-    # routes. Without this entry, widening the dispatch loop below to the full route set raised
-    # a bare KeyError in `_expected_served_by`.
-    "quick_background": "atlas-worker-fast-1",
-    # `harness` (2026-08-20): interim alias of `chat`'s own worker -- same reasoning as
-    # `quick_background` above. Caught by this file's own documented failure mode: adding
-    # `harness` to LLM_ROUTE_DISPLAY_ORDER without an entry here would have raised the exact
-    # bare KeyError `_expected_served_by`'s docstring warns about, the first time this smoke
-    # ran against a route table that actually configures `harness`.
-    #
-    # `circe-worker-1`, NOT the atlas-flavoured default the other entries above use: unlike
-    # `chat`/`agent` (whose "NOT fixed here" note below is deliberately left as pre-existing
-    # debt), `harness` was introduced by this same patch, so there is no excuse for its own
-    # default to repeat that stale placeholder. It aliases `chat`'s real, documented
-    # served_by (services/orion-llm-gateway/README.md's "harness split off chat" section) --
-    # get this wrong and the smoke false-fails against a correctly configured deployment.
-    "harness": "circe-worker-1",
-}
 
-# NOT fixed here, but do not trust the two entries above: `chat` and `agent` actually run on
-# CIRCE (`circe-worker-1` / `circe-worker-agent-1`), not atlas. These defaults only apply when
-# LLM_ROUTE_<ROUTE>_SERVED_BY is unset AND the live route table omits served_by, which is not
-# the current deployment -- see the "latent trap" note in the scarcity roadmap's A2 section.
+
+def _pool_routes():
+    """Routes and the roles that may serve them, from config/gpu_pool.yaml (the gateway's own source
+    since the 2026-09-24 GPU pool cutover; the old LLM_GATEWAY_ROUTE_TABLE_JSON is gone)."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from orion.gpu_pool.config import load_pool_config
+
+    return load_pool_config()
 
 
 def _load_route_urls() -> Dict[str, str]:
-    raw_json = os.getenv("LLM_GATEWAY_ROUTE_TABLE_JSON")
-    if raw_json:
-        raw = json.loads(raw_json)
-        if not isinstance(raw, dict):
-            raise ValueError("LLM_GATEWAY_ROUTE_TABLE_JSON must be a JSON object")
-        route_urls: Dict[str, str] = {}
-        for route, value in raw.items():
-            if isinstance(value, str):
-                route_urls[str(route)] = value
-            elif isinstance(value, dict):
-                url = value.get("url") or value.get("base_url")
-                if url:
-                    route_urls[str(route)] = url
-        return route_urls
-
-    return {
-        "chat": os.getenv("LLM_ROUTE_CHAT_URL", ""),
-        "agent": os.getenv("LLM_ROUTE_AGENT_URL", ""),
-        "metacog": os.getenv("LLM_ROUTE_METACOG_URL", ""),
-        "quick": os.getenv("LLM_ROUTE_QUICK_URL", ""),
-    }
+    """Each route's HOME role URL (first role of its class) -- the pool may still place a call elsewhere."""
+    cfg = _pool_routes()
+    return {route: cfg.url(cfg.classes[spec.work_class].roles[0]) for route, spec in cfg.routes.items()}
 
 
-def _expected_served_by(route: str) -> str:
-    override = os.getenv(f"LLM_ROUTE_{route.upper()}_SERVED_BY")
-    if override:
-        return override
-    try:
-        return DEFAULT_ROUTE_SERVERS[route]
-    except KeyError:
-        # A bare KeyError here reads as a smoke crash; it is actually "a route exists that this
-        # file has never heard of", which is the drift this whole patch is about.
-        raise AssertionError(
-            f"route {route!r} has no expected served_by: add it to DEFAULT_ROUTE_SERVERS "
-            f"or set LLM_ROUTE_{route.upper()}_SERVED_BY"
-        ) from None
+def _expected_served_by(route: str) -> set:
+    """Every served_by the pool may legitimately answer with for this route ("circe-worker-<role>")."""
+    cfg = _pool_routes()
+    if route not in cfg.routes:
+        raise AssertionError(f"route {route!r} is not in config/gpu_pool.yaml routes")
+    return {f"{cfg.host.name}-worker-{role}" for role in cfg.classes[cfg.routes[route].work_class].roles}
 
 
 async def _rpc_chat(
     bus: OrionBusAsync,
     *,
     route: str,
-    expected_served_by: str,
+    expected_served_by: set,
     request_channel: str,
     timeout_sec: float,
 ) -> None:
@@ -119,8 +77,8 @@ async def _rpc_chat(
         raise RuntimeError(f"Gateway error for route={route}: {payload.get('error')}")
     meta = payload.get("meta") or {}
     served_by = meta.get("served_by")
-    if served_by != expected_served_by:
-        raise AssertionError(f"route={route} served_by={served_by} expected={expected_served_by}")
+    if served_by not in expected_served_by:
+        raise AssertionError(f"route={route} served_by={served_by} expected one of {sorted(expected_served_by)}")
 
     print(f"[ok] route={route} served_by={served_by}")
 

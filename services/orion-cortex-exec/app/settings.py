@@ -290,10 +290,10 @@ class Settings(BaseSettings):
     cortex_exec_llm_gateway_url: str = Field(
         "http://llm-gateway:8210", alias="CORTEX_EXEC_LLM_GATEWAY_URL"
     )
-    # ROADMAP A5: read orion-llm-gateway's GET /admission and put "was my background thinking
-    # made to wait, and for how long" into the metacog cue. Default ON, but the cue key is
-    # simply absent whenever the gateway cannot be read -- unknown never renders as calm.
-    # Set false to remove both the fetch and the key.
+    # ROADMAP A5: read orion-gpu-pool's lease history (gpu_pool_events) and put "was my background
+    # thinking made to wait, and for how long" into the metacog cue. Default ON, but the cue key is
+    # simply absent whenever the history cannot be read -- unknown never renders as calm.
+    # Set false to remove both the read and the key.
     cortex_exec_admission_cue_enabled: bool = Field(
         True, alias="CORTEX_EXEC_ADMISSION_CUE_ENABLED"
     )
@@ -304,9 +304,6 @@ class Settings(BaseSettings):
     )
     cortex_exec_admission_cue_ttl_sec: float = Field(
         60.0, alias="CORTEX_EXEC_ADMISSION_CUE_TTL_SEC"
-    )
-    cortex_exec_admission_cue_timeout_sec: float = Field(
-        2.0, alias="CORTEX_EXEC_ADMISSION_CUE_TIMEOUT_SEC"
     )
     orion_situation_runtime_probe_timeout_sec: float = Field(
         2.0, alias="ORION_SITUATION_RUNTIME_PROBE_TIMEOUT_SEC"

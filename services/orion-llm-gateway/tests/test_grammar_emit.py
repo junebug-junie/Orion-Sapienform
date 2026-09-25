@@ -66,6 +66,13 @@ from app.grammar_emit import (
         ({"text": "", "raw": {"error": "route_operator_closed"}}, "route_operator_closed"),
         ({"text": "", "raw": {"error": "gateway_capacity_rejected"}}, "gateway_capacity_rejected"),
         ({"text": "", "raw": {"error": "llm_route_unavailable"}}, "llm_route_unavailable"),
+        # GPU pool placement outcomes (stage 3): the serving node did not fail.
+        ({"text": "", "raw": {"error": "gpu_pool_unavailable"}}, "gpu_pool_unavailable"),
+        ({"text": "", "raw": {"error": "route_not_in_gpu_pool"}}, "route_not_in_gpu_pool"),
+        ({"text": "", "raw": {"error": "no_pool_grant"}}, "no_pool_grant"),
+        ({"text": "", "raw": {"error": "gpu_pool_recalled"}}, "gpu_pool_recalled"),
+        ({"text": "[Error: context overflow]", "raw": {"error": "context_overflow"}}, "context_overflow"),
+        ({"text": "", "raw": {"error": "timeout", "details": {"reason": "caller_budget_exhausted"}}}, "upstream_timeout"),
         ({"text": "", "raw": {"error": "something_new"}}, "upstream_error"),
         ("not a dict", "upstream_error"),
     ],
@@ -229,7 +236,7 @@ async def test_handle_chat_records_outcome_only_when_enabled():
     grammar_emit.reset_recorder_for_tests()
     fake = {"text": "[Error: llamacpp timed out after waiting]", "raw": {}, "served_by": "circe-worker-fast-1"}
 
-    async def _dispatch(body, *, correlation_id):
+    async def _dispatch(body, *, correlation_id, **_kw):
         return dict(fake)
 
     with patch.object(main, "_dispatch_chat", _dispatch), patch.object(main.settings, "llm_gateway_grammar_enabled", False):
@@ -249,7 +256,7 @@ async def test_handle_chat_records_outcome_only_when_enabled():
 async def test_handle_chat_reply_survives_a_recorder_crash():
     from app import main
 
-    async def _dispatch(body, *, correlation_id):
+    async def _dispatch(body, *, correlation_id, **_kw):
         return {"text": "hi", "raw": {}, "served_by": "circe-worker-2"}
 
     class _Boom:
@@ -261,3 +268,25 @@ async def test_handle_chat_reply_survives_a_recorder_crash():
     ), patch.object(grammar_emit, "get_recorder", lambda: _Boom()):
         out = await main.handle_chat(_req())
     assert out.payload.content == "hi"
+
+
+def test_every_error_code_the_gateway_emits_has_a_class():
+    """A gateway error code missing from the contract falls through to upstream_error and is
+    counted as the serving node failing. Pin every literal ``"error": ...`` the dispatch paths
+    return, so a new code cannot ship unclassified."""
+    import re
+    from pathlib import Path
+
+    from app import ctx_overflow, pool_placement
+
+    app_dir = Path(grammar_emit.__file__).parent
+    literals = set()
+    for name in ("main.py", "llm_backend.py"):
+        literals |= set(re.findall(r'"error":\s*"([a-z_]+)"', (app_dir / name).read_text()))
+    literals |= {pool_placement.POOL_UNAVAILABLE, pool_placement.POOL_RECALLED, pool_placement.ROUTE_NOT_IN_POOL,
+                 ctx_overflow.CONTEXT_OVERFLOW_ERROR}
+    # validation_failed is returned before dispatch and never reaches the recorder.
+    literals.discard("validation_failed")
+    unclassified = {code for code in literals
+                    if classify_outcome({"text": "", "raw": {"error": code}}) == "upstream_error"}
+    assert not unclassified, unclassified

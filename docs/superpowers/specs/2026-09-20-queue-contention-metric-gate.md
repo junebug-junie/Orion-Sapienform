@@ -77,3 +77,43 @@ Additive `FieldStateV1` fields + digester module + inner-state registry + metric
 
 **UNBLOCKED** — implement Task 6 with all three source keys:
 `world_pulse_seed_pending`, `durable_demand_pending`, `gateway_waiting`.
+
+## Re-point: `gateway_waiting` → `gpu_pool_waiting` (2026-09-24, Juniper-approved)
+
+The LLM gateway's in-process admission ledger (`GET /admission`, the `gateway_waiting` source) is
+deleted by the GPU pool gateway cutover (stage 3 of `2026-09-24-gpu-pool-design.md`). The metric is
+re-pointed, not left to go silent. The gate, re-run in full:
+
+1. **Provenance.** `gpu_pool_waiting` = `SELECT count(*) FROM gpu_pool_leases WHERE status IN
+   ('queued','backlogged')` (`services/orion-field-digester/app/store.py::count_gpu_pool_waiting`).
+   The rows are the pool's fenced projection, written by the single-writer runtime
+   (`services/orion-gpu-pool/app/runtime.py::_row`) on every lease transition. `retry_wait` is
+   excluded (cooling down after a failure, not waiting for capacity), and so are `granted` and
+   `recalling` (holding a GPU).
+2. **Independence.** It replaces `gateway_waiting` (same concept, the retired producer). It does
+   **not** double-count `durable_demand_pending`: a durable run waits in the old broker until it is
+   granted, and only then takes a pool lease for the slot it uses. Its wait is counted in one place,
+   never both. When durable runs move onto the pool (stage 4), `durable_demand_pending` retires and
+   its wait moves into `gpu_pool_waiting`; that is the next re-point.
+3. **Theory anchor.** Unchanged from this gate: backlog of work waiting for a GPU, relative to its own
+   EWMA baseline, is the queueing-pressure signal the hire decision consumes. The pool's queue is
+   where that waiting now physically happens, because every LLM call leases before it runs.
+4. **Live data.**
+   - **The retired source was degenerate.** `substrate_field_state` at 2026-09-24 23:29Z shows
+     `queue_contention_ewma.gateway_waiting = 0.0` over **163,577** observations, and it was never the
+     driver in 3 days (drivers: `world_pulse_seed_pending` ×66,458, avg score 0.14;
+     `durable_demand_pending` ×54,581, max 6.38).
+   - **Why it was zero.** The gateway's semaphore cap was 8 per upstream, far above the real slot
+     counts (chat 1, agent 1, metacog/fast 4), so nothing ever queued there. Oversubscription
+     happened inside llama.cpp instead, invisible to the metric.
+   - **Why the new source can move.** The pool grants against discovered real slots, so the queue
+     forms exactly where the GPU is full. Its rest state is a genuine 0 (empty queue). It is not a
+     decay artifact: the value is a fresh count every tick, never carried forward.
+   - **UNVERIFIED live** until stage 3 is deployed: after deploy, confirm the new source rises under
+     load (e.g. a metacog burst beyond 4 slots, or chat while a turn runs) and returns to 0.
+5. **Existing mechanism.** This is the same metric; only one source changes. `SOURCE_KEYS` stays at
+   three.
+6. **Reversibility.** Cheap. The key rename starts a fresh EWMA (the first tick scores 0 by
+   construction). The retired `gateway_waiting` baseline is dropped from state rather than carried
+   (`score_queue_contention` keeps only `SOURCE_KEYS`). Disclosure text is updated
+   (`orion/curiosity/queue_contention_disclosure.py`).

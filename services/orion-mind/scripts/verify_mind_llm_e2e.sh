@@ -55,12 +55,13 @@ else
   fail "orch cannot reach orion-mind:6611"
 fi
 
-GW_ROUTES=$(docker exec orion-llm-gateway printenv LLM_GATEWAY_ROUTE_TABLE_JSON 2>/dev/null || true)
+# Routes come from config/gpu_pool.yaml since the GPU pool cutover; /routes is generated from it.
+GW_ROUTES=$(curl -sf http://127.0.0.1:8210/routes 2>/dev/null || true)
 for route in quick metacog chat; do
-  if echo "$GW_ROUTES" | grep -q "\"$route\""; then
-    pass "gateway route table includes $route"
+  if echo "$GW_ROUTES" | grep -q "\"id\": *\"$route\""; then
+    pass "gateway /routes includes $route"
   else
-    fail "gateway route table missing $route"
+    fail "gateway /routes missing $route"
   fi
 done
 

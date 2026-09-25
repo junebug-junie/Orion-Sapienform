@@ -11,7 +11,7 @@ import pytest
 
 from orion.field.queue_contention import (
     SOURCE_DURABLE,
-    SOURCE_GATEWAY,
+    SOURCE_GPU_POOL,
     SOURCE_SEED,
     QueueContentionReading,
     ewma_alpha,
@@ -48,14 +48,14 @@ def test_max_not_average() -> None:
         {
             SOURCE_SEED: 100.0,  # at baseline → sub 0
             SOURCE_DURABLE: 10.0,  # 5x of 2 → sub 10
-            SOURCE_GATEWAY: 0.0,  # calm → sub 0
+            SOURCE_GPU_POOL: 0.0,  # calm → sub 0
         },
         prev_ewma={
             SOURCE_SEED: 100.0,
             SOURCE_DURABLE: 2.0,
-            SOURCE_GATEWAY: 0.0,
+            SOURCE_GPU_POOL: 0.0,
         },
-        prev_n={SOURCE_SEED: 50, SOURCE_DURABLE: 50, SOURCE_GATEWAY: 50},
+        prev_n={SOURCE_SEED: 50, SOURCE_DURABLE: 50, SOURCE_GPU_POOL: 50},
         alpha=0.0,
     )
     assert reading.score == 10.0
@@ -67,21 +67,21 @@ def test_max_not_average() -> None:
 def test_ratio_midpoint_is_five() -> None:
     """3x baseline → clip(10 * (3-1)/4) = 5."""
     reading = score_queue_contention(
-        {SOURCE_GATEWAY: 3.0},
-        prev_ewma={SOURCE_GATEWAY: 1.0},
-        prev_n={SOURCE_GATEWAY: 20},
+        {SOURCE_GPU_POOL: 3.0},
+        prev_ewma={SOURCE_GPU_POOL: 1.0},
+        prev_n={SOURCE_GPU_POOL: 20},
         alpha=0.0,
     )
     assert reading.score == 5.0
-    assert reading.driver == SOURCE_GATEWAY
+    assert reading.driver == SOURCE_GPU_POOL
 
 
 def test_floor_avoids_divide_by_near_zero() -> None:
     """EWMA near 0 still denominates at floor=1.0 — count=5 → ratio 5 → score 10."""
     reading = score_queue_contention(
-        {SOURCE_GATEWAY: 5.0},
-        prev_ewma={SOURCE_GATEWAY: 0.01},
-        prev_n={SOURCE_GATEWAY: 10},
+        {SOURCE_GPU_POOL: 5.0},
+        prev_ewma={SOURCE_GPU_POOL: 0.01},
+        prev_n={SOURCE_GPU_POOL: 10},
         alpha=0.0,
         floor=1.0,
     )
@@ -119,3 +119,14 @@ def test_reading_is_frozen_dataclass() -> None:
     assert isinstance(reading, QueueContentionReading)
     with pytest.raises(Exception):
         reading.score = 9.0  # type: ignore[misc]
+
+
+def test_retired_source_baseline_is_dropped_not_carried() -> None:
+    reading = score_queue_contention(
+        {SOURCE_GPU_POOL: 0.0},
+        prev_ewma={"gateway_waiting": 0.0, SOURCE_SEED: 3.0},
+        prev_n={"gateway_waiting": 163577, SOURCE_SEED: 10},
+        alpha=0.1,
+    )
+    assert "gateway_waiting" not in reading.ewma and "gateway_waiting" not in reading.ewma_n
+    assert reading.ewma[SOURCE_SEED] == 3.0 and reading.ewma_n[SOURCE_GPU_POOL] == 1

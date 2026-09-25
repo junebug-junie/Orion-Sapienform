@@ -137,6 +137,7 @@ class DiscoveredRoleV1(BaseModel):
     status: Literal["confirmed", "mismatch", "silent", "down", "unloaded", "evicted", "static"]
     profile_name: str | None = None
     model_file: str | None = None
+    model_path: str | None = None   # as llama.cpp /props reports it (durable-runs compares full paths)
     slots: int = 0
     ctx_per_slot: int | None = None
     vision: bool | None = None

@@ -35,7 +35,10 @@ async def test_main_rabbit_enables_concurrent_handlers_when_setting_true(
         return None
 
     monkeypatch.setattr(gw_main, "Rabbit", FakeRabbit)
-    monkeypatch.setattr(gw_main, "_probe_route_targets", noop_async)
+    async def noop_pool_bus(parent) -> None:
+        return None
+
+    monkeypatch.setattr(gw_main, "_connect_pool_bus", noop_pool_bus)
     monkeypatch.setattr(gw_main, "_serve_health", noop_async)
 
     await gw_main.main()

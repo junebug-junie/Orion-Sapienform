@@ -5,15 +5,13 @@ import dataclasses
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
 
-import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 import uvicorn
 
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 # [FIX] Added ServiceRef to imports
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, Envelope, ServiceRef
@@ -22,27 +20,22 @@ from orion.bus.consumer_readiness import bus_consumer_readiness_v1, check_bus_co
 from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
 from orion.schemas.vector.schemas import VectorUpsertV1
 
+from orion.gpu_pool.client import Lease, LeaseUnavailable
+
+from .ctx_overflow import CONTEXT_OVERFLOW_ERROR
 from .llm_backend import (
     ChatDispatchPlan,
-    get_route_targets,
+    RouteTarget,
     plan_llm_chat,
     resolve_caller_budget_sec,
     run_llm_chat,
 )
-from .priority_admission import background_admission
-from .upstream_admission import UpstreamAdmission, get_upstream_admission
 from .anthropic_passthrough import register_anthropic_passthrough_routes
 from .openai_passthrough import register_openai_passthrough_routes
-from .route_catalog import get_routes_payload, refresh_route_health_cache
-from . import grammar_emit, lane_gate
-from orion.llm.routes import OPERATOR_GATED_LLM_ROUTES
-import math
-
-from .admission_ledger import get_ledger
+from . import grammar_emit, pool_placement, upstream_cancel
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
 from .resource_lease import LeaseGuard, ResourceLeaseRejected
-from .capacity import CapacityPermit, CapacityRejected
 from .settings import settings
 
 logger = logging.getLogger("orion-llm-gateway")
@@ -75,7 +68,7 @@ def _preview_text(value: str | None, limit: int = 220) -> str:
 
 @app.get("/health")
 async def health() -> Dict[str, Any]:
-    routes = sorted(get_route_targets().keys())
+    routes = sorted(pool_placement.pool_routes().keys())
     return {
         "status": "ok",
         "service": settings.service_name,
@@ -119,70 +112,25 @@ async def ready() -> JSONResponse:
         check_heartbeat=False,
     )
     body = bus_consumer_readiness_v1(result, http_alive=True)
+    pool_bus_up = pool_placement.pool_bus_ready()
+    if not pool_bus_up:
+        # Every LLM call leases over the forked pool RPC client; without it each one answers
+        # gpu_pool_unavailable (pool_bus_unavailable), so the gateway is not ready to serve.
+        body = body.model_copy(update={
+            "ok": False, "dependency_status": "unavailable",
+            "error": "; ".join(e for e in (body.error, "gpu_pool_bus_unavailable") if e),
+        })
     status_code = 200 if body.ok else 503
-    return JSONResponse(body.model_dump(mode="json"), status_code=status_code)
+    return JSONResponse(body.model_dump(mode="json"), status_code=status_code,
+                        headers={"X-Gpu-Pool-Bus": "up" if pool_bus_up else "down"})
 
 
 @app.get("/routes")
 async def routes_catalog() -> Dict[str, Any]:
-    return await get_routes_payload()
-
-
-class LaneGateUpdate(BaseModel):
-    open: bool
-    changed_by: str = "unknown"
-
-
-# The operator gate on a lent lane (lane_gate.py). `chat-burst` is Juniper's chat worker lent
-# to the durable burst queue; the Hub's "Lend chat lane" button is the only writer. A PUT
-# forces the catalog cache to refresh so GET /routes flips to/from `operator_closed` at once
-# instead of up to 15s later -- durable admission reads that catalog to decide eligibility.
-@app.get("/routes/{route_id}/gate")
-async def route_gate(route_id: str) -> Dict[str, Any]:
-    try:
-        return await lane_gate.read_gate(route_id)
-    except lane_gate.RouteNotOperatorGated:
-        raise HTTPException(status_code=404, detail="route_not_operator_gated")
-    except lane_gate.LaneGateUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
-
-
-@app.put("/routes/{route_id}/gate")
-async def route_gate_set(route_id: str, update: LaneGateUpdate) -> Dict[str, Any]:
-    try:
-        state = await lane_gate.set_gate(route_id, open=update.open, changed_by=update.changed_by)
-    except lane_gate.RouteNotOperatorGated:
-        raise HTTPException(status_code=404, detail="route_not_operator_gated")
-    except lane_gate.LaneGateUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
-    await refresh_route_health_cache(force=True)
-    return state
-
-
-# ROADMAP A5. The read side of the admission ledger: how often background dispatch was actually
-# made to wait, and for how long. This is what cortex-exec reads to put the wait into Orion's
-# own context, and it is deliberately the whole picture rather than only the deferrals --
-# `checked` is the denominator, so a caller can tell "asked 294 times, never waited" apart from
-# "nothing asked", which are different facts and would otherwise be the same zero.
-#
-# Read-only, no content, no identity. See admission_ledger.py's docstring.
-@app.get("/admission")
-async def admission_snapshot(
-    window_s: float = 21600.0,
-    via: Optional[str] = None,
-) -> Dict[str, Any]:
-    # isfinite first: min/max PROPAGATE a leading NaN rather than clamping it, so a
-    # `?window_s=nan` would sail through the clamp, make every `ts >= cutoff` comparison False,
-    # and return a confident `checked: 0` -- "nothing was ever asked" fabricated from a
-    # malformed query string. It would also serialise as a bare NaN token, which is not valid
-    # JSON but which Python's own json.loads accepts, so the consumer would not notice either.
-    raw = float(window_s)
-    window = 21600.0 if not math.isfinite(raw) else min(max(raw, 60.0), 86400.0)
-    snapshot = get_ledger().snapshot(window_s=window, via=via)
-    # Per-upstream in-flight depth (upstream_admission.py): live gauges, not windowed.
-    # Extra key on the same surface; cortex-exec's admission_cue only requires its own fields.
-    snapshot["upstreams"] = get_upstream_admission().snapshot()
-    return snapshot
+    """Compatibility view generated from orion-gpu-pool state (pool_placement.build_routes_compat).
+    Kept until durable-runs, fcc_motor, situational context, context-exec and the Hub read pool
+    state directly; removed in stage 6 of the GPU pool spec."""
+    return await pool_placement.get_routes_payload()
 
 
 def _cfg() -> ChassisConfig:
@@ -260,215 +208,225 @@ async def _maybe_publish_latent_upsert(
         logger.warning("Latent upsert publish failed doc_id=%s error=%s", doc_id, exc)
 
 
-def _overloaded_result(
-    plan: ChatDispatchPlan, *, stage: str, waited_s: float, budget_s: float, lane: Dict[str, Any]
-) -> Dict[str, Any]:
-    """Same shape as llm_backend's `llm_route_unavailable` early return: empty text,
-    `raw.error` set. Consumers that check for empty content (orion-mind, topic-foundry,
-    vision-council, memory-consolidation) treat it as a failed call. NOTE: cortex-exec's
-    chat-turn step does not check `raw.error` or empty content today (pre-existing gap,
-    tracked in this PR's report); it would carry an empty answer forward."""
-    served_by = plan.route_target.served_by if plan.route_target else None
+class _UpstreamFailed(Exception):
+    """Raised inside the lease block so the pool records ``upstream_error``; carries the result
+    the caller still gets back unchanged."""
+
+    def __init__(self, result: Dict[str, Any]):
+        super().__init__(str((result.get("raw") or {}).get("error") or result.get("text") or "upstream_error")[:300])
+        self.result = result
+
+
+class _ContextOverflow(_UpstreamFailed):
+    def __init__(self, result: Dict[str, Any], ctx_per_slot: Optional[int]):
+        super().__init__(result)
+        self.ctx_per_slot = ctx_per_slot
+
+
+def _result_error(result: Dict[str, Any]) -> Optional[str]:
+    raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    vision = raw.get("vision")
+    if isinstance(vision, dict) and vision.get("status") in ("refused", "fetch_failed"):
+        return None  # refused before any generation: not the GPU's failure
+    if raw.get("error"):
+        return str(raw.get("error"))
+    if str(result.get("text") or "").startswith("[Error:"):
+        return "upstream_error"
+    return None
+
+
+def _pool_unavailable_result(plan: ChatDispatchPlan, reason: str) -> Dict[str, Any]:
+    """Same shape as every early gateway error: empty text, `raw.error` set. Consumers that check
+    for empty content treat it as a failed call."""
     return {
         "text": "",
         "content": "",
         "spark_meta": {},
         "raw": {
-            "error": "gateway_overloaded",
-            "details": {
-                "stage": stage,
-                "route": plan.route,
-                "upstream": plan.upstream,
-                "served_by": served_by,
-                "waited_s": round(waited_s, 3),
-                "budget_s": round(budget_s, 3),
-                "lane": lane,
-            },
+            "error": pool_placement.POOL_UNAVAILABLE,
+            "details": {"reason": reason, "route": plan.route, "work_class": plan.work_class},
         },
         "route": plan.route,
-        "served_by": served_by,
+        "served_by": None,
     }
 
 
-_chat_executor: Optional[ThreadPoolExecutor] = None
+def _revoked_result(plan: ChatDispatchPlan, lease: Lease, reason: str) -> Dict[str, Any]:
+    """The pool took the slot back mid-call and the upstream was stopped. Empty content, raw.error
+    set: consumers that check for empty content treat it as a failed call."""
+    return {
+        "text": "",
+        "content": "",
+        "spark_meta": {},
+        "raw": {
+            "error": pool_placement.POOL_RECALLED,
+            "details": {"reason": f"lease_{reason}", "lease_id": lease.lease_id, "route": plan.route},
+        },
+        "route": plan.route,
+        "served_by": lease.grant.served_by,
+    }
 
 
-def _executor(loop: asyncio.AbstractEventLoop) -> ThreadPoolExecutor:
-    global _chat_executor
-    if _chat_executor is None:
-        configure_executor(loop, get_upstream_admission())
-    assert _chat_executor is not None
-    return _chat_executor
+def _deadline_result(plan: ChatDispatchPlan, lease: Lease, budget_s: float) -> Dict[str, Any]:
+    return {
+        "text": "",
+        "content": "",
+        "spark_meta": {},
+        "raw": {
+            "error": "timeout",
+            "details": {"reason": "caller_budget_exhausted", "budget_sec": round(budget_s, 3), "route": plan.route},
+        },
+        "route": plan.route,
+        "served_by": lease.grant.served_by,
+    }
 
 
-async def _dispatch_chat(body: ChatBody, *, correlation_id: str) -> Dict[str, Any]:
-    plan = plan_llm_chat(body)
-    if plan.route in OPERATOR_GATED_LLM_ROUTES and not await lane_gate.is_open(plan.route):
-        # A lent lane (chat-burst) is closed until the Hub opens it -- refused before any
-        # lease/capacity work, so a closed gate never even queues on the worker.
-        logger.warning("route_operator_closed correlation_id=%s route=%s", correlation_id, plan.route)
-        return {"text": "", "content": "", "route": plan.route,
-                "raw": {"error": "route_operator_closed",
-                        "details": lane_gate.route_operator_closed_error(plan.route)["error"]}}
-    guard = LeaseGuard((body.options or {}).get("resource_lease"), lane=plan.route, backend_key=plan.upstream)
+async def _run_on_grant(plan: ChatDispatchPlan, lease: Lease, read_timeout_s: float) -> Dict[str, Any]:
+    """Run the sync call in the granted role's thread, and stop it from here when the pool takes
+    the lease back (lost, or recalled past its grace), the caller's budget runs out, or this task is
+    cancelled. Stopping = shutting down the worker's upstream sockets (upstream_cancel.py): the
+    blocked read fails, the worker returns, and the slot the pool now counts as free is free."""
+    grant = lease.grant
+    run_body = plan.body.model_copy(update={"options": {
+        **(plan.body.options or {}), "gateway_read_timeout_sec": read_timeout_s,
+    }})
+    run_plan = dataclasses.replace(
+        plan, body=run_body,
+        route_target=RouteTarget(url=grant.url, backend=pool_placement.LLAMACPP_BACKEND, served_by=grant.served_by),
+    )
+    loop = asyncio.get_running_loop()
+    handle = upstream_cancel.UpstreamCancel()
+    future = loop.run_in_executor(pool_placement.executor_for(grant.url), upstream_cancel.run_cancellable,
+                                  handle, run_llm_chat, run_body, run_plan)
+    watch = asyncio.ensure_future(pool_placement.wait_lease_revoked(lease))
+    # The upstream client floors its read timeout at 30s; the caller may have less. Hold the whole
+    # call to what is left of the caller's budget.
+    budget = asyncio.ensure_future(asyncio.sleep(max(0.0, read_timeout_s)))
     try:
-        await guard.check()
-        return await guard.run(_dispatch_chat_unfenced(body, correlation_id=correlation_id, plan=plan, guard=guard))
-    except (ResourceLeaseRejected, CapacityRejected) as exc:
-        logger.warning("resource_lease_rejected correlation_id=%s reason=%s", correlation_id, exc)
-        return {"text": "", "content": "", "route": plan.route,
-                "raw": {"error": "gateway_capacity_rejected" if isinstance(exc, CapacityRejected) else "resource_lease_rejected",
-                        "details": {"reason": str(exc)}}}
+        try:
+            await asyncio.wait({future, watch, budget}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            # The caller has gone: stop the upstream, keep the lease until the thread is out so the
+            # pool's view of the role's busy slots stays true, then let the cancellation through.
+            handle.cancel("caller_cancelled")
+            await asyncio.wait({future})
+            raise
+        if future.done():
+            return future.result()
+        if watch.done():
+            reason = watch.result()
+            handle.cancel(f"lease_{reason}")
+            logger.warning("gpu_pool_lease_revoked_mid_call lease_id=%s route=%s reason=%s served_by=%s",
+                           lease.lease_id, plan.route, reason, grant.served_by)
+            result = await asyncio.shield(future)
+            if _result_error(result) is None:
+                return result  # it finished before the sockets went down
+            pool_placement.mark_revoked(lease, reason)
+            return _revoked_result(plan, lease, reason)
+        handle.cancel("caller_budget_exhausted")
+        logger.warning("gateway_caller_budget_exhausted route=%s served_by=%s budget_sec=%.1f",
+                       plan.route, grant.served_by, read_timeout_s)
+        result = await asyncio.shield(future)
+        if _result_error(result) is None:
+            return result
+        lease.release_outcome, lease.release_detail = "timeout", "caller_budget_exhausted"
+        return _deadline_result(plan, lease, read_timeout_s)
+    finally:
+        watch.cancel()
+        budget.cancel()
 
 
-async def _dispatch_chat_unfenced(
-    body: ChatBody, *, correlation_id: str, plan: ChatDispatchPlan, guard: LeaseGuard,
-) -> Dict[str, Any]:
-    """Admission on the event loop, generation on a thread.
-
-    One deadline for the whole stay: `resolve_caller_budget_sec` (the caller's own
-    stated wait, raw, not the 30s-floored HTTP read value). Every wait -- the
-    background route's slack/concurrency gate, then the upstream lane permit -- is
-    bounded by what is left of it, and whatever is left after admission becomes the
-    upstream read timeout, so a request that queued for 390s of a 393s budget is not
-    then given a fresh 393s to generate. Past the deadline the request is shed with
-    `gateway_overloaded` rather than generated for a caller that already timed out --
-    that wasted generation is what turned a busy lane into a 20-minute backlog on
-    2026-09-05.
-
-    Gate order: a background route waits for /slots slack FIRST, holding only its
-    route's background permit, never an upstream lane permit, so a background request
-    polling for 30s does not occupy a permit a foreground request on the same upstream
-    needs. Then shared admission precedes the local lane permit so ordinary
-    waiters cannot starve the durable owner. Admitted owners bypass the legacy
-    background gate. The lane permit is released when the executor thread finishes, not when the
-    awaiting task ends (see `_Admission.release_when_done`).
-    """
+async def _dispatch_chat(body: ChatBody, *, correlation_id: str, holder: str = "llm-gateway") -> Dict[str, Any]:
+    plan = plan_llm_chat(body)
     if plan.error is not None:
         return dict(plan.error)
-    if plan.has_route_table and plan.route_target is None:
-        # route_not_configured: run_llm_chat returns immediately without I/O. No permit,
-        # no thread, no "legacy" lane invented for a route that does not exist.
-        return run_llm_chat(body, plan)
-    budget_s = resolve_caller_budget_sec(body)
-    deadline = time.monotonic() + budget_s
-    gate = get_upstream_admission()
-    loop = asyncio.get_running_loop()
-
-    def _remaining() -> float:
-        return deadline - time.monotonic()
-
-    async def _admit_and_run() -> Dict[str, Any]:
-        # Shared admission goes first: ordinary requests waiting behind a
-        # durable owner must not occupy its process-local executor permits.
-        capacity = CapacityPermit(lane=plan.route, backend_key=plan.upstream,
-                                  correlation_id=correlation_id, budget_sec=_remaining(),
-                                  lease=(body.options or {}).get("resource_lease"))
-        try:
-            await capacity.acquire()
-            admission = gate.admit(plan.upstream, max_wait_s=_remaining())
-            async with admission as admitted:
-                lane = gate.lane(plan.upstream).public()
-                remaining = _remaining()
-                if not admitted or remaining <= 0.0:
-                    stage = "upstream_queue" if not admitted else "budget_exhausted"
-                    logger.warning(
-                        "gateway_overloaded correlation_id=%s stage=%s route=%s upstream=%s waited=%.1fs "
-                        "budget=%.1fs inflight=%s waiting=%s max_inflight=%s",
-                        correlation_id, stage, plan.route, plan.upstream, admission.waited_s, budget_s,
-                        lane["inflight"], lane["waiting"], lane["max_inflight"],
-                    )
-                    return _overloaded_result(
-                        plan, stage=stage, waited_s=admission.waited_s, budget_s=budget_s, lane=lane
-                    )
-                if admission.queued:
-                    logger.info(
-                        "gateway_upstream_queued correlation_id=%s route=%s upstream=%s waited=%.3fs "
-                        "remaining=%.1fs inflight=%s waiting=%s",
-                        correlation_id, plan.route, plan.upstream, admission.waited_s, remaining,
-                        lane["inflight"], lane["waiting"],
-                    )
-                await guard.check()
-                def submit():
-                    if _remaining() <= 0:
-                        raise CapacityRejected("capacity_wait_budget_exhausted")
-                    run_body = plan.body.model_copy(update={"options": {
-                        **(plan.body.options or {}), "gateway_read_timeout_sec": _remaining(),
-                    }})
-                    run_plan = dataclasses.replace(plan, body=run_body)
-                    future = _executor(loop).submit(run_llm_chat, run_body, run_plan)
-                    admission.release_when_done(future, loop)
-                    return future
-                return await capacity.run_blocking(submit)
-        finally:
-            await capacity.close()
-
-    target = plan.route_target
-    if (target is None or target.priority != "background"
-            or (settings.llm_gateway_capacity_enabled and guard.lease is not None)):
-        # An admitted owner must not wait behind an ordinary background caller
-        # whose legacy semaphore is held while waiting for that owner's lease.
-        return await _admit_and_run()
-
-    background = background_admission(
-        plan.route,
-        target,
-        concurrency=settings.llm_gateway_background_concurrency,
-        poll_interval_sec=settings.llm_gateway_background_poll_interval_sec,
-        max_wait_sec=settings.llm_gateway_background_max_wait_sec,
-        # ROADMAP A5: this path is orion-cortex-exec's bus RPC and orion-embodiment's
-        # speech -- Orion. The OpenAI passthrough on the same route key is AI Town's NPC
-        # dialogue, which is not. The cue makes a first-person claim, so the ledger
-        # must be able to tell them apart.
-        via="bus",
-    )
-    queued_at = time.monotonic()
+    # A durable-run lease is validated first (don't take a GPU for a stale token), then kept
+    # checked for the whole call. It is admission only: placement is the pool lease below.
+    guard = LeaseGuard((body.options or {}).get("resource_lease"), lane=plan.route)
     try:
-        async with asyncio.timeout(max(0.0, _remaining())):
-            await background.__aenter__()
-    except TimeoutError:
-        waited = time.monotonic() - queued_at
-        lane = gate.lane(plan.upstream).public()
-        logger.warning(
-            "gateway_overloaded correlation_id=%s stage=background_queue route=%s upstream=%s "
-            "waited=%.1fs budget=%.1fs",
-            correlation_id, plan.route, plan.upstream, waited, budget_s,
-        )
-        return _overloaded_result(plan, stage="background_queue", waited_s=waited, budget_s=budget_s, lane=lane)
-    try:
-        return await _admit_and_run()
-    finally:
-        await background.__aexit__(None, None, None)
+        await guard.check()
+        return await guard.run(_dispatch_on_pool(plan, correlation_id=correlation_id, holder=holder))
+    except ResourceLeaseRejected as exc:
+        logger.warning("resource_lease_rejected correlation_id=%s reason=%s", correlation_id, exc)
+        return {"text": "", "content": "", "route": plan.route,
+                "raw": {"error": "resource_lease_rejected", "details": {"reason": str(exc)}}}
 
 
-def configure_executor(loop: asyncio.AbstractEventLoop, gate: UpstreamAdmission) -> int:
-    """Build the chat thread pool so every upstream lane can be full at once.
+async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, holder: str) -> Dict[str, Any]:
+    """Lease -> run on the granted URL -> release. At most three acquires, never a loop:
 
-    Dedicated pool, deliberately NOT the loop's default executor: the stock default is
-    capped at min(32, cpu+4) regardless of how many lanes exist and is shared with the
-    chassis' own `to_thread` heartbeat, and asyncio shuts the default executor down
-    with the loop. The right size is a function of the route table, so it is derived,
-    not configured. `loop` is accepted for symmetry with startup; the pool is
-    process-owned.
+    * the pool refuses a prompt bigger than every role of its class (``min_ctx_exceeds_class:<max>``)
+      -> re-acquire ONCE at the class's largest ctx, so llama.cpp answers with its real overflow;
+    * the upstream overflows -> release and re-lease ONCE at that role's ctx_per_slot + 1. If the
+      pool then says nothing that big exists, the overflow itself is the answer -- never
+      gpu_pool_unavailable, and never a second clamp. An overflow on the already-clamped (largest)
+      role is returned as is.
+
+    One deadline for the whole stay: the caller's own budget (`resolve_caller_budget_sec`). The
+    pool wait is capped by it (and by LLM_GATEWAY_POOL_[BACKGROUND_]WAIT_SEC), and whatever is
+    left after the grant bounds the upstream call, so a call that queued for most of its budget is
+    not then given a fresh budget to generate for a caller that has gone.
     """
-    global _chat_executor
-    upstreams = {t.url for t in get_route_targets().values()} or {"legacy"}
-    workers = gate.executor_workers(len(upstreams))
-    if _chat_executor is not None:
-        _chat_executor.shutdown(wait=False)
-    _chat_executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="llm-gw-chat")
-    logger.info(
-        "[LLM-GW] executor sized workers=%d upstreams=%d max_inflight_per_upstream=%d",
-        workers, len(upstreams), gate.max_inflight,
-    )
-    return workers
-
-
-def reset_executor_for_tests() -> None:
-    global _chat_executor
-    if _chat_executor is not None:
-        _chat_executor.shutdown(wait=False)
-    _chat_executor = None
+    budget_s = resolve_caller_budget_sec(plan.body)
+    deadline = time.monotonic() + budget_s
+    options = plan.body.options or {}
+    estimate = pool_placement.estimate_min_ctx_tokens(plan.body.messages or [], options.get("max_tokens"))
+    min_ctx = estimate
+    overflow: Optional[Dict[str, Any]] = None
+    clamped = False
+    for _ in range(3):
+        remaining = deadline - time.monotonic()
+        wait_s = min(pool_placement.wait_budget_sec(plan.priority or "system"), remaining)
+        try:
+            async with pool_placement.lease_for_route(
+                plan.route, holder=holder, turn_correlation_id=correlation_id,
+                min_ctx_tokens=min_ctx, deadline_sec=wait_s,
+            ) as lease:
+                read_timeout_s = deadline - time.monotonic()
+                if read_timeout_s <= 0:
+                    # The grant came after the caller's budget ran out: generate nothing.
+                    return overflow or _pool_unavailable_result(plan, "deadline")
+                result = await _run_on_grant(plan, lease, read_timeout_s)
+                error = _result_error(result)
+                if error == CONTEXT_OVERFLOW_ERROR:
+                    # The prompt was too big for the slot: not a GPU/server failure, so keep it out
+                    # of the pool's error accounting.
+                    lease.release_outcome, lease.release_detail = "ok", "context_overflow"
+                if error == CONTEXT_OVERFLOW_ERROR and overflow is None and not clamped:
+                    raise _ContextOverflow(result, lease.grant.ctx_per_slot)
+                if error is not None:
+                    raise _UpstreamFailed(result)
+                return result
+        except _ContextOverflow as exc:
+            overflow = exc.result
+            min_ctx = int(exc.ctx_per_slot or estimate) + 1
+            logger.warning(
+                "gpu_pool_context_overflow correlation_id=%s route=%s ctx_per_slot=%s -> re-lease min_ctx=%s",
+                correlation_id, plan.route, exc.ctx_per_slot, min_ctx,
+            )
+            continue
+        except _UpstreamFailed as exc:
+            return exc.result
+        except LeaseUnavailable as exc:
+            if overflow is not None:
+                # Nothing bigger could take it: the honest answer is the overflow itself.
+                return overflow
+            max_ctx = pool_placement.class_max_ctx(exc.reason)
+            if max_ctx is not None and not clamped and max_ctx < min_ctx:
+                # Bigger than every role of the class by the estimate: place it on the biggest one
+                # anyway and let llama.cpp's own tokenizer decide (chars/4 is only a guess).
+                logger.warning(
+                    "gpu_pool_min_ctx_exceeds_class correlation_id=%s route=%s estimate=%s -> clamp min_ctx=%s",
+                    correlation_id, plan.route, min_ctx, max_ctx,
+                )
+                clamped, min_ctx = True, max_ctx
+                continue
+            logger.warning(
+                "gpu_pool_unavailable correlation_id=%s route=%s class=%s reason=%s",
+                correlation_id, plan.route, plan.work_class, exc.reason,
+            )
+            return _pool_unavailable_result(plan, exc.reason)
+    return overflow or _pool_unavailable_result(plan, "overflow_retry_exhausted")
 
 
 async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
@@ -542,9 +500,10 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         len(messages),
     )
 
+    holder = (typed_req.source.name if typed_req.source else None) or "llm-gateway"
     dispatch_started = time.monotonic()
     try:
-        result = await _dispatch_chat(body, correlation_id=str(typed_req.correlation_id))
+        result = await _dispatch_chat(body, correlation_id=str(typed_req.correlation_id), holder=holder)
     except Exception:
         # A crashed call is still an outcome; count it, then let it propagate as before.
         if settings.llm_gateway_grammar_enabled:
@@ -702,29 +661,21 @@ async def _serve_health() -> None:
     await server.serve()
 
 
-async def _probe_route_targets() -> None:
-    route_targets = get_route_targets()
-    if not route_targets:
-        logger.info("No route table configured; skipping upstream health probes.")
-        return
+async def _connect_pool_bus(parent: Any) -> None:
+    """Fork the RPC client the pool lease client uses; retry until the bus is reachable. Until
+    then every call answers gpu_pool_unavailable (reason pool_bus_unavailable), never a guess."""
+    from orion.core.bus.rpc_fork import fork_rpc_client
 
-    timeout = settings.llm_route_health_timeout_sec
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        for route, target in route_targets.items():
-            url = f"{target.url.rstrip('/')}/health"
-            try:
-                response = await client.get(url)
-                if response.status_code >= 400:
-                    logger.warning(
-                        "Route '%s' health probe failed status=%s url=%s",
-                        route,
-                        response.status_code,
-                        url,
-                    )
-                else:
-                    logger.info("Route '%s' health probe ok url=%s", route, url)
-            except Exception as exc:
-                logger.warning("Route '%s' health probe error url=%s error=%s", route, url, exc)
+    delay = 1.0
+    while pool_placement.get_bus() is None:
+        try:
+            pool_placement.set_bus(await fork_rpc_client(parent))
+            logger.info("[LLM-GW] gpu pool RPC client ready")
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[LLM-GW] gpu pool RPC client not ready (%s); retrying in %.0fs", exc, delay)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30.0)
 
 
 async def main() -> None:
@@ -738,26 +689,25 @@ async def main() -> None:
     )
     global bus_handle
     bus_handle = chat_svc.bus
-    configure_executor(asyncio.get_running_loop(), get_upstream_admission())
-    route_targets = get_route_targets()
-    routes_summary = ",".join(
-        f"{name}={target.url}" for name, target in sorted(route_targets.items())
-    )
+    # Placement is the pool's: every call leases over a forked RPC client (lease replies must
+    # not be consumed by the chassis' own intake subscriber).
+    pool_bus_task = asyncio.create_task(_connect_pool_bus(chat_svc.bus), name="gpu-pool-bus")
+    routes = pool_placement.pool_routes()
     logger.info(
-        "[LLM-GW] startup routes=[%s] timeouts=connect:%s read:%s bus=%s channel=%s",
-        routes_summary,
+        "[LLM-GW] startup gpu_pool_config=%s routes=[%s] timeouts=connect:%s read:%s bus=%s channel=%s",
+        settings.gpu_pool_config_path,
+        ",".join(f"{name}={spec.work_class}/{spec.priority}" for name, spec in sorted(routes.items())),
         settings.connect_timeout_sec,
         settings.read_timeout_sec,
         cfg.bus_url,
         settings.channel_llm_intake,
     )
-    await _probe_route_targets()
     logger.info(
         "Rabbit listening channels=%s bus=%s",
         settings.channel_llm_intake,
         cfg.bus_url,
     )
-    tasks = [chat_svc.start(), _serve_health()]
+    tasks = [chat_svc.start(), _serve_health(), pool_bus_task]
     if settings.llm_gateway_grammar_enabled:
         logger.info(
             "[LLM-GW] inference grammar windows on window_sec=%s gateway_node=%s",

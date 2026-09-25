@@ -96,25 +96,19 @@ def test_display_order_still_matches_accepted_routes() -> None:
     assert len(LLM_ROUTE_DISPLAY_ORDER) == len(set(LLM_ROUTE_DISPLAY_ORDER))
 
 
-def test_chat_burst_is_a_lent_system_burst_lane() -> None:
-    # `chat-burst` (2026-09-21): Juniper's chat worker lent to the durable burst queue. It is
-    # accepted (the gateway must dispatch a leased FCC turn labelled llamacpp/chat-burst),
-    # displayed (operators see its gate state in the catalog), system-only (never a human's
-    # Compute pick, refused as a caller override), a burst lane (unleased calls refused by
-    # CapacityPermit), and the only operator-gated route.
-    from orion.llm.routes import (
-        BURST_LLM_ROUTES,
-        CHAT_BURST_LENDS_ROUTE,
-        OPERATOR_GATED_LLM_ROUTES,
-        fcc_model_for_route,
-    )
+def test_chat_burst_is_a_system_route_the_pool_places() -> None:
+    # `chat-burst` (2026-09-21) is still an accepted, displayed, system-only route name (durable
+    # runs and FCC still send it until stage 4). Lending and the operator gate are the GPU pool's
+    # now (config/gpu_pool.yaml: chat-burst -> class agent; gpu0 is borrowable only while lent),
+    # so the gateway-side BURST / OPERATOR_GATED / CHAT_BURST_LENDS constants are gone.
+    import orion.llm.routes as routes
+    from orion.llm.routes import fcc_model_for_route
 
     assert "chat-burst" in ACCEPTED_LLM_ROUTES
     assert "chat-burst" in LLM_ROUTE_DISPLAY_ORDER
     assert "chat-burst" in SYSTEM_LLM_ROUTES
     assert "chat-burst" not in BACKGROUND_LLM_ROUTES
-    assert BURST_LLM_ROUTES == {"agent-burst", "chat-burst"}
-    assert OPERATOR_GATED_LLM_ROUTES == {"chat-burst"}
-    assert CHAT_BURST_LENDS_ROUTE == "chat"
+    for gone in ("BURST_LLM_ROUTES", "OPERATOR_GATED_LLM_ROUTES", "CHAT_BURST_LENDS_ROUTE"):
+        assert not hasattr(routes, gone), gone
     assert normalize_llm_route("chat-burst") is None
     assert fcc_model_for_route("chat-burst") is None

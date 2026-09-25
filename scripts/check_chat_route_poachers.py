@@ -85,9 +85,6 @@ ALLOW: dict[str, str] = {
         "Hub-turn adjacent: stance_react / chat_general final-response defaults ARE the Hub "
         "chat path; changing them needs proposal mode"
     ),
-    "services/orion-thought/app/bus_listener.py:execute_stance_react_with_lane_fallback": (
-        "agent->chat fallback leg of stance_react, a Hub-turn verb; needs proposal mode"
-    ),
     "orion/harness/finalize.py:resolve_finalize_llm_lane": (
         "owner rule: the harness finalize route is owned by the Hub turn"
     ),
@@ -139,19 +136,15 @@ ALLOW: dict[str, str] = {
     "orion/schemas/situation.py:<module>": (
         "LLM situation snapshot records which route was probed (catalog lookup), not a dispatch"
     ),
-    "orion/llm/routes.py:<module>": (
-        "CHAT_BURST_LENDS_ROUTE names the route the chat-burst worker lends capacity to; "
-        "a constant the Hub reads, not a dispatch default"
-    ),
     # ---- gateway last resorts, gated off live ------------------------------
     "services/orion-llm-gateway/app/lane_routes.py:_norm_lane": (
         "lane-class normalizer: `default` is the caller's LLM_LANE_DEFAULT (chat-class vs "
         "background-class), not a gateway route"
     ),
-    "services/orion-llm-gateway/app/lane_routes.py:_chat_fallback": (
-        "`_chat_fallback` is gated off by LLM_ALLOW_BACKGROUND_TO_CHAT_FALLBACK=false; the "
-        "chat-lane branch prefers quick and only falls to chat when quick is absent from the "
-        "route table"
+    "services/orion-llm-gateway/app/lane_routes.py:_missing": (
+        "chat-lane branch of resolve_llm_lane_route (attributed to the nested `_missing` def "
+        "above it): `or 'chat'` last resort behind LLM_ROUTE_DEFAULT, which is quick live; it "
+        "prefers quick and only falls to chat when quick is absent from gpu_pool.yaml routes"
     ),
     "services/orion-llm-gateway/app/llm_backend.py:_resolve_route": (
         "`or 'chat'` last resort behind LLM_ROUTE_DEFAULT, which is quick live"

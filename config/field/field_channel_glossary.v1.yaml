@@ -313,6 +313,11 @@ channels:
     category: infra_transport
     meaning: "Pressure from failures of the bus \"observer\" role (monitoring/subscriber-side failures)."
 
+  - channel: inference_failure_pressure
+    level: [node]
+    category: task_execution
+    meaning: "Share of the calls the LLM gateway sent to this node's model backends that came back without an answer (timeout, refused connection, HTTP error), per gateway window. Reported by the gateway itself; absent when the node got no calls."
+
   - channel: field_coherence_warning
     level: [node]
     category: self_monitoring

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +39,17 @@ logger = logging.getLogger("orion.field.digester")
 # no default and get_settings() raises if POSTGRES_URI is unset at import
 # (tests construct FieldDigesterWorker without ever importing a real env).
 _FIELD_CHANNEL_SINK: "InnerStateCorpusSink | None" = None
+
+
+def delta_digestion_enabled(target_kind: str, settings: Any) -> bool:
+    """Per-lane field gates. The receipt cursor still moves past a gated-off
+    delta, so it is dropped for good, not deferred: flipping a flag on only
+    affects receipts written after the flip."""
+    if target_kind == "transport_bus":
+        return bool(settings.enable_transport_field_digestion)
+    if target_kind == "llm_inference_node":
+        return bool(settings.enable_llm_inference_field_digestion)
+    return True
 
 
 class FieldDigesterWorker:
@@ -251,10 +263,7 @@ class FieldDigesterWorker:
             for delta in receipt.state_deltas:
                 if self._store.is_delta_applied(delta.delta_id):
                     continue
-                if (
-                    delta.target_kind == "transport_bus"
-                    and not self._settings.enable_transport_field_digestion
-                ):
+                if not delta_digestion_enabled(delta.target_kind, self._settings):
                     continue
                 perturbations.extend(delta_to_perturbations(delta))
                 pending_deltas.append(

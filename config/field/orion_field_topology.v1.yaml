@@ -225,6 +225,11 @@ edges:
       gpu_pressure: pressure
       memory_pressure: pressure
       reasoning_load: reasoning_pressure
+      # added 2026-09-25: the gateway's own count of calls to this node that
+      # came back without an answer (orion/substrate/llm_inference_loop/).
+      # gpu/memory pressure read an idle, broken backend as calm; this is the
+      # only input here that can say "inference is failing", not just "busy".
+      inference_failure_pressure: reliability_pressure
 
   # capability→capability: transport degradation bleeds into orchestration
   - source_id: capability:transport

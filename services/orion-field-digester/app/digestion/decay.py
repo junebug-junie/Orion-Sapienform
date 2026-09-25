@@ -66,6 +66,8 @@ NODE_DECAY_CHANNELS = {
     "catalog_drift_pressure",
     "observer_failure_pressure",
     "reliability_pressure",
+    # llm inference (gateway-reported)
+    "inference_failure_pressure",
     "field_coherence_warning",
 }
 

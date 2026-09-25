@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     chat_grammar_batch_limit: int = Field(100, alias="CHAT_GRAMMAR_BATCH_LIMIT")
     enable_route_grammar_reducer: bool = Field(True, alias="ENABLE_ROUTE_GRAMMAR_REDUCER")
     route_grammar_batch_limit: int = Field(100, alias="ROUTE_GRAMMAR_BATCH_LIMIT")
+    # llm_inference lane (orion-llm-gateway reporting on its own calls, trace
+    # prefix llm_gateway.inference:). Off by default: needs
+    # services/orion-sql-db/manual_migration_llm_inference_substrate_loop.sql first.
+    enable_llm_inference_reducer: bool = Field(False, alias="ENABLE_LLM_INFERENCE_REDUCER")
+    llm_inference_grammar_batch_limit: int = Field(200, alias="LLM_INFERENCE_GRAMMAR_BATCH_LIMIT")
     bus_stream_depth_critical: int = Field(100_000, alias="BUS_STREAM_DEPTH_CRITICAL")
     transport_substrate_maturity: str = Field(
         "trace_only",

@@ -1,4 +1,11 @@
-"""Optional fencing around existing bus and FCC HTTP generation paths."""
+"""Durable-run lease validation (bus ``options.resource_lease``, HTTP ``X-Orion-Resource-Lease``).
+
+Until stage 4 durable-runs still issues these leases, so the gateway keeps checking them with the
+broker. They are an ADMISSION TOKEN only: where the call runs is always a GPU pool grant
+(pool_placement.py). The lease's ``backend_key`` is therefore compared with itself, not with the
+granted URL -- the pool may legitimately place the call on a different role than the one durable
+admission saw in ``GET /routes``. Lane and broker generation are still enforced.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -15,18 +22,17 @@ T = TypeVar("T")
 
 
 class LeaseGuard:
-    def __init__(self, lease: Any, *, lane: str, backend_key: str) -> None:
+    def __init__(self, lease: Any, *, lane: str) -> None:
         self.lease = lease
         self.lane = lane
-        self.backend_key = backend_key
-        self.enabled = bool((settings.llm_gateway_lease_validation_enabled or settings.llm_gateway_capacity_enabled)
-                            and lease is not None)
+        self.backend_key = str(lease.get("backend_key") or "") if isinstance(lease, dict) else ""
+        self.enabled = bool(settings.llm_gateway_lease_validation_enabled and lease is not None)
 
     @classmethod
-    def from_headers(cls, headers: Any, *, lane: str, backend_key: str) -> "LeaseGuard":
+    def from_headers(cls, headers: Any, *, lane: str) -> "LeaseGuard":
         value = headers.get(LEASE_HEADER)
         lease = decode_lease_header(value) if value is not None else None
-        return cls(lease, lane=lane, backend_key=backend_key)
+        return cls(lease, lane=lane)
 
     async def check(self) -> None:
         if self.enabled:

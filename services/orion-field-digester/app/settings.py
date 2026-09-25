@@ -187,17 +187,12 @@ class Settings(BaseSettings):
     #   1 - exp(-ln(2) * RECEIPT_POLL_INTERVAL_SEC / HALF_LIFE_SEC)
     # so a ~24h half-life at the digester's ~2s tick is one documented
     # constant, not a magic 1e-5. Floor=1.0 avoids divide-by-near-zero when
-    # a source (esp. gateway_waiting) is usually calm near 0.
+    # a source (esp. gpu_pool_waiting) is usually calm near 0.
     field_queue_contention_half_life_sec: float = Field(
         86400.0, alias="FIELD_QUEUE_CONTENTION_HALF_LIFE_SEC"
     )
     field_queue_contention_floor: float = Field(
         1.0, alias="FIELD_QUEUE_CONTENTION_FLOOR"
-    )
-    # LLM gateway admission snapshot for gateway_waiting sum. Empty string
-    # disables that source (fail-open omit) without breaking SQL sources.
-    field_digester_llm_gateway_url: str = Field(
-        "http://llm-gateway:8210", alias="FIELD_DIGESTER_LLM_GATEWAY_URL"
     )
 
 

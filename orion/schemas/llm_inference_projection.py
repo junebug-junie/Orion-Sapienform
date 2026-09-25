@@ -49,6 +49,13 @@ REFUSAL_CLASSES = frozenset(
         # lane resolver declined (probe status or background-lane policy);
         # carries no route target, so it is never node-attributed anyway
         "llm_route_unavailable",
+        # GPU pool placement (gpu-pool stage 3): the pool gave no card in time, the route has
+        # no pool class, no grant was held, or the pool took the card back mid-call (recall /
+        # lost lease) -- none of these is the serving node failing.
+        "gpu_pool_unavailable",
+        "route_not_in_gpu_pool",
+        "no_pool_grant",
+        "gpu_pool_recalled",
     }
 )
 # The caller's request was unusable (bad attachment, unknown route). Not the
@@ -56,7 +63,10 @@ REFUSAL_CLASSES = frozenset(
 # upstream_http_4xx lives here, not in UPSTREAM_FAILURE_CLASSES: llama.cpp answers
 # 400 for an oversized or malformed request from one caller while the node is fine
 # (review finding, 2026-09-25).
-REQUEST_INVALID_CLASSES = frozenset({"request_invalid", "route_not_configured", "upstream_http_4xx"})
+# context_overflow: the prompt did not fit any slot the route's class has (llama.cpp's own
+# "exceeds the available context size"); one caller's request, not a node fault.
+REQUEST_INVALID_CLASSES = frozenset(
+    {"request_invalid", "route_not_configured", "upstream_http_4xx", "context_overflow"})
 
 
 class LlmInferenceNodeStateV1(BaseModel):

@@ -56,8 +56,7 @@ USAGE
     python3 scripts/analysis/record_lane_occupancy.py report \
         --in /tmp/lane-occupancy/samples.jsonl
 
-Lane definitions come from LLM_GATEWAY_ROUTE_TABLE_JSON -- the env var if set, otherwise the
-first readable --env-file. Routes sharing an upstream URL are polled once and reported as one
+Lane definitions come from config/gpu_pool.yaml (each route's home role). Routes sharing an upstream URL are polled once and reported as one
 lane, since they contend for the same slots.
 """
 from __future__ import annotations
@@ -79,7 +78,6 @@ DEFAULT_ENV_FILES = (
     "services/orion-llm-gateway/.env",
     "services/orion-llm-gateway/.env_example",
 )
-ROUTE_TABLE_KEY = "LLM_GATEWAY_ROUTE_TABLE_JSON"
 DEFAULT_MIN_SAMPLES = 600
 DEFAULT_MIN_WINDOW_SEC = 3600.0
 SLOTS_TIMEOUT_SEC = 3.0
@@ -102,43 +100,20 @@ DEFAULT_ROUTE_REFRESH_SEC = 300.0
 # --------------------------------------------------------------------------- config
 
 
-def _strip_quotes(value: str) -> str:
-    value = value.strip()
-    for q in ("'", '"'):
-        if len(value) >= 2 and value.startswith(q) and value.endswith(q):
-            return value[1:-1]
-    return value
+def read_route_table(env_files: Sequence[str] = ()) -> Dict[str, dict]:
+    """Route -> {url, served_by} for each route's HOME role, from config/gpu_pool.yaml (the gateway's
+    source since the 2026-09-24 GPU pool cutover). ``env_files`` is accepted for CLI compatibility
+    and ignored: the old LLM_GATEWAY_ROUTE_TABLE_JSON no longer exists."""
+    from pathlib import Path
 
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from orion.gpu_pool.config import load_pool_config
 
-def read_route_table(env_files: Sequence[str]) -> Dict[str, dict]:
-    """Return the gateway route table, from the environment or the first readable env file."""
-    raw = os.environ.get(ROUTE_TABLE_KEY)
-    if not raw:
-        for path in env_files:
-            try:
-                with open(path, "r", encoding="utf-8") as fh:
-                    for line in fh:
-                        line = line.strip()
-                        if line.startswith("#") or "=" not in line:
-                            continue
-                        key, _, value = line.partition("=")
-                        if key.strip() == ROUTE_TABLE_KEY:
-                            raw = value
-                            break
-            except OSError:
-                continue
-            if raw:
-                break
-    if not raw:
-        raise SystemExit(
-            f"{ROUTE_TABLE_KEY} not found in the environment or any of: {', '.join(env_files)}"
-        )
-    try:
-        table = json.loads(_strip_quotes(raw))
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"{ROUTE_TABLE_KEY} is not valid JSON: {exc}") from exc
-    if not isinstance(table, dict):
-        raise SystemExit(f"{ROUTE_TABLE_KEY} did not parse to an object")
+    cfg = load_pool_config()
+    table: Dict[str, dict] = {}
+    for route, spec in cfg.routes.items():
+        role = cfg.classes[spec.work_class].roles[0]
+        table[route] = {"url": cfg.url(role), "served_by": f"{cfg.host.name}-worker-{role}"}
     return table
 
 

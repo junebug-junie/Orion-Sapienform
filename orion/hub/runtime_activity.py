@@ -19,9 +19,9 @@ Sources folded (all pre-existing):
 - ``execute_unified_turn`` -- Hub's own handoff to the governor: which lane
   (chat / agent, the governor's two serial dispatch loops), which mode, which
   model label, which caller (source tag), and the HarnessRunV1 outcome.
-- orion-llm-gateway ``/admission`` -- per-upstream inflight/waiting gauges,
-  polled by Hub. Those are the gateway's own lanes (chat / spark /
-  background=metacog / agent), a different multiplexer from the governor's.
+- orion-gpu-pool state (Hub's live pool feed) -- per-role leases held / slots and
+  leases waiting, since the 2026-09-24 gateway cutover (was the gateway's own
+  ``/admission`` gauges). A different multiplexer from the governor's.
 
 Runtime truth rule: a turn is "running" only once a step has been observed;
 a run is "active" only while its last transition says running/resumed.

@@ -123,6 +123,11 @@ SYNC_PREFIXES = (
     "CORTEX_DURABLE_",
     "LLM_GATEWAY_LEASE_",
     "LLM_GATEWAY_CAPACITY_",
+    # GPU pool (2026-09-25, stage 3): the pool's own keys and the Gateway's pool-placement keys.
+    # Without these the default sync visited both .env files and silently added nothing.
+    "GPU_POOL_",
+    "LLM_GATEWAY_POOL_",
+    "LLM_GATEWAY_EXECUTOR_",
     # orion-whisper-tts, added 2026-08-29. None of this service's 26 keys
     # matched any prefix below, and the service itself was absent from
     # DEFAULT_SERVICES, so the default invocation considered ZERO of them
@@ -452,6 +457,7 @@ DEFAULT_SERVICES = (
     "orion-harness-governor",
     "orion-dream",
     "orion-llm-gateway",
+    "orion-gpu-pool",
     "orion-fcc",
     "orion-vector-host",
     "orion-embodiment",

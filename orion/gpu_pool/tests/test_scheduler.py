@@ -318,3 +318,31 @@ def test_owner_reclaiming_gpu2_waits_instead_of_backlogging():
     decisions = run([d], crds=swapped)
     assert not of(Backlog, decisions)
     assert [u.role for u in of(SwapUnload, decisions)] == ["agent-gpu2"]
+
+
+def test_prompt_bigger_than_every_role_of_its_class_fails_fast_naming_the_biggest():
+    chat = lease("chat", lease_id="c", priority="interactive", min_ctx_tokens=65537)
+    assert [(u.lease_id, u.reason) for u in of(Unavailable, run([chat]))] == [("c", "min_ctx_exceeds_class:65536")]
+    fast = lease("fast", lease_id="f", min_ctx_tokens=200_000)
+    assert of(Unavailable, run([fast]))[0].reason == "min_ctx_exceeds_class:131072"
+    fits = lease("chat", lease_id="ok", priority="interactive", min_ctx_tokens=65536)
+    assert grants(run([fits])) == {"ok": "chat"}
+
+
+def test_unknown_contexts_never_count_as_too_big():
+    unknown = live(chat=RoleLive("chat", False, 1, None))
+    chat = lease("chat", lease_id="c", min_ctx_tokens=10**9)
+    assert of(Unavailable, run([chat], roles=unknown)) == []
+
+
+def test_a_down_roles_last_seen_context_only_stops_a_false_too_big():
+    """agent (131072) is restarting and agent-gpu2 is an unloaded swap seat; chat (65536, lent) is
+    the only live role of the agent class. A 100k lease must wait for agent -- not be refused as
+    bigger than the class -- and the remembered size must not trigger a swap load on its own."""
+    down = live(agent=RoleLive("agent", False, 0, None), **{"agent-gpu2": RoleLive("agent-gpu2", False, 0, None)})
+    big = lease("agent", lease_id="a", min_ctx_tokens=100_000)
+    refused = schedule(CFG, down, cards(), [big], T0)
+    assert [u.reason for u in of(Unavailable, refused)] == ["min_ctx_exceeds_class:65536"]
+    waiting = schedule(CFG, down, cards(), [big], T0, seen_ctx={"agent": 131072})
+    assert of(Unavailable, waiting) == [] and not grants(waiting)
+    assert of(SwapLoad, waiting) == of(SwapLoad, schedule(CFG, down, cards(), [lease("agent")], T0))

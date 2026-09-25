@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from orion.hub.runtime_activity import RuntimeActivity, reset_runtime_activity
 from scripts import runtime_activity_routes as mod
-from scripts.runtime_activity_routes import RuntimeActivityFeeds, merge_gateway, router
+from scripts.runtime_activity_routes import RuntimeActivityFeeds, pool_lanes, router
 
 
 @pytest.fixture
@@ -93,107 +93,53 @@ def _parse_event(frame: str) -> dict[str, Any]:
     return out
 
 
-def test_merge_gateway_joins_routes_to_gauges_by_upstream():
-    admission = {
-        "checked": 3,
-        "upstreams": {
-            "http://w:8013": {"inflight": 1, "waiting": 2, "max_inflight": 8},
-            "http://w:8099": {"inflight": 0, "waiting": 0, "max_inflight": 8},
-        },
-    }
-    routes = {
-        "default_route": "quick",
-        "routes": [
-            {"id": "quick", "served_by": "fast-1", "upstream": "http://w:8013", "status": "up"},
-            {"id": "quick_background", "served_by": "fast-1", "upstream": "http://w:8013", "status": "up", "priority": "background"},
-            {"id": "spark", "served_by": None, "upstream": None, "status": "not_configured"},
-        ],
-    }
-    merged = merge_gateway(admission, routes)
-    by = {l["upstream"]: l for l in merged["lanes"]}
-    assert [r["id"] for r in by["http://w:8013"]["routes"]] == ["quick", "quick_background"]
-    assert by["http://w:8013"]["waiting"] == 2
-    # A gauge the catalog does not name is still shown -- traffic is evidence.
-    assert by["http://w:8099"]["routes"] == []
-    assert merged["ledger"] == {"checked": 3}
-    assert merged["default_route"] == "quick"
-    # No catalog at all (first poll before /routes answered) still yields gauges.
-    assert merge_gateway(admission, None)["lanes"][0]["routes"] == []
+POOL_STATE = {
+    "roles": [
+        {"role": "fast", "url": "http://w:8013", "status": "confirmed", "slots": 4, "model_file": "q4.gguf"},
+        {"role": "chat", "url": "http://w:8011", "status": "confirmed", "slots": 1, "model_file": "35b.gguf"},
+        {"role": "agent-gpu2", "url": "http://w:8016", "status": "unloaded", "slots": 0},
+    ],
+    "leases": [
+        {"status": "granted", "role": "fast", "work_class": "fast"},
+        {"status": "queued", "role": None, "work_class": "fast"},
+        {"status": "queued", "role": None, "work_class": "experiment"},
+    ],
+}
 
 
-class _FakeResp:
-    def __init__(self, status: int, body: Any) -> None:
-        self.status = status
-        self._body = body
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    def raise_for_status(self):
-        if self.status >= 400:
-            raise RuntimeError(f"http {self.status}")
-
-    async def json(self):
-        return self._body
-
-
-class _FakeSession:
-    def __init__(self, responses: dict[str, Any]) -> None:
-        self._responses = responses
-        self.calls: list[str] = []
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    def get(self, url: str, params=None):
-        self.calls.append(url)
-        for suffix, resp in self._responses.items():
-            if url.endswith(suffix):
-                return resp
-        return _FakeResp(404, {})
+def test_pool_lanes_show_slots_in_use_waiting_and_a_5min_ledger():
+    now = 1_000_000.0
+    iso = lambda t: __import__("datetime").datetime.fromtimestamp(t, __import__("datetime").timezone.utc).isoformat()
+    events = [
+        {"event": "admitted", "generated_at": iso(now - 10)},
+        {"event": "granted", "waited_ms": 2400.0, "generated_at": iso(now - 9)},
+        {"event": "granted", "waited_ms": 20.0, "generated_at": iso(now - 8)},
+        {"event": "admitted", "generated_at": iso(now - 900)},              # outside the 5-min window
+    ]
+    out = pool_lanes(POOL_STATE, events, now_ts=now)
+    by = {l["upstream"]: l for l in out["lanes"]}
+    assert by["http://w:8013"]["inflight"] == 1 and by["http://w:8013"]["waiting"] == 1 and by["http://w:8013"]["max_inflight"] == 4
+    assert by["http://w:8013"]["routes"][0]["served_by"] == "circe-worker-fast"
+    assert "http://w:8016" not in by                                   # unloaded seat: nothing to show
+    assert by["queue:experiment"]["waiting"] == 1                       # waiting with no home role still shown
+    assert out["ledger"] == {"checked": 1, "queued": 2, "deferrals": 1, "longest_wait_s": 2.4}
+    assert out["source"] == "gpu_pool"
 
 
 @pytest.mark.asyncio
-async def test_poll_once_folds_admission_and_caches_routes(activity: RuntimeActivity):
-    session = _FakeSession(
-        {
-            "/admission": _FakeResp(200, {"checked": 1, "upstreams": {"http://w:1": {"inflight": 1}}}),
-            "/routes": _FakeResp(200, {"routes": [{"id": "chat", "upstream": "http://w:1"}]}),
-        }
-    )
-    feeds = RuntimeActivityFeeds(
-        activity=activity, gateway_url="http://gw/", poll_sec=0, timeout_sec=1, session_factory=lambda: session
-    )
-    await feeds.poll_once()
+async def test_poll_once_reads_the_pool_feed(activity: RuntimeActivity):
+    feed = type("Feed", (), {"state": POOL_STATE, "events": []})()
+    feeds = RuntimeActivityFeeds(activity=activity, poll_sec=0, pool_feed=feed)
     await feeds.poll_once()
     g = activity.snapshot()["gateway"]
-    assert g["error"] is None
-    assert g["snapshot"]["lanes"][0]["routes"][0]["id"] == "chat"
-    # /routes fetched once (cached ~60s), /admission every poll.
-    assert session.calls.count("http://gw/admission") == 2
-    assert session.calls.count("http://gw/routes") == 1
+    assert g["error"] is None and g["snapshot"]["source"] == "gpu_pool"
 
 
 @pytest.mark.asyncio
-async def test_poll_once_reports_a_down_gateway_instead_of_raising(activity: RuntimeActivity):
-    class _Boom:
-        async def __aenter__(self):
-            raise ConnectionError("refused")
-
-        async def __aexit__(self, *exc):
-            return False
-
-    feeds = RuntimeActivityFeeds(
-        activity=activity, gateway_url="http://gw", poll_sec=0, timeout_sec=1, session_factory=lambda: _Boom()
-    )
+async def test_no_pool_state_is_reported_as_unavailable_not_idle(activity: RuntimeActivity):
+    feeds = RuntimeActivityFeeds(activity=activity, poll_sec=0, pool_feed=type("Feed", (), {"state": None, "events": []})())
     await feeds.poll_once()
-    assert activity.snapshot()["gateway"]["error"].startswith("ConnectionError")
+    assert activity.snapshot()["gateway"]["error"] == "gpu_pool_state_unavailable"
 
 
 @pytest.mark.asyncio
@@ -224,7 +170,7 @@ async def test_backfill_adopts_active_rows_and_fails_open(activity: RuntimeActiv
             return _Conn()
 
     feeds = RuntimeActivityFeeds(
-        activity=activity, gateway_url="http://gw", poll_sec=0, timeout_sec=1, engine_factory=lambda: _Engine()
+        activity=activity, poll_sec=0, engine_factory=lambda: _Engine()
     )
     assert await feeds.backfill() == 1
     assert [r["run_id"] for r in activity.snapshot()["curiosity_runs"]] == ["live"]
@@ -233,14 +179,14 @@ async def test_backfill_adopts_active_rows_and_fails_open(activity: RuntimeActiv
         raise RuntimeError("postgres down")
 
     feeds2 = RuntimeActivityFeeds(
-        activity=activity, gateway_url="http://gw", poll_sec=0, timeout_sec=1, engine_factory=_broken
+        activity=activity, poll_sec=0, engine_factory=_broken
     )
     assert await feeds2.backfill() == 0
 
 
 @pytest.mark.asyncio
 async def test_start_with_poll_disabled_only_backfills(activity: RuntimeActivity):
-    feeds = RuntimeActivityFeeds(activity=activity, gateway_url="http://gw", poll_sec=0, timeout_sec=1)
+    feeds = RuntimeActivityFeeds(activity=activity, poll_sec=0)
     await feeds.start()
     assert feeds._task is None
     await feeds.stop()

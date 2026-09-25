@@ -21,7 +21,8 @@ _spec = importlib.util.spec_from_file_location("check_llm_route_not_circe", _SCR
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
 
-resolve_served_by = _mod.resolve_served_by
+route_listed = _mod.route_listed
+resolve_work_class = _mod.resolve_work_class
 check_not_circe = _mod.check_not_circe
 
 _MODELS = [
@@ -38,41 +39,26 @@ def test_script_exists_and_is_executable():
     assert _SCRIPT_PATH.stat().st_mode & stat.S_IXUSR
 
 
-def test_resolve_served_by_finds_matching_model():
-    assert resolve_served_by(_MODELS, "quick_background") == "circe-worker-fast-1"
-    assert resolve_served_by(_MODELS, "chat") == "circe-worker-1"
+def test_routes_resolve_to_their_gpu_pool_class():
+    assert resolve_work_class("quick_background") == "fast"
+    assert resolve_work_class("chat") == "chat"
+    assert resolve_work_class("not-a-real-route") is None
+    assert route_listed(_MODELS, "quick_background") and not route_listed(_MODELS, "ghost")
 
 
-def test_resolve_served_by_returns_none_for_unknown_model():
-    assert resolve_served_by(_MODELS, "not-a-real-route") is None
+def test_check_not_circe_passes_for_the_fast_class():
+    assert check_not_circe("fast", model_id="quick_background", allow_circe=False) is None
 
 
-def test_check_not_circe_passes_for_fast_lane_on_circe():
-    assert check_not_circe("circe-worker-fast-1", model_id="quick_background", allow_circe=False) is None
-
-
-def test_check_not_circe_fails_for_circe_worker():
-    error = check_not_circe("circe-worker-1", model_id="chat", allow_circe=False)
-    assert error is not None
-    assert "chat" in error.lower()
-
-
-def test_check_not_circe_is_case_insensitive():
-    error = check_not_circe("Circe-Worker-1", model_id="chat", allow_circe=False)
-    assert error is not None
+def test_check_not_circe_fails_for_the_chat_class_even_under_another_route_name():
+    assert "chat GPU" in check_not_circe("chat", model_id="harness", allow_circe=False)
+    assert "chat lane" in check_not_circe("chat", model_id="chat", allow_circe=False)
 
 
 def test_check_not_circe_allows_explicit_override():
-    assert check_not_circe("circe-worker-1", model_id="chat", allow_circe=True) is None
+    assert check_not_circe("chat", model_id="chat", allow_circe=True) is None
 
 
-def test_check_not_circe_fails_when_model_missing_from_gateway():
+def test_check_not_circe_fails_when_route_unknown():
     error = check_not_circe(None, model_id="ghost-route", allow_circe=False)
-    assert error is not None
-    assert "ghost-route" in error
-
-
-def test_check_not_circe_does_not_false_positive_on_similar_names():
-    # A hypothetical "circe-adjacent" or "not-circe" label should not match --
-    # the policy is specifically about the chat worker lane.
-    assert check_not_circe("atlas-circe-relay", model_id="quick_background", allow_circe=False) is None
+    assert error and "Refusing to pass" in error

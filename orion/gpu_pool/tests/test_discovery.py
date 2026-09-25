@@ -43,6 +43,7 @@ def test_confirmed_when_announcement_profile_and_props_agree():
         {"metacog": Probe(True, props("Qwen_Qwen3-8B-Q5_K_M.gguf"))}, cards(), NOW)
     row = by_role(d)["metacog"]
     assert row.status == "confirmed" and row.slots == 4 and row.ctx_per_slot == 4096
+    assert row.model_path == "/models/gguf/Qwen_Qwen3-8B-Q5_K_M.gguf"
     assert live["metacog"].healthy
 
 

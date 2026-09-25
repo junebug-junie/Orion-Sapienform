@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from orion.field.queue_contention import (
     SOURCE_DURABLE,
-    SOURCE_GATEWAY,
+    SOURCE_GPU_POOL,
     SOURCE_SEED,
 )
 
@@ -20,8 +20,8 @@ _DRIVER_BLURBS: dict[str, str] = {
     SOURCE_SEED: (
         "the reading-seed pipeline backlog is running well above its normal level"
     ),
-    SOURCE_GATEWAY: (
-        "LLM gateway waiting is running well above its normal level"
+    SOURCE_GPU_POOL: (
+        "work waiting in line for a GPU is running well above its normal level"
     ),
 }
 

@@ -15,7 +15,7 @@ from app.main import handle_chat
 
 
 @pytest.mark.asyncio
-async def test_handle_chat_meta_includes_llm_uncertainty():
+async def test_handle_chat_meta_includes_llm_uncertainty(fake_pool):
     fake_result = {
         "text": "hi",
         "spark_meta": {},

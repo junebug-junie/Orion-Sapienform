@@ -3,6 +3,7 @@ uvicorn==0.30.6
 pydantic==2.9.2
 pydantic-settings==2.6.1
 httpx==0.27.2
+httpcore>=1.0,<2  # imported directly by app/upstream_cancel.py (network backend hook)
 uvloop==0.20.0
 redis[hiredis]==5.0.7
 typing-extensions==4.12.2

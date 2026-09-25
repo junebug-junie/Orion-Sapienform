@@ -387,6 +387,9 @@ def test_operator_hold_via_control_and_release():
     async def go():
         rt, _ = make()
         await boot(rt)
+        refused = await rt.control(GpuPoolControlV1(verb="hold", work_class="experiment"))
+        assert not refused.ok and refused.reason == "hold_requires_swap_actuation"   # observe mode
+        rt.mode = "enforce"
         held = await rt.control(GpuPoolControlV1(verb="hold", work_class="experiment"))
         assert held.ok and held.detail["status"] == "queued"      # it drains every card first
         rel = await rt.control(GpuPoolControlV1(verb="release",
@@ -407,4 +410,46 @@ def test_state_request_can_carry_config_and_a_lease_history():
         assert set(full.config["roles"]) == set(CFG.roles) and "cards:" in full.config_yaml
         assert full.config["routes"]["metacog"]["class"] == "metacog"
         assert [h["event"] for h in full.history] == ["admit", "grant", "release_ok"]
+    run(go())
+
+
+def test_grant_served_by_keeps_the_node_worker_shape():
+    async def go():
+        rt, _ = make()
+        await boot(rt)
+        r = await rt.acquire(acq("metacog"))
+        assert r.grant.served_by == "circe-worker-metacog"
+        assert r.grant.served_by.split("-worker")[0] == "circe"      # cortex-exec node attribution
+    run(go())
+
+
+def test_swap_seat_counts_as_loaded_when_its_worker_is_really_up():
+    async def go():
+        rt, clock = make()
+        LIVE["agent-gpu2"] = ("qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex", "Qwen3.8-27B-UD-Q4_K_XL.gguf", 1, 131072)
+        try:
+            await boot(rt)
+            assert {d.role: d.status for d in rt.discovered}["agent-gpu2"] == "confirmed"
+            assert "agent-gpu2" in rt.cards["gpu2"].swapped_in
+            assert {d.role: d.status for d in rt.discovered}["diffusion"] == "evicted"
+        finally:
+            del LIVE["agent-gpu2"]
+        await later(rt, clock, 1)                    # worker gone -> seat unloaded, diffusion back
+        assert "agent-gpu2" not in rt.cards["gpu2"].swapped_in
+    run(go())
+
+
+def test_a_briefly_down_role_keeps_its_context_so_big_prompts_wait_for_it():
+    """agent (131072/slot) restarts while gpu0 is lent: the class's only other role is chat
+    (65536/slot). A 100k prompt must wait for agent, not be refused as bigger than the class."""
+    async def go():
+        down: set[str] = set()
+        rt, clock = make(down=down)
+        await boot(rt)
+        await rt.control(GpuPoolControlV1(verb="lend", card="gpu0"))
+        down.add("agent")
+        await later(rt, clock, 1)
+        assert not rt.roles["agent"].healthy and rt._ctx_seen["agent"] == 131072
+        r = await rt.acquire(acq_r("agent", min_ctx_tokens=100_000))
+        assert r.status == "backlogged", r.reason
     run(go())

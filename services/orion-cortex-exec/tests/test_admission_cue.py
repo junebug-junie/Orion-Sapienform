@@ -34,7 +34,6 @@ def _settings(**over):
         cortex_exec_llm_gateway_url="http://llm-gateway:8210",
         cortex_exec_admission_cue_window_s=21600.0,
         cortex_exec_admission_cue_ttl_sec=60.0,
-        cortex_exec_admission_cue_timeout_sec=2.0,
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -99,8 +98,8 @@ class TestFetchAndCache:
     def test_result_is_cached_within_ttl(self, monkeypatch):
         calls = []
 
-        def _fake(base_url, *, window_s, timeout_sec):
-            calls.append(base_url)
+        def _fake(*, window_s):
+            calls.append(window_s)
             return _snapshot()
 
         monkeypatch.setattr(admission_cue, "fetch_admission_snapshot", _fake)
@@ -110,7 +109,7 @@ class TestFetchAndCache:
         assert len(calls) == 1
 
     def test_a_failure_is_cached_too(self, monkeypatch):
-        """Otherwise an unreachable gateway means a blocking urlopen on every metacog pass."""
+        """Otherwise an unreachable database means a blocking query on every metacog pass."""
         calls = []
 
         def _boom(*a, **k):
@@ -125,15 +124,13 @@ class TestFetchAndCache:
     def test_the_configured_window_reaches_the_request(self, monkeypatch):
         seen = {}
 
-        def _fake(base_url, *, window_s, timeout_sec):
-            seen.update(base_url=base_url, window_s=window_s, timeout_sec=timeout_sec)
+        def _fake(*, window_s):
+            seen.update(window_s=window_s)
             return _snapshot(window_s=window_s)
 
         monkeypatch.setattr(admission_cue, "fetch_admission_snapshot", _fake)
         admission_cue_for_settings(_settings(cortex_exec_admission_cue_window_s=3600.0))
-        assert seen == {
-            "base_url": "http://llm-gateway:8210", "window_s": 3600.0, "timeout_sec": 2.0,
-        }
+        assert seen == {"window_s": 3600.0}
 
 
 class TestCueRendering:
@@ -230,26 +227,35 @@ class TestMaxSNeverContradictsItself:
 
 
 class TestFirstPersonScope:
-    def test_the_fetch_asks_only_for_orions_own_call_path(self, monkeypatch):
-        """`quick_background` also carries AI Town's NPC dialogue. A cue that says "I waited"
-        must not be counting somebody else's wait."""
+    def test_the_read_is_first_person_background_and_thresholded(self):
+        """The pool history holds everyone's leases; the cue is Orion's own. The query must keep only
+        background leases, drop the gateway's HTTP callers (AI Town NPC dialogue), and count a wait
+        only past the threshold -- a grant in the same few ms is bookkeeping, not waiting."""
         import app.admission_cue as mod
 
         seen = {}
 
-        class _Resp:
+        class _Conn:
             def __enter__(self): return self
             def __exit__(self, *a): return False
-            def read(self): return b'{"window_s":60.0,"checked":0,"deferrals":0,"unchecked":0}'
+            def execute(self, sql, params):
+                seen["sql"], seen["params"] = str(sql), params
+                class _R:
+                    def mappings(self_inner):
+                        class _M:
+                            def one(self_m): return {"checked": 12, "deferrals": 2, "longest_ms": 4200.0}
+                        return _M()
+                return _R()
 
-        def _fake_urlopen(url, timeout=None):
-            seen["url"] = url
-            return _Resp()
+        class _Engine:
+            def connect(self): return _Conn()
 
-        monkeypatch.setattr(mod, "urlopen", _fake_urlopen)
-        mod.fetch_admission_snapshot("http://gw:8210", window_s=21600.0, timeout_sec=2.0)
-        assert "via=bus" in seen["url"]
-        assert "window_s=21600" in seen["url"]
+        snap = mod.fetch_admission_snapshot(window_s=21600.0, engine=_Engine())
+        assert snap == {"checked": 12, "deferrals": 2, "unchecked": 0, "window_s": 21600.0, "longest_wait_s": 4.2}
+        assert "priority = 'background'" in seen["sql"] and "holder NOT LIKE 'http:%'" in seen["sql"]
+        assert "gpu_pool_events" in seen["sql"]
+        assert seen["params"] == {"threshold": mod.WAIT_THRESHOLD_MS, "window_s": 21600.0}
+        assert mod.render_admission_cue(snap) == {"n": 2, "of": 12, "h": 6.0, "max_s": 4.2}
 
 
 class TestCueSurvivesTruncation:

@@ -84,19 +84,6 @@ class ThoughtSettings(BaseSettings):
     # Hub's own TIMEOUT_SEC=400 outer wait. See services/orion-thought/.env_example.
     stance_react_timeout_sec: float = Field(360.0, alias="STANCE_REACT_TIMEOUT_SEC")
 
-    # Step-level timeout cap for stance_react's FIRST attempt when the turn
-    # prefers the agent lane without owning a durable lease (autonomous reading,
-    # curiosity -- see orion.hub.turn_orchestrator's stance_req.llm_route).
-    # That lane is a single GPU slot a curiosity investigation can hold for up
-    # to ~40 minutes; live 2026-09-19 (corr 5258cae8) a reading turn spent its
-    # entire 240s stance_react step budget queued behind one, got shed by the
-    # gateway (`capacity_wait_budget_exhausted`), and generated nothing. A short
-    # cap here means that queue wait is bounded and the remaining budget still
-    # has time for one chat-lane attempt -- see
-    # execute_stance_react_with_lane_fallback in app/bus_listener.py.
-    stance_react_agent_lane_budget_sec: float = Field(
-        60.0, alias="STANCE_REACT_AGENT_LANE_BUDGET_SEC"
-    )
 
     # --- Reverie: spontaneous-thought mode (Phase A, default-off) ---
     reverie_enabled: bool = Field(False, alias="ORION_REVERIE_ENABLED")
@@ -311,8 +298,8 @@ class ThoughtSettings(BaseSettings):
         True, alias="ORION_VISUAL_CHAIN_GPU2_CAPACITY_ENABLED"
     )
     # orion-durable-runs is on the same docker network as this service (both
-    # athena-resident) -- the internal compose DNS name, same convention
-    # orion-llm-gateway's own LLM_GATEWAY_CAPACITY_URL uses.
+    # athena-resident) -- the internal compose DNS name. (GPU2 permits move to
+    # orion-gpu-pool leases in stage 5 of the GPU pool design.)
     visual_chain_gpu2_capacity_url: str = Field(
         "http://durable-runs:8121/capacity", alias="ORION_VISUAL_CHAIN_GPU2_CAPACITY_URL"
     )

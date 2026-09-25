@@ -3,10 +3,11 @@
   "metric_count": 669,
   "_last_change": {
     "base": "merge base aa621ec4c (origin/main)",
-    "change_count": 0,
-    "high_severity_count": 0,
+    "change_count": 2,
+    "high_severity_count": 2,
     "changes": [
-      "no definition changes relative to the merge base"
+      "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:state:reply:* (declared_consumers: ['orion-hub'] -> ['orion-hub', 'orion-llm-gateway'])",
+      "high   routing_changed metric://bus_channel/orion-hub/orion:gpu_pool:state:request (all_producers: ['orion-hub'] -> ['orion-hub', 'orion-llm-gateway'])"
     ]
   },
   "definitions": {
@@ -1519,7 +1520,8 @@
         "orion-gpu-pool"
       ],
       "declared_consumers": [
-        "orion-hub"
+        "orion-hub",
+        "orion-llm-gateway"
       ],
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -1817,7 +1819,8 @@
     "metric://bus_channel/orion-hub/orion:gpu_pool:state:request": {
       "schema_id": "GpuPoolStateRequestV1",
       "all_producers": [
-        "orion-hub"
+        "orion-hub",
+        "orion-llm-gateway"
       ],
       "declared_consumers": [
         "orion-gpu-pool"

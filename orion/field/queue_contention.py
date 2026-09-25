@@ -35,9 +35,13 @@ from orion.bus.ewma import compute_ewma_update
 
 SOURCE_SEED = "world_pulse_seed_pending"
 SOURCE_DURABLE = "durable_demand_pending"
-SOURCE_GATEWAY = "gateway_waiting"
+# Leases queued or backlogged in orion-gpu-pool (gpu_pool_leases). Replaces "gateway_waiting" (the
+# LLM gateway's in-process admission ledger, deleted when the gateway cut over to the pool,
+# 2026-09-24). Same meaning -- work waiting for a GPU -- now counted where the waiting happens.
+# Gate: docs/superpowers/specs/2026-09-20-queue-contention-metric-gate.md, "Re-point" section.
+SOURCE_GPU_POOL = "gpu_pool_waiting"
 
-SOURCE_KEYS: tuple[str, ...] = (SOURCE_SEED, SOURCE_DURABLE, SOURCE_GATEWAY)
+SOURCE_KEYS: tuple[str, ...] = (SOURCE_SEED, SOURCE_DURABLE, SOURCE_GPU_POOL)
 
 DEFAULT_FLOOR = 1.0
 # Digester tick ~2s (RECEIPT_POLL_INTERVAL_SEC); half-life ~24h per gate doc.
@@ -101,8 +105,10 @@ def score_queue_contention(
     rather than inventing 0). Unknown keys outside ``SOURCE_KEYS`` are ignored.
     """
     raw: dict[str, float] = {}
-    ewma: dict[str, float] = dict(prev_ewma)
-    ewma_n: dict[str, int] = dict(prev_n)
+    # Only live sources carry forward: a retired source's baseline (e.g. "gateway_waiting") is dropped,
+    # not left riding along in FieldStateV1 forever where a generic reader could mistake it for signal.
+    ewma: dict[str, float] = {k: v for k, v in prev_ewma.items() if k in SOURCE_KEYS}
+    ewma_n: dict[str, int] = {k: v for k, v in prev_n.items() if k in SOURCE_KEYS}
     subs: dict[str, float] = {}
 
     for key in SOURCE_KEYS:

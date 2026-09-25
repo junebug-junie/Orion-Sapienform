@@ -25,7 +25,6 @@ import json
 import logging
 from typing import Any, AsyncIterator, Callable, Optional
 
-import aiohttp
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy import text
@@ -58,42 +57,60 @@ _COALESCE_SEC = 0.25
 _HEARTBEAT_SEC = 15.0
 
 
-def _routes_by_upstream(routes_payload: dict[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
-    """Group the gateway's route catalog by its `upstream` join key so each
-    admission gauge can name the lanes it serves. Routes without an upstream
-    (not configured) are dropped -- they have no gauge to attach to."""
-    out: dict[str, list[dict[str, Any]]] = {}
-    for r in (routes_payload or {}).get("routes") or []:
-        if not isinstance(r, dict):
-            continue
-        key = r.get("upstream")
-        if not key:
-            continue
-        out.setdefault(str(key), []).append(
-            {
-                "id": r.get("id"),
-                "served_by": r.get("served_by"),
-                "status": r.get("status"),
-                "priority": r.get("priority"),
-                "model": r.get("model"),
-            }
-        )
-    return out
+LEDGER_WINDOW_SEC = 300.0
+WAIT_THRESHOLD_MS = 500.0  # same "made to wait" line as cortex-exec's admission cue
 
 
-def merge_gateway(admission: dict[str, Any], routes_payload: dict[str, Any] | None) -> dict[str, Any]:
-    """One record per upstream: the live gauge plus the route ids that
-    dispatch to it. An upstream the catalog does not name still appears
-    (`routes: []`) -- a gauge with real traffic is evidence regardless."""
-    by_upstream = _routes_by_upstream(routes_payload)
-    upstreams = admission.get("upstreams") if isinstance(admission.get("upstreams"), dict) else {}
+def pool_lanes(state: dict[str, Any] | None, events: list[dict[str, Any]], *, now_ts: float) -> dict[str, Any]:
+    """The "what's running" gateway section, built from orion-gpu-pool instead of the gateway's
+    deleted /admission ledger. One record per pool role that runs work:
+      inflight / max_inflight -- leases held on it now / its discovered slots
+      waiting                 -- leases queued for the class that calls it home (role name == class)
+    plus a 5-minute ledger from the pool's lease events (the same shape the page already reads)."""
+    from datetime import datetime
+
+    state = state or {}
+    held: dict[str, int] = {}
+    waiting: dict[str, int] = {}
+    for lease in state.get("leases") or []:
+        if lease.get("status") in ("granted", "recalling") and lease.get("role"):
+            held[lease["role"]] = held.get(lease["role"], 0) + 1
+        elif lease.get("status") == "queued":
+            waiting[lease.get("work_class") or "?"] = waiting.get(lease.get("work_class") or "?", 0) + 1
     lanes = []
-    for url, gauge in sorted(upstreams.items()):
-        if not isinstance(gauge, dict):
-            continue
-        lanes.append({"upstream": url, "routes": by_upstream.get(url, []), **gauge})
-    ledger = {k: v for k, v in admission.items() if k != "upstreams"}
-    return {"lanes": lanes, "ledger": ledger, "default_route": (routes_payload or {}).get("default_route")}
+    role_names = set()
+    for role in state.get("roles") or []:
+        name = role.get("role")
+        role_names.add(name)
+        if not role.get("slots") and not held.get(name) and not waiting.get(name):
+            continue  # unloaded seats / evicted residents: nothing to show
+        lanes.append({
+            "upstream": role.get("url"),
+            "routes": [{"id": name, "served_by": f"circe-worker-{name}", "status": role.get("status"),
+                        "priority": None, "model": role.get("model_file")}],
+            "inflight": held.get(name, 0), "waiting": waiting.get(name, 0), "max_inflight": role.get("slots"),
+        })
+    for cls, n in sorted(waiting.items()):
+        if cls not in role_names:
+            lanes.append({"upstream": f"queue:{cls}", "routes": [{"id": cls}], "inflight": 0, "waiting": n,
+                          "max_inflight": None})
+
+    def ts(event: dict[str, Any]) -> float:
+        try:
+            return datetime.fromisoformat(str(event.get("generated_at")).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return 0.0
+
+    recent = [e for e in events if now_ts - ts(e) <= LEDGER_WINDOW_SEC]
+    waits = [float(e.get("waited_ms") or 0) for e in recent if e.get("event") == "granted"]
+    deferred = [w for w in waits if w >= WAIT_THRESHOLD_MS]
+    ledger = {
+        "checked": sum(1 for e in recent if e.get("event") == "admitted"),
+        "queued": sum(waiting.values()),
+        "deferrals": len(deferred) + sum(1 for e in recent if e.get("event") == "unavailable"),
+        "longest_wait_s": (max(deferred) / 1000.0) if deferred else 0.0,
+    }
+    return {"lanes": lanes, "ledger": ledger, "default_route": None, "source": "gpu_pool"}
 
 
 class RuntimeActivityFeeds:
@@ -105,30 +122,23 @@ class RuntimeActivityFeeds:
         self,
         *,
         activity: RuntimeActivity,
-        gateway_url: str,
         poll_sec: float,
-        timeout_sec: float,
         engine_factory: Optional[Callable[[], Any]] = None,
-        session_factory: Optional[Callable[[], aiohttp.ClientSession]] = None,
+        pool_feed: Any = None,
     ) -> None:
         self._activity = activity
-        self._gateway_url = gateway_url.rstrip("/")
         self._poll_sec = float(poll_sec)
-        self._timeout_sec = max(0.5, float(timeout_sec))
         self._engine_factory = engine_factory
-        self._session_factory = session_factory or (
-            lambda: aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=self._timeout_sec))
-        )
+        # Hub's live orion-gpu-pool feed (scripts/gpu_pool_routes.feed): state + recent lease events.
+        self._pool_feed = pool_feed
         self._task: Optional[asyncio.Task] = None
-        self._routes_cache: dict[str, Any] | None = None
-        self._routes_cached_at: float = 0.0
 
     async def start(self) -> None:
         if self._task and not self._task.done():
             return
         await self.backfill()
         if self._poll_sec > 0:
-            self._task = asyncio.create_task(self._poll_loop(), name="hub-runtime-activity-gateway-poll")
+            self._task = asyncio.create_task(self._poll_loop(), name="hub-runtime-activity-pool-poll")
 
     async def stop(self) -> None:
         if self._task and not self._task.done():
@@ -158,28 +168,16 @@ class RuntimeActivityFeeds:
         return adopted
 
     async def poll_once(self) -> None:
-        """One gateway round trip. Routes are re-read every ~60s (they change
-        only on gateway restart); admission every poll."""
-        try:
-            async with self._session_factory() as session:
-                async with session.get(f"{self._gateway_url}/admission", params={"window_s": 300}) as resp:
-                    resp.raise_for_status()
-                    admission = await resp.json()
-                loop_now = asyncio.get_running_loop().time()
-                if self._routes_cache is None or (loop_now - self._routes_cached_at) > 60.0:
-                    async with session.get(f"{self._gateway_url}/routes") as resp:
-                        if resp.status == 200:
-                            self._routes_cache = await resp.json()
-                            self._routes_cached_at = loop_now
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 -- a down gateway is a reported state
-            self._activity.gateway_admission(None, error=f"{type(exc).__name__}: {exc}"[:200])
+        """Read the pool feed Hub already keeps (no network hop). No state yet -> reported as a
+        down source, never as idle."""
+        feed = self._pool_feed
+        state = getattr(feed, "state", None) if feed is not None else None
+        if not state:
+            self._activity.gateway_admission(None, error="gpu_pool_state_unavailable")
             return
-        if not isinstance(admission, dict):
-            self._activity.gateway_admission(None, error="admission_not_an_object")
-            return
-        self._activity.gateway_admission(merge_gateway(admission, self._routes_cache))
+        import time
+
+        self._activity.gateway_admission(pool_lanes(state, list(getattr(feed, "events", []) or []), now_ts=time.time()))
 
     async def _poll_loop(self) -> None:
         try:

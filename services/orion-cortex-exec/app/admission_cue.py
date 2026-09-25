@@ -3,17 +3,11 @@
 ROADMAP step A5 (`docs/superpowers/specs/2026-08-13-scarcity-ROADMAP.md`), designed in
 `docs/superpowers/specs/2026-08-19-A5-deferral-perceptible-proposal.md`.
 
-The gateway measures the wait (`orion-llm-gateway/app/admission_ledger.py`) and exposes it at
-`GET /admission`. This module is the read side: it fetches that snapshot and renders the one
-compact object that goes into the metacog cue Orion already reads every pass.
-
-WHY THIS IS A FETCH AND NOT A BUS CHANNEL
------------------------------------------
-`CORTEX_EXEC_LLM_GATEWAY_URL` already exists and this service already probes the gateway over
-HTTP (`situation.py::_fetch_runtime_context` hits `/routes`). A bus channel to deliver one
-integer would need a schema, a registry entry, a producer, a consumer, a reducer and a writer --
-the shape §0A calls a cathedral. If a second consumer ever wants this, that is when the channel
-earns itself.
+Since 2026-09-24 every LLM call waits in orion-gpu-pool, which records each lease's wait in
+`gpu_pool_events` (via sql-writer). This module is the read side: one windowed SQL read over the
+POSTGRES_URI this process already has, rendered into the one compact object that goes into the
+metacog cue Orion already reads every pass. (It used to read the LLM gateway's in-process ledger
+at `GET /admission`; that ledger was deleted when the gateway cut over to the pool.)
 
 THE FOUR STATES, AND WHY THEY ARE ALL DISTINCT
 ----------------------------------------------
@@ -22,7 +16,7 @@ The failure this module is written against is a zero that means two different th
     {"n":0,"of":294,"h":6}          asked 294 times, never made to wait  -- a real observation
     {"n":3,"of":291,"max_s":4.2,"h":6}   made to wait 3 times, longest 4.2s
     {"n":0,"of":0,"h":6}            made no background requests at all   -- NOT the same as above
-    key absent                      the gateway could not be read        -- NOT calm, unknown
+    key absent                      the pool history could not be read   -- NOT calm, unknown
 
 `of` is what carries the difference between the first and third, and absence is what carries the
 fourth. A cue that emitted a bare `0` for all of them would let Orion conclude "nothing is
@@ -36,12 +30,10 @@ waited, not who took the slot.
 """
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
-from urllib.request import urlopen
 
 logger = logging.getLogger("orion-cortex-exec.admission_cue")
 
@@ -55,22 +47,65 @@ _LOCK = threading.Lock()
 _CACHE: Dict[str, Tuple[datetime, Optional[Dict[str, Any]]]] = {}
 
 
-def fetch_admission_snapshot(
-    base_url: str,
-    *,
-    window_s: float,
-    timeout_sec: float,
-) -> Dict[str, Any]:
-    """Raw `GET /admission`. Raises on any failure so the caller degrades to "unknown"."""
-    # via=bus restricts the count to Orion's own call path. The OpenAI passthrough shares the
-    # `quick_background` route key but is AI Town's NPC dialogue, and this cue is a FIRST-PERSON
-    # claim -- "I was made to wait" must not be somebody else's wait.
-    url = f"{str(base_url).rstrip('/')}/admission?window_s={float(window_s):.0f}&via=bus"
-    with urlopen(url, timeout=timeout_sec) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
-    if not isinstance(payload, dict) or "checked" not in payload:
-        raise ValueError("admission payload missing/malformed")
-    return payload
+# A background lease that waited at least this long was "made to wait". A grant that arrives in the
+# same few milliseconds as the request is bookkeeping, not waiting -- counting it would be the
+# phantom-wait this cue was built to refuse (see render_admission_cue's max_s note).
+WAIT_THRESHOLD_MS = 500.0
+
+_ENGINE: Any = None
+
+
+def _engine() -> Any:
+    global _ENGINE
+    if _ENGINE is None:
+        import os
+
+        from sqlalchemy import create_engine
+
+        dsn = os.environ.get("POSTGRES_URI") or os.environ.get("DATABASE_URL")
+        if not dsn:
+            raise RuntimeError("POSTGRES_URI not set")
+        _ENGINE = create_engine(dsn, pool_pre_ping=True, pool_size=1, max_overflow=1)
+    return _ENGINE
+
+
+def fetch_admission_snapshot(*, window_s: float, engine: Any = None) -> Dict[str, Any]:
+    """Orion's own background leases in orion-gpu-pool over the window (gpu_pool_events).
+
+    Replaces the LLM gateway's in-process ledger (``GET /admission``), deleted when the gateway cut
+    over to the pool (2026-09-24). Same snapshot keys, so ``render_admission_cue`` is unchanged:
+      checked   -- background leases Orion asked for (admitted events)
+      deferrals -- of those, granted only after waiting >= WAIT_THRESHOLD_MS, or never served
+      longest_wait_s -- the longest such wait
+      unchecked -- always 0: the pool measures every wait, unlike /slots polling that could fail open
+    First-person only: holders starting "http:" are other callers of the gateway's HTTP API (e.g.
+    AI Town NPC dialogue over the OpenAI passthrough), not Orion. Raises on any failure so the
+    caller degrades to "unknown".
+    """
+    from sqlalchemy import text
+
+    sql = text(
+        """
+        SELECT
+          count(*) FILTER (WHERE event = 'admitted') AS checked,
+          count(*) FILTER (WHERE (event = 'granted' AND waited_ms >= :threshold)
+                                OR event = 'unavailable') AS deferrals,
+          max(waited_ms) FILTER (WHERE event = 'granted' AND waited_ms >= :threshold) AS longest_ms
+        FROM gpu_pool_events
+        WHERE priority = 'background'
+          AND holder NOT LIKE 'http:%'
+          AND generated_at >= now() - (:window_s * interval '1 second')
+        """
+    )
+    with (engine or _engine()).connect() as conn:
+        row = conn.execute(sql, {"threshold": WAIT_THRESHOLD_MS, "window_s": float(window_s)}).mappings().one()
+    return {
+        "checked": int(row["checked"] or 0),
+        "deferrals": int(row["deferrals"] or 0),
+        "unchecked": 0,
+        "window_s": float(window_s),
+        "longest_wait_s": float(row["longest_ms"] or 0.0) / 1000.0,
+    }
 
 
 def render_admission_cue(snapshot: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -132,28 +167,22 @@ def admission_cue_for_settings(runtime_settings: Any) -> Optional[Dict[str, Any]
     if not bool(getattr(runtime_settings, "cortex_exec_admission_cue_enabled", True)):
         return None
 
-    base_url = str(
-        getattr(runtime_settings, "cortex_exec_llm_gateway_url", "http://llm-gateway:8210")
-    )
     window_s = float(getattr(runtime_settings, "cortex_exec_admission_cue_window_s", 21600.0))
     ttl_s = float(getattr(runtime_settings, "cortex_exec_admission_cue_ttl_sec", 60.0))
-    timeout_s = float(getattr(runtime_settings, "cortex_exec_admission_cue_timeout_sec", 2.0))
 
-    cache_key = f"{base_url}|{window_s}"
+    cache_key = f"gpu_pool|{window_s}"
     now = datetime.now(UTC)
     with _LOCK:
         cached = _CACHE.get(cache_key)
-        # A failed fetch is cached too (as None). Otherwise an unreachable gateway means a
-        # blocking urlopen on the metacog path every single pass.
+        # A failed read is cached too (as None). Otherwise an unreachable database means a
+        # blocking query on the metacog path every single pass.
         if cached and (now - cached[0]).total_seconds() < ttl_s:
             return cached[1]
 
     try:
-        rendered = render_admission_cue(
-            fetch_admission_snapshot(base_url, window_s=window_s, timeout_sec=timeout_s)
-        )
+        rendered = render_admission_cue(fetch_admission_snapshot(window_s=window_s))
     except Exception as exc:  # noqa: BLE001 -- unknown is a valid answer; a broken cue is not
-        logger.debug("admission cue fetch failed url=%s error=%s", base_url, exc)
+        logger.debug("admission cue read failed error=%s", exc)
         rendered = None
 
     with _LOCK:

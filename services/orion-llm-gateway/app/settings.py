@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from pydantic import Field, model_validator, AliasChoices
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 from .profiles import LLMProfile, LLMProfileRegistry
@@ -43,15 +43,9 @@ class Settings(BaseSettings):
     default_backend: str = Field("vllm", alias="ORION_LLM_DEFAULT_BACKEND")
     default_model: str = Field("Active-GGUF-Model", alias="ORION_DEFAULT_LLM_MODEL")
 
-    # Backend endpoints
-    vllm_url: Optional[str] = Field(None, alias="ORION_LLM_VLLM_URL")
-    ollama_url: Optional[str] = Field(None, alias="ORION_LLM_OLLAMA_URL")
+    # Backend endpoints. There are no LLM URLs here any more: every chat call is placed by
+    # orion-gpu-pool (app/pool_placement.py) and sent to the URL of the granted role.
     ollama_use_openai_compat: bool = Field(False, alias="ORION_LLM_OLLAMA_USE_OPENAI")
-    llamacpp_url: Optional[str] = Field(
-        None,
-        validation_alias=AliasChoices("ORION_LLM_LLAMACPP_URL", "ORION_LLM_LLAMA_CPP_URL"),
-    )
-    llama_cola_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMA_COLA_URL")
     orion_vector_host_url: Optional[str] = Field(
         "http://orion-athena-vector-host:8320",
         alias="ORION_VECTOR_HOST_URL",
@@ -87,60 +81,39 @@ class Settings(BaseSettings):
     llm_profiles_config_path: Optional[Path] = Field(None, alias="LLM_PROFILES_CONFIG_PATH")
     llm_default_profile_name: Optional[str] = Field(None, alias="LLM_DEFAULT_PROFILE_NAME")
 
-    # Route table (single-subscriber routing)
-    llm_route_table_json: Optional[str] = Field(None, alias="LLM_GATEWAY_ROUTE_TABLE_JSON")
+    # Placement: config/gpu_pool.yaml `routes:` maps a route name to a pool work class and
+    # priority; the pool grants the role (url, served_by, ctx). A route not listed is refused.
+    gpu_pool_config_path: str = Field("/app/config/gpu_pool.yaml", alias="GPU_POOL_CONFIG_PATH")
+    # How long a call may wait in the pool's queue for a grant (never longer than the caller's own
+    # gateway_read_timeout_sec). Background-priority routes may wait longer.
+    llm_gateway_pool_wait_sec: float = Field(300.0, gt=0, alias="LLM_GATEWAY_POOL_WAIT_SEC")
+    llm_gateway_pool_background_wait_sec: float = Field(
+        900.0, gt=0, alias="LLM_GATEWAY_POOL_BACKGROUND_WAIT_SEC"
+    )
+    # HTTP passthroughs (OpenAI/Anthropic) hold a client socket open while queued: their pool wait
+    # is this, never the bus budgets above. The queued acquire is withdrawn if the client leaves.
+    llm_gateway_pool_passthrough_wait_sec: float = Field(
+        60.0, gt=0, alias="LLM_GATEWAY_POOL_PASSTHROUGH_WAIT_SEC"
+    )
+    # Threads per granted role URL (one executor per role, never one shared across lanes).
+    llm_gateway_executor_workers_per_role: int = Field(
+        8, ge=1, le=128, alias="LLM_GATEWAY_EXECUTOR_WORKERS_PER_ROLE"
+    )
     # `quick`, not `chat`: a request that names no route must never land on Juniper's reserved
     # Hub lane (live .env has said quick since 2026-08; the code default lagged behind it).
     llm_route_default: str = Field("quick", alias="LLM_ROUTE_DEFAULT")
 
-    # Background-priority routes (RouteTarget.priority == "background"): wait
-    # for upstream /slots slack before dispatch instead of competing evenly
-    # with foreground traffic on the same llama.cpp process. See
-    # priority_admission.py and README.md's "Background-priority routes".
-    llm_gateway_background_max_wait_sec: float = Field(
-        30.0, alias="LLM_GATEWAY_BACKGROUND_MAX_WAIT_SEC"
-    )
-    llm_gateway_background_poll_interval_sec: float = Field(
-        0.5, alias="LLM_GATEWAY_BACKGROUND_POLL_INTERVAL_SEC"
-    )
-    llm_gateway_background_concurrency: int = Field(
-        1, alias="LLM_GATEWAY_BACKGROUND_CONCURRENCY"
-    )
-    # Per-upstream in-flight cap on the bus chat path (upstream_admission.py). Each
-    # distinct route-table URL may hold at most this many executor threads at once;
-    # the executor is sized to (distinct upstreams x this) + headroom, so a flood on
-    # one lane cannot take the threads another lane's requests need. A request that
-    # cannot get its lane's permit inside its own read-timeout budget is shed with
-    # `gateway_overloaded` instead of being generated for a caller that already
-    # gave up. Incident: 2026-09-05 stance_react starvation.
-    llm_gateway_upstream_max_inflight: int = Field(
-        8, ge=1, le=128, alias="LLM_GATEWAY_UPSTREAM_MAX_INFLIGHT"
-    )
-    llm_gateway_capacity_enabled: bool = Field(False, alias="LLM_GATEWAY_CAPACITY_ENABLED")
-    llm_gateway_capacity_url: str = Field("http://durable-runs:8121/capacity", alias="LLM_GATEWAY_CAPACITY_URL")
-    # Only requests carrying a durable lease opt into broker fencing.
+    # Durable-run leases (options.resource_lease / X-Orion-Resource-Lease) are still validated
+    # against durable-runs until stage 4. They are an admission token only: placement always
+    # comes from a pool lease.
     llm_gateway_lease_validation_enabled: bool = Field(False, alias="LLM_GATEWAY_LEASE_VALIDATION_ENABLED")
     llm_gateway_lease_validation_url: str = Field(
         "http://durable-runs:8121/leases/validate", alias="LLM_GATEWAY_LEASE_VALIDATION_URL"
     )
     llm_gateway_lease_validation_timeout_sec: float = Field(2.0, gt=0, alias="LLM_GATEWAY_LEASE_VALIDATION_TIMEOUT_SEC")
     llm_gateway_lease_check_interval_sec: float = Field(5.0, gt=0, alias="LLM_GATEWAY_LEASE_CHECK_INTERVAL_SEC")
-    llm_route_chat_url: Optional[str] = Field(None, alias="LLM_ROUTE_CHAT_URL")
-    llm_route_metacog_url: Optional[str] = Field(None, alias="LLM_ROUTE_METACOG_URL")
-    llm_route_latents_url: Optional[str] = Field(None, alias="LLM_ROUTE_LATENTS_URL")
-    llm_route_specialist_url: Optional[str] = Field(None, alias="LLM_ROUTE_SPECIALIST_URL")
-    llm_route_chat_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_CHAT_SERVED_BY")
-    # Phase 3: optional lane labels used to match route-table entries by served_by
-    llm_route_spark_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_SPARK_SERVED_BY")
-    llm_route_background_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_BACKGROUND_SERVED_BY")
-    llm_route_agent_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_AGENT_SERVED_BY")
-    llm_allow_background_to_chat_fallback: bool = Field(False, alias="LLM_ALLOW_BACKGROUND_TO_CHAT_FALLBACK")
     llm_lane_default: str = Field("chat", alias="LLM_LANE_DEFAULT")
     llm_lane_routing_enabled: bool = Field(True, alias="LLM_LANE_ROUTING_ENABLED")
-    llm_route_metacog_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_METACOG_SERVED_BY")
-    llm_route_latents_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_LATENTS_SERVED_BY")
-    llm_route_specialist_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_SPECIALIST_SERVED_BY")
-    llm_route_health_timeout_sec: float = Field(1.5, alias="LLM_ROUTE_HEALTH_TIMEOUT_SEC")
     llm_gateway_health_port: int = Field(8210, alias="LLM_GATEWAY_HEALTH_PORT")
     llm_gateway_concurrent_handlers: bool = Field(True, alias="LLM_GATEWAY_CONCURRENT_HANDLERS")
     # Inference grammar windows (services/orion-llm-gateway/app/grammar_emit.py): the
@@ -159,7 +132,6 @@ class Settings(BaseSettings):
     llm_gateway_openai_passthrough_enabled: bool = Field(
         True, alias="LLM_GATEWAY_OPENAI_PASSTHROUGH_ENABLED"
     )
-    atlas_metacog_service_name: str = Field("atlas-worker-2", alias="ATLAS_METACOG_SERVICE_NAME")
     atlas_metacog_profile_name: Optional[str] = Field(None, alias="ATLAS_METACOG_PROFILE_NAME")
     atlas_metacog_cuda_visible_devices: Optional[str] = Field(None, alias="ATLAS_METACOG_CUDA_VISIBLE_DEVICES")
     atlas_metacog_host_port: int = Field(8012, alias="ATLAS_METACOG_HOST_PORT")

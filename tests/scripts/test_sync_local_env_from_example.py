@@ -249,3 +249,16 @@ def test_camera_rtsp_urls_never_synced() -> None:
     # They carry camera credentials; a --force sync must not replace a live URL
     # with the template placeholder.
     assert {"REOLINK_URL", "WALKWAY_RTSP_URL"} <= NEVER_SYNC_KEYS
+
+
+def test_gpu_pool_keys_are_reached_by_the_default_sync() -> None:
+    """Every key the GPU pool cutover added must be synced by the default command: a key no
+    prefix matches is skipped silently, with a "No changes needed" that looks like a pass."""
+    assert "orion-gpu-pool" in sync_mod.DEFAULT_SERVICES
+    for service, prefix_filter in (("orion-llm-gateway", ("GPU_POOL_", "LLM_GATEWAY_POOL_", "LLM_GATEWAY_EXECUTOR_")),
+                                   ("orion-gpu-pool", ("GPU_POOL_",))):
+        keys = [k for k in sync_mod.parse_kv(ROOT / "services" / service / ".env_example")
+                if k.startswith(prefix_filter)]
+        assert keys, service
+        for key in keys:
+            assert should_sync_key(key, all_keys=False), key

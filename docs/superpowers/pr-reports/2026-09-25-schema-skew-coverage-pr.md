@@ -141,6 +141,6 @@ scripts/safe_docker_build.sh orion-vision-host -f services/orion-vision-host/doc
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2339
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

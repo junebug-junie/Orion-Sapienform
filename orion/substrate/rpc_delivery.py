@@ -253,6 +253,10 @@ class RpcDeliveryWindow:
             if key > worst:
                 worst = key
                 worst_hop = hop
+        if worst[0] <= 0.0:
+            # Nothing timed out: there is no "worst" hop to name, and naming one
+            # by tie-break would point an inspector at a healthy channel.
+            worst_hop = None
         ws, wt = totals[worst_hop] if worst_hop else (0, 0)
         return RpcDeliveryReading(
             pressure=round(max(0.0, min(1.0, worst[0])), 4),
@@ -311,6 +315,9 @@ def rpc_delivery_receipt(reading: RpcDeliveryReading, *, now: Any) -> Any:
                 explanation=(
                     f"worst hop {reading.worst_hop}: {reading.worst_timeouts} timeouts "
                     f"in {reading.worst_calls} calls over {int(reading.window_s)}s"
+                    if reading.worst_hop
+                    else f"no timeouts in {reading.total_calls} bus RPC calls over "
+                    f"{int(reading.window_s)}s"
                 ),
             )
         ],

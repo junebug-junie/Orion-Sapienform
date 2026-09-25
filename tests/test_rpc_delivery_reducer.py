@@ -67,6 +67,10 @@ def test_calm_traffic_reads_exactly_zero():
     r = _reading(win, T0)
     assert r.pressure == 0.0
     assert r.total_calls == 52 and r.total_timeouts == 0
+    # no timeouts -> no hop is named as "worst"
+    assert r.worst_hop is None and (r.worst_timeouts, r.worst_calls) == (0, 0)
+    receipt = rpc_delivery_receipt(r, now=T0)
+    assert receipt.state_deltas[0].explanation.startswith("no timeouts in 52")
 
 
 def test_worst_hop_wins_rather_than_being_pooled_away():

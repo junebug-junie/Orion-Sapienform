@@ -143,12 +143,12 @@ def build_stance_react_context(
     if isinstance(surface_context, dict) and surface_context:
         metadata["surface_context"] = surface_context
     context: dict[str, Any] = {
-        # Top level as well as metadata: cortex-exec reads ctx["session_id"],
-        # never metadata's copy -- the router's mark_orion_turn (conversation
-        # phase), metacog traces, and grammar events all key off it. With it
-        # only nested, every unified turn's stance step recorded "Orion
-        # spoke" under the shared "global" phase key and emitted traces with
-        # no session. cortex-orch's _build_context sets it top level too.
+        # Top level as well as metadata: cortex-exec's router
+        # (mark_orion_turn -> conversation phase), metacog traces and grammar
+        # events read ctx["session_id"], not metadata's copy. With it only
+        # nested, every unified turn's stance step recorded "Orion spoke"
+        # under the shared "global" phase key and emitted traces with no
+        # session. cortex-orch's _build_context sets it top level too.
         "session_id": request.session_id,
         "user_message": request.user_message,
         "stance_inputs": stance_inputs,

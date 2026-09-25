@@ -33,6 +33,17 @@ def _spark_meta_dict(raw) -> dict:
 
 
 async def _prior_turns_for(pool, *, session_id: str | None, created_at) -> list[dict]:
+    """The 20 turns immediately before this one, oldest first.
+
+    classify_turn reads ``prior_turns[-1]`` as "the previous turn" and
+    ``prior_turns[-n:]`` as the recent window -- the same shape the live path
+    gets from the open window's append-ordered turn list. So the query takes
+    the NEWEST 20 (``DESC``) and flips them back to chronological order. It
+    used to be ``ORDER BY created_at ASC LIMIT 20``, which returned the
+    session's OLDEST 20 turns: once a session passed 20 turns, every retry
+    scored novelty/shift against a turn from the start of the thread, and
+    Hub's ``orion_sid`` never expires, so that was most sessions.
+    """
     if not session_id or created_at is None:
         return []
     rows = await pool.fetch(
@@ -43,14 +54,14 @@ async def _prior_turns_for(pool, *, session_id: str | None, created_at) -> list[
           AND created_at < $2
           AND coalesce(trim(prompt), '') <> ''
           AND coalesce(trim(response), '') <> ''
-        ORDER BY created_at ASC
+        ORDER BY created_at DESC
         LIMIT 20
         """,
         session_id,
         created_at,
     )
     out: list[dict] = []
-    for row in rows:
+    for row in reversed(rows):
         out.append(
             {
                 "correlation_id": str(row["correlation_id"]),

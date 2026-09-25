@@ -1,12 +1,13 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 668,
+  "metric_count": 669,
   "_last_change": {
-    "base": "merge base 9bfb2008a (origin/main)",
-    "change_count": 0,
-    "high_severity_count": 0,
+    "base": "merge base d1b145208 (origin/main)",
+    "change_count": 2,
+    "high_severity_count": 1,
     "changes": [
-      "no definition changes relative to the merge base"
+      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026ub', 'orion-vision-edge'\u2026 -> \u2026ub', 'orion-llm-gateway', 'orion-vision-edge'\u2026)",
+      "medium added metric://field_channel/orion-field-digester/inference_failure_pressure"
     ]
   },
   "definitions": {
@@ -523,6 +524,7 @@
         "orion-gpu-pool",
         "orion-harness-governor",
         "orion-hub",
+        "orion-llm-gateway",
         "orion-vision-edge",
         "orion-vision-retina",
         "orion-vision-window"
@@ -3884,6 +3886,11 @@
     },
     "metric://field_channel/orion-field-digester/harness_step_load": {
       "meaning": "FCC-motor-only step-load proxy for one unified Hub turn, split out of cortex_exec_step_load (renamed from execution_load 2026-07-24; blended cortex-exec + harness-governor step counts and hard-capped at 8 before the 2026-07-23 fix) -- a compute/thermal/power cost proxy for how much processing one turn actually cost on the expensive GPU node running the motor.",
+      "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/inference_failure_pressure": {
+      "meaning": "Share of the calls the LLM gateway sent to this node's model backends that came back without an answer (timeout, refused connection, HTTP error), per gateway window. Reported by the gateway itself; absent when the node got no calls.",
       "notes": "category=task_execution level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },

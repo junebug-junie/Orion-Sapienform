@@ -222,7 +222,9 @@ def test_compute_pressure_hints_repair():
     turn = extract_chat_turn_state(events)
     hints = compute_chat_pressure_hints(turn)
     assert hints["repair_pressure"] == pytest.approx(0.7)
-    assert hints["topic_coherence"] == pytest.approx(0.3)
+    # topic_coherence (1 - repair_pressure) was removed 2026-09-25: a mirror of
+    # repair_pressure, not an independent reading.
+    assert "topic_coherence" not in hints
 
 
 # ---------------------------------------------------------------------------

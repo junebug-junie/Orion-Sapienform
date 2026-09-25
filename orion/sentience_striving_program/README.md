@@ -441,7 +441,8 @@ first place. Full reasoning and phased detail:
    `node:substrate.chat`/`node:substrate.route` via the same shared writer and flag) close the
    two remaining domains named in §9b item 3's open question. `chat_prediction_error()`
    mirrors execution/transport/biometrics' fixed-key continuous-magnitude shape (diffing
-   `compute_chat_pressure_hints()`'s three keys). `route_prediction_error()` is deliberately
+   `compute_chat_pressure_hints()`'s keys -- three at the time; `topic_coherence` was removed
+   2026-09-25 as a mirror of `repair_pressure`). `route_prediction_error()` is deliberately
    shaped differently: `RouteArbitrationRunStateV1`'s decision fields (`lane`, `lane_reason`,
    `output_mode`, `mind_requested`) are categorical, not continuous, so it scores a per-field
    mismatch rate instead of an absolute-value delta, and does not apply the module's

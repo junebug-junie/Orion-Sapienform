@@ -474,6 +474,14 @@ These override the text elsewhere in this document.
 3. **The fence state lives on the named volume `orion-gpu-lane-controller-state`.** `docker compose down -v` resets it to generation 0.
 4. **Circe's `services/orion-gpu-lane-controller/.env` needs three new keys:** `GPU2_AUTHORITY=durable`, `GPU_POOL_ACTUATOR_NAME=circe`, `GPU2_POOL_FENCE_STATE_PATH=/state/gpu2_pool_fence.json`.
 
+## Corrections from building 4.4 (PR #2351)
+
+1. **4.4 deploys six services before 4.5:** gateway, cortex-exec, orion-thought, harness-governor, Hub and field-digester. Thought's and the governor's request models accept unknown fields, so an old container silently drops the hold reference, and the call then queues behind its own run. The 4.5 runbook greps each container for `gpu_lease` before step 5.
+2. **A hold's role is not a route.** 4.5 must never write the pool role (e.g. `agent-gpu2`) into `assigned_lane` or any FCC or cortex-exec route label. Held calls use route `agent`.
+3. **Acceptance check 2** reads `hold_lease_id IS NULL`, not `parent_lease_id`.
+4. **4.5 hazard:** durable-runs `runner.py` `_call_reflect_llm` calls the LLM with neither lease. It must carry the run's hold, or a reflect run queues behind itself.
+5. **Re-fit the durable 12 h expected-wait anchor for `queue_contention`** after about a week of hold data. Holds measure from `queued_since`, which restarts on re-queue.
+
 ## Juniper's answers (2026-09-25)
 
 1. **Gaps are shared.** While a run holds a card, higher-priority single calls may use it between the run's own calls. The run keeps its card and model for the whole run; at worst it waits one call's length.
@@ -484,7 +492,7 @@ These override the text elsewhere in this document.
 1. After PR 4.5:
    - zero new rows in `durable_resource_demands` / `durable_resource_leases`;
    - each accepted run has one `gpu_pool_leases` row, `kind='hold', holder='durable-runs:<run_id>'`.
-2. **No self-deadlock:** zero `work_class='agent'` request leases with `parent_lease_id IS NULL` whose
+2. **No self-deadlock:** zero `work_class='agent'` request leases with `hold_lease_id IS NULL` whose
    `turn_correlation_id` belongs to a run holding a hold (SQL join, run for 24h). FCC calls show as children of
    their run's hold.
 3. **Interleave:** during a run's tool phase, a cortex-exec system `agent` call is granted on `agent` (pool

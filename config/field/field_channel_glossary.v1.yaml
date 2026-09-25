@@ -26,6 +26,12 @@
 # 48 entries, plus 1 node-qualified prediction_error entry added
 # 2026-09-03 (version 2, see below) -- 49 entries total in this file.
 #
+# 2026-09-25: stream_backlog_pressure, stream_backlog_health and
+# delivery_confidence retired with no successor (fix/bus-observer-scope,
+# docs/superpowers/specs/2026-09-25-bus-observer-stream-depth-retirement.md):
+# 48 entries / 47 distinct channels after removal. contract_pressure is now the
+# only node+capability overlap.
+#
 # This is the machine-readable companion to
 # services/orion-field-digester/README.md's "Field channel glossary" section,
 # which stays the prose reference (full mechanism detail, live-data
@@ -265,20 +271,6 @@ channels:
     meaning: "How much active conversational load (turn volume/complexity) is occurring."
     self_state_dimension: social_pressure
 
-  - channel: stream_backlog_pressure
-    level: [node, capability]
-    category: infra_transport
-    meaning: "Renamed from transport_pressure 2026-07-24 for scope honesty: this only
-      ever measures world_pulse's one real Redis Stream (orion:stream:world_pulse:run:result)
-      and its dead-letter queue -- the only thing in the architecture with a real
-      backlog/XLEN concept. Everything else on the bus is Pub/Sub, which has no
-      backlog to measure. Not a general bus/transport-layer pressure signal, and not
-      intended to become one without a genuinely different mechanism -- see
-      docs/superpowers/specs/2026-07-22-transport-bus-signal-quality-measurement-design.md
-      and docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md
-      for the real cross-service RPC-health signal being built separately."
-    evidence_dimension: resource_pressure
-
   - channel: contract_pressure
     level: [node, capability]
     category: infra_transport
@@ -288,25 +280,6 @@ channels:
     level: [node]
     category: infra_transport
     meaning: "Drift/staleness in the bus event \"catalog\" (schema registry) relative to what's actually flowing."
-
-  - channel: delivery_confidence
-    level: [node]
-    category: sensor_trust_liveness
-    meaning: "Confidence that bus messages are actually being delivered end-to-end. Single-observer channel (2026-07-22): only node:athena's bus-observer ever reports this -- atlas/circe/prometheus have no code path that could produce a real reading and are excluded from the merge entirely (SINGLE_OBSERVER_NODE_CHANNELS, services/orion-field-digester/app/tensor/channels.py), not defaulted to a placeholder value."
-    evidence_dimension: coherence
-
-  - channel: stream_backlog_health
-    level: [node]
-    category: sensor_trust_liveness
-    meaning: "Renamed from bus_health 2026-07-24, same scope-honesty reasoning as
-      stream_backlog_pressure above -- reflects world_pulse's one Redis Stream, not
-      overall bus/transport subsystem health. Single-observer channel (2026-07-22):
-      only node:athena's bus-observer ever reports this -- atlas/circe/prometheus
-      have no code path that could produce a real reading and are excluded from the
-      merge entirely (SINGLE_OBSERVER_NODE_CHANNELS,
-      services/orion-field-digester/app/tensor/channels.py), not defaulted to a
-      placeholder value."
-    evidence_dimension: coherence
 
   - channel: observer_failure_pressure
     level: [node]

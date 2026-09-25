@@ -1,9 +1,10 @@
 """Transport-bus adapter — binds the substrate's transport "felt state".
 
-Maps ``TransportBusProjectionV1`` (per-bus health, delivery confidence, and the
-family of transport pressures — stream_backlog_pressure, backpressure, contract,
-reliability, stream-depth) into substrate belief nodes anchored to Orion, so the
-unified belief set contains beliefs about how Orion's own message bus is faring.
+Maps ``TransportBusProjectionV1`` (per-bus reliability and contract pressures)
+into substrate belief nodes anchored to Orion, so the unified belief set
+contains beliefs about how Orion's own message bus is faring. The XLEN
+stream-depth family (stream_backlog_*, backpressure, delivery_confidence) was
+retired 2026-09-25 (fix/bus-observer-scope).
 
 ctx-sourced, pure (no network, no DB): reads
 ``ctx['transport_bus_projection']`` as a model, dict, or JSON string, and
@@ -72,24 +73,17 @@ def map_transport_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
     temporal = make_temporal(observed_at=now)
     prov = _make_prov()
 
-    buses = sorted(
-        projection.buses.values(),
-        key=lambda b: b.stream_backlog_pressure,
-        reverse=True,
-    )[:_MAX_NODES]
+    def _salience(bus: Any) -> float:
+        return _clamp(max(bus.reliability_pressure, bus.contract_pressure))
+
+    buses = sorted(projection.buses.values(), key=_salience, reverse=True)[:_MAX_NODES]
 
     nodes: list[Any] = []
     for bus in buses:
-        salience = _clamp(
-            max(
-                bus.stream_backlog_pressure,
-                bus.backpressure,
-                bus.reliability_pressure,
-                bus.contract_pressure,
-                bus.stream_depth_pressure,
-            )
-        )
-        confidence = _clamp(bus.delivery_confidence) or 0.7
+        salience = _salience(bus)
+        # Same value the retired delivery_confidence produced: it was always
+        # 1 - reliability_pressure (0.0 on observer failure, 0.5 unknown ping).
+        confidence = _clamp(1.0 - bus.reliability_pressure) or 0.7
         nodes.append(
             ConceptNodeV1(
                 anchor_scope="orion",
@@ -102,9 +96,9 @@ def map_transport_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
                     "source_kind": "transport_bus",
                     "target_id": bus.target_id,
                     "node_id": bus.node_id,
-                    "stream_backlog_health": round(bus.stream_backlog_health, 6),
-                    "delivery_confidence": round(bus.delivery_confidence, 6),
-                    "stream_backlog_pressure": round(bus.stream_backlog_pressure, 6),
+                    "redis_ping_ok": bus.redis_ping_ok,
+                    "reliability_pressure": round(bus.reliability_pressure, 6),
+                    "contract_pressure": round(bus.contract_pressure, 6),
                 },
             )
         )

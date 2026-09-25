@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from orion.schemas.biometrics_projection import (
     ActiveNodePressureProjectionV1,
     ActiveNodePressureStateV1,
@@ -102,13 +104,9 @@ def _transport_projection(n: int = 1) -> TransportBusProjectionV1:
             node_id=f"node{i}",
             sample_window_id="w1",
             source_trace_id="t1",
-            stream_backlog_health=0.5,
-            delivery_confidence=0.8,
-            stream_backlog_pressure=0.3 + (i % 5) * 0.1,
-            backpressure=0.6,
+            redis_ping_ok=True,
             reliability_pressure=0.2,
-            contract_pressure=0.1,
-            stream_depth_pressure=0.05,
+            contract_pressure=0.1 + (i % 5) * 0.1,
             observed_at=NOW,
         )
     return TransportBusProjectionV1(updated_at=NOW, buses=buses)
@@ -123,10 +121,14 @@ def test_transport_adapter_emits_bus_nodes() -> None:
     assert node.label == "transport:node0"
     assert node.anchor_scope == "orion"
     assert node.subject_ref == "entity:orion"
-    # salience = max of the pressures = backpressure 0.6
-    assert node.signals.salience == 0.6
-    # confidence = delivery_confidence
-    assert node.signals.confidence == 0.8
+    # salience = max(reliability 0.2, contract 0.1)
+    assert node.signals.salience == pytest.approx(0.2)
+    # confidence = 1 - reliability_pressure (what the retired
+    # delivery_confidence always equalled)
+    assert node.signals.confidence == pytest.approx(0.8)
+    assert node.metadata["redis_ping_ok"] is True
+    for retired in ("stream_backlog_health", "delivery_confidence", "stream_backlog_pressure"):
+        assert retired not in node.metadata
     assert node.metadata["source_kind"] == "transport_bus"
     assert node.metadata["target_id"] == "target0"
     assert node.metadata["node_id"] == "node0"
@@ -240,3 +242,25 @@ def test_registry_registers_three_reducer_lanes() -> None:
     assert "orionmem" not in ids
     assert "self_study" not in ids
     assert {"biometrics", "execution", "transport", "attention", "episodes", "curiosity"} <= set(ids)
+
+
+@pytest.mark.parametrize(
+    ("ping_ok", "observer_failures", "expected_confidence"),
+    [(True, 0, 1.0), (None, 0, 0.5), (False, 0, 0.7), (True, 1, 0.7)],
+)
+def test_transport_adapter_confidence_unchanged_by_delivery_confidence_retirement(
+    ping_ok, observer_failures, expected_confidence
+) -> None:
+    """Old: _clamp(delivery_confidence) or 0.7. New: _clamp(1 - reliability_pressure)
+    or 0.7. Uses reducer-produced states so every real reliability value is covered."""
+    from orion.substrate.transport_loop.extract import compute_transport_pressures
+
+    state = TransportBusStateV1(
+        target_id="bus:athena", node_id="athena", sample_window_id="w", source_trace_id="t",
+        redis_ping_ok=ping_ok, observer_failure_count=observer_failures,
+    )
+    state = state.model_copy(update=compute_transport_pressures(state))
+    proj = TransportBusProjectionV1(updated_at=NOW, buses={"bus:athena": state})
+    record = map_transport_ctx_to_substrate({"transport_bus_projection": proj})
+    assert record is not None
+    assert record.nodes[0].signals.confidence == pytest.approx(expected_confidence)

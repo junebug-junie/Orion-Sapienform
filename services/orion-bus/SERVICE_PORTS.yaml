@@ -8,9 +8,9 @@ ports:
     substrate_trace_required: true
     trace_roles:
       - bus_health_observed
-      - bus_stream_depth_observed
-      - bus_stream_lag_observed
-      - bus_backpressure_observed
+      # bus_stream_depth_observed / bus_backpressure_observed retired
+      # 2026-09-25 (XLEN is not backlog); bus_stream_lag_observed dropped as a
+      # deferred role: the live bus has one active consumer group, lag=0.
       - bus_configured_stream_uncataloged
       - bus_schema_validation_failed
       - bus_delivery_anomaly_observed

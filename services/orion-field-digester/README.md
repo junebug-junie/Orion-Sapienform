@@ -131,7 +131,7 @@ explicitly deferred pending live data on whether tension volume drops enough aft
 | `POSTGRES_URI` | (required) | Postgres connection string |
 | `LATTICE_PATH` | `config/field/orion_field_topology.v1.yaml` | Node/capability lattice YAML (canonical) |
 
-`biometrics_lattice.yaml` is retained as a compatibility alias; `orion_field_topology.v1.yaml` is the canonical config. Operators may keep `LATTICE_PATH` pointed at either file.
+`orion_field_topology.v1.yaml` is the only topology file. The old `biometrics_lattice.yaml` compatibility alias was deleted 2026-09-25: nothing live loaded it, and it had silently fallen three edges behind the canonical file.
 | `RECEIPT_POLL_INTERVAL_SEC` | `2.0` | Receipt poll interval |
 | `BIOMETRICS_FIELD_DECAY_RATE` | `0.92` | Per-tick pressure decay multiplier |
 | `BIOMETRICS_FIELD_DIFFUSION_RATE` | `1.0` | Node→capability diffusion strength |
@@ -760,6 +760,22 @@ own failure count (0 for weeks). Gated by `ENABLE_RPC_DELIVERY_FIELD_DIGESTION` 
 in code, on in `.env_example`). Not the same event as `inference_failure_pressure`: that one
 is the gateway's count of backend calls that came back with an error; this one is callers
 whose reply did not arrive before their own deadline, whatever the reason.
+
+## Retired: `stream_backlog_pressure` / `stream_backlog_health` / `delivery_confidence` (2026-09-25)
+
+Removed from `NODE_CHANNELS` (and `stream_backlog_pressure` from `CAPABILITY_CHANNELS`), with no
+successor channel. All three came from the bus observer: the first from `XLEN` on the two
+`world_pulse` Redis Streams, the other two from its own Redis `PING`. A live `SCAN ... TYPE stream`
+found 5 Redis Streams on the whole bus and one live consumer group at lag 0; over 24,633 observer
+ticks the depth read 0.0016 of threshold and `PING` never failed (a failed `PING` would also mean the
+observer cannot publish, so 0.0 could never arrive). `RETIRED_NODE_CHANNELS` /
+`RETIRED_CAPABILITY_CHANNELS` in `app/tensor/channels.py` prune the names from every persisted vector
+on the next reconcile, including the stale capability-level `transport_pressure` left over from the
+2026-07-24 rename. The `capability:transport -> capability:orchestration` edge (whose source channel
+was never written) is deleted. Transport health lives on `capability:transport.pressure`
+(`node:substrate.bus_synaptic`), `catalog_drift_pressure`, `observer_failure_pressure` and RPC health.
+Historical sections below still name these channels; they describe the past.
+See `docs/superpowers/specs/2026-09-25-bus-observer-stream-depth-retirement.md`.
 
 ## Field channel glossary
 
@@ -1495,17 +1511,15 @@ follow-up note, and `test_execution_run_fcc_channels_ignored_off_lane` /
 - **Producer**: `transport_bus` delta, via `hints["stream_backlog_pressure"]`,
   `hints["stream_depth_pressure"]`, or `hints["backpressure"]` — all
   mode=`add` (default), targeting a **node** vector. In
-  `NODE_DECAY_CHANNELS` and `CAPABILITY_DECAY_CHANNELS`. As a node channel
-  it is a diffusion source for `capability:orchestration` (`pressure`,
-  weight `0.90`) and `capability:transport` (`pressure`, weight `0.85`), and
-  for the `capability:transport → capability:orchestration` cap-cap edge
-  (`stream_backlog_pressure` → `stream_backlog_pressure`, weight `0.70`) — but that
-  cap-cap edge's own source value (`capability:transport`'s own
-  `stream_backlog_pressure` key) is only ever seeded `0.0` by
-  `DEFAULT_CAPABILITY_VECTOR`, since the `node:athena → capability:transport`
-  edge maps `stream_backlog_pressure` → `"pressure"`, not `"stream_backlog_pressure"`
-  — no edge ever writes a channel literally named `stream_backlog_pressure`
-  directly onto `capability:transport`.
+  `NODE_DECAY_CHANNELS` and `CAPABILITY_DECAY_CHANNELS`. As of 2026-09-25
+  it feeds no topology edge at all: it was dropped from
+  `node:athena → capability:transport` on 2026-07-26 (degenerate census),
+  and its leftover `node:athena → capability:orchestration` mapping and the
+  `capability:transport → capability:orchestration` cap-cap edge (which read
+  `capability:transport`'s own `stream_backlog_pressure`, a key no edge ever
+  wrote) were both deleted 2026-09-25 (chore/transport-lattice-semantics).
+  Neither had moved a single tick in 72h of live data; see the tombstones in
+  `config/field/orion_field_topology.v1.yaml`.
 - **SelfState dimension fed**: not in `channel_dimension_map` directly
   (removed 2026-07-12). `evidence_channel_map`: `stream_backlog_pressure` →
   `resource_pressure` (evidence-only).

@@ -11,6 +11,7 @@ from app.tensor.channels import (
     DEFAULT_NODE_VECTOR,
     NODE_CHANNELS,
     PRUNED_NODE_IDS,
+    RETIRED_CAPABILITY_CHANNELS,
     RETIRED_NODE_CHANNELS,
     SINGLE_OBSERVER_NODE_CHANNELS,
 )
@@ -30,8 +31,8 @@ def _ensure_node_vector(
         if key not in NODE_CHANNELS:
             merged[key] = val
     # SINGLE_OBSERVER_NODE_CHANNELS (channels.py): some channels can only
-    # ever be legitimately reported by one specific node (stream_backlog_health/
-    # delivery_confidence -> node:athena, the only bus-observer). Every
+    # ever be legitimately reported by one specific node (empty since the
+    # 2026-09-25 retirement of its only two entries). Every
     # other node gets the key pruned here, every tick -- not just skipped
     # at seed time -- so a stale value already persisted on a non-owner
     # node from before this channel was added to this set (or from before
@@ -59,6 +60,20 @@ def _ensure_capability_vector(
             merged[key] = val
     capability_vectors[capability_id] = merged
     return merged
+
+
+def _prune_every_capability_vector(state: FieldStateV1) -> None:
+    """Drop RETIRED_CAPABILITY_CHANNELS from every capability vector and its
+    provenance, lattice-declared or not. Same reason as the node-level pruning
+    below: _ensure_capability_vector() preserves undeclared keys, so a retired
+    name would otherwise sit frozen in the vector (and be read by every
+    generic consumer as a real, quiet channel) forever."""
+    for capability_id, vector in state.capability_vectors.items():
+        provenance = state.capability_provenance.get(capability_id)
+        for channel in RETIRED_CAPABILITY_CHANNELS:
+            vector.pop(channel, None)
+            if provenance is not None:
+                provenance.pop(channel, None)
 
 
 def _prune_every_node_vector(state: FieldStateV1) -> None:
@@ -100,6 +115,18 @@ def _prune_every_node_vector(state: FieldStateV1) -> None:
                     stamps.pop(channel, None)
 
 
+_TENSION_KEY_SEP = "\x1f"  # same separator as app/digestion/tension.py::_KEY_SEP
+
+
+def _prune_retired_tension_baselines(state: FieldStateV1) -> None:
+    """Drop tension baseline entries (keyed "<node_id>\\x1f<channel>") whose
+    channel is retired. Otherwise they round-trip through tension.py's gate
+    state forever for a channel nothing writes (found in review, 2026-09-25)."""
+    for store in (state.tension_baseline_mu, state.tension_baseline_var, state.tension_baseline_n):
+        for flat_key in [k for k in store if k.partition(_TENSION_KEY_SEP)[2] in RETIRED_NODE_CHANNELS]:
+            store.pop(flat_key, None)
+
+
 def _prune_retired_lattice_nodes(state: FieldStateV1) -> None:
     """Drop the whole node_vectors/node_vector_updated_at entry for a node
     that has been permanently removed from the lattice (RETIRED_LATTICE_NODES
@@ -129,9 +156,11 @@ def reconcile_field_state_with_lattice(
     for node_id in lattice.nodes:
         _ensure_node_vector(updated.node_vectors, node_id)
     _prune_every_node_vector(updated)
+    _prune_retired_tension_baselines(updated)
     _prune_retired_lattice_nodes(updated)
     for capability_id in lattice.capabilities:
         _ensure_capability_vector(updated.capability_vectors, capability_id)
+    _prune_every_capability_vector(updated)
     updated.edges = [
         FieldEdgeV1.model_validate(edge.model_dump(mode="json"))
         for edge in lattice.edges

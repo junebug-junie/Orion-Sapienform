@@ -6,7 +6,6 @@ from orion.grammar.atom_signals import (
     clamp01,
     uncertainty_for_cortex_exec_atom,
     uncertainty_from_abs_zscore,
-    uncertainty_from_backpressure,
     uncertainty_from_catalog_drift,
     uncertainty_from_induction_volatility,
     uncertainty_from_route_arbitration,
@@ -39,10 +38,6 @@ def test_abs_zscore_three_sigma_caps_at_one() -> None:
 
 def test_sample_mismatch_ratio() -> None:
     assert uncertainty_from_sample_mismatch(2, 5) == pytest.approx(0.4)
-
-
-def test_backpressure_below_threshold() -> None:
-    assert uncertainty_from_backpressure(100, 400) == pytest.approx(0.0625)
 
 
 def test_catalog_drift() -> None:

@@ -374,6 +374,31 @@ def _latest_run(runs) -> Any:
     return best
 
 
+def _route_run_has_decision(run: Any) -> bool:
+    """False for a run created from a trace-start event alone, before any decision
+    event reached it (every categorical decision field still the reducer default)."""
+    return not (
+        run.lane == "unknown" and run.lane_reason == "unknown" and run.output_mode == "unknown"
+    )
+
+
+def _touched_runs(prev_runs, curr_runs) -> list[tuple[str, Any]]:
+    """Runs in ``curr_runs`` that the batch between ``prev``/``curr`` actually
+    wrote: new trace_ids, plus existing ones whose state changed at all. The
+    route reducer stamps the tick's clock into ``last_updated_at`` on every run it
+    creates or merges, so a written run always differs from its ``prev`` copy;
+    comparing the whole run (not just the timestamp) also catches a revision that
+    somehow kept its timestamp. Runs the batch left alone are identical and are
+    excluded, rather than scored 0.0 against themselves (route_prediction_error's
+    v1 dilution defect)."""
+    touched: list[tuple[str, Any]] = []
+    for trace_id, curr_run in curr_runs.items():
+        prev_run = prev_runs.get(trace_id)
+        if prev_run is None or prev_run != curr_run:
+            touched.append((trace_id, curr_run))
+    return touched
+
+
 def _score_and_update_ewma_prediction_error(
     prev: Any,
     curr: Any,
@@ -524,9 +549,10 @@ def execution_prediction_error(
 #      killed for exactly that reason: nothing failed when it stayed.
 #   2. The replay case is not lost. It diffed TransportBusProjectionV1's
 #      stream_backlog_health / delivery_confidence / stream_backlog_pressure --
-#      fields still persisted, still readable, and recoverable in ~10 lines by
-#      any script that genuinely needs them. Keeping a live-importable symbol is
-#      not the cheap way to preserve that; git history is.
+#      fields that were themselves retired 2026-09-25 (fix/bus-observer-scope)
+#      but survive in historical substrate_reduction_receipts. Keeping a
+#      live-importable symbol is not the cheap way to preserve that; git
+#      history is.
 #
 # The successor is bus_synaptic_prediction_error() above: mesh-wide real
 # inter-service publish traffic via orion_bus_synapse's per-edge EWMA z-scores,
@@ -610,22 +636,16 @@ def chat_prediction_error(
     previous and current turn state for each shared ``turn_id`` rather than reading a
     persisted ``pressure_hints`` dict, since none exists on ``ChatTurnStateV1``.
 
-    Known intra-instrument redundancy (CLAUDE.md metric-quality-gate step 2, re-checked
-    against this instrument specifically, not skipped): ``compute_chat_pressure_hints()``
-    defines ``topic_coherence = max(0.0, 1.0 - repair_pressure_level)``, an affine
-    (monotonic) transform of the same ``repair_pressure_level`` that also drives
-    ``repair_pressure`` directly. A change in ``repair_pressure_level`` therefore moves
-    both ``repair_pressure`` and ``topic_coherence`` by the same magnitude, giving that
-    one underlying signal roughly 2x the weight of ``conversation_load`` in the 3-key
-    mean rather than an even 1x/1x/1x split. This is intentional, not an oversight: the
-    three keys diffed here are exactly ``compute_chat_pressure_hints()``'s full, already-
-    tested output contract (not a new subset invented for this instrument), and
-    ``topic_coherence`` is kept rather than dropped so this function stays a literal diff
-    of "the hints this reducer already reports," not a hand-curated reweighting of them --
-    reintroducing the "hand-classified vocabulary" problem charter §6 item 3 was written
-    to avoid, just one layer down. If this weighting becomes a real problem in practice
-    (verified against live data, not asserted), the fix is upstream in
-    ``compute_chat_pressure_hints()`` itself, not a silent key-drop here.
+    **Definition v2 (2026-09-25): ``topic_coherence`` removed.** v1 diffed three
+    keys, but ``topic_coherence`` was defined as ``1 - repair_pressure_level`` -- the
+    same reading as ``repair_pressure``, flipped. Any repair change moved both by the
+    same amount, so v1's raw delta was ``(d_load + 2*d_repair) / 3``: repair carried
+    2/3 of the weight and conversation load 1/3, with no second signal behind the
+    extra repair share (CLAUDE.md metric-quality-gate step 2, independence). The
+    hint itself is deleted upstream in ``compute_chat_pressure_hints()`` (the only
+    other reader, the field digester, already dropped it), so this is now
+    ``(d_load + d_repair) / 2``: an even split between the two real readings.
+    Bumped ``orion.schemas.prediction_error_definitions`` for ``chat_session``.
 
     **2026-08-19 baseline fix, same disease and same fix as
     ``execution_prediction_error``.** Live-confirmed via a real self-model audit:
@@ -653,7 +673,7 @@ def chat_prediction_error(
             continue
         prev_hints = compute_chat_pressure_hints(prev_turn)
         curr_hints = compute_chat_pressure_hints(curr_turn)
-        for key in ("conversation_load", "repair_pressure", "topic_coherence"):
+        for key in ("conversation_load", "repair_pressure"):
             pv = prev_hints.get(key, 0.0)
             cv = curr_hints.get(key, 0.0)
             deltas.append(abs(cv - pv))
@@ -730,13 +750,44 @@ def route_prediction_error(
     never occur and this instrument would read ``0.0`` forever regardless of real
     arbitration volume. When no trace_id match exists, compare against ``prev``'s
     most-recently-updated run instead (by ``last_updated_at``).
+
+    **Definition v2 (2026-09-25): average over the runs this batch touched, not
+    every run in the projection.** v1 averaged over ``curr.runs`` in full -- up to
+    ``ROUTE_ARBITRATION_MAX_RUNS`` (2000) runs retained for 24h, ~600-800 live.
+    Every run the batch did not touch is identical in ``prev``/``curr`` and scored
+    0.0 against itself, so one run flipping one of four fields read
+    ``0.25 / 800 ~= 0.0003`` and a full four-field flip topped out near 0.0012:
+    structurally unable to read anything but calm (found in PR #2322/#2326). A run
+    is touched when it is new in ``curr`` or differs from its ``prev`` copy -- the
+    route reducer stamps the tick's clock on every run it creates or merges
+    (``route_loop/grammar_extract.py``/``merge.py``), and eviction only removes
+    runs, so this is exactly the set the batch wrote (see ``_touched_runs``).
+    No touched runs -> 0.0, an
+    honest "no decision was made this tick". Several new runs in one batch all
+    share one clock, so they cannot be ordered among themselves; each is compared
+    against ``prev``'s latest run, as before. Bumped
+    ``orion.schemas.prediction_error_definitions`` so Candidate A's persisted
+    baseline, built on v1's near-zero numbers, restarts.
+
+    **Undecided runs are not decisions (review finding, 2026-09-25).** A route
+    decision arrives as a trace-start event plus a decision event. If a batch
+    boundary splits them, the reducer creates the run with ``lane``/``lane_reason``/
+    ``output_mode`` all ``"unknown"``. v1's huge denominator hid this; under v2 it
+    would read 0.75 twice (unknown vs the last decision, then the real decision vs
+    its own unknown copy). So a touched run with no decision yet is skipped, and a
+    run whose previous copy had no decision is compared against the latest
+    *decided* run in ``prev`` instead.
     """
     fields = ("lane", "lane_reason", "output_mode", "mind_requested")
     run_scores: list[float] = []
-    prev_fallback = _latest_run(prev.runs)
-    for trace_id, curr_run in curr.runs.items():
+    prev_fallback = _latest_run(
+        {tid: run for tid, run in prev.runs.items() if _route_run_has_decision(run)}
+    )
+    for trace_id, curr_run in _touched_runs(prev.runs, curr.runs):
+        if not _route_run_has_decision(curr_run):
+            continue
         prev_run = prev.runs.get(trace_id)
-        if prev_run is None:
+        if prev_run is None or not _route_run_has_decision(prev_run):
             prev_run = prev_fallback
         if prev_run is None:
             continue

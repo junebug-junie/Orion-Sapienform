@@ -60,7 +60,7 @@ def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     # this intensity is a full current-availability estimate
                     # recomputed fresh from this tick's pressure_score, not an
                     # incremental delta -- same "current reading" shape as
-                    # stream_backlog_health/delivery_confidence/cortex_exec_step_load elsewhere
+                    # cortex_exec_step_load/the transport channels elsewhere
                     # in this file. Without mode="replace",
                     # apply_perturbations() special-cases channel=="availability"
                     # to floor-only (min(current, intensity)): can decrease but
@@ -521,68 +521,21 @@ def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
     if delta.target_kind == "transport_bus":
         hints = dict((delta.after or {}).get("pressure_hints") or {})
         node_key = _node_key(str((delta.after or {}).get("node_id") or delta.target_id.replace("bus:", "")))
-        # All seven pressure_hints channels below (stream_backlog_health,
-        # delivery_confidence, and the five in the loop further down) are
-        # fresh-value-per-report readings (orion/substrate/transport_loop/
-        # reducer.py::reduce_transport_trace_events recomputes them from
-        # scratch via extract_transport_bus_state_from_events every time it
-        # reduces new bus-trace events -- not an incremental delta), the same
-        # "here's the current reading" shape already used for
-        # cortex_exec_step_load/execution_friction/reasoning_load/failure_pressure/
-        # egress_confidence_deficit/prediction_error elsewhere in this file,
-        # all of which use mode="replace".
+        # Every transport pressure_hint is a fresh reading per report
+        # (reduce_transport_trace_events recomputes it from scratch), so all use
+        # mode="replace". Until 2026-07-22 these used the default "add", which
+        # froze any nonzero value: a real 0.0 report no-ops in add-mode while
+        # still stamping node_vector_updated_at, so decay skipped it too
+        # (live: catalog_drift_pressure stuck at 0.135 for 10+ minutes while
+        # the reducer reported 0.0 every ~10s).
         #
-        # stream_backlog_health/delivery_confidence use mode="replace" and are
-        # deliberately NOT in NODE_DECAY_CHANNELS: both are "current
-        # health/confidence reading" scores (0.0-1.0, default 0.5 -- see
-        # orion/schemas/transport_projection.py and extract.py), not pressure
-        # accumulators, and have no decay story.
-        #
-        # stream_backlog_pressure/catalog_drift_pressure/observer_failure_pressure/
-        # reliability_pressure/contract_pressure (the loop below) ARE in
-        # NODE_DECAY_CHANNELS -- decaying toward baseline if the bus-observer
-        # genuinely goes dark is correct for these. But until 2026-07-22 this
-        # loop left mode at its default "add", which combined with
-        # apply_perturbations() unconditionally stamping
-        # node_vector_updated_at on every perturbation regardless of mode
-        # (perturbation.py) to produce a stuck-value bug: a real "no drift"
-        # report (intensity=0.0) is a no-op in add-mode, so it can never
-        # correct a previously-injected nonzero value back down, while
-        # simultaneously re-marking the channel "fresh" every ~10s -- which
-        # makes apply_decay()'s hold-if-fresh logic skip decay too. Net
-        # effect: whatever nonzero value one of these channels last picked up
-        # from a genuine event got permanently frozen, immune to both
-        # correction (add-mode 0.0 no-ops) and decay (perpetually "fresh").
-        # Confirmed live 2026-07-22: catalog_drift_pressure stuck at
-        # 0.13517857261119032 for 10+ minutes across a service restart while
-        # transport_bus_reducer was continuously emitting the real current
-        # value (0.0) every ~10s the whole time -- traced end to end via
-        # docs/superpowers/design/2026-07-18-collapse-mirror-metacog-redesign.md's
-        # telemetry_anomaly investigation, which was firing on nearly every
-        # tick because of this exact stale channel. mode="replace" is the
-        # same fix already applied to stream_backlog_health/delivery_confidence above.
-        if "stream_backlog_health" in hints:
-            out.append(
-                Perturbation(
-                    node_id=node_key,
-                    channel="stream_backlog_health",
-                    intensity=float(hints["stream_backlog_health"]),
-                    label=delta.delta_id,
-                    mode="replace",
-                )
-            )
-        if "delivery_confidence" in hints:
-            out.append(
-                Perturbation(
-                    node_id=node_key,
-                    channel="delivery_confidence",
-                    intensity=float(hints["delivery_confidence"]),
-                    label=delta.delta_id,
-                    mode="replace",
-                )
-            )
+        # stream_backlog_health / delivery_confidence / stream_backlog_pressure
+        # are no longer injected: retired 2026-09-25 (fix/bus-observer-scope,
+        # docs/superpowers/specs/2026-09-25-bus-observer-stream-depth-
+        # retirement.md). A pre-deploy receipt that still carries those hints
+        # is ignored here, and reconcile prunes the names from every node
+        # (RETIRED_NODE_CHANNELS).
         for channel, key in (
-            ("stream_backlog_pressure", "stream_backlog_pressure"),
             ("catalog_drift_pressure", "catalog_drift_pressure"),
             ("observer_failure_pressure", "observer_failure_pressure"),
             ("reliability_pressure", "reliability_pressure"),
@@ -598,21 +551,6 @@ def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                         mode="replace",
                     )
                 )
-        # stream_depth_pressure/backpressure are NOT separately injected here:
-        # extract.py's stream_backlog_pressure = max(stream_depth_pressure,
-        # backpressure) already folds both into the "stream_backlog_pressure" hint
-        # handled by the loop above. Re-injecting them as their own
-        # mode="add" perturbations against the same channel (as this code did
-        # until 2026-07-22) would fight the replace above -- whichever
-        # Perturbation for "stream_backlog_pressure" apply_perturbations() sees
-        # last in this list wins outright (replace) or silently inflates it
-        # past the intended max() (add), depending on ordering. hints always
-        # carries all of stream_backlog_health/delivery_confidence/stream_depth_pressure/
-        # backpressure/catalog_drift_pressure/observer_failure_pressure/
-        # stream_backlog_pressure/contract_pressure/reliability_pressure together
-        # (single dict returned by compute_transport_pressures()), so
-        # "stream_backlog_pressure" is always present whenever
-        # "stream_depth_pressure"/"backpressure" would have been.
 
     if delta.target_kind == "llm_inference_node":
         # orion-llm-gateway's own count of calls it sent to this node's backends

@@ -140,9 +140,12 @@ class ObserverRollup:
     sample_window_id: str
     observed_at: datetime
     ping_ok: bool
-    stream_lengths: dict[str, int] = field(default_factory=dict)
+    # How many BUS_OBSERVER_STREAMS keys this tick was configured to check for
+    # catalog membership / schema samples. Not a depth reading: per-stream XLEN
+    # depth and the backpressure threshold were retired 2026-09-25 (XLEN is
+    # retained length, not backlog; see grammar_emit.py's retirement note).
+    streams_observed: int = 0
     uncataloged_streams: list[str] = field(default_factory=list)
-    backpressure: list[tuple[str, int, int, str]] = field(default_factory=list)
     # Only streams where mismatch_count > 0 land here (same "only the
     # anomaly, not every check" convention as uncataloged_streams).
     schema_mismatches: list[tuple[str, int, int]] = field(default_factory=list)
@@ -169,15 +172,6 @@ class ObserverRollup:
         )
         c.record_tick_started()
         c.record_health_observed(redis_ping_ok=self.ping_ok)
-        for stream_key, length in sorted(self.stream_lengths.items()):
-            c.record_stream_depth(stream_key=stream_key, stream_length=length)
-        for stream_key, length, threshold, severity in self.backpressure:
-            c.record_backpressure(
-                stream_key=stream_key,
-                stream_length=length,
-                threshold=threshold,
-                severity=severity,
-            )
         for stream_key in self.uncataloged_streams:
             c.record_uncataloged_stream(stream_key=stream_key)
         for stream_key, mismatch_count, sampled_count in self.schema_mismatches:
@@ -191,7 +185,7 @@ class ObserverRollup:
                 undeclared_active_count=self.undeclared_active_count,
                 catalog_size=self.catalog_size,
             )
-        c.record_tick_completed(streams_observed=len(self.stream_lengths))
+        c.record_tick_completed(streams_observed=self.streams_observed)
         return c
 
 
@@ -203,21 +197,10 @@ def build_rollup_from_redis_snapshot(
     sample_window_id: str,
 ) -> ObserverRollup:
     ping_ok = bool(snapshot.get("ping_ok"))
-    stream_lengths: dict[str, int] = dict(snapshot.get("stream_lengths") or {})
     catalog_names: set[str] = set(snapshot.get("catalog_names") or [])
     uncataloged = [
         sk for sk in settings.observer_stream_list if sk not in catalog_names
     ]
-    backpressure: list[tuple[str, int, int, str]] = []
-    for stream_key, length in stream_lengths.items():
-        if length >= settings.bus_stream_depth_critical:
-            backpressure.append(
-                (stream_key, length, settings.bus_stream_depth_critical, "critical")
-            )
-        elif length >= settings.bus_stream_depth_warning:
-            backpressure.append(
-                (stream_key, length, settings.bus_stream_depth_warning, "warning")
-            )
 
     # Schema-mismatch check: only meaningful for streams that are BOTH
     # cataloged (we know what schema to check against) and have a sample to
@@ -246,9 +229,8 @@ def build_rollup_from_redis_snapshot(
         sample_window_id=sample_window_id,
         observed_at=observed_at,
         ping_ok=ping_ok,
-        stream_lengths=stream_lengths,
+        streams_observed=len(settings.observer_stream_list),
         uncataloged_streams=uncataloged,
-        backpressure=backpressure,
         schema_mismatches=schema_mismatches,
         undeclared_active_count=undeclared_active_count,
         catalog_size=len(catalog_names),
@@ -260,12 +242,6 @@ async def _fetch_redis_snapshot(settings: Settings) -> dict[str, Any]:
     client = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
     try:
         ping_ok = (await client.ping()) is True
-        stream_lengths: dict[str, int] = {}
-        for stream_key in settings.observer_stream_list:
-            try:
-                stream_lengths[stream_key] = int(await client.xlen(stream_key))
-            except Exception:
-                stream_lengths[stream_key] = 0
         catalog_names = load_channel_catalog_names(settings.channels_catalog_path)
         catalog_schema_ids = load_channel_catalog_schema_ids(settings.channels_catalog_path)
 
@@ -300,8 +276,7 @@ async def _fetch_redis_snapshot(settings: Settings) -> dict[str, Any]:
         # stream has no declared schema_id to check against, and is already
         # covered by catalog_names/uncataloged_streams above. Cost: at most
         # len(observer_stream_list) * bus_observer_schema_sample_count extra
-        # Redis reads per tick, on top of the len(observer_stream_list) XLEN
-        # calls already made above.
+        # Redis reads per tick, on top of the single PING above.
         stream_samples: dict[str, list[tuple[str, dict[str, Any]]]] = {}
         sample_count = max(settings.bus_observer_schema_sample_count, 0)
         if sample_count > 0:
@@ -318,7 +293,6 @@ async def _fetch_redis_snapshot(settings: Settings) -> dict[str, Any]:
 
         return {
             "ping_ok": ping_ok,
-            "stream_lengths": stream_lengths,
             "catalog_names": catalog_names,
             "catalog_schema_ids": catalog_schema_ids,
             "stream_samples": stream_samples,
@@ -396,7 +370,7 @@ async def run_observer_tick(
         logger.debug(
             "bus observer tick ok window={} streams={}",
             window,
-            len(rollup.stream_lengths),
+            rollup.streams_observed,
         )
     except Exception as exc:
         logger.warning("bus observer tick failed: {}", exc, exc_info=True)

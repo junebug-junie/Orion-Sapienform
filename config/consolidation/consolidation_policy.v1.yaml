@@ -73,20 +73,29 @@ motif_rules:
         allowed:
           - unchanged
 
-  transport_contract_drift_loop:
-    kind: attention_pattern
-    label: transport_contract_drift_loop
-    conditions:
-      attention_target: capability:transport
-      min_contract_pressure: 0.70
-
-  transport_healthy_idle:
-    kind: attention_pattern
-    label: transport_healthy_idle
-    conditions:
-      attention_target: capability:transport
-      max_stream_backlog_pressure: 0.10
-      min_stream_backlog_health: 0.90
+  # transport_contract_drift_loop and transport_healthy_idle DELETED
+  # 2026-09-25 (chore/transport-lattice-semantics; audit:
+  # docs/superpowers/specs/2026-09-22-substrate-lattice-audit.md, L11).
+  #
+  # Both read `dominant_channels` off the capability:transport attention
+  # target. Capability targets are novelty-scored (orion/attention/
+  # field_attention/selectors.py) and ALWAYS carry dominant_channels={}:
+  # capability:transport was a dominant target in 2,883 of 54,401 attention
+  # frames over 48h, every one with an empty dict. So:
+  #   - transport_contract_drift_loop could never fire at any threshold (its
+  #     prefilter needs contract_pressure >= 0.05 in that dict). Its real
+  #     input, capability:transport contract_pressure (catalog drift), read
+  #     max 0.0216 over 72h against the 0.70 bar, and its producer is being
+  #     redefined upstream (fix/bus-observer-scope). Never fired in 30 days.
+  #   - transport_healthy_idle read the missing keys as 0.0 and so called
+  #     transport "healthy idle" every time it was attended at all -- absence
+  #     reported as calm. It fired once (2026-09-25 04:00 window) and wrote a
+  #     `transport_stable` expectation backed by nothing.
+  # Not recalibrated: a threshold on a key that is never present is not a
+  # threshold, and neither motif's expectation has a behavioral consumer
+  # (substrate_expectations is write-and-display only). Not re-keyed onto
+  # pressure_score: "calm" there has no anchor better than a percentile, and
+  # a motif nothing reads is not worth a new constant.
 
 tensor:
   enabled: true

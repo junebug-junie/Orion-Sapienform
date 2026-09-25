@@ -224,12 +224,11 @@ def _sample_proof_chain_for_gates(
                         "bus:athena": {
                             "source_trace_id": source_trace_id,
                             "observed_at": ts,
-                            "stream_backlog_health": 1.0,
-                            "stream_backlog_pressure": stream_backlog_pressure,
+                            "redis_ping_ok": True,
                             "contract_pressure": contract_pressure,
                             "catalog_drift_pressure": 0.0,
                             "observer_failure_pressure": 0.0,
-                            "delivery_confidence": 1.0,
+                            "reliability_pressure": 0.0,
                         }
                     } if source_trace_id else {},
                 },

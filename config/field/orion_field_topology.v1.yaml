@@ -32,11 +32,8 @@ node_channels:
   - execution_friction
   - reasoning_load
   - failure_pressure
-  - stream_backlog_pressure
   - contract_pressure
   - catalog_drift_pressure
-  - delivery_confidence
-  - stream_backlog_health
   - observer_failure_pressure
   - rpc_timeout_pressure
   - conversation_load
@@ -49,7 +46,6 @@ capability_channels:
   - execution_pressure
   - reasoning_pressure
   - reliability_pressure
-  - stream_backlog_pressure
   - contract_pressure
 
 edges:
@@ -204,7 +200,15 @@ edges:
       cortex_exec_step_load: execution_pressure
       execution_friction: reliability_pressure
       failure_pressure: reliability_pressure
-      stream_backlog_pressure: pressure
+      # stream_backlog_pressure: pressure removed 2026-09-25
+      # (chore/transport-lattice-semantics). Same dead world_pulse census
+      # (BUS_OBSERVER_STREAMS) the node:athena -> capability:transport edge
+      # above dropped on 2026-07-26, left behind here. Measured over the 72h
+      # substrate_field_state holds (121,114 ticks): node:athena's
+      # stream_backlog_pressure sat at 0.0016 (max 0.0016, 5 distinct values),
+      # a contribution of 0.0014 against orchestration pressure's own minimum
+      # of 0.108 -- it never won the max once, and capability_provenance never
+      # named it. Removing it changes no tick.
       reasoning_load: reasoning_pressure
 
   - source_id: node:athena
@@ -253,13 +257,33 @@ edges:
       # only input here that can say "inference is failing", not just "busy".
       inference_failure_pressure: reliability_pressure
 
-  # capability→capability: transport degradation bleeds into orchestration
-  - source_id: capability:transport
-    target_id: capability:orchestration
-    edge_type: capability_capability
-    weight: 0.70
-    channel_map:
-      stream_backlog_pressure: stream_backlog_pressure
+  # capability:transport -> capability:orchestration (weight 0.70,
+  # stream_backlog_pressure -> stream_backlog_pressure) DELETED 2026-09-25
+  # (chore/transport-lattice-semantics; docs/superpowers/specs/
+  # 2026-09-22-substrate-lattice-audit.md "Dead topology edge").
+  #
+  # It carried nothing: no edge writes stream_backlog_pressure onto
+  # capability:transport, so the source read 0.0 on 121,114 of 121,114 ticks
+  # (72h). Rewiring it to `pressure -> pressure` was measured and rejected:
+  #   - effect: transport would win orchestration pressure on 0.63% of ticks,
+  #     mean lift +0.025 when it wins, overall mean 0.2088 -> 0.2089;
+  #   - no downstream reach: transport `pressure` already feeds the proposal
+  #     arena's resource_pressure directly (orion/field/pressure.py, max over
+  #     every capability's pressure), and 0.7x of it can never beat itself;
+  #   - no theory anchor: capability:transport.pressure is the FRACTION of
+  #     bus edges with anomalous timing (|z| >= 3, bus_synaptic_prediction_
+  #     error). Bursts count the same as stalls, and orchestration's own RPC
+  #     traffic is one of the things that makes bus timing anomalous, so the
+  #     arrow could as easily point the other way (corr with orchestration
+  #     pressure 0.027, execution_pressure -0.003 -- independent, but not
+  #     evidence of "transport degradation bleeds into orchestration").
+  # The real "the bus is failing orchestration" signal is RPC timeouts,
+  # which feat/rpc-health-field-bridge is bringing onto capability:transport's
+  # reliability_pressure. If that lands and passes the metric gate, a
+  # reliability_pressure -> reliability_pressure edge is the honest successor.
+  # tests/test_field_topology_edges.py refuses any cap->cap edge whose source
+  # channel nothing writes. stream_backlog_pressure itself is retired end to
+  # end as of fix/bus-observer-scope (2026-09-25).
 
   # capability→capability: inference unavailability raises orchestration pressure
   - source_id: capability:llm_inference

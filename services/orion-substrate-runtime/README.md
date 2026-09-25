@@ -459,7 +459,8 @@ gate writeup.
 fourth and fifth instruments in this family, shadow-built 2026-07-21, closing charter §6
 item 3's producer-instrumentation sweep across all five named domains. `chat_prediction_
 error()` diffs `compute_chat_pressure_hints()` (`orion/substrate/chat_loop/
-grammar_extract.py:114` — `conversation_load`/`repair_pressure`/`topic_coherence`, computed
+grammar_extract.py` — `conversation_load`/`repair_pressure`; `topic_coherence` was removed
+2026-09-25 as a mirror of `repair_pressure` (definition v2, see below), computed
 transiently, not persisted on `ChatTurnStateV1`) across successive turn states, same
 fixed-key/`_THRESHOLD`-scaled shape execution/transport originally shared (execution moved off
 this shape 2026-07-28 -- see the EWMA-baseline entry below; `chat_prediction_error()` itself still
@@ -1333,3 +1334,17 @@ keep separate" question this section used to pose never got answered — the who
 question became moot once both sides were deleted instead. `orion/autonomy/
 signal_drive_map.py` (the shared taxonomy config both used to import) is also
 deleted.
+
+## Prediction-error definition v2 for route and chat (2026-09-25)
+
+- `route_prediction_error()` averages its decision-mismatch rate over only the runs a batch
+  touched (new, or changed since `prev`). v1 averaged over every run in the 24h projection
+  (~600-800), so one flip read ~0.0003 and route could never read non-calm.
+- `chat_prediction_error()` diffs `conversation_load` and `repair_pressure` only;
+  `topic_coherence` (`1 - repair_pressure`) is deleted from `compute_chat_pressure_hints()`.
+- Every prediction-error receipt carries `after.definition_version`
+  (`orion/schemas/prediction_error_definitions.py`) so the attention runtime restarts
+  Candidate A's baseline for a domain whose formula changed.
+- Before/after replay over the live projections:
+  `scripts/analysis/replay_route_chat_prediction_error_definitions.py`; numbers in
+  `docs/superpowers/pr-reports/2026-09-25-route-pe-touched-runs-and-topic-coherence-pr.md`.

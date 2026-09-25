@@ -53,20 +53,38 @@ def test_retired_names_are_pruned_from_an_OFF_LATTICE_node() -> None:
     assert out.node_vectors["node:substrate.chat"] == {}
 
 
-def test_single_observer_channels_are_pruned_from_an_off_lattice_node() -> None:
-    """The live bug (2026-08-14, on the since-retired node:rpc_timeout): an off-lattice node held delivery_confidence/stream_backlog_health
-    at 0.5 with a 774s-old write while node:athena reported 1.0 fresh. Both are
-    HIGHER_IS_BETTER, so min() let the stale 0.5 win.
+def test_single_observer_channels_are_pruned_from_an_off_lattice_node(monkeypatch) -> None:
+    """The live bug (2026-08-14, on the since-retired node:rpc_timeout): an
+    off-lattice node held delivery_confidence/stream_backlog_health at 0.5 with a
+    774s-old write while node:athena reported 1.0 fresh; min() let the stale 0.5
+    win. Both channels were retired 2026-09-25, so the mechanism is exercised
+    with a synthetic registered channel.
     """
+    monkeypatch.setitem(SINGLE_OBSERVER_NODE_CHANNELS, "synthetic_health", "node:athena")
     state = _state({
-        "node:substrate.chat": {"delivery_confidence": 0.5, "stream_backlog_health": 0.5},
-        "node:athena": {"delivery_confidence": 1.0, "stream_backlog_health": 1.0},
+        "node:substrate.chat": {"synthetic_health": 0.5},
+        "node:athena": {"synthetic_health": 1.0},
     })
     out = reconcile_field_state_with_lattice(state, lattice=_lattice())
     assert out.node_vectors["node:substrate.chat"] == {}
-    # The declared owner keeps them.
-    assert out.node_vectors["node:athena"]["delivery_confidence"] == 1.0
-    assert out.node_vectors["node:athena"]["stream_backlog_health"] == 1.0
+    # The declared owner keeps it.
+    assert out.node_vectors["node:athena"]["synthetic_health"] == 1.0
+
+
+def test_retired_bus_observer_channels_are_pruned_even_from_their_old_owner() -> None:
+    """2026-09-25: node:athena was the declared owner of both; now retired, no
+    node keeps them (the live vector held 1.0/1.0/0.0016)."""
+    state = _state({
+        "node:athena": {
+            "delivery_confidence": 1.0,
+            "stream_backlog_health": 1.0,
+            "stream_backlog_pressure": 0.0016,
+        },
+    })
+    out = reconcile_field_state_with_lattice(state, lattice=_lattice())
+    vec = out.node_vectors["node:athena"]
+    for retired in ("delivery_confidence", "stream_backlog_health", "stream_backlog_pressure"):
+        assert retired not in vec
 
 
 def test_pruning_also_drops_the_orphaned_write_timestamp() -> None:
@@ -95,11 +113,18 @@ def test_retired_set_and_live_channels_do_not_overlap() -> None:
     retired name to NODE_CHANNELS and having it silently pruned every tick."""
     from app.tensor.channels import CAPABILITY_CHANNELS, NODE_CHANNELS
 
+    from app.tensor.channels import RETIRED_CAPABILITY_CHANNELS
+
     live = set(NODE_CHANNELS) | set(CAPABILITY_CHANNELS)
     assert not (set(RETIRED_NODE_CHANNELS) & live)
-    # Every replacement named in the map must itself be a real channel.
-    for old, new in RETIRED_NODE_CHANNELS.items():
-        assert new in live, f"{old} claims to be replaced by {new}, which does not exist"
+    assert not (set(RETIRED_CAPABILITY_CHANNELS) & set(CAPABILITY_CHANNELS))
+    # Every replacement named in the map must itself be a real channel; None
+    # means "retired with no successor" and is allowed.
+    for retired in (RETIRED_NODE_CHANNELS, RETIRED_CAPABILITY_CHANNELS):
+        for old, new in retired.items():
+            if new is None:
+                continue
+            assert new in live, f"{old} claims to be replaced by {new}, which does not exist"
 
 
 def test_single_observer_owners_are_real_and_not_retired() -> None:
@@ -135,3 +160,18 @@ def test_retired_lattice_nodes_are_not_currently_in_the_lattice() -> None:
     immediately deletes it every tick, i.e. it could never actually reconcile."""
     lattice_nodes = set(_lattice().nodes)
     assert not (RETIRED_LATTICE_NODES & lattice_nodes)
+
+
+def test_retired_channels_are_pruned_from_tension_baselines() -> None:
+    """Review finding 2026-09-25: tension baselines keyed "<node>\\x1f<channel>"
+    round-tripped for retired channels forever. Live channels are kept."""
+    retired_key = "node:athena\x1fstream_backlog_health"
+    live_key = "node:athena\x1fcpu_pressure"
+    state = _state({"node:athena": {"cpu_pressure": 0.2}})
+    state.tension_baseline_mu = {retired_key: 1.0, live_key: 0.2}
+    state.tension_baseline_var = {retired_key: 0.0, live_key: 0.01}
+    state.tension_baseline_n = {retired_key: 50, live_key: 50}
+    out = reconcile_field_state_with_lattice(state, lattice=_lattice())
+    for store in (out.tension_baseline_mu, out.tension_baseline_var, out.tension_baseline_n):
+        assert retired_key not in store
+        assert live_key in store

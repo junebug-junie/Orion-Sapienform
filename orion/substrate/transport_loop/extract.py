@@ -7,7 +7,6 @@ from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.transport_projection import TransportBusStateV1
 
 from .constants import (
-    DEFAULT_STREAM_DEPTH_CRITICAL,
     NON_BUS_TRANSPORT_NODE_IDS,
     TRANSPORT_SOURCE_SERVICE,
     TRANSPORT_TRACE_PREFIX,
@@ -21,14 +20,17 @@ _IGNORED_ROLES = frozenset(
         "trace_ended",
         "edge_emitted",
         "bus_observer_tick_started",
+        # Retired 2026-09-25 (fix/bus-observer-scope): XLEN depth/backpressure.
+        # Named here so a pre-deploy trace still in the reducer backlog is
+        # skipped on purpose, not by falling through ATOM_ROLES.
+        "bus_stream_depth_observed",
+        "bus_backpressure_observed",
     }
 )
 
-_ATOM_ROLES = frozenset(
+ATOM_ROLES = frozenset(
     {
         "bus_health_observed",
-        "bus_stream_depth_observed",
-        "bus_backpressure_observed",
         "bus_configured_stream_uncataloged",
         "bus_schema_validation_failed",
         "bus_observer_tick_failed",
@@ -78,23 +80,23 @@ def _boolish(val: str | None) -> bool | None:
     return None
 
 
-def compute_transport_pressures(
-    state: TransportBusStateV1,
-    *,
-    stream_depth_critical: int = DEFAULT_STREAM_DEPTH_CRITICAL,
-) -> dict[str, float]:
+def compute_transport_pressures(state: TransportBusStateV1) -> dict[str, float]:
+    # stream_backlog_health / delivery_confidence / stream_depth_pressure /
+    # backpressure / stream_backlog_pressure were retired 2026-09-25
+    # (fix/bus-observer-scope, docs/superpowers/specs/2026-09-25-bus-observer-
+    # stream-depth-retirement.md). ping_pressure below is the one piece of
+    # that family reliability_pressure actually depended on, kept with the
+    # exact same values (ok=0.0, unknown=0.5, failed=1.0) so
+    # reliability_pressure does not change meaning.
     if state.redis_ping_ok is True:
-        stream_backlog_health = 1.0
+        ping_pressure = 0.0
     elif state.redis_ping_ok is False:
-        stream_backlog_health = 0.0
+        ping_pressure = 1.0
     else:
-        stream_backlog_health = 0.5
+        ping_pressure = 0.5
 
     observer_failure_pressure = 1.0 if state.observer_failure_count > 0 else 0.0
     denom = max(state.streams_observed, 1)
-    critical = max(stream_depth_critical, 1)
-    stream_depth_pressure = min(state.max_stream_depth / critical, 1.0)
-    backpressure = min(state.backpressure_count / denom, 1.0)
     # Fixed 2026-07-25 (docs/superpowers/specs/2026-07-25-catalog-drift-
     # pressure-mesh-wide-fix.md): was uncataloged_stream_count/denom, capped
     # at whatever this observer's own small configured stream list covers
@@ -119,28 +121,13 @@ def compute_transport_pressures(
     # shape as catalog_drift_pressure on purpose -- keeps both channels'
     # dynamic range comparable under the shared watch_at thresholds in
     # config/substrate-lattice/transport_lattice_policy.v1.yaml.
-
-    if observer_failure_pressure > 0.0:
-        delivery_confidence = 0.0
-    elif stream_backlog_health >= 1.0:
-        delivery_confidence = 1.0
-    elif stream_backlog_health == 0.5:
-        delivery_confidence = 0.5
-    else:
-        delivery_confidence = 0.0
-
-    stream_backlog_pressure = max(stream_depth_pressure, backpressure)
     contract_pressure = min(state.schema_mismatch_stream_count / denom, 1.0)
-    reliability_pressure = max(observer_failure_pressure, 1.0 - delivery_confidence)
+    # Same values as the old max(observer_failure, 1 - delivery_confidence).
+    reliability_pressure = max(observer_failure_pressure, ping_pressure)
 
     return {
-        "stream_backlog_health": stream_backlog_health,
-        "delivery_confidence": delivery_confidence,
-        "stream_depth_pressure": stream_depth_pressure,
-        "backpressure": backpressure,
         "catalog_drift_pressure": catalog_drift_pressure,
         "observer_failure_pressure": observer_failure_pressure,
-        "stream_backlog_pressure": stream_backlog_pressure,
         "contract_pressure": contract_pressure,
         "reliability_pressure": reliability_pressure,
     }
@@ -150,7 +137,6 @@ def extract_transport_bus_state_from_events(
     events: list[GrammarEventV1],
     *,
     now: datetime | None = None,
-    stream_depth_critical: int = DEFAULT_STREAM_DEPTH_CRITICAL,
 ) -> TransportBusStateV1:
     clock = _utc_now(now)
     if not events:
@@ -165,10 +151,7 @@ def extract_transport_bus_state_from_events(
     target_id = f"bus:{node_id}"
 
     streams_observed = 0
-    total_stream_depth = 0
-    max_stream_depth = 0
     uncataloged_stream_count = 0
-    backpressure_count = 0
     observer_failure_count = 0
     schema_mismatch_stream_count = 0
     undeclared_active_count: int | None = None
@@ -185,7 +168,7 @@ def extract_transport_bus_state_from_events(
         role = (atom.semantic_role or "").strip()
         if not role or role in _IGNORED_ROLES:
             continue
-        if role not in _ATOM_ROLES:
+        if role not in ATOM_ROLES:
             continue
 
         evidence_event_ids.append(event.event_id)
@@ -193,23 +176,6 @@ def extract_transport_bus_state_from_events(
 
         if role == "bus_health_observed":
             redis_ping_ok = _boolish(kv.get("redis_ping_ok"))
-        elif role == "bus_stream_depth_observed":
-            try:
-                length = int(kv.get("stream_length", "0") or 0)
-            except ValueError:
-                length = 0
-            streams_observed += 1
-            total_stream_depth += length
-            max_stream_depth = max(max_stream_depth, length)
-        elif role == "bus_backpressure_observed":
-            backpressure_count += 1
-            try:
-                length = int(kv.get("stream_length", "0") or 0)
-            except ValueError:
-                length = 0
-            streams_observed = max(streams_observed, 1)
-            total_stream_depth += length
-            max_stream_depth = max(max_stream_depth, length)
         elif role == "bus_configured_stream_uncataloged":
             uncataloged_stream_count += 1
         elif role == "bus_schema_validation_failed":
@@ -236,10 +202,7 @@ def extract_transport_bus_state_from_events(
         source_trace_id=trace_id,
         redis_ping_ok=redis_ping_ok,
         streams_observed=streams_observed,
-        total_stream_depth=total_stream_depth,
-        max_stream_depth=max_stream_depth,
         uncataloged_stream_count=uncataloged_stream_count,
-        backpressure_count=backpressure_count,
         observer_failure_count=observer_failure_count,
         schema_mismatch_stream_count=schema_mismatch_stream_count,
         undeclared_active_count=undeclared_active_count,
@@ -247,5 +210,5 @@ def extract_transport_bus_state_from_events(
         evidence_event_ids=evidence_event_ids,
         observed_at=clock,
     )
-    pressures = compute_transport_pressures(state, stream_depth_critical=stream_depth_critical)
+    pressures = compute_transport_pressures(state)
     return state.model_copy(update=pressures)

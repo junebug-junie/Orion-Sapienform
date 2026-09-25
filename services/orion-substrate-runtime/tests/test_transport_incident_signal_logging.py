@@ -35,38 +35,28 @@ def _projection(**buses: TransportBusStateV1) -> TransportBusProjectionV1:
 
 
 def test_logs_nothing_when_all_signals_quiet(caplog) -> None:
-    projection = _projection(**{"bus:athena": _bus(max_stream_depth=91, stream_depth_pressure=0.00091)})
+    projection = _projection(**{"bus:athena": _bus(redis_ping_ok=True)})
     with caplog.at_level(logging.INFO, logger="orion.substrate.runtime"):
         _log_transport_incident_signals(projection)
     assert "transport_incident_signal" not in caplog.text
 
 
-def test_logs_when_backpressure_nonzero(caplog) -> None:
-    projection = _projection(**{"bus:athena": _bus(backpressure=0.5, backpressure_count=3)})
+def test_logs_when_reliability_pressure_nonzero(caplog) -> None:
+    projection = _projection(**{"bus:athena": _bus(redis_ping_ok=False, reliability_pressure=1.0)})
     with caplog.at_level(logging.INFO, logger="orion.substrate.runtime"):
         _log_transport_incident_signals(projection)
     assert "transport_incident_signal" in caplog.text
     assert "bus:athena" in caplog.text
-    assert "backpressure" in caplog.text
+    assert "reliability_pressure" in caplog.text
 
 
-def test_does_not_fire_on_stream_depth_pressure_alone() -> None:
-    """stream_depth_pressure is structurally nonzero on almost every real tick
-    (any nonzero queue depth divides through DEFAULT_STREAM_DEPTH_CRITICAL to a
-    small positive number) -- it must not, by itself, count as an incident."""
-    projection = _projection(
-        **{"bus:athena": _bus(max_stream_depth=91, stream_depth_pressure=0.00091)}
-    )
-    logger = logging.getLogger("orion.substrate.runtime")
-    records: list[str] = []
-    handler = logging.Handler()
-    handler.emit = lambda record: records.append(record.getMessage())
-    logger.addHandler(handler)
-    try:
-        _log_transport_incident_signals(projection)
-    finally:
-        logger.removeHandler(handler)
-    assert not any("transport_incident_signal" in r for r in records)
+def test_retired_depth_family_is_not_an_incident_field() -> None:
+    """backpressure / max_stream_depth were retired 2026-09-25
+    (fix/bus-observer-scope); the incident set must not name them."""
+    from app.worker import _TRANSPORT_INCIDENT_FIELDS
+
+    assert "backpressure" not in _TRANSPORT_INCIDENT_FIELDS
+    assert "stream_depth_pressure" not in _TRANSPORT_INCIDENT_FIELDS
 
 
 def test_multiple_buses_each_checked_independently(caplog) -> None:

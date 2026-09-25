@@ -181,4 +181,4 @@ redis-cli -u "$ORION_BUS_URL" GET "orion:cortex-exec:session_turn_phase:<your or
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2347

@@ -29,7 +29,7 @@ from orion.schemas.gpu_pool import (
     GpuPoolControlV1, GpuPoolStateRequestV1, LlmWorkerAnnounceV1,
 )
 
-from app.runtime import PoolRuntime
+from app.runtime import SLOW_LOCK_MS, PoolRuntime
 from app.settings import get_settings
 from app.store import CHECKPOINT_SCHEMA, PostgresStore, ensure_checkpoint_schema, pool_kwargs
 
@@ -256,6 +256,15 @@ app = FastAPI(title="orion-gpu-pool", lifespan=lifespan)
 async def health() -> dict[str, Any]:
     return {"ok": runtime is not None, "service": _settings.service_name, "mode": _settings.mode,
             "config_digest": runtime.cfg.digest if runtime else None}
+
+
+@app.get("/v1/lock-stats")
+async def lock_stats() -> dict[str, Any]:
+    """Per-op lock wait/hold since the previous call (then reset). An op with max_wait_ms in the
+    seconds is what stalls lease RPCs; the log line gpu_pool_slow_lock names its phases."""
+    if runtime is None:
+        raise HTTPException(status_code=503, detail="not ready")
+    return {"slow_threshold_ms": SLOW_LOCK_MS, "ops": runtime.lock_stats.drain()}
 
 
 @app.get("/v1/pool")

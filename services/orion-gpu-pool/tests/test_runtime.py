@@ -453,3 +453,35 @@ def test_a_briefly_down_role_keeps_its_context_so_big_prompts_wait_for_it():
         r = await rt.acquire(acq_r("agent", min_ctx_tokens=100_000))
         assert r.status == "backlogged", r.reason
     run(go())
+
+
+def test_a_slow_lock_holder_is_named_and_counted(caplog):
+    """Every verb and the tick share one lock; a slow holder must show up as evidence (the log
+    line names the op and its phases, /v1/lock-stats counts it) instead of as unexplained RPC lag."""
+    import logging
+
+    from app import runtime as runtime_mod
+
+    async def go():
+        rt, _ = make()
+        await boot(rt)
+        rt.lock_stats.drain()
+        real = rt.store.live_leases
+
+        async def slow_live_leases():
+            await asyncio.sleep(0.3)
+            return await real()
+
+        rt.store.live_leases = slow_live_leases
+        with caplog.at_level(logging.WARNING, logger=runtime_mod.logger.name):
+            waiting = asyncio.create_task(rt.acquire(acq("fast")))
+            await asyncio.sleep(0.01)
+            await rt.tick()                                  # queued behind the slow acquire
+            await waiting
+        stats = rt.lock_stats.drain()
+        assert stats["acquire"]["max_hold_ms"] >= 250 and stats["acquire"]["slow"] == 1
+        assert stats["tick"]["max_wait_ms"] >= 200
+        slow = [r.getMessage() for r in caplog.records if "gpu_pool_slow_lock" in r.getMessage()]
+        assert any("op=acquire" in m and "live_leases" in m for m in slow), slow
+        assert rt.lock_stats.drain() == {}                   # drained
+    run(go())

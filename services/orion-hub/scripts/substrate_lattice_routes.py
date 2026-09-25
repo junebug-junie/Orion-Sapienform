@@ -27,6 +27,15 @@ def _config_dir() -> Path:
     """Resolve config/substrate-lattice for dev, Docker (/app), and compose (/repo mount)."""
     return resolve_repo_root_details().repo_root / "config" / "substrate-lattice"
 
+# Producer lane rail. `status` = whether the lane's grammar producer is live on
+# orion:grammar:event (the channel's producer list in orion/bus/channels.yaml is
+# the canonical catalog, gated by tests/test_grammar_event_producer_catalog.py).
+# Only the transport lane has a proof chain in this console. The biometrics and
+# execution rows said "planned" until 2026-09-25 although both producers had
+# been live for months (grammar_events, 7 days to 2026-09-25: orion-biometrics
+# 812k rows, orion-cortex-exec 266k, orion-cortex-orch 11k). The deleted
+# config/substrate-lattice/grammar_producer_registry.v1.yaml carried the same
+# stale statuses.
 _LANES: list[dict[str, Any]] = [
     {
         "lane_id": "transport",
@@ -41,13 +50,19 @@ _LANES: list[dict[str, Any]] = [
         "lane_id": "biometrics",
         "producer_id": "orion-biometrics",
         "source_service": "orion-biometrics",
-        "status": "planned",
+        "status": "live",
     },
     {
         "lane_id": "execution",
         "producer_id": "orion-cortex-exec",
         "source_service": "orion-cortex-exec",
-        "status": "planned",
+        "status": "live",
+    },
+    {
+        "lane_id": "route",
+        "producer_id": "orion-cortex-orch",
+        "source_service": "orion-cortex-orch",
+        "status": "live",
     },
 ]
 
@@ -422,76 +437,145 @@ def _compute_verdict(chain: dict[str, Any]) -> str:
     return f"Transport lane partially stale: {stale_str} stale."
 
 
-# Channel definitions for in-memory salience computation.
-# IMPORTANT: These values MIRROR config/substrate-lattice/transport_lattice_policy.v1.yaml.
-# If you edit dimension_weights or watch_at in the YAML, update this dict to match.
-_TRANSPORT_CHANNELS: dict[str, dict] = {
-    "stream_backlog_pressure": {
-        "dimension": "delivery_integrity",
-        "dimension_weight": 0.35,
-        "watch_at": 0.25,
-        "action_ceiling": "read_only",
-    },
-    "contract_pressure": {
-        "dimension": "contract_integrity",
-        "dimension_weight": 0.30,
-        "watch_at": 0.50,
-        "action_ceiling": "summarize",
-    },
-    "catalog_drift_pressure": {
-        "dimension": "topology_integrity",
-        "dimension_weight": 0.15,
-        "watch_at": 0.50,
-        "action_ceiling": "watch",
-    },
-    "observer_failure_pressure": {
-        "dimension": "observability_integrity",
-        "dimension_weight": 0.20,
-        "watch_at": 0.25,
-        "action_ceiling": "summarize",
-    },
+# Where each transport-lattice channel's live value is read from. This is NOT a
+# copy of the policy: thresholds, ceilings and the channel list itself come only
+# from config/substrate-lattice/transport_lattice_policy.v1.yaml (`channels:`),
+# via _policy_channels(). This table only says which proof-chain layer holds a
+# channel's current reading. Default for a channel not listed here: the max of
+# that same key across M3's per-bus TransportBusStateV1 rows
+# (orion/schemas/transport_projection.py) -- M3's top level carries no pressure
+# fields at all, which is why the old simulator (reading M3's top level) always
+# saw 0.0.
+#
+# bus_synaptic_pressure has no M3 field; its only reading is M4's
+# capability:transport `pressure`, fed by node:substrate.bus_synaptic's
+# prediction_error edge in config/field/orion_field_topology.v1.yaml -- the same
+# value the pressure gate below already reads.
+_CHANNEL_VALUE_SOURCES: dict[str, tuple[str, str]] = {
+    "bus_synaptic_pressure": ("m4", "pressure"),
 }
 
+# Ordering used to pick the strongest action ceiling among channels that crossed
+# their watch threshold. The hub simulator's own ranking, not a mirror of any
+# config file: every `action_ceiling` value in transport_lattice_policy.v1.yaml
+# must appear here (enforced by test_policy_ceilings_are_all_ranked).
 _CEILING_RANK = [
-    "ignore", "no_op_motif", "watch", "summarize",
-    "read_only", "propose_read_only", "dry_run", "request_operator"
+    "ignore", "watch", "summarize",
+    "read_only", "propose_read_only", "dry_run", "request_operator",
 ]
 
 
+def _policy_channels() -> dict[str, dict[str, Any]]:
+    """The transport lane's channel definitions, straight from the policy YAML."""
+    channels = _load_yaml("transport_lattice_policy.v1.yaml").get("channels") or {}
+    return {str(k): dict(v or {}) for k, v in channels.items()}
+
+
+def _channel_value(chain: dict[str, Any], channel_id: str) -> tuple[float | None, str]:
+    """Current reading for one policy channel, or None when it cannot be measured.
+
+    Stale or missing source layers return None rather than 0.0: an unmeasured
+    channel must not read as a calm one.
+    """
+    transport = chain.get("transport", {})
+    layer, key = _CHANNEL_VALUE_SOURCES.get(channel_id, ("m3_buses", channel_id))
+    if layer == "m4":
+        source = f"M4 capability:transport.{key}"
+        m4 = transport.get("m4", {})
+        if m4.get("status") in (None, "stale", "missing"):
+            return None, source
+        value = ((m4.get("values") or {}).get("field_vector") or {}).get(key)
+        return (float(value) if isinstance(value, (int, float)) else None), source
+
+    source = f"M3 max(buses[*].{key})"
+    m3 = transport.get("m3", {})
+    if m3.get("status") in (None, "stale", "missing"):
+        return None, source
+    buses = (m3.get("values") or {}).get("buses") or {}
+    readings = [
+        float(bus[key])
+        for bus in buses.values()
+        if isinstance(bus, dict) and isinstance(bus.get(key), (int, float))
+    ]
+    return (max(readings) if readings else None), source
+
+
+def _channel_values(chain: dict[str, Any], channels: dict[str, dict[str, Any]]) -> dict[str, float | None]:
+    return {ch_id: _channel_value(chain, ch_id)[0] for ch_id in channels}
+
+
+def _lattice_channel_rows(chain: dict[str, Any], channels: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per-channel rows for the Lattice Values panel and the simulator inputs."""
+    rows: list[dict[str, Any]] = []
+    for ch_id, ch_def in channels.items():
+        value, source = _channel_value(chain, ch_id)
+        watch_at = ch_def.get("watch_at")
+        if value is None or watch_at is None:
+            state = "unmeasured" if value is None else "no_threshold"
+        else:
+            state = "watch" if value >= float(watch_at) else "quiet"
+        rows.append({
+            "channel_id": ch_id,
+            "dimension": ch_def.get("dimension"),
+            "watch_at": watch_at,
+            "summarize_at": ch_def.get("summarize_at"),
+            "propose_at": ch_def.get("propose_at"),
+            "action_ceiling": ch_def.get("action_ceiling"),
+            "value": value,
+            "value_source": source,
+            "state": state,
+        })
+    return rows
+
+
 def _compute_salience(
-    bus_summary: dict[str, Any],
-    threshold_overrides: dict[str, float],
+    values: dict[str, float | None],
+    channels: dict[str, dict[str, Any]],
+    thresholds: dict[str, float],
 ) -> dict[str, Any]:
-    """Compute attention bucket, salience, and action ceiling from bus values and thresholds.
+    """Attention bucket, salience and action ceiling for one threshold set.
+
+    salience = the strongest reading among channels at or above their watch
+    threshold (0.0 when none are). There is deliberately no weighted sum: the
+    policy's old per-dimension weights were read by no process and were
+    deleted (docs/superpowers/specs/2026-09-22-substrate-lattice-audit.md).
+    Channels with no current reading never promote and are listed under
+    `unmeasured_channels` instead of being treated as 0.0.
 
     No DB access. Pure computation on already-loaded data.
     """
-    total_salience = 0.0
-    promoted_ceilings: list[str] = []
+    promoted: list[tuple[str, float, str]] = []
+    unmeasured: list[str] = []
+    for ch_id, ch_def in channels.items():
+        value = values.get(ch_id)
+        if value is None:
+            unmeasured.append(ch_id)
+            continue
+        default_watch = ch_def.get("watch_at")
+        watch_at = thresholds.get(f"{ch_id}_watch_at", default_watch)
+        if watch_at is None:
+            continue
+        if value >= float(watch_at):
+            promoted.append((ch_id, value, str(ch_def.get("action_ceiling") or "ignore")))
 
-    for ch_id, ch_def in _TRANSPORT_CHANNELS.items():
-        value = float(bus_summary.get(ch_id) or 0.0)
-        watch_at_key = f"{ch_id}_watch_at"
-        watch_at = threshold_overrides.get(watch_at_key, ch_def["watch_at"])
-
-        if value >= watch_at:
-            total_salience += value * ch_def["dimension_weight"]
-            promoted_ceilings.append(ch_def["action_ceiling"])
-
-    if promoted_ceilings:
+    if promoted:
         action_ceiling = max(
-            promoted_ceilings,
+            (ceiling for _, _, ceiling in promoted),
             key=lambda c: _CEILING_RANK.index(c) if c in _CEILING_RANK else -1,
         )
         bucket = "capability_targets"
+        salience = max(value for _, value, _ in promoted)
     else:
         action_ceiling = "ignore"
         bucket = "suppressed_targets"
+        salience = 0.0
 
     return {
         "bucket": bucket,
-        "salience": round(total_salience, 4),
+        "salience": round(salience, 4),
         "action_ceiling": action_ceiling,
+        "promoted_channels": [ch_id for ch_id, _, _ in promoted],
+        "unmeasured_channels": unmeasured,
     }
 
 
@@ -664,6 +748,7 @@ async def transport_latest() -> dict[str, Any]:
     chain = await asyncio.to_thread(_load_transport_proof_chain, freshness_threshold_sec=_freshness_threshold())
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
+    chain["lattice_channels"] = _lattice_channel_rows(chain, _policy_channels())
     return chain
 
 
@@ -693,21 +778,24 @@ async def transport_simulate(req: SimulateRequest) -> dict[str, Any]:
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
 
-    # Extract bus values for salience computation
-    m3 = chain.get("transport", {}).get("m3", {})
-    bus = m3.get("values", {}) if m3.get("status") != "missing" else {}
+    channels = _policy_channels()
+    if not channels:
+        raise HTTPException(status_code=503, detail="transport_lattice_policy_not_found")
+    values = _channel_values(chain, channels)
+    current_thresholds: dict[str, float] = {
+        f"{ch_id}_watch_at": float(ch_def["watch_at"])
+        for ch_id, ch_def in channels.items()
+        if ch_def.get("watch_at") is not None
+    }
+    # Only thresholds naming a real policy channel apply; anything else (e.g. a
+    # retired channel id from a stale client) is reported, not silently used.
+    simulated_thresholds = {
+        **current_thresholds,
+        **{k: v for k, v in req.thresholds.items() if k in current_thresholds},
+    }
 
-    lattice_policy = _load_yaml("transport_lattice_policy.v1.yaml")
-    policy_channels = lattice_policy.get("channels", {})
-    current_thresholds: dict[str, float] = {}
-    for ch_id, ch_def in _TRANSPORT_CHANNELS.items():
-        yaml_watch = (policy_channels.get(ch_id) or {}).get("watch_at", ch_def["watch_at"])
-        current_thresholds[f"{ch_id}_watch_at"] = float(yaml_watch)
-
-    simulated_thresholds = {**current_thresholds, **req.thresholds}
-
-    current_result = _compute_salience(bus, current_thresholds)
-    simulated_result = _compute_salience(bus, simulated_thresholds)
+    current_result = _compute_salience(values, channels, current_thresholds)
+    simulated_result = _compute_salience(values, channels, simulated_thresholds)
 
     changed = (
         current_result["bucket"] != simulated_result["bucket"]
@@ -721,6 +809,8 @@ async def transport_simulate(req: SimulateRequest) -> dict[str, Any]:
         "simulated": simulated_result,
         "changed": changed,
         "applied_thresholds": simulated_thresholds,
+        "ignored_thresholds": [k for k in req.thresholds if k not in current_thresholds],
+        "channel_values": values,
     }
 
 

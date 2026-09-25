@@ -11,7 +11,7 @@ usage() {
   echo "  m3          transport_bus_reducer receipts + substrate_transport_bus_projection"
   echo "  m4          capability:transport in substrate_field_state"
   echo "  m5          capability:transport in any attention bucket (dominant/capability/suppressed)"
-  echo "  full-observe layers 6-11: self_state, proposals, policy, dispatch, feedback, consolidation"
+  echo "  full-observe layers 7-11: proposals, policy, dispatch, feedback, consolidation"
   exit 1
 }
 
@@ -115,18 +115,11 @@ case "$MODE" in
     ;;
 
   full-observe)
-    echo "== full-observe: layers 6-11 (requires all flags enabled) =="
+    echo "== full-observe: layers 7-11 (requires all flags enabled) =="
     echo ""
+    # L6 (SelfStateV1 transport_integrity) removed: its producer,
+    # orion-self-state-runtime, was deleted 2026-07-22 (commit bcc72f6a0).
 
-    echo "-- L6 self_state: transport_integrity dimension --"
-    psql_run "
-      SELECT generated_at,
-             self_state_json::jsonb #> '{dimensions,transport_integrity}' AS transport_integrity
-      FROM substrate_self_state
-      ORDER BY generated_at DESC
-      LIMIT 1;" || true
-
-    echo ""
     echo "-- L7 proposals: transport candidate count (bounded) --"
     psql_run "
       SELECT generated_at,

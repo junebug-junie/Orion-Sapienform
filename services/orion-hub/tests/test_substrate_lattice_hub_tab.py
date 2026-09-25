@@ -57,3 +57,20 @@ def test_lattice_js_exists_and_has_fetch_calls() -> None:
     assert "/api/substrate-lattice/transport/latest" in js
     assert "/api/substrate-lattice/lanes" in js
     assert "/api/substrate-lattice/transport/gates" in js
+
+
+def test_lattice_ui_does_not_hardcode_transport_policy() -> None:
+    """The channel list, thresholds and ceilings come from the server
+    (lattice_channels, read from transport_lattice_policy.v1.yaml). The UI used
+    to carry its own copy -- with per-dimension weights no process read and the
+    retired stream_backlog_pressure channel -- which is exactly how the two
+    drifted apart."""
+    js = LATTICE_JS.read_text(encoding="utf-8")
+    html = LATTICE_STATIC.read_text(encoding="utf-8")
+    assert "lattice_channels" in js
+    assert 'id="simThresholdInputs"' in html
+    assert "weight:" not in js
+    assert "stream_backlog_pressure_watch_at" not in js
+    for retired_input in ("simContractWatchAt", "simTransportWatchAt", "simCatalogWatchAt", "simObserverWatchAt"):
+        assert retired_input not in html
+        assert retired_input not in js

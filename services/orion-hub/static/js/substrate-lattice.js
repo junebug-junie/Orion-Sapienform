@@ -171,14 +171,27 @@ function _renderProofChain(chain) {
   const m3 = chain.transport?.m3 || {};
   const bus = m3.values || {};
   _setText("m3Status", `${_statusBadge(m3.status)} ${_ts(m3.timestamp)}`);
+  // TransportBusProjectionV1 carries its readings per bus under `buses`; its
+  // top level has no pressure fields (this card used to read the top level and
+  // always showed "—").
+  const buses = bus.buses && typeof bus.buses === "object" ? bus.buses : {};
+  const busIds = Object.keys(buses);
   _setText(
     "m3Body",
-    `stream_backlog_health: <b>${_fmt(bus.stream_backlog_health)}</b> &nbsp;|&nbsp;
-     stream_backlog_pressure: <b>${_fmt(bus.stream_backlog_pressure)}</b> &nbsp;|&nbsp;
-     contract_pressure: <b>${_fmt(bus.contract_pressure)}</b><br>
-     catalog_drift_pressure: <b>${_fmt(bus.catalog_drift_pressure)}</b> &nbsp;|&nbsp;
-     observer_failure_pressure: <b>${_fmt(bus.observer_failure_pressure)}</b><br>
-     delivery_confidence: <b>${_fmt(bus.delivery_confidence)}</b>`
+    busIds.length
+      ? busIds
+          .map((busId) => {
+            const b = buses[busId] || {};
+            return `<div><span class="font-mono text-gray-300">${_esc(busId)}</span>
+              streams_observed: <b>${_esc(b.streams_observed)}</b> &nbsp;|&nbsp;
+              contract_pressure: <b>${_fmt(b.contract_pressure)}</b> &nbsp;|&nbsp;
+              catalog_drift_pressure: <b>${_fmt(b.catalog_drift_pressure)}</b><br>
+              observer_failure_pressure: <b>${_fmt(b.observer_failure_pressure)}</b> &nbsp;|&nbsp;
+              delivery_confidence: <b>${_fmt(b.delivery_confidence)}</b> &nbsp;|&nbsp;
+              stream_backlog_pressure <span class="text-gray-600">(world_pulse streams only)</span>: <b>${_fmt(b.stream_backlog_pressure)}</b></div>`;
+          })
+          .join("")
+      : '<span class="text-gray-500">no buses in projection</span>'
   );
 
   // M4
@@ -297,43 +310,47 @@ function _renderProofChain(chain) {
 function _renderLatticeValues(chain) {
   const el = document.getElementById("latticeValueBody");
   if (!el) return;
-  if (!chain || !chain.transport?.m3) {
+  // Channel list, thresholds and ceilings come from the server
+  // (chain.lattice_channels, read from transport_lattice_policy.v1.yaml).
+  // Nothing about the policy is hardcoded here.
+  const channels = chain && Array.isArray(chain.lattice_channels) ? chain.lattice_channels : null;
+  if (!channels) {
     el.innerHTML = '<span class="text-red-400">No data</span>';
+    _renderSimInputs([]);
     return;
   }
-  const bus = chain.transport.m3.values || {};
-  const channels = [
-    { id: "stream_backlog_pressure", label: "stream_backlog_pressure", weight: 0.35, watchAt: 0.25, ceiling: "read_only" },
-    { id: "contract_pressure", label: "contract_pressure", weight: 0.30, watchAt: 0.50, ceiling: "summarize" },
-    { id: "catalog_drift_pressure", label: "catalog_drift_pressure", weight: 0.15, watchAt: 0.50, ceiling: "watch" },
-    { id: "observer_failure_pressure", label: "observer_failure_pressure", weight: 0.20, watchAt: 0.25, ceiling: "summarize" },
-  ];
+  _renderSimInputs(channels);
+
+  const stateClass = {
+    watch: "text-amber-400",
+    quiet: "text-emerald-400",
+    unmeasured: "text-gray-500",
+    no_threshold: "text-gray-500",
+  };
+  const stateLabel = { watch: "WATCH", quiet: "quiet", unmeasured: "unmeasured", no_threshold: "no threshold" };
 
   el.innerHTML = channels
     .map((ch) => {
-      const val = typeof bus[ch.id] === "number" ? bus[ch.id] : null;
-      const passes = val !== null && val >= ch.watchAt;
-      const passClass =
-        val === null ? "text-gray-500" : passes ? "text-amber-400" : "text-emerald-400";
-      const passLabel = val === null ? "?" : passes ? "WATCH" : "quiet";
-      const contribution = val !== null && passes ? (val * ch.weight).toFixed(3) : "—";
+      const id = _esc(ch.channel_id);
+      const val = typeof ch.value === "number" ? ch.value : null;
       return `
-        <div class="border border-gray-800 rounded p-2 flex flex-col gap-1" data-channel="${ch.id}">
+        <div class="border border-gray-800 rounded p-2 flex flex-col gap-1" data-channel="${id}">
           <div class="flex items-center justify-between">
-            <span class="font-mono text-[10px] text-gray-300">${ch.label}</span>
-            <span class="text-[10px] font-semibold ${passClass}">${passLabel}</span>
+            <span class="font-mono text-[10px] text-gray-300">${id}</span>
+            <span class="text-[10px] font-semibold ${stateClass[ch.state] || "text-gray-500"}">${_esc(stateLabel[ch.state] || ch.state)}</span>
           </div>
           <div class="grid grid-cols-2 gap-x-2 text-[10px] text-gray-400">
             <span>value: <b class="text-gray-200">${val !== null ? val.toFixed(3) : "—"}</b></span>
-            <span>watch_at: <b>${ch.watchAt}</b></span>
-            <span>contribution: <b>${contribution}</b></span>
-            <span>ceiling: <b>${ch.ceiling}</b></span>
+            <span>watch_at: <b>${_esc(ch.watch_at)}</b></span>
+            <span>dimension: <b>${_esc(ch.dimension)}</b></span>
+            <span>ceiling: <b>${_esc(ch.action_ceiling)}</b></span>
           </div>
+          <div class="text-[9px] text-gray-600 font-mono">${_esc(ch.value_source)}</div>
           <div class="flex gap-1 mt-1">
-            <button class="lattice-judgment text-[9px] rounded px-1.5 py-0.5 bg-gray-800 hover:bg-gray-700 border border-gray-700" data-channel="${ch.id}" data-judgment="too_loud">Too Loud</button>
-            <button class="lattice-judgment text-[9px] rounded px-1.5 py-0.5 bg-emerald-900/40 hover:bg-emerald-900/60 border border-emerald-800" data-channel="${ch.id}" data-judgment="right">✓ Right</button>
-            <button class="lattice-judgment text-[9px] rounded px-1.5 py-0.5 bg-gray-800 hover:bg-gray-700 border border-gray-700" data-channel="${ch.id}" data-judgment="too_quiet">Too Quiet</button>
-            <button class="lattice-judgment text-[9px] rounded px-1.5 py-0.5 bg-amber-900/30 hover:bg-amber-900/50 border border-amber-800" data-channel="${ch.id}" data-judgment="wrong_attribution">Wrong</button>
+            <button class="lattice-judgment text-[9px] rounded px-1.5 py-0.5 bg-gray-800 hover:bg-gray-700 border border-gray-700" data-channel="${id}" data-judgment="too_loud">Too Loud</button>
+            <button class="lattice-judgment text-[9px] rounded px-1.5 py-0.5 bg-emerald-900/40 hover:bg-emerald-900/60 border border-emerald-800" data-channel="${id}" data-judgment="right">✓ Right</button>
+            <button class="lattice-judgment text-[9px] rounded px-1.5 py-0.5 bg-gray-800 hover:bg-gray-700 border border-gray-700" data-channel="${id}" data-judgment="too_quiet">Too Quiet</button>
+            <button class="lattice-judgment text-[9px] rounded px-1.5 py-0.5 bg-amber-900/30 hover:bg-amber-900/50 border border-amber-800" data-channel="${id}" data-judgment="wrong_attribution">Wrong</button>
           </div>
         </div>
       `;
@@ -345,6 +362,32 @@ function _renderLatticeValues(chain) {
       _recordJudgment(btn.dataset.channel, btn.dataset.judgment)
     );
   });
+}
+
+function _renderSimInputs(channels) {
+  const el = document.getElementById("simThresholdInputs");
+  if (!el) return;
+  const withThreshold = channels.filter((ch) => typeof ch.watch_at === "number");
+  if (withThreshold.length === 0) {
+    el.innerHTML = '<span class="text-gray-500">No policy channels loaded</span>';
+    return;
+  }
+  // Keep an operator's in-progress edits across a Refresh.
+  const previous = {};
+  el.querySelectorAll("input[data-channel]").forEach((input) => {
+    previous[input.dataset.channel] = input.value;
+  });
+  el.innerHTML = withThreshold
+    .map((ch) => {
+      const id = _esc(ch.channel_id);
+      const value = previous[ch.channel_id] !== undefined ? _esc(previous[ch.channel_id]) : ch.watch_at;
+      return `
+        <label class="text-[10px] text-gray-500">${id} watch_at</label>
+        <input data-channel="${id}" type="number" min="0" max="1" step="0.05" value="${value}"
+          class="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 w-full" />
+      `;
+    })
+    .join("");
 }
 
 function _recordJudgment(channelId, judgment) {
@@ -375,24 +418,12 @@ function _renderGates(gateData) {
 }
 
 async function _runSimulate() {
-  const contractWatchAt = parseFloat(
-    document.getElementById("simContractWatchAt")?.value || "0.50"
-  );
-  const transportWatchAt = parseFloat(
-    document.getElementById("simTransportWatchAt")?.value || "0.25"
-  );
-  const catalogWatchAt = parseFloat(
-    document.getElementById("simCatalogWatchAt")?.value || "0.50"
-  );
-  const observerWatchAt = parseFloat(
-    document.getElementById("simObserverWatchAt")?.value || "0.25"
-  );
-  _lastSimThresholds = {
-    contract_pressure_watch_at: contractWatchAt,
-    stream_backlog_pressure_watch_at: transportWatchAt,
-    catalog_drift_pressure_watch_at: catalogWatchAt,
-    observer_failure_pressure_watch_at: observerWatchAt,
-  };
+  const thresholds = {};
+  document.querySelectorAll("#simThresholdInputs input[data-channel]").forEach((input) => {
+    const value = parseFloat(input.value);
+    if (!Number.isNaN(value)) thresholds[`${input.dataset.channel}_watch_at`] = value;
+  });
+  _lastSimThresholds = thresholds;
 
   try {
     const result = await _post("/api/substrate-lattice/transport/simulate", {

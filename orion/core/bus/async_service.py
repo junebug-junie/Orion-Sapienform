@@ -447,7 +447,7 @@ class OrionBusAsync:
         (services/orion-hub/scripts/grammar_emit.py, scoped to one harness/thought RPC
         each) to every rpc_request() timeout across all 37+ real call sites sharing this
         one client. Same trace-lane family as the pre-existing bus.transport: grammar
-        producer (config/substrate-lattice/grammar_producer_registry.v1.yaml) but a
+        producer (services/orion-bus/app/grammar_emit.py, cataloged in channels.yaml) but a
         distinct semantic_role, so this doesn't collide with or get consumed by the old
         transport_bus_reducer/bus_health_observed pipeline.
 

@@ -50,6 +50,18 @@ def test_lanes_returns_known_lanes(client) -> None:
     assert "transport" in lane_ids
 
 
+def test_lanes_grammar_producers_are_not_marked_planned(client) -> None:
+    """All four lanes' grammar producers are live on orion:grammar:event and
+    listed in orion/bus/channels.yaml; the rail said "planned" for two of them."""
+    import yaml as _yaml
+    doc = _yaml.safe_load((REPO_ROOT / "orion" / "bus" / "channels.yaml").read_text(encoding="utf-8"))
+    entry = next(c for c in doc["channels"] if c["name"] == "orion:grammar:event")
+    producers = set(entry["producer_services"])
+    for lane in client.get("/api/substrate-lattice/lanes").json():
+        assert lane["status"] == "live"
+        assert lane["source_service"] in producers
+
+
 def test_lanes_transport_lane_is_live(client) -> None:
     resp = client.get("/api/substrate-lattice/lanes")
     lanes = {lane["lane_id"]: lane for lane in resp.json()}
@@ -202,25 +214,20 @@ def _sample_proof_chain_for_gates(
                 "age_sec": bus_age_sec,
                 "values": {
                     "projection_id": "active_transport_bus_projection",
-                    "stream_backlog_health": 1.0,
-                    # 2026-07-27: these two top-level keys don't exist on the real
-                    # TransportBusProjectionV1 schema (only nested under buses[...]
-                    # per TransportBusStateV1) -- kept here only because
-                    # transport_simulate()/_compute_salience() (a separate,
-                    # not-yet-fixed code path, out of scope for this patch) still
-                    # reads M3 this way. _compute_gates() no longer reads these --
-                    # it reads m4.field_vector below instead (real bug found while
-                    # wiring bus_synaptic in: this key was never real).
-                    "stream_backlog_pressure": stream_backlog_pressure,
-                    "contract_pressure": contract_pressure,
-                    "catalog_drift_pressure": 0.0,
-                    "observer_failure_pressure": 0.0,
-                    "delivery_confidence": 1.0,
                     "observed_at": ts,
+                    # Per-bus readings, the real TransportBusProjectionV1 shape:
+                    # the projection's top level carries no pressure fields.
+                    # The simulator/lattice-values panel read these via
+                    # _channel_value() (max across buses).
                     "buses": {
                         "bus:athena": {
                             "source_trace_id": source_trace_id,
                             "stream_backlog_health": 1.0,
+                            "stream_backlog_pressure": stream_backlog_pressure,
+                            "contract_pressure": contract_pressure,
+                            "catalog_drift_pressure": 0.0,
+                            "observer_failure_pressure": 0.0,
+                            "delivery_confidence": 1.0,
                         }
                     } if source_trace_id else {},
                 },
@@ -508,8 +515,6 @@ def test_simulate_returns_comparison_when_thresholds_change(client) -> None:
     chain = _sample_proof_chain_for_gates(contract_pressure=1.0, stream_backlog_pressure=0.0)
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
-    ), patch.object(
-        substrate_lattice_routes, "_load_yaml", return_value={}
     ):
         resp = client.post(
             "/api/substrate-lattice/transport/simulate",
@@ -540,8 +545,6 @@ def test_simulate_contract_suppressed_when_threshold_above_value(client) -> None
     )
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
-    ), patch.object(
-        substrate_lattice_routes, "_load_yaml", return_value={}
     ):
         resp = client.post(
             "/api/substrate-lattice/transport/simulate",
@@ -549,7 +552,7 @@ def test_simulate_contract_suppressed_when_threshold_above_value(client) -> None
                 "lane_id": "transport",
                 "thresholds": {
                     "contract_pressure_watch_at": 1.1,
-                    "stream_backlog_pressure_watch_at": 1.1,
+                    "bus_synaptic_pressure_watch_at": 1.1,
                     "catalog_drift_pressure_watch_at": 1.1,
                     "observer_failure_pressure_watch_at": 1.1,
                 },
@@ -570,8 +573,6 @@ def test_simulate_no_change_when_same_thresholds(client) -> None:
     )
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
-    ), patch.object(
-        substrate_lattice_routes, "_load_yaml", return_value={}
     ):
         resp = client.post(
             "/api/substrate-lattice/transport/simulate",
@@ -604,8 +605,6 @@ def test_simulate_no_db_writes(client) -> None:
     chain = _sample_proof_chain_for_gates(contract_pressure=1.0)
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
-    ), patch.object(
-        substrate_lattice_routes, "_load_yaml", return_value={}
     ), patch.object(substrate_lattice_routes, "_engine") as mock_engine:
         resp = client.post(
             "/api/substrate-lattice/transport/simulate",
@@ -613,6 +612,135 @@ def test_simulate_no_db_writes(client) -> None:
         )
     assert resp.status_code == 200
     mock_engine.assert_not_called()  # no direct engine access — load was fully mocked
+
+
+def _policy_doc() -> dict:
+    import yaml as _yaml
+    path = REPO_ROOT / "config" / "substrate-lattice" / "transport_lattice_policy.v1.yaml"
+    return _yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def test_policy_has_no_unread_weights_and_no_hub_mirror() -> None:
+    """Kill-means-kill regression, 2026-09-25: dimension_weights was read by no
+    process, and the hub's hand-copied _TRANSPORT_CHANNELS mirror of it was
+    still keyed on the retired stream_backlog_pressure channel."""
+    doc = _policy_doc()
+    assert "dimension_weights" not in doc
+    assert "healthy_idle" not in doc
+    assert not hasattr(substrate_lattice_routes, "_TRANSPORT_CHANNELS")
+    assert "stream_backlog_pressure" not in (doc.get("channels") or {})
+
+
+def test_policy_ceilings_are_all_ranked() -> None:
+    ceilings = {
+        str(ch.get("action_ceiling"))
+        for ch in (_policy_doc().get("channels") or {}).values()
+    }
+    unranked = ceilings - set(substrate_lattice_routes._CEILING_RANK)
+    assert not unranked, f"policy action_ceiling values missing from _CEILING_RANK: {unranked}"
+
+
+def test_latest_lattice_channels_come_from_policy_yaml(client) -> None:
+    chain = _sample_proof_chain_for_gates(contract_pressure=0.6, stream_backlog_pressure=0.3)
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/latest")
+    assert resp.status_code == 200
+    rows = {r["channel_id"]: r for r in resp.json()["lattice_channels"]}
+    policy = _policy_doc()["channels"]
+    assert list(rows) == list(policy)
+    for ch_id, ch_def in policy.items():
+        assert rows[ch_id]["watch_at"] == ch_def["watch_at"]
+        assert rows[ch_id]["action_ceiling"] == ch_def["action_ceiling"]
+    # bus_synaptic_pressure is read from M4 (the fixture's `pressure` knob),
+    # the other channels from M3's per-bus rows.
+    assert rows["bus_synaptic_pressure"]["value"] == 0.3
+    assert rows["bus_synaptic_pressure"]["state"] == "watch"
+    assert rows["contract_pressure"]["value"] == 0.6
+    assert rows["contract_pressure"]["state"] == "watch"
+    assert rows["catalog_drift_pressure"]["state"] == "quiet"
+
+
+def test_lattice_channel_unmeasured_when_m4_stale_not_calm() -> None:
+    chain = _sample_proof_chain_for_gates(stream_backlog_pressure=0.9)
+    chain["transport"]["m4"]["status"] = "stale"
+    rows = {
+        r["channel_id"]: r
+        for r in substrate_lattice_routes._lattice_channel_rows(
+            chain, substrate_lattice_routes._policy_channels()
+        )
+    }
+    assert rows["bus_synaptic_pressure"]["value"] is None
+    assert rows["bus_synaptic_pressure"]["state"] == "unmeasured"
+
+
+def test_channel_value_takes_max_across_buses() -> None:
+    chain = _sample_proof_chain_for_gates(contract_pressure=0.2)
+    chain["transport"]["m3"]["values"]["buses"]["bus:circe"] = {"contract_pressure": 0.7}
+    value, source = substrate_lattice_routes._channel_value(chain, "contract_pressure")
+    assert value == 0.7
+    assert source == "M3 max(buses[*].contract_pressure)"
+
+
+def test_simulate_salience_is_strongest_promoted_reading(client) -> None:
+    # contract 0.6 (>= 0.50) and bus_synaptic 0.3 (>= 0.25) both promote.
+    chain = _sample_proof_chain_for_gates(contract_pressure=0.6, stream_backlog_pressure=0.3)
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.post(
+            "/api/substrate-lattice/transport/simulate",
+            json={"lane_id": "transport", "thresholds": {}},
+        )
+    body = resp.json()
+    assert body["current"]["salience"] == 0.6
+    assert set(body["current"]["promoted_channels"]) == {"contract_pressure", "bus_synaptic_pressure"}
+    # read_only (bus_synaptic) outranks summarize (contract)
+    assert body["current"]["action_ceiling"] == "read_only"
+
+
+def test_simulate_unmeasured_channel_never_promotes(client) -> None:
+    chain = _sample_proof_chain_for_gates(contract_pressure=0.0, stream_backlog_pressure=0.9)
+    chain["transport"]["m4"]["status"] = "missing"
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.post(
+            "/api/substrate-lattice/transport/simulate",
+            json={"lane_id": "transport", "thresholds": {}},
+        )
+    body = resp.json()
+    assert body["current"]["bucket"] == "suppressed_targets"
+    assert "bus_synaptic_pressure" in body["current"]["unmeasured_channels"]
+    assert body["channel_values"]["bus_synaptic_pressure"] is None
+
+
+def test_simulate_reports_retired_channel_threshold_as_ignored(client) -> None:
+    chain = _sample_proof_chain_for_gates(contract_pressure=1.0)
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.post(
+            "/api/substrate-lattice/transport/simulate",
+            json={"lane_id": "transport", "thresholds": {"stream_backlog_pressure_watch_at": 0.0}},
+        )
+    body = resp.json()
+    assert body["ignored_thresholds"] == ["stream_backlog_pressure_watch_at"]
+    assert "stream_backlog_pressure_watch_at" not in body["applied_thresholds"]
+    assert body["changed"] is False
+
+
+def test_simulate_503_when_policy_has_no_channels(client) -> None:
+    chain = _sample_proof_chain_for_gates()
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ), patch.object(substrate_lattice_routes, "_load_yaml", return_value={}):
+        resp = client.post(
+            "/api/substrate-lattice/transport/simulate",
+            json={"lane_id": "transport", "thresholds": {}},
+        )
+    assert resp.status_code == 503
 
 
 # ── /transport/draft-policy-patch ───────────────────────────────

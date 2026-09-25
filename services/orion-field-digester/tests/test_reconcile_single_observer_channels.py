@@ -1,9 +1,10 @@
 """SINGLE_OBSERVER_NODE_CHANNELS mechanism tests.
 
-The map's only two real entries (stream_backlog_health, delivery_confidence)
-were retired 2026-09-25 (fix/bus-observer-scope), leaving it empty. The
-mechanism is kept for the next genuinely single-observer channel, so these
-tests register a synthetic one rather than going vacuous over an empty dict.
+The map's two bus-observer entries (stream_backlog_health, delivery_confidence)
+were retired 2026-09-25 (fix/bus-observer-scope); its one real entry is now
+rpc_timeout_pressure, owned by the off-lattice node:substrate.rpc_delivery.
+The mechanism tests register a synthetic node:athena-owned channel so they
+exercise seeding/pruning on a real lattice node.
 """
 
 from __future__ import annotations
@@ -41,15 +42,13 @@ def _state(node_vectors: dict[str, dict[str, float]] | None = None) -> FieldStat
     )
 
 
-def test_owner_node_gets_seeded_with_single_observer_channels() -> None:
-    vec = _ensure_node_vector({}, "node:athena")
+def test_rpc_timeout_pressure_is_never_seeded_on_lattice_nodes() -> None:
     # rpc_timeout_pressure's owner is the off-lattice node:substrate.rpc_delivery,
-    # which reconcile never seeds (it only exists once the bridge writes it).
-    for channel, owner in SINGLE_OBSERVER_NODE_CHANNELS.items():
-        if owner == "node:athena":
-            assert channel in vec
-        else:
-            assert channel not in vec
+    # which reconcile never seeds (it only exists once the bridge writes it), so
+    # no physical node may carry a never-written 0.0 that reads as "calm".
+    assert SINGLE_OBSERVER_NODE_CHANNELS["rpc_timeout_pressure"] == "node:substrate.rpc_delivery"
+    for node in ("node:athena", "node:circe", "node:prometheus"):
+        assert "rpc_timeout_pressure" not in _ensure_node_vector({}, node)
 
 
 def test_retired_entries_are_gone_from_the_real_map() -> None:

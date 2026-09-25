@@ -16,30 +16,29 @@ MIGRATION = Path(__file__).resolve().parents[3] / "services/orion-sql-db/manual_
 
 
 async def _pool():
-    """The production connection setup (app.store.pool_kwargs + ensure_checkpoint_schema), on a
-    scratch database reset to: no pool schema, no shared checkpoint tables, fresh projection."""
+    """Production's layout, then the production connection setup (app.store.pool_kwargs +
+    ensure_checkpoint_schema): the projection migration applied on a plain connection (public),
+    and durable-runs' LangGraph tables already in public at the current migration version --
+    so the pool's own saver.setup() must still create its tables in the gpu_pool schema."""
     import psycopg
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from psycopg.rows import dict_row
     from psycopg_pool import AsyncConnectionPool
 
     from app.store import ensure_checkpoint_schema, pool_kwargs
 
-    async with await psycopg.AsyncConnection.connect(URI, autocommit=True) as conn:
+    async with await psycopg.AsyncConnection.connect(URI, autocommit=True, row_factory=dict_row) as conn:
         await conn.execute("DROP SCHEMA IF EXISTS gpu_pool CASCADE")
         await conn.execute("DROP TABLE IF EXISTS public.checkpoints, public.checkpoint_blobs, "
-                           "public.checkpoint_writes, public.checkpoint_migrations")
+                           "public.checkpoint_writes, public.checkpoint_migrations, gpu_pool_leases, gpu_pool_cards")
+        sql = "\n".join(l for l in MIGRATION.read_text().splitlines() if not l.strip().startswith("--"))
+        for statement in (s.strip() for s in sql.split(";")):
+            if statement:
+                await conn.execute(statement)
+        await AsyncPostgresSaver(conn).setup()          # durable-runs' tables, in public
     await ensure_checkpoint_schema(URI)
     pool = AsyncConnectionPool(conninfo=URI, min_size=1, max_size=6, open=False, kwargs=pool_kwargs())
     await pool.open()
-    try:
-        async with pool.connection() as conn:
-            await conn.execute("DROP TABLE IF EXISTS gpu_pool_leases, gpu_pool_cards")
-            sql = "\n".join(l for l in MIGRATION.read_text().splitlines() if not l.strip().startswith("--"))
-            for statement in (s.strip() for s in sql.split(";")):
-                if statement:
-                    await conn.execute(statement)
-    except BaseException:
-        await pool.close()
-        raise
     return pool
 
 
@@ -182,8 +181,10 @@ def test_lease_threads_live_in_their_own_schema_not_the_shared_table():
         assert a.status == "granted"
         assert await _count(pool, "SELECT count(*) AS n FROM gpu_pool.checkpoints WHERE thread_id=%s",
                             (f"gpu_pool:{a.lease_id}",)) > 0
-        assert await _count(pool, "SELECT count(*) AS n FROM pg_tables WHERE schemaname='public' "
-                                  "AND tablename='checkpoints'") == 0
+        assert await _count(pool, "SELECT count(*) AS n FROM public.checkpoints") == 0   # durable-runs' table untouched
+        assert await _count(pool, "SELECT count(*) AS n FROM public.gpu_pool_leases") > 0   # projection stays in public
+        assert await _count(pool, "SELECT max(v) AS n FROM gpu_pool.checkpoint_migrations") == \
+            await _count(pool, "SELECT max(v) AS n FROM public.checkpoint_migrations")
         assert [h["event"] for h in await rt.history(a.lease_id)] == ["admit", "grant"]
     _run_with_runtime(body)
 
@@ -197,13 +198,15 @@ def test_boot_adopts_lease_threads_left_in_the_shared_tables_and_leaves_others()
         async with pool.connection() as conn:
             # Recreate the pre-schema layout: this lease's thread (and a durable-runs thread) in public.
             for table in ("checkpoints", "checkpoint_blobs", "checkpoint_writes"):
-                await conn.execute(f"CREATE TABLE public.{table} (LIKE gpu_pool.{table} INCLUDING ALL)")
                 await conn.execute(f"INSERT INTO public.{table} SELECT * FROM gpu_pool.{table}")
                 await conn.execute(f"DELETE FROM gpu_pool.{table}")
             await conn.execute("INSERT INTO public.checkpoints (thread_id, checkpoint_ns, checkpoint_id, checkpoint, "
                                "metadata) VALUES ('durable-run-1', '', 'c1', '{}', '{}')")
         moved = await rt.store.adopt_public_checkpoints()
         assert moved > 0
+        for _ in range(6):   # no pooled connection keeps the adopt step's lock_timeout
+            async with pool.connection() as conn:
+                assert (await (await conn.execute("SHOW lock_timeout")).fetchone())["lock_timeout"] == "0"
         assert await rt.store.adopt_public_checkpoints() == 0          # idempotent
         assert await _count(pool, "SELECT count(*) AS n FROM public.checkpoints WHERE thread_id LIKE 'gpu_pool:%%'") == 0
         assert await _count(pool, "SELECT count(*) AS n FROM public.checkpoints WHERE thread_id='durable-run-1'") == 1
@@ -214,31 +217,41 @@ def test_boot_adopts_lease_threads_left_in_the_shared_tables_and_leaves_others()
     _run_with_runtime(body)
 
 
-def test_prune_drops_only_old_released_threads():
+def test_prune_forgets_only_old_ended_leases_in_bounded_batches():
     from orion.schemas.gpu_pool import GpuLeaseRequestV1, GpuPoolControlV1
 
     async def body(rt, pool):
-        old = await rt.acquire(GpuLeaseRequestV1(verb="acquire", work_class="diffusion", holder="h", request_id="p1"))
-        await rt.release(old.lease_id, "ok")
-        fresh = await rt.acquire(GpuLeaseRequestV1(verb="acquire", work_class="diffusion", holder="h", request_id="p2"))
-        await rt.release(fresh.lease_id, "ok")
-        live = await rt.acquire(GpuLeaseRequestV1(verb="acquire", work_class="diffusion", holder="h", request_id="p3"))
+        async def lease(rid):
+            return (await rt.acquire(GpuLeaseRequestV1(verb="acquire", work_class="diffusion", holder="h",
+                                                       request_id=rid))).lease_id
+        old = [await lease(f"o{i}") for i in range(3)]
+        for lid in old:
+            await rt.release(lid, "ok")
+        fresh = await lease("f")
+        await rt.release(fresh, "ok")
+        gone_unavailable, dead, live = await lease("u"), await lease("d"), await lease("l")
         async with pool.connection() as conn:
+            await conn.execute("UPDATE gpu_pool_leases SET status='unavailable' WHERE lease_id=%s", (gone_unavailable,))
+            await conn.execute("UPDATE gpu_pool_leases SET status='dead_letter' WHERE lease_id=%s", (dead,))
             await conn.execute("UPDATE gpu_pool_leases SET updated_at = now() - interval '10 days' "
-                               "WHERE lease_id = ANY(%s)", ([old.lease_id, live.lease_id],))
-        pruned = await rt.store.prune_checkpoints(datetime.now(timezone.utc) - timedelta(days=7))
-        assert pruned > 0
+                               "WHERE lease_id = ANY(%s)", ([*old, gone_unavailable, dead, live],))
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        assert await rt.store.prune_checkpoints(cutoff, batch=2) == 4      # 3 released + 1 unavailable, 2 per batch
+        assert await rt.store.prune_checkpoints(cutoff) == 0
 
-        async def threads(lease_id):
+        async def thread_rows(lid):
             return await _count(pool, "SELECT count(*) AS n FROM gpu_pool.checkpoints WHERE thread_id=%s",
-                                (f"gpu_pool:{lease_id}",))
-        assert await threads(old.lease_id) == 0           # released and old: gone
-        assert await threads(fresh.lease_id) > 0          # released but recent: kept
-        assert await threads(live.lease_id) > 0           # old but still granted: kept
-        assert await _count(pool, "SELECT count(*) AS n FROM gpu_pool.checkpoint_writes WHERE thread_id=%s",
-                            (f"gpu_pool:{old.lease_id}",)) == 0
+                                (f"gpu_pool:{lid}",))
+
+        async def lease_rows(lid):
+            return await _count(pool, "SELECT count(*) AS n FROM gpu_pool_leases WHERE lease_id=%s", (lid,))
+        for lid in [*old, gone_unavailable]:                  # ended and old: thread and row gone
+            assert await thread_rows(lid) == 0 and await lease_rows(lid) == 0
+        assert await _count(pool, "SELECT count(*) AS n FROM gpu_pool.checkpoint_writes WHERE thread_id = ANY(%s)",
+                            ([f"gpu_pool:{lid}" for lid in old],)) == 0
+        for lid in (fresh, dead, live):                       # recent / dead letter / still granted: kept
+            assert await thread_rows(lid) > 0 and await lease_rows(lid) == 1
         reply = await rt.control(GpuPoolControlV1(verb="backfill", backfill={
             "status": "released", "preview": False, "limit": 10}))
-        assert old.lease_id in reply.detail["skipped_no_history"]
-        assert reply.detail["replayed"] == 1              # the recent one still replays
+        assert reply.detail["replayed"] == 1 and reply.detail["skipped_no_history"] == []
     _run_with_runtime(body)

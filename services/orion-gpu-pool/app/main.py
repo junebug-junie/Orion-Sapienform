@@ -126,10 +126,10 @@ async def _prune_forever() -> None:
     day. Outside the runtime lock -- released threads are never resumed."""
     while not _stop.is_set():
         try:
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=_settings.checkpoint_retention_hours)
-            pruned = await _store.prune_checkpoints(cutoff)
-            if pruned:
-                logger.info("gpu_pool_checkpoints_pruned checkpoints=%s older_than=%s", pruned, cutoff.isoformat())
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=_settings.lease_retention_hours)
+            forgotten = await _store.prune_checkpoints(cutoff)
+            if forgotten:
+                logger.info("gpu_pool_leases_pruned leases=%s older_than=%s", forgotten, cutoff.isoformat())
         except Exception:  # noqa: BLE001 -- retention must never take the pool down
             logger.exception("gpu_pool_checkpoint_prune_failed")
         try:

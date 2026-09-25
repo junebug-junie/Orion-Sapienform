@@ -272,7 +272,7 @@ class PoolRuntime:
                 snap = await self.graph.aget_state(self._thread(parent["lease_id"]))
                 request = dict((snap.values or {}).get("request") or {})
                 if not request:
-                    # history pruned (GPU_POOL_CHECKPOINT_RETENTION_HOURS): say so, don't drop it
+                    # history pruned (GPU_POOL_LEASE_RETENTION_HOURS): say so, don't drop it
                     skipped.append(parent["lease_id"])
                     continue
                 request.update(request_id=uuid.uuid4().hex, parent_lease_id=parent["lease_id"],

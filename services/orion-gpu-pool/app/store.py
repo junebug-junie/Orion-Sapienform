@@ -27,6 +27,8 @@ CARD_COLUMNS = ("card", "lent", "swapped_in", "swap_state", "cooldown_until", "l
 CHECKPOINT_SCHEMA = "gpu_pool"
 CHECKPOINT_TABLES = ("checkpoints", "checkpoint_blobs", "checkpoint_writes")
 THREAD_PREFIX = "gpu_pool:"
+PRUNABLE_STATUSES = ("released", "unavailable")  # terminal; dead_letter stays for operator replay
+PRUNE_BATCH = 2000
 LIVE_STATUSES = ("queued", "backlogged", "granted", "recalling", "retry_wait", "dead_letter", "unavailable")
 ADVISORY_KEY = 0x6770755F706F6F6C  # "gpu_pool"
 
@@ -155,7 +157,6 @@ class PostgresStore:
         resumed, so a lease granted by the previous process keeps its history."""
         moved = 0
         async with self.pool.connection() as conn:
-            await conn.execute("SET lock_timeout = '10s'")
             for table in CHECKPOINT_TABLES:
                 exists = await (await conn.execute("SELECT to_regclass(%s) AS t", (f"public.{table}",))).fetchone()
                 if not exists["t"]:
@@ -167,6 +168,8 @@ class PostgresStore:
                     (CHECKPOINT_SCHEMA, table, table))).fetchall()]
                 collist = ", ".join(cols)
                 async with conn.transaction():
+                    # SET LOCAL: a plain SET would stay on this pooled connection for its next user
+                    await conn.execute("SET LOCAL lock_timeout = '10s'")
                     cur = await conn.execute(
                         f"INSERT INTO {CHECKPOINT_SCHEMA}.{table} ({collist}) SELECT {collist} FROM public.{table} "
                         f"WHERE thread_id LIKE %s ON CONFLICT DO NOTHING", (THREAD_PREFIX + "%",))
@@ -174,20 +177,29 @@ class PostgresStore:
                     await conn.execute(f"DELETE FROM public.{table} WHERE thread_id LIKE %s", (THREAD_PREFIX + "%",))
         return moved
 
-    async def prune_checkpoints(self, older_than):
-        """Drop the checkpoint history of leases released before ``older_than``. Only released
-        leases: a dead letter keeps its thread for operator replay. Backfill and the history
-        walker need the thread, so this bounds how far back they reach."""
-        deleted = 0
-        async with self.pool.connection() as conn:
-            for table in reversed(CHECKPOINT_TABLES):
-                cur = await conn.execute(
-                    f"DELETE FROM {CHECKPOINT_SCHEMA}.{table} c USING gpu_pool_leases l "
-                    f"WHERE c.thread_id = %s || l.lease_id AND l.status = 'released' AND l.updated_at < %s",
-                    (THREAD_PREFIX, older_than))
-                if table == "checkpoints":
-                    deleted = cur.rowcount or 0
-        return deleted
+    async def prune_checkpoints(self, older_than, batch: int = PRUNE_BATCH) -> int:
+        """Forget leases that ended (released or unavailable) before ``older_than``: their
+        checkpoint thread AND their projection row, in batches. Dropping the row too keeps both
+        tables about one retention window deep, so each pass only touches what aged out since
+        the last one -- no scan that grows with all history. Dead letters are kept for operator
+        replay. Backfill and the history walker reach back this far. Returns leases forgotten."""
+        forgotten = 0
+        while True:
+            async with self.pool.connection() as conn, conn.transaction():
+                rows = await (await conn.execute(
+                    "SELECT lease_id FROM gpu_pool_leases WHERE status = ANY(%s) AND updated_at < %s "
+                    "LIMIT %s FOR UPDATE SKIP LOCKED",
+                    (list(PRUNABLE_STATUSES), older_than, batch))).fetchall()
+                if not rows:
+                    return forgotten
+                threads = [THREAD_PREFIX + r["lease_id"] for r in rows]
+                for table in reversed(CHECKPOINT_TABLES):
+                    await conn.execute(f"DELETE FROM {CHECKPOINT_SCHEMA}.{table} WHERE thread_id = ANY(%s)", (threads,))
+                await conn.execute("DELETE FROM gpu_pool_leases WHERE lease_id = ANY(%s)",
+                                   ([r["lease_id"] for r in rows],))
+            forgotten += len(rows)
+            if len(rows) < batch:
+                return forgotten
 
     async def check_schema(self) -> None:
         """The migration is operator-applied (services/orion-sql-db/manual_migration_gpu_pool_v1.sql).

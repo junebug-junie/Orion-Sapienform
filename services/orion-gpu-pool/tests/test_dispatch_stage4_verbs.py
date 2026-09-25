@@ -36,7 +36,7 @@ class RecordingRuntime:
 @pytest.mark.parametrize("req", [
     GpuLeaseRequestV1(verb="status", lease_id="hold-1"),
     GpuLeaseRequestV1(verb="attach", request_id="c1", holder="gateway", work_class="agent",
-                      parent_lease_id="hold-1", parent_generation=1),
+                      hold_lease_id="hold-1", hold_generation=1),
 ])
 async def test_unsupported_stage4_verbs_touch_nothing(req):
     rt = RecordingRuntime()

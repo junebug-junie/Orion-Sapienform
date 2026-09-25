@@ -33,26 +33,39 @@ NOW = datetime(2026, 9, 25, tzinfo=timezone.utc)
 # --- lease verbs -----------------------------------------------------------------------------
 def test_attach_round_trips_and_names_the_hold_not_a_lease_id():
     req = GpuLeaseRequestV1(verb="attach", request_id="call-1", holder="gateway", work_class="agent",
-                            parent_lease_id="hold-1", parent_generation=3, turn_correlation_id="turn-9")
+                            hold_lease_id="hold-1", hold_generation=3, turn_correlation_id="turn-9")
     back = GpuLeaseRequestV1.model_validate(req.model_dump(mode="json"))
-    assert back == req and back.parent_lease_id == "hold-1" and back.parent_generation == 3
+    assert back == req and back.hold_lease_id == "hold-1" and back.hold_generation == 3
 
 
 @pytest.mark.parametrize("kw", [
-    {"parent_lease_id": "hold-1"},                                    # no generation
-    {"parent_generation": 2},                                         # no hold
-    {"parent_lease_id": "hold-1", "parent_generation": 0},            # generations start at 1
-    {"parent_lease_id": "hold-1", "parent_generation": 2, "lease_id": "x"},  # the child's id is the pool's
+    {"hold_lease_id": "hold-1"},                                    # no generation
+    {"hold_generation": 2},                                         # no hold
+    {"hold_lease_id": "hold-1", "hold_generation": 0},            # generations start at 1
+    {"hold_lease_id": "hold-1", "hold_generation": 2, "lease_id": "x"},  # the child's id is the pool's
 ])
 def test_attach_rejects_incomplete_parent(kw):
     with pytest.raises(ValidationError):
+        GpuLeaseRequestV1(verb="attach", request_id="c", work_class="agent", **kw)
+
+
+@pytest.mark.parametrize("missing", ["request_id", "work_class"])
+def test_attach_needs_idempotency_key_and_class(missing):
+    kw = dict(request_id="c", work_class="agent", hold_lease_id="hold-1", hold_generation=1)
+    kw.pop(missing)
+    with pytest.raises(ValidationError):
         GpuLeaseRequestV1(verb="attach", **kw)
+
+
+def test_status_needs_lease_id():
+    with pytest.raises(ValidationError):
+        GpuLeaseRequestV1(verb="status")
 
 
 @pytest.mark.parametrize("verb", ["acquire", "heartbeat", "release", "cancel", "status"])
 def test_parent_fields_only_on_attach(verb):
     with pytest.raises(ValidationError):
-        GpuLeaseRequestV1(verb=verb, lease_id="l", parent_lease_id="hold-1", parent_generation=1)
+        GpuLeaseRequestV1(verb=verb, lease_id="l", hold_lease_id="hold-1", hold_generation=1)
 
 
 def test_status_verb_and_existing_verbs_still_parse():
@@ -67,6 +80,7 @@ def test_lease_ref_round_trip_and_header():
     assert GpuLeaseRefV1.model_validate(ref.model_dump(mode="json")) == ref
     assert GPU_LEASE_HEADER == "X-Orion-Gpu-Lease"
     assert decode_gpu_lease_header(encode_gpu_lease_header(ref)) == ref
+    assert decode_gpu_lease_header(encode_gpu_lease_header(ref).rstrip("=")) == ref   # proxy-stripped padding
     for junk in ("", "not base64!", encode_gpu_lease_header(ref)[:-4] + "AAAA"):
         with pytest.raises(ResourceLeaseRejected):
             decode_gpu_lease_header(junk)
@@ -112,6 +126,8 @@ def test_actuate_result_round_trip_and_restored_only_on_failure():
     with pytest.raises(ValidationError):
         GpuActuateResultV1(action_id="a1", generation=9, role="r", action="load", status="succeeded", restored=True)
     with pytest.raises(ValidationError):
+        GpuActuateResultV1(action_id="a1", generation=9, role="r", action="unload", status="failed", restored=False)
+    with pytest.raises(ValidationError):
         GpuActuateResultV1(action_id="a1", generation=9, role="r", action="load", status="accepted",
                            observed={"r": "sleeping"})
 
@@ -145,6 +161,9 @@ def test_launch_digest_is_stable_and_moves_with_launch():
     assert len(d) == 64 and d == launch_digest(load_pool_config(), "agent-gpu2")
     data = copy.deepcopy(RAW)
     data["roles"]["diffusion"]["launch"]["timeout_sec"] = 601     # an EVICTED role's launch moved
+    assert launch_digest(PoolConfig.model_validate(data), "agent-gpu2") != d
+    data = copy.deepcopy(RAW)
+    data["roles"]["agent-gpu2"]["port"] = 8116                    # the seat's own port (ready check target)
     assert launch_digest(PoolConfig.model_validate(data), "agent-gpu2") != d
     data = copy.deepcopy(RAW)
     data["roles"]["chat"]["port"] = 8111                          # unrelated role: no effect
@@ -230,7 +249,7 @@ def _set_env(svc, key, value):
 
 @pytest.mark.parametrize("edit,match", [
     (lambda s, c: _set_env(s, "LLM_ROLE", "agent"), "LLM_ROLE=agent"),
-    (lambda s, c: _set_env(s, "LLM_ANNOUNCE_PORT", "${ATLAS_AGENT_BURST_HOST_PORT:-8017}"), "announces port 8017"),
+    (lambda s, c: _set_env(s, "LLM_ANNOUNCE_PORT", "${SOME_UNSET_PORT_VAR:-8017}"), "announces port 8017"),
     (lambda s, c: s.update(profiles=["burst"]), "compose_profile agent-burst"),
     (lambda s, c: _set_env(s, "CUDA_VISIBLE_DEVICES_OVERRIDE", "1"), "CUDA_VISIBLE_DEVICES_OVERRIDE=1"),
     (lambda s, c: s.update(environment=[e for e in s["environment"] if "CUDA" not in e]), "does not set"),
@@ -243,6 +262,37 @@ def test_gate_catches_compose_drift(tmp_path, edit, match):
 
 def test_gate_is_clean_on_unmodified_copy(tmp_path):
     assert _compose_mutation(tmp_path, lambda s, c: None) == []
+
+
+def test_gate_env_template_value_beats_compose_default(tmp_path):
+    # Compose uses ${VAR:-d}'s default only when VAR is unset/empty; a set template value wins.
+    _compose_mutation(tmp_path, lambda s, c: _set_env(
+        s, "LLM_ANNOUNCE_PORT", "${ATLAS_AGENT_BURST_HOST_PORT:-8016}"))
+    rel = "services/orion-llamacpp-host/.env_example"
+    text = (tmp_path / rel).read_text()
+    (tmp_path / rel).write_text(text + "\nATLAS_AGENT_BURST_HOST_PORT=9999\n")
+    problems = check_launch(load_pool_config(), tmp_path)
+    assert any("announces port 9999" in p for p in problems), problems
+
+
+def test_gate_template_default_equal_to_role_port_is_not_drift(tmp_path):
+    # ${VAR:-8017} with VAR=8016 in the template resolves to 8016: no false alarm.
+    _compose_mutation(tmp_path, lambda s, c: _set_env(
+        s, "LLM_ANNOUNCE_PORT", "${ATLAS_AGENT_BURST_HOST_PORT:-8017}"))
+    rel = "services/orion-llamacpp-host/.env_example"
+    (tmp_path / rel).write_text((tmp_path / rel).read_text() + "\nexport ATLAS_AGENT_BURST_HOST_PORT=8016\n")
+    assert check_launch(load_pool_config(), tmp_path) == []
+
+
+@pytest.mark.parametrize("ports", [["127.0.0.1:${HOST_PORT}:6700"], [{"published": "${HOST_PORT}", "target": 6700}],
+                                   ["${HOST_PORT}:6700/tcp"]])
+def test_gate_port_forms(tmp_path, ports):
+    _compose_mutation(tmp_path, lambda s, c: None)
+    path = tmp_path / "services/orion-diffusion-host/docker-compose.yml"
+    compose = yaml.safe_load(path.read_text())
+    compose["services"]["diffusion-host"]["ports"] = ports
+    path.write_text(yaml.safe_dump(compose))
+    assert check_launch(load_pool_config(), tmp_path) == []
 
 
 def test_gate_resolves_service_port_from_env_template(tmp_path):

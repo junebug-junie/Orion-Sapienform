@@ -55,7 +55,9 @@ def decode_gpu_lease_header(value: str) -> GpuLeaseRefV1:
     try:
         if not value or len(value) > MAX_LEASE_HEADER_BYTES:
             raise ValueError("invalid gpu lease header length")
-        raw = base64.b64decode(value.encode(), altchars=b"-_", validate=True)
+        # Some proxies strip base64 '=' padding; restore it before strict decoding.
+        padded = value + "=" * (-len(value) % 4)
+        raw = base64.b64decode(padded.encode(), altchars=b"-_", validate=True)
         return GpuLeaseRefV1.model_validate_json(raw)
     except (ValueError, binascii.Error, UnicodeError) as exc:
         raise ResourceLeaseRejected("malformed_gpu_lease") from exc

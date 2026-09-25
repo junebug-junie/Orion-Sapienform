@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -19,7 +19,8 @@ DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "gpu_pool.yaml"
 PRIORITIES = ("interactive", "system", "background")
 # Pool-side swap preconditions (stage 4 spec, "Guards"). A guard named here must be one the
 # scheduler evaluates; the scheduler side lands with the actuation engine (stage 4.3).
-SWAP_GUARDS = ("thermal", "visual_baseline")
+SwapGuard = Literal["thermal", "visual_baseline"]
+SWAP_GUARDS = get_args(SwapGuard)
 
 
 class RetryPolicy(BaseModel):
@@ -121,7 +122,7 @@ class SwapSpec(BaseModel):
     load: str | None = None
     unload: str | None = None
     after_wait_sec: float | None = Field(None, ge=0)   # per-seat override of defaults.swap_after_wait_sec
-    guards: list[Literal["thermal", "visual_baseline"]] = Field(default_factory=list)
+    guards: list[SwapGuard] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _bridge_pair(self):
@@ -295,17 +296,30 @@ def launch_digest(cfg: PoolConfig, role: str) -> str:
     launch of every role it evicts. Pool and actuator each compute it from their own copy of
     config/gpu_pool.yaml; GpuActuateV1.launch_digest carries the pool's, and the actuator refuses on
     a mismatch (a stale checkout on one side must not start the wrong thing). Key order, comments
-    and unrelated roles do not move it."""
-    spec = cfg.roles[role]
+    and unrelated roles do not move it.
+
+    Taken over the *parsed* model, not the YAML text: a new defaulted LaunchSpec field changes every
+    digest even for identical YAML, so pool and actuator must run the same parser version before
+    actuation is armed. That is intended -- they must agree on meaning, not just bytes."""
     evicted = cfg.evicted_by(role)
+
+    def one(name: str) -> dict[str, Any]:
+        spec = cfg.roles[name]
+        launch = spec.launch
+        return {
+            "kind": spec.kind, "port": spec.port,
+            "cards": {c: cfg.cards[c].index for c in spec.cards},
+            "launch": launch.model_dump(mode="json", by_alias=True) if launch else None,
+            "actuator_host": (cfg.actuators[launch.actuator].host
+                              if launch and launch.actuator in cfg.actuators else None),
+        }
+
+    spec = cfg.roles[role]
     body = {
-        "role": role,
-        "cards": {c: cfg.cards[c].index for c in spec.cards},
-        "launch": spec.launch.model_dump(mode="json", by_alias=True) if spec.launch else None,
+        "role": role, **one(role),
         "swap": ({"load": spec.swap.load, "unload": spec.swap.unload, "evicts": sorted(evicted)}
                  if spec.swap else None),
-        "evicted": {r: (cfg.roles[r].launch.model_dump(mode="json", by_alias=True) if cfg.roles[r].launch else None)
-                    for r in sorted(evicted)},
+        "evicted": {r: one(r) for r in sorted(evicted)},
     }
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -343,7 +357,7 @@ def check_vram(cfg: PoolConfig, footprint_gb: dict[str, float]) -> list[str]:
     return problems
 
 
-_SUBST_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}$")
+_SUBST_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?-)([^}]*))?\}$")
 
 
 def _env_pairs(environment: Any) -> dict[str, str]:
@@ -362,6 +376,8 @@ def _read_env_template(path: Path) -> dict[str, str]:
         return out
     for line in path.read_text().splitlines():
         line = line.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
@@ -370,16 +386,20 @@ def _read_env_template(path: Path) -> dict[str, str]:
 
 
 def _resolve(value: str, template: dict[str, str]) -> str | None:
-    """A compose value as the operator contract resolves it: a literal, a ``${VAR:-default}``
-    default, or the committed ``.env_example`` value of ``${VAR}``. None when unresolvable."""
+    """A compose value as Docker Compose would resolve it against the committed ``.env_example``
+    (the operator contract): the env value wins; ``${VAR:-d}`` falls back to d when VAR is unset
+    OR empty, ``${VAR-d}`` only when unset. A literal is itself. None when unresolvable."""
     value = value.strip().strip('"').strip("'")
     match = _SUBST_RE.match(value)
     if match is None:
         return None if "$" in value else value
-    var, default = match.groups()
-    if default:
-        return default
-    return template.get(var) or None
+    var, op, default = match.groups()
+    current = template.get(var)
+    if op == ":-":
+        return current or default or None
+    if op == "-":
+        return current if var in template else (default or None)
+    return current or None
 
 
 def check_launch(cfg: PoolConfig, root: str | Path) -> list[str]:
@@ -416,8 +436,9 @@ def check_launch(cfg: PoolConfig, root: str | Path) -> list[str]:
                             f"{launch.service} (has {profiles})")
         env = _env_pairs(service.get("environment"))
         if role.kind == "llm":
-            if env.get("LLM_ROLE") != name:
-                problems.append(f"{where}: {launch.service} sets LLM_ROLE={env.get('LLM_ROLE')}, not {name}")
+            llm_role = _resolve(env.get("LLM_ROLE", ""), template)
+            if llm_role != name:
+                problems.append(f"{where}: {launch.service} sets LLM_ROLE={llm_role}, not {name}")
             announced = _resolve(env.get("LLM_ANNOUNCE_PORT", ""), template)
             if announced != str(role.port):
                 problems.append(f"{where}: {launch.service} announces port {announced}, pool expects {role.port}")
@@ -425,11 +446,12 @@ def check_launch(cfg: PoolConfig, root: str | Path) -> list[str]:
             host_ports = []
             for mapping in service.get("ports") or []:
                 if isinstance(mapping, dict):
-                    host_ports.append(str(mapping.get("published")))
+                    host_ports.append(_resolve(str(mapping.get("published", "")), template))
                     continue
-                parts = str(mapping).rsplit(":", 1)
-                if len(parts) == 2:
-                    host_ports.append(_resolve(parts[0], template))
+                # [ip:]host:container, where each part may be ${VAR...} (no ':' inside ours)
+                parts = re.findall(r"\$\{[^}]*\}|[^:]+", str(mapping).split("/", 1)[0])
+                if len(parts) >= 2:
+                    host_ports.append(_resolve(parts[-2], template))
             if str(role.port) not in host_ports:
                 problems.append(f"{where}: {launch.service} publishes host ports {host_ports}, pool expects {role.port}")
         if launch.cuda_env not in env:

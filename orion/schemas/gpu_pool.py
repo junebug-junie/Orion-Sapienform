@@ -54,8 +54,10 @@ class GpuLeaseRequestV1(BaseModel):
     """One verb against the pool. ``acquire`` is idempotent on ``request_id``.
 
     Stage 4 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md):
-    ``attach`` asks for a child request lease under a hold (``parent_lease_id`` +
-    ``parent_generation``; the child's own ``lease_id`` does not exist yet, so it is not sent);
+    ``attach`` asks for a child request lease under a hold (``hold_lease_id`` + ``hold_generation``;
+    the child's own ``lease_id`` does not exist yet, so it is not sent). Named ``hold_*``, not
+    ``parent_*``: the pool's request dict already uses ``parent_lease_id`` for dead-letter replay
+    lineage (services/orion-gpu-pool/app/runtime.py), and the two must not collide;
     ``status`` is a read of ``lease_id`` with no side effect (resume after restart, Door-A).
     A pool that predates the engine for them answers ``unavailable reason=verb_not_supported:<verb>``.
     """
@@ -86,19 +88,23 @@ class GpuLeaseRequestV1(BaseModel):
     replay_payload: dict[str, Any] | None = None
     # verb=attach only: the hold this call runs under, and the hold generation the caller was
     # granted (a stale generation means the hold was re-granted and the caller must not attach).
-    parent_lease_id: str | None = Field(None, min_length=1, max_length=128)
-    parent_generation: int | None = Field(None, ge=1)
+    hold_lease_id: str | None = Field(None, min_length=1, max_length=128)
+    hold_generation: int | None = Field(None, ge=1)
 
     @model_validator(mode="after")
-    def _parent_only_on_attach(self):
-        has_parent = self.parent_lease_id is not None or self.parent_generation is not None
+    def _stage4_verb_shapes(self):
+        has_hold = self.hold_lease_id is not None or self.hold_generation is not None
         if self.verb == "attach":
-            if self.parent_lease_id is None or self.parent_generation is None:
-                raise ValueError("attach needs parent_lease_id and parent_generation")
+            if self.hold_lease_id is None or self.hold_generation is None:
+                raise ValueError("attach needs hold_lease_id and hold_generation")
             if self.lease_id is not None:
-                raise ValueError("attach names the hold in parent_lease_id; lease_id is the child's, not sent")
-        elif has_parent:
-            raise ValueError(f"parent_lease_id/parent_generation are only valid on attach, not {self.verb}")
+                raise ValueError("attach names the hold in hold_lease_id; lease_id is the child's, not sent")
+            if self.request_id is None or self.work_class is None:
+                raise ValueError("attach needs request_id (idempotency) and work_class")
+        elif has_hold:
+            raise ValueError(f"hold_lease_id/hold_generation are only valid on attach, not {self.verb}")
+        if self.verb == "status" and self.lease_id is None:
+            raise ValueError("status needs lease_id")
         return self
 
 
@@ -309,9 +315,9 @@ class GpuActuateResultV1(BaseModel):
     observed: dict[str, Literal["running", "exited", "absent", "unknown"]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def _restored_only_on_failure(self):
-        if self.restored is not None and self.status != "failed":
-            raise ValueError("restored is only meaningful on status=failed")
+    def _restored_only_on_failed_load(self):
+        if self.restored is not None and (self.status != "failed" or self.action != "load"):
+            raise ValueError("restored is only meaningful on a failed load")
         return self
 
 

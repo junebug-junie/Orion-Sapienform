@@ -95,6 +95,24 @@ def test_other_actuator_is_ignored_silently(repo):
     assert sink.results == []
 
 
+def test_invalid_request_without_actuator_is_not_answered(repo):
+    body = payload(repo, cards=[])
+    del body["actuator"]
+    sink = Sink()
+    run(lambda: bus.handle(body, sink))
+    assert sink.results == []
+
+
+def test_naive_deadline_refused_not_crashed(repo, monkeypatch):
+    transition = AsyncMock()
+    monkeypatch.setattr(gpu, "transition", transition)
+    sink = Sink()
+    naive = (datetime.now(timezone.utc) + timedelta(minutes=5)).replace(tzinfo=None).isoformat()
+    run(lambda: bus.handle(payload(repo, deadline_at=naive), sink))
+    assert sink.statuses == [("refused", None)] and sink.results[0].reason == "invalid_request:deadline_at_naive"
+    transition.assert_not_called()
+
+
 def test_invalid_request_is_refused_when_addressable(repo):
     sink = Sink()
     run(lambda: bus.handle(payload(repo, cards=[]), sink))
@@ -357,13 +375,16 @@ def test_restart_mid_action_is_recorded_as_interrupted(repo, monkeypatch):
     state["in_flight"] = {"action_id": "a2", "generation": 2, "role": "agent-gpu2", "action": "load",
                           "cards": ["gpu2"], "launch_digest": digest(repo)}
     fence.write_state(state)
-    assert fence.recover_interrupted()["reason"] == "interrupted_by_controller_restart"
+    recovered = fence.recover_interrupted()
+    assert recovered["reason"] == "interrupted_by_controller_restart"
+    assert recovered["restored"] is False   # a cut-off load may have evicted diffusion: fault, not "untouched"
     transition = AsyncMock()
     monkeypatch.setattr(gpu, "transition", transition)
     replay = Sink()
     run(lambda: bus.handle(payload(repo, generation=2, action_id="a2"), replay))
     assert replay.statuses == [("failed", None)]
     assert replay.results[0].reason == "interrupted_by_controller_restart"
+    assert replay.results[0].restored is False
     transition.assert_not_called()
 
 
@@ -445,3 +466,126 @@ def test_real_config_launch_blocks_resolve_to_bridge_targets():
     assert fence.resolve(cfg, role="agent-gpu2", action="unload", cards=["gpu2"], digest=None) == "diffusion"
     with pytest.raises(fence.Refusal, match="not_a_bridge_role"):
         fence.resolve(cfg, role="diffusion", action="load", cards=["gpu2"], digest=None)
+
+
+# --- review regressions ------------------------------------------------------------------------
+
+def test_accepted_publish_failure_still_runs_and_clears_in_flight(repo, monkeypatch):
+    transition = AsyncMock(return_value={"status": "success"})
+    monkeypatch.setattr(gpu, "transition", transition)
+
+    class DropsAck(Sink):
+        async def __call__(self, result, corr):
+            if result.status == "accepted":
+                raise ConnectionError("bus hiccup")
+            await super().__call__(result, corr)
+    sink = DropsAck()
+    run(lambda: bus.handle(payload(repo), sink))
+    transition.assert_awaited_once()
+    assert [r.status for r in sink.results] == ["succeeded"]
+    assert fence.read_state()["in_flight"] is None and bus._current is None
+
+
+def test_rollback_not_blocked_by_checkout_edited_mid_load(repo, monkeypatch):
+    """git pull on circe during a load changes the digest: the next forward checkpoint stops, but
+    rollback (require_drained=False) must still put diffusion back."""
+    calls = []
+    snap = {"active": "diffusion", "targets": {
+        "diffusion": {"state": "running", "containers": [{"state": "running"}]},
+        "agent-burst": {"state": "exited", "containers": []}}}
+    monkeypatch.setattr(gpu, "status", AsyncMock(return_value=snap))
+    monkeypatch.setattr(gpu, "model_ready", AsyncMock(return_value=False))
+
+    async def drain():
+        calls.append("drain")
+        path = repo / "config" / "gpu_pool.yaml"
+        path.write_text(path.read_text().replace("timeout_sec: 900", "timeout_sec: 901"))
+    monkeypatch.setattr(gpu, "drain_diffusion", drain)
+    monkeypatch.setattr(gpu, "request", AsyncMock(return_value={}))
+
+    async def stop(t):
+        calls.append("stop:" + t)
+    monkeypatch.setattr(gpu, "stop", stop)
+    sink = Sink()
+    run(lambda: bus.handle(payload(repo), sink))
+    final = sink.results[-1]
+    assert "stop:diffusion" not in calls          # forward progress stopped at the checkpoint
+    assert final.status == "failed" and final.reason == "launch_digest_changed"
+    assert final.restored is True                  # diffusion un-drained, not stranded
+
+
+def test_finished_result_not_erased_by_concurrent_admission(repo, monkeypatch):
+    """B reads the fence, awaits config load; A finishes meanwhile and records its result. B must
+    not write its older snapshot back over A's record."""
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        release = asyncio.Event()
+
+        async def transition(req):
+            if req.operation_id == "a1":
+                await release.wait()
+            return {"status": "success"}
+        monkeypatch.setattr(gpu, "transition", transition)
+        await bus.handle(payload(repo, generation=1, action_id="a1"), Sink())
+        task_a = bus._task
+        real_load = fence.load_config
+
+        def slow_load():
+            loop.call_soon_threadsafe(release.set)
+            import time as _t
+            _t.sleep(0.3)   # A finishes (and records) while B sits in this await
+            return real_load()
+        monkeypatch.setattr(fence, "load_config", slow_load)
+        second = Sink()
+        await bus.handle(payload(repo, generation=2, action_id="b2", action="unload"), second)
+        await task_a
+        if bus._task is not None:
+            await bus._task
+        replay = Sink()
+        await bus.handle(payload(repo, generation=1, action_id="a1"), replay)
+        assert replay.statuses == [("succeeded", None)]
+        assert second.results[-1].status == "succeeded"
+    asyncio.run(scenario())
+
+
+def test_status_observes_outside_admit_lock(repo, monkeypatch):
+    held = []
+
+    async def observe():
+        held.append(bus._admit_lock.locked())
+        return {"agent-gpu2": "absent", "diffusion": "running"}
+    monkeypatch.setattr(bus, "observe", observe)
+    sink = Sink()
+    run(lambda: bus.handle(payload(repo, action="status", action_id="s1"), sink))
+    assert held == [False] and sink.results[-1].status == "succeeded"
+
+
+def test_lifespan_runs_one_heartbeat_chassis(monkeypatch):
+    """The actuator Hunter already heartbeats; HeartbeatOnly is only its fallback."""
+    started = []
+
+    class Fake:
+        def __init__(self, name):
+            self.name = name
+
+        async def start_background(self):
+            started.append(self.name)
+
+        async def stop(self):
+            pass
+    monkeypatch.setattr(settings, "ORION_BUS_ENABLED", True)
+    monkeypatch.setattr(settings, "GPU2_AUTHORITY", "durable")
+    monkeypatch.setattr(main_module, "build_actuator_chassis", lambda: Fake("actuator"))
+    monkeypatch.setattr(main_module, "build_heartbeat_chassis", lambda: Fake("heartbeat"))
+    with TestClient(main_module.app):
+        pass
+    assert started == ["actuator"]
+
+    started.clear()
+
+    def broken():
+        raise RuntimeError("bus down")
+    monkeypatch.setattr(main_module, "build_actuator_chassis", broken)
+    with TestClient(main_module.app):
+        pass
+    assert started == ["heartbeat"]

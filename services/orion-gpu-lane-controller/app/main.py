@@ -52,15 +52,7 @@ def build_actuator_chassis() -> Hunter:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global heartbeat_chassis
-    try:
-        heartbeat_chassis = build_heartbeat_chassis()
-        await heartbeat_chassis.start_background()
-        logger.info(f"[HOST] system_health_heartbeat_started service={settings.SERVICE_NAME}")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"[HOST] system_health_heartbeat_start_failed error={exc}")
-        heartbeat_chassis = None
-    global actuator_chassis
+    global heartbeat_chassis, actuator_chassis
     if gpu2.pool_authority():
         try:
             interrupted = await asyncio.to_thread(pool_fence.recover_interrupted)
@@ -77,6 +69,16 @@ async def lifespan(app: FastAPI):
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[HOST] gpu_pool_actuator_start_failed error={exc}")
             actuator_chassis = None
+    if actuator_chassis is None:
+        # The actuator Hunter already publishes the heartbeat (BaseChassis); a second chassis would
+        # be a second SystemHealthV1 stream + bus connection. HeartbeatOnly is only the fallback.
+        try:
+            heartbeat_chassis = build_heartbeat_chassis()
+            await heartbeat_chassis.start_background()
+            logger.info(f"[HOST] system_health_heartbeat_started service={settings.SERVICE_NAME}")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[HOST] system_health_heartbeat_start_failed error={exc}")
+            heartbeat_chassis = None
     yield
     if actuator_chassis is not None:
         try:

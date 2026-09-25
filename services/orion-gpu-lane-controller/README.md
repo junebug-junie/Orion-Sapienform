@@ -150,3 +150,10 @@ yet -- read `observed`.
   upstream-idle-before-stop stay here.
 
 Keys: `GPU2_AUTHORITY`, `GPU_POOL_ACTUATOR_NAME`, `GPU2_POOL_FENCE_STATE_PATH` (see `.env_example`).
+
+**Fence file operations.** It lives on the pinned volume `orion-gpu-lane-controller-state`
+(`docker compose down -v` deletes it and resets the accepted generation to 0 -- don't). If it is
+corrupt, every request is refused `fence_state_unreadable:*` until an operator inspects it:
+`docker exec orion-circe-gpu-lane-controller cat /state/gpu2_pool_fence.json`. Only delete it with
+the pool's actuation disarmed (`GPU_POOL_ACTUATE_ROLES=` empty), since the pool's next generation
+must then be above whatever the controller last accepted.

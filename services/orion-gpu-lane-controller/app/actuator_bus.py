@@ -71,14 +71,24 @@ def _result(req: GpuActuateV1, status: str, *, started: float | None = None, **f
 
 
 def _salvage(payload: Any) -> GpuActuateV1 | None:
-    """Enough of an invalid request to address a refusal to it, or None (unanswerable)."""
-    if not isinstance(payload, dict):
+    """Enough of an invalid request to address a refusal to it, or None (unanswerable). Only a
+    request explicitly addressed to this actuator is answered -- never on another host's behalf."""
+    if not isinstance(payload, dict) or payload.get("actuator") != settings.GPU_POOL_ACTUATOR_NAME:
         return None
     try:
-        return GpuActuateV1.model_construct(
+        salvaged = GpuActuateV1.model_construct(
             action_id=str(payload["action_id"])[:128], generation=max(1, int(payload["generation"])),
-            role=str(payload["role"])[:64], action=payload["action"])
+            role=str(payload["role"])[:64] or "unknown", action=payload["action"])
+        _result(salvaged, "refused")  # must itself be a valid result, or stay silent
+        return salvaged
     except Exception:  # noqa: BLE001
+        return None
+
+
+def _recorded(row: dict[str, Any]) -> GpuActuateResultV1 | None:
+    try:
+        return GpuActuateResultV1.model_validate(_strip(row))
+    except Exception:  # noqa: BLE001 -- a row from an older schema: answer from `status` instead
         return None
 
 
@@ -87,8 +97,6 @@ async def handle(payload: Any, publish: Publish, corr: Any = None) -> None:
     try:
         req = GpuActuateV1.model_validate(payload)
     except ValidationError as exc:
-        if isinstance(payload, dict) and payload.get("actuator") not in (None, settings.GPU_POOL_ACTUATOR_NAME):
-            return
         salvaged = _salvage(payload)
         if salvaged is None or salvaged.action not in ("load", "unload", "status"):
             logger.warning("gpu_actuate_unanswerable errors={}", exc.error_count())
@@ -97,6 +105,9 @@ async def handle(payload: Any, publish: Publish, corr: Any = None) -> None:
         return
     if req.actuator != settings.GPU_POOL_ACTUATOR_NAME:
         return  # another host's actuator; not ours to answer
+    if req.deadline_at.tzinfo is None:
+        # A naive datetime cannot be compared with UTC now; refuse rather than crash unanswered.
+        return await _refuse(req, "invalid_request:deadline_at_naive", publish, corr)
     await _dispatch(req, publish, corr)
 
 
@@ -112,18 +123,25 @@ async def _dispatch(req: GpuActuateV1, publish: Publish, corr: Any) -> None:
         return await _refuse(req, "authority_durable", publish, corr)
     if not settings.GPU2_ENABLED:
         return await _refuse(req, "gpu2_disabled", publish, corr)
+    status_view = None
     async with _admit_lock:
         try:
             state = await asyncio.to_thread(pool_fence.read_state)
         except Exception as exc:  # noqa: BLE001 -- unreadable fence: act on nothing
             return await _refuse(req, f"fence_state_unreadable:{type(exc).__name__}", publish, corr)
-        if req.action_id in state["actions"]:
+        recorded = state["actions"].get(req.action_id)
+        if recorded is not None and (replay := _recorded(recorded)) is not None:
             # Idempotent replay: the recorded terminal result, never a second transition.
-            return await publish(GpuActuateResultV1.model_validate(_strip(state["actions"][req.action_id])), corr)
+            return await publish(replay, corr)
         if _current is not None and _current["action_id"] == req.action_id:
             return await publish(_result(req, "progress", phase=_current.get("phase")), corr)
         if req.action == "status":
-            return await _status(req, state, publish, corr)
+            status_view = _status_view(req, state)
+    if status_view is not None:
+        # Outside the admit lock: observe() shells out to docker (up to ~60s) and must not starve
+        # a concurrent load's `accepted` past the pool's actuate_ack_sec.
+        return await _status(req, status_view, publish, corr)
+    async with _admit_lock:
         if req.deadline_at <= datetime.now(timezone.utc):
             return await _refuse(req, "deadline_passed", publish, corr)
         if req.profile is not None:
@@ -136,10 +154,16 @@ async def _dispatch(req: GpuActuateV1, publish: Publish, corr: Any) -> None:
             return await _refuse(req, str(exc), publish, corr)
         except Exception as exc:  # noqa: BLE001 -- unparseable own config: act on nothing
             return await _refuse(req, f"config_unloadable:{type(exc).__name__}", publish, corr)
-        if req.generation <= pool_fence.last_generation(state, req.cards):
-            return await _refuse(req, "stale_generation", publish, corr)
         if (_task is not None and not _task.done()) or gpu2._lock.locked():
             return await _refuse(req, "busy", publish, corr)
+        try:
+            # Re-read after every await above: a transition that finished meanwhile recorded its
+            # result in the file, and writing an older snapshot back would erase it.
+            state = await asyncio.to_thread(pool_fence.read_state)
+        except Exception as exc:  # noqa: BLE001
+            return await _refuse(req, f"fence_state_unreadable:{type(exc).__name__}", publish, corr)
+        if req.generation <= pool_fence.last_generation(state, req.cards):
+            return await _refuse(req, "stale_generation", publish, corr)
         flight = {"action_id": req.action_id, "generation": req.generation, "role": req.role,
                   "action": req.action, "cards": sorted(req.cards), "launch_digest": req.launch_digest}
         state["generations"][pool_fence.card_set(req.cards)] = req.generation
@@ -151,8 +175,13 @@ async def _dispatch(req: GpuActuateV1, publish: Publish, corr: Any) -> None:
             return await _refuse(req, f"fence_state_unwritable:{type(exc).__name__}", publish, corr)
         _current = {**flight, "phase": None}
         started = time.monotonic()
-        await publish(_result(req, "accepted", started=started), corr)
+        # The generation is spent; the action must run even if the ack cannot be published (the
+        # pool then reconciles via `status`), or it would be stranded in flight forever.
         _task = asyncio.create_task(_run(req, target, started, publish, corr))
+        try:
+            await publish(_result(req, "accepted", started=started), corr)
+        except Exception:  # noqa: BLE001
+            logger.warning("gpu_actuate_accepted_publish_failed action_id={}", req.action_id)
 
 
 async def _run(req: GpuActuateV1, target: str, started: float, publish: Publish, corr: Any) -> None:
@@ -199,7 +228,21 @@ def _finish(action_id: str, result: dict[str, Any]) -> None:
     pool_fence.write_state(state)
 
 
-async def _status(req: GpuActuateV1, state: dict[str, Any], publish: Publish, corr: Any) -> None:
+def _status_view(req: GpuActuateV1, state: dict[str, Any]) -> dict[str, Any]:
+    """What `status` reports, copied under the admit lock so it is one consistent snapshot."""
+    cards = pool_fence.card_set(req.cards)
+    last = None
+    for action_id in reversed(state["order"]):
+        row = state["actions"].get(action_id) or {}
+        if pool_fence.card_set(row.get("cards") or []) == cards:
+            last = row
+            break
+    return {"last": last, "last_generation": pool_fence.last_generation(state, req.cards),
+            "in_flight": _current["action_id"] if _current else None,
+            "phase": _current.get("phase") if _current else None}
+
+
+async def _status(req: GpuActuateV1, view: dict[str, Any], publish: Publish, corr: Any) -> None:
     """Read-only: re-publish the last recorded result for the card set (so a restarted pool adopts
     it by its own action_id), then answer this request with the observed containers."""
     try:
@@ -209,20 +252,12 @@ async def _status(req: GpuActuateV1, state: dict[str, Any], publish: Publish, co
         return await _refuse(req, str(exc), publish, corr)
     except Exception as exc:  # noqa: BLE001
         return await _refuse(req, f"config_unloadable:{type(exc).__name__}", publish, corr)
-    cards = pool_fence.card_set(req.cards)
-    last = None
-    for action_id in reversed(state["order"]):
-        row = state["actions"].get(action_id) or {}
-        if pool_fence.card_set(row.get("cards") or []) == cards:
-            last = row
-            break
-    if last is not None and _current is None:
-        await publish(GpuActuateResultV1.model_validate(_strip(last)), corr)
-    in_flight = _current["action_id"] if _current else "none"
-    reason = (f"last_generation={pool_fence.last_generation(state, req.cards)} "
-              f"last_action={(last or {}).get('action_id', 'none')} in_flight={in_flight}")
-    await publish(_result(req, "succeeded", observed=await observe(), reason=reason,
-                          phase=_current.get("phase") if _current else None), corr)
+    last = view["last"]
+    if last is not None and view["in_flight"] is None and (replay := _recorded(last)) is not None:
+        await publish(replay, corr)
+    reason = (f"last_generation={view['last_generation']} "
+              f"last_action={(last or {}).get('action_id', 'none')} in_flight={view['in_flight'] or 'none'}")
+    await publish(_result(req, "succeeded", observed=await observe(), reason=reason, phase=view["phase"]), corr)
 
 
 def _strip(row: dict[str, Any]) -> dict[str, Any]:

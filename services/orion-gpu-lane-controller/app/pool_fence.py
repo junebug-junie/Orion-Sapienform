@@ -129,7 +129,10 @@ def recover_interrupted() -> dict[str, Any] | None:
     flight = state.get("in_flight")
     if not flight:
         return None
-    result = {**flight, "status": "failed", "phase": None, "restored": None,
+    # A load cut off mid-way may already have stopped diffusion: report restored=False (the pool
+    # then marks the card `fault` for an operator) rather than None, which reads "nothing evicted".
+    restored = False if flight.get("action") == "load" else None
+    result = {**flight, "status": "failed", "phase": None, "restored": restored,
               "reason": "interrupted_by_controller_restart", "elapsed_ms": None, "observed": {}}
     record(state, flight["action_id"], result)
     state["in_flight"] = None
@@ -138,11 +141,13 @@ def recover_interrupted() -> dict[str, Any] | None:
 
 
 async def authority(req, *, require_drained=True):
-    del require_drained  # the durable admissions it guarded no longer exist under pool authority
-    return await asyncio.to_thread(_authority, req)
+    # require_drained=False is the pre-flight and the rollback check. Rollback returns the card to
+    # its previous residents, so a checkout edited mid-load must not block it: identity and
+    # generation only. (The durable admissions require_drained guarded do not exist under pool.)
+    return await asyncio.to_thread(_authority, req, require_drained)
 
 
-def _authority(req):
+def _authority(req, check_digest=True):
     """Pool-mode replacement for gpu2.authority(): the transition in progress must still be the
     newest generation accepted for gpu2, and the checkout must still match the digest it was
     accepted under. Drain/idle *safety* stays in gpu2.transition; whether-to-act (thermal, visual
@@ -153,6 +158,8 @@ def _authority(req):
         raise RuntimeError("stale_or_unknown_intent")
     if last_generation(state, flight["cards"]) != req.generation:
         raise RuntimeError("stale_or_unknown_intent")
+    if not check_digest:
+        return {"can_transition": True, "activation_eligible": True}
     cfg = load_config()
     if launch_digest(cfg, flight["role"]) != flight["launch_digest"]:
         raise RuntimeError("launch_digest_changed")

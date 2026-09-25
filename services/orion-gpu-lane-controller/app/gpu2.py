@@ -30,7 +30,8 @@ async def phase(name):
     if hook is None:
         return
     try:
-        await hook(name)
+        # Bounded: a hung bus publish must not stall a transition mid-drain.
+        await asyncio.wait_for(hook(name), timeout=5)
     except Exception:  # noqa: BLE001 -- progress telemetry never changes a transition's outcome
         logger.warning("gpu2_progress_publish_failed phase={}", name)
 
@@ -158,8 +159,11 @@ async def transition(req):
         # Reject obsolete requests before changing observable transition state.
         try:
             await authority(req, require_drained=False)
-        except Exception:
-            return {"status": "failed", "error": "stale_or_unknown_intent"}
+        except Exception as exc:
+            # Under pool authority keep the fence's own reason (e.g. a corrupt fence file) so the
+            # pool can tell it from a stale request; durable keeps its historical single reason.
+            reason = str(exc) if pool_authority() and isinstance(exc, RuntimeError) else "stale_or_unknown_intent"
+            return {"status": "failed", "error": reason}
         _state.clear()
         _state.update(state="draining", error=None, operation_id=req.operation_id, generation=req.generation)
         touched = False

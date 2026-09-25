@@ -137,19 +137,34 @@ would learn "stuck" as normal, the exact failure being fixed.
 
 | Sub | Producer (`services/orion-field-digester/app/store.py`) | Live 2026-09-25 ~06:10Z |
 | --- | --- | --- |
-| seed oldest wait | `oldest_world_pulse_seed_pending_age_sec`: `EXTRACT(EPOCH FROM now() - min(created_at)) FROM world_pulse_read_seed WHERE status='pending'` | 1,555,830 s (432 h) |
-| durable oldest wait | `oldest_durable_demand_pending_age_sec`: same over `durable_resource_demands WHERE status='pending'` | 798 s (one fresh demand) |
-| GPU pool oldest wait | `oldest_gpu_pool_waiting_age_sec`: `min(coalesce(queued_since, created_at)) FROM gpu_pool_leases WHERE status IN ('queued','backlogged')` | NULL -> 0.0 (queue empty) |
+| seed head-of-line wait | `oldest_world_pulse_seed_pending_age_sec`: age of the pending seed `CLAIM_SQL` would take next (`ORDER BY priority, attempts, created_at, seed_id LIMIT 1`) | 138 h (a 2026-09-19 seed, attempts 0; the 432 h 09-07 seeds are retries that sort behind it) |
+| durable oldest wait | `oldest_durable_demand_pending_age_sec`: `now() - min(created_at)` over `durable_resource_demands WHERE status='pending'` | 798 s (one fresh demand) |
+| GPU pool oldest queued wait | `oldest_gpu_pool_waiting_age_sec`: `now() - min(coalesce(queued_since, created_at))` over `gpu_pool_leases WHERE status='queued'` | NULL -> 0.0 (queue empty) |
 
-Filters match each source's `count_*` sibling exactly, so depth and age describe the same set of
-items. The subtraction runs inside Postgres against its own `now()`. `created_at` on seeds and
+Where the age filter differs from its `count_*` sibling, on purpose (both found in code review):
+
+- **Seeds: head of line, not `min(created_at)`.** Claims go by priority, then attempts, then age
+  (`orion/world_pulse_read/queue.py::CLAIM_SQL`, whose own comment says a retried seed's wait "is
+  NOT bounded"). The oldest seed overall can therefore starve behind fresh work while the queue
+  flows, which would pin the sub at 10 for a reason other than "stuck". The head-of-line item only
+  stays old if the worker is not taking even the next seed. Age still counts from `created_at`, so a
+  seed that was claimed and put back carries its earlier time; the attempts ordering keeps such a seed
+  off the head while fresh ones exist. A test pins the ordering to `CLAIM_SQL`.
+- **GPU pool: queued only.** A `backlogged` lease is waiting for a role to come back and may sit up to
+  `backlog_max_age_sec` (86,400 s, `orion/gpu_pool/config.py`) before being dead-lettered
+  (`orion/gpu_pool/scheduler.py`), which would pin a 60 s expected wait for a day. Queued leases are
+  bounded by their own `deadline_at`, which is what the 60 s anchor is calibrated against. Backlogged
+  leases still count toward depth. The subtraction runs inside Postgres against its own `now()`. `created_at` on seeds and
 durable demands is a DB default; on `gpu_pool_leases` it is written by orion-gpu-pool
 (`services/orion-gpu-pool/app/runtime.py::_row`), which runs on athena, the same host as the
 database, so no cross-host clock enters. Readers go through `app/digestion/queue_contention.py::
 default_queue_contention_age_readers` -> `read_queue_contention_oldest_waits` (fail-open: a failed
 read is omitted, never written as 0.0) -> `orion/field/queue_contention.py::score_queue_contention`.
-Every query uses an existing index (`EXPLAIN` on the pool query: `Index Scan using
-gpu_pool_leases_live_idx`).
+`EXPLAIN` (live, 2026-09-25): pool -> `Index Scan using gpu_pool_leases_live_idx`; durable ->
+`Index Only Scan using durable_resource_demands_fifo`; seed -> `Seq Scan` + sort over 145 rows (the
+claim index cannot serve the four-key order; harmless at this size, and the same shape `CLAIM_SQL`
+already runs). A recording-engine test asserts each query's table, status filter and ordering, since
+every other test injects readers.
 
 ### 2. Independence
 
@@ -197,19 +212,29 @@ durable, per 10 s for the pool):
 | --- | --- | --- | --- | --- | --- | --- |
 | durable, expected 12 h | 2026-09-14..09-25, 1604 samples | 715 (45%) | 715 (45%) | 174 (11%) | 0 | 26 h -> sub 2.9 |
 | GPU pool, expected 60 s | 2026-09-24 20:00..09-25 06:10, 3695 samples | 3615 (97.8%) | 62 (1.7%) | 18 (0.5%) | 0 | 231 s -> sub 7.1 |
-| seed, expected 48 h | 2026-09-07..09-25, every 6 h | never empty | first ~2 days | since 2026-09-09 | since 2026-09-17 | 432 h -> sub 10 |
+| seed (oldest overall), expected 48 h | 2026-09-07..09-25, every 6 h | never empty | first ~2 days | since 2026-09-09 | since 2026-09-17 | 432 h -> sub 10 |
 
 Durable and GPU pool both go quiet at a genuine 0 most of the time, rise when work really waits,
-and never pinned. **The seed source is pinned at 10, and that is the truthful reading, not a metric
-defect:** the seed queue has never once drained since it was created (296 seeds created, 15 ever
-finished, the last on 2026-09-15; oldest-pending age has grown monotonically from 6 h to 432 h in
-every sample). Its rest point is reachable (the math above), but the queue has never been in a rest
-state to show it. **Consequence to know before deploying:** while the seed queue stays frozen, the
-score reads 10 with driver `world_pulse_seed_pending:oldest_wait` on every tick, the hire
-disclosure will say so every time it fires, and the `max()` will hide any durable or GPU-pool
-contention behind it. It clears only when the seed backlog older than 48 h is claimed or skipped.
-If that is unwanted before the seed pipeline is fixed, set
-`FIELD_QUEUE_CONTENTION_SEED_EXPECTED_WAIT_SEC` very high to mute only the seed age sub.
+and never pinned. (The pool replay covered every lease with a wait interval; no backlogged leases
+exist in its history, so it is unchanged by the queued-only filter.)
+
+**Seeds.** The seed queue has never once drained since it was created (296 seeds created, 15 ever
+finished, the last on 2026-09-15). The oldest-overall row above is kept as evidence of that, but it
+is not what ships. The shipped head-of-line age cannot be replayed historically (`attempts` changes
+carry no timestamp), so only the live value is known: 138 h -> sub **4.7**, and while nothing is
+claimed it climbs ~1.25 per day, reaching 10 around 2026-09-29. The rest point is reachable (the
+math above); the queue has simply never been at rest to show it.
+
+**Consequences to know before deploying:**
+
+- The disclosure line for a stuck seed queue says so and explicitly does **not** push a hire
+  (`orion/curiosity/queue_contention_disclosure.py::_STUCK_SEED_NOTE`): a stalled reader pipeline is
+  not shared capacity under contention, and hiring Cursor does not unstick it. Durable and GPU-pool
+  oldest-wait drivers keep the hire nudge, because those waits are capacity.
+- While the seed age sub is the highest, the `max()` hides smaller durable/GPU-pool readings behind
+  it (a capacity sub of, say, 3 is not disclosed while seeds read 5). Accepted for now; the real fix
+  is the stalled seed pipeline. To mute only the seed age sub without code, set
+  `FIELD_QUEUE_CONTENTION_SEED_EXPECTED_WAIT_SEC` very high.
 
 **Expected waits -- knobs, anchored, not findings:**
 
@@ -244,6 +269,7 @@ falls back to its generic blurb, it does not fail. No EWMA state is added, so re
 nothing behind. Per-source mute without code: raise that source's `*_EXPECTED_WAIT_SEC`. Full
 revert: drop the age readers and the six-sub max; the depth path is untouched.
 
-**Expected live change on deploy (UNVERIFIED until deployed):** score ~0.14 -> 10.0, driver
+**Expected live change on deploy (UNVERIFIED until deployed):** score ~0.11 -> ~4.7, driver
 `world_pulse_seed_pending` -> `world_pulse_seed_pending:oldest_wait`, on the first tick (no warm-up;
-the expected wait is config, not learned).
+the expected wait is config, not learned), then climbing while the seed queue stays frozen. Verify
+with the `queue_contention_driver_changed` log line and the latest `substrate_field_state` row.

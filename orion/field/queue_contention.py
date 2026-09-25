@@ -142,8 +142,6 @@ def _sub_score(count: float, baseline: float, *, floor: float) -> float:
 
 
 def _age_sub_score(oldest_wait_sec: float, expected_wait_sec: float) -> float:
-    if expected_wait_sec <= 0.0:
-        raise ValueError("expected_wait_sec must be positive")
     ratio = max(oldest_wait_sec, 0.0) / expected_wait_sec
     return _clip(10.0 * (ratio - 1.0) / 4.0, 0.0, 10.0)
 
@@ -204,9 +202,13 @@ def score_queue_contention(
     for key in SOURCE_KEYS:
         if key not in ages_in:
             continue
+        exp_wait = float(expected[key])
+        if not exp_wait > 0.0:
+            # Bad override: skip this source's age sub rather than crash the digester tick.
+            continue
         age = max(float(ages_in[key]), 0.0)
         ages[key] = age
-        subs[key + OLDEST_WAIT_SUFFIX] = _age_sub_score(age, float(expected[key]))
+        subs[key + OLDEST_WAIT_SUFFIX] = _age_sub_score(age, exp_wait)
 
     if not subs:
         return QueueContentionReading(

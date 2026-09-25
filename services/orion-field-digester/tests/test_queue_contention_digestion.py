@@ -296,3 +296,69 @@ def test_default_age_readers_map_every_source() -> None:
         SOURCE_DURABLE: 2.0,
         SOURCE_GPU_POOL: 3.0,
     }
+
+
+class _RecordingConn:
+    def __init__(self, sink: list[str], value):
+        self._sink, self._value = sink, value
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, clause):
+        self._sink.append(" ".join(str(clause).split()))
+        value = self._value
+
+        class _R:
+            def scalar(self_inner):
+                return value
+
+        return _R()
+
+
+class _RecordingEngine:
+    def __init__(self, value):
+        self.sql: list[str] = []
+        self._value = value
+
+    def connect(self):
+        return _RecordingConn(self.sql, self._value)
+
+
+def _store_with(value):
+    from app.store import FieldDigesterStore
+
+    store = FieldDigesterStore.__new__(FieldDigesterStore)
+    store._engine = _RecordingEngine(value)
+    return store
+
+
+def test_age_sql_filters_match_the_queue_they_describe() -> None:
+    """The SQL itself, not an injected lambda: a wrong table/status/order would pass every other test."""
+    store = _store_with(12.5)
+    assert store.oldest_world_pulse_seed_pending_age_sec() == 12.5
+    assert store.oldest_durable_demand_pending_age_sec() == 12.5
+    assert store.oldest_gpu_pool_waiting_age_sec() == 12.5
+    seed_sql, durable_sql, pool_sql = store._engine.sql
+    assert "FROM world_pulse_read_seed WHERE status = 'pending'" in seed_sql
+    # Head of line in CLAIM_SQL's own order.
+    assert "ORDER BY priority ASC, attempts ASC, created_at ASC, seed_id ASC LIMIT 1" in seed_sql
+    assert "FROM durable_resource_demands WHERE status = 'pending'" in durable_sql
+    assert "min(created_at)" in durable_sql
+    # Queued only: backlogged leases may wait up to backlog_max_age_sec by design.
+    assert "FROM gpu_pool_leases WHERE status = 'queued'" in pool_sql
+    assert "coalesce(queued_since, created_at)" in pool_sql
+
+
+def test_seed_age_order_matches_claim_sql() -> None:
+    from orion.world_pulse_read.queue import CLAIM_SQL
+
+    assert "ORDER BY priority ASC, attempts ASC, created_at ASC, seed_id ASC" in " ".join(CLAIM_SQL.split())
+
+
+def test_age_sql_empty_queue_is_zero_and_negative_clamped() -> None:
+    assert _store_with(None).oldest_gpu_pool_waiting_age_sec() == 0.0
+    assert _store_with(-3.0).oldest_durable_demand_pending_age_sec() == 0.0

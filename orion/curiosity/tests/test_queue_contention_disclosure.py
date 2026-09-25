@@ -83,3 +83,20 @@ def test_every_oldest_wait_driver_has_its_own_blurb() -> None:
         (line,) = format_queue_contention_progress(6.0, src + OLDEST_WAIT_SUFFIX)
         assert generic not in line
         assert "oldest" in line
+
+
+def test_stuck_seed_queue_does_not_push_a_hire() -> None:
+    """A frozen seed queue is a stalled pipeline, not capacity: no hire-now nudge."""
+    from orion.field.queue_contention import OLDEST_WAIT_SUFFIX, SOURCE_SEED
+
+    (line,) = format_queue_contention_progress(10.0, SOURCE_SEED + OLDEST_WAIT_SUFFIX)
+    assert "Write hire_cursor" not in line
+    assert "not by itself a reason to hire_cursor" in line
+
+
+def test_capacity_oldest_wait_drivers_keep_the_hire_nudge() -> None:
+    from orion.field.queue_contention import OLDEST_WAIT_SUFFIX, SOURCE_GPU_POOL, SOURCE_SEED
+
+    for driver in (SOURCE_DURABLE + OLDEST_WAIT_SUFFIX, SOURCE_GPU_POOL + OLDEST_WAIT_SUFFIX, SOURCE_SEED):
+        (line,) = format_queue_contention_progress(6.0, driver)
+        assert "Write hire_cursor and HelpRequest now" in line

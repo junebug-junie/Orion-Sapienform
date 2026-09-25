@@ -479,29 +479,46 @@ class FieldDigesterStore:
 
     # Oldest-wait readers (queue contention oldest-wait component, 2026-09-25). Age is computed
     # inside Postgres against its own now(), so the digester's clock never enters the subtraction.
-    # Empty queue -> NULL -> 0.0 (a real "nothing waiting", not a failure). Each filter matches its
-    # count_* sibling exactly, and each rides an existing index (claim index, the durable FIFO
-    # partial index, gpu_pool_leases_live_idx).
+    # Empty queue -> NULL / no row -> 0.0 (a real "nothing waiting", not a failure). Each reads
+    # the item the queue itself would serve next or has let wait longest -- see each docstring for
+    # where that differs from its count_* sibling's filter, and why.
     def _oldest_age_sec(self, sql: str) -> float:
         with self._engine.connect() as conn:
             value = conn.execute(text(sql)).scalar()
         return max(float(value), 0.0) if value is not None else 0.0
 
     def oldest_world_pulse_seed_pending_age_sec(self) -> float:
+        """Age of the head-of-line pending seed: the one CLAIM_SQL would take next.
+
+        Not min(created_at): claims go by priority, then attempts, then age, so a
+        low-priority or already-retried seed can legitimately sit behind fresh
+        work while the queue flows. Head-of-line age only stays high when the
+        worker is not taking even the next item. Ordering must match
+        orion/world_pulse_read/queue.py::CLAIM_SQL.
+        """
         return self._oldest_age_sec(
             """
-            SELECT EXTRACT(EPOCH FROM now() - min(created_at))
+            SELECT EXTRACT(EPOCH FROM now() - created_at)
             FROM world_pulse_read_seed WHERE status = 'pending'
+            ORDER BY priority ASC, attempts ASC, created_at ASC, seed_id ASC
+            LIMIT 1
             """
         )
 
     def oldest_gpu_pool_waiting_age_sec(self) -> float:
-        # queued_since is when the lease started waiting for a slot; created_at covers a
-        # backlogged lease that never got a queued_since.
+        """Oldest QUEUED lease's wait (queued_since; created_at if unset).
+
+        Narrower than count_gpu_pool_waiting on purpose: a backlogged lease
+        waits for a role to come back and may legitimately sit up to
+        backlog_max_age_sec (24h, orion/gpu_pool/config.py) before
+        dead-lettering, so it would pin a 60s expected wait for a day. Queued
+        leases are bounded by their own deadline_at, which is what the 60s
+        anchor is calibrated against. Backlogged depth still counts.
+        """
         return self._oldest_age_sec(
             """
             SELECT EXTRACT(EPOCH FROM now() - min(coalesce(queued_since, created_at)))
-            FROM gpu_pool_leases WHERE status IN ('queued', 'backlogged')
+            FROM gpu_pool_leases WHERE status = 'queued'
             """
         )
 

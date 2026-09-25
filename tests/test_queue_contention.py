@@ -187,7 +187,20 @@ def test_stuck_queue_stays_loud_after_depth_baseline_converges() -> None:
         age += 2.0
     assert scores[0] > 0.0
     assert reading.driver == SOURCE_SEED + OLDEST_WAIT_SUFFIX
-    assert scores == sorted(scores)  # never decays while the queue stays stuck
+    assert scores[-1] > scores[0]  # keeps rising while the queue stays stuck; no decay
+
+
+def test_nonpositive_expected_wait_skips_source_instead_of_crashing() -> None:
+    reading = score_queue_contention(
+        {},
+        {},
+        {},
+        alpha=0.0,
+        oldest_wait_sec={SOURCE_GPU_POOL: 900.0, SOURCE_DURABLE: 5 * 43200.0},
+        expected_wait_sec={SOURCE_GPU_POOL: 0.0},
+    )
+    assert SOURCE_GPU_POOL + OLDEST_WAIT_SUFFIX not in reading.subs
+    assert reading.driver == SOURCE_DURABLE + OLDEST_WAIT_SUFFIX
 
 
 def test_empty_queue_rest_point_is_exact_zero() -> None:

@@ -138,8 +138,9 @@ def update_queue_contention_pressure(
         oldest_wait_sec=oldest_wait_sec,
         expected_wait_sec=expected_wait_sec,
     )
-    if reading.driver is not None and reading.driver != state.queue_contention_driver:
-        # One line per driver change, not per tick: the only place the raw age is visible.
+    if reading.driver != state.queue_contention_driver:
+        # One line per driver change (including back to None = cleared), not per tick: the only
+        # place the raw age is visible.
         logger.info(
             "queue_contention_driver_changed driver=%s score=%.2f counts=%s oldest_wait_sec=%s",
             reading.driver,

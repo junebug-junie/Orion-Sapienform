@@ -12,6 +12,21 @@ from orion.field.queue_contention import (
     SOURCE_DURABLE,
     SOURCE_GPU_POOL,
     SOURCE_SEED,
+    driver_source,
+)
+
+_HIRE_NUDGE = (
+    "Elevated queue is a reason to hire_cursor (offload), not a reason to "
+    "stay on local_crawl — the local agent GPU seat is the expensive one. "
+    "Write hire_cursor and HelpRequest now — do not take a short local look first."
+)
+
+# A reading-seed queue that has stopped moving is most likely a stalled reader
+# pipeline, not shared agent capacity under contention: hiring Cursor does not
+# unstick it, so it must not push a hire. Report it as information only.
+_STUCK_SEED_NOTE = (
+    "This is a stalled queue, not busy capacity — it is not by itself a "
+    "reason to hire_cursor."
 )
 
 _DRIVER_BLURBS: dict[str, str] = {
@@ -83,9 +98,6 @@ def format_queue_contention_progress(
     if blurb is None:
         blurb = "shared agent capacity is under more contention than usual"
 
-    return [
-        f"Queue pressure: {shown}/10 ({band}) — {blurb}. "
-        "Elevated queue is a reason to hire_cursor (offload), not a reason to "
-        "stay on local_crawl — the local agent GPU seat is the expensive one. "
-        "Write hire_cursor and HelpRequest now — do not take a short local look first."
-    ]
+    source, is_oldest_wait = driver_source(str(driver or "").strip() or None)
+    closing = _STUCK_SEED_NOTE if (is_oldest_wait and source == SOURCE_SEED) else _HIRE_NUDGE
+    return [f"Queue pressure: {shown}/10 ({band}) — {blurb}. {closing}"]

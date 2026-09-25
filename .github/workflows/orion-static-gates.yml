@@ -71,6 +71,13 @@ jobs:
       - name: Bus schema lookup and kind registry agree
         run: python -m pytest tests/test_agent_trace_schema_registry.py -q
 
+      # Pure logic of the substrate ladder liveness gate, including the replay
+      # of the 2026-09-20 FieldStateV1 extra_forbidden incident. The live check
+      # itself (make substrate-ladder-check) needs Postgres + docker, so it runs
+      # from host cron, not here.
+      - name: Substrate ladder liveness logic replays the 09-20 incident red
+        run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py -q
+
       # Each gate is its own step so a failure names itself in the UI rather
       # than surfacing as one opaque red block.
       - name: Metric lineage gate (consumer existence, orphan ratchet)

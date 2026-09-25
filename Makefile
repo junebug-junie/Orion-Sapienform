@@ -1,4 +1,4 @@
-.PHONY: check-async-routes-not-blocking check-chat-route-poachers check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet check-system-health-producers postgres-headroom postgres-headroom-watch
+.PHONY: check-async-routes-not-blocking check-chat-route-poachers check-metric-generic-consumers check-metric-unwritten test test-hub test-actions bootstrap-test-envs check-inner-state-registry check-metric-lineage check-metric-lineage-cache-refresh check-metric-lineage-gate check-definition-drift check-single-consumer-channels check-activation-saturation concept-relation-digest check-concept-relation-digest-liveness check-env-compose-parity check-journal-dispatch-registry check-daily-schedule-collisions check-substrate-projection-schema-drift check-service-hostname-refs check-scripts-dir-no-stdlib-shadow bus-core-health-watchdog worktree-status worktree-status-summary worktree-status-stale prune-merged-worktrees check-sql-migrations-applied check-sql-migrations-applied-quiet check-system-health-producers postgres-headroom postgres-headroom-watch substrate-ladder-check substrate-ladder-watch
 
 SERVICE ?=
 ARGS ?=
@@ -463,6 +463,22 @@ check-sentience-instruments:
 # Makefile. Every other entry in this crontab already uses one form or the other.
 postgres-headroom-watch:
 	$(METRIC_PYTHON) scripts/check_postgres_connection_headroom.py --gate --verbose --notify
+
+# Substrate ladder liveness (2026-09-20 incident: a FieldStateV1 forbid-field was
+# added, only the producer redeployed, attention/proposal wrote nothing for ~48h
+# while every container read "Up"). Two checks: every rung table still has a
+# recent row (bounded index scans), and every container that validates a strict
+# cross-service schema runs a copy of it matching origin/main (import-scan
+# derived consumer list; `--list-consumers` shows it). Read-only against
+# Postgres, docker, and git. Exit 1 = red, 2 = could not check.
+# substrate-ladder-watch adds a debounced Hub Pending Attention card via
+# orion-notify, the same path disk-threshold-watchdog/postgres-headroom-watch use
+# from host cron. See scripts/check_substrate_ladder_liveness.py.
+substrate-ladder-check:
+	$(METRIC_PYTHON) scripts/check_substrate_ladder_liveness.py $(if $(JSON),--json,) $(if $(VERBOSE),--verbose,)
+
+substrate-ladder-watch:
+	$(METRIC_PYTHON) scripts/check_substrate_ladder_liveness.py --notify
 
 # Self-sense eval (Patch A/B of the sense-of-self + lived-self designs): four
 # fixed identity questions to the LIVE Hub chat endpoint, two deterministic

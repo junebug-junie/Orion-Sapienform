@@ -1,0 +1,44 @@
+{
+  "_source": "Recovered from live Postgres on 2026-09-25 (max(generated_at) per ladder table inside 2026-09-20 20:00..09-22 00:00, first field_state row after 09-22 21:59, last consolidation frame before 22:00, motif_observations lengths of the 09-22 frames). Attention-frame rows for the window have aged out of retention; their newest value is set equal to proposal's, which is what the 09-20 incident report recorded (both froze at 21:58Z). Image dates: attention-runtime image built 2026-09-08, proposal-runtime 2026-09-14 (incident report); field_state.py last changed by 586faf93b at 2026-09-20T21:15:13Z (git log). Grammar-lane and receipt values are representative fresh values, not recovered: those rungs sit below field_state and kept writing (receipts for the window are pruned after 30 minutes).",
+  "now": "2026-09-22T22:00:00+00:00",
+  "newest": {
+    "grammar:orion-bus": "2026-09-22T21:59:58+00:00",
+    "grammar:orion-biometrics": "2026-09-22T21:59:50+00:00",
+    "grammar:orion-cortex-exec": "2026-09-22T21:50:00+00:00",
+    "receipts:transport_bus_reducer": "2026-09-22T21:59:40+00:00",
+    "receipts:biometrics_node_reducer": "2026-09-22T21:59:55+00:00",
+    "receipts:substrate.bus_synaptic": "2026-09-22T21:58:00+00:00",
+    "receipts:substrate.perception": "2026-09-22T21:58:30+00:00",
+    "receipts:substrate.vision_channel": "2026-09-22T21:57:00+00:00",
+    "field_state": "2026-09-22T21:59:00.10268+00:00",
+    "attention": "2026-09-20T21:58:22.947332+00:00",
+    "proposal": "2026-09-20T21:58:22.947332+00:00",
+    "policy": "2026-09-20T21:58:24.096355+00:00",
+    "dispatch": "2026-09-20T22:02:27.253428+00:00",
+    "feedback": "2026-09-20T22:03:11.327212+00:00",
+    "consolidation": "2026-09-22T21:00:16.199709+00:00"
+  },
+  "consolidation_motif_counts": [
+    0,
+    0,
+    0
+  ],
+  "schema_commit_time": "2026-09-20T21:15:13+00:00",
+  "containers": [
+    {
+      "name": "orion-athena-field-digester",
+      "service_dir": "orion-field-digester",
+      "image_created": "2026-09-20T21:40:00+00:00"
+    },
+    {
+      "name": "orion-athena-attention-runtime",
+      "service_dir": "orion-attention-runtime",
+      "image_created": "2026-09-08T00:00:00+00:00"
+    },
+    {
+      "name": "orion-athena-proposal-runtime",
+      "service_dir": "orion-proposal-runtime",
+      "image_created": "2026-09-14T00:00:00+00:00"
+    }
+  ]
+}

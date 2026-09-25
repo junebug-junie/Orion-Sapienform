@@ -212,10 +212,11 @@
     const holds = ((view.state && view.state.leases) || []).filter((l) => l.holder && l.holder.startsWith("operator:"));
     const enforce = view.state && view.state.mode === "enforce";
     $("holdControls").innerHTML = holdable.map((r) => {
-      if (!enforce) return `<span class="muted">Hold ${esc(r.name)}: needs the pool to load and unload models itself (stage 5); until then a hold would only drain every card.</span>`;
       const cls = holdClassFor(view.config, r.name);
       const held = holds.find((l) => ((classesCfg[l.work_class] || {}).roles || []).includes(r.name));
+      // An existing hold can always be released, whatever the mode.
       if (held) return `<button type="button" data-verb="release" data-lease="${esc(held.lease_id)}">Release ${esc(r.name)} (${esc(held.status)})</button>`;
+      if (!enforce) return `<span class="muted">Hold ${esc(r.name)}: needs the pool to load and unload models itself (stage 5); until then a hold would only drain every card.</span>`;
       return cls ? `<button type="button" data-verb="hold" data-class="${esc(cls)}">Hold ${esc(r.name)} (drains ${esc(r.cards.join(", "))})</button>`
                  : `<span class="muted">${esc(r.name)}: no class lists this role</span>`;
     }).join("");

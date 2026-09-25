@@ -261,7 +261,7 @@ class TestAnthropicPassthroughHTTP:
 
         assert response.status_code == 200
         assert [c["min_ctx_tokens"] for c in pool.calls][1] == 4096 + 1
-        assert pool.releases == ["upstream_error", "ok"]
+        assert pool.releases == ["ok", "ok"]  # an overflow is not the GPU's failure
         assert overflow.post.await_args.args[0] == "http://pool-metacog:8012/v1/messages"
         assert ok.post.await_args.args[0] == "http://pool-agent:8015/v1/messages"
 

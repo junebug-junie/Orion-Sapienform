@@ -388,6 +388,10 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
                     return overflow or _pool_unavailable_result(plan, "deadline")
                 result = await _run_on_grant(plan, lease, read_timeout_s)
                 error = _result_error(result)
+                if error == CONTEXT_OVERFLOW_ERROR:
+                    # The prompt was too big for the slot: not a GPU/server failure, so keep it out
+                    # of the pool's error accounting.
+                    lease.release_outcome, lease.release_detail = "ok", "context_overflow"
                 if error == CONTEXT_OVERFLOW_ERROR and overflow is None and not clamped:
                     raise _ContextOverflow(result, lease.grant.ctx_per_slot)
                 if error is not None:

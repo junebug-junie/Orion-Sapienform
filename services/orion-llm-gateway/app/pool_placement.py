@@ -229,8 +229,10 @@ class PoolLease:
         except LeaseUnavailable:
             raise
         except (asyncio.TimeoutError, TimeoutError) as exc:
-            # The acquire RPC went unanswered: fail the next few seconds of calls fast.
-            _unreachable_until[0] = time.monotonic() + _UNREACHABLE_CACHE_SEC
+            # The acquire RPC went unanswered. Only a FULL-length timeout says the pool is down; one
+            # shortened by this caller's tiny deadline must not fail everyone else (chat) for 5s.
+            if getattr(exc, "full", True):
+                _unreachable_until[0] = time.monotonic() + _UNREACHABLE_CACHE_SEC
             logger.warning("gpu_pool_unreachable route=%s class=%s holder=%s (acquire RPC timed out)",
                            self.route, self.spec.work_class, self.holder)
             raise LeaseUnavailable(POOL_UNREACHABLE) from exc

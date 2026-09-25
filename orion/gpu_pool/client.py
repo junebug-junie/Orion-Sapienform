@@ -46,6 +46,19 @@ class LeaseUnavailable(RuntimeError):
         self.reason, self.lease_id = reason, lease_id
 
 
+class PoolRpcTimeout(asyncio.TimeoutError):
+    """The acquire RPC went unanswered. ``full`` is True only when the wait was the full
+    LEASE_RPC_TIMEOUT_SEC: a timeout shortened by a caller's tiny deadline says nothing about the
+    pool's health, so callers must not treat it as "pool down"."""
+
+    def __init__(self, full: bool):
+        super().__init__("gpu pool acquire RPC timed out")
+        self.full = full
+
+
+_BACKGROUND: set = set()
+
+
 class LeaseBacklogged(LeaseUnavailable):
     """Nothing can serve this class right now. Only raised for ``retryable=True`` callers: the pool
     keeps the lease and re-grants it later, and the caller is expected to come back by lease_id."""
@@ -97,25 +110,32 @@ async def gpu_lease(
         async with bus.subscribe(GPU_POOL_EVENT_CHANNEL) as pubsub:  # before acquire: no missed grant
             try:
                 reply = await lease_rpc(bus, req, source=source, timeout_sec=rpc_timeout)
-            except (asyncio.TimeoutError, TimeoutError):
-                unreachable = True  # the pool did not answer: a withdraw RPC would not be answered either
-                raise
+            except (asyncio.TimeoutError, TimeoutError) as exc:
+                unreachable = True
+                raise PoolRpcTimeout(full=rpc_timeout >= LEASE_RPC_TIMEOUT_SEC) from exc
+            wait_reason = None
             if reply.status == "granted" and reply.grant:
                 lease = Lease(reply.lease_id, reply.grant)
             elif reply.status == "queued":
-                lease = await _wait_for_grant(bus, pubsub, reply.lease_id, deadline)
+                lease, wait_reason = await _wait_for_grant(bus, pubsub, reply.lease_id, deadline)
     except BaseException:
         # Cancelled or failed mid-acquire: withdraw by request_id (idempotent; works even if the
         # acquire reply never arrived) so nothing is later granted to a caller that has left.
-        if not unreachable:
+        if unreachable:
+            # A slow (not dead) pool may still have admitted the acquire: withdraw in the
+            # background, bounded, rather than stall this caller or leave a slot for nobody.
+            task = asyncio.ensure_future(_quiet(_withdraw(bus, req, None, source)))
+            _BACKGROUND.add(task)
+            task.add_done_callback(_BACKGROUND.discard)
+        else:
             await _withdraw(bus, req, reply, source)
         raise
     if lease is None:
         if reply.status == "backlogged" and retryable:
             raise LeaseBacklogged(reply.reason or "backlogged", reply.lease_id)
         await _withdraw(bus, req, reply, source)
-        raise LeaseUnavailable(reply.reason or ("deadline" if reply.status == "queued" else reply.status),
-                               reply.lease_id)
+        raise LeaseUnavailable(reply.reason or wait_reason
+                               or ("deadline" if reply.status == "queued" else reply.status), reply.lease_id)
 
     beat = asyncio.create_task(_heartbeat(bus, lease, source, heartbeat_sec or (10.0 if kind == "request" else 30.0)))
     outcome, detail = "ok", None
@@ -134,23 +154,26 @@ async def gpu_lease(
                                                       outcome=outcome, detail=detail), source=source))
 
 
-async def _wait_for_grant(bus: Any, pubsub: Any, lease_id: str, deadline: datetime) -> Lease | None:
-    async def listen() -> Lease | None:
+async def _wait_for_grant(bus: Any, pubsub: Any, lease_id: str,
+                          deadline: datetime) -> tuple[Lease | None, str | None]:
+    """(lease, None) on grant; (None, the pool's reason) when it refused while we waited -- e.g.
+    "min_ctx_exceeds_class:65536" -- so the caller reports the real cause, not a generic deadline."""
+    async def listen() -> tuple[Lease | None, str | None]:
         async for msg in bus.iter_messages(pubsub):
             payload = bus.codec.decode(msg["data"]).envelope.payload or {}
             if payload.get("lease_id") != lease_id:
                 continue
             if payload.get("event") == "granted" and (payload.get("detail") or {}).get("grant"):
-                return Lease(lease_id, GpuLeaseGrantV1.model_validate(payload["detail"]["grant"]))
+                return Lease(lease_id, GpuLeaseGrantV1.model_validate(payload["detail"]["grant"])), None
             if payload.get("event") in ("unavailable", "backlogged", "cancelled", "dead_lettered"):
-                return None
-        return None
+                return None, payload.get("reason") or payload.get("event")
+        return None, None
 
     remaining = (deadline - datetime.now(timezone.utc)).total_seconds()
     try:
         return await asyncio.wait_for(listen(), timeout=max(0.0, remaining))
     except asyncio.TimeoutError:
-        return None
+        return None, "deadline"
 
 
 async def _heartbeat(bus: Any, lease: Lease, source: str, every: float) -> None:
@@ -170,8 +193,9 @@ async def _heartbeat(bus: Any, lease: Lease, source: str, every: float) -> None:
 
 
 async def _withdraw(bus: Any, req: GpuLeaseRequestV1, reply: GpuLeaseReplyV1 | None, source: str) -> None:
-    """Best effort, bounded to WITHDRAW_RPC_TIMEOUT_SEC per RPC. Callers skip it entirely when the
-    acquire RPC itself timed out: an unreachable pool must not cost a second full wait."""
+    """Best effort, bounded to WITHDRAW_RPC_TIMEOUT_SEC per RPC. When the acquire RPC itself
+    timed out, callers run it in the background instead: an unreachable pool must not cost the
+    caller a second wait."""
     lease_id = reply.lease_id if reply is not None else None
     if lease_id is None:
         # The acquire may have landed without us seeing the reply: re-acquire is idempotent on

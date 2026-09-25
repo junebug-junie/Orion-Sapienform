@@ -152,7 +152,7 @@ async def test_clamped_then_overflowing_returns_the_overflow_without_another_lea
     assert result["raw"]["error"] == "context_overflow"
     # clamp to the fast class's largest role (agent, 131072); its overflow is the answer
     assert [c["min_ctx_tokens"] for c in fake_pool.calls] == [200000, 131072]
-    assert fake_pool.releases == ["upstream_error"]
+    assert fake_pool.releases == ["ok"]  # an overflow is not the GPU's failure
 
 
 @pytest.mark.asyncio
@@ -193,7 +193,7 @@ def test_passthrough_clamps_then_returns_the_real_overflow(openai_on, monkeypatc
     assert "exceeds the available context" in response.json()["error"]["message"]
     assert [c["min_ctx_tokens"] for c in openai_on.calls] == [70000, 65536]
     assert posted == ["http://pool-chat:8011/v1/chat/completions"]
-    assert openai_on.releases == ["upstream_error"]
+    assert openai_on.releases == ["ok"]
 
 
 @patch("app.passthrough_proxy.httpx.AsyncClient")
@@ -453,6 +453,30 @@ async def test_acquire_rpc_timeout_fails_following_calls_fast(fake_pool, monkeyp
         assert second["raw"]["details"]["reason"] == "pool_unreachable"
         assert len(attempts) == 1  # the second call did not wait on the pool again
         pool_placement._unreachable_until[0] = time.monotonic() - 1  # cache expired
+        await gateway._dispatch_chat(_body("quick"), correlation_id="c")
+        assert len(attempts) == 2
+    finally:
+        pool_placement.reset_pool_unreachable()
+
+
+@pytest.mark.asyncio
+async def test_a_short_acquire_timeout_does_not_mark_the_pool_down(fake_pool, monkeypatch):
+    """A caller with almost no time left times out on its own short wait: that says nothing about
+    the pool, so the next caller (chat) must still be asked, not failed fast for 5 seconds."""
+    from orion.gpu_pool.client import PoolRpcTimeout
+
+    attempts: List[int] = []
+
+    @contextlib.asynccontextmanager
+    async def short_timeout(bus, **kw):
+        attempts.append(1)
+        raise PoolRpcTimeout(full=False)
+        yield
+
+    monkeypatch.setattr(pool_placement, "gpu_lease", short_timeout)
+    monkeypatch.setattr(gateway, "run_llm_chat", lambda *a: pytest.fail("must not run"))
+    try:
+        await gateway._dispatch_chat(_body("quick"), correlation_id="c")
         await gateway._dispatch_chat(_body("quick"), correlation_id="c")
         assert len(attempts) == 2
     finally:

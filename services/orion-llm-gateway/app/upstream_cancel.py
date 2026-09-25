@@ -93,7 +93,7 @@ def cancellable_transport() -> Optional[httpx.HTTPTransport]:
     """A transport whose sockets the current call's handle can shut down, or None outside one.
 
     Swaps the connection pool's network backend: httpx 0.27 does not expose ``network_backend``
-    on HTTPTransport. tests/test_upstream_cancel.py drives a real socket through this, so an
+    on HTTPTransport. tests/test_pool_lease_lifecycle.py drives a real socket through this, so an
     httpx/httpcore upgrade that breaks it fails there rather than silently not cancelling."""
     handle = current()
     if handle is None:

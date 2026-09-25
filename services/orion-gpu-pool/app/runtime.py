@@ -80,6 +80,7 @@ class PoolRuntime:
         self._last_probe: datetime | None = None
         self._last_state: datetime | None = None
         self._swap_requested: set[tuple[str, str]] = set()
+        self._ctx_seen: dict[str, int] = {}
 
     # --- lifecycle --------------------------------------------------------------------
     async def start(self) -> None:
@@ -145,6 +146,14 @@ class PoolRuntime:
         self.discovered, self.roles, self.unclaimed = resolve_roles(
             self.cfg, self.profiles, self.announcements, self.probes, self.cards, self.now(),
             self.announce_stale_sec)
+        # Remember each role's last-seen context size. A role that is restarting or unloaded reports
+        # none; forgetting it would make its class look smaller and wrongly refuse big prompts
+        # ("min_ctx_exceeds_class") while the one role that fits them is briefly away.
+        for name, live in list(self.roles.items()):
+            if live.ctx_per_slot:
+                self._ctx_seen[name] = live.ctx_per_slot
+            elif name in self._ctx_seen:
+                self.roles[name] = RoleLive(name, live.healthy, live.slots, self._ctx_seen[name], live.vision)
         self._discovery_changes = [
             d for d in self.discovered
             if d.status in ("confirmed", "mismatch") and before.get(d.role) != d.status

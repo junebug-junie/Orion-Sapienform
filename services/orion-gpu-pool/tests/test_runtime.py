@@ -437,3 +437,19 @@ def test_swap_seat_counts_as_loaded_when_its_worker_is_really_up():
         await later(rt, clock, 1)                    # worker gone -> seat unloaded, diffusion back
         assert "agent-gpu2" not in rt.cards["gpu2"].swapped_in
     run(go())
+
+
+def test_a_briefly_down_role_keeps_its_context_so_big_prompts_wait_for_it():
+    """agent (131072/slot) restarts while gpu0 is lent: the class's only other role is chat
+    (65536/slot). A 100k prompt must wait for agent, not be refused as bigger than the class."""
+    async def go():
+        down: set[str] = set()
+        rt, clock = make(down=down)
+        await boot(rt)
+        await rt.control(GpuPoolControlV1(verb="lend", card="gpu0"))
+        down.add("agent")
+        await later(rt, clock, 1)
+        assert not rt.roles["agent"].healthy and rt.roles["agent"].ctx_per_slot == 131072
+        r = await rt.acquire(acq_r("agent", min_ctx_tokens=100_000))
+        assert r.status == "backlogged", r.reason
+    run(go())

@@ -66,6 +66,10 @@ def _http_helpers():
     return _forwardable_request_headers, _forwardable_response_headers, _httpx_timeout
 
 
+def _mark_overflow(lease: Lease) -> None:
+    lease.release_outcome, lease.release_detail = "ok", "context_overflow"
+
+
 def _plain_response(content: bytes, upstream: httpx.Response) -> Response:
     headers = _http_helpers()[1](upstream.headers)
     content_type = headers.pop("content-type", None) or headers.pop("Content-Type", None)
@@ -217,7 +221,10 @@ async def proxy_on_pool(
                         await client.aclose()
                     response = _plain_response(content, upstream)
                     failure = _UpstreamStatus(f"http_{upstream.status_code}")
-                    if may_release and is_context_overflow(upstream.status_code, _json_or_none(content)):
+                    if is_context_overflow(upstream.status_code, _json_or_none(content)):
+                        # Too big for the slot is not the GPU's failure: keep it out of the error counts.
+                        _mark_overflow(lease)
+                    if may_release and lease.release_detail == "context_overflow":
                         overflow_response = response
                         min_ctx = int(lease.grant.ctx_per_slot or min_ctx) + 1
                         await handle.release(failure)
@@ -272,7 +279,10 @@ async def proxy_on_pool(
             response = _plain_response(upstream.content, upstream)
             if upstream.status_code >= 400:
                 failure = _UpstreamStatus(f"http_{upstream.status_code}")
-                if may_release and is_context_overflow(upstream.status_code, _json_or_none(upstream.content)):
+                if is_context_overflow(upstream.status_code, _json_or_none(upstream.content)):
+                    # Too big for the slot is not the GPU's failure: keep it out of the error counts.
+                    _mark_overflow(lease)
+                if may_release and lease.release_detail == "context_overflow":
                     overflow_response = response
                     min_ctx = int(lease.grant.ctx_per_slot or min_ctx) + 1
                     await handle.release(failure)

@@ -210,11 +210,35 @@ class SilentBus(WiredBus):
 def test_lease_rpc_timeout_is_bounded_by_the_deadline_and_an_unreachable_pool_is_not_re_asked(deadline_sec, expected):
     async def go():
         bus = SilentBus()
-        with pytest.raises(asyncio.TimeoutError):
+        with pytest.raises(asyncio.TimeoutError) as err:
             async with gpu_lease(bus, work_class="fast", holder="t", deadline_sec=deadline_sec):
                 pass
-        # exactly one RPC: no withdraw (re-acquire + cancel) against a pool that did not answer
+        # The caller waited exactly one RPC; only a full-length wait may be read as "pool down".
         assert bus.rpcs == [("acquire", expected)]
+        assert err.value.full is (expected == 10.0)
+        # A slow (not dead) pool may still have admitted it: a bounded withdraw follows in the background.
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert bus.rpcs[1:] == [("acquire", 2.0)]
+    asyncio.run(go())
+
+
+def test_a_refusal_while_queued_carries_the_pools_reason():
+    """The pool refused a queued lease (e.g. the only big-enough role went away): the caller sees
+    that reason, not a generic "deadline"."""
+    from datetime import datetime, timedelta, timezone
+
+    from orion.gpu_pool.client import _wait_for_grant
+
+    async def go():
+        bus = WiredBus()
+        async with bus.subscribe(GPU_POOL_EVENT_CHANNEL) as q:
+            env = BaseEnvelope(kind="gpu_pool.event.v1", source=ServiceRef(name="orion-gpu-pool"),
+                               payload={"lease_id": "L1", "event": "unavailable",
+                                        "reason": "min_ctx_exceeds_class:65536"})
+            await bus.publish(GPU_POOL_EVENT_CHANNEL, env)
+            lease, reason = await _wait_for_grant(bus, q, "L1", datetime.now(timezone.utc) + timedelta(seconds=1))
+        assert lease is None and reason == "min_ctx_exceeds_class:65536"
     asyncio.run(go())
 
 

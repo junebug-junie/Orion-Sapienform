@@ -125,7 +125,7 @@ async def test_context_overflow_re_leases_once_with_a_bigger_min_ctx(fake_pool, 
     assert result["text"] == "hello" and result["url"] == "http://pool-agent:8015"
     assert fake_pool.calls[0]["min_ctx_tokens"] == 10
     assert fake_pool.calls[1]["min_ctx_tokens"] == 4096 + 1  # the overflowed role's ctx_per_slot + 1
-    assert fake_pool.releases == ["upstream_error", "ok"]
+    assert fake_pool.releases == ["ok", "ok"]  # an overflow is not the GPU's failure
 
 
 @pytest.mark.asyncio
@@ -134,7 +134,7 @@ async def test_a_second_overflow_returns_the_overflow_error(fake_pool, monkeypat
     result = await gateway._dispatch_chat(_body("quick"), correlation_id="c")
     assert result["raw"]["error"] == "context_overflow"
     assert len(fake_pool.calls) == 2
-    assert fake_pool.releases == ["upstream_error", "upstream_error"]
+    assert fake_pool.releases == ["ok", "ok"]
 
 
 @pytest.mark.asyncio
@@ -146,7 +146,7 @@ async def test_nothing_big_enough_after_overflow_returns_the_overflow(fake_pool,
     result = await gateway._dispatch_chat(_body("chat"), correlation_id="c")
     assert result["raw"]["error"] == "context_overflow"
     assert [c["min_ctx_tokens"] for c in fake_pool.calls] == [10, 65536 + 1]
-    assert fake_pool.releases == ["upstream_error"]
+    assert fake_pool.releases == ["ok"]
 
 
 @pytest.mark.asyncio

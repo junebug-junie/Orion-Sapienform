@@ -84,6 +84,13 @@ jobs:
       - name: Grammar event producer catalog matches emitting code
         run: python -m pytest tests/test_grammar_event_producer_catalog.py -q -p no:cacheprovider
 
+      # Field topology: every capability->capability edge must read a channel
+      # some edge actually writes, and there is one topology file, not two.
+      # The transport->orchestration edge read a never-written channel for
+      # months; the test that should have caught drift could not be collected.
+      - name: Field topology has no dead cap-cap edges
+        run: python -m pytest tests/test_field_topology_edges.py -q -p no:cacheprovider
+
       # Each gate is its own step so a failure names itself in the UI rather
       # than surfacing as one opaque red block.
       - name: Metric lineage gate (consumer existence, orphan ratchet)

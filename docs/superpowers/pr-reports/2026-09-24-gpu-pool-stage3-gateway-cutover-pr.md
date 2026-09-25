@@ -82,11 +82,11 @@ Before: the gateway picked an upstream from `LLM_ROUTE_*` env URLs plus a route 
 ```text
 services/orion-llm-gateway: 267 passed
 services/orion-gpu-pool: 35 passed, 2 skipped
-orion/gpu_pool + orion/llm + root tests touched: 131 passed
-services/orion-field-digester: 229 passed
+orion/gpu_pool + orion/llm + root tests touched: 153 passed (after merging main)
+services/orion-field-digester: 234 passed (after merging main)
 services/orion-cortex-exec (touched tests): 33 passed
 services/orion-thought: 240 passed, 1 failed. The failure is pre-existing and env-sensitive: mind_base_url comes from local .env, and the file is untouched by this PR.
-services/orion-hub: 2776 passed, 38 failed. Every failure also fails on origin/main (baseline diff below).
+services/orion-hub: 2776 passed, 38 failed. The same 38 test ids run against a clean origin/main worktree: 38 failed. None come from this branch.
 node --check services/orion-hub/static/js/gpu_pool.js: ok
 New regression tests (each fails without its fix):
   - a briefly-down role keeps its ctx so big prompts wait for it (runtime)

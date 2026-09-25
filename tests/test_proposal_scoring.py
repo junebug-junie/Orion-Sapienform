@@ -139,7 +139,7 @@ def test_priority_empty_dimension_template_still_gets_real_confidence() -> None:
     (harmless under the old additive formula's independent 0.1 term, would
     have silently zeroed the entire signal under a naive
     confidence * max(...) formula that didn't fix this fallback first)."""
-    template = POLICY.proposal_templates["inspect_bus_channel_catalog"]
+    template = POLICY.proposal_templates["inspect_field_topology_catalog"]
     assert template.dimensions == {}
     field = FieldStateV1(
         generated_at=NOW,
@@ -173,9 +173,6 @@ def test_empty_dimension_template_fallback_excludes_deviation_pressure() -> None
 
     assert "deviation_pressure" not in _LEGACY_EMPTY_DIMENSIONS_FALLBACK
     for key in (
-        "inspect_bus_channel_catalog",
-        "summarize_transport_contract_drift",
-        "watch_transport_backpressure",
         "inspect_field_topology_catalog",
         "inspect_attended_target",
     ):
@@ -219,7 +216,7 @@ def test_empty_dimension_template_confidence_can_clear_the_real_policy_review_ga
     just that confidence is "greater than 0" (test_priority_empty_dimension_
     template_still_gets_real_confidence above only checked the latter)."""
     REAL_POLICY_REQUIRE_REVIEW_BELOW_CONFIDENCE = 0.50  # config/policy/substrate_policy.v1.yaml
-    template = POLICY.proposal_templates["inspect_bus_channel_catalog"]
+    template = POLICY.proposal_templates["inspect_field_topology_catalog"]
     assert template.dimensions == {}
     field = FieldStateV1(
         generated_at=NOW,
@@ -362,7 +359,9 @@ def test_proposal_confidence_no_longer_capped_by_a_dead_dimension() -> None:
 
 
 def test_proposal_urgency_wakes_up_once_the_dead_only_dimension_is_removed() -> None:
-    """Regression test (2026-07-30): inspect_bus_channel_catalog used to
+    """Regression test (2026-07-30): inspect_bus_channel_catalog (deleted
+    2026-09-25; inspect_field_topology_catalog is the same honestly-empty
+    shape and stands in for it here) used to
     score ONLY on contract_pressure, a dimension field_pressures() never
     produces. proposal_urgency()'s own dimension filter
     (`dim_id in PRESSURE_DIMENSIONS or dim_id.endswith("_pressure")`) let
@@ -373,7 +372,7 @@ def test_proposal_urgency_wakes_up_once_the_dead_only_dimension_is_removed() -> 
     real field pressure. Now that the template's `dimensions` is honestly
     empty, the fallback correctly triggers and urgency reflects the real
     field."""
-    template = POLICY.proposal_templates["inspect_bus_channel_catalog"]
+    template = POLICY.proposal_templates["inspect_field_topology_catalog"]
     assert template.dimensions == {}
     quiet = proposal_urgency(field_pressures={"execution_pressure": 0.05}, template=template)
     loud = proposal_urgency(field_pressures={"execution_pressure": 0.95}, template=template)
@@ -483,3 +482,36 @@ def test_every_template_sets_an_explicit_base_priority():
         f"templates with no explicit base_priority (silently 0.0, a flat "
         f"handicap against every other template): {missing}"
     )
+
+
+# 2026-09-25 (chore/transport-lattice-semantics): three transport templates
+# with `dimensions: {}` were deleted because nothing transport-specific could
+# drive them -- they were scored on the best of the four core pressures, so
+# they fired on ~99% of warranted ticks regardless of transport state. An
+# empty-dimensions template is a timer. This ratchet stops new ones arriving
+# silently; the three that remain were each argued for on their own terms
+# (see their comments in config/proposals/proposal_policy.v1.yaml). Adding to
+# this set is a decision, not a default.
+_EMPTY_DIMENSION_TEMPLATES_ALLOWED = frozenset(
+    {"inspect_field_topology_catalog", "inspect_attended_target", "analyze_self_study_source"}
+)
+
+
+def test_no_new_empty_dimension_templates() -> None:
+    empty = {key for key, t in POLICY.proposal_templates.items() if not t.dimensions}
+    assert empty <= _EMPTY_DIMENSION_TEMPLATES_ALLOWED, sorted(empty - _EMPTY_DIMENSION_TEMPLATES_ALLOWED)
+
+
+def test_deleted_transport_timer_templates_stay_deleted() -> None:
+    from orion.proposals.templates import TRANSPORT_PROPOSAL_TEMPLATE_KEYS, _TEMPLATE_COPY
+
+    for key in (
+        "inspect_bus_channel_catalog",
+        "summarize_transport_contract_drift",
+        "watch_transport_backpressure",
+    ):
+        assert key not in POLICY.proposal_templates
+        assert key not in _TEMPLATE_COPY
+        assert key not in TRANSPORT_PROPOSAL_TEMPLATE_KEYS
+    # the one transport template with a declared signal survives
+    assert POLICY.proposal_templates["inspect_transport_status"].dimensions == {"reliability_pressure": 0.40}

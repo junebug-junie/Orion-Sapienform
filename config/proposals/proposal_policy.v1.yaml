@@ -173,58 +173,33 @@ proposal_templates:
     dimensions:
       reliability_pressure: 0.40
 
-  inspect_bus_channel_catalog:
-    kind: inspect
-    target_kind: system
-    target_id: orion/bus/channels.yaml
-    proposed_effect: increase_observability
-    required_policy_gate: read_only
-    base_priority: 0.38
-    base_risk: 0.05
-    reversibility: 1.0
-    # contract_pressure removed 2026-07-30: never produced by field_pressures()
-    # -- was this template's ONLY dimension, so match_score/confidence were
-    # both permanently 0.0 and proposal_urgency() was ALSO permanently 0.0
-    # (contract_pressure's "_pressure" suffix let it pass proposal_urgency()'s
-    # own dimension filter while contributing nothing, which suppressed that
-    # function's real all-4-core-dimensions fallback that an empty dimensions
-    # dict now correctly triggers). No real transport/bus-health dimension
-    # exists in field_pressures() yet to replace it with -- CHANNEL_DIMENSION_MAP
-    # (orion/field/pressure.py) doesn't route any transport-domain channel to
-    # any category. Building that is real, separate follow-up work (a new
-    # CHANNEL_DIMENSION_MAP category + PRESSURE_DIMENSIONS extension +
-    # live variance verification, same discipline already applied to the
-    # existing 4 dimensions), not done here. This template now honestly
-    # scores 0.0 match/confidence and derives its urgency and priority from
-    # the real all-4-core-pressures fallback plus base_priority, not from a
-    # fabricated transport-specific signal.
-    dimensions: {}
-
-  summarize_transport_contract_drift:
-    kind: summarize
-    target_kind: capability
-    target_id: capability:transport
-    proposed_effect: increase_observability
-    required_policy_gate: read_only
-    base_priority: 0.36
-    base_risk: 0.05
-    reversibility: 1.0
-    # contract_pressure removed 2026-07-30 -- see inspect_bus_channel_catalog's
-    # comment above for the full account (same disease, same template shape).
-    dimensions: {}
-
-  watch_transport_backpressure:
-    kind: observe
-    target_kind: capability
-    target_id: capability:transport
-    proposed_effect: preserve_stability
-    required_policy_gate: read_only
-    base_priority: 0.32
-    base_risk: 0.02
-    reversibility: 1.0
-    # contract_pressure removed 2026-07-30 -- see inspect_bus_channel_catalog's
-    # comment above for the full account (same disease, same template shape).
-    dimensions: {}
+  # inspect_bus_channel_catalog, summarize_transport_contract_drift and
+  # watch_transport_backpressure DELETED 2026-09-25
+  # (chore/transport-lattice-semantics; audit:
+  # docs/superpowers/specs/2026-09-22-substrate-lattice-audit.md, L7).
+  #
+  # All three had `dimensions: {}` since their only dimension
+  # (contract_pressure) was found never-produced on 2026-07-30, so they were
+  # scored on the best of the four core pressures plus base_priority -- a
+  # timer, not a response to transport. Live, 24h to 2026-09-25: 10,779 +
+  # 10,779 + 7,500 candidates (~1,210/h), i.e. on ~99% of warranted ticks, and
+  # 17,250 prepared dispatches (27% of all). They were not given real
+  # dimensions because no transport-specific dimension exists to give them:
+  #   - capability:transport `pressure` only reaches the arena inside
+  #     resource_pressure, a max over every capability's pressure;
+  #   - capability:transport `contract_pressure` (catalog drift) is not routed
+  #     to any dimension, and read 8 distinct values, max 0.0216, over 72h;
+  #   - capability:transport `reliability_pressure` read exactly 0.0 on all
+  #     121,114 ticks (inspect_transport_status keeps it; the RPC-health
+  #     bridge is making it real, and its semantics are left alone here);
+  #   - "backpressure" (XLEN depth) is being retired upstream
+  #     (fix/bus-observer-scope).
+  # Kill means kill: no fallback template. A replay of 1,560 sampled
+  # warranted ticks through the real builder showed the freed arena slots go
+  # to templates that do declare a signal (inspect_transport_status top-5
+  # 132 -> 340, watch_reliability 16 -> 240, inspect_execution_pressure
+  # 121 -> 284); candidates per tick are unchanged (max_candidates cap).
+  # Replay: scripts/analysis/replay_proposal_template_removal.py.
 
   defer_due_to_low_readiness:
     kind: defer

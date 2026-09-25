@@ -79,27 +79,9 @@ _TEMPLATE_COPY: dict[str, tuple[str, str, list[str]]] = {
         "Reliability pressure is elevated; inspect capability:transport evidence.",
         ["transport_inspect", "read_only"],
     ),
-    # 2026-07-30: these 3 transport templates no longer score against any real
-    # dimension (contract_pressure was never produced by field_pressures() --
-    # see config/proposals/proposal_policy.v1.yaml's own comment on each).
-    # Descriptions no longer claim a "pressure signal" reasoning that doesn't
-    # exist; they surface on base_priority + the real all-4-core-dimensions
-    # urgency fallback alone, same read-only bounded action either way.
-    "inspect_bus_channel_catalog": (
-        "Inspect bus channel catalog alignment",
-        "Configured observer streams may be uncataloged; inspect orion/bus/channels.yaml read-only.",
-        ["transport_catalog_inspect", "read_only"],
-    ),
-    "summarize_transport_contract_drift": (
-        "Summarize transport contract drift",
-        "Periodic bounded summary of capability:transport for review.",
-        ["transport_contract_drift", "read_only"],
-    ),
-    "watch_transport_backpressure": (
-        "Watch transport backpressure",
-        "Periodic observation of transport signals without bus mutation.",
-        ["transport_backpressure_watch", "read_only"],
-    ),
+    # inspect_bus_channel_catalog / summarize_transport_contract_drift /
+    # watch_transport_backpressure deleted 2026-09-25 -- see the tombstone in
+    # config/proposals/proposal_policy.v1.yaml.
     # 2026-08-16 (docs/superpowers/specs/2026-08-16-tension-driven-mutating-
     # dispatch-design.md): tension-driven templates.
     "observe_tension_via_camera": (
@@ -133,9 +115,6 @@ _TEMPLATE_COPY: dict[str, tuple[str, str, list[str]]] = {
 TRANSPORT_PROPOSAL_TEMPLATE_KEYS = frozenset(
     {
         "inspect_transport_status",
-        "inspect_bus_channel_catalog",
-        "summarize_transport_contract_drift",
-        "watch_transport_backpressure",
     }
 )
 

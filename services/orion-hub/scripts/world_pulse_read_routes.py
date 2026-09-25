@@ -27,10 +27,12 @@ from orion.world_pulse_read.queue import (
 from orion.world_pulse_read.wallet_a import (
     WALLET_A_COOLDOWN_KEY,
     WALLET_A_COUNT_KEY_PREFIX,
+    WALLET_A_RETRY_NOT_BEFORE_KEY,
 )
 from orion.world_pulse_read.wallet_b import (
     WALLET_B_COOLDOWN_KEY,
     WALLET_B_COUNT_KEY_PREFIX,
+    WALLET_B_RETRY_NOT_BEFORE_KEY,
 )
 
 logger = logging.getLogger("orion-hub.world_pulse_read_routes")
@@ -223,9 +225,17 @@ async def world_pulse_read_status() -> JSONResponse:
         if redis is not None:
             payload["available"] = True
             payload["wallet_a"]["last_at"] = _decode(await redis.get(WALLET_A_COOLDOWN_KEY))
+            # Set only when a turn was refused before reading and its slot refunded.
+            payload["wallet_a"]["retry_not_before"] = _decode(
+                await redis.get(WALLET_A_RETRY_NOT_BEFORE_KEY)
+            )
             a_count = _decode(await redis.get(f"{WALLET_A_COUNT_KEY_PREFIX}{local_date}"))
             payload["wallet_a"]["done_today"] = int(a_count) if a_count else 0
             payload["wallet_b"]["last_at"] = _decode(await redis.get(WALLET_B_COOLDOWN_KEY))
+            # Set only when a turn was refused before reading and its slot refunded.
+            payload["wallet_b"]["retry_not_before"] = _decode(
+                await redis.get(WALLET_B_RETRY_NOT_BEFORE_KEY)
+            )
             b_count = _decode(await redis.get(f"{WALLET_B_COUNT_KEY_PREFIX}{local_date}"))
             payload["wallet_b"]["done_today"] = int(b_count) if b_count else 0
 

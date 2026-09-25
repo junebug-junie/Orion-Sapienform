@@ -71,3 +71,23 @@ class FailureOutcome:
     @property
     def retry_scheduled(self) -> bool:
         return self.status == "pending"
+
+
+# Failure reasons that mean the turn stopped *before any reading happened*, so
+# the wallet slot it was debited is refunded (orion/world_pulse_read/
+# wallet_refund.py). `turn_deferred` frames are only built by the stance phase
+# of execute_unified_turn (orion/hub/turn_orchestrator.py: stance timeout /
+# missing thought, stance defer/refuse, and stance_react_failed -- which is
+# where a GPU capacity refusal lands, today as `gpu_pool_unavailable:<reason>`,
+# before 2026-09-25 as `gateway_capacity_rejected:<stage>`), all of which return
+# before the harness/FCC reader is dispatched. Everything else -- `turn_error:*`
+# (the reader ran and failed), timeouts, exceptions, parse failures -- still
+# costs its slot.
+
+
+def is_refused_before_work(reason: str | None) -> bool:
+    """True when ``reason`` names a turn that did no reading (refund its slot)."""
+    if not reason:
+        return False
+    text = str(reason).strip()
+    return text == "turn_deferred" or text.startswith("turn_deferred:")

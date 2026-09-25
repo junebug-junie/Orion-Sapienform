@@ -40,6 +40,13 @@ class _FakeRedis:
         self.store[key] = str(int(self.store.get(key, "0")) + 1)
         return int(self.store[key])
 
+    async def decr(self, key):
+        self.store[key] = str(int(self.store.get(key, "0")) - 1)
+        return int(self.store[key])
+
+    async def delete(self, key):
+        self.store.pop(key, None)
+
     async def expire(self, key, ttl):
         return True
 
@@ -866,3 +873,144 @@ class _FakeConn(ReadingQueueFakeMixin, _LegacyFakeConn):
     pass
 
 pytestmark = pytest.mark.usefixtures("reading_dns")
+
+
+# --- Wallet A refund: a turn refused before any reading gives its slot back ---
+# Live 2026-09-23/24: six stance-phase capacity refusals spent the whole daily
+# cap (orion:wp_read:wallet_a:count:<day> = 6) without one read, then every tick
+# logged world_pulse_read_blocked reason=daily_cap for the rest of the day.
+
+# Stance reason after GPU pool stage 3 (PR #2328): cortex-exec names the
+# gateway's raw.error, stance fails, the turn orchestrator returns turn_deferred.
+_POOL_STANCE_REASON = "stance_react_failed: agent=gpu_pool_unavailable:deadline"
+
+
+def _patch_turn(monkeypatch, frames):
+    async def _turn(**kwargs):
+        return frames
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _turn)
+
+
+def _tick(pipe, conn, *, force=True):
+    async def _run():
+        await _seed_queue(conn)
+        return await pipe.tick(force=force)
+
+    return asyncio.run(_run())
+
+
+def _now():
+    return datetime.now(timezone.utc)
+
+
+def test_real_deferred_frame_refunds_wallet_a_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """End to end through _generate -> _reason_from_non_final_frame ->
+    _stage1_read's ValueError: pins the label the refund keys on."""
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    bus.redis.store[_count_key()] = "2"
+    prior = (_now() - timedelta(hours=10)).isoformat()
+    bus.redis.store[wa.WALLET_A_COOLDOWN_KEY] = prior
+    pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=3)
+    _patch_turn(monkeypatch, [{"type": "turn_deferred", "reason": _POOL_STANCE_REASON}])
+
+    _tick(pipe, conn)
+
+    assert bus.redis.store[_count_key()] == "2"
+    # last_at goes back to the last debit that counted (dashboard stays honest).
+    assert bus.redis.store[wa.WALLET_A_COOLDOWN_KEY] == prior
+    # Retry spacing moves to its own key: floor (600s) after the refusal.
+    wait = asyncio.run(wa.read_wallet_a_retry_wait(bus.redis, now=_now()))
+    assert wait is not None and 590 <= wait <= 600
+    # The seed still spends one bounded attempt.
+    assert conn.rows["finding:r1:x"]["attempts"] == 1
+    assert conn.rows["finding:r1:x"]["status"] == "pending"
+
+
+def test_real_turn_error_frame_keeps_wallet_a_charge(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    bus.redis.store[_count_key()] = "2"
+    pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=3)
+    _patch_turn(monkeypatch, [{"type": "turn_error", "error_code": "fcc_stream_stalled"}])
+
+    _tick(pipe, conn)
+
+    assert bus.redis.store[_count_key()] == "3"
+    assert wa.WALLET_A_RETRY_NOT_BEFORE_KEY not in bus.redis.store
+
+
+def test_refund_backoff_blocks_the_next_tick_then_doubles(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=5)
+    _patch_turn(monkeypatch, [{"type": "turn_deferred", "reason": _POOL_STANCE_REASON}])
+
+    _tick(pipe, conn)
+    # Unforced tick right after: cooldown was refunded, so the backoff is what blocks.
+    assert asyncio.run(pipe.tick()) == "refund_backoff"
+    # Second consecutive refusal (forced past the backoff) doubles the wait.
+    asyncio.run(pipe.tick(force=True))
+    wait = asyncio.run(wa.read_wallet_a_retry_wait(bus.redis, now=_now()))
+    assert 1190 <= wait <= 1200
+    assert bus.redis.store[wa.WALLET_A_REFUND_STREAK_KEY] == "2"
+
+
+def test_turn_that_reached_reader_resets_refund_streak(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=5)
+    _patch_turn(monkeypatch, [{"type": "turn_deferred", "reason": _POOL_STANCE_REASON}])
+    _tick(pipe, conn)
+    assert bus.redis.store[wa.WALLET_A_REFUND_STREAK_KEY] == "1"
+
+    _patch_turn(monkeypatch, [{"type": "turn_error", "error_code": "fcc_stream_stalled"}])
+    asyncio.run(pipe.tick(force=True))
+
+    assert wa.WALLET_A_REFUND_STREAK_KEY not in bus.redis.store
+
+
+def test_other_stance_deferrals_refund_but_reader_failures_do_not() -> None:
+    cases = {
+        "turn_deferred:stance_react_timeout": "0",
+        "turn_deferred:stance_react_failed: agent=gateway_capacity_rejected:capacity_wait_budget_exhausted": "0",
+        "turn_deferred:empty_imperative": "0",
+        "turn_error:fcc_stream_stalled": "1",
+        "stage1_turn_timeout": "1",
+        "turn_exception:boom": "1",
+        "unreadable handoff": "1",
+    }
+    for reason, expected in cases.items():
+        bus = _FakeBus()
+        conn = _FakeConn()
+        store = InMemorySubstrateGraphStore()
+        pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=3)
+
+        async def _boom(seed, _r=reason):
+            raise ValueError(_r)
+
+        pipe._stage1_read = _boom  # type: ignore[method-assign]
+        _tick(pipe, conn)
+        assert bus.redis.store[_count_key()] == expected, reason
+
+
+def test_forced_tick_overrides_refund_backoff_and_real_turn_clears_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=5)
+    _patch_turn(monkeypatch, [{"type": "turn_deferred", "reason": _POOL_STANCE_REASON}])
+    _tick(pipe, conn)
+    assert wa.WALLET_A_RETRY_NOT_BEFORE_KEY in bus.redis.store
+
+    _patch_turn(monkeypatch, [{"type": "turn_error", "error_code": "fcc_stream_stalled"}])
+    assert asyncio.run(pipe.tick(force=True)) != "refund_backoff"
+
+    assert wa.WALLET_A_RETRY_NOT_BEFORE_KEY not in bus.redis.store

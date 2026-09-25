@@ -10,8 +10,20 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from orion.world_pulse_read.wallet_refund import (
+    WalletDebit,
+    read_retry_wait,
+    record_debit,
+    refund_debit,
+    settle_turn_ran,
+)
+
 WALLET_B_COOLDOWN_KEY = "orion:wp_read:wallet_b:last_at"
 WALLET_B_COUNT_KEY_PREFIX = "orion:wp_read:wallet_b:count:"
+# Set only by a refund (a turn refused before reading): earliest retry time,
+# with backoff over consecutive refunds. See wallet_refund.py.
+WALLET_B_RETRY_NOT_BEFORE_KEY = "orion:wp_read:wallet_b:retry_not_before"
+WALLET_B_REFUND_STREAK_KEY = "orion:wp_read:wallet_b:refund_streak"
 _STATE_TTL_SEC = 172800
 
 
@@ -25,6 +37,7 @@ class WalletBInputs:
     now_hour: int | None = None
     window_start_hour: int = 0
     window_end_hour: int = 0
+    seconds_until_retry: float | None = None
 
 
 def window_is_configured(start_hour: int, end_hour: int) -> bool:
@@ -70,6 +83,8 @@ def wallet_b_block_reason(inp: WalletBInputs) -> str | None:
         and inp.seconds_since_last < inp.min_cooldown_sec
     ):
         return "cooldown"
+    if inp.seconds_until_retry is not None and inp.seconds_until_retry > 0:
+        return "refund_backoff"
     return None
 
 
@@ -101,11 +116,46 @@ async def debit_wallet_b(
     now: datetime,
     timezone_name: str,
     ttl_sec: int = _STATE_TTL_SEC,
-) -> None:
-    await redis.setex(WALLET_B_COOLDOWN_KEY, ttl_sec, now.isoformat())
-    key = _daily_key(now, timezone_name)
-    await redis.incr(key)
-    await redis.expire(key, ttl_sec)
+) -> WalletDebit:
+    """Charge one slot. Keep the receipt: :func:`refund_wallet_b` undoes it
+    when the turn was refused before any reading happened."""
+    return await record_debit(
+        redis,
+        cooldown_key=WALLET_B_COOLDOWN_KEY,
+        count_key=_daily_key(now, timezone_name),
+        retry_key=WALLET_B_RETRY_NOT_BEFORE_KEY,
+        streak_key=WALLET_B_REFUND_STREAK_KEY,
+        now=now,
+        ttl_sec=ttl_sec,
+    )
+
+
+async def refund_wallet_b(
+    redis,
+    receipt: WalletDebit | None,
+    *,
+    now: datetime,
+    backoff_base_sec: float,
+    backoff_cap_sec: float,
+) -> bool:
+    """Undo a Wallet B debit (see :func:`orion.world_pulse_read.wallet_refund.refund_debit`)."""
+    return await refund_debit(
+        redis,
+        receipt,
+        now=now,
+        backoff_base_sec=backoff_base_sec,
+        backoff_cap_sec=backoff_cap_sec,
+    )
+
+
+async def settle_wallet_b(redis, receipt: WalletDebit | None) -> None:
+    """The turn reached the reader: keep the charge, reset the refund streak."""
+    await settle_turn_ran(redis, receipt)
+
+
+async def read_wallet_b_retry_wait(redis, *, now: datetime) -> float | None:
+    """Seconds until a refunded turn may retry (None when not backing off)."""
+    return await read_retry_wait(redis, WALLET_B_RETRY_NOT_BEFORE_KEY, now=now)
 
 
 async def read_wallet_b_state(

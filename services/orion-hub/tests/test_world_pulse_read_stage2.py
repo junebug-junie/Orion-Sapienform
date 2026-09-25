@@ -44,6 +44,13 @@ class _FakeRedis:
         self.store[key] = str(int(self.store.get(key, "0")) + 1)
         return int(self.store[key])
 
+    async def decr(self, key):
+        self.store[key] = str(int(self.store.get(key, "0")) - 1)
+        return int(self.store[key])
+
+    async def delete(self, key):
+        self.store.pop(key, None)
+
     async def expire(self, key, ttl):
         return True
 
@@ -927,3 +934,85 @@ class _FakeConn(ReadingQueueFakeMixin, _LegacyFakeConn):
     pass
 
 pytestmark = pytest.mark.usefixtures("reading_dns")
+
+
+# --- Wallet B refund: a Stage 2 turn refused before any reading gives its slot back ---
+
+
+def _patch_turn(monkeypatch, frames):
+    async def _turn(**kwargs):
+        return frames
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _turn)
+
+
+def _stage2_tick(conn, pipe):
+    async def _run():
+        await _ready_stage2(conn)
+        return await pipe.tick(force=True)
+
+    return asyncio.run(_run())
+
+
+def test_stage2_real_deferred_frame_refunds_wallet_b(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    bus.redis.store[_count_key_b()] = "4"
+    pipe = _pipeline(bus, conn, max_attempts=3, min_cooldown_sec=600.0)
+    _patch_turn(
+        monkeypatch,
+        [{"type": "turn_deferred", "reason": "stance_react_failed: agent=gpu_pool_unavailable:deadline"}],
+    )
+
+    _stage2_tick(conn, pipe)
+
+    assert bus.redis.store[_count_key_b()] == "4"
+    assert wb.WALLET_B_COOLDOWN_KEY not in bus.redis.store  # no prior debit -> cleared
+    assert wb.WALLET_B_RETRY_NOT_BEFORE_KEY in bus.redis.store
+    assert conn.rows["finding:r1:x"]["stage2_attempts"] == 1
+
+
+def test_stage2_real_turn_error_keeps_wallet_b_charge(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    bus.redis.store[_count_key_b()] = "4"
+    pipe = _pipeline(bus, conn, max_attempts=3, min_cooldown_sec=600.0)
+    _patch_turn(monkeypatch, [{"type": "turn_error", "error_code": "fcc_stream_stalled"}])
+
+    _stage2_tick(conn, pipe)
+
+    assert bus.redis.store[_count_key_b()] == "5"
+    assert wb.WALLET_B_RETRY_NOT_BEFORE_KEY not in bus.redis.store
+
+
+def test_stage2_invalid_handoff_is_not_debited() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn)
+
+    async def _run():
+        await _ready_stage2(conn)
+        conn.rows["finding:r1:x"]["handoff_json"] = {"not": "a handoff"}
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) == "handoff_invalid"
+    assert _count_key_b() not in bus.redis.store
+    assert wb.WALLET_B_COOLDOWN_KEY not in bus.redis.store
+
+
+def test_stage2_turn_that_reached_reader_resets_refund_streak(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, max_attempts=5, min_cooldown_sec=600.0)
+    _patch_turn(
+        monkeypatch,
+        [{"type": "turn_deferred", "reason": "stance_react_failed: agent=gpu_pool_unavailable:deadline"}],
+    )
+    _stage2_tick(conn, pipe)
+    assert bus.redis.store[wb.WALLET_B_REFUND_STREAK_KEY] == "1"
+
+    _patch_turn(monkeypatch, [{"type": "turn_error", "error_code": "fcc_stream_stalled"}])
+    asyncio.run(pipe.tick(force=True))
+
+    assert wb.WALLET_B_REFUND_STREAK_KEY not in bus.redis.store
+    assert wb.WALLET_B_RETRY_NOT_BEFORE_KEY not in bus.redis.store

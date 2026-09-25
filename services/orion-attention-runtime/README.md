@@ -22,6 +22,8 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_node_prediction_error_baseline_v1.sql
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
+  < services/orion-sql-db/manual_migration_node_prediction_error_baseline_v2_definition_version.sql
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_goal_provenance_streak_v1.sql
 ```
 
@@ -45,6 +47,18 @@ few as 2 real samples surviving the window win a fully-confident-looking
 module docstring and `orion/sentience_striving_program/README.md` section 12 for the full
 live-incident record. `observation_count` on the persisted baseline is a real cumulative
 count of every receipt this target has ever incorporated, immune to that retention prune.
+
+**Definition-version reset (2026-09-25).** A baseline only describes the formula that
+produced its numbers. `orion/schemas/prediction_error_definitions.py` holds the live
+formula version per `reducer_key`; the substrate runtime stamps it on every prediction-error
+receipt (`after.definition_version`, unstamped = 1). When a row's stored `definition_version`
+differs from the live one, the baseline restarts cold (cursor kept) and only receipts carrying
+the live version are folded, so receipts the old producer wrote before a deploy never seed the
+new baseline. `route_arbitration` and `chat_session` moved to v2 on 2026-09-25 (route now
+averages only over runs a batch touched; chat dropped `topic_coherence`). Look for
+`node_prediction_error_baseline_definition_reset` in the logs. Without the v2 migration the
+store keeps the old behaviour and logs
+`node_prediction_error_baseline_definition_version_column_missing`.
 
 ## Node-target dominance streak: restart persistence (2026-07-31 fix)
 

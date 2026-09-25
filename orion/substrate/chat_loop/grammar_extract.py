@@ -112,11 +112,13 @@ def extract_chat_turn_state(
 
 
 def compute_chat_pressure_hints(turn: ChatTurnStateV1) -> dict[str, float]:
+    # `topic_coherence` (= 1 - repair_pressure_level) was removed 2026-09-25: it
+    # was a mirror of repair_pressure, not a separate reading of topic, and its
+    # only consumer (chat_prediction_error) counted repair twice because of it.
+    # The field digester already refused to put it on the lattice.
     conversation_load = min(1.0, turn.word_count / 150.0)
     repair_pressure = turn.repair_pressure_level
-    topic_coherence = max(0.0, 1.0 - turn.repair_pressure_level)
     return {
         "conversation_load": conversation_load,
         "repair_pressure": repair_pressure,
-        "topic_coherence": topic_coherence,
     }

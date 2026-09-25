@@ -181,6 +181,6 @@ scripts/safe_docker_build.sh orion-field-digester up -d --build
 
 ## PR link
 
-(filled on open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2328
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

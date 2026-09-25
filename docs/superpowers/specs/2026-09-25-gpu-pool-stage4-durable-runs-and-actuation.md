@@ -456,6 +456,17 @@ What else it takes:
 - Fixing why 13 runs pile up. Stage 4 makes the queue visible to the one decider that can open a second seat.
   Capacity policy is Missing question 2.
 
+## Corrections from building 4.1 (PR #2349)
+
+These override the text elsewhere in this document.
+
+1. **The gpu4 example needs one more line.** Add `fast2` to `classes.metacog.roles`: it's owned by `[metacog, fast]` but only class `fast` listed it, so the validator rejects the example as written.
+2. **The fields that point a call at its run's hold are `hold_lease_id` / `hold_generation`, not `parent_*`.** `parent_lease_id` already means "replayed from" in the pool's stored request and projection. 4.3 records "child of hold" in its own projection column (`hold_lease_id`) and never reuses `parent_lease_id`.
+3. **4.1 deploys the pool and sql-writer**, not "pool, gateway, Hub". sql-writer validates every `GpuPoolEventV1`, so it must accept the new events before a 4.3 pool emits them.
+4. **The pool's lease handler used to treat any unknown verb as cancel.** 4.1 makes `attach` and `status` return `verb_not_supported` until 4.3 builds them.
+5. **`cuda_env` only works if compose lets the device be set from outside.** `atlas-agent-burst` hard-codes `CUDA_VISIBLE_DEVICES_OVERRIDE=2`. Stage 5 must make it `${...}`, or the gate must require it. The 4.2 bridge is unaffected.
+6. **The Hub must show `swap_state`, including `fault`**, in 4.3. Acceptance check 7 depends on it.
+
 ## Juniper's answers (2026-09-25)
 
 1. **Gaps are shared.** While a run holds a card, higher-priority single calls may use it between the run's own calls. The run keeps its card and model for the whole run; at worst it waits one call's length.

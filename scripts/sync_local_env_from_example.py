@@ -128,6 +128,11 @@ SYNC_PREFIXES = (
     "GPU_POOL_",
     "LLM_GATEWAY_POOL_",
     "LLM_GATEWAY_EXECUTOR_",
+    # Substrate pending-marker reconcilers (2026-09-25): bounded window + full-sweep schedule.
+    # None of the policy / execution-dispatch / feedback runtimes were visited before this.
+    "POLICY_RECONCILE_",
+    "DISPATCH_RECONCILE_",
+    "FEEDBACK_RECONCILE_",
     # orion-whisper-tts, added 2026-08-29. None of this service's 26 keys
     # matched any prefix below, and the service itself was absent from
     # DEFAULT_SERVICES, so the default invocation considered ZERO of them
@@ -453,6 +458,9 @@ DEFAULT_SERVICES = (
     "orion-attention-runtime",
     # orion-self-state-runtime deleted 2026-07-22 (SelfStateV1 burn).
     "orion-proposal-runtime",
+    "orion-policy-runtime",
+    "orion-execution-dispatch-runtime",
+    "orion-feedback-runtime",
     "orion-thought",
     "orion-harness-governor",
     "orion-dream",

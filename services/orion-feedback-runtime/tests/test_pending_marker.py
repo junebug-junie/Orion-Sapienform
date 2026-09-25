@@ -18,7 +18,8 @@ import json
 
 import pytest
 
-from app.store import FeedbackRuntimeStore
+from app.store import _PENDING_MARKER_SPEC, FeedbackRuntimeStore
+from orion.substrate.pending_marker_reconcile import PendingMarkerReconciler
 
 
 class _Result:
@@ -65,9 +66,15 @@ class _Engine:
 def _store(engine, **kw):
     s = FeedbackRuntimeStore.__new__(FeedbackRuntimeStore)
     s._engine = engine
-    s._reconcile_interval_sec = kw.get("reconcile_interval_sec", 900.0)
-    s._last_reconcile_mono = kw.get("last_reconcile_mono")
+    s._reconciler = PendingMarkerReconciler(
+        _PENDING_MARKER_SPEC, interval_sec=kw.get("reconcile_interval_sec", 900.0)
+    )
+    s._reconciler.last_sweep_mono = kw.get("last_reconcile_mono")
     return s
+
+
+def _updates(eng):
+    return [c for c in eng.calls if c[1].startswith("UPDATE")]
 
 
 def _frame():
@@ -122,26 +129,26 @@ class TestTheReconcilerCanOnlyAddWork:
     def test_it_sets_the_marker_true_never_false(self):
         eng = _Engine(begin_script=[_Result(rowcount=0)])
         _store(eng).reconcile_feedback_pending(force=True)
-        sql = eng.calls[0][1]
+        sql = _updates(eng)[0][1]
         assert "SET feedback_pending = true" in sql
         assert "false" not in sql.lower(), "a reconciler that can clear markers can lose work"
         assert "NOT EXISTS" in sql, "it must only re-queue rows with no feedback frame"
 
     def test_it_is_rate_limited(self):
-        """It IS the expensive anti-join. Running it per poll reinstates the original problem."""
+        """Even bounded, running it per poll would be wasteful; it stays rate-limited."""
         eng = _Engine(begin_script=[_Result(rowcount=0)] * 4)
         store = _store(eng, reconcile_interval_sec=900.0)
         store.reconcile_feedback_pending(force=True)
         store.reconcile_feedback_pending()
         store.reconcile_feedback_pending()
-        assert len(eng.calls) == 1
+        assert len(_updates(eng)) == 1
 
     def test_force_bypasses_the_rate_limit(self):
         eng = _Engine(begin_script=[_Result(rowcount=0)] * 3)
         store = _store(eng)
         store.reconcile_feedback_pending(force=True)
         store.reconcile_feedback_pending(force=True)
-        assert len(eng.calls) == 2
+        assert len(_updates(eng)) == 2
 
     def test_a_requeue_is_logged_loudly(self, caplog):
         """Re-queuing means work WOULD have been lost. That is not a debug line."""

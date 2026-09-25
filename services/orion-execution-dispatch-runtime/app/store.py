@@ -15,11 +15,23 @@ from orion.autonomy.prediction import EffectPosterior
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
+from orion.substrate.pending_marker_reconcile import PendingMarkerReconciler, PendingMarkerSpec
+
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchFrameV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 from orion.schemas.proposal_frame import ProposalFrameV1
 from orion.substrate.bus_synaptic_surprise import (
     latest_bus_synaptic_prediction_error as _shared_latest_bus_synaptic_prediction_error,
+)
+
+_PENDING_MARKER_SPEC = PendingMarkerSpec(
+    parent_table="substrate_policy_decision_frames",
+    marker_column="dispatch_pending",
+    child_table="substrate_execution_dispatch_frames",
+    child_fk_column="source_policy_frame_id",
+    log_prefix="dispatch_pending",
+    parent_label="policy frames",
+    child_label="dispatch frame",
 )
 
 logger = logging.getLogger("orion.execution_dispatch.runtime.store")
@@ -47,19 +59,32 @@ def _coerce_starvation_counts(raw: object) -> dict[str, int]:
 
 
 class ExecutionDispatchRuntimeStore:
-    def __init__(self, postgres_uri: str, *, reconcile_interval_sec: float = 900.0) -> None:
+    def __init__(
+        self,
+        postgres_uri: str,
+        *,
+        reconcile_interval_sec: float = 900.0,
+        reconcile_window_sec: float = 7200.0,
+        reconcile_full_sweep_interval_sec: float = 86400.0,
+        reconcile_full_sweep_hour_utc: int = 9,
+    ) -> None:
         self._engine: Engine = create_engine(
             postgres_uri,
             pool_pre_ping=True,
             json_serializer=json.dumps,
             json_deserializer=json.loads,
         )
-        # Seeded to NOW, not None: otherwise the expensive full-table anti-join in
-        # reconcile_dispatch_pending runs on the first tick of every process start, and a crash
-        # loop would re-run it per restart -- defeating the rate limit that makes it safe to
-        # call every tick.
-        self._reconcile_interval_sec = float(reconcile_interval_sec)
-        self._last_reconcile_mono: float | None = _monotonic()
+        # The safety net for the pending marker: a bounded frequent sweep plus a rare read-only
+        # full sweep. Seeding/rate-limit semantics live in PendingMarkerReconciler.
+        self._reconciler = PendingMarkerReconciler(
+            _PENDING_MARKER_SPEC,
+            interval_sec=reconcile_interval_sec,
+            window_sec=reconcile_window_sec,
+            full_sweep_interval_sec=reconcile_full_sweep_interval_sec,
+            full_sweep_hour_utc=reconcile_full_sweep_hour_utc,
+            logger=logger,
+            monotonic=_monotonic,
+        )
 
     def _validate_policy_frame_row(
         self, payload: object, *, log_label: str
@@ -277,38 +302,17 @@ class ExecutionDispatchRuntimeStore:
             logger.info("dispatch_pending_bulk_drained cleared=%s", drained)
         return drained
 
-    def reconcile_dispatch_pending(self, *, force: bool = False) -> int:
-        """Re-queue any policy frame whose marker was cleared without a dispatch frame existing.
+    def reconcile_dispatch_pending(self, *, force: bool = False, full: bool = False) -> int:
+        """Re-queue rows whose pending marker was cleared without the child frame existing.
 
-        Only ever sets the marker TRUE -- it can add work, never remove it, so a bug here costs
-        duplicated effort rather than lost effort. It IS the expensive anti-join the marker
-        exists to avoid, hence rate-limited rather than run on every tick.
+        Only ever sets the marker TRUE -- it can add work, never remove it. Rate-limited to once
+        per `reconcile_interval_sec`, and BOUNDED to rows generated inside
+        `reconcile_window_sec`; the whole history is checked by one read-only anti-join plus short
+        batched UPDATEs at most once per `reconcile_full_sweep_interval_sec` (see orion/substrate/pending_marker_reconcile.py
+        for why: the unbounded version was athena's top I/O statement, 2026-09-25).
+        Returns the number of rows re-queued.
         """
-        now = _monotonic()
-        if not force and self._last_reconcile_mono is not None:
-            if (now - self._last_reconcile_mono) < self._reconcile_interval_sec:
-                return 0
-        self._last_reconcile_mono = now
-        with self._engine.begin() as conn:
-            result = conn.execute(
-                text("""
-                    UPDATE substrate_policy_decision_frames p
-                       SET dispatch_pending = true
-                     WHERE NOT p.dispatch_pending
-                       AND NOT EXISTS (
-                             SELECT 1 FROM substrate_execution_dispatch_frames d
-                              WHERE d.source_policy_frame_id = p.frame_id
-                       )
-                """)
-            )
-        requeued = int(result.rowcount or 0)
-        if requeued:
-            logger.warning(
-                "dispatch_pending_reconciled requeued=%s -- policy frames had their pending "
-                "marker cleared with no dispatch frame present. Work would have been lost.",
-                requeued,
-            )
-        return requeued
+        return self._reconciler.run(self._engine, force=force, full=full)
 
     def _retire_incompatible_policy_frame(
         self, raw_frame_id: str, raw_proposal_frame_id: str | None

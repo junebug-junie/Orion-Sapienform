@@ -509,6 +509,24 @@ Rollout is consumer-first: the schema is `extra="forbid"`, so rebuild
 `orion-signal-gateway` and `orion-equilibrium-service` on PR #2312's build before deploying
 this service with `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true`.
 
+## Pending-marker reconciler (bounded, 2026-09-25)
+
+`dispatch_pending` is cleared in the same transaction as the dispatch frame insert. A safety-net sweep sets it
+back to `true` for any of the policy frames whose marker is `false` but whose dispatch frame does not
+exist -- it can only add work, never remove it. Shared implementation:
+`orion/substrate/pending_marker_reconcile.py`.
+
+- Every `DISPATCH_RECONCILE_INTERVAL_SEC` (900): one short UPDATE over rows generated in the last
+  `DISPATCH_RECONCILE_WINDOW_SEC` (7200) -- index scan on `generated_at` plus a per-row index probe.
+- At most once per `DISPATCH_RECONCILE_FULL_SWEEP_INTERVAL_SEC` (86400; 0 disables), only during UTC
+  hour `DISPATCH_RECONCILE_FULL_SWEEP_HOUR_UTC` (9 = 03:00 MDT; -1 = any hour): one read-only
+  whole-history anti-join SELECT, then UPDATEs in batches of 5000 ids that re-check the condition.
+- Logs: `dispatch_pending_reconciled requeued=N scope=window|full` (WARNING, only when work was recovered) and
+  `dispatch_pending_full_sweep_done candidates=N batches=N requeued=N elapsed_ms=N` (INFO, every full sweep).
+
+Before this, the sweep was an unbounded anti-join UPDATE every 15 min and was one of the three
+top I/O statements on athena's Postgres while never finding anything.
+
 ## Prerequisites
 
 1. `substrate_policy_decision_frames` populated (`orion-policy-runtime`, port 8120)

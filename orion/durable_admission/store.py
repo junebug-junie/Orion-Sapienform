@@ -14,6 +14,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from psycopg.rows import dict_row
+from pydantic import ValidationError
 from psycopg.types.json import Jsonb
 
 from orion.schemas.resource_admission import ResourceRequirementV1, ResourceLeaseV1, ResourceEventV1
@@ -165,9 +166,13 @@ class PostgresAdmissionStore:
             existing = await (await conn.execute("SELECT * FROM durable_resource_demands WHERE run_id=%s", (run_id,))).fetchone()
             # Compare by meaning: a demand stored before a defaulted field
             # existed is the same demand once re-read through the contract.
-            if existing and (existing["demand_id"] != demand_id or ResourceRequirementV1.model_validate(
-                    existing["requirement"]).model_dump(mode="json") != requirement):
-                raise SubmissionConflict("run demand is immutable")
+            if existing:
+                try:
+                    stored = ResourceRequirementV1.model_validate(existing["requirement"]).model_dump(mode="json")
+                except ValidationError:
+                    stored = None  # no longer valid under the contract: not the same demand
+                if existing["demand_id"] != demand_id or stored != requirement:
+                    raise SubmissionConflict("run demand is immutable")
             now = await self.now(conn)
             demand = await (await conn.execute("INSERT INTO durable_resource_demands(demand_id,run_id,requirement,created_at,status) VALUES (%s,%s,%s,%s,'pending') ON CONFLICT(run_id) DO UPDATE SET status=CASE WHEN durable_resource_demands.status='suspended' THEN 'pending' ELSE durable_resource_demands.status END RETURNING *",
                                               (demand_id, run_id, Jsonb(requirement), row["created_at"]))).fetchone()
@@ -257,15 +262,28 @@ class PostgresAdmissionStore:
         async with self.transaction() as conn:
             return await self._event(conn, run_id, event, detail, event_id=event_id)
 
-    async def resume_failure_count(self, run_id: str, checkpoint_id: str) -> int:
-        """Resume failures recorded at one graph checkpoint (progress resets it)."""
+    # Nodes that only wait for or re-request capacity. Their completion is not
+    # progress: a grant -> fail -> worker_recovery -> re-request cycle must
+    # keep counting toward the resume-failure bound.
+    WAIT_NODES = ("resource_request", "resource_wait", "retry_wait")
+
+    async def resume_failures_since_progress(self, run_id: str) -> tuple[int, datetime | None, datetime]:
+        """(count, first failure time, now) of resume failures since the run's
+        last real node progress. Pre-2026-09-25 failure rows (no checkpoint_id)
+        are not counted."""
         async with self.pool.connection() as conn:
+            now = await self.now(conn)
             row = await (await conn.execute(
-                "SELECT count(*) AS n FROM durable_resource_events WHERE run_id=%s "
-                "AND event='run.checkpoint_resume_failed' AND payload->'detail'->>'checkpoint_id'=%s",
-                (run_id, checkpoint_id),
+                "WITH progress AS (SELECT max(generated_at) AS at FROM durable_resource_events "
+                "WHERE run_id=%s AND payload->'detail' ? 'node' "
+                "AND event NOT IN ('run.resumed','run.checkpoint_resume_failed') "
+                "AND NOT (payload->'detail'->>'node' = ANY(%s))) "
+                "SELECT count(*) AS n, min(generated_at) AS first_at FROM durable_resource_events, progress "
+                "WHERE run_id=%s AND event='run.checkpoint_resume_failed' AND payload->'detail' ? 'checkpoint_id' "
+                "AND (progress.at IS NULL OR generated_at > progress.at)",
+                (run_id, list(self.WAIT_NODES), run_id),
             )).fetchone()
-            return int(row["n"])
+            return int(row["n"]), row["first_at"], now
 
     async def history(self, run_id: str, limit: int = 200) -> list[dict[str, Any]]:
         async with self.pool.connection() as conn:

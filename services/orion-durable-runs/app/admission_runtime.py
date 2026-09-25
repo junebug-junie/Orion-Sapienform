@@ -118,6 +118,8 @@ class AdmissionRuntime:
 
     async def register(self, state):
         # The accepted request row, not the checkpoint's copy, is the demand.
+        # (Only the demand follows the row; deadline checks still read the
+        # checkpoint's `admission.deadline_at`.)
         # The checkpoint snapshots `admission` at acceptance and never
         # refreshes it; if the durable row is ever corrected (live
         # 2026-09-22: queued runs widened to add `chat-burst`), re-registering
@@ -359,14 +361,21 @@ class AdmissionRuntime:
         error = f"{type(exc).__name__}: {exc}"[:400]
         await self.event(state, "run.checkpoint_resume_failed",
                          {"node": list(snap.next), "checkpoint_id": checkpoint_id, "error": error})
-        failures = await self.store.resume_failure_count(run_id, checkpoint_id)
-        limit = self.settings.resume_max_failures
-        if failures < limit:
+        if not snap.next:
+            # The graph already finished; only its projection failed. Never
+            # rewrite a finished graph -- the next tick retries the projection.
             return
-        last_error = f"checkpoint_resume_failed: {error} (x{failures} at node {','.join(snap.next) or '-'})"
+        failures, first_at, now = await self.store.resume_failures_since_progress(run_id)
+        if failures < self.settings.resume_max_failures or first_at is None or (
+                (now - first_at).total_seconds() < self.settings.resume_min_failure_span_sec):
+            return
+        last_error = f"checkpoint_resume_failed: {error} (x{failures} since last progress, at node {','.join(snap.next)})"
         logger.error("durable_checkpoint_resume_abandoned run=%s failures=%s error=%s", run_id, failures, error)
         await self.release(run_id, "checkpoint_resume_failed")
-        await graph.aupdate_state(cfg, {"status": "failed", "last_error": last_error, "lease": None}, as_node="failed")
+        try:
+            await graph.aupdate_state(cfg, {"status": "failed", "last_error": last_error, "lease": None}, as_node="failed")
+        except Exception:  # noqa: BLE001 -- the durable row must still go terminal
+            logger.exception("durable_checkpoint_abandon_graph_update_failed run=%s", run_id)
         await self._terminal(run_id, "failed", {**state, "last_error": last_error}, workflow=workflow)
 
     async def _terminal(self, run_id, status, state, *, workflow: str | None = None):

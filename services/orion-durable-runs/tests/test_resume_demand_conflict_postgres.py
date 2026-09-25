@@ -89,6 +89,7 @@ def test_repeated_resume_failure_at_one_checkpoint_fails_the_run_with_a_visible_
     async def scenario(pool, saver, store):
         rt = runtime(pool, saver, store)
         rt.settings.resume_max_failures = 3
+        rt.settings.resume_min_failure_span_sec = 0
         req = request("spin-001")
         await rt.submit(req)
         await _park_at_resource_request(rt, req.run_id)
@@ -117,29 +118,103 @@ def test_repeated_resume_failure_at_one_checkpoint_fails_the_run_with_a_visible_
     asyncio.run(with_database(scenario))
 
 
-def test_resume_failure_count_is_per_checkpoint_and_resets_on_progress():
+async def _broken(*args, **kwargs):
+    raise RuntimeError("transient")
+
+
+def test_wait_machinery_rewrites_do_not_reset_the_count_but_real_progress_does():
+    """A grant -> fail -> worker_recovery -> re-request cycle writes a new
+    checkpoint each time; it must still count toward the bound. Real node
+    progress (e.g. harness_turn completing) resets it."""
     async def scenario(pool, saver, store):
         rt = runtime(pool, saver, store)
         rt.settings.resume_max_failures = 2
-        req = request("progress-001")
+        rt.settings.resume_min_failure_span_sec = 0
+        req = request("cycle-001")
         await rt.submit(req)
         await _park_at_resource_request(rt, req.run_id)
         real = store.register_demand
-
-        async def broken(*args, **kwargs):
-            raise RuntimeError("transient")
-        store.register_demand = broken
+        store.register_demand = _broken
         await rt._drive(await store.get_run(req.run_id))
         assert len(await _failures(store, req.run_id)) == 1
-        # The failure clears; the graph moves to a new checkpoint.
+        # Recovery: re-request succeeds, graph moves to a NEW checkpoint.
         store.register_demand = real
         await rt._drive(await store.get_run(req.run_id))
         assert (await rt.graph.aget_state(rt.config(req.run_id))).next == ("resource_wait",)
-        # A later single failure at a different checkpoint does not inherit
-        # the old count and must not terminate the run.
         await rt.graph.aupdate_state(rt.config(req.run_id), {"lease": None, "status": "retrying", "retry_node": None}, as_node="retry_wait")
-        store.register_demand = broken
+        # Real progress in between resets the count ...
+        await store.record_event(req.run_id, "run.running", {"node": "harness_turn"})
+        store.register_demand = _broken
         await rt._drive(await store.get_run(req.run_id))
         assert (await store.get_run(req.run_id))["terminal"] is None
+        # ... but another wait-machinery rewrite does not.
+        store.register_demand = real
+        await rt._drive(await store.get_run(req.run_id))
+        await rt.graph.aupdate_state(rt.config(req.run_id), {"lease": None, "status": "retrying", "retry_node": None}, as_node="retry_wait")
+        store.register_demand = _broken
+        await rt._drive(await store.get_run(req.run_id))
+        assert (await store.get_run(req.run_id))["terminal"] == "failed"
+        await rt.close()
+    asyncio.run(with_database(scenario))
+
+
+def test_failures_must_span_the_minimum_time_before_the_run_is_failed():
+    """A burst of failures during a short outage must not kill a healthy run."""
+    async def scenario(pool, saver, store):
+        from datetime import datetime, timedelta, timezone
+        now = [datetime(2026, 9, 25, tzinfo=timezone.utc)]
+        store.clock = lambda: now[0]
+        rt = runtime(pool, saver, store)
+        rt.settings.resume_max_failures = 2
+        rt.settings.resume_min_failure_span_sec = 600
+        req = request("span-001")
+        await rt.submit(req)
+        await _park_at_resource_request(rt, req.run_id)
+        store.register_demand = _broken
+        for _ in range(5):
+            now[0] += timedelta(seconds=5)
+            await rt._drive(await store.get_run(req.run_id))
+        assert (await store.get_run(req.run_id))["terminal"] is None
+        now[0] += timedelta(seconds=600)
+        await rt._drive(await store.get_run(req.run_id))
+        assert (await store.get_run(req.run_id))["terminal"] == "failed"
+        await rt.close()
+    asyncio.run(with_database(scenario))
+
+
+def test_lease_expiry_reregistration_failure_is_counted_not_escaped():
+    """The resource_wait re-register used to sit outside the bounded handler."""
+    async def scenario(pool, saver, store):
+        rt = runtime(pool, saver, store)
+        req = request("expiry-001")
+        await rt.submit(req)
+        await rt._drive(await store.get_run(req.run_id))
+        assert (await rt.graph.aget_state(rt.config(req.run_id))).next == ("resource_wait",)
+        store.register_demand = _broken
+        await rt._drive(await store.get_run(req.run_id))  # must not raise
+        assert len(await _failures(store, req.run_id)) == 1
+        await rt.close()
+    asyncio.run(with_database(scenario))
+
+
+def test_projection_failure_on_a_finished_graph_is_never_relabelled_failed():
+    async def scenario(pool, saver, store):
+        rt = runtime(pool, saver, store)
+        rt.settings.resume_max_failures = 1
+        rt.settings.resume_min_failure_span_sec = 0
+        req = request("finished-001")
+        await rt.submit(req)
+        await rt.broker.tick()
+        real = store.finish_projection
+        async def broken_projection(*args, **kwargs):
+            raise RuntimeError("projection unavailable")
+        store.finish_projection = broken_projection
+        await rt._drive(await store.get_run(req.run_id))
+        snap = await rt.graph.aget_state(rt.config(req.run_id))
+        assert not snap.next and snap.values["status"] == "completed"
+        assert (await store.get_run(req.run_id))["terminal"] is None
+        store.finish_projection = real
+        await rt._drive(await store.get_run(req.run_id))
+        assert (await store.get_run(req.run_id))["terminal"] == "completed"
         await rt.close()
     asyncio.run(with_database(scenario))

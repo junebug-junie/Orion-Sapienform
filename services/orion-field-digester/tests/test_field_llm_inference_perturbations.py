@@ -73,7 +73,9 @@ def test_failure_reading_survives_idle_minutes_and_clears_on_next_window():
 
 
 def test_live_topology_carries_failures_to_llm_inference_reliability_only():
-    for name in ("orion_field_topology.v1.yaml", "biometrics_lattice.yaml"):
+    # The old compatibility alias topology file was deleted
+    # 2026-09-25; the canonical file is the only topology.
+    for name in ("orion_field_topology.v1.yaml",):
         lattice = load_lattice(REPO / "config" / "field" / name)
         state = empty_field_state(lattice=lattice, now=NOW, tick_id="t")
         apply_perturbations(state, delta_to_perturbations(_delta({"inference_failure_pressure": 1.0})), now=NOW)

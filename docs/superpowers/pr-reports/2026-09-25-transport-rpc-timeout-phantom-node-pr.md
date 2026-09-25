@@ -180,6 +180,6 @@ $P "select count(*) from grammar_events where created_at > now() - interval '1 d
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2323
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

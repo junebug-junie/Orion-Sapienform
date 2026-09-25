@@ -220,6 +220,27 @@ the admission runtime owns the actual inference/overall deadline. Replies must
 match the expected kind, run and attempt correlation before becoming graph state.
 Legacy turns retain their configured RPC timeout.
 
+Demand re-registration (every resume that passes `resource_request`, lease
+expiry, guarded tails) registers the accepted request row's `admission`, not the
+checkpoint's copy, and the store compares demands by meaning (re-read through
+`ResourceRequirementV1`). Only the demand follows the row; deadline checks
+still read the checkpoint's `admission.deadline_at`. A resume that still fails
+is retried on the next reconcile tick, but once a run has at least
+`DURABLE_RUNS_RESUME_MAX_FAILURES` (default 10) failures since its last real
+node progress AND the first of them is `DURABLE_RUNS_RESUME_MIN_FAILURE_SPAN_SEC`
+(default 600) old, it is failed terminally: `run.failed` carries
+`error: "checkpoint_resume_failed: <exception> (xN since last progress, at node <node>)"`,
+the lease is released and the demand withdrawn. Completions of the wait
+machinery (`resource_request`, `resource_wait`, `retry_wait`) are not progress,
+so a grant -> fail -> worker_recovery cycle keeps counting. A graph that has
+already finished is never relabelled; only its projection is retried. Each
+`run.checkpoint_resume_failed` event records `checkpoint_id` and `error`.
+Live 2026-09-22..25, one run failed 53k times without this.
+
+Known gaps (pre-existing, unchanged): the finished-graph projection, cancel,
+deadline and worker_recovery blocks run outside this bound, and a run waiting
+days for capacity can accumulate sporadic infrastructure failures toward it.
+
 Apply `services/orion-sql-db/manual_migration_durable_resource_admission_v1.sql`
 to the same Postgres database as the existing checkpointer before enabling
 `DURABLE_RUNS_ADMISSION_ENABLED`. Admission tables are operator-managed; startup

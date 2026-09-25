@@ -60,7 +60,7 @@ After this patch, a turn refused before reading costs no daily slot. A full-day 
 
 ```text
 pytest services/orion-hub/tests -k world_pulse                       -> 144 passed
-CI orion-reading test set (workflow command, run locally)            -> 505 passed, 9 skipped
+CI orion-reading test set (workflow command, run locally)            -> 501 passed, 9 skipped
 New tests against origin/main sources                                -> 9 failed (as intended)
 ```
 

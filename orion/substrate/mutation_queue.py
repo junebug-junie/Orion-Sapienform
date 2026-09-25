@@ -255,6 +255,14 @@ class SubstrateMutationStore:
     #: leading entries already persisted). Keeping the list object detects a
     #: wholesale reassignment (reload), which resets the mark to 0.
     _signal_marks: dict[str, tuple[list[MutationSignalV1], int]] = field(default_factory=dict, init=False, repr=False)
+    #: Serializes every database write (full `_persist()` and the single-row
+    #: helpers) from snapshot through commit to recording what was written.
+    #: Without it, two overlapping saves (mutation worker thread vs. hub
+    #: event loop) could commit an older row version last while recording the
+    #: newer digest -- after which the row is never rewritten. Transactions
+    #: are short now, so serializing saves is cheap. Always taken OUTSIDE
+    #: `_lock` (no caller persists while holding `_lock`).
+    _persist_io_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
     #: One cached SQLAlchemy engine per store (was: create_engine per call).
     _engine: Any = field(default=None, init=False, repr=False)
     _engine_url: str | None = field(default=None, init=False, repr=False)
@@ -1013,6 +1021,10 @@ class SubstrateMutationStore:
         return [row.model_dump(mode="json") for row in rows[:limit]]
 
     def _persist(self) -> None:
+        with self._persist_io_lock:
+            self._persist_locked()
+
+    def _persist_locked(self) -> None:
         self._compact_artifacts()
         if self.postgres_url:
             try:
@@ -1078,6 +1090,11 @@ class SubstrateMutationStore:
             if self._engine is None or self._engine_url != self.postgres_url:
                 old = self._engine
                 self._engine = create_engine(self.postgres_url, pool_pre_ping=True, pool_size=2, max_overflow=3)
+                # A different database: nothing we recorded about the old
+                # one applies, so the next persist fully sweeps the new one.
+                if old is not None:
+                    self._persisted_payloads.pop("postgres", None)
+                    self._signal_marks.pop("postgres", None)
                 self._engine_url = self.postgres_url
                 if old is not None:
                     try:
@@ -1089,9 +1106,17 @@ class SubstrateMutationStore:
     def _known_payloads(self, backend: str, table: str) -> dict[str, bytes]:
         return self._persisted_payloads.setdefault(backend, {}).setdefault(table, {})
 
-    def _note_persisted(self, backend: str, table: str, row_id: str, payload: str) -> None:
+    def _forget_persisted(self, backend: str, table: str, row_id: str) -> None:
+        """After a single-row helper writes a row, drop what we knew about it.
+
+        The helper serialized the object itself, and the object can be
+        mutated in place, so we cannot be sure which version landed. Forgetting
+        is the safe direction: the next `_persist()` rewrites this one row
+        (idempotent), where recording a digest could mark a stale row current
+        forever.
+        """
         with self._lock:
-            self._known_payloads(backend, table)[row_id] = _digest(payload)
+            self._known_payloads(backend, table).pop(row_id, None)
 
     def _note_signal_persisted(self, backend: str, signal: MutationSignalV1) -> None:
         """Advance the signal mark past `signal` if it is the next unpersisted one."""
@@ -1412,6 +1437,10 @@ class SubstrateMutationStore:
                 self._adoptions = {k: v for k, v in self._adoptions.items() if k not in drop}
 
     def _persist_signal(self, signal: MutationSignalV1) -> bool:
+        with self._persist_io_lock:
+            return self._persist_signal_locked(signal)
+
+    def _persist_signal_locked(self, signal: MutationSignalV1) -> bool:
         if self.postgres_url:
             try:
                 self._persist_signal_postgres(signal)
@@ -1469,6 +1498,10 @@ class SubstrateMutationStore:
             )
 
     def _persist_pressure(self, pressure: MutationPressureV1) -> bool:
+        with self._persist_io_lock:
+            return self._persist_pressure_locked(pressure)
+
+    def _persist_pressure_locked(self, pressure: MutationPressureV1) -> bool:
         # Mirrors `_persist()`'s own postgres-success clearing (source_kind
         # set, last_error cleared) -- review caught that `_persist_signal`'s
         # existing fast path never did this, so a store that had drifted to
@@ -1479,7 +1512,7 @@ class SubstrateMutationStore:
         if self.postgres_url:
             try:
                 self._persist_pressure_postgres(pressure)
-                self._note_persisted("postgres", "substrate_mutation_pressure", pressure.pressure_id, _payload_json(pressure))
+                self._forget_persisted("postgres", "substrate_mutation_pressure", pressure.pressure_id)
                 self._source_kind = "postgres"
                 self._last_error = None
                 return True
@@ -1488,7 +1521,7 @@ class SubstrateMutationStore:
         if self.sql_db_path:
             try:
                 self._persist_pressure_sqlite(pressure)
-                self._note_persisted("sqlite", "substrate_mutation_pressure", pressure.pressure_id, _payload_json(pressure))
+                self._forget_persisted("sqlite", "substrate_mutation_pressure", pressure.pressure_id)
                 return True
             except Exception:
                 pass
@@ -1535,10 +1568,14 @@ class SubstrateMutationStore:
             )
 
     def _persist_proposal(self, proposal: MutationProposalV1) -> bool:
+        with self._persist_io_lock:
+            return self._persist_proposal_locked(proposal)
+
+    def _persist_proposal_locked(self, proposal: MutationProposalV1) -> bool:
         if self.postgres_url:
             try:
                 self._persist_proposal_postgres(proposal)
-                self._note_persisted("postgres", "substrate_mutation_proposal", proposal.proposal_id, _payload_json(proposal))
+                self._forget_persisted("postgres", "substrate_mutation_proposal", proposal.proposal_id)
                 self._source_kind = "postgres"
                 self._last_error = None
                 return True
@@ -1547,7 +1584,7 @@ class SubstrateMutationStore:
         if self.sql_db_path:
             try:
                 self._persist_proposal_sqlite(proposal)
-                self._note_persisted("sqlite", "substrate_mutation_proposal", proposal.proposal_id, _payload_json(proposal))
+                self._forget_persisted("sqlite", "substrate_mutation_proposal", proposal.proposal_id)
                 return True
             except Exception:
                 pass
@@ -1596,6 +1633,12 @@ class SubstrateMutationStore:
     def _persist_proposal_and_queue_item(
         self, proposal: MutationProposalV1, queue_item: MutationQueueItemV1
     ) -> bool:
+        with self._persist_io_lock:
+            return self._persist_proposal_and_queue_item_locked(proposal, queue_item)
+
+    def _persist_proposal_and_queue_item_locked(
+        self, proposal: MutationProposalV1, queue_item: MutationQueueItemV1
+    ) -> bool:
         """Write a brand-new proposal and its queue row in one transaction.
 
         Same fallback contract as `_persist_pressure`/`_persist_signal`: try
@@ -1606,8 +1649,8 @@ class SubstrateMutationStore:
         if self.postgres_url:
             try:
                 self._persist_proposal_and_queue_item_postgres(proposal, queue_item)
-                self._note_persisted("postgres", "substrate_mutation_proposal", proposal.proposal_id, _payload_json(proposal))
-                self._note_persisted("postgres", "substrate_mutation_queue", queue_item.queue_item_id, _payload_json(queue_item))
+                self._forget_persisted("postgres", "substrate_mutation_proposal", proposal.proposal_id)
+                self._forget_persisted("postgres", "substrate_mutation_queue", queue_item.queue_item_id)
                 self._source_kind = "postgres"
                 self._last_error = None
                 return True
@@ -1616,8 +1659,8 @@ class SubstrateMutationStore:
         if self.sql_db_path:
             try:
                 self._persist_proposal_and_queue_item_sqlite(proposal, queue_item)
-                self._note_persisted("sqlite", "substrate_mutation_proposal", proposal.proposal_id, _payload_json(proposal))
-                self._note_persisted("sqlite", "substrate_mutation_queue", queue_item.queue_item_id, _payload_json(queue_item))
+                self._forget_persisted("sqlite", "substrate_mutation_proposal", proposal.proposal_id)
+                self._forget_persisted("sqlite", "substrate_mutation_queue", queue_item.queue_item_id)
                 return True
             except Exception:
                 pass

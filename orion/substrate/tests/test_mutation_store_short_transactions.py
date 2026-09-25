@@ -18,6 +18,7 @@ Every test here fails against the pre-fix code:
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -108,6 +109,7 @@ class _FakePostgres:
         #: One entry per committed transaction: [(sql, row_count), ...]
         self.transactions: list[list[tuple[str, int]]] = []
         self.engines_created = 0
+        self.jsonb_reorder = False
 
     # sqlalchemy.create_engine replacement
     def create_engine(self, *_args: Any, **_kwargs: Any) -> "_FakePostgres":
@@ -166,6 +168,14 @@ class _FakeConn:
             table = re.search(r"FROM (\w+)", sql).group(1)
             stored = self.db.tables.get(table, {})
             ordered = sorted(stored.items(), key=lambda kv: str(kv[1][0]))
+            if self.db.jsonb_reorder:
+                # Real JSONB `::text` output: its own key order and spacing,
+                # not the sorted compact string that was written.
+                ordered = [
+                    (k, (ts, json.dumps(dict(reversed(list(json.loads(v).items()))), indent=None, separators=(", ", ": "))))
+                    if isinstance(v, str) and v.startswith("{") else (k, (ts, v))
+                    for k, (ts, v) in ordered
+                ]
             if "payload_json::text FROM" in sql and not re.search(r"SELECT \w+, payload_json", sql):
                 return _FakeResult([(value,) for _row_id, (_ts, value) in ordered])  # pre-fix query shape
             return _FakeResult([(row_id, value) for row_id, (_ts, value) in ordered])
@@ -270,7 +280,9 @@ def test_incremental_signal_write_advances_the_mark(fake_pg) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_postgres_round_trip_and_reload_does_not_rewrite(fake_pg) -> None:
+@pytest.mark.parametrize("jsonb_reorder", [False, True])
+def test_postgres_round_trip_and_reload_does_not_rewrite(fake_pg, jsonb_reorder) -> None:
+    fake_pg.jsonb_reorder = jsonb_reorder
     store = _pg_store()
     _populate(store, signals=50, proposals=5)
     _persist_ok(store)
@@ -372,3 +384,45 @@ def test_leader_lock_connection_is_autocommit(monkeypatch) -> None:
     finally:
         worker._release_leader_lock(ctx)
     assert "k" not in held  # unlocked on release
+
+
+def test_concurrent_saves_are_serialized(fake_pg) -> None:
+    """Review finding: two overlapping saves could commit an older row last yet
+    record the newer digest, leaving the row stale forever. Saves now hold a
+    store-level io lock from snapshot to record."""
+    import threading
+
+    store = _pg_store()
+    _populate(store, signals=5, proposals=3)
+    _persist_ok(store)
+    entered = threading.Event()
+    release = threading.Event()
+    real = store._persist_locked
+
+    def slow_persist() -> None:
+        entered.set()
+        release.wait(5)
+        real()
+
+    store._persist_locked = slow_persist  # type: ignore[method-assign]
+    t = threading.Thread(target=store._persist)
+    t.start()
+    assert entered.wait(5)
+    second_done = threading.Event()
+    t2 = threading.Thread(target=lambda: (store._persist_proposal(store._proposals["prop-1"]), second_done.set()))
+    t2.start()
+    assert not second_done.wait(0.3), "single-row save ran while a full save was mid-flight"
+    release.set()
+    t.join(5)
+    t2.join(5)
+    assert second_done.is_set()
+
+
+def test_postgres_url_change_resets_known_state(fake_pg) -> None:
+    store = _pg_store()
+    _populate(store, signals=10, proposals=2)
+    _persist_ok(store)
+    store.postgres_url = "postgresql://fake/other"
+    before = len(fake_pg.transactions)
+    _persist_ok(store)
+    assert fake_pg.data_rows_written(since=before)["substrate_mutation_signal"] == 10

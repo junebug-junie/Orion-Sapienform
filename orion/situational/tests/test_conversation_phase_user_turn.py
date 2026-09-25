@@ -134,14 +134,16 @@ async def test_outreach_brief_cached_moments_earlier_does_not_swallow_her_reply(
     (and caches) a brief for her session, then her reply arrives inside the
     same TTL window. Her build must still run the phase and record her."""
     monkeypatch.setattr(situation_mod, "_SITUATION_CACHE", {})
+    six_hours_ago = _last_user(redis)
 
     outreach_brief, _ = await situation_mod.build_situation_for_ctx(
         {"session_id": SID, "record_user_turn": False}, _ISOLATED_RUNTIME
     )
+    assert outreach_brief["conversation_phase"]["phase_change"] == "long_gap"
+    assert _last_user(redis) == six_hours_ago  # outreach read, did not record
+
     reply_brief, _ = await situation_mod.build_situation_for_ctx(
         {"session_id": SID, "record_user_turn": True}, _ISOLATED_RUNTIME
     )
-
-    assert outreach_brief["conversation_phase"]["phase_change"] == "long_gap"
     assert reply_brief["conversation_phase"]["phase_change"] == "long_gap"
-    assert _last_user(redis) == NOW.isoformat()
+    assert _last_user(redis) == NOW.isoformat()  # her reply recorded despite the cached brief

@@ -7,8 +7,11 @@ runs a runtime at all (see app/main.py), so this lock is the whole concurrency s
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
@@ -57,13 +60,35 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+SLOW_LOCK_MS = 250.0
+
+
+class LockStats:
+    """Per-op count / worst wait / worst hold since the last read -- /health reports and resets it,
+    so a stall shows up without grepping logs."""
+
+    def __init__(self) -> None:
+        self._stats: dict[str, dict[str, float]] = {}
+
+    def observe(self, op: str, waited_ms: float, held_ms: float) -> None:
+        st = self._stats.setdefault(op, {"n": 0, "max_wait_ms": 0.0, "max_hold_ms": 0.0, "slow": 0})
+        st["n"] += 1
+        st["max_wait_ms"] = max(st["max_wait_ms"], round(waited_ms, 1))
+        st["max_hold_ms"] = max(st["max_hold_ms"], round(held_ms, 1))
+        if waited_ms >= SLOW_LOCK_MS or held_ms >= SLOW_LOCK_MS:
+            st["slow"] += 1
+
+    def drain(self) -> dict[str, dict[str, float]]:
+        out, self._stats = self._stats, {}
+        return out
+
+
 class PoolRuntime:
     def __init__(self, *, cfg: PoolConfig, profiles: dict[str, Any], store: Any, graph: Any,
                  bus: Any = None, prober: Prober | None = None, now: Callable[[], datetime] = _utcnow,
                  mode: str = "observe", service_name: str = "orion-gpu-pool",
                  announce_stale_sec: float = 120.0, probe_interval_sec: float = 15.0,
                  state_publish_sec: float = 5.0, replay_payload_max_bytes: int = 262144):
-        import asyncio
 
         self.cfg, self.profiles, self.store, self.graph, self.bus = cfg, profiles, store, graph, bus
         self.prober, self.now, self.mode = prober, now, mode
@@ -71,6 +96,9 @@ class PoolRuntime:
         self.announce_stale_sec, self.probe_interval_sec = announce_stale_sec, probe_interval_sec
         self.state_publish_sec, self.replay_payload_max_bytes = state_publish_sec, replay_payload_max_bytes
         self.lock = asyncio.Lock()
+        self._lock_holder: str | None = None
+        self._phases: dict[str, float] = {}
+        self.lock_stats = LockStats()
         self.cards: dict[str, CardLive] = {}
         self.announcements: dict[str, LlmWorkerAnnounceV1] = {}
         self.probes: dict[str, Probe] = {}
@@ -104,8 +132,32 @@ class PoolRuntime:
         return {"configurable": {"thread_id": f"gpu_pool:{lease_id}"}}
 
     # --- discovery --------------------------------------------------------------------
-    async def on_announce(self, ann: LlmWorkerAnnounceV1) -> None:
+    @contextlib.asynccontextmanager
+    async def _locked(self, op: str):
+        """The runtime lock, timed. Every lease verb and the tick serialise on it, so one slow
+        holder stalls every caller (live 2026-09-25: bursts of ~2 s waits per acquire). A wait or
+        hold over SLOW_LOCK_MS is logged with what held it -- the evidence, not a guess."""
+        t0 = time.monotonic()
         async with self.lock:
+            waited = (time.monotonic() - t0) * 1000
+            t1 = time.monotonic()
+            prev, self._lock_holder = self._lock_holder, op
+            self._phases = {}
+            try:
+                yield
+            finally:
+                self._lock_holder = prev
+                held = (time.monotonic() - t1) * 1000
+                self.lock_stats.observe(op, waited, held)
+                if waited >= SLOW_LOCK_MS or held >= SLOW_LOCK_MS:
+                    logger.warning("gpu_pool_slow_lock op=%s waited_ms=%.0f held_ms=%.0f phases=%s",
+                                   op, waited, held, self._phases or "-")
+
+    def _phase(self, name: str, started: float) -> None:
+        self._phases[name] = round(self._phases.get(name, 0.0) + (time.monotonic() - started) * 1000, 1)
+
+    async def on_announce(self, ann: LlmWorkerAnnounceV1) -> None:
+        async with self._locked("on_announce"):
             self.announcements[ann.role] = ann
 
     async def _probe_all(self) -> None:
@@ -159,7 +211,7 @@ class PoolRuntime:
 
     # --- RPC verbs --------------------------------------------------------------------
     async def acquire(self, req: GpuLeaseRequestV1, *, operator: bool = False) -> GpuLeaseReplyV1:
-        async with self.lock:
+        async with self._locked("acquire"):
             if not req.work_class or req.work_class not in self.cfg.classes:
                 return GpuLeaseReplyV1(status="unavailable", reason=f"unknown_class:{req.work_class}")
             roles = self.cfg.classes[req.work_class].roles
@@ -176,12 +228,14 @@ class PoolRuntime:
             now = self.now()
             request = {**req.model_dump(mode="json", exclude={"verb", "lease_id", "outcome", "detail"}),
                        "request_id": request_id, "holder": req.holder or "unknown", "operator": operator}
+            t = time.monotonic()
             await self._start_thread(lease_id, request, now)
+            self._phase("start_thread", t)
             await self._schedule_and_apply()
             return await self._reply_for(await self.store.lease(lease_id))
 
     async def heartbeat(self, lease_id: str) -> GpuLeaseReplyV1:
-        async with self.lock:
+        async with self._locked("heartbeat"):
             row = await self.store.lease(lease_id)
             if row is None:
                 return GpuLeaseReplyV1(status="unknown_lease", lease_id=lease_id)
@@ -190,7 +244,7 @@ class PoolRuntime:
             return await self._reply_for(row)
 
     async def release(self, lease_id: str, outcome: str = "ok", detail: str | None = None) -> GpuLeaseReplyV1:
-        async with self.lock:
+        async with self._locked("release"):
             row = await self.store.lease(lease_id)
             if row is None:
                 return GpuLeaseReplyV1(status="unknown_lease", lease_id=lease_id)
@@ -213,7 +267,7 @@ class PoolRuntime:
         logger.info("gpu_pool_control verb=%s actor=%s card=%s lease=%s class=%s",
                     ctl.verb, ctl.actor, ctl.card, ctl.lease_id, ctl.work_class)
         if ctl.verb in ("lend", "unlend"):
-            async with self.lock:
+            async with self._locked("control"):
                 card = self.cards.get(ctl.card or "")
                 if card is None or not self.cfg.cards[card.card].lendable:
                     return GpuPoolControlReplyV1(ok=False, reason="card_not_lendable")
@@ -225,7 +279,7 @@ class PoolRuntime:
                 await self._schedule_and_apply()
             return GpuPoolControlReplyV1(ok=True, detail={"card": card.card, "lent": card.lent})
         if ctl.verb in ("replay", "cancel"):
-            async with self.lock:
+            async with self._locked("control"):
                 row = await self.store.lease(ctl.lease_id or "")
                 if row is None:
                     return GpuPoolControlReplyV1(ok=False, reason="unknown_lease")
@@ -261,7 +315,7 @@ class PoolRuntime:
         """Replay a filtered set of past leases as linked child leases. ``preview`` counts only."""
         spec = ctl.backfill or {}
         limit = min(int(spec.get("limit", 100)), 1000)
-        async with self.lock:
+        async with self._locked("_backfill"):
             rows = await self.store.find_leases(
                 work_class=spec.get("work_class"), holder=spec.get("holder"), status=spec.get("status"),
                 since=_ts(spec.get("since")), until=_ts(spec.get("until")), limit=limit)
@@ -286,11 +340,15 @@ class PoolRuntime:
 
     # --- the tick ---------------------------------------------------------------------
     async def tick(self) -> None:
-        async with self.lock:
+        async with self._locked("tick"):
             now = self.now()
             if self._last_probe is None or (now - self._last_probe).total_seconds() >= self.probe_interval_sec:
+                t = time.monotonic()
                 await self._probe_all()
+                self._phase("probe", t)
+            t = time.monotonic()
             self._resolve()
+            self._phase("resolve", t)
             for d in self._discovery_changes:
                 await self._emit(GpuPoolEventV1(
                     event="discovery_confirmed" if d.status == "confirmed" else "discovery_mismatch",
@@ -298,18 +356,26 @@ class PoolRuntime:
                     detail={"profile_name": d.profile_name, "model_file": d.model_file}))
             await self._schedule_and_apply()
             if self._last_state is None or (now - self._last_state).total_seconds() >= self.state_publish_sec:
+                t = time.monotonic()
                 await self.publish_state()
+                self._phase("publish_state", t)
 
     async def _schedule_and_apply(self) -> None:
         rows = []
-        for row in await self.store.live_leases():
+        t = time.monotonic()
+        live = await self.store.live_leases()
+        self._phase("live_leases", t)
+        for row in live:
             if row["work_class"] not in self.cfg.classes or (row.get("role") and row["role"] not in self.cfg.roles):
                 # The YAML no longer knows this class/role: end the lease rather than crash every tick.
                 await self._resume(row["lease_id"], {"type": "cancel", "reason": "config_removed"})
                 continue
             rows.append(row)
+        t = time.monotonic()
         decisions = schedule(self.cfg, self.roles, self.cards, [self._view(r) for r in rows], self.now(),
                              seen_ctx=self._ctx_seen)
+        self._phase("schedule", t)
+        self._phases["decisions"] = self._phases.get("decisions", 0) + len(decisions)
         swaps: set[tuple[str, str]] = set()
         for d in decisions:
             try:
@@ -358,6 +424,13 @@ class PoolRuntime:
         await self._emit_row("admitted", row)
 
     async def _resume(self, lease_id: str, event: dict[str, Any]) -> dict | None:
+        t = time.monotonic()
+        try:
+            return await self._resume_inner(lease_id, event)
+        finally:
+            self._phase("resume", t)
+
+    async def _resume_inner(self, lease_id: str, event: dict[str, Any]) -> dict | None:
         from langgraph.types import Command
 
         cfg = self._thread(lease_id)
@@ -553,6 +626,13 @@ class PoolRuntime:
             await self._grammar(event)
 
     async def _publish(self, channel: str, kind: str, payload: dict, corr: str | None) -> None:
+        t = time.monotonic()
+        try:
+            await self._publish_inner(channel, kind, payload, corr)
+        finally:
+            self._phase("bus_publish", t)
+
+    async def _publish_inner(self, channel: str, kind: str, payload: dict, corr: str | None) -> None:
         try:
             cid = uuid.UUID(str(corr)) if corr else uuid.uuid4()
         except ValueError:

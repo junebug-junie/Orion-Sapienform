@@ -94,3 +94,11 @@ python -m pytest orion/gpu_pool/tests -q
 cd services/orion-gpu-pool && python -m pytest tests -q        # + GPU_POOL_TEST_POSTGRES_URI for the Postgres tests
 python services/orion-gpu-pool/evals/run_pool_day_eval.py      # exits 1 on owner starvation, lost leases, spill-down
 ```
+
+## When lease RPCs are slow
+
+Every lease verb and the 1 s tick share one lock. `GET /v1/lock-stats` returns, per op, how many
+times it took the lock and its worst wait / hold since the previous call (then resets). A wait or
+hold over 250 ms is also logged as `gpu_pool_slow_lock op=... phases={...}`, with time per phase
+(probe, live_leases, schedule, resume, start_thread, bus_publish, publish_state). On 2026-09-25 the
+phases were all database commits, stalled behind Postgres I/O from the substrate reconcile sweeps.

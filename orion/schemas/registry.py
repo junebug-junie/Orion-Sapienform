@@ -629,6 +629,8 @@ from orion.schemas.durable_run import (
 )
 from orion.schemas.resource_admission import ResourceEventV1
 from orion.schemas.gpu_pool import (
+    GpuActuateResultV1,
+    GpuActuateV1,
     GpuLeaseReplyV1,
     GpuLeaseRequestV1,
     GpuPoolControlReplyV1,
@@ -973,6 +975,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GpuPoolStateRequestV1": GpuPoolStateRequestV1,
     "GpuPoolControlV1": GpuPoolControlV1,
     "GpuPoolControlReplyV1": GpuPoolControlReplyV1,
+    "GpuActuateV1": GpuActuateV1,
+    "GpuActuateResultV1": GpuActuateResultV1,
     "LlmWorkerAnnounceV1": LlmWorkerAnnounceV1,
     "DurableRunStateV1": DurableRunStateV1,
     "CuriosityTurnRequestV1": CuriosityTurnRequestV1,
@@ -1778,6 +1782,9 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "GpuPoolStateRequestV1": SchemaRegistration(model=GpuPoolStateRequestV1, kind="gpu_pool.state.request.v1"),
     "GpuPoolControlV1": SchemaRegistration(model=GpuPoolControlV1, kind="gpu_pool.control.v1"),
     "GpuPoolControlReplyV1": SchemaRegistration(model=GpuPoolControlReplyV1, kind="gpu_pool.control.reply.v1"),
+    # Stage 4 actuation (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
+    "GpuActuateV1": SchemaRegistration(model=GpuActuateV1, kind="gpu_pool.actuate.v1"),
+    "GpuActuateResultV1": SchemaRegistration(model=GpuActuateResultV1, kind="gpu_pool.actuate.result.v1"),
     "LlmWorkerAnnounceV1": SchemaRegistration(model=LlmWorkerAnnounceV1, kind="llm.worker.announce.v1"),
     "CuriosityTurnRequestV1": SchemaRegistration(model=CuriosityTurnRequestV1, kind="curiosity.turn.request.v1"),
     "CuriosityTurnResultV1": SchemaRegistration(model=CuriosityTurnResultV1, kind="curiosity.turn.result.v1"),

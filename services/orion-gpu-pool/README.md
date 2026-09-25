@@ -42,7 +42,8 @@ with the server's own `GET /props`: the loaded file must equal the profile's `hf
 
 | channel | what |
 | --- | --- |
-| `orion:gpu_pool:lease:request` | acquire / heartbeat / release / cancel (RPC; answers at once) |
+| `orion:gpu_pool:lease:request` | acquire / heartbeat / release / cancel (RPC; answers at once). `attach` and `status` (stage 4) are in the contract from 4.1 but answered `unavailable reason=verb_not_supported:<verb>` until the hold engine lands (4.3) -- never routed to cancel. |
+| `orion:gpu_pool:actuate:request` / `:actuate:result` | stage 4 pool ↔ host actuator (`GpuActuateV1` / `GpuActuateResultV1`). Registered in 4.1; no producer or consumer until 4.2 (controller) and 4.3 (pool). |
 | `orion:gpu_pool:event` | lease facts; callers wake on `granted` |
 | `orion:gpu_pool:state` (+ `:state:request`) | whole-pool snapshot |
 | `orion:gpu_pool:control:request` | operator: lend, unlend, hold, release, replay, cancel, backfill. No token (the pool trusts the bus like every Orion service); each verb is logged with its actor and published as a pool event. |

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import ast
 import collections
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -155,7 +156,8 @@ def evaluate_rung(rung: Rung, newest: Optional[datetime], now: datetime) -> Rung
 CONSOLIDATION_EMPTY_RUN = 3
 
 CONSOLIDATION_MOTIF_SQL = (
-    "SELECT jsonb_array_length(COALESCE(consolidation_frame_json->'motif_observations', '[]'::jsonb)) "
+    "SELECT CASE WHEN jsonb_typeof(consolidation_frame_json->'motif_observations') = 'array' "
+    "THEN jsonb_array_length(consolidation_frame_json->'motif_observations') ELSE 0 END "
     "FROM substrate_consolidation_frames "
     "WHERE generated_at > now() - make_interval(secs => %s) "
     "ORDER BY generated_at DESC LIMIT %s"
@@ -183,10 +185,17 @@ def evaluate_consolidation_empty(
 
 @dataclass(frozen=True)
 class StrictSchema:
-    """A forbid-model that one service writes and other services validate."""
+    """A forbid-model that one service writes and other services validate.
+
+    ``producer_service`` is the one declared fact: which service's rows are the
+    shape everyone else must accept. Consumers are derived from code
+    (``schema_consumer_services``); a test fails if the producer stops being
+    one of them.
+    """
 
     path: str  # repo-relative file
     symbol: str
+    producer_service: str
 
     @property
     def module(self) -> str:
@@ -194,7 +203,9 @@ class StrictSchema:
 
 
 STRICT_SCHEMAS: tuple[StrictSchema, ...] = (
-    StrictSchema("orion/schemas/field_state.py", "FieldStateV1"),
+    # orion-field-digester writes substrate_field_state; attention, proposal,
+    # policy, feedback runtimes and the hub read it back with model_validate.
+    StrictSchema("orion/schemas/field_state.py", "FieldStateV1", "orion-field-digester"),
 )
 
 #: ``orion.schemas.registry`` imports every schema for name lookup, and ~60
@@ -223,7 +234,7 @@ def _scan_file(path: Path, symbol: str) -> tuple[set[str], bool]:
     except (OSError, UnicodeDecodeError):
         return set(), False
     # Exact prefilter: with neither token in the text, the AST walk below can
-    # find nothing. Skips most of the ~3.8k files a repo scan touches.
+    # find nothing.
     if "orion" not in text and symbol not in text:
         return set(), False
     try:
@@ -254,13 +265,18 @@ def schema_consumer_services(repo_root: Path, schema: StrictSchema) -> dict[str,
 
     A service is a consumer if one of its own files names the symbol, or imports
     (transitively, through the ``orion`` package) a module that does. Returns
-    ``{service_dir_name: [evidence file, ...]}``. Includes the producer; the
-    caller decides which one that is.
+    ``{service_dir_name: [evidence file, ...]}``, producer included.
+
+    Known limits, both erring toward over-inclusion or honest omission rather
+    than silence: taint spreads through any import of a tainted module whether
+    or not the importer touches the schema; importing ``orion.a.b`` does not
+    taint through ``orion/a/__init__.py``; service-relative imports (``app.*``)
+    are only followed by the per-file scan of the service itself.
     """
     repo_root = Path(repo_root)
     channels = repo_root / "orion" / "bus" / "channels.yaml"
     try:
-        bus_carries = schema.symbol in channels.read_text(encoding="utf-8")
+        bus_carries = re.search(rf"\b{re.escape(schema.symbol)}\b", channels.read_text(encoding="utf-8")) is not None
     except OSError:
         bus_carries = False
     excluded = set() if bus_carries else {REGISTRY_MODULE}
@@ -319,12 +335,18 @@ class SkewResult:
     schema: str
     service_dir: str
     container: Optional[str]
-    status: str  # "ok" | "skew" | "content_differs" | "not_running" | "unknown"
+    # "ok" | "skew" (red) | "content_differs" | "producer_differs_from_main"
+    # | "not_running" | "unknown"
+    status: str
     detail: str
 
     @property
     def red(self) -> bool:
         return self.status == "skew"
+
+    @property
+    def key(self) -> str:
+        return f"skew:{self.schema}:{self.container or self.service_dir}"
 
 
 def evaluate_skew(
@@ -335,17 +357,26 @@ def evaluate_skew(
     consumer_services: Iterable[str],
     containers: Sequence[RunningContainer],
 ) -> list[SkewResult]:
-    """Flag consumer containers running a copy of the schema older than the ref.
+    """Flag consumer containers whose copy of the schema is older than the one
+    the producer is actually writing.
 
-    Rules, per running container of a consumer service:
+    The reference is the producer's running container, not main: a producer
+    deployed from a branch ahead of main is exactly the 09-20 shape, and a
+    change merged to main but not yet deployed to the producer breaks nothing.
+    Per consumer container:
 
-    - schema file inside the container matches the ref byte-for-byte -> ok,
-      whatever the image date (content beats timestamps);
-    - it differs and the image predates the last schema commit -> skew (red):
-      this is the 09-20 shape;
-    - it differs but the image is newer -> content_differs (reported, not red):
-      usually a deploy from a branch ahead of main;
-    - content unreadable -> fall back to the timestamp rule alone.
+    - same schema file bytes as the producer -> ok;
+    - different bytes and the consumer image is older than the producer image
+      -> skew (red). Bytes alone cannot say which side is newer; image age is
+      the direction tie-break, and a forbid-model only breaks when the writer
+      is ahead of the reader;
+    - different bytes, consumer image newer -> content_differs (reported);
+    - bytes unreadable on either side -> timestamp fallback: red when the
+      consumer image predates the schema's last change on main
+      (``schema_commit_time``) and the producer image does not.
+
+    The producer gets its own row: ok when it matches main, otherwise
+    producer_differs_from_main (reported, not red).
     """
     commit = _as_utc(schema_commit_time)
     by_service: dict[str, list[RunningContainer]] = collections.defaultdict(list)
@@ -353,8 +384,13 @@ def evaluate_skew(
         if c.service_dir:
             by_service[c.service_dir].append(c)
 
+    producers = by_service.get(schema.producer_service, [])
+    producer = producers[0] if producers else None
+    ref_sha = producer.schema_sha256 if producer and producer.schema_sha256 else None
+    ref_built = _as_utc(producer.image_created) if producer and producer.image_created else None
+
     results: list[SkewResult] = []
-    for svc in sorted(set(consumer_services)):
+    for svc in sorted(set(consumer_services) | {schema.producer_service}):
         running = by_service.get(svc, [])
         if not running:
             results.append(SkewResult(schema.symbol, svc, None, "not_running", "no running container for this service"))
@@ -364,16 +400,30 @@ def evaluate_skew(
                 results.append(SkewResult(schema.symbol, svc, c.name, "unknown", "image creation time unreadable"))
                 continue
             built = _as_utc(c.image_created)
-            older = built < commit
-            ages = f"image built {built.isoformat()}, {schema.path} last changed {commit.isoformat()}"
-            content_known = c.schema_sha256 is not None and schema_sha256_on_ref is not None
-            if content_known and c.schema_sha256 == schema_sha256_on_ref:
-                results.append(SkewResult(schema.symbol, svc, c.name, "ok", f"schema file matches; {ages}"))
-            elif older:
-                why = "schema file differs" if content_known else "schema file not readable"
-                results.append(SkewResult(schema.symbol, svc, c.name, "skew", f"{why}; {ages}"))
-            elif content_known:
-                results.append(SkewResult(schema.symbol, svc, c.name, "content_differs", f"schema file differs but image is newer; {ages}"))
+            if svc == schema.producer_service:
+                if c.schema_sha256 is None or schema_sha256_on_ref is None:
+                    results.append(SkewResult(schema.symbol, svc, c.name, "unknown", "producer schema file not readable"))
+                elif c.schema_sha256 == schema_sha256_on_ref:
+                    results.append(SkewResult(schema.symbol, svc, c.name, "ok", "producer schema matches main"))
+                else:
+                    results.append(SkewResult(
+                        schema.symbol, svc, c.name, "producer_differs_from_main",
+                        f"producer (image {built.isoformat()}) writes a {schema.path} that differs from main",
+                    ))
+                continue
+            if ref_sha is not None and c.schema_sha256 is not None:
+                vs = f"image built {built.isoformat()}, producer image {ref_built.isoformat() if ref_built else '?'}"
+                if c.schema_sha256 == ref_sha:
+                    results.append(SkewResult(schema.symbol, svc, c.name, "ok", f"schema file matches producer; {vs}"))
+                elif ref_built is None or built < ref_built:
+                    results.append(SkewResult(schema.symbol, svc, c.name, "skew", f"schema file differs from the producer's; {vs}"))
+                else:
+                    results.append(SkewResult(schema.symbol, svc, c.name, "content_differs", f"schema file differs from the producer's but image is newer; {vs}"))
+                continue
+            producer_new = ref_built is None or ref_built >= commit
+            ages = f"image built {built.isoformat()}, {schema.path} last changed on main {commit.isoformat()} (schema bytes unreadable)"
+            if built < commit and producer_new:
+                results.append(SkewResult(schema.symbol, svc, c.name, "skew", ages))
             else:
                 results.append(SkewResult(schema.symbol, svc, c.name, "ok", ages))
     return results
@@ -418,8 +468,25 @@ class LadderReport:
     def red_keys(self) -> list[str]:
         """Stable identifiers for debounce: one per failing rung / skewed container."""
         keys = [f"rung:{r.rung}" for r in self.red_rungs]
-        keys += [f"skew:{s.schema}:{s.container}" for s in self.red_skew]
+        keys += [s.key for s in self.red_skew]
         return sorted(keys)
+
+    def green_keys(self) -> list[str]:
+        """Keys whose check actually ran this tick and came back not-red.
+
+        A rung whose query errored is absent from ``rungs`` entirely, and a
+        container that could not be inspected is ``unknown``/``not_running``;
+        neither counts as recovered, so a flaky DB/docker read cannot re-arm a
+        card that was already delivered.
+        """
+        keys = [f"rung:{r.rung}" for r in self.rungs if not r.red]
+        keys += [s.key for s in self.skew if not s.red and s.status not in ("unknown", "not_running")]
+        return sorted(keys)
+
+    def severity(self) -> str:
+        """critical when anything that stops cognition is red; warning when the
+        only finding is empty consolidation (a symptom, usually of a red rung)."""
+        return "warning" if self.red_keys() == ["rung:consolidation:motifs"] else "critical"
 
     def alert_message(self) -> str:
         lines = []
@@ -429,7 +496,7 @@ class LadderReport:
                       f"- consolidation: last {int(r.max_age_sec)} frames have zero motif observations (running, but on nothing)"
                       for r in self.red_rungs]
         if self.red_skew:
-            lines.append("Containers are running a strict schema older than the one being written:")
+            lines.append("Containers are running a strict schema older than the one their producer is writing:")
             lines += [f"- {s.container} ({s.service_dir}) vs {s.schema}: {s.detail}" for s in self.red_skew]
             lines.append("Rebuild/redeploy those consumers; a forbid-model change is a consumer-first migration.")
         return "\n".join(lines)

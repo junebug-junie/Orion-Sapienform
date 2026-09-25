@@ -468,7 +468,7 @@ postgres-headroom-watch:
 # added, only the producer redeployed, attention/proposal wrote nothing for ~48h
 # while every container read "Up"). Two checks: every rung table still has a
 # recent row (bounded index scans), and every container that validates a strict
-# cross-service schema runs a copy of it matching origin/main (import-scan
+# cross-service schema runs the same copy its producer writes (import-scan
 # derived consumer list; `--list-consumers` shows it). Read-only against
 # Postgres, docker, and git. Exit 1 = red, 2 = could not check.
 # substrate-ladder-watch adds a debounced Hub Pending Attention card via

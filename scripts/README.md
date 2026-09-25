@@ -126,9 +126,10 @@ writing for ~48h while every container read "Up". Two checks:
    has a row newer than its limit, via bounded index scans; plus consolidation
    is flagged when its last 3 hourly frames have zero motif observations;
 2. every running container of a service whose code reaches the schema
-   (derived by an import scan, not a list) has a copy of the schema file that
-   matches `origin/main`; a mismatch on an image older than the schema's last
-   commit is red.
+   (derived by an import scan, not a list) has the same schema file bytes as
+   the running producer (for `FieldStateV1`, orion-field-digester); a mismatch
+   on a consumer image older than the producer's is red. A producer that
+   differs from `origin/main` is reported, not red.
 
 Read-only against Postgres, docker, and git. Cron, same shape as the other
 watchdogs (`crontab -e`, then paste):

@@ -13,7 +13,9 @@ Read-only everywhere:
 - docker: ``docker ps`` / ``docker inspect`` / ``docker image inspect``, plus
   one ``docker exec <c> python -c`` per consumer container that hashes its copy
   of the schema file (no writes, no restarts).
-- git: ``git log`` / ``git show`` on ``--ref`` (default origin/main, else HEAD).
+- git: ``git log --first-parent`` / ``git show`` on ``--ref`` (default
+  origin/main, else HEAD) -- used to report producer-vs-main drift and as the
+  timestamp fallback when a container's schema bytes cannot be read.
 
 Alerting (``--notify``): one Hub Pending Attention card per new failing
 rung/container via orion-notify ``/attention/request`` -- the same path
@@ -128,17 +130,21 @@ def _parse_ts(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+# Locate the top-level ``orion`` package without importing it (find_spec on a
+# top-level name only searches sys.path), then hash the file by path. Nothing
+# from the repo executes inside the production container.
 _HASH_SNIPPET = (
-    "import hashlib,importlib.util as u,sys;"
-    "s=u.find_spec(sys.argv[1]);"
-    "print(hashlib.sha256(open(s.origin,'rb').read()).hexdigest())"
+    "import hashlib,importlib.util as u,os,sys;"
+    "s=u.find_spec('orion');"
+    "p=os.path.join(s.submodule_search_locations[0],*sys.argv[1].split('/')[1:]);"
+    "print(hashlib.sha256(open(p,'rb').read()).hexdigest())"
 )
 
 
-def container_schema_sha(container: str, module: str) -> Optional[str]:
+def container_schema_sha(container: str, schema_path: str) -> Optional[str]:
     for py in ("python", "python3"):
         try:
-            out = _run(["docker", "exec", container, py, "-c", _HASH_SNIPPET, module]).strip()
+            out = _run(["docker", "exec", container, py, "-c", _HASH_SNIPPET, schema_path]).strip()
         except (subprocess.SubprocessError, OSError):
             continue
         if len(out) == 64:
@@ -146,7 +152,7 @@ def container_schema_sha(container: str, module: str) -> Optional[str]:
     return None
 
 
-def read_containers(services: set[str], module: str) -> list[ll.RunningContainer]:
+def read_containers(services: set[str], schema_path: str) -> list[ll.RunningContainer]:
     names = [n for n in _run(["docker", "ps", "--format", "{{.Names}}"]).split() if n]
     if not names:
         return []
@@ -169,7 +175,7 @@ def read_containers(services: set[str], module: str) -> list[ll.RunningContainer
                 service_dir=svc,
                 image_created=created.get(c.get("Image")),
                 started_at=_parse_ts((c.get("State") or {}).get("StartedAt")),
-                schema_sha256=container_schema_sha(name, module),
+                schema_sha256=container_schema_sha(name, schema_path),
             )
         )
     return out
@@ -188,7 +194,9 @@ def default_ref(repo: str) -> str:
 
 def schema_commit(repo: str, ref: str, path: str) -> tuple[datetime, str, str]:
     """(commit time, short sha, sha256 of the file on ref)."""
-    log = _run(["git", "-C", repo, "log", "-1", "--format=%cI %h", ref, "--", path]).split()
+    # --first-parent: the time the change LANDED on ref (its merge), not the
+    # side-branch commit's own date, which can be hours or days earlier.
+    log = _run(["git", "-C", repo, "log", "-1", "--first-parent", "--format=%cI %h", ref, "--", path]).split()
     if len(log) != 2:
         raise RuntimeError(f"no commit touches {path} on {ref}")
     body = subprocess.run(["git", "-C", repo, "show", f"{ref}:{path}"], capture_output=True, check=True).stdout
@@ -231,6 +239,16 @@ def keys_to_notify(red_keys: list[str], notified: list[str]) -> list[str]:
     return [k for k in red_keys if k not in done]
 
 
+def carry_notified(notified: list[str], green_keys: list[str]) -> list[str]:
+    """Forget a delivered key only once its check ran and came back green.
+
+    A key that is merely absent (its query errored, docker was unreachable) is
+    kept, so a flaky read cannot re-send a card a human already has.
+    """
+    green = set(green_keys)
+    return [k for k in notified if k not in green]
+
+
 def notify(report: ll.LadderReport, *, state_file: str, base_url: str, token: Optional[str], client=None) -> Optional[bool]:
     """Returns True/False when a card was attempted, None when nothing was new."""
     os.makedirs(os.path.dirname(state_file) or ".", exist_ok=True)
@@ -241,8 +259,8 @@ def notify(report: ll.LadderReport, *, state_file: str, base_url: str, token: Op
             return None
         state = _load_state(state_file)
         red = report.red_keys()
-        # Forget keys that recovered, so a recurrence alerts again.
-        notified = [k for k in state.get("notified_keys", []) if k in red]
+        # Forget keys that verifiably recovered, so a recurrence alerts again.
+        notified = carry_notified(list(state.get("notified_keys", [])), report.green_keys())
         new = keys_to_notify(red, notified)
         sent: Optional[bool] = None
         if new:
@@ -252,7 +270,7 @@ def notify(report: ll.LadderReport, *, state_file: str, base_url: str, token: Op
                 client = NotifyClient(base_url=base_url, api_token=token, timeout=10)
             accepted = client.attention_request(
                 message=report.alert_message(),
-                severity="critical" if report.red_skew or any(k.startswith("rung:") for k in new) else "warning",
+                severity=report.severity(),
                 require_ack=True,
                 context={
                     "source_service": "check_substrate_ladder_liveness",
@@ -305,7 +323,7 @@ def build_report(args) -> ll.LadderReport:
             try:
                 commit_time, commit_sha, ref_sha = schema_commit(repo, ref, schema.path)
                 consumers = set(ll.schema_consumer_services(Path(repo), schema))
-                containers = read_containers(consumers, schema.module)
+                containers = read_containers(consumers | {schema.producer_service}, schema.path)
                 report.skew += ll.evaluate_skew(
                     schema,
                     schema_commit_time=commit_time,
@@ -328,7 +346,7 @@ def print_human(report: ll.LadderReport) -> None:
         else:
             print(f"{mark}{r.summary()}")
     for s in report.skew:
-        mark = "RED " if s.red else ("warn" if s.status in ("content_differs", "unknown") else "ok  ")
+        mark = "RED " if s.red else ("ok  " if s.status == "ok" else "warn")
         print(f"{mark}skew {s.schema} {s.service_dir} [{s.container or '-'}] {s.status}: {s.detail}")
     for c in report.cannot_check:
         print(f"CANNOT CHECK {c}")

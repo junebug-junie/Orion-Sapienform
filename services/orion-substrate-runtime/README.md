@@ -703,7 +703,7 @@ false "Bus Anomaly Detected" alerts, functionally the same downstream symptom as
 `SubstrateDynamicsEngine.tick()` clobber bug fixed 2026-07-29 (`falkor_codec.py`'s
 `EXTERNALLY_OWNED_METADATA_KEYS`) but via a different, still-live mechanism that fix didn't touch.
 Split the gate in `_bus_synaptic_tick()`: the receipt write (an audit trail of notable events) stays
-gated on `error > 0.0`; the node write (the polled current-state value) now runs unconditionally
+gated on `error > 0.0` (superseded 2026-09-25 -- the receipt is ungated too, see below); the node write (the polled current-state value) now runs unconditionally
 every tick, including a calm tick writing `prediction_error=0.0` -- the node can finally read a
 genuine calm state again instead of only ever ratcheting up. The other four `_*_tick` methods in
 this file (biometrics, execution, chat, route) share the identical `if error > 0.0:` gate around

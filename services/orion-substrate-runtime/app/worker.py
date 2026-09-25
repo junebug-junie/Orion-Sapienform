@@ -1346,7 +1346,8 @@ class BiometricsSubstrateWorker:
             counts = list(self._vision_object_counts)
             yield_value = perceptual_yield(counts)
 
-            # Receipt on EVERY tick, unlike _bus_synaptic_tick's fault-gated one.
+            # Receipt on EVERY tick (as every domain now does -- see the comment on
+            # _prediction_error_receipt).
             # The receipt is the only path to the field node vector
             # (state_deltas.py turns pressure_hints into the perturbation the
             # digester folds in), and this signal's healthy state is exactly

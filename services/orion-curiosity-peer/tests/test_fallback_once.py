@@ -493,3 +493,70 @@ def test_apply_peer_brief_consumed_marks_graph() -> None:
     cypher, params = graph.calls[0]
     assert "SET b.consumed = true" in cypher
     assert params["brief_ids"] == ["brief-a", "brief-b"]
+
+
+# --- 2026-09-25 (D2): with no injected Claude observer, the Claude fallback
+# gate must read the real Claude meter (`rate_limit_events.observe`), never
+# the Cursor meter. A local `observe = observe_limit or ...` used to shadow the
+# module-level import, so production gated Claude spend on Cursor state.
+# Every test above injects `observe_claude_limit`, which is why none caught it.
+
+
+def test_default_claude_gate_reads_the_claude_meter_not_the_cursor_meter(monkeypatch) -> None:
+    import app.worker as worker_mod
+
+    seen: list[str] = []
+
+    def claude_meter() -> _ClearClaudeLimit:
+        seen.append("claude_meter")
+        return _ClearClaudeLimit()
+
+    def cursor_meter() -> CursorLimitObservation:
+        seen.append("cursor_meter")
+        return _clear_budget()
+
+    monkeypatch.setattr(worker_mod, "observe", claude_meter)
+
+    def cursor(*_a: Any, **_k: Any) -> PeerBriefV1:
+        raise TokenUnavailable("cursor tokens dry")
+
+    def claude(*_a: Any, **_k: Any) -> str:
+        return '{"summary": "ok summary", "evidence_pointers": []}'
+
+    brief = handle_help_request(
+        _help(),
+        cursor=cursor,
+        claude=claude,
+        observe_limit=cursor_meter,
+        persist=lambda _b: None,
+    )
+    assert seen == ["cursor_meter", "claude_meter"]
+    assert brief.status == "ok"
+    assert brief.peer == "claude_room"
+
+
+def test_default_claude_gate_refuses_when_the_claude_meter_is_unobserved(monkeypatch) -> None:
+    # The Cursor meter reads clear. Before the fix that alone let Claude spend.
+    import app.worker as worker_mod
+
+    monkeypatch.setattr(
+        worker_mod,
+        "observe",
+        lambda: _ClearClaudeLimit(observed=False, state="unknown", staleness_sec=None),
+    )
+
+    def cursor(*_a: Any, **_k: Any) -> PeerBriefV1:
+        raise TokenUnavailable("cursor tokens dry")
+
+    def claude(*_a: Any, **_k: Any) -> str:
+        raise AssertionError("claude must not spend on an unobserved Claude meter")
+
+    brief = handle_help_request(
+        _help(),
+        cursor=cursor,
+        claude=claude,
+        observe_limit=lambda: _clear_budget(),
+        persist=lambda _b: None,
+    )
+    assert brief.status == "refused_budget"
+    assert brief.refusal_reason and "claude_budget_unobserved" in brief.refusal_reason

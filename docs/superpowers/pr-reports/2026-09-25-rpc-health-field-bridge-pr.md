@@ -398,6 +398,6 @@ FROM substrate_field_state WHERE generated_at > now() - interval '24 hours';
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2342
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

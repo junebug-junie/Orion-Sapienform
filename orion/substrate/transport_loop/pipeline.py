@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -7,12 +8,38 @@ from typing import Any, Callable
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.transport_projection import TransportBusProjectionV1
 
-from .constants import DEFAULT_STREAM_DEPTH_CRITICAL, TRANSPORT_BUS_PROJECTION_ID
+from .constants import (
+    DEFAULT_STREAM_DEPTH_CRITICAL,
+    NON_BUS_TRANSPORT_NODE_IDS,
+    NON_BUS_TRANSPORT_TARGET_IDS,
+    TRANSPORT_BUS_PROJECTION_ID,
+)
 from .reducer import reduce_transport_trace_events
 
 TransportProjectionLoader = Callable[[], TransportBusProjectionV1]
 TransportProjectionSaver = Callable[[TransportBusProjectionV1], None]
 ReceiptSaver = Callable[[Any], None]
+
+logger = logging.getLogger(__name__)
+
+
+def prune_non_bus_entries(projection: TransportBusProjectionV1) -> list[str]:
+    """Drop persisted `buses` entries that were never buses (e.g. the
+    `bus:rpc_timeout` phantom minted before NON_BUS_TRANSPORT_NODE_IDS was
+    excluded at parse time). Mutates in place; returns the dropped keys.
+
+    Runs on every load so already-persisted state self-heals on the first
+    batch after deploy -- no one-off SQL patch needed.
+    """
+    dropped = [
+        key
+        for key, state in projection.buses.items()
+        if state.node_id in NON_BUS_TRANSPORT_NODE_IDS
+        or key in NON_BUS_TRANSPORT_TARGET_IDS
+    ]
+    for key in dropped:
+        projection.buses.pop(key, None)
+    return dropped
 
 
 def process_transport_grammar_events(
@@ -33,6 +60,10 @@ def process_transport_grammar_events(
         by_trace[event.trace_id or ""].append(event)
 
     projection = load_projection()
+    dropped = prune_non_bus_entries(projection)
+    if dropped:
+        # Runtime proof the persisted phantom self-healed after deploy.
+        logger.info("transport_projection_pruned_non_bus keys=%s", dropped)
     for trace_id, trace_events in by_trace.items():
         if not trace_id:
             continue

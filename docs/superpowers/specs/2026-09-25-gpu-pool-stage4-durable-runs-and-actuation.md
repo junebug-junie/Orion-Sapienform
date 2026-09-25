@@ -456,17 +456,10 @@ What else it takes:
 - Fixing why 13 runs pile up. Stage 4 makes the queue visible to the one decider that can open a second seat.
   Capacity policy is Missing question 2.
 
-## Missing questions (need Juniper)
+## Juniper's answers (2026-09-25)
 
-1. **Interleave (Decision 1, option C) or strict hold (option A)?** C lets higher-priority single calls use a
-   held card between the run's calls. The cost is an occasional prefix-cache miss for the run. A regresses
-   cortex-exec agent calls, which would queue behind 35-minute-plus holds. Recommendation: C.
-2. **Cap holds on the home `agent` seat?** Today nothing caps a run on gpu1 (max observed 7.8h). Stage 4 keeps
-   that. A cap (for example 2h, then recall at a node boundary and re-queue) trades one run's continuity for
-   queue turnover. Recommendation: no cap in stage 4; decide after a week of pool data on hold wait and hold
-   idle fraction.
-
-Everything else above is resolved from code.
+1. **Gaps are shared.** While a run holds a card, higher-priority single calls may use it between the run's own calls. The run keeps its card and model for the whole run; at worst it waits one call's length.
+2. **No hold cap in stage 4.** Recall and priority still apply. Decide a cap from a week of pool data.
 
 ## Acceptance checks (live, observable)
 

@@ -487,17 +487,40 @@ def _channel_value(chain: dict[str, Any], channel_id: str) -> tuple[float | None
         value = ((m4.get("values") or {}).get("field_vector") or {}).get(key)
         return (float(value) if isinstance(value, (int, float)) else None), source
 
-    source = f"M3 max(buses[*].{key})"
+    source = f"M3 max(buses[*].{key}), fresh buses only"
     m3 = transport.get("m3", {})
     if m3.get("status") in (None, "stale", "missing"):
         return None, source
     buses = (m3.get("values") or {}).get("buses") or {}
+    max_age = float(chain.get("freshness_threshold_sec") or 60)
     readings = [
         float(bus[key])
         for bus in buses.values()
-        if isinstance(bus, dict) and isinstance(bus.get(key), (int, float))
+        if isinstance(bus, dict)
+        and isinstance(bus.get(key), (int, float))
+        and _bus_row_is_fresh(bus, max_age)
     ]
     return (max(readings) if readings else None), source
+
+
+def _bus_row_is_fresh(bus: dict[str, Any], max_age_sec: float) -> bool:
+    """A per-bus row is only a live reading if its own observed_at is recent.
+
+    The projection's updated_at moves whenever any bus reports, so a bus that
+    stopped reporting (or a phantom row such as bus:rpc_timeout) would otherwise
+    keep its last value in the max forever. Rows without a parseable
+    observed_at are treated as stale.
+    """
+    raw = bus.get("observed_at")
+    if not raw:
+        return False
+    try:
+        ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - ts).total_seconds() <= max_age_sec
 
 
 def _channel_values(chain: dict[str, Any], channels: dict[str, dict[str, Any]]) -> dict[str, float | None]:
@@ -677,8 +700,11 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
         pressure_active = transport_p >= transport_watch_at or observer_p >= observer_watch_at
         pressure_state = "watch" if pressure_active else "quiet"
         pressure_reason = (
-            f"bus_synaptic_pressure={transport_p:.2f} "
-            f"observer_failure_pressure={observer_p:.2f} "
+            # Labels name what is actually read. M4 reliability_pressure is
+            # max(observer_failure, 1 - delivery_confidence), not the M3
+            # observer_failure_pressure channel shown in Lattice Values.
+            f"bus_synaptic_pressure={transport_p:.2f} [M4 capability:transport.pressure] "
+            f"reliability_pressure={observer_p:.2f} [M4, vs observer_failure_pressure watch_at] "
             f"(thresholds: transport={transport_watch_at}, observer={observer_watch_at})"
         )
 
@@ -697,7 +723,13 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
             contract_state = "watch"
         else:
             contract_state = "pass"
-        contract_reason = f"contract_pressure={contract_p:.2f} (watch_at={contract_watch_at})"
+        # M4 contract_pressure is fed by catalog_drift_pressure (orion_field_topology
+        # channel_map), not by the reducer's own contract_pressure -- open
+        # vocabulary bug, see docs/superpowers/specs/2026-09-22-substrate-lattice-audit.md.
+        contract_reason = (
+            f"contract_pressure={contract_p:.2f} [M4, fed by catalog_drift_pressure] "
+            f"(watch_at={contract_watch_at})"
+        )
 
     # --- attention gate ---
     m5_status = m5.get("status", "missing")
@@ -748,7 +780,11 @@ async def transport_latest() -> dict[str, Any]:
     chain = await asyncio.to_thread(_load_transport_proof_chain, freshness_threshold_sec=_freshness_threshold())
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
-    chain["lattice_channels"] = _lattice_channel_rows(chain, _policy_channels())
+    try:
+        chain["lattice_channels"] = _lattice_channel_rows(chain, _policy_channels())
+    except Exception as exc:  # a bad policy file must not hide the proof chain
+        chain["lattice_channels"] = []
+        chain["lattice_policy_error"] = f"{type(exc).__name__}: {exc}"
     return chain
 
 
@@ -778,7 +814,10 @@ async def transport_simulate(req: SimulateRequest) -> dict[str, Any]:
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
 
-    channels = _policy_channels()
+    try:
+        channels = _policy_channels()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"transport_lattice_policy_invalid: {type(exc).__name__}") from exc
     if not channels:
         raise HTTPException(status_code=503, detail="transport_lattice_policy_not_found")
     values = _channel_values(chain, channels)

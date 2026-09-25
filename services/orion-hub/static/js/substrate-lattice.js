@@ -32,13 +32,15 @@ function _esc(v) {
   return String(v)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function _fmt(v) {
   if (v === null || v === undefined) return "—";
   if (typeof v === "number") return v.toFixed(3);
-  return String(v);
+  return _esc(v);
 }
 
 function _ts(isoStr) {
@@ -316,7 +318,7 @@ function _renderLatticeValues(chain) {
   const channels = chain && Array.isArray(chain.lattice_channels) ? chain.lattice_channels : null;
   if (!channels) {
     el.innerHTML = '<span class="text-red-400">No data</span>';
-    _renderSimInputs([]);
+    // Leave the simulator inputs (and any operator edits) as they are.
     return;
   }
   _renderSimInputs(channels);
@@ -372,22 +374,27 @@ function _renderSimInputs(channels) {
     el.innerHTML = '<span class="text-gray-500">No policy channels loaded</span>';
     return;
   }
-  // Keep an operator's in-progress edits across a Refresh.
+  // Keep only inputs the operator actually edited across a Refresh; untouched
+  // inputs pick up the policy's current watch_at.
   const previous = {};
-  el.querySelectorAll("input[data-channel]").forEach((input) => {
+  el.querySelectorAll("input[data-channel][data-dirty]").forEach((input) => {
     previous[input.dataset.channel] = input.value;
   });
   el.innerHTML = withThreshold
     .map((ch) => {
       const id = _esc(ch.channel_id);
-      const value = previous[ch.channel_id] !== undefined ? _esc(previous[ch.channel_id]) : ch.watch_at;
+      const edited = previous[ch.channel_id] !== undefined;
+      const value = _esc(edited ? previous[ch.channel_id] : ch.watch_at);
       return `
         <label class="text-[10px] text-gray-500">${id} watch_at</label>
-        <input data-channel="${id}" type="number" min="0" max="1" step="0.05" value="${value}"
+        <input data-channel="${id}" ${edited ? "data-dirty" : ""} type="number" min="0" max="1" step="0.05" value="${value}"
           class="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 w-full" />
       `;
     })
     .join("");
+  el.querySelectorAll("input[data-channel]").forEach((input) => {
+    input.addEventListener("input", () => input.setAttribute("data-dirty", ""));
+  });
 }
 
 function _recordJudgment(channelId, judgment) {
@@ -434,6 +441,8 @@ async function _runSimulate() {
     if (!el) return;
     el.classList.remove("hidden");
     const changed = result.changed;
+    const unmeasured = _asList(result.simulated?.unmeasured_channels);
+    const ignored = _asList(result.ignored_thresholds);
     el.innerHTML = `
       <div class="text-[10px] font-semibold text-gray-400 mb-1">Salience / Bucket / Action Ceiling</div>
       <div class="grid grid-cols-2 gap-x-4 gap-y-0.5">
@@ -450,8 +459,14 @@ async function _runSimulate() {
           ${_esc(result.current?.action_ceiling)} → ${_esc(result.simulated?.action_ceiling)}
         </span>
       </div>
-      <div class="text-[10px] mt-1 ${changed ? "text-amber-400" : "text-gray-500"}">
-        ${changed ? "⚠ outcome would change" : "✓ no change"}
+      ${unmeasured.length
+        ? `<div class="text-[10px] mt-1 text-amber-400">${unmeasured.length} channel(s) unmeasured (stale or missing data, not calm): ${unmeasured.map(_esc).join(", ")}</div>`
+        : ""}
+      ${ignored.length
+        ? `<div class="text-[10px] mt-1 text-amber-400">ignored thresholds (no such policy channel): ${ignored.map(_esc).join(", ")}</div>`
+        : ""}
+      <div class="text-[10px] mt-1 ${changed || unmeasured.length ? "text-amber-400" : "text-gray-500"}">
+        ${changed ? "⚠ outcome would change" : unmeasured.length ? "no change among measured channels" : "✓ no change"}
       </div>
     `;
   } catch (err) {

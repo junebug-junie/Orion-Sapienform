@@ -13,9 +13,9 @@ middle (M3 reducer, M4 field) runs but mostly watches two narrow world_pulse
 streams, so it reads near-zero almost all the time. The top (L7–L11) fires on a
 timer regardless of what the bottom says, and the one learning signal at the end
 (the `transport_contract_drift_loop` motif) needs a reading 40x higher than
-anything seen in a week. Around it sat four config files that looked like policy
-and were read by nothing, one of which had a hand-copied mirror in the Hub keyed
-on a channel retired two months earlier. Config being present was standing in
+anything seen in a week. Around it sat two config files read by nothing, plus
+unread keys in two more, one of which (`dimension_weights`) had a hand-copied
+mirror in the Hub keyed on a channel retired two months earlier. Config being present was standing in
 for behavior.
 
 ## Current architecture
@@ -31,7 +31,7 @@ Per rung, with a verdict.
 | L6 | `SelfStateV1.transport_integrity` | Producer `orion-self-state-runtime` and `config/self_state/` deleted 2026-07-22 (`bcc72f6a0`) | **Gone.** Hub route/UI already dropped it; docs and smoke script still described it (fixed here). |
 | L7 | Transport proposal templates | Templates have empty `dimensions`; fired ~1,200/h regardless of state | **Timer, not a response.** |
 | L8–L10 | Policy / dispatch (`dispatch_read_only`) / feedback | Running | **Plumbing only; nothing transport-specific to decide on.** |
-| L11 | `transport_contract_drift_loop` motif | Needs `contract_pressure ≥ 0.70`; observed 7-day max 0.018; never fired in 30 days | **Unreachable.** |
+| L11 | `transport_contract_drift_loop` motif | Needs `contract_pressure ≥ 0.70`; observed 7-day max 0.018–0.022; never fired in 30 days. The motif (`orion/consolidation/motif.py`) reads M4's `contract_pressure`, which the topology fills from `catalog_drift_pressure` — not M3's reducer `contract_pressure` (exactly 0 all week) | **Unreachable.** |
 
 Cross-cutting findings:
 
@@ -95,7 +95,8 @@ Shipped on this branch:
 - Hub `substrate_lattice_routes.py`: deleted `_TRANSPORT_CHANNELS`. The simulator,
   Lattice Values panel and simulator inputs read `channels:` from the YAML.
   Values come from where they actually live: `bus_synaptic_pressure` from M4
-  `capability:transport.pressure`, the rest as max over M3's per-bus rows.
+  `capability:transport.pressure`, the rest as max over M3's per-bus rows whose
+  own `observed_at` is fresh (so a stopped or phantom bus row cannot hold the max).
   **Salience is now the strongest reading among channels at or above their watch
   threshold** (0.0 if none), not a weighted sum. Unmeasured channels (stale/missing
   layer) never promote and are listed, never read as 0.0. `/transport/latest`
@@ -141,7 +142,8 @@ Open items would touch `config/field/orion_field_topology.v1.yaml`,
 ## Acceptance checks
 
 - `rg "grammar_producer_registry|action_ceiling_policy|dimension_weights" config services orion`
-  finds no live reference (proposal policy has its own, unrelated `dimension_weights`).
+  finds only explanatory comments and the unrelated proposal-policy `dimension_weights`
+  (`config/proposals`, `orion/proposals`) — no loader.
 - `pytest services/orion-hub/tests/test_substrate_lattice_routes.py services/orion-hub/tests/test_substrate_lattice_hub_tab.py`
   green, including kill-means-kill regressions (no `_TRANSPORT_CHANNELS`, no weights, UI has no hardcoded policy).
 - `pytest tests/test_grammar_event_producer_catalog.py` green, and red when a
@@ -156,7 +158,7 @@ Open items would touch `config/field/orion_field_topology.v1.yaml`,
 |------|---------|
 | Dead `capability:transport → capability:orchestration` edge on `stream_backlog_pressure` | **Keep open; needs the metric quality gate.** Rewiring to `pressure` changes orchestration pressure live. Deleting the edge is the cheap honest step if no one wants to run the gate. |
 | L7 transport templates with empty `dimensions`, firing ~1,200/h | **Keep open; needs proposal mode.** Changes proposal-loop behavior. |
-| L11 `transport_contract_drift_loop` threshold 0.70 vs observed max 0.018 | **Keep open.** The input has been flat at ~0; fix the input (item below) before touching the bar. |
+| L11 `transport_contract_drift_loop` threshold 0.70 vs observed max 0.018–0.022 | **Keep open.** Its input is really catalog drift (via M4), not contract mismatches. Decide which signal the motif should read (vocabulary item below) before touching the bar; lowering it on a near-flat signal makes a motif out of noise. |
 | M3 observer covers only two world_pulse streams | **Keep open.** Either widen `BUS_OBSERVER_STREAMS` or retire the 7 census channels in favor of bus_synaptic — pick one, not both. |
-| Hub contract gate reads M4 `contract_pressure` (fed by `catalog_drift_pressure`) | **Keep open; vocabulary bug.** Display-only, but labels a catalog-drift reading as contract pressure. |
+| Hub contract gate reads M4 `contract_pressure` (fed by `catalog_drift_pressure`); pressure gate compares M4 `reliability_pressure` (= max(observer_failure, 1 − delivery_confidence)) against the `observer_failure_pressure` threshold | **Keep open; vocabulary bug.** Display-only. This branch relabels both gate reasons with what they actually read, but the gate overlay and the Lattice Values panel (M3 per-bus values) can still disagree under the same channel name until the three vocabularies are unified. |
 | `transport_healthy_idle` motif keyed on retired `stream_backlog_*` | **Keep open.** Same census retirement decision as above. |

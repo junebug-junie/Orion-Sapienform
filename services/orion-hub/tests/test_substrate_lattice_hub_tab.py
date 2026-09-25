@@ -74,3 +74,13 @@ def test_lattice_ui_does_not_hardcode_transport_policy() -> None:
     for retired_input in ("simContractWatchAt", "simTransportWatchAt", "simCatalogWatchAt", "simObserverWatchAt"):
         assert retired_input not in html
         assert retired_input not in js
+
+
+def test_lattice_simulator_surfaces_unmeasured_and_ignored() -> None:
+    """The server refuses to read unmeasured channels as calm; the UI must not
+    undo that by showing a bare "no change"."""
+    js = LATTICE_JS.read_text(encoding="utf-8")
+    assert "unmeasured_channels" in js
+    assert "ignored_thresholds" in js
+    assert "data-dirty" in js
+    assert '.replace(/"/g, "&quot;")' in js

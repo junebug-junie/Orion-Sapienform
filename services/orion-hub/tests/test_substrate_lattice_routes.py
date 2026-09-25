@@ -58,8 +58,9 @@ def test_lanes_grammar_producers_are_not_marked_planned(client) -> None:
     entry = next(c for c in doc["channels"] if c["name"] == "orion:grammar:event")
     producers = set(entry["producer_services"])
     for lane in client.get("/api/substrate-lattice/lanes").json():
-        assert lane["status"] == "live"
-        assert lane["source_service"] in producers
+        # "live" iff the lane's producer is cataloged on the channel; a genuinely
+        # planned future lane (not yet a producer) may say "planned".
+        assert (lane["status"] == "live") == (lane["source_service"] in producers), lane
 
 
 def test_lanes_transport_lane_is_live(client) -> None:
@@ -222,6 +223,7 @@ def _sample_proof_chain_for_gates(
                     "buses": {
                         "bus:athena": {
                             "source_trace_id": source_trace_id,
+                            "observed_at": ts,
                             "stream_backlog_health": 1.0,
                             "stream_backlog_pressure": stream_backlog_pressure,
                             "contract_pressure": contract_pressure,
@@ -677,10 +679,47 @@ def test_lattice_channel_unmeasured_when_m4_stale_not_calm() -> None:
 
 def test_channel_value_takes_max_across_buses() -> None:
     chain = _sample_proof_chain_for_gates(contract_pressure=0.2)
-    chain["transport"]["m3"]["values"]["buses"]["bus:circe"] = {"contract_pressure": 0.7}
+    fresh = chain["transport"]["m3"]["values"]["buses"]["bus:athena"]["observed_at"]
+    chain["transport"]["m3"]["values"]["buses"]["bus:circe"] = {
+        "contract_pressure": 0.7, "observed_at": fresh,
+    }
     value, source = substrate_lattice_routes._channel_value(chain, "contract_pressure")
     assert value == 0.7
-    assert source == "M3 max(buses[*].contract_pressure)"
+    assert source == "M3 max(buses[*].contract_pressure), fresh buses only"
+
+
+def test_channel_value_ignores_stale_bus_rows() -> None:
+    """A bus that stopped reporting (or a phantom row like bus:rpc_timeout,
+    live 2026-09-25 with observed_at 4h behind bus:athena) must not keep its
+    last high value in the max."""
+    chain = _sample_proof_chain_for_gates(contract_pressure=0.1)
+    chain["transport"]["m3"]["values"]["buses"]["bus:rpc_timeout"] = {
+        "contract_pressure": 0.95, "observed_at": "2026-01-01T00:00:00+00:00",
+    }
+    chain["transport"]["m3"]["values"]["buses"]["bus:no_ts"] = {"contract_pressure": 0.9}
+    value, _ = substrate_lattice_routes._channel_value(chain, "contract_pressure")
+    assert value == 0.1
+
+
+def test_channel_value_unmeasured_when_every_bus_row_stale() -> None:
+    chain = _sample_proof_chain_for_gates(contract_pressure=0.8)
+    chain["transport"]["m3"]["values"]["buses"]["bus:athena"]["observed_at"] = "2026-01-01T00:00:00+00:00"
+    value, _ = substrate_lattice_routes._channel_value(chain, "contract_pressure")
+    assert value is None
+
+
+def test_latest_survives_malformed_policy(client) -> None:
+    chain = _sample_proof_chain_for_gates()
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ), patch.object(
+        substrate_lattice_routes, "_load_yaml", return_value={"channels": {"bad": 3}}
+    ):
+        resp = client.get("/api/substrate-lattice/transport/latest")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["lattice_channels"] == []
+    assert "lattice_policy_error" in body
 
 
 def test_simulate_salience_is_strongest_promoted_reading(client) -> None:

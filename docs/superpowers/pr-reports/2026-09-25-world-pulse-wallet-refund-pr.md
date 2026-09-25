@@ -132,3 +132,7 @@ Live read-only observations (2026-09-25, UTC):
 - Severity: info (stale backlog, report only, no data mutated).
   - Concern: the 143 pending Stage 1 seeds are not stuck by the attempts logic. All have `attempts` ≤ 1 against max 3, so they remain claimable. They are stuck by throughput and priority. Capacity is 6 reads a day. Claim order is `priority, attempts, created_at`. 39 priority-0 `finding`/`reading` seeds (32 of them already-tried retries, since 2026-09-07) sit ahead of 104 priority-10 `digest_item` seeds, and roughly 5 non-index digest items a day keep arriving. The digest backlog therefore never drains, and news from 2026-09-07 is stale.
   - Mitigation (proposal): age out pending `digest_item` seeds older than N days (e.g. 5) to `skipped` with `last_error='stale_digest_item'`, via a scheduled query in the enqueue path. Separately decide whether retries should outrank fresh seeds of the same priority.
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/2335

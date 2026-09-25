@@ -110,3 +110,38 @@ def test_read_only_builds_get_their_own_cache_entry():
 
     assert _situation_cache_key({"session_id": SID, "record_user_turn": True}, cfg) == user_turn
     assert _situation_cache_key({"session_id": SID, "record_user_turn": False}, cfg) != user_turn
+
+
+# Every provider that reaches outside the process switched off, so the real
+# builder -- cache included -- runs on nothing but the phase store.
+_ISOLATED_RUNTIME = SimpleNamespace(
+    orion_situation_enabled=True,
+    orion_situation_weather_enabled=False,
+    orion_situation_agenda_enabled=False,
+    orion_situation_lab_context_enabled=False,
+    orion_situation_perception_enabled=False,
+    orion_situation_affect_enabled=False,
+    orion_situation_curiosity_enabled=False,
+    orion_situation_reverie_enabled=False,
+    orion_situation_cabinet_enabled=False,
+    orion_situation_runtime_enabled=False,
+)
+
+
+@pytest.mark.asyncio
+async def test_outreach_brief_cached_moments_earlier_does_not_swallow_her_reply(redis, monkeypatch):
+    """End to end through build_situation_for_ctx's cache: outreach builds
+    (and caches) a brief for her session, then her reply arrives inside the
+    same TTL window. Her build must still run the phase and record her."""
+    monkeypatch.setattr(situation_mod, "_SITUATION_CACHE", {})
+
+    outreach_brief, _ = await situation_mod.build_situation_for_ctx(
+        {"session_id": SID, "record_user_turn": False}, _ISOLATED_RUNTIME
+    )
+    reply_brief, _ = await situation_mod.build_situation_for_ctx(
+        {"session_id": SID, "record_user_turn": True}, _ISOLATED_RUNTIME
+    )
+
+    assert outreach_brief["conversation_phase"]["phase_change"] == "long_gap"
+    assert reply_brief["conversation_phase"]["phase_change"] == "long_gap"
+    assert _last_user(redis) == NOW.isoformat()

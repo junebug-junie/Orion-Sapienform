@@ -151,25 +151,44 @@ _READ_SNIPPET = (
 )
 
 
-def container_sources(container: str, paths: list[str]) -> Optional[dict[str, Optional[str]]]:
-    """``{repo-relative path: file text or None}`` as ``container`` sees them;
-    ``None`` when the container has no Python or no ``orion`` package at all
-    (a sidecar such as redis/grafana in the same compose file), since such a
-    container cannot be running a reader."""
+NO_ORION = "no-orion"
+
+
+def container_sources(container: str, paths: list[str]):
+    """``{repo-relative path: file text or None}`` as ``container`` sees them.
+
+    ``NO_ORION`` when the container has no Python or its Python has no
+    ``orion`` package (a sidecar such as redis/grafana in the same compose
+    file; it cannot be running a reader or writer). ``None`` when the read
+    itself failed (timeout, restarting container, daemon error): the caller
+    reports that as could-not-check rather than guessing.
+    """
     arg = json.dumps(sorted(paths))
+    no_python = 0
     for py in ("python", "python3"):
         try:
             out = _run(["docker", "exec", container, py, "-c", _READ_SNIPPET, arg], timeout=DOCKER_TIMEOUT_SEC)
+        except subprocess.CalledProcessError as exc:
+            # docker exec exits 127 (126) when the command is not found (not
+            # executable) in the image: no such interpreter (redis, grafana,
+            # bus-core). The message goes to the terminal, not stderr, so the
+            # exit code is the signal. Anything else -- a restarting
+            # container, a daemon error -- is a failed read.
+            if exc.returncode in (126, 127):
+                no_python += 1
+            continue
         except (subprocess.SubprocessError, OSError):
             continue
         try:
             data = json.loads(out)
         except json.JSONDecodeError:
             continue
-        if not isinstance(data, dict) or not data.pop("__orion__", False):
-            return None
+        if not isinstance(data, dict):
+            continue
+        if not data.pop("__orion__", False):
+            return NO_ORION
         return {p: (v if isinstance(v, str) else None) for p, v in data.items()}
-    return None
+    return NO_ORION if no_python == 2 else None
 
 
 class ContainerMeta(NamedTuple):
@@ -403,8 +422,10 @@ def check_skew(args) -> tuple[list[ll.SkewResult], list[str]]:
             paths_by_service.setdefault(svc, set()).update(files)
     metas = list_containers(set(paths_by_service))
     sources = read_all_sources(metas, paths_by_service, args.docker_workers)
-    skipped = sorted(m.name for m in metas if sources.get(m.name) is None)
-    metas = [m for m in metas if sources.get(m.name) is not None]
+    skipped = sorted(m.name for m in metas if sources.get(m.name) == NO_ORION)
+    failed = sorted(m.name for m in metas if sources.get(m.name) is None)
+    notes += [f"skew: could not read schema files in container {n} (docker exec failed)" for n in failed]
+    metas = [m for m in metas if isinstance(sources.get(m.name), dict)]
     if args.verbose and skipped:
         print(f"skew: {len(skipped)} containers have no orion package (sidecars), skipped: {', '.join(skipped)}", file=sys.stderr)
     shapes = {m.name: ssd.shapes_from_sources({p: t for p, t in sources[m.name].items() if t is not None}) for m in metas}

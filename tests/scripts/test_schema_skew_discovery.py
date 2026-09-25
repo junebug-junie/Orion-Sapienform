@@ -208,12 +208,32 @@ def test_ref_file_shas_matches_git_show():
     assert got["orion/does/not/exist.py"] is None
 
 
-def test_sidecar_without_orion_is_skipped(monkeypatch):
+def test_sidecar_without_orion_is_distinguished_from_a_failed_read(monkeypatch):
     cli = _load_cli()
     monkeypatch.setattr(cli, "_run", lambda cmd, timeout=0: json.dumps({"__orion__": False, "orion/x.py": None}))
-    assert cli.container_sources("redis", ["orion/x.py"]) is None
+    assert cli.container_sources("redis", ["orion/x.py"]) == cli.NO_ORION
     monkeypatch.setattr(cli, "_run", lambda cmd, timeout=0: json.dumps({"__orion__": True, "orion/x.py": "x = 1\n"}))
     assert cli.container_sources("svc", ["orion/x.py"]) == {"orion/x.py": "x = 1\n"}
+
+    def boom(cmd, timeout=0):
+        raise cli.subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(cli, "_run", boom)
+    assert cli.container_sources("slow", ["orion/x.py"]) is None
+
+    def restarting(cmd, timeout=0):
+        raise cli.subprocess.CalledProcessError(1, cmd, stderr="Error response from daemon: Container x is restarting")
+
+    monkeypatch.setattr(cli, "_run", restarting)
+    assert cli.container_sources("restarting", ["orion/x.py"]) is None
+
+    def no_python(cmd, timeout=0):
+        raise cli.subprocess.CalledProcessError(
+            127, cmd, stderr=""
+        )
+
+    monkeypatch.setattr(cli, "_run", no_python)
+    assert cli.container_sources("redis", ["orion/x.py"]) == cli.NO_ORION
 
 
 def test_check_skew_end_to_end_with_one_exec_per_container(monkeypatch):
@@ -235,23 +255,27 @@ def test_check_skew_end_to_end_with_one_exec_per_container(monkeypatch):
         cli.ContainerMeta("prop", "orion-proposal-runtime", t, t),
         cli.ContainerMeta("disp", "orion-execution-dispatch-runtime", t - timedelta(days=9), t),
         cli.ContainerMeta("disp-redis", "orion-execution-dispatch-runtime", t - timedelta(days=400), t),
+        cli.ContainerMeta("disp-2", "orion-execution-dispatch-runtime", t - timedelta(days=9), t),
     ])
     calls = []
 
     def fake_sources(name, paths):
         calls.append(name)
-        return {"prop": {path: after}, "disp": {path: before}, "disp-redis": None}[name]
+        return {"prop": {path: after}, "disp": {path: before}, "disp-redis": cli.NO_ORION, "disp-2": None}[name]
 
     monkeypatch.setattr(cli, "container_sources", fake_sources)
     monkeypatch.setattr(cli, "ref_file_shas", lambda repo, ref, paths: {path: hashlib.sha256(after.encode()).hexdigest()})
     args = cli.argparse.Namespace(repo=str(REPO), ref="HEAD", include_loose=True, docker_workers=2, verbose=False)
     results, notes = cli.check_skew(args)
-    assert sorted(calls) == ["disp", "disp-redis", "prop"]  # one read per container
+    assert sorted(calls) == ["disp", "disp-2", "disp-redis", "prop"]  # one read per container
     by = {r.container: r for r in results}
     assert by["disp"].red and "expected_signal" in by["disp"].detail
     assert by["prop"].status == "ok"
-    assert "disp-redis" not in by
-    assert notes == []
+    assert "disp-redis" not in by  # sidecar: skipped silently
+    assert "disp-2" not in by  # failed read: not guessed at, but surfaced
+    assert notes == ["skew: could not read schema files in container disp-2 (docker exec failed)"]
+    # the production key form: schema file path, not a class name
+    assert ll.LadderReport(skew=results).red_keys() == [f"skew:{path}:disp"]
 
 
 def test_shapes_resolve_a_base_imported_through_a_re_export():
@@ -261,3 +285,104 @@ def test_shapes_resolve_a_base_imported_through_a_re_export():
     }
     t = ssd.shapes_from_sources(src)["orion.schemas.t:T"]
     assert t.extra == "forbid" and t.fields == {"common", "a"}
+
+
+def test_before_validator_reader_is_reported_not_red():
+    """attention_frame.py's _drop_removed_legacy_fields pattern: the reader
+    removed a field and strips it from old rows in a before-validator. That is
+    the correct consumer-first order and must not page."""
+    path = "orion/schemas/a.py"
+    w = ssd.shapes_from_sources({path: BASE.replace("StrictBase", "A") + "    x: int\n    legacy: int = 0\n"})
+    r = ssd.shapes_from_sources({path: BASE.replace("StrictBase", "A") + (
+        "    x: int\n"
+        "    @model_validator(mode='before')\n"
+        "    @classmethod\n"
+        "    def _drop(cls, v):\n        return v\n"
+    )})
+    (d,) = ssd.compare_models("orion.schemas.a", ["A"], w, r)
+    assert not d.breaks and d.maybe_stripped == ("legacy",)
+    sc = ll.StrictSchema(path, path, "w", models=("A",))
+    got = {x.container: x for x in ll.evaluate_skew(
+        sc, schema_commit_time=None, schema_sha256_on_ref=None, consumer_services=["r"],
+        containers=[ll.RunningContainer("wc", "w", None, shapes=w), ll.RunningContainer("rc", "r", None, shapes=r)],
+    )}
+    assert got["rc"].status == "forbidden_unless_stripped" and not got["rc"].red
+
+
+def test_unresolvable_or_ambiguous_base_forces_fallback_not_loose():
+    """A forbid reader whose base cannot be resolved must not read as loose
+    (that would turn the 09-20 shape into a warning)."""
+    src = {"orion/schemas/t.py": "from orion.other import StrictBase\nclass T(StrictBase):\n    a: int\n"}
+    assert "orion.schemas.t:T" not in ssd.shapes_from_sources(src)
+    amb = {
+        "orion/schemas/b1.py": BASE,
+        "orion/schemas/b2.py": BASE,
+        "orion/schemas/t.py": "from orion.schemas import StrictBase\nclass T(StrictBase):\n    a: int\n",
+    }
+    assert "orion.schemas.t:T" not in ssd.shapes_from_sources(amb)
+    dotted = {
+        "orion/schemas/base.py": BASE,
+        "orion/schemas/t.py": "from orion.schemas import base\nclass T(base.StrictBase):\n    a: int\n",
+    }
+    assert ssd.shapes_from_sources(dotted)["orion.schemas.t:T"].extra == "forbid"
+
+
+def test_extra_follows_mro_first_base_wins():
+    src = {"orion/schemas/t.py": (
+        "from pydantic import BaseModel, ConfigDict\n"
+        "class F(BaseModel):\n    model_config = ConfigDict(extra='forbid')\n"
+        "class I(BaseModel):\n    model_config = ConfigDict(extra='ignore')\n"
+        "class M(F, I):\n    a: int\n"
+    )}
+    assert ssd.shapes_from_sources(src)["orion.schemas.t:M"].extra == "forbid"
+
+
+def test_field_edge_cases():
+    src = {"orion/schemas/t.py": (
+        "from typing import Annotated\nfrom pydantic import BaseModel, Field\n"
+        "class T(BaseModel):\n"
+        "    a: Annotated[int, Field(default=1)]\n"
+        "    b: int = Field(default=...)\n"
+        "    c: int = Field(default=0, exclude=True)\n"
+        "    class Config:\n        extra = 'forbid'\n"
+        "class Config(BaseModel):\n    top: int\n"
+    )}
+    sh = ssd.shapes_from_sources(src)
+    t = sh["orion.schemas.t:T"]
+    assert t.required == {"b"} and t.excluded == {"c"} and t.extra == "forbid"
+    # the nested ``class Config`` did not overwrite the top-level model
+    assert sh["orion.schemas.t:Config"].fields == {"top"}
+
+
+def test_init_schema_module_name():
+    sc = ll.StrictSchema("orion/schemas/pkg/__init__.py", "x", "w")
+    assert sc.module == "orion.schemas.pkg"
+
+
+def test_container_parser_agrees_with_repo_index_for_every_candidate(real):
+    """Parity gate: the host-side parser over exactly the files the live check
+    fetches for each service must see the same fields and extra as discovery
+    for every candidate model. A divergence means the live comparison would
+    judge a different model than the one discovered."""
+    index = real.index
+    schemas = ll.schemas_from_discovery(real)
+    files_by_svc: dict[str, set[str]] = {}
+    for sc in schemas:
+        for svc in {sc.producer_service, *(r for r, _ in sc.reader_models)}:
+            files_by_svc.setdefault(svc, set()).update({sc.path, *sc.deps})
+    parsed = {
+        svc: ssd.shapes_from_sources({p: (REPO / p).read_text(encoding="utf-8") for p in files})
+        for svc, files in files_by_svc.items()
+    }
+    by_module = {f.path: f.module for f in index.orion.values()}
+    bad = []
+    for sc in schemas:
+        mod = by_module[sc.path]
+        for svc in {sc.producer_service, *(r for r, _ in sc.reader_models)}:
+            for name in sc.models:
+                ref = (mod, name)
+                want_fields = set().union(*(set(index.classes[b].fields) for b in index.base_closure(ref)))
+                got = parsed[svc].get(f"{mod}:{name}")
+                if got is None or got.fields != want_fields or got.extra != index.effective_extra(ref):
+                    bad.append((sc.path, name, svc))
+    assert not bad, bad[:10]

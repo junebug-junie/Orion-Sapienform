@@ -8,7 +8,7 @@
 
 ## Outcome moved
 
-The failure is a writer shipping a new field on a strict schema while a different service still runs the old copy and rejects every row. Before this patch that was caught for 1 schema file (5 reader services). Now it is caught for 84 files, 272 distinct (schema file, reader service) pairs, and 5,980 (file, writer, reader) combinations. Live run today: **GREEN, 11.5s wall**. That is about 6.5s of code scan plus about 5s of parallel docker reads across 69 containers.
+The failure is a writer shipping a new field on a strict schema while a different service still runs the old copy and rejects every row. Before this patch that was caught for 1 schema file (5 reader services). Now it is caught for 84 files, 272 distinct (schema file, reader service) pairs, and 5,980 (file, writer, reader) combinations. Live run today: **nothing red, about 12s wall**. That is about 6.5s of code scan plus about 5s of parallel docker reads across 69 containers. The run exits 2 (could not check) only because one container, pageindex, is crash-looping, so its schema files cannot be read.
 
 ## Current architecture
 
@@ -68,11 +68,13 @@ eval: both go red with the exact rejected field names.
 ## Docker/build/smoke checks
 
 ```text
-make substrate-ladder-check   (read-only: Postgres, docker ps/inspect/exec, git)
-exit 0, GREEN, wall 11.47s
-skew rows: drops_fields=6, no_writer=1049, not_running=943, ok=5635, producer_differs_from_main=6
-7 containers skipped as having no orion package: pageindex, bus-core, bus-exporter,
-signal-gateway redis/otel-collector/grafana/tempo
+make substrate-ladder-check   (read-only: Postgres, docker ps/inspect/exec, git), after review fixes
+exit 2 (CANNOT CHECK, no red), wall 12.08s
+all ladder rungs fresh; skew rows: drops_fields=6, no_writer=1049, not_running=943, ok=5635,
+producer_differs_from_main=6, skew(red)=0
+CANNOT CHECK skew: could not read schema files in container orion-athena-pageindex (docker exec failed)
+  -> pageindex is restart-looping: TypeError: Router.__init__() got an unexpected keyword argument 'on_startup'
+6 sidecars with no python/orion skipped: bus-core, bus-exporter, signal-gateway redis/otel-collector/grafana/tempo
 ```
 
 Nothing red today. The FieldStateV1 readers (attention, proposal, feedback, hub) all match the digester field-for-field, so feedback-runtime has been redeployed since the 09-25 finding.
@@ -85,7 +87,34 @@ Warnings (not red, no card), all real stale copies:
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+A code-review subagent reviewed `origin/main...HEAD` read-only. It also ran the live check itself: 0 red, and feedback-runtime shows 0 `extra_forbidden` in the last 30 minutes, which agrees with the green. It raised 10 findings; 1-9 are fixed.
+
+- Finding: a reader that correctly removed a field first, and strips it from old rows in a `model_validator(mode="before")` (the `attention_frame.py` `_drop_removed_legacy_fields` pattern), would have been red. That pages on the correct deploy order.
+  - Fix: before-validators (and `root_validator(pre=True)`) are recorded. That case is now `forbidden_unless_stripped`, reported but not red.
+  - Evidence: `test_before_validator_reader_is_reported_not_red`.
+- Finding: when a base class could not be resolved (a dotted `a.Base`, or a re-exported name that more than one fetched file defines), the model silently lost its inherited `forbid` and read as loose. That is a false green: the 09-20 shape would show as a warning.
+  - Fix: dotted bases now resolve. An unresolvable non-trivial base drops that model's shape, which forces the bytes/time fallback. A parity gate test checks that the container-side parser and discovery agree on fields and `extra` for every candidate model, over exactly the files each service fetches.
+  - Evidence: `test_unresolvable_or_ambiguous_base_forces_fallback_not_loose`, `test_container_parser_agrees_with_repo_index_for_every_candidate` (0 disagreements).
+- Finding: `extra` was inherited from the last base, but pydantic takes the first base in MRO order.
+  - Fix: `extra` now comes from the first base, in forward order, that sets it.
+  - Evidence: `test_extra_follows_mro_first_base_wins`.
+- Finding: a failed `docker exec` (timeout, restarting container) was silently treated as a sidecar, so a writer whose read failed turned every reader into a quiet `no_writer`.
+  - Fix: a missing interpreter (docker exit 126/127) or a Python without `orion` is a sidecar and is skipped. Any other failure goes to `cannot_check` (exit 2).
+  - Evidence: `test_sidecar_without_orion_is_distinguished_from_a_failed_read` and the end-to-end test. Live: `orion-athena-pageindex` is restart-looping (`TypeError: Router.__init__() got an unexpected keyword argument 'on_startup'`) and is now reported as CANNOT CHECK instead of being hidden.
+- Finding: the writer rule is broad (any `X(field=...)` counts), so a card may name a writer that never sends to that reader.
+  - Fix (the cheap one): every non-ok row, and so every card, now names the writer's first call site ("written at path:line") so a human can triage it in seconds. Ranking writers by publish/persist call sites is left as a follow-up.
+- Finding: `Field(exclude=True)` fields were counted as sent; `Annotated[T, Field(default=...)]` was counted as required; `Field(default=...)` with Ellipsis was counted as optional.
+  - Fix: all three handled.
+  - Evidence: `test_field_edge_cases`.
+- Finding: a schema module that is a package `__init__.py` never got a field comparison.
+  - Fix: `StrictSchema.module` strips `.__init__`.
+  - Evidence: `test_init_schema_module_name`.
+- Finding: no test covered the new production debounce key.
+  - Fix: the end-to-end test asserts `skew:<schema file>:<container>`. The one-time re-send is noted under Risks.
+- Finding: a nested `class Config` could overwrite a top-level class of the same name.
+  - Fix: only module-level classes are registered (including those inside a module-level `if`/`try`).
+  - Evidence: `test_field_edge_cases`.
+- Finding 10 (a debounce key can re-arm when the only red writer stops running): not changed, documented in `green_keys`. When that writer comes back the reader is unreadable again, so the second card is correct.
 
 ## Restart required
 

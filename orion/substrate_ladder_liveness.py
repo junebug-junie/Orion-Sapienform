@@ -203,10 +203,12 @@ class StrictSchema:
     reader_models: tuple[tuple[str, tuple[str, ...]], ...] = ()
     strict: bool = True
     deps: tuple[str, ...] = ()  # files the models' inherited fields live in
+    writer_evidence: str = ""  # first writer call site, so a card can be triaged
 
     @property
     def module(self) -> str:
-        return self.path[: -len(".py")].replace("/", ".")
+        mod = self.path[: -len(".py")].replace("/", ".")
+        return mod[: -len(".__init__")] if mod.endswith(".__init__") else mod
 
     def models_for(self, reader: str) -> tuple[str, ...]:
         return dict(self.reader_models).get(reader, self.models)
@@ -221,6 +223,7 @@ class StrictSchema:
             reader_models=tuple(sorted((k, tuple(v)) for k, v in c.reader_models.items())),
             strict=c.strict,
             deps=tuple(deps),
+            writer_evidence=next(iter(c.evidence.get(c.writer, ())), ""),
         )
 
 
@@ -261,7 +264,7 @@ class SkewResult:
     schema: str
     service_dir: str
     container: Optional[str]
-    # "ok" | "skew" (red) | "drops_fields" | "content_differs"
+    # "ok" | "skew" (red) | "drops_fields" | "forbidden_unless_stripped" | "content_differs"
     # | "producer_differs_from_main" | "not_running" | "no_writer" | "unknown"
     status: str
     detail: str
@@ -293,6 +296,12 @@ def _shape_verdict(schema: StrictSchema, svc: str, writer: RunningContainer, rea
             if d.missing_required:
                 parts.append(f"{d.model}: reader requires {', '.join(d.missing_required)} (writer lacks them)")
         return "skew", "; ".join(parts)
+    stripped = [d for d in diffs if d.maybe_stripped]
+    if stripped:
+        return "forbidden_unless_stripped", "; ".join(
+            f"{d.model}: writer sends {', '.join(d.maybe_stripped)}; reader forbids extras but has a before-validator that may strip them"
+            for d in stripped
+        )
     dropped = [d for d in diffs if d.dropped]
     if dropped:
         return "drops_fields", "; ".join(f"{d.model}: reader silently drops {', '.join(d.dropped)}" for d in dropped)
@@ -368,7 +377,8 @@ def evaluate_skew(
             verdict = _shape_verdict(schema, svc, producer, c)
             if verdict is not None:
                 status, why = verdict
-                results.append(SkewResult(schema.symbol, svc, c.name, status, f"{why} (writer {producer.name})", pw))
+                where = f"; written at {schema.writer_evidence}" if schema.writer_evidence and status != "ok" else ""
+                results.append(SkewResult(schema.symbol, svc, c.name, status, f"{why} (writer {producer.name}{where})", pw))
                 continue
             if c.image_created is None:
                 results.append(SkewResult(schema.symbol, svc, c.name, "unknown", "image creation time unreadable", pw))
@@ -449,6 +459,9 @@ class LadderReport:
         # A key is green only if no row for it is red this tick: one reader
         # container is compared against every writer of the file, and the
         # same key can be red against one writer and ok against another.
+        # Known flap: if the only red writer stops running (no_writer) while
+        # another writer's row is ok, the key re-arms and fires again when
+        # that writer returns -- acceptable, it is again unreadable then.
         red = {s.key for s in self.skew if s.red}
         keys += sorted({
             s.key for s in self.skew

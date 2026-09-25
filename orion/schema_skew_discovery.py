@@ -140,6 +140,10 @@ class ClassInfo:
     fields: tuple[str, ...]
     required: tuple[str, ...]
     ann_names: tuple[str, ...]  # dotted names referenced in field annotations
+    # ``model_validator(mode="before")`` / ``root_validator(pre=True)``: may
+    # strip or remap input keys before ``extra="forbid"`` sees them.
+    before_validator: bool = False
+    excluded: tuple[str, ...] = ()  # Field(exclude=True): never serialized
 
     @property
     def ref(self) -> Ref:
@@ -212,15 +216,67 @@ def _ann_names(node: Optional[ast.AST]) -> set[str]:
     return out
 
 
-def _is_required(value: Optional[ast.AST]) -> bool:
-    if value is None:
-        return True
+def _field_call(value: Optional[ast.AST]) -> Optional[ast.Call]:
     if isinstance(value, ast.Call) and (_dotted(value.func) or "").split(".")[-1] == "Field":
-        if value.args:
-            return isinstance(value.args[0], ast.Constant) and value.args[0].value is Ellipsis
-        kws = {kw.arg for kw in value.keywords}
-        return not ({"default", "default_factory"} & kws)
-    return isinstance(value, ast.Constant) and value.value is Ellipsis
+        return value
+    return None
+
+
+def _is_ellipsis(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value is Ellipsis
+
+
+def _field_call_required(call: ast.Call) -> bool:
+    if call.args:
+        return _is_ellipsis(call.args[0])
+    for kw in call.keywords:
+        if kw.arg == "default":
+            return _is_ellipsis(kw.value)
+        if kw.arg == "default_factory":
+            return False
+    return True
+
+
+def _annotated_field(annotation: ast.AST) -> Optional[ast.Call]:
+    """``Annotated[T, Field(...)]`` -> that Field call."""
+    if isinstance(annotation, ast.Subscript) and (_dotted(annotation.value) or "").split(".")[-1] == "Annotated":
+        sl = annotation.slice
+        for el in sl.elts if isinstance(sl, ast.Tuple) else []:
+            if _field_call(el) is not None:
+                return el
+    return None
+
+
+def _is_required(value: Optional[ast.AST], annotation: Optional[ast.AST] = None) -> bool:
+    if value is None:
+        ann_field = _annotated_field(annotation) if annotation is not None else None
+        return True if ann_field is None else _field_call_required(ann_field)
+    call = _field_call(value)
+    if call is not None:
+        return _field_call_required(call)
+    return _is_ellipsis(value)
+
+
+def _is_excluded(value: Optional[ast.AST], annotation: Optional[ast.AST]) -> bool:
+    call = _field_call(value) or (_annotated_field(annotation) if annotation is not None else None)
+    return call is not None and any(
+        kw.arg == "exclude" and isinstance(kw.value, ast.Constant) and kw.value.value is True for kw in call.keywords
+    )
+
+
+def _is_before_validator(fn: ast.AST) -> bool:
+    if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    for dec in fn.decorator_list:
+        if not isinstance(dec, ast.Call):
+            continue
+        name = (_dotted(dec.func) or "").split(".")[-1]
+        for kw in dec.keywords:
+            if name == "model_validator" and kw.arg == "mode" and _const_str(kw.value) in ("before", "wrap"):
+                return True
+            if name == "root_validator" and kw.arg == "pre" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                return True
+    return False
 
 
 def _class_info(node: ast.ClassDef, module: str, path: str) -> ClassInfo:
@@ -230,9 +286,13 @@ def _class_info(node: ast.ClassDef, module: str, path: str) -> ClassInfo:
             extra = _const_str(kw.value)
     fields: list[str] = []
     required: list[str] = []
+    excluded: list[str] = []
     ann: set[str] = set()
+    before = False
     for stmt in node.body:
-        if isinstance(stmt, ast.Assign):
+        if _is_before_validator(stmt):
+            before = True
+        elif isinstance(stmt, ast.Assign):
             for t in stmt.targets:
                 if isinstance(t, ast.Name) and t.id == "model_config":
                     extra = _extra_from_config_value(stmt.value) or extra
@@ -245,8 +305,10 @@ def _class_info(node: ast.ClassDef, module: str, path: str) -> ClassInfo:
             if name.startswith("_") or "ClassVar" in ast.dump(stmt.annotation):
                 continue
             fields.append(name)
-            if _is_required(stmt.value):
+            if _is_required(stmt.value, stmt.annotation):
                 required.append(name)
+            if _is_excluded(stmt.value, stmt.annotation):
+                excluded.append(name)
             ann |= _ann_names(stmt.annotation)
         elif isinstance(stmt, ast.ClassDef) and stmt.name == "Config":
             for s in stmt.body:
@@ -261,6 +323,8 @@ def _class_info(node: ast.ClassDef, module: str, path: str) -> ClassInfo:
         fields=tuple(fields),
         required=tuple(required),
         ann_names=tuple(sorted(ann)),
+        before_validator=before,
+        excluded=tuple(excluded),
     )
 
 
@@ -280,6 +344,19 @@ def parse_facts(text: str, module: str, path: str, *, is_package: bool = False) 
             return None
         base = base[: len(base) - (level - 1)]
         return ".".join([*base, mod] if mod else base) or None
+
+    # Only module-level classes (also inside a module-level if/try, e.g. a
+    # TYPE_CHECKING or ImportError guard) are importable by name; a nested
+    # ``class Config`` must not overwrite a top-level model of the same name.
+    guarded: set[int] = set()
+    for top in tree.body:
+        if isinstance(top, (ast.If, ast.Try)):
+            blocks = [top.body, top.orelse, getattr(top, "finalbody", [])]
+            blocks += [h.body for h in getattr(top, "handlers", [])]
+            guarded.update(id(st) for blk in blocks for st in blk if isinstance(st, ast.ClassDef))
+
+    def top_level_class(node: ast.ClassDef) -> bool:
+        return id(node) in guarded
 
     for top in tree.body:
         enclosing: Optional[str] = None
@@ -309,7 +386,8 @@ def parse_facts(text: str, module: str, path: str, *, is_package: bool = False) 
                     facts.imports[a.asname or a.name] = (mod, a.name)
                 continue
             if isinstance(node, ast.ClassDef):
-                facts.classes[node.name] = _class_info(node, module, path)
+                if node is top or top_level_class(node):
+                    facts.classes[node.name] = _class_info(node, module, path)
             elif isinstance(node, ast.Name):
                 refs.add(node.id)
             elif isinstance(node, ast.Attribute):
@@ -384,6 +462,7 @@ class Discovery:
     # (inherited bases), so the live check fetches those too.
     dependency_files: dict[str, tuple[str, ...]]
     declared_used: set[str] = field(default_factory=set)
+    index: Optional["RepoIndex"] = field(default=None, repr=False, compare=False)
 
     def strict(self) -> list[Candidate]:
         return [c for c in self.candidates if c.strict]
@@ -787,7 +866,7 @@ def discover(repo_root: Path, *, include_loose: bool = True, lib_hops: int = LIB
                 reader_models={s: tuple(sorted(m)) for s, m in slot["reader_models"].items()},
             )
         )
-    return Discovery(candidates, unresolved, len(strict), dependency_files, declared_used)
+    return Discovery(candidates, unresolved, len(strict), dependency_files, declared_used, index)
 
 
 # ---------------------------------------------------------------------------
@@ -800,6 +879,8 @@ class ModelShape:
     fields: frozenset[str]
     required: frozenset[str]
     extra: Optional[str]
+    before_validator: bool = False
+    excluded: frozenset[str] = frozenset()
 
 
 def shapes_from_sources(sources: Mapping[str, Optional[str]]) -> Optional[dict[str, ModelShape]]:
@@ -824,44 +905,77 @@ def shapes_from_sources(sources: Mapping[str, Optional[str]]) -> Optional[dict[s
     for ref in classes:
         by_name[ref[1]].append(ref)
 
-    def bases(ci: ClassInfo) -> list[Ref]:
-        f = facts[ci.module]
-        out = []
-        for b in ci.base_exprs:
-            head = b.split(".")[0]
-            if b in f.classes:
-                out.append((ci.module, b))
-            elif head in f.imports and f.imports[head][1] is not None and "." not in b:
-                ref = (f.imports[head][0], f.imports[head][1])
-                if ref in classes:
-                    out.append(ref)
-                elif len(by_name.get(ref[1], ())) == 1:
-                    # Imported through a re-export (``from orion.schemas import
-                    # Base``); the defining file is in the fetched set because
-                    # discovery lists it in ``dependency_files``.
-                    out.append(by_name[ref[1]][0])
-        return out
+    def resolve_base(f: FileFacts, b: str) -> Optional[Ref]:
+        parts = b.split(".")
+        head = parts[0]
+        if len(parts) == 1 and b in f.classes:
+            return (f.module, b)
+        if head not in f.imports:
+            return None
+        mod, attr = f.imports[head]
+        if len(parts) == 1:
+            if attr is None:
+                return None
+            ref = (mod, attr)
+            if ref in classes:
+                return ref
+            # Imported through a re-export (``from orion.schemas import Base``);
+            # the defining file is in the fetched set because discovery lists
+            # it in ``dependency_files``. Ambiguous -> unresolved.
+            hits = by_name.get(attr, [])
+            return hits[0] if len(hits) == 1 else None
+        # ``alias.Base`` / ``pkg.mod.Base``
+        full = (f"{mod}.{attr}" if attr else mod).split(".") + parts[1:]
+        ref = (".".join(full[:-1]), full[-1])
+        return ref if ref in classes else None
 
-    def shape(ref: Ref, depth: int = 0) -> ModelShape:
+    _TRIVIAL = {"BaseModel", "RootModel", "Generic", "object", "Protocol"}
+    memo: dict[Ref, Optional[ModelShape]] = {}
+
+    def shape(ref: Ref, depth: int = 0) -> Optional[ModelShape]:
+        """``None`` when any base cannot be resolved among the fetched files:
+        the inherited ``extra``/fields would be a guess, so the caller falls
+        back to bytes/time instead of reporting a forbid reader as loose."""
+        if ref in memo:
+            return memo[ref]
+        memo[ref] = None  # cycle guard
         ci = classes[ref]
+        f = facts[ci.module]
+        base_shapes: list[ModelShape] = []
+        for b in ci.base_exprs:
+            r = resolve_base(f, b)
+            if r is None:
+                if b.split(".")[-1] in _TRIVIAL:
+                    continue
+                return None
+            s = shape(r, depth + 1) if depth < 10 else None
+            if s is None:
+                return None
+            base_shapes.append(s)
         fields: set[str] = set()
         required: set[str] = set()
+        excluded: set[str] = set()
+        for s in reversed(base_shapes):  # later bases first, earlier override
+            fields |= s.fields
+            required = (required - s.fields) | s.required
+            excluded = (excluded - s.fields) | s.excluded
+        # extra: own setting, else the first base in MRO order that sets it
         extra = ci.own_extra
-        if depth < 10:
-            for b in reversed(bases(ci)):
-                s = shape(b, depth + 1)
-                fields |= s.fields
-                required |= s.required
-                extra = extra if extra is not None else s.extra
+        if extra is None:
+            extra = next((s.extra for s in base_shapes if s.extra is not None), None)
         fields |= set(ci.fields)
         required = (required - set(ci.fields)) | set(ci.required)
-        return ModelShape(frozenset(fields), frozenset(required), extra)
+        excluded = (excluded - set(ci.fields)) | set(ci.excluded)
+        before = ci.before_validator or any(s.before_validator for s in base_shapes)
+        out_shape = ModelShape(frozenset(fields), frozenset(required), extra, before, frozenset(excluded))
+        memo[ref] = out_shape
+        return out_shape
 
     out: dict[str, ModelShape] = {}
     for (m, n) in classes:
-        # First-listed file wins on a name collision; callers ask by the
-        # candidate's own file's class names, which are unique in that file.
-        out.setdefault(f"{m}:{n}", shape((m, n)))
+        sh = shape((m, n))
+        if sh is not None:
+            out[f"{m}:{n}"] = sh
     return out
 
 
@@ -871,6 +985,9 @@ class ShapeDiff:
     extra_forbidden: tuple[str, ...]  # writer fields a forbid reader rejects
     missing_required: tuple[str, ...]  # reader-required fields the writer lacks
     dropped: tuple[str, ...]  # writer fields a non-forbid reader silently drops
+    # writer fields a forbid reader lacks but whose before-validator may strip
+    # them (the consumer-first removal pattern): reported, not red.
+    maybe_stripped: tuple[str, ...] = ()
 
     @property
     def breaks(self) -> bool:
@@ -891,13 +1008,15 @@ def compare_models(
         w, r = writer.get(k), reader.get(k)
         if w is None or r is None:
             return None
-        new = tuple(sorted(w.fields - r.fields))
+        new = tuple(sorted(w.fields - w.excluded - r.fields))
+        forbid = r.extra == "forbid"
         out.append(
             ShapeDiff(
                 model=name,
-                extra_forbidden=new if r.extra == "forbid" else (),
+                extra_forbidden=new if forbid and not r.before_validator else (),
                 missing_required=tuple(sorted(r.required - w.fields)),
-                dropped=new if r.extra != "forbid" else (),
+                dropped=new if not forbid else (),
+                maybe_stripped=new if forbid and r.before_validator else (),
             )
         )
     return out

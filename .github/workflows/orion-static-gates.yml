@@ -78,6 +78,12 @@ jobs:
       - name: Substrate ladder liveness logic replays the 09-20 incident red
         run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py -q
 
+      # orion:grammar:event's producer list in channels.yaml vs a static scan of
+      # every GrammarProvenanceV1(source_service=...) call site. The list had
+      # three phantom vision producers and was missing substrate-runtime.
+      - name: Grammar event producer catalog matches emitting code
+        run: python -m pytest tests/test_grammar_event_producer_catalog.py -q -p no:cacheprovider
+
       # Each gate is its own step so a failure names itself in the UI rather
       # than surfacing as one opaque red block.
       - name: Metric lineage gate (consumer existence, orphan ratchet)

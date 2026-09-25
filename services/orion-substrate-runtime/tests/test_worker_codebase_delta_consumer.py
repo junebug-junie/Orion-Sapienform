@@ -107,7 +107,7 @@ def test_git_domain_scores_and_persists() -> None:
 
     # Raw-event history for a future Hub "cocreation signals" analytics tab
     # (docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md
-    # follow-on) -- unconditional, unlike the receipt above.
+    # follow-on) -- unconditional.
     fake_store.save_codebase_delta_log.assert_called_once()
     log_args, log_kwargs = fake_store.save_codebase_delta_log.call_args
     assert log_args[0].domain == "git"
@@ -115,12 +115,12 @@ def test_git_domain_scores_and_persists() -> None:
     assert log_kwargs["retention_days"] == 180.0
 
 
-def test_calm_tick_writes_node_and_log_but_skips_receipt() -> None:
+def test_calm_tick_writes_node_log_and_zero_receipt() -> None:
     """A below-baseline (score == 0.0) tick must still write the FalkorDB
-    node and the raw-event log (a genuine calm reading, not skipped) but
-    must NOT emit a save_receipt audit entry -- that's an audit trail of
-    notable events, gated on error > 0.0, same convention every sibling
-    domain's tick already uses (e.g. the biometrics tick, same file)."""
+    node, the raw-event log, AND a 0.0 receipt (2026-09-25): the receipt is
+    the only path into the field's node:substrate.codebase prediction_error
+    channel, so skipping it on a calm delta froze that channel at its last
+    non-zero score."""
     worker, fake_store, fake_write = _make_worker(
         baseline=CodebaseMassBaseline(git=_DomainEwmaBaseline(ewma=5000.0, variance=1_000_000.0, n=10))
     )
@@ -137,7 +137,9 @@ def test_calm_tick_writes_node_and_log_but_skips_receipt() -> None:
 
     fake_write.assert_called_once()
     assert fake_write.call_args[1]["error"] == 0.0
-    fake_store.save_receipt.assert_not_called()
+    fake_store.save_receipt.assert_called_once()
+    receipt = fake_store.save_receipt.call_args[0][0]
+    assert receipt.state_deltas[0].after["pressure_hints"]["prediction_error"] == 0.0
     fake_store.save_codebase_mass_baseline.assert_called_once()
     fake_store.save_codebase_delta_log.assert_called_once()
     assert fake_store.save_codebase_delta_log.call_args[1]["score"] == 0.0

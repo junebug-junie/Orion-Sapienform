@@ -265,7 +265,7 @@ def select_node_targets(
     fallback formula, per "kill means kill, no fallback to the thing being
     killed" (CLAUDE.md §0A, previously applied to retiring dependencies and
     metrics; applied here to retiring an entire scoring approach). Physical
-    host nodes (`node:athena`/`atlas`/`circe`/`prometheus`/`rpc_timeout`)
+    host nodes (`node:athena`/`circe`/`prometheus`; `node:rpc_timeout` was a phantom, pruned 2026-09-25)
     have no real historical prediction-error series of their own -- their
     `prediction_error` vector entry is a hardcoded `0.0` placeholder, not a
     tracked signal -- so they simply do not appear as attention targets
@@ -353,8 +353,8 @@ def select_host_targets(
     policy: FieldAttentionPolicyV1,
     previous_frame: FieldAttentionFrameV1 | None,
 ) -> list[FieldAttentionTargetV1]:
-    """Physical host nodes (`node:athena`/`atlas`/`circe`/`prometheus`/
-    `rpc_timeout`, or any `field.node_vectors` key not in `PREDICTION_ERROR_
+    """Physical host nodes (`node:athena`/`circe`/`prometheus`,
+    or any `field.node_vectors` key not in `PREDICTION_ERROR_
     NATIVE_TARGETS`) -- excluded by `select_node_targets` (no real
     prediction-error history of their own), now real-theory-grounded via
     Candidate B's `novelty_scorer()` instead. See `_novelty_targets()`'s own

@@ -46,24 +46,24 @@ def test_retired_names_are_pruned_from_a_lattice_node() -> None:
 
 
 def test_retired_names_are_pruned_from_an_OFF_LATTICE_node() -> None:
-    """node:rpc_timeout is not in the lattice, so _ensure_node_vector never
+    """node:substrate.chat (an off-lattice pseudo-node) is not in the lattice, so _ensure_node_vector never
     runs for it. This is the gap the old pruning had."""
-    state = _state({"node:rpc_timeout": {"bus_health": 1.0, "transport_pressure": 0.5}})
+    state = _state({"node:substrate.chat": {"bus_health": 1.0, "transport_pressure": 0.5}})
     out = reconcile_field_state_with_lattice(state, lattice=_lattice())
-    assert out.node_vectors["node:rpc_timeout"] == {}
+    assert out.node_vectors["node:substrate.chat"] == {}
 
 
 def test_single_observer_channels_are_pruned_from_an_off_lattice_node() -> None:
-    """The live bug: rpc_timeout held delivery_confidence/stream_backlog_health
+    """The live bug (2026-08-14, on the since-retired node:rpc_timeout): an off-lattice node held delivery_confidence/stream_backlog_health
     at 0.5 with a 774s-old write while node:athena reported 1.0 fresh. Both are
     HIGHER_IS_BETTER, so min() let the stale 0.5 win.
     """
     state = _state({
-        "node:rpc_timeout": {"delivery_confidence": 0.5, "stream_backlog_health": 0.5},
+        "node:substrate.chat": {"delivery_confidence": 0.5, "stream_backlog_health": 0.5},
         "node:athena": {"delivery_confidence": 1.0, "stream_backlog_health": 1.0},
     })
     out = reconcile_field_state_with_lattice(state, lattice=_lattice())
-    assert out.node_vectors["node:rpc_timeout"] == {}
+    assert out.node_vectors["node:substrate.chat"] == {}
     # The declared owner keeps them.
     assert out.node_vectors["node:athena"]["delivery_confidence"] == 1.0
     assert out.node_vectors["node:athena"]["stream_backlog_health"] == 1.0
@@ -73,12 +73,12 @@ def test_pruning_also_drops_the_orphaned_write_timestamp() -> None:
     """A stamp for a channel that no longer exists is a dangling fact -- and
     the staleness rule reads these."""
     state = _state(
-        {"node:rpc_timeout": {"delivery_confidence": 0.5, "execution_load": 0.2672}},
-        {"node:rpc_timeout": {"delivery_confidence": NOW - timedelta(seconds=774),
+        {"node:substrate.chat": {"delivery_confidence": 0.5, "execution_load": 0.2672}},
+        {"node:substrate.chat": {"delivery_confidence": NOW - timedelta(seconds=774),
                               "execution_load": NOW - timedelta(seconds=900)}},
     )
     out = reconcile_field_state_with_lattice(state, lattice=_lattice())
-    assert out.node_vector_updated_at["node:rpc_timeout"] == {}
+    assert out.node_vector_updated_at["node:substrate.chat"] == {}
 
 
 def test_undeclared_but_not_retired_keys_still_survive() -> None:

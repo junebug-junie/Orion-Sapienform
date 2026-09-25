@@ -161,8 +161,8 @@ RETIRED_NODE_CHANNELS: dict[str, str] = {
 
 # Node ids that were once real entries in orion_field_topology.v1.yaml's
 # `nodes:` list and have since been permanently removed from it (decommissioned
-# hardware), as opposed to a pseudo-node (node:rpc_timeout, node:substrate.*)
-# that was never in the lattice to begin with.
+# hardware), as opposed to a pseudo-node (node:substrate.*) that was never in
+# the lattice to begin with (retired pseudo-nodes: RETIRED_PSEUDO_NODES below).
 #
 # Why this needs its own set rather than "prune any node_vectors key not in
 # lattice.nodes": pseudo-nodes are off-lattice BY DESIGN and must keep
@@ -186,6 +186,34 @@ RETIRED_NODE_CHANNELS: dict[str, str] = {
 RETIRED_LATTICE_NODES: set[str] = {
     "node:atlas",
 }
+
+# Off-lattice pseudo-node ids that must never exist in node_vectors: either
+# their producer was killed or they were never a real node in the first place.
+# Same "drop the whole entry" treatment as RETIRED_LATTICE_NODES, and
+# delta_to_perturbations() refuses to write to them, so a late/replayed delta
+# cannot resurrect one between reconcile passes.
+#
+# Add here only with a named reason; pseudo-nodes in general stay legitimate.
+RETIRED_PSEUDO_NODES: dict[str, str] = {
+    # Never a node. orion/substrate/transport_loop parsed the RPC-timeout
+    # grammar trace `bus.transport:rpc_timeout:<corr>` as bus "rpc_timeout",
+    # so every rpc_request() timeout perturbed this pseudo-node with
+    # fabricated half-health pressures; it was a dominant attention target in
+    # 16,911 of 40,352 attention frames (42%) on 2026-09-19. Fixed at the
+    # reducer (NON_BUS_TRANSPORT_NODE_IDS); this prunes the persisted residue.
+    "node:rpc_timeout": "phantom: rpc timeout trace misparsed as a bus node",
+    # Producer write killed 2026-07-26, reader removed 2026-07-31
+    # (docs/superpowers/specs/2026-07-26-transport-domain-retirement-bus-
+    # synaptic-successor-design.md). Still sitting in live node_vectors on
+    # 2026-09-25 with prediction_error decayed to 0.0 -- retired in name,
+    # still iterated by every generic node_vectors consumer.
+    # Successor: node:substrate.bus_synaptic.
+    "node:substrate.transport": "retired: successor node:substrate.bus_synaptic",
+}
+
+# Every node id reconcile drops wholesale (perturbation refusal covers only
+# RETIRED_PSEUDO_NODES; retired lattice nodes are pruned on the next reconcile).
+PRUNED_NODE_IDS: frozenset[str] = frozenset(RETIRED_LATTICE_NODES) | frozenset(RETIRED_PSEUDO_NODES)
 
 DEFAULT_CAPABILITY_VECTOR = {ch: 0.0 for ch in CAPABILITY_CHANNELS}
 DEFAULT_CAPABILITY_VECTOR["confidence"] = 1.0

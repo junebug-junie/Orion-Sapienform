@@ -24,6 +24,28 @@ def _utc_now(now: datetime | None) -> datetime:
     return now if now.tzinfo else now.replace(tzinfo=timezone.utc)
 
 
+def _noop_receipt(
+    events: list[GrammarEventV1],
+    *,
+    reducer_id: str,
+    clock: datetime,
+    warnings: list[str] | None = None,
+) -> ReductionReceiptV1:
+    noop_ids = [e.event_id for e in events]
+    return ReductionReceiptV1(
+        receipt_id=stable_receipt_id(
+            reducer_id=reducer_id,
+            accepted_event_ids=[],
+            rejected_event_ids=[],
+            merged_event_ids=[],
+            noop_event_ids=noop_ids,
+        ),
+        noop_event_ids=noop_ids,
+        warnings=list(warnings or []),
+        created_at=clock,
+    )
+
+
 def reduce_transport_trace_events(
     *,
     events: list[GrammarEventV1],
@@ -49,32 +71,10 @@ def reduce_transport_trace_events(
 
     trace_id = events[0].trace_id or ""
     if not parse_bus_transport_trace_id(trace_id):
-        noop_ids = [e.event_id for e in events]
-        return projection, ReductionReceiptV1(
-            receipt_id=stable_receipt_id(
-                reducer_id=reducer_id,
-                accepted_event_ids=[],
-                rejected_event_ids=[],
-                merged_event_ids=[],
-                noop_event_ids=noop_ids,
-            ),
-            noop_event_ids=noop_ids,
-            created_at=clock,
-        )
+        return projection, _noop_receipt(events, reducer_id=reducer_id, clock=clock)
 
     if any(e.provenance.source_service != TRANSPORT_SOURCE_SERVICE for e in events):
-        noop_ids = [e.event_id for e in events]
-        return projection, ReductionReceiptV1(
-            receipt_id=stable_receipt_id(
-                reducer_id=reducer_id,
-                accepted_event_ids=[],
-                rejected_event_ids=[],
-                merged_event_ids=[],
-                noop_event_ids=noop_ids,
-            ),
-            noop_event_ids=noop_ids,
-            created_at=clock,
-        )
+        return projection, _noop_receipt(events, reducer_id=reducer_id, clock=clock)
 
     updated = deepcopy(projection)
     updated.updated_at = clock
@@ -90,19 +90,16 @@ def reduce_transport_trace_events(
         )
     except ValueError as exc:
         warnings.append(str(exc))
-        noop_ids = [e.event_id for e in events]
-        return projection, ReductionReceiptV1(
-            receipt_id=stable_receipt_id(
-                reducer_id=reducer_id,
-                accepted_event_ids=[],
-                rejected_event_ids=[],
-                merged_event_ids=[],
-                noop_event_ids=noop_ids,
-            ),
-            noop_event_ids=noop_ids,
-            warnings=warnings,
-            created_at=clock,
-        )
+        return projection, _noop_receipt(events, reducer_id=reducer_id, clock=clock, warnings=warnings)
+
+    # A bus state with zero bus-observer evidence is not a reading, it is the
+    # extractor's defaults (redis_ping_ok=None -> 0.5 "half health"). Writing
+    # it would overwrite/mint a bus entry with fabricated pressures -- exactly
+    # how bus:rpc_timeout was born (2026-09-22 audit). Also covers a trace
+    # whose observer atoms landed in a different batch than its trace_ended.
+    if not incoming.evidence_event_ids:
+        warnings.append(f"no bus observer evidence in trace {incoming.source_trace_id}")
+        return projection, _noop_receipt(events, reducer_id=reducer_id, clock=clock, warnings=warnings)
 
     existing = updated.buses.get(incoming.target_id)
     operation = "create" if existing is None else "update"

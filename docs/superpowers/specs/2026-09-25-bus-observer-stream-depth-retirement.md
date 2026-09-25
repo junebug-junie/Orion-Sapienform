@@ -74,8 +74,8 @@ independent (step 2): it is exactly `1 - reliability_pressure`.
   `capability:transport -> capability:orchestration` edge (source channel was
   never written; 2026-09-22 audit).
 - Consumers: relational transport adapter, hub M3 card, consolidation
-  `transport_healthy_idle` motif (now `max_pressure` on
-  `capability:transport.pressure`), incident-signal log, smoke script.
+  `transport_healthy_idle` motif (deleted by #2338: it read empty
+  `dominant_channels` on capability targets), incident-signal log, smoke script.
 
 Kept on purpose: `mood_arc`'s encoder exclusion list (historical corpora still
 contain these channels); `scripts/analysis/*` history tools; historical prose.

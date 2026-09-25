@@ -8,8 +8,9 @@ pieces. Each piece used to be reduced alone into a full TransportBusStateV1
 that REPLACES buses["bus:athena"]:
 
   * a tail without bus_health_observed -> redis_ping_ok=None ->
-    stream_backlog_health / delivery_confidence = 0.5, reliability_pressure
-    = 0.5 (fabricated half-health), and
+    reliability_pressure = 0.5 (fabricated half-health; before
+    fix/bus-observer-scope retired them, also stream_backlog_health and
+    delivery_confidence = 0.5), and
   * a head without bus_census_computed -> catalog_drift_pressure falls back to
     0/denom = 0.0 ("no drift" that nobody measured), streams_observed short.
 
@@ -47,15 +48,9 @@ def _prior_window() -> TransportBusStateV1:
         source_trace_id="bus.transport:athena:20260925T060046Z",
         redis_ping_ok=True,
         streams_observed=2,
-        total_stream_depth=160,
-        max_stream_depth=160,
         undeclared_active_count=3,
         catalog_size=276,
-        stream_backlog_health=1.0,
-        delivery_confidence=1.0,
-        stream_depth_pressure=0.0016,
         catalog_drift_pressure=3 / 276,
-        stream_backlog_pressure=0.0016,
         reliability_pressure=0.0,
         evidence_event_ids=["gev_prev"],
         observed_at=NOW,
@@ -78,17 +73,14 @@ def test_fixture_is_the_real_observer_shape() -> None:
     assert len(roles) == 13
 
 
-# The honest reading of the fixture tick (redis ping ok, 2 streams, max depth
-# 160, census 3/276).
+# The honest reading of the fixture tick (redis ping ok, 2 streams, census
+# 3/276). The fixture's bus_stream_depth_observed atoms predate
+# fix/bus-observer-scope and are now ignored by the reducer.
 _EXPECTED = {
     "redis_ping_ok": True,
     "streams_observed": 2,
-    "max_stream_depth": 160,
-    "total_stream_depth": 160,
     "undeclared_active_count": 3,
     "catalog_size": 276,
-    "stream_backlog_health": 1.0,
-    "delivery_confidence": 1.0,
     "reliability_pressure": 0.0,
     "catalog_drift_pressure": 3 / 276,
 }
@@ -135,7 +127,6 @@ def test_every_cut_writes_only_the_honest_reading(cut: int) -> None:
     # ...and nothing written, at any point, is fabricated.
     for delta in deltas:
         _assert_honest(delta.after)
-        assert delta.after["pressure_hints"]["stream_backlog_health"] == 1.0
         assert delta.after["pressure_hints"]["reliability_pressure"] == 0.0
     _assert_honest(projection.buses["bus:athena"].model_dump(mode="json"))
     assert projection.buses["bus:athena"].sample_window_id == "20260925T060056Z"
@@ -149,7 +140,7 @@ def test_without_a_loader_a_piece_is_held_not_fabricated(cut: int) -> None:
     bus = projection.buses["bus:athena"]
     # Either the whole tick landed (cut outside the observer atoms) or the
     # previous window's real reading still stands -- never 0.5.
-    assert bus.stream_backlog_health == 1.0
+    assert bus.redis_ping_ok is True
     assert bus.reliability_pressure == 0.0
     assert bus.sample_window_id in {"20260925T060046Z", "20260925T060056Z"}
 
@@ -157,13 +148,13 @@ def test_without_a_loader_a_piece_is_held_not_fabricated(cut: int) -> None:
 def test_tail_without_health_alone_is_the_reported_bug() -> None:
     """Direct repro of PR #2323's named risk: the piece after
     bus_health_observed, reduced on its own, used to overwrite bus:athena
-    with stream_backlog_health=0.5 / reliability_pressure=0.5."""
+    with reliability_pressure=0.5 (and, pre-retirement, stream_backlog_health=0.5)."""
     trace = _live_trace()
     health_at = next(i for i, e in enumerate(trace) if e.atom and e.atom.semantic_role == "bus_health_observed")
     tail = trace[health_at + 1 :]
     out, receipt = reduce_transport_trace_events(events=tail, projection=_projection(), now=NOW)
     assert receipt.state_deltas == []
-    assert out.buses["bus:athena"].stream_backlog_health == 1.0
+    assert out.buses["bus:athena"].redis_ping_ok is True
     assert out.buses["bus:athena"].reliability_pressure == 0.0
     assert any("incomplete observer window held" in w for w in receipt.warnings)
 

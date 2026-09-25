@@ -54,7 +54,7 @@ orion-bus (producer), `orion/substrate/transport_loop` (reducer), orion-substrat
 - `config/field/field_channel_glossary.v1.yaml`: 3 entries removed.
 - `orion/field/pressure.py`, `orion/attention/field_attention/selectors.py`: polarity sets trimmed (kept in sync).
 - `orion/field_coherence.py`: rule on the retired pair removed.
-- `orion/consolidation/motif.py`, `config/consolidation/consolidation_policy.v1.yaml`: `transport_healthy_idle` keyed on `max_pressure` (`capability:transport.pressure`); unread `min_stream_backlog_health` removed.
+- `orion/consolidation/motif.py`, `config/consolidation/consolidation_policy.v1.yaml`: this branch originally re-keyed `transport_healthy_idle` on `max_pressure`; superseded when the stack merged in #2338, which deletes both transport motifs (capability attention targets carry empty `dominant_channels`, 2,883/2,883 frames, so any re-key still reads 0.0 and fires on every attended frame).
 - `orion/substrate/relational/adapters/transport_ctx.py`: salience/confidence from `reliability_pressure`/`contract_pressure` (confidence value identical).
 - `services/orion-hub/static/js/substrate-lattice.js`, `scripts/substrate_lattice_routes.py`: M3 card shows `reliability_pressure`/`redis_ping_ok`.
 - `scripts/smoke_orion_bus_transport_full_stack.sh`: reads `reliability_pressure`.
@@ -155,7 +155,7 @@ docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "select fiel
 ## Risks / concerns
 
 - Severity: low. Concern: `BUS_OBSERVER_STREAMS` still drives `contract_pressure` via a schema sample of the same two world_pulse keys (one of which doesn't exist), so that signal is equally narrow. Mitigation: flagged in the spec as the next instrument to judge; not changed here.
-- Severity: low. Concern: overlap with sibling branches. `chore/transport-lattice-semantics` (topology edge, motifs, proposal templates): this PR deletes the dead transport->orchestration edge and rekeys `transport_healthy_idle`, so rebase onto this. `watch_transport_backpressure` proposal template (name only, empty dimensions) is left for that branch. `fix/transport-split-batch-fake-health` touches the same `extract.py`/`reducer.py`: its "split between atoms writes 0.5 defaults" concern now only affects `reliability_pressure`. Mitigation: announced on the agent board; neither sibling had commits when this was cut.
+- Severity: low. Concern: overlap with sibling branches. `chore/transport-lattice-semantics` (topology edge, motifs, proposal templates): both branches delete the dead transport->orchestration edge; #2338's motif deletion wins over this branch's re-key. Resolved by stacking: this branch now contains #2333, #2332, #2338 and #2339, so merge those first, in that order. `watch_transport_backpressure` proposal template (name only, empty dimensions) is left for that branch. `fix/transport-split-batch-fake-health` touches the same `extract.py`/`reducer.py`: its "split between atoms writes 0.5 defaults" concern now only affects `reliability_pressure`. Mitigation: announced on the agent board; neither sibling had commits when this was cut.
 - Severity: low. Concern: constructing `TransportBusStateV1` in code with a retired kwarg is silently dropped, not rejected. Mitigation: the drop list is closed (8 names); any other unknown key still raises (tested).
 
 ## PR link

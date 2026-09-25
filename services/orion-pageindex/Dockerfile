@@ -39,6 +39,8 @@ ENV PYTHONUNBUFFERED=1
 # Build-time guard: fail the BUILD (not a restart loop) if the service venv cannot import the app
 # after PageIndex's deps have landed in the system interpreter.
 RUN ${ORION_VENV}/bin/python -c "import fastapi, starlette; fastapi.APIRouter(); import app.main; print('app.main import ok: fastapi', fastapi.__version__, 'starlette', starlette.__version__)"
+# ...and the PageIndex side must still run under the system interpreter the service shells out to.
+RUN cd /opt/PageIndex && python3 run_pageindex.py --help >/dev/null && echo "PageIndex CLI ok under $(command -v python3)"
 
 # Explicit venv path (PATH is deliberately NOT changed, so `python3` for the PageIndex CLI
 # subprocess still resolves to the system interpreter that has PageIndex installed).

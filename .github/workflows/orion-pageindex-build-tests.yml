@@ -1,0 +1,23 @@
+name: orion-pageindex build isolation
+
+# Static guard for the 2026-08-30 crash loop: PageIndex's upstream requirements must never be
+# installed into the interpreter the service runs from. Stdlib-only test, no service deps needed.
+on:
+  pull_request:
+    paths:
+      - "services/orion-pageindex/**"
+      - ".github/workflows/orion-pageindex-build-tests.yml"
+  push:
+    branches: [main]
+
+jobs:
+  build-isolation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install pytest==8.3.4
+      - run: python -m pytest -q services/orion-pageindex/tests/test_dockerfile_dependency_isolation.py

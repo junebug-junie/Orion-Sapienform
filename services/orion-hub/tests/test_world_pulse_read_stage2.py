@@ -998,3 +998,21 @@ def test_stage2_invalid_handoff_is_not_debited() -> None:
     assert asyncio.run(_run()) == "handoff_invalid"
     assert _count_key_b() not in bus.redis.store
     assert wb.WALLET_B_COOLDOWN_KEY not in bus.redis.store
+
+
+def test_stage2_turn_that_reached_reader_resets_refund_streak(monkeypatch: pytest.MonkeyPatch) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    pipe = _pipeline(bus, conn, max_attempts=5, min_cooldown_sec=600.0)
+    _patch_turn(
+        monkeypatch,
+        [{"type": "turn_deferred", "reason": "stance_react_failed: agent=gpu_pool_unavailable:deadline"}],
+    )
+    _stage2_tick(conn, pipe)
+    assert bus.redis.store[wb.WALLET_B_REFUND_STREAK_KEY] == "1"
+
+    _patch_turn(monkeypatch, [{"type": "turn_error", "error_code": "fcc_stream_stalled"}])
+    asyncio.run(pipe.tick(force=True))
+
+    assert wb.WALLET_B_REFUND_STREAK_KEY not in bus.redis.store
+    assert wb.WALLET_B_RETRY_NOT_BEFORE_KEY not in bus.redis.store

@@ -59,8 +59,8 @@ After this patch, a turn refused before reading costs no daily slot. A full-day 
 ## Tests run
 
 ```text
-pytest services/orion-hub/tests -k world_pulse                       -> 140 passed
-CI orion-reading test set (workflow command, run locally)            -> 501 passed, 9 skipped
+pytest services/orion-hub/tests -k world_pulse                       -> 144 passed
+CI orion-reading test set (workflow command, run locally)            -> 505 passed, 9 skipped
 New tests against origin/main sources                                -> 9 failed (as intended)
 ```
 
@@ -111,6 +111,16 @@ Live read-only observations (2026-09-25, UTC):
   - Fix: re-apply `expire`.
 - Finding: the refund unit tests sat in `orion/world_pulse_read/tests`, which CI does not run.
   - Fix: moved to `services/orion-hub/tests/test_world_pulse_read_wallet_refund.py`, which the CI glob covers.
+- Finding (second review): if `MIN_COOLDOWN_SEC` were set to 0, backoff would be 0 and an outage would retry every tick.
+  - Fix: a zero base falls back to the cap.
+  - Evidence: `test_zero_floor_falls_back_to_cap_so_outage_cannot_retry_every_tick`.
+- Finding (second review): a forced tick past the backoff that then reached the reader left `retry_not_before` blocking later ticks for up to 4h.
+  - Fix: `settle_turn_ran` clears the retry key along with the streak.
+  - Evidence: `test_forced_tick_overrides_refund_backoff_and_real_turn_clears_it` and `test_settle_clears_pending_backoff`.
+- Finding (second review): Stage 2's gate for re-entering Stage 1 ignored Wallet A's refund backoff.
+  - Fix: it now passes `seconds_until_retry`.
+  - Evidence: the full world_pulse suite passes (144).
+- Not fixed (nit): a cancelled turn (`CancelledError`) is never settled. Its debit stands and the streak is unchanged. This is acceptable.
 
 ## Restart required
 

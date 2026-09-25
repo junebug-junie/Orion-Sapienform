@@ -100,7 +100,13 @@ async def record_debit(
 
 
 def refund_backoff_sec(streak: int, *, base_sec: float, cap_sec: float) -> float:
-    """``base * 2**(streak-1)``, capped. ``streak`` is consecutive refunds incl. this one."""
+    """``base * 2**(streak-1)``, capped. ``streak`` is consecutive refunds incl. this one.
+
+    A zero base (MIN_COOLDOWN_SEC=0) falls back to the cap: the refund has
+    already restored the old cooldown, so with no retry time at all a capacity
+    outage would retry every tick -- worse than never refunding."""
+    if base_sec <= 0:
+        base_sec = cap_sec
     if base_sec <= 0 or streak <= 0:
         return 0.0
     return float(min(base_sec * (2 ** min(streak - 1, 20)), max(base_sec, cap_sec)))
@@ -167,10 +173,13 @@ async def refund_debit(
 
 async def settle_turn_ran(redis, receipt: WalletDebit | None) -> None:
     """The turn reached the reader (success or a real failure): the debit
-    stands and the consecutive-refund streak resets."""
+    stands, the consecutive-refund streak resets, and any pending refund
+    backoff (possible after a forced tick overrode it) is cleared -- the
+    debit's own cooldown now governs spacing."""
     if receipt is None or redis is None:
         return
     await redis.delete(receipt.streak_key)
+    await redis.delete(receipt.retry_key)
 
 
 async def read_retry_wait(redis, retry_key: str, *, now: datetime) -> float | None:

@@ -135,7 +135,7 @@ def test_retry_wait_is_none_once_elapsed():
 
 
 def test_backoff_math():
-    assert refund_backoff_sec(1, base_sec=0, cap_sec=100) == 0.0
+    assert refund_backoff_sec(0, base_sec=600, cap_sec=100) == 0.0
     assert refund_backoff_sec(1, base_sec=600, cap_sec=100) == 600.0  # cap never below base
     assert refund_backoff_sec(99, base_sec=600, cap_sec=4800) == 4800.0
 
@@ -184,3 +184,17 @@ def test_refused_before_work_classifier_against_live_reasons():
     ]
     assert all(is_refused_before_work(r) for r in refunded)
     assert not any(is_refused_before_work(r) for r in charged)
+
+
+def test_zero_floor_falls_back_to_cap_so_outage_cannot_retry_every_tick():
+    assert refund_backoff_sec(1, base_sec=0, cap_sec=8400) == 8400.0
+    assert refund_backoff_sec(1, base_sec=0, cap_sec=0) == 0.0
+
+
+def test_settle_clears_pending_backoff():
+    r = _FakeRedis()
+    _refund(r, _debit(r), T0)
+    assert asyncio.run(wa.read_wallet_a_retry_wait(r, now=T0)) == 1800.0
+    asyncio.run(wa.settle_wallet_a(r, _debit(r, now=T0 + timedelta(seconds=5))))
+    assert wa.WALLET_A_RETRY_NOT_BEFORE_KEY not in r.store
+    assert wa.WALLET_A_REFUND_STREAK_KEY not in r.store

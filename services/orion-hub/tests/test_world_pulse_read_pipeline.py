@@ -997,3 +997,20 @@ def test_other_stance_deferrals_refund_but_reader_failures_do_not() -> None:
         pipe._stage1_read = _boom  # type: ignore[method-assign]
         _tick(pipe, conn)
         assert bus.redis.store[_count_key()] == expected, reason
+
+
+def test_forced_tick_overrides_refund_backoff_and_real_turn_clears_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    store = InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store, min_cooldown_sec=600.0, max_attempts=5)
+    _patch_turn(monkeypatch, [{"type": "turn_deferred", "reason": _POOL_STANCE_REASON}])
+    _tick(pipe, conn)
+    assert wa.WALLET_A_RETRY_NOT_BEFORE_KEY in bus.redis.store
+
+    _patch_turn(monkeypatch, [{"type": "turn_error", "error_code": "fcc_stream_stalled"}])
+    assert asyncio.run(pipe.tick(force=True)) != "refund_backoff"
+
+    assert wa.WALLET_A_RETRY_NOT_BEFORE_KEY not in bus.redis.store

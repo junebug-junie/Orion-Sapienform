@@ -44,6 +44,7 @@ from orion.world_pulse_read.queue import (
 from orion.world_pulse_read.retry import is_refused_before_work
 from orion.world_pulse_read.wallet_a import (
     WalletAInputs,
+    read_wallet_a_retry_wait,
     read_wallet_a_state,
     wallet_a_block_reason,
 )
@@ -582,10 +583,12 @@ class WorldPulseReadStage2Pipeline:
         redis = self._redis()
         now = datetime.now(timezone.utc)
         since, done_today = None, 0
+        retry_wait = None
         if redis is not None:
             since, done_today = await read_wallet_a_state(
                 redis, now=now, timezone_name=self.timezone_name
             )
+            retry_wait = await read_wallet_a_retry_wait(redis, now=now)
         local_hour = None
         if (
             window_is_configured(self.wallet_a_window_start_hour, self.wallet_a_window_end_hour)
@@ -602,6 +605,7 @@ class WorldPulseReadStage2Pipeline:
                 now_hour=local_hour,
                 window_start_hour=self.wallet_a_window_start_hour,
                 window_end_hour=self.wallet_a_window_end_hour,
+                seconds_until_retry=retry_wait,
             )
         )
         if blocked is not None:

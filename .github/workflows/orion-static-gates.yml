@@ -75,8 +75,10 @@ jobs:
       # of the 2026-09-20 FieldStateV1 extra_forbidden incident. The live check
       # itself (make substrate-ladder-check) needs Postgres + docker, so it runs
       # from host cron, not here.
+      # Includes discovery of every cross-service forbid schema: fails when a
+      # strict schema some service validates has no found or declared writer.
       - name: Substrate ladder liveness logic replays the 09-20 incident red
-        run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py -q
+        run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py tests/scripts/test_schema_skew_discovery.py -q
 
       # orion:grammar:event's producer list in channels.yaml vs a static scan of
       # every GrammarProvenanceV1(source_service=...) call site. The list had

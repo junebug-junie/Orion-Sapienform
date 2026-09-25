@@ -56,3 +56,17 @@ def repo_with_worktrees(primary_repo: Path) -> tuple[Path, Path, Path]:
     _git("commit", "-q", "-m", "unmerged work", cwd=unmerged_wt)
 
     return primary, merged_wt, unmerged_wt
+
+
+@pytest.fixture(scope="session")
+def real_schema_discovery():
+    """One real-repo ``orion.schema_skew_discovery.discover`` pass (~6s AST
+    scan) shared by the skew tests in this directory."""
+    import sys
+
+    repo = Path(__file__).resolve().parents[2]
+    if str(repo) not in sys.path:
+        sys.path.insert(0, str(repo))
+    from orion import schema_skew_discovery as ssd
+
+    return ssd.discover(repo)

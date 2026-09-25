@@ -19,6 +19,7 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from orion import schema_skew_discovery as ssd  # noqa: E402
 from orion import substrate_ladder_liveness as ll  # noqa: E402
 
 FIXTURE = REPO / "tests" / "fixtures" / "substrate_ladder_2026-09-20_incident.json"
@@ -184,7 +185,12 @@ def _producer(sha=NEW, built=COMMIT + timedelta(minutes=30)):
     return ll.RunningContainer("digester", "orion-field-digester", built, schema_sha256=sha)
 
 
-def _skew(consumer: ll.RunningContainer, producer=None, main_sha=NEW, consumers=None):
+_DEFAULT = object()
+
+
+def _skew(consumer: ll.RunningContainer, producer=_DEFAULT, main_sha=NEW, consumers=None):
+    if producer is _DEFAULT:
+        producer = _producer()
     containers = [consumer] + ([producer] if producer is not None else [])
     results = ll.evaluate_skew(
         FIELD_STATE,
@@ -276,55 +282,144 @@ def test_service_dir_from_compose_label(label, expected):
     assert ll.service_dir_from_compose_files(label) == expected
 
 
-# ------------------------------------------------------ consumer derivation
+# ------------------------------------------- field-level replay (real files)
+#
+# The fixtures are the real bytes of the schema file on either side of the
+# commit that broke each pair (``git show <sha>^:path`` / ``<sha>:path``).
+
+SKEW_FIX = REPO / "tests" / "fixtures" / "schema_skew"
 
 
-def test_real_repo_consumers_include_the_incident_services():
-    consumers = ll.schema_consumer_services(REPO, FIELD_STATE)
-    # The two services that broke on 09-20, the one that is still broken
-    # (feedback), the producer, and the transitive consumer (policy, via
-    # orion.policy.builder).
-    assert FIELD_STATE.producer_service in consumers  # the one declared fact must stay true
-    for svc in (
-        "orion-attention-runtime",
-        "orion-proposal-runtime",
-        "orion-feedback-runtime",
-        "orion-field-digester",
-        "orion-policy-runtime",
-    ):
-        assert svc in consumers, svc
-    # The registry import path is excluded while FieldStateV1 is not on the bus,
-    # otherwise ~60 services would be flagged.
-    assert len(consumers) < 15
+def _shapes(name: str, which: str, sha: str, path: str):
+    text = (SKEW_FIX / f"{name}.{which}_{sha}.py.txt").read_text(encoding="utf-8")
+    return ssd.shapes_from_sources({path: text})
 
 
-def _write(root: Path, rel: str, body: str) -> None:
-    p = root / rel
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(body, encoding="utf-8")
+FS_BEFORE = _shapes("field_state", "before", "586faf93b", "orion/schemas/field_state.py")
+FS_AFTER = _shapes("field_state", "after", "586faf93b", "orion/schemas/field_state.py")
+PF_PATH = "orion/schemas/proposal_frame.py"
+PF_BEFORE = _shapes("proposal_frame", "before", "c95c8360c", PF_PATH)
+PF_AFTER = _shapes("proposal_frame", "after", "c95c8360c", PF_PATH)
 
 
-def test_consumer_derivation_is_transitive_and_skips_tests(tmp_path):
-    _write(tmp_path, "orion/schemas/thing.py", "class ThingV1: ...\n")
-    _write(tmp_path, "orion/schemas/registry.py", "from orion.schemas.thing import ThingV1\n")
-    _write(tmp_path, "orion/lib/a.py", "from orion.schemas.thing import ThingV1\n")
-    _write(tmp_path, "orion/lib/b.py", "import orion.lib.a\n")
-    _write(tmp_path, "orion/bus/channels.yaml", "channels: {}\n")
-    _write(tmp_path, "services/svc-direct/app/x.py", "from orion.schemas.thing import ThingV1\n")
-    _write(tmp_path, "services/svc-transitive/app/x.py", "from orion.lib import b\nimport orion.lib.b\n")
-    _write(tmp_path, "services/svc-registry/app/x.py", "from orion.schemas.registry import resolve\n")
-    _write(tmp_path, "services/svc-testonly/tests/test_x.py", "from orion.schemas.thing import ThingV1\n")
-    _write(tmp_path, "services/svc-none/app/x.py", "import os\n")
-    schema = ll.StrictSchema("orion/schemas/thing.py", "ThingV1", "svc-direct")
-    got = set(ll.schema_consumer_services(tmp_path, schema))
-    assert got == {"svc-direct", "svc-transitive"}
+def test_real_09_20_bytes_name_the_exact_rejected_fields():
+    """The field-level diff of the real 586faf93b change is the extra_forbidden
+    set the readers logged; it is red whatever the image ages say."""
+    producer = ll.RunningContainer("digester", "orion-field-digester", COMMIT, schema_sha256=NEW, shapes=FS_AFTER)
+    # Reader image deliberately NEWER than the producer: bytes/time alone would
+    # call this content_differs; the fields say it cannot read the rows.
+    reader = ll.RunningContainer("att", "orion-attention-runtime", COMMIT + timedelta(days=1), schema_sha256=OLD, shapes=FS_BEFORE)
+    r = _skew(reader, producer)["att"]
+    assert r.red, r
+    for f in ("queue_contention_score", "queue_contention_ewma", "queue_contention_driver"):
+        assert f in r.detail
 
-    # A longer name that merely contains the symbol is not the schema on the bus.
-    _write(tmp_path, "orion/bus/channels.yaml", "channels:\n  x:\n    schema_id: ThingV1Delta\n")
-    assert "svc-registry" not in ll.schema_consumer_services(tmp_path, schema)
-    # Once the schema travels on the bus, registry resolution is a real path.
-    _write(tmp_path, "orion/bus/channels.yaml", "channels:\n  x:\n    schema_id: ThingV1\n")
-    assert "svc-registry" in ll.schema_consumer_services(tmp_path, schema)
+
+def test_real_09_20_bytes_after_redeploy_are_ok():
+    producer = ll.RunningContainer("digester", "orion-field-digester", COMMIT, schema_sha256=NEW, shapes=FS_AFTER)
+    reader = ll.RunningContainer("att", "orion-attention-runtime", COMMIT - timedelta(days=12), schema_sha256=NEW, shapes=FS_AFTER)
+    assert _skew(reader, producer)["att"].status == "ok"
+
+
+def test_reader_ahead_of_writer_is_not_red():
+    """An old writer and a new forbid reader: optional new fields are fine."""
+    producer = ll.RunningContainer("digester", "orion-field-digester", COMMIT, schema_sha256=OLD, shapes=FS_BEFORE)
+    reader = ll.RunningContainer("att", "orion-attention-runtime", COMMIT - timedelta(days=1), schema_sha256=NEW, shapes=FS_AFTER)
+    assert _skew(reader, producer)["att"].status == "ok"
+
+
+PROPOSAL = ll.StrictSchema(
+    PF_PATH,
+    PF_PATH,
+    "orion-proposal-runtime",
+    models=("ProposalCandidateV1", "ProposalFrameV1"),
+)
+PF_COMMIT = datetime(2026, 8, 21, tzinfo=timezone.utc)
+
+
+def test_second_real_pair_proposal_frame_skew_is_red():
+    """c95c8360c (2026-08-21) added expected_signal/expected_direction to the
+    forbid ProposalCandidateV1 nested in ProposalFrameV1. proposal-runtime
+    writes substrate_proposal_frames; execution-dispatch-runtime validates the
+    rows back. A dispatch runtime left on the old image rejects every frame."""
+    writer = ll.RunningContainer("prop", "orion-proposal-runtime", PF_COMMIT, schema_sha256=NEW, shapes=PF_AFTER)
+    stale = ll.RunningContainer("disp", "orion-execution-dispatch-runtime", PF_COMMIT - timedelta(days=9), schema_sha256=OLD, shapes=PF_BEFORE)
+    fresh = ll.RunningContainer("pol", "orion-policy-runtime", PF_COMMIT, schema_sha256=NEW, shapes=PF_AFTER)
+    got = {
+        r.container: r
+        for r in ll.evaluate_skew(
+            PROPOSAL,
+            schema_commit_time=PF_COMMIT,
+            schema_sha256_on_ref=NEW,
+            consumer_services=["orion-execution-dispatch-runtime", "orion-policy-runtime"],
+            containers=[writer, stale, fresh],
+        )
+    }
+    assert got["disp"].red
+    assert "ProposalCandidateV1" in got["disp"].detail and "expected_signal" in got["disp"].detail
+    assert got["pol"].status == "ok"
+    assert got["prop"].status == "ok"
+    rep = ll.LadderReport(skew=list(got.values()))
+    assert rep.red_keys() == [f"skew:{PF_PATH}:disp"]
+
+
+def test_bytes_differ_but_fields_compatible_is_ok():
+    """A comment-only change must not page anyone."""
+    commented = ssd.shapes_from_sources({PF_PATH: (SKEW_FIX / "proposal_frame.after_c95c8360c.py.txt").read_text() + "\n# note\n"})
+    writer = ll.RunningContainer("prop", "orion-proposal-runtime", PF_COMMIT, schema_sha256=NEW, shapes=commented)
+    reader = ll.RunningContainer("disp", "orion-execution-dispatch-runtime", PF_COMMIT - timedelta(days=9), schema_sha256=OLD, shapes=PF_AFTER)
+    got = {r.container: r for r in ll.evaluate_skew(
+        PROPOSAL, schema_commit_time=None, schema_sha256_on_ref=NEW,
+        consumer_services=["orion-execution-dispatch-runtime"], containers=[writer, reader],
+    )}
+    assert got["disp"].status == "ok"
+
+
+def test_loose_reader_dropping_fields_is_reported_not_red():
+    src_w = "from pydantic import BaseModel\nclass A(BaseModel):\n    x: int\n    y: int = 0\n"
+    src_r = "from pydantic import BaseModel\nclass A(BaseModel):\n    x: int\n"
+    path = "orion/schemas/a.py"
+    sc = ll.StrictSchema(path, path, "w-svc", models=("A",), strict=False)
+    w = ll.RunningContainer("w", "w-svc", COMMIT, schema_sha256=NEW, shapes=ssd.shapes_from_sources({path: src_w}))
+    r = ll.RunningContainer("r", "r-svc", COMMIT - timedelta(days=3), schema_sha256=OLD, shapes=ssd.shapes_from_sources({path: src_r}))
+    got = {x.container: x for x in ll.evaluate_skew(sc, schema_commit_time=None, schema_sha256_on_ref=NEW, consumer_services=["r-svc"], containers=[w, r])}
+    assert got["r"].status == "drops_fields" and not got["r"].red and "y" in got["r"].detail
+
+
+def test_writer_not_running_is_not_red():
+    old_reader = ll.RunningContainer("c", "orion-attention-runtime", COMMIT - timedelta(days=30), schema_sha256=OLD)
+    got = _skew(old_reader, None)
+    assert got["c"].status == "no_writer" and not got["c"].red
+
+
+def test_a_key_red_against_one_writer_is_not_green():
+    """One reader container is compared against every writer of a file."""
+    rep = ll.LadderReport(skew=[
+        ll.SkewResult("f.py", "r", "rc", "skew", "x", "w1"),
+        ll.SkewResult("f.py", "r", "rc", "ok", "x", "w2"),
+    ])
+    assert rep.red_keys() == ["skew:f.py:rc"]
+    assert "skew:f.py:rc" not in rep.green_keys()
+
+
+def test_pinned_schemas_are_still_discovered(discovery):
+    schemas, _ = discovery
+    for pin in ll.STRICT_SCHEMAS:
+        hits = [s for s in schemas if s.path == pin.path and s.producer_service == pin.producer_service]
+        assert hits, f"{pin.path} written by {pin.producer_service} fell out of discovery"
+        assert set(pin.models) <= set(hits[0].models)
+        readers = {r for r, _ in hits[0].reader_models}
+        # The two services that broke on 09-20, and feedback, still broken on 09-25.
+        assert {"orion-attention-runtime", "orion-proposal-runtime", "orion-feedback-runtime"} <= readers
+
+
+def test_second_real_pair_is_discovered(discovery):
+    schemas, _ = discovery
+    hit = next(s for s in schemas if s.path == PF_PATH and s.producer_service == "orion-proposal-runtime")
+    assert hit.strict
+    readers = dict(hit.reader_models)
+    assert "orion-execution-dispatch-runtime" in readers
+    assert "ProposalCandidateV1" in readers["orion-execution-dispatch-runtime"]
 
 
 # ------------------------------------------------------------ CLI / notify
@@ -373,6 +468,11 @@ def test_parse_docker_nanosecond_timestamps():
     assert cli._parse_ts("2026-09-23T21:27:59.408813151Z") == datetime(2026, 9, 23, 21, 27, 59, 408813, tzinfo=timezone.utc)
     assert cli._parse_ts("0001-01-01T00:00:00Z") is None
     assert cli._parse_ts(None) is None
+
+
+@pytest.fixture
+def discovery(real_schema_discovery):
+    return ll.schemas_from_discovery(real_schema_discovery), real_schema_discovery
 
 
 def test_cli_exit_codes_without_db_or_docker():

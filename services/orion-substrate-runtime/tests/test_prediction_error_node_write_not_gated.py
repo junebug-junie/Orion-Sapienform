@@ -20,9 +20,10 @@ present-tense reading -- a signal that can rise but can never come back down
 to a genuine calm state. That is precisely the failure mode CLAUDE.md's
 metric quality gate step 4 exists to catch.
 
-The receipt write (`save_receipt`) staying inside the gate is correct and is
-NOT flagged here: receipts are an audit trail of notable prediction-error
-events, not a polled current-state read.
+The receipt write (`save_receipt`) is NOT flagged here, but it is no longer
+allowed inside the gate either (2026-09-25): the receipt is the only path into
+the field's prediction_error channel, so a gated receipt froze that channel at
+its last non-zero value. See test_prediction_error_receipt_not_gated.py.
 """
 
 from __future__ import annotations
@@ -77,8 +78,7 @@ def test_no_prediction_error_node_write_is_gated_on_error_greater_than_zero() ->
         "_write_prediction_error_node() must be called on EVERY tick, not only when "
         "error > 0.0 -- a gated write leaves the node holding its last non-zero value "
         "indefinitely on a quiet domain, which every polling consumer reads as a current "
-        "reading. Move the call out of the `if error > 0.0:` block (the save_receipt call "
-        "stays gated). Offending call sites: "
+        "reading. Move the call out of the `if error > 0.0:` block. Offending call sites: "
         + ", ".join(f"{node_id} at worker.py:{lineno}" for lineno, node_id in gated)
     )
 

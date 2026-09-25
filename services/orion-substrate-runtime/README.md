@@ -721,6 +721,19 @@ alerts persisted even after this fix landed, and needs its own fix in `reconcile
 `materializer.py` -- out of scope here since `merge_node()` is shared by any concept merge, not
 just this node.
 
+**Fixed 2026-09-25: the prediction-error receipt is no longer gated on `error > 0.0` either.**
+The split above treated the receipt as audit-only, but it is the only write path into two
+current-state reads: `orion-field-digester`'s field node vector `prediction_error` channel
+(`state_deltas.py`, `target_kind="prediction_signal"`, `mode="replace"`) and
+`orion-attention-runtime`'s Candidate A precision baseline (`substrate_node_prediction_error_baseline`,
+whose `last_value` is the target's current error). Gated, both froze at the last non-zero value --
+live, `node:substrate.route` sat at `0.0003` in `substrate_field_state` with its
+`node_vector_updated_at` 12h+ old while the tick kept writing `0.0` to FalkorDB. `prediction_error`
+is not decayed, so nothing corrected it. The receipt is now saved on every tick for biometrics,
+execution, chat, route, bus_synaptic and codebase (vision/perception already did this).
+`tests/test_prediction_error_receipt_not_gated.py` refuses any `_prediction_error_receipt()` call
+inside an `if <x> > 0:` block.
+
 **RETIRED, 2026-07-26: `transport_prediction_error()`'s live write removed entirely.** Following
 Juniper's explicit go-ahead after proposal mode
 (`docs/superpowers/specs/2026-07-26-transport-domain-retirement-bus-synaptic-successor-design.md`),

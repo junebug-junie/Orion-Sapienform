@@ -82,10 +82,16 @@ def test_start_spawns_independent_reducer_poll_tasks() -> None:
     with patch("asyncio.create_task", side_effect=capture_coro):
         asyncio.run(worker.start())
 
-    assert "biometrics-substrate-poll" in created
-    assert "execution-substrate-poll" in created
-    assert "transport-substrate-poll" in created
-    assert len([n for n in created if n.endswith("-poll")]) == 3
+    # Was `== 3`, stale since the chat and route lanes landed (it failed on
+    # main before the llm_inference lane was added); pinned to the real set now.
+    assert {n for n in created if n.endswith("-substrate-poll")} == {
+        "biometrics-substrate-poll",
+        "execution-substrate-poll",
+        "transport-substrate-poll",
+        "chat-substrate-poll",
+        "route-substrate-poll",
+        "llm-inference-substrate-poll",
+    }
 
 
 def test_biometrics_backlog_does_not_block_transport_poll_iteration() -> None:

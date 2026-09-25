@@ -144,6 +144,10 @@ from orion.schemas.reduction_receipt import ProjectionUpdateV1, ReductionReceipt
 from orion.schemas.state_delta import StateDeltaV1
 from orion.schemas.substrate_telemetry import SubstrateTierOutcomesPayloadV1
 from orion.schemas.transport_projection import TransportBusProjectionV1, TransportBusStateV1
+from orion.schemas.llm_inference_projection import (
+    LlmInferenceNodeStateV1,
+    LlmInferenceProjectionV1,
+)
 from orion.schemas.agents.bound_capability import (
     BoundCapabilityExecutionFailureV1,
     BoundCapabilityExecutionRequestV1,
@@ -814,6 +818,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ExecutionTrajectoryProjectionV1": ExecutionTrajectoryProjectionV1,
     "TransportBusStateV1": TransportBusStateV1,
     "TransportBusProjectionV1": TransportBusProjectionV1,
+    "LlmInferenceNodeStateV1": LlmInferenceNodeStateV1,
+    "LlmInferenceProjectionV1": LlmInferenceProjectionV1,
     "CodebaseDeltaV1": CodebaseDeltaV1,
     "JuniperAffectiveStateV1": JuniperAffectiveStateV1,
     "DocSemanticDriftV1": DocSemanticDriftV1,

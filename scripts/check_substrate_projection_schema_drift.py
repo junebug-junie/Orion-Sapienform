@@ -177,6 +177,12 @@ PROJECTIONS: tuple[ProjectionSpec, ...] = (
         model_name="RouteArbitrationProjectionV1",
     ),
     ProjectionSpec(
+        table="substrate_llm_inference_projection",
+        projection_id="active_llm_inference_projection",
+        model_module="orion.schemas.llm_inference_projection",
+        model_name="LlmInferenceProjectionV1",
+    ),
+    ProjectionSpec(
         table="substrate_attention_broadcast_projection",
         projection_id="substrate.attention.broadcast.v1",
         model_module="orion.schemas.attention_frame",

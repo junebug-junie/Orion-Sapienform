@@ -34,7 +34,7 @@ from .upstream_admission import UpstreamAdmission, get_upstream_admission
 from .anthropic_passthrough import register_anthropic_passthrough_routes
 from .openai_passthrough import register_openai_passthrough_routes
 from .route_catalog import get_routes_payload, refresh_route_health_cache
-from . import lane_gate
+from . import grammar_emit, lane_gate
 from orion.llm.routes import OPERATOR_GATED_LLM_ROUTES
 import math
 
@@ -542,7 +542,30 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         len(messages),
     )
 
-    result = await _dispatch_chat(body, correlation_id=str(typed_req.correlation_id))
+    dispatch_started = time.monotonic()
+    try:
+        result = await _dispatch_chat(body, correlation_id=str(typed_req.correlation_id))
+    except Exception:
+        # A crashed call is still an outcome; count it, then let it propagate as before.
+        if settings.llm_gateway_grammar_enabled:
+            try:
+                grammar_emit.get_recorder().record(
+                    {"text": "", "raw": {"error": "gateway_exception"}},
+                    served_by=None,
+                    elapsed_s=time.monotonic() - dispatch_started,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+    if settings.llm_gateway_grammar_enabled:
+        try:
+            grammar_emit.get_recorder().record(
+                result,
+                served_by=(result.get("served_by") if isinstance(result, dict) else None),
+                elapsed_s=time.monotonic() - dispatch_started,
+            )
+        except Exception:  # noqa: BLE001 -- telemetry must never break a reply
+            logger.warning("llm_gateway_grammar_record_failed", exc_info=True)
     text = result.get("text") if isinstance(result, dict) else str(result)
 
     # Optional Spark/NeuralHost enrichments. These may be absent depending on
@@ -734,7 +757,21 @@ async def main() -> None:
         settings.channel_llm_intake,
         cfg.bus_url,
     )
-    await asyncio.gather(chat_svc.start(), _serve_health())
+    tasks = [chat_svc.start(), _serve_health()]
+    if settings.llm_gateway_grammar_enabled:
+        logger.info(
+            "[LLM-GW] inference grammar windows on window_sec=%s gateway_node=%s",
+            settings.llm_gateway_grammar_window_sec,
+            settings.node_name or "gateway",
+        )
+        tasks.append(
+            grammar_emit.run_window_publisher(
+                chat_svc.bus,
+                gateway_node=settings.node_name or "gateway",
+                window_sec=settings.llm_gateway_grammar_window_sec,
+            )
+        )
+    await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":

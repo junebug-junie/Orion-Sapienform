@@ -44,6 +44,11 @@ NODE_CHANNELS = [
     "delivery_confidence",
     "stream_backlog_health",
     "observer_failure_pressure",
+    # orion-llm-gateway's own view of its calls to this node's backends: share of
+    # calls sent upstream that came back without an answer, per gateway window
+    # (orion/substrate/llm_inference_loop/). Written only for nodes that actually
+    # received upstream traffic that window; holds (does not decay) in between.
+    "inference_failure_pressure",
     "field_coherence_warning",
     "prediction_error",
 ]

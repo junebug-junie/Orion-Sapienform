@@ -144,6 +144,6 @@ WHERE r.reducer_name='transport_bus_reducer' AND r.created_at > now()-interval '
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2333
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

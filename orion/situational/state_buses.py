@@ -12,7 +12,8 @@ and never recorded the user's turn: the prompt said "Conversation phase:
 unknown" however long the gap had been.
 
 Both processes now call this, so a store cannot be bound in one and forgotten
-in the other. `tests/test_state_buses.py` fails if a module in this package
+in the other. `tests/test_state_buses.py` (run in CI by
+.github/workflows/session-scope-tests.yml) fails if a module in this package
 grows a `bind_*_bus` that this function does not call.
 """
 

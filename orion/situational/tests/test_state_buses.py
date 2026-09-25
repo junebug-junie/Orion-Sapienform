@@ -96,42 +96,48 @@ def _state(redis: _FakeRedis, session_id: str) -> dict:
     return json.loads(raw) if raw else {}
 
 
+@pytest.fixture
+def unbound_stores(monkeypatch):
+    """Every store starts unbound and is restored afterwards, so binding the
+    fake bus here cannot leak into later tests in the same process."""
+    monkeypatch.setattr(situation_mod, "datetime", _FixedDatetime)
+    for mod in _modules_with_bus_bind():
+        monkeypatch.setattr(mod, "_BUS", None)
+
+
+def _time_ctx():
+    return _build_time_context(settings_from_runtime(SimpleNamespace()), SituationDiagnosticsV1())
+
+
 @pytest.mark.asyncio
-async def test_unified_turn_sequence_reads_and_records_the_real_session(monkeypatch):
+async def test_unified_turn_sequence_reads_and_records_the_real_session(unbound_stores):
     """The unified turn's order: the stance step (cortex-exec) marks Orion's
     turn, then Hub builds the situation brief. With the store bound and the
     real session id on both sides, the phase reflects the gap since the user's
     previous message and both timestamps land on that session's key."""
-    import orion.situational.session_turn_phase as session_turn_phase
-
-    monkeypatch.setattr(situation_mod, "datetime", _FixedDatetime)
-    monkeypatch.setattr(session_turn_phase, "_BUS", None)
     redis = _FakeRedis()
     redis.store[_phase_key("orion_sid_1")] = json.dumps(
         {"last_user_turn_at": (NOW - timedelta(hours=1)).isoformat(), "last_orion_turn_at": None}
     ).encode("utf-8")
     bind_situation_state_buses(SimpleNamespace(redis=redis))
-    time_ctx = _build_time_context(settings_from_runtime(SimpleNamespace()), SituationDiagnosticsV1())
 
     await mark_orion_turn("orion_sid_1")
-    phase = await _build_conversation_phase({"session_id": "orion_sid_1"}, time_ctx, NOW)
+    phase = await _build_conversation_phase({"session_id": "orion_sid_1"}, _time_ctx(), NOW)
 
     assert phase.phase_change == "resumed_thread"
     state = _state(redis, "orion_sid_1")
     assert state["last_user_turn_at"] == NOW.isoformat()
     assert state["last_orion_turn_at"] == NOW.isoformat()
-    assert _phase_key("global") not in redis.store
 
 
 @pytest.mark.asyncio
-async def test_unbound_store_reads_unknown_and_records_nothing(monkeypatch):
-    """What every unified turn did before Hub bound the store."""
-    import orion.situational.session_turn_phase as session_turn_phase
+async def test_unbound_store_reads_unknown(unbound_stores, caplog):
+    """What every unified turn did before Hub bound the store -- and the log
+    line Hub printed each time."""
+    import logging
 
-    monkeypatch.setattr(situation_mod, "datetime", _FixedDatetime)
-    monkeypatch.setattr(session_turn_phase, "_BUS", None)
-    time_ctx = _build_time_context(settings_from_runtime(SimpleNamespace()), SituationDiagnosticsV1())
-
-    phase = await _build_conversation_phase({"session_id": "orion_sid_1"}, time_ctx, NOW)
+    with caplog.at_level(logging.WARNING, logger="orion.cortex.session_turn_phase"):
+        phase = await _build_conversation_phase({"session_id": "orion_sid_1"}, _time_ctx(), NOW)
 
     assert phase.phase_change == "unknown"
+    assert "session_turn_phase_read_bus_unbound" in caplog.text

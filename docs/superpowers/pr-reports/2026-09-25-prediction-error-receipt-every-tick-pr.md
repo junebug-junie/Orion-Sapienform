@@ -129,6 +129,6 @@ Run from an up-to-date worktree of main after merge (the wrapper refuses the sha
 
 ## PR link
 
-(filled in on the PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2326
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

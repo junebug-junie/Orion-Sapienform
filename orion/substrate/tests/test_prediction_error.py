@@ -425,9 +425,8 @@ def test_chat_prediction_error_first_tick_is_cold_start_but_seeds_baseline() -> 
     curr = _chat_projection({"t1": _chat_turn("t1", repair_pressure_level=0.30)})
     result = chat_prediction_error(prev, curr)
     assert result == 0.0
-    # repair_pressure delta 0.30, topic_coherence delta 0.30, conversation_load delta 0.0
-    # -> mean(0.30, 0.30, 0.0) = 0.20
-    assert curr.prediction_error_baseline_ewma == pytest.approx(0.20)
+    # repair_pressure delta 0.30, conversation_load delta 0.0 -> mean(0.30, 0.0) = 0.15
+    assert curr.prediction_error_baseline_ewma == pytest.approx(0.15)
     assert curr.prediction_error_baseline_ewma_var == 0.0
     assert curr.prediction_error_baseline_ewma_n == 1
 
@@ -446,7 +445,7 @@ def test_chat_prediction_error_uses_latest_prev_turn_as_fallback_for_new_turn() 
     curr = _chat_projection({"t2": _chat_turn("t2", repair_pressure_level=0.30)})
     assert chat_prediction_error(prev, curr) == 0.0
     # Same math as test_chat_prediction_error_first_tick_is_cold_start_but_seeds_baseline.
-    assert curr.prediction_error_baseline_ewma == pytest.approx(0.20)
+    assert curr.prediction_error_baseline_ewma == pytest.approx(0.15)
 
 
 def test_chat_prediction_error_exact_match_still_takes_priority_over_fallback() -> None:
@@ -467,7 +466,7 @@ def test_chat_prediction_error_exact_match_still_takes_priority_over_fallback() 
     assert chat_prediction_error(prev, curr) == 0.0
     # If the fallback (t_other, repair_pressure_level=0.9) were used instead of the exact
     # match (t1, repair_pressure_level=0.0), this baseline seed would be different.
-    assert curr.prediction_error_baseline_ewma == pytest.approx(0.20)
+    assert curr.prediction_error_baseline_ewma == pytest.approx(0.15)
 
 
 def test_chat_prediction_error_zero_when_projections_empty() -> None:
@@ -481,10 +480,10 @@ def test_chat_prediction_error_conversation_load_key_contributes_to_baseline_see
     # word_count 0 -> conversation_load 0.0; word_count 45 -> conversation_load 0.30
     prev_proj = _chat_projection({"t1": _chat_turn("t1", word_count=0)})
     curr_proj = _chat_projection({"t1": _chat_turn("t1", word_count=45)})
-    # conversation_load delta = |0.30 - 0.0| = 0.30; repair_pressure delta = 0.0;
-    # topic_coherence delta = 0.0 (both 1.0). mean(0.30, 0, 0) = 0.10
+    # conversation_load delta = |0.30 - 0.0| = 0.30; repair_pressure delta = 0.0.
+    # mean(0.30, 0) = 0.15
     assert chat_prediction_error(prev_proj, curr_proj) == 0.0  # cold start
-    assert curr_proj.prediction_error_baseline_ewma == pytest.approx(0.30 / 3)
+    assert curr_proj.prediction_error_baseline_ewma == pytest.approx(0.30 / 2)
 
 
 def test_chat_prediction_error_averages_across_multiple_turns() -> None:
@@ -500,7 +499,7 @@ def test_chat_prediction_error_averages_across_multiple_turns() -> None:
             "t2": _chat_turn("t2", repair_pressure_level=0.0),  # zero delta
         }
     )
-    deltas = [0.0, 0.30, 0.30, 0.0, 0.0, 0.0]  # t1: cl/rp/tc, t2: cl/rp/tc
+    deltas = [0.0, 0.30, 0.0, 0.0]  # t1: cl/rp, t2: cl/rp
     assert chat_prediction_error(prev, curr) == 0.0  # cold start
     assert curr.prediction_error_baseline_ewma == pytest.approx(sum(deltas) / len(deltas))
 
@@ -517,11 +516,11 @@ def test_chat_prediction_error_scores_deviation_from_established_baseline() -> N
         baseline_ewma_n=4,
     )
     curr = _chat_projection({"t1": _chat_turn("t1", repair_pressure_level=0.33)})
-    # repair_pressure delta 0.33, topic_coherence delta 0.33, conversation_load delta 0.0
-    # -> raw_mean_delta = 0.22; zscore = (0.22 - 0.05) / sqrt(0.01) = 1.7
-    expected = min(1.0, max(0.0, (0.22 - 0.05) / math.sqrt(0.01)) / 3.0)
+    # repair_pressure delta 0.33, conversation_load delta 0.0
+    # -> raw_mean_delta = 0.165; zscore = (0.165 - 0.05) / sqrt(0.01) = 1.15
+    expected = min(1.0, max(0.0, (0.165 - 0.05) / math.sqrt(0.01)) / 3.0)
     assert chat_prediction_error(prev, curr) == pytest.approx(expected)
-    assert curr.prediction_error_baseline_ewma == pytest.approx(0.2 * 0.22 + 0.8 * 0.05)
+    assert curr.prediction_error_baseline_ewma == pytest.approx(0.2 * 0.165 + 0.8 * 0.05)
     assert curr.prediction_error_baseline_ewma_n == 5
 
 
@@ -555,9 +554,8 @@ def test_chat_prediction_error_uses_domain_specific_variance_floor() -> None:
         baseline_ewma_var=1e-7,  # below shared default (1e-6), above the domain floor (5e-8)
         baseline_ewma_n=5,
     )
-    curr = _chat_projection({"t1": _chat_turn("t1", repair_pressure_level=0.0015)})
-    # repair_pressure delta 0.0015, topic_coherence delta 0.0015, conversation_load delta 0.0
-    # -> raw_mean_delta = 0.001
+    curr = _chat_projection({"t1": _chat_turn("t1", repair_pressure_level=0.002)})
+    # repair_pressure delta 0.002, conversation_load delta 0.0 -> raw_mean_delta = 0.001
     result = chat_prediction_error(prev, curr)
     # Domain floor (5e-8) loses to the real variance (1e-7): zscore = 0.001 /
     # sqrt(1e-7) ~= 3.162 -> saturates at 1.0.
@@ -565,6 +563,28 @@ def test_chat_prediction_error_uses_domain_specific_variance_floor() -> None:
     # Under the shared default floor (1e-6, which would win over 1e-7 instead):
     # zscore = 0.001 / sqrt(1e-6) = 1.0 -> error 1.0/3.0 ~= 0.333, nowhere near 1.0.
     assert result != pytest.approx(1.0 / 3.0)
+
+
+def test_chat_prediction_error_weights_repair_and_load_evenly() -> None:
+    """Definition v2 (2026-09-25): topic_coherence was 1 - repair_pressure, so v1
+    counted every repair change twice ((d_load + 2*d_repair) / 3). With it removed,
+    an equal-sized change in either reading moves the raw delta by the same amount."""
+    def seed(prev_turn, curr_turn) -> float:
+        curr = _chat_projection({"t1": curr_turn})
+        chat_prediction_error(_chat_projection({"t1": prev_turn}), curr)
+        return curr.prediction_error_baseline_ewma
+
+    repair_only = seed(_chat_turn("t1"), _chat_turn("t1", repair_pressure_level=0.30))
+    load_only = seed(_chat_turn("t1"), _chat_turn("t1", word_count=45))  # load 0.30
+    assert repair_only == pytest.approx(0.15)
+    assert load_only == pytest.approx(0.15)
+
+
+def test_chat_pressure_hints_no_longer_carry_topic_coherence() -> None:
+    from orion.substrate.chat_loop.grammar_extract import compute_chat_pressure_hints
+
+    hints = compute_chat_pressure_hints(_chat_turn("t1", word_count=30, repair_pressure_level=0.4))
+    assert set(hints) == {"conversation_load", "repair_pressure"}
 
 
 def test_chat_prediction_error_saturates_at_one_for_large_zscore() -> None:
@@ -588,6 +608,7 @@ def _route_run(
     lane_reason: str = "verb_background",
     output_mode: str = "direct_answer",
     mind_requested: bool = False,
+    last_updated_at: datetime | None = None,
 ) -> RouteArbitrationRunStateV1:
     return RouteArbitrationRunStateV1(
         trace_id=trace_id,
@@ -598,7 +619,7 @@ def _route_run(
         lane_reason=lane_reason,
         mind_requested=mind_requested,
         output_mode=output_mode,
-        last_updated_at=_NOW,
+        last_updated_at=last_updated_at or _NOW,
     )
 
 
@@ -675,7 +696,11 @@ def test_route_prediction_error_not_saturated_by_threshold_scaling() -> None:
     assert result != pytest.approx(min(1.0, 0.25 / 0.30))
 
 
-def test_route_prediction_error_averages_across_multiple_runs() -> None:
+def test_route_prediction_error_ignores_runs_the_batch_did_not_touch() -> None:
+    """Definition v2 (2026-09-25). v1 averaged over every run in the projection, and
+    an untouched run scores 0.0 against its identical self -- so with ~800 live runs a
+    one-field flip read 0.25/800 ~= 0.0003 and route could never read non-calm. r2 is
+    untouched here (identical in prev and curr) and must not dilute r1's flip."""
     prev = _route_projection(
         {
             "r1": _route_run("r1", lane="background"),
@@ -684,8 +709,62 @@ def test_route_prediction_error_averages_across_multiple_runs() -> None:
     )
     curr = _route_projection(
         {
-            "r1": _route_run("r1", lane="chat"),  # 1/4 fields flip -> 0.25
-            "r2": _route_run("r2", lane="background"),  # no flip -> 0.0
+            "r1": _route_run("r1", lane="chat", last_updated_at=_NOW + timedelta(seconds=5)),
+            "r2": _route_run("r2", lane="background"),  # untouched
+        }
+    )
+    assert route_prediction_error(prev, curr) == pytest.approx(0.25)
+
+
+def test_route_prediction_error_not_diluted_by_a_live_sized_projection() -> None:
+    """The live shape that hid the v1 defect: hundreds of old identical runs plus one
+    new run whose lane differs from the latest prior run. v1 read 0.25 * 2/801."""
+    history = {
+        f"old{i}": _route_run(f"old{i}", last_updated_at=_NOW + timedelta(seconds=i))
+        for i in range(800)
+    }
+    prev = _route_projection(dict(history))
+    new = _route_run(
+        "new", lane="chat", lane_reason="mode_chat", last_updated_at=_NOW + timedelta(hours=1)
+    )
+    curr = _route_projection({**history, "new": new})
+    assert route_prediction_error(prev, curr) == pytest.approx(0.5)
+
+
+def test_route_prediction_error_split_decision_does_not_spike() -> None:
+    """Review finding: a trace-start event reduced one tick before its decision event
+    creates an all-"unknown" run. Neither tick may read that as a decision change:
+    tick 1 skips the undecided run; tick 2 compares the real decision against the
+    latest decided run (same background decision -> 0.0), not its own unknown copy."""
+    t1, t2 = _NOW + timedelta(seconds=5), _NOW + timedelta(seconds=10)
+    decided = _route_run("r0")
+    undecided = _route_run(
+        "r1", lane="unknown", lane_reason="unknown", output_mode="unknown", last_updated_at=t1
+    )
+    tick1_prev = _route_projection({"r0": decided})
+    tick1_curr = _route_projection({"r0": decided, "r1": undecided})
+    assert route_prediction_error(tick1_prev, tick1_curr) == 0.0
+    tick2_curr = _route_projection({"r0": decided, "r1": _route_run("r1", last_updated_at=t2)})
+    assert route_prediction_error(tick1_curr, tick2_curr) == 0.0
+    flipped = _route_run("r1", lane="chat", last_updated_at=t2)
+    assert route_prediction_error(tick1_curr, _route_projection({"r0": decided, "r1": flipped})) == pytest.approx(0.25)
+
+
+def test_route_prediction_error_zero_when_batch_touched_nothing() -> None:
+    """A tick whose events were all no-ops leaves the projection unchanged: no decision
+    was made, so the honest reading is 0.0, not an average over stale runs."""
+    runs = {"r1": _route_run("r1", lane="chat"), "r2": _route_run("r2")}
+    assert route_prediction_error(_route_projection(dict(runs)), _route_projection(dict(runs))) == 0.0
+
+
+def test_route_prediction_error_averages_across_touched_runs() -> None:
+    later = _NOW + timedelta(seconds=5)
+    prev = _route_projection({"r0": _route_run("r0", lane="background")})
+    curr = _route_projection(
+        {
+            "r0": _route_run("r0", lane="background"),  # untouched, excluded
+            "a": _route_run("a", lane="chat", last_updated_at=later),  # 1/4 vs r0
+            "b": _route_run("b", lane="background", last_updated_at=later),  # 0/4 vs r0
         }
     )
     assert route_prediction_error(prev, curr) == pytest.approx(0.125)

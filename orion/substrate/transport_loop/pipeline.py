@@ -14,7 +14,7 @@ from .constants import (
     NON_BUS_TRANSPORT_TARGET_IDS,
     TRANSPORT_BUS_PROJECTION_ID,
 )
-from .reducer import reduce_transport_trace_events
+from .reducer import TraceEventsLoader, reduce_transport_trace_events
 
 TransportProjectionLoader = Callable[[], TransportBusProjectionV1]
 TransportProjectionSaver = Callable[[TransportBusProjectionV1], None]
@@ -50,7 +50,11 @@ def process_transport_grammar_events(
     save_receipt: ReceiptSaver,
     now: datetime | None = None,
     stream_depth_critical: int = DEFAULT_STREAM_DEPTH_CRITICAL,
+    load_trace_events: TraceEventsLoader | None = None,
 ) -> dict[str, int]:
+    """`load_trace_events` lets a trace cut across two cursor batches be
+    reduced from its whole stored trace instead of from the piece in hand
+    (see reduce_transport_trace_events). Without it, pieces are held."""
     clock = now or datetime.now(timezone.utc)
     stats = {"events": 0, "receipts": 0, "traces": 0}
 
@@ -73,6 +77,7 @@ def process_transport_grammar_events(
             projection=projection,
             now=clock,
             stream_depth_critical=stream_depth_critical,
+            load_trace_events=load_trace_events,
         )
         save_receipt(receipt)
         stats["receipts"] += 1

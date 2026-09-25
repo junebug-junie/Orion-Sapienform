@@ -9,9 +9,10 @@
 - `topic_coherence` (chat lane): **not wired** (fails the independence check). **Not deleted in
   this PR either**: it has a live consumer, and deleting it changes a live metric's definition.
   That is Juniper's call; options below.
-- Two side findings recorded as follow-ups: the route atom's uncertainty rule checks for a lane
-  reason string the router never emits, and the existing `node:substrate.route`
-  prediction-error reading has sat at exactly 0.0003 for at least 8 hours.
+- Side findings recorded as follow-ups. The main one: the existing `node:substrate.route`
+  prediction-error value in the field is a stale copy of the last reading above zero. The
+  instrument behind it also cannot mathematically rise above ~0.0012. So route's one existing
+  path into the field is broken too (details under Risks).
 
 ## Outcome moved
 
@@ -37,7 +38,7 @@ tries this starts from these numbers.
   `node:substrate.route` `prediction_error` (`orion/substrate/prediction_error.py::route_prediction_error`,
   a categorical mismatch rate between successive runs).
 - `capability:orchestration` is fed by `node:athena` (`cpu_pressure`, `cortex_exec_step_load`,
-  `execution_friction`, `failure_pressure`, `stream_backlog_pressure`) plus
+  `execution_friction`, `failure_pressure`, `stream_backlog_pressure`, `reasoning_load`) plus
   `capability:transport` and `capability:llm_inference` (`config/field/orion_field_topology.v1.yaml:176-243`).
 
 ## Live data (pulled 2026-09-25 ~00:10 UTC)
@@ -61,6 +62,8 @@ per day on 09-22/23/24; volume fell through 09-24, from ~200/h to ~20/h, not inv
 - `node:substrate.route.prediction_error` from `substrate_field_state` over the last 24h:
   40,324 ticks, min 0.0001, max 0.0006, median 0.0003, zero ticks above 0.01. For the last
   8 hours, every hour held exactly one distinct value: 0.0003.
+  `node_vector_updated_at` shows the last write at `2026-09-24T12:11:48Z`. It is stale, not live
+  (see Risks).
 - `capability:orchestration` right now: `pressure` 0.359, `execution_pressure` 0.241,
   `reasoning_pressure` 0.9, `reliability_pressure` 0.0.
 
@@ -69,7 +72,9 @@ per day on 09-22/23/24; volume fell through 09-24, from ~200/h to ~20/h, not inv
 ### 1. `route_fallback_pressure`: share of calls the router could not classify (`fallback_background` / `lane_routing_disabled` / `unknown`)
 
 1. Provenance: `execution_lanes.py:66` (`fallback_background`), `orchestrator.py:517`
-   (`lane_routing_disabled`), `orchestrator.py:647,655` (`unknown` on exception).
+   (`lane_routing_disabled`), `orchestrator.py:647,655` (`unknown` on exception). Blind spot: when
+   `EXEC_LANE_ROUTING_ENABLED=false`, line 517 overwrites *every* reason with `lane_routing_disabled`,
+   so a real fallback cannot be told apart from that setting.
 2. Independence: independent of `node:substrate.route` PE (that one measures change between
    runs, not the fallback level) and of the execution channels. Passes.
 3. Theory anchor: weak. A fallback means a verb arrived that the lookup table does not know.
@@ -100,7 +105,9 @@ per day on 09-22/23/24; volume fell through 09-24, from ~200/h to ~20/h, not inv
 4. Live data: 0.42 on 5,680 / 5,680 (the `mind_skip_reason` floor), **flat**.
 5. Side bug: line 72 checks `lane_reason in {"unknown", "fallback", "lane_routing_disabled"}`,
    but the router emits `fallback_background`, never `fallback`. So a real fallback would not
-   raise uncertainty. Follow-up, not fixed here (see Risks).
+   raise uncertainty. The rule takes the higher of its two bumps, and the mind-skip floor (0.42)
+   sits above the fallback bump (0.35). So fixing the string alone changes nothing while mind is
+   off. Follow-up, not fixed here (see Risks).
 
 **Verdict: FAIL (2, 4).**
 
@@ -108,7 +115,8 @@ per day on 09-22/23/24; volume fell through 09-24, from ~200/h to ~20/h, not inv
 
 1. Provenance: count of `route_arbitration_decided` atoms by `lane`.
 2. Independence: **redundant**. Every non-chat orch call goes out as one PlanExecution to
-   cortex-exec (`orchestrator.py:693`, `use_direct_exec`). That produces the `execution_run`
+   cortex-exec (`orchestrator.py:693`, `use_direct_exec`). Live over 24h (from review), 817 of 823
+   orch correlation IDs have matching cortex-exec grammar events. That produces the `execution_run`
    delta that already drives `cortex_exec_step_load` / `execution_pressure` into
    `capability:orchestration`. It is the same event counted a second time.
 3. Theory anchor: none. The share of each lane describes the mix of work, not pressure.
@@ -136,7 +144,7 @@ which is the likely redundancy target. **Not a candidate without a contract chan
   calibrated on. That is an in-place definition change to a live metric with consumers.
   Juniper's standing rule says that choice is hers.
   - Option A: delete `topic_coherence` from `compute_chat_pressure_hints`, update
-    `chat_prediction_error`'s key tuple and tests, accept a transient z-score skew while the
+    `chat_prediction_error`'s key tuple and tests, check `orion/inner_state_registry.py:731`, accept a transient z-score skew while the
     EWMA re-baselines. This follows the docstring's own "fix upstream" guidance.
   - Option B: keep the status quo. The double weighting is already disclosed in
     `chat_prediction_error`'s docstring and in `docs/superpowers/specs/2026-07-21-chat-route-prediction-error-shadow-design.md`.
@@ -189,7 +197,22 @@ substrate_field_state via docker exec orion-athena-sql-db psql (read-only SELECT
 
 ## Review findings fixed
 
-See PR conversation; filled in after the review subagent run.
+Reviewer: orion-repo-agent subagent, targeted at commit 585d9aac2. It re-ran the live SELECTs and verified every code citation.
+
+- Finding (material): the flat 0.0003 was blamed on routing near-identity. The real causes are a stale field copy (receipt write gated on `error > 0.0`) and an instrument averaged over ~824 runs, capped near 0.0012.
+  - Fix: rewrote the medium risk and its follow-up. Verified myself: `worker.py:3880` gate, `node_vector_updated_at = 2026-09-24T12:11:48Z`.
+  - Evidence: the Risks section above.
+- Finding (minor): the uncertainty string fix is masked by the 0.42 mind-skip floor.
+  - Fix: noted in candidate 3 and in Risks.
+- Finding (minor): "every non-chat call reaches exec" was stated without a number.
+  - Fix: added the reviewer's live 817/823 overlap.
+- Finding (minor): the orchestration input list omitted `reasoning_load`.
+  - Fix: added.
+- Finding (minor): candidate 1 blind spot under `lane_routing_disabled`.
+  - Fix: added to candidate 1.
+- Finding (minor): Option A should also check `orion/inner_state_registry.py:731`.
+  - Fix: added.
+- Gate verdicts and the topic_coherence decision were confirmed by the reviewer. No missed candidate was found.
 
 ## Restart required
 
@@ -201,10 +224,12 @@ No restart required.
 
 - Severity: low
   - Concern: `uncertainty_from_route_arbitration` checks for `"fallback"`, but the router emits `"fallback_background"`, so a real fallback is invisible to atom uncertainty.
-  - Mitigation: follow-up fix plus a regression test. Live impact today is zero (0 fallbacks in all retained history).
-- Severity: medium
-  - Concern: `node:substrate.route.prediction_error` is flat at 0.0003 (8h, one distinct value per hour), and route sits in `ACTIVE_INFERENCE_DOMAINS`. It is a near-constant input to the attention self-model. This is not decay: the value holds rather than falling geometrically. It is the upstream near-identity of route decisions.
-  - Mitigation: follow-up to decide whether route belongs in `ACTIVE_INFERENCE_DOMAINS` while lane choice stays a static lookup.
+  - Mitigation: follow-up fix plus a regression test that uses `mind_requested=True`. The 0.42 mind-skip floor masks the fix while mind is off. Live impact today is zero (0 fallbacks in all retained history).
+- Severity: medium (the existing route signal is broken, beyond what this PR set out to check)
+  - Concern: two defects together make `node:substrate.route.prediction_error` meaningless in the field. Route is in `ACTIVE_INFERENCE_DOMAINS` (`attention_self_model.py:128`).
+    1. **Stale copy.** `services/orion-substrate-runtime/app/worker.py` `_route_tick` (~line 3880) saves the `prediction_signal` receipt only `if error > 0.0`. That receipt is what the digester uses to set the field channel (mode `replace`, `state_deltas.py:607-619`). The "write every tick" fix just below covers only the graph node. So the field holds the last value above zero. `node_vector_updated_at` is `2026-09-24T12:11:48Z`, 12h stale at the time of the read. This is the same stuck-high-water-mark disease the worker's own comment says was fixed.
+    2. **Can never read "not calm".** `route_prediction_error` averages over every run in the projection (~824 live, capped at 2000). Old runs match themselves by `trace_id` and score 0. One run flipping one field reads 0.25/824 ≈ 0.0003. Two fields read 0.0006. Both match the live values exactly. The ceiling is about 0.0012 even if every field flips.
+  - Mitigation: follow-up PR. Fix the instrument (score only runs that are new or changed this tick) and the gated field write. Only then decide whether route stays in `ACTIVE_INFERENCE_DOMAINS`.
 - Severity: low
   - Concern: no ordinary Hub chat (`verb_chat`) reached the route lane in 3 days, and orch route volume fell ~10x across 09-24.
   - Mitigation: not investigated here. Flagged.

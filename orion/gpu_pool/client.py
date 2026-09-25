@@ -9,6 +9,20 @@ On exit the lease is released with ``ok``, or ``upstream_error`` if the block ra
 always gets a grant or a typed exception (``LeaseUnavailable`` / ``LeaseBacklogged``); never an
 unexplained timeout.
 
+Stage 4 (durable runs on pool holds, docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md):
+
+    reply = await acquire_hold(bus, holder="durable-runs:<run_id>", work_class="agent",
+                               request_id=f"{run_id}:{attempt}", priority="background")
+    # granted -> GpuLeaseRefV1 via hold_ref(reply); queued/backlogged -> interrupt, wake on the
+    # pool's "granted" event for this lease_id; unavailable -> fail the run with reply.reason
+    reply = await heartbeat_lease(bus, lease_id, source=...)   # "recall" -> release at next node
+    reply = await lease_status(bus, lease_id, source=...)      # resume: granted / queued / unknown_lease
+    await release_lease(bus, lease_id, source=..., outcome="ok")
+
+    async with attached_lease(bus, ref, work_class="agent", holder="orion-llm-gateway",
+                              deadline_sec=60, turn_correlation_id=corr) as lease:
+        call(lease.grant.url)   # one LLM call in the hold's slot; never a second lease
+
 Transport rule (spec, "Transport-metric and reader impacts" item 1): the lease RPC travels on a
 FRESH correlation id, with the turn's id carried as ``turn_correlation_id``. Waiting in line is
 not transport, so it must never enter the turn's bus-synaptic causal chain.
@@ -25,7 +39,7 @@ from typing import Any, AsyncIterator
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.gpu_pool import (
     GPU_LEASE_REQUEST_KIND, GPU_POOL_EVENT_CHANNEL, GPU_POOL_LEASE_REPLY_PREFIX, GPU_POOL_LEASE_REQUEST_CHANNEL, GpuLeaseGrantV1,
-    GpuLeaseReplyV1, GpuLeaseRequestV1,
+    GpuLeaseRefV1, GpuLeaseReplyV1, GpuLeaseRequestV1,
 )
 
 REPLY_PREFIX = GPU_POOL_LEASE_REPLY_PREFIX
@@ -97,12 +111,85 @@ async def gpu_lease(
     deadline_sec: float = 60.0, min_ctx_tokens: int = 0, turn_correlation_id: str | None = None,
     request_id: str | None = None, heartbeat_sec: float | None = None, retryable: bool = False,
 ) -> AsyncIterator[Lease]:
-    source = holder
     deadline = datetime.now(timezone.utc) + timedelta(seconds=deadline_sec)
-    rpc_timeout = max(LEASE_RPC_MIN_TIMEOUT_SEC, min(LEASE_RPC_TIMEOUT_SEC, float(deadline_sec)))
     req = GpuLeaseRequestV1(verb="acquire", request_id=request_id or uuid.uuid4().hex, holder=holder,
                             work_class=work_class, priority=priority, kind=kind, min_ctx_tokens=min_ctx_tokens,
                             deadline_at=deadline, turn_correlation_id=turn_correlation_id, retryable=retryable)
+    async with _held(bus, req, source=holder, deadline=deadline, deadline_sec=deadline_sec,
+                     heartbeat_sec=heartbeat_sec or (10.0 if kind == "request" else 30.0),
+                     retryable=retryable) as lease:
+        yield lease
+
+
+@contextlib.asynccontextmanager
+async def attached_lease(
+    bus: Any, ref: GpuLeaseRefV1, *, work_class: str, holder: str, priority: str = "background",
+    deadline_sec: float = 60.0, turn_correlation_id: str | None = None, request_id: str | None = None,
+    heartbeat_sec: float = 10.0,
+) -> AsyncIterator[Lease]:
+    """One call under a durable run's hold (``verb=attach``). Same contract as ``gpu_lease``: a grant
+    in the hold's slot, or ``LeaseUnavailable`` -- e.g. ``stale_hold_generation:<n>`` /
+    ``hold_not_granted:<status>`` when the run's hold moved or ended, ``hold_unknown``. It never
+    takes a lease of its own: a call whose run holds the role's only slot would queue behind
+    itself forever (spec, "Why the gateway must attach, not lease")."""
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=deadline_sec)
+    req = GpuLeaseRequestV1(verb="attach", request_id=request_id or uuid.uuid4().hex, holder=holder,
+                            work_class=work_class, priority=priority, deadline_at=deadline,
+                            turn_correlation_id=turn_correlation_id, hold_lease_id=ref.lease_id,
+                            hold_generation=ref.generation)
+    async with _held(bus, req, source=holder, deadline=deadline, deadline_sec=deadline_sec,
+                     heartbeat_sec=heartbeat_sec, retryable=False) as lease:
+        yield lease
+
+
+async def acquire_hold(
+    bus: Any, *, holder: str, work_class: str, request_id: str, priority: str = "background",
+    deadline_at: datetime | None = None, min_ctx_tokens: int = 0, turn_correlation_id: str | None = None,
+    source: str | None = None, timeout_sec: float = LEASE_RPC_TIMEOUT_SEC,
+) -> GpuLeaseReplyV1:
+    """Ask for a durable run's hold; returns at once (granted / queued / backlogged / unavailable).
+    Idempotent on ``request_id`` (``<run_id>:<attempt>``): re-asking after a lost reply returns the
+    same lease. Always ``retryable``: an expired or aborted hold re-queues with the same lease_id."""
+    req = GpuLeaseRequestV1(verb="acquire", request_id=request_id, holder=holder, work_class=work_class,
+                            priority=priority, kind="hold", min_ctx_tokens=min_ctx_tokens, deadline_at=deadline_at,
+                            turn_correlation_id=turn_correlation_id, retryable=True)
+    return await lease_rpc(bus, req, source=source or holder, timeout_sec=timeout_sec)
+
+
+async def heartbeat_lease(bus: Any, lease_id: str, *, source: str,
+                          timeout_sec: float = LEASE_RPC_TIMEOUT_SEC) -> GpuLeaseReplyV1:
+    """granted -> keep going; recall -> finish the current node and release before ``recall_by``;
+    anything else -> the lease is no longer held (stop, then ``lease_status`` to see why)."""
+    return await lease_rpc(bus, GpuLeaseRequestV1(verb="heartbeat", lease_id=lease_id), source=source,
+                           timeout_sec=timeout_sec)
+
+
+async def lease_status(bus: Any, lease_id: str, *, source: str,
+                       timeout_sec: float = LEASE_RPC_TIMEOUT_SEC) -> GpuLeaseReplyV1:
+    """Read-only. granted/recall -> continue; queued/backlogged -> wait again; ok -> released;
+    unavailable -> ended with ``reason``; unknown_lease -> ask again with a new request_id."""
+    return await lease_rpc(bus, GpuLeaseRequestV1(verb="status", lease_id=lease_id), source=source,
+                           timeout_sec=timeout_sec)
+
+
+async def release_lease(bus: Any, lease_id: str, *, source: str, outcome: str = "ok", detail: str | None = None,
+                        timeout_sec: float = LEASE_RPC_TIMEOUT_SEC) -> GpuLeaseReplyV1:
+    return await lease_rpc(bus, GpuLeaseRequestV1(verb="release", lease_id=lease_id, outcome=outcome,
+                                                  detail=detail), source=source, timeout_sec=timeout_sec)
+
+
+def hold_ref(reply: GpuLeaseReplyV1, holder: str) -> GpuLeaseRefV1:
+    """The GpuLeaseRefV1 a granted hold's calls carry (header X-Orion-Gpu-Lease / options.gpu_lease)."""
+    if reply.status not in ("granted", "recall") or reply.grant is None:
+        raise LeaseUnavailable(f"hold_not_granted:{reply.status}", reply.lease_id)
+    return GpuLeaseRefV1(lease_id=reply.grant.lease_id, generation=reply.grant.generation,
+                         role=reply.grant.role, holder=holder)
+
+
+@contextlib.asynccontextmanager
+async def _held(bus: Any, req: GpuLeaseRequestV1, *, source: str, deadline: datetime, deadline_sec: float,
+                heartbeat_sec: float, retryable: bool) -> AsyncIterator[Lease]:
+    rpc_timeout = max(LEASE_RPC_MIN_TIMEOUT_SEC, min(LEASE_RPC_TIMEOUT_SEC, float(deadline_sec)))
     lease: Lease | None = None
     reply: GpuLeaseReplyV1 | None = None
     unreachable = False
@@ -137,7 +224,7 @@ async def gpu_lease(
         raise LeaseUnavailable(reply.reason or wait_reason
                                or ("deadline" if reply.status == "queued" else reply.status), reply.lease_id)
 
-    beat = asyncio.create_task(_heartbeat(bus, lease, source, heartbeat_sec or (10.0 if kind == "request" else 30.0)))
+    beat = asyncio.create_task(_heartbeat(bus, lease, source, heartbeat_sec))
     outcome, detail = "ok", None
     try:
         yield lease

@@ -61,6 +61,9 @@ class CardLive:
     swap_role: str | None = None             # the seat a loading/unloading/fault state is about
     residency_until: datetime | None = None  # after an unload, the evicted residents stay until this
     loaded_at: datetime | None = None        # when the seat on this card was loaded (max_hold_sec)
+    # Runtime bookkeeping for the actuation engine; the scheduler reads neither.
+    swap_generation: int = 0
+    swap_action: dict | None = None
 
 
 @dataclass(frozen=True)

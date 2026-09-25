@@ -97,6 +97,23 @@ async def later(rt, clock, sec):
     await rt.tick()
 
 
+CLEAR_GUARDS = {"thermal": None, "visual_baseline": None}
+SEAT_WAIT = CFG.swap_after_wait_sec("agent-gpu2")
+
+
+async def beating(rt, clock, sec, lease_ids, step=60):
+    """Advance ``sec`` like production: workers re-announce, holders heartbeat inside their TTL."""
+    left = sec
+    while left > 0:
+        dt = min(step, left)
+        clock.advance(dt)
+        left -= dt
+        for lid in lease_ids:
+            await rt.heartbeat(lid)
+        await announce(rt)
+        await rt.tick()
+
+
 def acq(cls, rid=None, **kw):
     return GpuLeaseRequestV1(verb="acquire", work_class=cls, holder="test", request_id=rid, **kw)
 
@@ -258,10 +275,10 @@ def test_observe_mode_publishes_swap_requests_without_touching_cards():
     async def go():
         rt, clock = make()
         await boot(rt)
-        await rt.acquire(acq("agent", kind="hold"))   # 90s heartbeat window: stays held
+        rt.guard_states = dict(CLEAR_GUARDS)
+        h = await rt.acquire(acq("agent", kind="hold"))
         await rt.acquire(acq("agent"))
-        await later(rt, clock, CFG.defaults.swap_after_wait_sec + 1)
-        await rt.tick()
+        await beating(rt, clock, SEAT_WAIT + 1, [h.lease_id])
         [s] = rt.bus.events("swap_requested")
         assert s["role"] == "agent-gpu2" and s["detail"] == {"action": "load", "actuated": False, "mode": "observe"}
         assert not rt.cards["gpu2"].swapped_in
@@ -345,15 +362,16 @@ def test_swap_request_is_reported_again_when_it_recurs():
     async def go():
         rt, clock = make()
         await boot(rt)
+        rt.guard_states = dict(CLEAR_GUARDS)
         held = await rt.acquire(acq("agent", kind="hold"))
-        await rt.acquire(acq("agent", kind="hold", deadline_at=rt.now() + timedelta(seconds=40)))
-        await later(rt, clock, CFG.defaults.swap_after_wait_sec + 1)
+        await rt.acquire(acq("agent", deadline_at=rt.now() + timedelta(seconds=SEAT_WAIT + 40)))
+        await beating(rt, clock, SEAT_WAIT + 1, [held.lease_id])
         assert len(rt.bus.events("swap_requested")) == 1
-        await later(rt, clock, 20)             # the waiter hits its deadline: demand gone
+        await beating(rt, clock, 60, [held.lease_id])   # the waiter hits its deadline: demand gone
         await rt.release(held.lease_id, "ok")
-        await rt.acquire(acq("agent", kind="hold"))
-        await rt.acquire(acq("agent", kind="hold"))
-        await later(rt, clock, CFG.defaults.swap_after_wait_sec + 1)
+        h2 = await rt.acquire(acq("agent", kind="hold"))
+        await rt.acquire(acq("agent"))
+        await beating(rt, clock, SEAT_WAIT + 1, [h2.lease_id])
         assert len(rt.bus.events("swap_requested")) == 2
     run(go())
 

@@ -448,8 +448,12 @@ class OrionBusAsync:
         each) to every rpc_request() timeout across all 37+ real call sites sharing this
         one client. Same trace-lane family as the pre-existing bus.transport: grammar
         producer (services/orion-bus/app/grammar_emit.py, cataloged in channels.yaml) but a
-        distinct semantic_role, so this doesn't collide with or get consumed by the old
-        transport_bus_reducer/bus_health_observed pipeline.
+        distinct semantic_role. The distinct role alone was NOT enough: the transport
+        reducer keys on trace_id and read this as bus node "rpc_timeout" until
+        2026-09-25, minting a phantom bus:rpc_timeout / node:rpc_timeout. It is now
+        excluded consumer-side via orion.substrate.transport_loop.constants.
+        NON_BUS_TRANSPORT_NODE_IDS -- keep the "rpc_timeout" trace segment in sync
+        with that set if this format ever changes.
 
         Fire-and-forget, never raises past this boundary -- same guarantee as
         RpcHealthAggregator.record_timeout(), which this call always accompanies (see

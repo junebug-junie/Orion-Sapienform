@@ -6,7 +6,12 @@ from datetime import datetime, timezone
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.transport_projection import TransportBusStateV1
 
-from .constants import DEFAULT_STREAM_DEPTH_CRITICAL, TRANSPORT_SOURCE_SERVICE, TRANSPORT_TRACE_PREFIX
+from .constants import (
+    DEFAULT_STREAM_DEPTH_CRITICAL,
+    NON_BUS_TRANSPORT_NODE_IDS,
+    TRANSPORT_SOURCE_SERVICE,
+    TRANSPORT_TRACE_PREFIX,
+)
 
 _KV_RE = re.compile(r"(\w+)=([^,;\s]+)")
 
@@ -47,6 +52,10 @@ def parse_bus_transport_trace_id(trace_id: str) -> tuple[str, str] | None:
         return None
     node_id, sample_window_id = parts[1], parts[2]
     if not node_id or not sample_window_id:
+        return None
+    # `bus.transport:rpc_timeout:<corr>` shares the lane prefix but is not a
+    # bus node (see constants.NON_BUS_TRANSPORT_NODE_IDS).
+    if node_id in NON_BUS_TRANSPORT_NODE_IDS:
         return None
     return node_id, sample_window_id
 

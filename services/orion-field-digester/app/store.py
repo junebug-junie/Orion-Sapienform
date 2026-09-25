@@ -477,6 +477,42 @@ class FieldDigesterStore:
             ).scalar()
         return int(value or 0)
 
+    # Oldest-wait readers (queue contention oldest-wait component, 2026-09-25). Age is computed
+    # inside Postgres against its own now(), so the digester's clock never enters the subtraction.
+    # Empty queue -> NULL -> 0.0 (a real "nothing waiting", not a failure). Each filter matches its
+    # count_* sibling exactly, and each rides an existing index (claim index, the durable FIFO
+    # partial index, gpu_pool_leases_live_idx).
+    def _oldest_age_sec(self, sql: str) -> float:
+        with self._engine.connect() as conn:
+            value = conn.execute(text(sql)).scalar()
+        return max(float(value), 0.0) if value is not None else 0.0
+
+    def oldest_world_pulse_seed_pending_age_sec(self) -> float:
+        return self._oldest_age_sec(
+            """
+            SELECT EXTRACT(EPOCH FROM now() - min(created_at))
+            FROM world_pulse_read_seed WHERE status = 'pending'
+            """
+        )
+
+    def oldest_gpu_pool_waiting_age_sec(self) -> float:
+        # queued_since is when the lease started waiting for a slot; created_at covers a
+        # backlogged lease that never got a queued_since.
+        return self._oldest_age_sec(
+            """
+            SELECT EXTRACT(EPOCH FROM now() - min(coalesce(queued_since, created_at)))
+            FROM gpu_pool_leases WHERE status IN ('queued', 'backlogged')
+            """
+        )
+
+    def oldest_durable_demand_pending_age_sec(self) -> float:
+        return self._oldest_age_sec(
+            """
+            SELECT EXTRACT(EPOCH FROM now() - min(created_at))
+            FROM durable_resource_demands WHERE status = 'pending'
+            """
+        )
+
     def count_durable_demand_pending(self) -> int:
         """Pending durable resource demands (queue contention source)."""
         with self._engine.connect() as conn:

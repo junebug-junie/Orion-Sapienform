@@ -8,6 +8,7 @@ reads Redis, never recomputes EWMA, and never embeds raw queue counts.
 from __future__ import annotations
 
 from orion.field.queue_contention import (
+    OLDEST_WAIT_SUFFIX,
     SOURCE_DURABLE,
     SOURCE_GPU_POOL,
     SOURCE_SEED,
@@ -22,6 +23,20 @@ _DRIVER_BLURBS: dict[str, str] = {
     ),
     SOURCE_GPU_POOL: (
         "work waiting in line for a GPU is running well above its normal level"
+    ),
+    # Oldest-wait drivers (2026-09-25): the queue may not be longer than usual,
+    # but the item at the back of it has waited far past its normal wait --
+    # i.e. the queue looks stuck, not just busy. Relative wording only; the
+    # raw age never reaches Orion.
+    SOURCE_DURABLE + OLDEST_WAIT_SUFFIX: (
+        "the oldest durable GPU demand has waited far longer than they normally do"
+    ),
+    SOURCE_SEED + OLDEST_WAIT_SUFFIX: (
+        "the oldest reading seed has waited far longer than seeds normally do — "
+        "that queue looks stuck, not just busy"
+    ),
+    SOURCE_GPU_POOL + OLDEST_WAIT_SUFFIX: (
+        "the oldest request waiting for a GPU has waited far longer than normal"
     ),
 }
 

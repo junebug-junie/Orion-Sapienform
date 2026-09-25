@@ -116,7 +116,10 @@ REGISTRY: tuple[InnerStateSignal, ...] = (
             "fixed 2026-07-12 (9d367d4f, 4dc965f2) after a permanent-saturation "
             "bug; not read by cognition directly, composed into self_state.v1. "
             "Additive scalar queue_contention_score (2026-09-20): 0-10 "
-            "EWMA-relative max of seed/durable/gateway queue subs, written each "
+            "max of per-source subs over seed/durable/gpu_pool queues -- depth "
+            "vs its own EWMA, plus (2026-09-25) oldest-item wait vs a fixed "
+            "expected wait so a frozen queue is not read as calm; driver "
+            "'<source>:oldest_wait' when the age sub wins. Written each "
             "digester tick by app/digestion/queue_contention.py; Hub hire "
             "role-teach disclosure is the cognition consumer (Task 8)."
         ),

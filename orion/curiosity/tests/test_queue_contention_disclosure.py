@@ -60,3 +60,26 @@ def test_queue_line_prefers_hire_not_compete_with_gpu() -> None:
     assert "do not take a short local look" in text
     assert "quick look" not in text
     assert "helprequest" in text.replace(" ", "") or "help request" in text
+
+
+def test_oldest_wait_driver_gets_stuck_wording_without_raw_age() -> None:
+    from orion.field.queue_contention import OLDEST_WAIT_SUFFIX, SOURCE_SEED
+
+    lines = format_queue_contention_progress(10.0, SOURCE_SEED + OLDEST_WAIT_SUFFIX)
+    assert len(lines) == 1
+    line = lines[0]
+    assert "10/10 (high)" in line
+    assert "oldest reading seed has waited far longer" in line
+    assert "stuck" in line
+    # Normalized only: no hours/days/seconds or raw counts reach Orion.
+    assert not any(ch.isdigit() for ch in line.replace("10/10", ""))
+
+
+def test_every_oldest_wait_driver_has_its_own_blurb() -> None:
+    from orion.field.queue_contention import OLDEST_WAIT_SUFFIX, SOURCE_KEYS
+
+    generic = "shared agent capacity is under more contention than usual"
+    for src in SOURCE_KEYS:
+        (line,) = format_queue_contention_progress(6.0, src + OLDEST_WAIT_SUFFIX)
+        assert generic not in line
+        assert "oldest" in line

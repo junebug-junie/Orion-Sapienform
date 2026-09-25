@@ -9,13 +9,21 @@ from pathlib import Path
 from orion.field_coherence import check_field_coherence
 from orion.schemas.telemetry.field_channel_corpus import FieldChannelCorpusRowV1
 from orion.field.pressure import collect_field_channel_pressures
-from orion.field.queue_contention import ewma_alpha
+from orion.field.queue_contention import (
+    SOURCE_DURABLE,
+    SOURCE_GPU_POOL,
+    SOURCE_SEED,
+    ewma_alpha,
+)
 from orion.telemetry.corpus_sink import InnerStateCorpusSink
 
 from app.anomaly_bus_publish import publish_anomaly_score
 from app.anomaly_scorer import FieldChannelAnomalyScorer
 from app.digestion.diffusion import get_learned_store
-from app.digestion.queue_contention import default_queue_contention_readers
+from app.digestion.queue_contention import (
+    default_queue_contention_age_readers,
+    default_queue_contention_readers,
+)
 from app.graph.lattice import load_lattice
 from app.health_monitor import HealthMonitor
 from app.ingest.state_deltas import Perturbation, delta_to_perturbations
@@ -277,6 +285,12 @@ class FieldDigesterWorker:
             half_life_sec=self._settings.field_queue_contention_half_life_sec,
         )
         qc_readers = default_queue_contention_readers(self._store)
+        qc_age_readers = default_queue_contention_age_readers(self._store)
+        qc_expected_wait = {
+            SOURCE_SEED: self._settings.field_queue_contention_seed_expected_wait_sec,
+            SOURCE_DURABLE: self._settings.field_queue_contention_durable_expected_wait_sec,
+            SOURCE_GPU_POOL: self._settings.field_queue_contention_gpu_pool_expected_wait_sec,
+        }
         run_digestion_tick(
             state,
             perturbations=perturbations,
@@ -289,6 +303,8 @@ class FieldDigesterWorker:
             queue_contention_alpha=qc_alpha,
             queue_contention_floor=self._settings.field_queue_contention_floor,
             queue_contention_readers=qc_readers,
+            queue_contention_age_readers=qc_age_readers,
+            queue_contention_expected_wait_sec=qc_expected_wait,
         )
 
         for node_id, suspicion in check_field_coherence(state).items():

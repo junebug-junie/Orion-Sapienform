@@ -10,6 +10,7 @@ from app.digestion.perturbation import apply_perturbations
 from app.digestion.precision import update_dimension_precision_baseline
 from app.digestion.queue_contention import (
     read_queue_contention_counts,
+    read_queue_contention_oldest_waits,
     update_queue_contention_pressure,
 )
 from app.digestion.significance import update_significance_pressure
@@ -32,6 +33,9 @@ def run_digestion_tick(
     queue_contention_floor: float = 1.0,
     queue_contention_counts: Mapping[str, float] | None = None,
     queue_contention_readers: Mapping[str, Callable[[], float]] | None = None,
+    queue_contention_oldest_wait_sec: Mapping[str, float] | None = None,
+    queue_contention_age_readers: Mapping[str, Callable[[], float]] | None = None,
+    queue_contention_expected_wait_sec: Mapping[str, float] | None = None,
 ) -> FieldStateV1:
     apply_perturbations(state, perturbations)
     # now=state.generated_at, NOT datetime.now(): apply_perturbations() above
@@ -70,12 +74,17 @@ def run_digestion_tick(
         counts = queue_contention_counts
         if counts is None and queue_contention_readers is not None:
             counts = read_queue_contention_counts(readers=queue_contention_readers)
-        if counts is not None:
+        ages = queue_contention_oldest_wait_sec
+        if ages is None and queue_contention_age_readers is not None:
+            ages = read_queue_contention_oldest_waits(readers=queue_contention_age_readers)
+        if counts is not None or ages is not None:
             update_queue_contention_pressure(
                 state,
-                counts=counts,
+                counts=counts or {},
                 alpha=queue_contention_alpha,
                 floor=queue_contention_floor,
+                oldest_wait_sec=ages,
+                expected_wait_sec=queue_contention_expected_wait_sec,
             )
     # Must run LAST: scores this tick's FINAL field_pressures() reading (see
     # update_dimension_precision_baseline()'s own docstring for why it can't

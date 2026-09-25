@@ -194,6 +194,20 @@ class Settings(BaseSettings):
     field_queue_contention_floor: float = Field(
         1.0, alias="FIELD_QUEUE_CONTENTION_FLOOR"
     )
+    # Oldest-wait component (2026-09-25): per-source expected wait in seconds.
+    # The oldest waiting item scores 0 up to 1x this and 10 at 5x. Fixed on
+    # purpose (not an EWMA) so a stuck queue cannot be learned as normal.
+    # Defaults and their live-data anchors: orion/field/queue_contention.py
+    # DEFAULT_*_EXPECTED_WAIT_SEC and the metric gate doc.
+    field_queue_contention_seed_expected_wait_sec: float = Field(
+        172800.0, gt=0.0, alias="FIELD_QUEUE_CONTENTION_SEED_EXPECTED_WAIT_SEC"
+    )
+    field_queue_contention_durable_expected_wait_sec: float = Field(
+        43200.0, gt=0.0, alias="FIELD_QUEUE_CONTENTION_DURABLE_EXPECTED_WAIT_SEC"
+    )
+    field_queue_contention_gpu_pool_expected_wait_sec: float = Field(
+        60.0, gt=0.0, alias="FIELD_QUEUE_CONTENTION_GPU_POOL_EXPECTED_WAIT_SEC"
+    )
 
 
 _settings: Settings | None = None

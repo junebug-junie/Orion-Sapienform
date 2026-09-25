@@ -483,7 +483,9 @@ What the disclosure can say:
 2. **≥2 access refusals** in hop notes → hand off to Cursor now.
 3. **Cursor budget spent** (`refused_budget`) → resume from hops; do not re-hire.
 4. **Queue contention** → one official digester score on FieldState
-   (`queue_contention_score` 0–10, `queue_contention_driver` names the source).
+   (`queue_contention_score` 0–10, `queue_contention_driver` names the source,
+   suffixed `:oldest_wait` when the oldest waiting item has waited far past its
+   normal wait -- a stuck queue, not just a long one).
    Hub **reads** latest `substrate_field_state`; it does **not** run its own
    Redis EWMA. Raw backlog counts are never shown. Elevated queue means hire
    now — not a short local look first.

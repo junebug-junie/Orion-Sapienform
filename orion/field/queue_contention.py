@@ -1,8 +1,23 @@
-"""Queue contention score: shared agent/curiosity capacity backlog vs EWMA.
+"""Queue contention score: shared agent/curiosity capacity backlog.
 
-Measures how backed up the reading-seed pipeline, durable GPU lease waits, and
-LLM gateway admission waiting are relative to each source's own recent EWMA
-baseline. Used to inform Orion's Cursor-vs-local hire decision.
+Measures how backed up the reading-seed pipeline, durable GPU demands, and GPU
+pool waiting leases are, two ways per source:
+
+* **depth** -- how many items wait, relative to that source's own recent EWMA
+  baseline;
+* **oldest wait** (2026-09-25) -- how long the oldest waiting item has waited,
+  relative to a fixed per-source expected wait.
+
+Used to inform Orion's Cursor-vs-local hire decision.
+
+Why the second half exists: a depth-vs-own-baseline score cannot see a FROZEN
+queue. Live 2026-09-25, the seed queue held 144 pending items with the oldest
+from 2026-09-07 and nothing done since 09-14, yet the score sat at 0.14 and
+was decaying toward 0 because the EWMA baseline was converging on the frozen
+count. A stuck queue and a quiet queue read the same to a relative depth
+score; only the age of what is waiting tells them apart. The expected waits
+are fixed config, not an EWMA, on purpose: a baseline that adapts would learn
+"stuck" as normal the same way the depth baseline did.
 
 NOT a rebadge of ``gpu_pressure`` (node biometrics / strain), 
 ``sustained_load_pressure`` (field-channel ``loaded_steady`` regime), or
@@ -13,11 +28,20 @@ different theory. Independence gate:
 Score formula (locked):
 
 ```text
-ratio = count / max(ewma, floor)
-sub   = clip(10 * (ratio - 1) / 4, 0, 10)   # 1x→0, 5x→10
-score = max(subs)
-driver = argmax(subs)  # None if all ~0
+ratio     = count / max(ewma, floor)
+depth_sub = clip(10 * (ratio - 1) / 4, 0, 10)          # 1x→0, 5x→10
+age_ratio = oldest_wait_sec / expected_wait_sec
+age_sub   = clip(10 * (age_ratio - 1) / 4, 0, 10)      # 1x→0, 5x→10
+score  = max(all depth_subs and age_subs)
+driver = "<source>" if a depth sub wins,
+         "<source>:oldest_wait" if an age sub wins,
+         None if every sub is ~0
 ```
+
+Rest point: an empty queue has no oldest item (age 0) and a queue whose oldest
+item is younger than its expected wait gives ``age_ratio <= 1`` -> ``age_sub``
+is exactly 0.0 (clip), not a floor. The age is a fresh read every tick, never
+carried forward or decayed, so it cannot sink to a fake 0 either.
 
 EWMA mean uses ``orion.bus.ewma.compute_ewma_update`` (variance unused here;
 prev_variance always 0). Score is against the *prior* baseline before this
@@ -43,6 +67,26 @@ SOURCE_GPU_POOL = "gpu_pool_waiting"
 
 SOURCE_KEYS: tuple[str, ...] = (SOURCE_SEED, SOURCE_DURABLE, SOURCE_GPU_POOL)
 
+# Driver suffix when a source's oldest-wait sub (not its depth sub) wins the max().
+OLDEST_WAIT_SUFFIX = ":oldest_wait"
+
+# Per-source expected wait (seconds) for the oldest waiting item. Knobs, not findings: each is
+# anchored to live data in docs/superpowers/specs/2026-09-20-queue-contention-metric-gate.md,
+# "Oldest-wait component (2026-09-25)". age_sub is 0 up to 1x and 10 at 5x.
+# Seeds: 48h ~= p90 claim wait of every seed ever completed (175,596s, n=15); 10/10 at 10 days.
+DEFAULT_SEED_EXPECTED_WAIT_SEC = 172800.0
+# Durable demands: 12h ~= p90 time-to-first-grant over 138 granted demands (45,086s); 10/10 at 60h.
+DEFAULT_DURABLE_EXPECTED_WAIT_SEC = 43200.0
+# GPU pool: 60s = 10x the worst grant wait seen over 1,275 leases (5.7s); 10/10 at 300s, which is
+# the deadline most callers put on a lease -- the oldest waiter is about to give up.
+DEFAULT_GPU_POOL_EXPECTED_WAIT_SEC = 60.0
+
+DEFAULT_EXPECTED_WAIT_SEC: dict[str, float] = {
+    SOURCE_SEED: DEFAULT_SEED_EXPECTED_WAIT_SEC,
+    SOURCE_DURABLE: DEFAULT_DURABLE_EXPECTED_WAIT_SEC,
+    SOURCE_GPU_POOL: DEFAULT_GPU_POOL_EXPECTED_WAIT_SEC,
+}
+
 DEFAULT_FLOOR = 1.0
 # Digester tick ~2s (RECEIPT_POLL_INTERVAL_SEC); half-life ~24h per gate doc.
 DEFAULT_HALF_LIFE_SEC = 86400.0
@@ -62,6 +106,12 @@ class QueueContentionReading:
 
     raw: dict[str, float]
     """Counts actually scored this tick (omit unreachable fail-open sources)."""
+
+    oldest_wait_sec: dict[str, float]
+    """Oldest-item wait actually scored this tick (omit unreachable fail-open sources)."""
+
+    subs: dict[str, float]
+    """Every sub-score that competed for the max, keyed like ``driver``."""
 
     ewma: dict[str, float]
     """Updated per-source EWMA means after absorbing ``raw``."""
@@ -91,6 +141,13 @@ def _sub_score(count: float, baseline: float, *, floor: float) -> float:
     return _clip(10.0 * (ratio - 1.0) / 4.0, 0.0, 10.0)
 
 
+def _age_sub_score(oldest_wait_sec: float, expected_wait_sec: float) -> float:
+    if expected_wait_sec <= 0.0:
+        raise ValueError("expected_wait_sec must be positive")
+    ratio = max(oldest_wait_sec, 0.0) / expected_wait_sec
+    return _clip(10.0 * (ratio - 1.0) / 4.0, 0.0, 10.0)
+
+
 def score_queue_contention(
     counts: Mapping[str, float],
     prev_ewma: Mapping[str, float],
@@ -98,12 +155,19 @@ def score_queue_contention(
     *,
     alpha: float,
     floor: float = DEFAULT_FLOOR,
+    oldest_wait_sec: Mapping[str, float] | None = None,
+    expected_wait_sec: Mapping[str, float] | None = None,
 ) -> QueueContentionReading:
-    """Score current queue depths against prior per-source EWMA baselines.
+    """Score current queue depths (vs prior EWMA) and oldest waits (vs expected wait).
 
-    Only keys present in ``counts`` participate (fail-open readers omit a key
-    rather than inventing 0). Unknown keys outside ``SOURCE_KEYS`` are ignored.
+    Only keys present in ``counts`` / ``oldest_wait_sec`` participate (fail-open
+    readers omit a key rather than inventing 0). Unknown keys outside
+    ``SOURCE_KEYS`` are ignored. ``expected_wait_sec`` falls back per key to
+    ``DEFAULT_EXPECTED_WAIT_SEC``.
     """
+    ages_in = oldest_wait_sec or {}
+    expected = {**DEFAULT_EXPECTED_WAIT_SEC, **(expected_wait_sec or {})}
+    ages: dict[str, float] = {}
     raw: dict[str, float] = {}
     # Only live sources carry forward: a retired source's baseline (e.g. "gateway_waiting") is dropped,
     # not left riding along in FieldStateV1 forever where a generic reader could mistake it for signal.
@@ -135,21 +199,48 @@ def score_queue_contention(
         ewma[key] = update.ewma
         ewma_n[key] = n_prev + 1
 
+    # Oldest-wait subs. No warm-up: the expected wait is fixed config, not a learned baseline,
+    # so the very first tick after a restart can already say "this queue is stuck".
+    for key in SOURCE_KEYS:
+        if key not in ages_in:
+            continue
+        age = max(float(ages_in[key]), 0.0)
+        ages[key] = age
+        subs[key + OLDEST_WAIT_SUFFIX] = _age_sub_score(age, float(expected[key]))
+
     if not subs:
         return QueueContentionReading(
-            score=0.0, driver=None, raw=raw, ewma=ewma, ewma_n=ewma_n
+            score=0.0,
+            driver=None,
+            raw=raw,
+            oldest_wait_sec=ages,
+            subs=subs,
+            ewma=ewma,
+            ewma_n=ewma_n,
         )
 
     score = max(subs.values())
     driver: str | None = None
     if score > _DRIVER_EPS:
-        # Stable tie-break: SOURCE_KEYS order (first max wins).
-        driver = max(subs, key=lambda k: (subs[k], -SOURCE_KEYS.index(k)))
+        # Stable tie-break: SOURCE_KEYS order, depth before oldest-wait (first max wins).
+        order = [k for src in SOURCE_KEYS for k in (src, src + OLDEST_WAIT_SUFFIX)]
+        driver = max(subs, key=lambda k: (subs[k], -order.index(k)))
 
     return QueueContentionReading(
         score=score,
         driver=driver,
         raw=raw,
+        oldest_wait_sec=ages,
+        subs=subs,
         ewma=ewma,
         ewma_n=ewma_n,
     )
+
+
+def driver_source(driver: str | None) -> tuple[str | None, bool]:
+    """Split a driver into ``(source_key, is_oldest_wait)``; ``(None, False)`` for no driver."""
+    if not driver:
+        return None, False
+    if driver.endswith(OLDEST_WAIT_SUFFIX):
+        return driver[: -len(OLDEST_WAIT_SUFFIX)], True
+    return driver, False

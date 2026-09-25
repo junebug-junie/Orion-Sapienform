@@ -179,3 +179,120 @@ def test_run_digestion_tick_uses_injectable_readers() -> None:
 
     assert state.queue_contention_score == 10.0
     assert state.queue_contention_driver == SOURCE_GPU_POOL
+
+
+# --- Oldest-wait component (2026-09-25) -------------------------------------
+
+from orion.field.queue_contention import OLDEST_WAIT_SUFFIX  # noqa: E402
+
+from app.digestion.queue_contention import (  # noqa: E402
+    default_queue_contention_age_readers,
+    read_queue_contention_oldest_waits,
+)
+
+
+def test_stuck_queue_through_full_tick_names_oldest_wait() -> None:
+    """Count flat at its baseline, oldest item 10 days old -> nonzero, driver names staleness."""
+    state = _empty_state()
+    state.queue_contention_ewma = {SOURCE_SEED: 144.0}
+    state.queue_contention_ewma_n = {SOURCE_SEED: 1176}
+
+    run_digestion_tick(
+        state,
+        perturbations=[],
+        decay_rate=0.0,
+        diffusion_rate=0.0,
+        staleness_threshold_sec=60.0,
+        store=_NoHistoryStore(),
+        significance_window_seconds=900.0,
+        significance_check_interval_sec=30.0,
+        queue_contention_alpha=0.01,
+        queue_contention_readers={SOURCE_SEED: lambda: 144.0},
+        queue_contention_age_readers={SOURCE_SEED: lambda: 10 * 86400.0},
+    )
+    assert state.queue_contention_score == 10.0
+    assert state.queue_contention_driver == SOURCE_SEED + OLDEST_WAIT_SUFFIX
+    assert state.queue_contention_computed_at == BASE
+
+
+def test_empty_queue_through_full_tick_is_zero() -> None:
+    state = _empty_state()
+    state.queue_contention_ewma = {SOURCE_GPU_POOL: 0.0}
+    state.queue_contention_ewma_n = {SOURCE_GPU_POOL: 100}
+    state.queue_contention_score = 7.0
+    state.queue_contention_driver = SOURCE_GPU_POOL + OLDEST_WAIT_SUFFIX
+
+    run_digestion_tick(
+        state,
+        perturbations=[],
+        decay_rate=0.0,
+        diffusion_rate=0.0,
+        staleness_threshold_sec=60.0,
+        store=_NoHistoryStore(),
+        significance_window_seconds=900.0,
+        significance_check_interval_sec=30.0,
+        queue_contention_alpha=0.01,
+        queue_contention_readers={SOURCE_GPU_POOL: lambda: 0.0},
+        queue_contention_age_readers={SOURCE_GPU_POOL: lambda: 0.0},
+    )
+    assert state.queue_contention_score == 0.0
+    assert state.queue_contention_driver is None
+
+
+def test_expected_wait_override_threads_through_tick() -> None:
+    state = _empty_state()
+    run_digestion_tick(
+        state,
+        perturbations=[],
+        decay_rate=0.0,
+        diffusion_rate=0.0,
+        staleness_threshold_sec=60.0,
+        store=_NoHistoryStore(),
+        significance_window_seconds=900.0,
+        significance_check_interval_sec=30.0,
+        queue_contention_alpha=0.01,
+        queue_contention_readers={},
+        queue_contention_age_readers={SOURCE_GPU_POOL: lambda: 300.0},
+        queue_contention_expected_wait_sec={SOURCE_GPU_POOL: 100.0},
+    )
+    assert state.queue_contention_score == pytest.approx(5.0)
+    assert state.queue_contention_driver == SOURCE_GPU_POOL + OLDEST_WAIT_SUFFIX
+
+
+def test_failed_age_reader_is_omitted_not_zero() -> None:
+    def boom() -> float:
+        raise RuntimeError("db down")
+
+    ages = read_queue_contention_oldest_waits(
+        readers={SOURCE_SEED: boom, SOURCE_DURABLE: lambda: 12.0}
+    )
+    assert ages == {SOURCE_DURABLE: 12.0}
+
+
+def test_all_readers_failed_keeps_prior_reading() -> None:
+    state = _empty_state()
+    state.queue_contention_score = 4.0
+    state.queue_contention_driver = SOURCE_SEED + OLDEST_WAIT_SUFFIX
+    update_queue_contention_pressure(state, counts={}, alpha=0.01, oldest_wait_sec={})
+    assert state.queue_contention_score == 4.0
+    assert state.queue_contention_computed_at is None
+
+
+class _AgeStore:
+    def oldest_world_pulse_seed_pending_age_sec(self) -> float:
+        return 1.0
+
+    def oldest_durable_demand_pending_age_sec(self) -> float:
+        return 2.0
+
+    def oldest_gpu_pool_waiting_age_sec(self) -> float:
+        return 3.0
+
+
+def test_default_age_readers_map_every_source() -> None:
+    readers = default_queue_contention_age_readers(_AgeStore())
+    assert {k: r() for k, r in readers.items()} == {
+        SOURCE_SEED: 1.0,
+        SOURCE_DURABLE: 2.0,
+        SOURCE_GPU_POOL: 3.0,
+    }

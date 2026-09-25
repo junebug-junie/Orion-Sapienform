@@ -242,3 +242,25 @@ def test_registry_registers_three_reducer_lanes() -> None:
     assert "orionmem" not in ids
     assert "self_study" not in ids
     assert {"biometrics", "execution", "transport", "attention", "episodes", "curiosity"} <= set(ids)
+
+
+@pytest.mark.parametrize(
+    ("ping_ok", "observer_failures", "expected_confidence"),
+    [(True, 0, 1.0), (None, 0, 0.5), (False, 0, 0.7), (True, 1, 0.7)],
+)
+def test_transport_adapter_confidence_unchanged_by_delivery_confidence_retirement(
+    ping_ok, observer_failures, expected_confidence
+) -> None:
+    """Old: _clamp(delivery_confidence) or 0.7. New: _clamp(1 - reliability_pressure)
+    or 0.7. Uses reducer-produced states so every real reliability value is covered."""
+    from orion.substrate.transport_loop.extract import compute_transport_pressures
+
+    state = TransportBusStateV1(
+        target_id="bus:athena", node_id="athena", sample_window_id="w", source_trace_id="t",
+        redis_ping_ok=ping_ok, observer_failure_count=observer_failures,
+    )
+    state = state.model_copy(update=compute_transport_pressures(state))
+    proj = TransportBusProjectionV1(updated_at=NOW, buses={"bus:athena": state})
+    record = map_transport_ctx_to_substrate({"transport_bus_projection": proj})
+    assert record is not None
+    assert record.nodes[0].signals.confidence == pytest.approx(expected_confidence)

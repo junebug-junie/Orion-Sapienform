@@ -153,8 +153,6 @@ def test_zero_evidence_bus_trace_does_not_mint_fabricated_half_health() -> None:
             "source_trace_id": "bus.transport:athena:prev",
             "redis_ping_ok": True,
             "evidence_event_ids": ["e1"],
-            "delivery_confidence": 1.0,
-            "stream_backlog_health": 1.0,
             "observed_at": NOW,
         }
     )

@@ -126,20 +126,20 @@ def test_capability_to_capability_diffusion() -> None:
         target_id="capability:orchestration",
         edge_type="capability_capability",
         weight=0.70,
-        channel_map={"stream_backlog_pressure": "stream_backlog_pressure"},
+        channel_map={"synthetic_cap_pressure": "synthetic_cap_pressure"},
     )
     state = FieldStateV1(
         generated_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
         tick_id="tick_cap_cap",
         node_vectors={},
         capability_vectors={
-            "capability:transport": {"stream_backlog_pressure": 1.0},
-            "capability:orchestration": {"stream_backlog_pressure": 0.0},
+            "capability:transport": {"synthetic_cap_pressure": 1.0},
+            "capability:orchestration": {"synthetic_cap_pressure": 0.0},
         },
         edges=[edge],
     )
     apply_diffusion(state, diffusion_rate=1.0)
-    assert state.capability_vectors["capability:orchestration"]["stream_backlog_pressure"] == 0.70
+    assert state.capability_vectors["capability:orchestration"]["synthetic_cap_pressure"] == 0.70
 
 
 def test_reasoning_load_diffuses_to_orchestration() -> None:

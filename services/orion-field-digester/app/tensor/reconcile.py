@@ -115,6 +115,18 @@ def _prune_every_node_vector(state: FieldStateV1) -> None:
                     stamps.pop(channel, None)
 
 
+_TENSION_KEY_SEP = "\x1f"  # same separator as app/digestion/tension.py::_KEY_SEP
+
+
+def _prune_retired_tension_baselines(state: FieldStateV1) -> None:
+    """Drop tension baseline entries (keyed "<node_id>\\x1f<channel>") whose
+    channel is retired. Otherwise they round-trip through tension.py's gate
+    state forever for a channel nothing writes (found in review, 2026-09-25)."""
+    for store in (state.tension_baseline_mu, state.tension_baseline_var, state.tension_baseline_n):
+        for flat_key in [k for k in store if k.partition(_TENSION_KEY_SEP)[2] in RETIRED_NODE_CHANNELS]:
+            store.pop(flat_key, None)
+
+
 def _prune_retired_lattice_nodes(state: FieldStateV1) -> None:
     """Drop the whole node_vectors/node_vector_updated_at entry for a node
     that has been permanently removed from the lattice (RETIRED_LATTICE_NODES
@@ -144,6 +156,7 @@ def reconcile_field_state_with_lattice(
     for node_id in lattice.nodes:
         _ensure_node_vector(updated.node_vectors, node_id)
     _prune_every_node_vector(updated)
+    _prune_retired_tension_baselines(updated)
     _prune_retired_lattice_nodes(updated)
     for capability_id in lattice.capabilities:
         _ensure_capability_vector(updated.capability_vectors, capability_id)

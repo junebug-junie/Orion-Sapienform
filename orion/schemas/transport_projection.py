@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
+import logging
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -30,6 +31,9 @@ RETIRED_TRANSPORT_BUS_STATE_FIELDS: frozenset[str] = frozenset(
 )
 
 
+_logger = logging.getLogger("orion.schemas.transport_projection")
+
+
 class TransportBusStateV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -37,6 +41,12 @@ class TransportBusStateV1(BaseModel):
     @classmethod
     def _drop_retired_fields(cls, data: Any) -> Any:
         if isinstance(data, dict) and not RETIRED_TRANSPORT_BUS_STATE_FIELDS.isdisjoint(data):
+            # Expected once per persisted pre-retirement row (rewritten on the
+            # next reducer tick). Seen repeatedly = a live writer still sends them.
+            _logger.info(
+                "transport_bus_state_retired_fields_dropped fields=%s",
+                sorted(RETIRED_TRANSPORT_BUS_STATE_FIELDS.intersection(data)),
+            )
             return {k: v for k, v in data.items() if k not in RETIRED_TRANSPORT_BUS_STATE_FIELDS}
         return data
 

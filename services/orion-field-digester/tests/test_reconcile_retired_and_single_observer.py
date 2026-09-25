@@ -160,3 +160,18 @@ def test_retired_lattice_nodes_are_not_currently_in_the_lattice() -> None:
     immediately deletes it every tick, i.e. it could never actually reconcile."""
     lattice_nodes = set(_lattice().nodes)
     assert not (RETIRED_LATTICE_NODES & lattice_nodes)
+
+
+def test_retired_channels_are_pruned_from_tension_baselines() -> None:
+    """Review finding 2026-09-25: tension baselines keyed "<node>\\x1f<channel>"
+    round-tripped for retired channels forever. Live channels are kept."""
+    retired_key = "node:athena\x1fstream_backlog_health"
+    live_key = "node:athena\x1fcpu_pressure"
+    state = _state({"node:athena": {"cpu_pressure": 0.2}})
+    state.tension_baseline_mu = {retired_key: 1.0, live_key: 0.2}
+    state.tension_baseline_var = {retired_key: 0.0, live_key: 0.01}
+    state.tension_baseline_n = {retired_key: 50, live_key: 50}
+    out = reconcile_field_state_with_lattice(state, lattice=_lattice())
+    for store in (out.tension_baseline_mu, out.tension_baseline_var, out.tension_baseline_n):
+        assert retired_key not in store
+        assert live_key in store

@@ -1,12 +1,13 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 669,
+  "metric_count": 670,
   "_last_change": {
-    "base": "merge base 38f114cd6 (origin/main)",
-    "change_count": 0,
-    "high_severity_count": 0,
+    "base": "merge base a65691c4d (origin/main)",
+    "change_count": 2,
+    "high_severity_count": 1,
     "changes": [
-      "no definition changes relative to the merge base"
+      "high   routing_changed metric://bus_channel/orion-cortex-exec/orion:rpc_health:snapshot (declared_consumers: \u2026nal-gateway'] -> \u2026nal-gateway', 'orion-substrate-runtime'])",
+      "medium added metric://field_channel/orion-field-digester/rpc_timeout_pressure"
     ]
   },
   "definitions": {
@@ -983,7 +984,8 @@
       ],
       "declared_consumers": [
         "orion-equilibrium-service",
-        "orion-signal-gateway"
+        "orion-signal-gateway",
+        "orion-substrate-runtime"
       ],
       "notes": "kind=telemetry stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -3962,6 +3964,11 @@
         "social_pressure"
       ],
       "notes": "category=social_conversational level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/rpc_timeout_pressure": {
+      "meaning": "Caller-side RPC delivery on node:substrate.rpc_delivery: the worst bus request channel's share of rpc_request() calls that hit their deadline over the last 10 minutes, timeouts / max(calls, 10), summed across every service's rpc-health snapshots. 0.0 means every counted call was answered in time; not written when no bus call happened.",
+      "notes": "category=infra_transport level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/stability": {

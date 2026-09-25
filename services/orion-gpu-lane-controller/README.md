@@ -101,3 +101,52 @@ adapter only. GPU2 restoration belongs to durable admission reconciliation.
 GPU2 control endpoints use the existing internal service/tailnet boundary without
 bearer tokens. Durable intent, generation fencing, lease/permit protection, and
 atomic diffusion draining remain enforced. The existing GPU1 API is unchanged.
+
+## GPU pool actuation bridge (stage 4.2)
+
+Spec: [`docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md`](../../docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
+
+The controller also listens on the bus for the GPU pool asking it to load or unload a model on
+gpu2, and does it with the same drain / stop / start / readiness-wait / rollback steps
+(`app/gpu2.py` `transition()`) the durable-runs HTTP route uses. Only who asks and the fence differ.
+
+**Who may move gpu2 is one switch, `GPU2_AUTHORITY`:**
+
+| value | gpu2 moved by | fence | bus actuation requests |
+| --- | --- | --- | --- |
+| `durable` (default, today) | durable-runs `POST /v1/gpu-slots/activate` | callback to `GPU2_AUTHORITY_URL/elastic/status` | answered `refused reason=authority_durable` |
+| `pool` | `GpuActuateV1` on `orion:gpu_pool:actuate:request` | pool generation (persisted) + `launch_digest` vs this checkout's `config/gpu_pool.yaml` | executed; HTTP gpu2 activate answers `503 authority_pool` |
+
+Flip to `pool` only as step (3) of the stage 4.5 cutover runbook. GPU1's flip is unaffected either way.
+
+**Bus contract** (`orion/schemas/gpu_pool.py`). Requests for another `actuator` name are ignored.
+For ours the controller publishes on `orion:gpu_pool:actuate:result`: `accepted`, then one
+`progress` per phase (`draining`, `stopping`, `starting`, `ready_wait`, `rolling_back`), then one
+terminal `succeeded` | `failed` | `refused`, with `observed` = container state of `agent-gpu2` and
+`diffusion` after the action. A failed load carries `restored` (were diffusion's containers put
+back); `restored` absent on a failed load means no rollback ran because nothing had been evicted
+yet -- read `observed`.
+
+- **Bridge mapping** (stage 4 only; stage 5 builds the compose call from the role's `launch`):
+  `agent-gpu2 load` -> `transition(target="agent-burst")`, `agent-gpu2 unload` ->
+  `transition(target="diffusion")`, via the role's `swap.load`/`swap.unload` verbs.
+- **Refusals** (`reason`): `authority_durable`, `gpu2_disabled`, `invalid_request:<field>`,
+  `unknown_role`, `role_not_on_this_actuator`, `cards_mismatch`, `launch_digest_mismatch`,
+  `not_a_bridge_role`, `bridge_verb_unsupported`, `profile_unsupported`, `deadline_passed`,
+  `stale_generation`, `busy`, `fence_state_unreadable:*`, `fence_state_unwritable:*`,
+  `config_unloadable:*`. A refusal never advances the generation.
+- **Generation fence.** The accepted generation is written (fsync + atomic rename) to
+  `GPU2_POOL_FENCE_STATE_PATH` on the `gpu-lane-controller-state` volume *before* any container is
+  touched; anything `<=` it is refused. `transition()`'s own authority checkpoints re-check that the
+  running action is still the newest generation and that the checkout's digest has not changed.
+- **Idempotency.** A replayed `action_id` gets its recorded terminal result back; a replay of the
+  in-flight one gets `progress`. Neither starts a second transition.
+- **`status`** is a read: no digest check, no fence. It re-publishes the card set's last recorded
+  result (so a restarted pool adopts it by its own `action_id`), then answers with `observed`.
+- **Controller restart mid-action**: on boot (pool authority) the in-flight action is recorded as
+  `failed reason=interrupted_by_controller_restart`, never re-run.
+- **Not re-checked here any more under `pool`:** thermal, visual-baseline urgency and lease/permit
+  closure. Those are pool policy (stage 4.3 guards + recall). Drain-before-stop and
+  upstream-idle-before-stop stay here.
+
+Keys: `GPU2_AUTHORITY`, `GPU_POOL_ACTUATOR_NAME`, `GPU2_POOL_FENCE_STATE_PATH` (see `.env_example`).

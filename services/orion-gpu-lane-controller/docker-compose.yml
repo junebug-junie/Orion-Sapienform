@@ -16,6 +16,9 @@ services:
       - GPU2_AUTHORITY_URL=${GPU2_AUTHORITY_URL:-http://100.92.216.81:8124}
       - GPU2_DRAIN_TIMEOUT_SEC=${GPU2_DRAIN_TIMEOUT_SEC:-300}
       - GPU2_MODEL_READY_TIMEOUT_SEC=${GPU2_MODEL_READY_TIMEOUT_SEC:-600}
+      - GPU2_AUTHORITY=${GPU2_AUTHORITY:-durable}
+      - GPU_POOL_ACTUATOR_NAME=${GPU_POOL_ACTUATOR_NAME:-circe}
+      - GPU2_POOL_FENCE_STATE_PATH=${GPU2_POOL_FENCE_STATE_PATH:-/state/gpu2_pool_fence.json}
       - LOG_LEVEL=${LOG_LEVEL}
       - NODE_NAME=${NODE_NAME:-circe}
 
@@ -41,12 +44,18 @@ services:
       # live at /mnt/scripts/Orion-Sapienform (same path used to SSH in and
       # operate circe elsewhere in this repo's docs), overridable per host.
       - ${GPU_LANE_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:/repo:ro
+      # Stage 4.2 pool fence (GPU2_POOL_FENCE_STATE_PATH): the last accepted pool generation must
+      # survive a container recreate, and /repo above is read-only.
+      - gpu-lane-controller-state:/state
 
     ports:
       - "${GPU_LANE_CONTROLLER_HOST_PORT:-8090}:8090"
 
     networks:
       - app-net
+
+volumes:
+  gpu-lane-controller-state:
 
 networks:
   app-net:

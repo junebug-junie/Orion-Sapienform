@@ -5,6 +5,9 @@ on:
       - 'services/orion-gpu-lane-controller/**'
       - 'services/orion-diffusion-host/**'
       - 'orion/schemas/gpu_slot.py'
+      - 'orion/schemas/gpu_pool.py'
+      - 'orion/gpu_pool/config.py'
+      - 'config/gpu_pool.yaml'
       - '.github/workflows/gpu2-elastic-tests.yml'
 jobs:
   safety:

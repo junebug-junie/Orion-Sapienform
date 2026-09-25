@@ -19,6 +19,11 @@ LEASE_HEADER = "X-Orion-Resource-Lease"
 MAX_LEASE_HEADER_BYTES = 8192
 GPU_LEASE_HEADER = "X-Orion-Gpu-Lease"      # HTTP carrier of GpuLeaseRefV1
 GPU_LEASE_OPTION = "gpu_lease"              # bus carrier: options.gpu_lease
+# The route a call under a GPU pool hold names when its caller has no route of its own. Placement
+# ignores it (``attach`` runs the call on the hold's role); it only names the work class the pool
+# records for the child, and durable-run holds are agent class (stage 4 spec, Decision 1 rule 1).
+# A hold's role (e.g. "agent-gpu2") is not a route name, so it can never stand in for one.
+GPU_LEASE_ROUTE = "agent"
 
 
 class ResourceLeaseRejected(RuntimeError):

@@ -820,6 +820,10 @@ def shapes_from_sources(sources: Mapping[str, Optional[str]]) -> Optional[dict[s
         facts[mod] = f
     classes = {(m, n): ci for m, f in facts.items() for n, ci in f.classes.items()}
 
+    by_name: dict[str, list[Ref]] = collections.defaultdict(list)
+    for ref in classes:
+        by_name[ref[1]].append(ref)
+
     def bases(ci: ClassInfo) -> list[Ref]:
         f = facts[ci.module]
         out = []
@@ -831,6 +835,11 @@ def shapes_from_sources(sources: Mapping[str, Optional[str]]) -> Optional[dict[s
                 ref = (f.imports[head][0], f.imports[head][1])
                 if ref in classes:
                     out.append(ref)
+                elif len(by_name.get(ref[1], ())) == 1:
+                    # Imported through a re-export (``from orion.schemas import
+                    # Base``); the defining file is in the fetched set because
+                    # discovery lists it in ``dependency_files``.
+                    out.append(by_name[ref[1]][0])
         return out
 
     def shape(ref: Ref, depth: int = 0) -> ModelShape:

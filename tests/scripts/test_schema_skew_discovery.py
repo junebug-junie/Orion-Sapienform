@@ -252,3 +252,12 @@ def test_check_skew_end_to_end_with_one_exec_per_container(monkeypatch):
     assert by["prop"].status == "ok"
     assert "disp-redis" not in by
     assert notes == []
+
+
+def test_shapes_resolve_a_base_imported_through_a_re_export():
+    src = {
+        "orion/schemas/base.py": BASE + "    common: str\n",
+        "orion/schemas/t.py": "from orion.schemas import StrictBase\nclass T(StrictBase):\n    a: int\n",
+    }
+    t = ssd.shapes_from_sources(src)["orion.schemas.t:T"]
+    assert t.extra == "forbid" and t.fields == {"common", "a"}

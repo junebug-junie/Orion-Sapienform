@@ -134,6 +134,6 @@ select count(*) from public.checkpoints where thread_id like 'gpu_pool:%';   -- 
 
 ## PR link
 
-(filled on open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2330
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -20,6 +20,12 @@ grammar_events (orion-cortex-orch, orch.route:*) → route arbitration projectio
   (default on: PUBLISH_CORTEX_ORCH_GRAMMAR=true on orion-cortex-orch AND
   ENABLE_ROUTE_GRAMMAR_REDUCER=true here, both true by default now.
   manual_migration_route_substrate_loop.sql must be applied first.)
+
+grammar_events (orion-llm-gateway, llm_gateway.inference:*) → llm inference projection
+  → llm_inference_reducer → StateDeltaV1(target_kind=llm_inference_node), one per serving node
+  → substrate_reduction_receipts → orion-field-digester (when ENABLE_LLM_INFERENCE_FIELD_DIGESTION=true)
+  (default off: LLM_GATEWAY_GRAMMAR_ENABLED on the gateway, ENABLE_LLM_INFERENCE_REDUCER
+  here. manual_migration_llm_inference_substrate_loop.sql must be applied first.)
 ```
 
 ## Setup
@@ -134,7 +140,7 @@ curl -X POST -H "X-Orion-Operator-Token: $SUBSTRATE_CURSOR_RESET_OPERATOR_TOKEN"
   'http://127.0.0.1:8115/grammar/cursor/reset?cursor_name=biometrics_grammar_consumer&mode=timestamp&at=2026-06-01T00:00:00Z'
 ```
 
-Known cursors: `biometrics_grammar_consumer`, `execution_grammar_reducer`, `transport_grammar_reducer`, `route_grammar_consumer`.
+Known cursors: `biometrics_grammar_consumer`, `execution_grammar_reducer`, `transport_grammar_reducer`, `route_grammar_consumer`, `llm_inference_grammar_reducer`.
 
 ### Poison quarantine acknowledgement (internal operator endpoint)
 

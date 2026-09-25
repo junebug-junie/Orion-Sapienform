@@ -530,6 +530,38 @@ PYTHONPATH=/workspace/Orion-Sapienform python -m scripts.smoke_llm_gateway_route
 ```bash
 curl http://localhost:8210/health
 ```
+## Inference grammar lane (the gateway reporting on itself)
+
+Off by default (`LLM_GATEWAY_GRAMMAR_ENABLED=false`). When on, every bus-RPC chat
+reply is classified by what actually happened (`app/grammar_emit.py::classify_outcome`):
+`served`, a backend failure (`upstream_timeout`, `upstream_connect`, `upstream_http_5xx`,
+`upstream_http_4xx`, `upstream_not_found`, `upstream_error`), a gateway refusal
+(`gateway_overloaded`, `gateway_capacity_rejected`, `resource_lease_rejected`,
+`route_operator_closed`, `llm_route_unavailable`), a bad request (`request_invalid`,
+`route_not_configured`) or `upstream_empty`. Counts are grouped by serving node (the
+`{node}-worker...` prefix of `served_by`) and flushed every
+`LLM_GATEWAY_GRAMMAR_WINDOW_SEC` as one grammar trace
+`llm_gateway.inference:<NODE_NAME|gateway>:<window start UTC>` on `orion:grammar:event`:
+one `llm_inference_window_observed` atom per node, plus an
+`llm_gateway_window_completed` atom that is sent even for an empty window.
+
+Why here: a failed backend call comes back to the caller as an ordinary reply whose
+text is `[Error: ...]`, so the caller's RPC health counts it a success, and an idle,
+broken backend reads as calm GPU pressure. Only the gateway sees the call fail.
+
+Counts, latency percentiles and token totals only -- no prompt or reply text leaves
+the process. Only the bus path (`handle_chat`) is counted; the OpenAI/Anthropic HTTP
+passthroughs are not.
+
+Downstream: substrate-runtime's `llm_inference` reducer
+(`ENABLE_LLM_INFERENCE_REDUCER`) turns each window into node
+`inference_failure_pressure` = backend failures / (served + backend failures), which
+the field digester (`ENABLE_LLM_INFERENCE_FIELD_DIGESTION`) carries to
+`capability:llm_inference` `reliability_pressure`. Refusals and `upstream_empty` are
+recorded in the projection for inspection and never reach the field. Replay what the
+channel would read from existing logs with
+`evals/run_inference_outcome_eval.py`.
+
 ## Optional durable resource leases
 
 `LLM_GATEWAY_LEASE_VALIDATION_ENABLED=true` is the operator-template default.

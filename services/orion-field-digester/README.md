@@ -725,6 +725,18 @@ this writing, that's this seventh cutoff, superseding the sixth's. See
 `orion/mood_arc/README.md`'s matching seventh-cutoff entry — keep the two in sync if either is
 ever revised, same convention as the first six.
 
+## `inference_failure_pressure` (2026-09-25)
+
+Share of the calls orion-llm-gateway sent to a node's model backends that came back
+without an answer, one reading per gateway window
+(`orion/substrate/llm_inference_loop/`). `mode="replace"`, in `NODE_DECAY_CHANNELS`.
+Written only when the node actually got upstream traffic that window; otherwise the
+last reading holds, then decays. The node:circe edge maps it to
+`capability:llm_inference` `reliability_pressure`. Gated by
+`ENABLE_LLM_INFERENCE_FIELD_DIGESTION` (default off). Caveat: if callers stop calling a
+dead backend, no new failures are counted and the value decays toward 0 -- silence is
+not evidence of health here either.
+
 ## Field channel glossary
 
 This is the consolidated reference for all 38 channels in

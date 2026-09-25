@@ -8,3 +8,6 @@ pytest==8.3.4
 SQLAlchemy==2.0.43
 # Required for orion.core.bus.bus_service_chassis (bus-native SystemHealthV1 heartbeat).
 redis[hiredis]==5.0.7
+# orion.core.bus loads channels.yaml. Previously arrived only by accident via PageIndex's own
+# requirements in the shared interpreter; now that the service has its own venv it must be explicit.
+pyyaml==6.0.2

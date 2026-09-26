@@ -21,6 +21,8 @@
   var AMBIENT_LATEST_URL = "/api/cabinet/ambient/latest";
   var AMBIENT_HISTORY_URL = "/api/cabinet/ambient/history?window=";
   var AMBIENT_SPIKES_URL = "/api/cabinet/ambient/spikes?window=";
+  var COOLING_LATEST_URL = "/api/cabinet/cooling/latest";
+  var COOLING_HISTORY_URL = "/api/cabinet/cooling/history?window=";
   var SVG_NS = "http://www.w3.org/2000/svg";
 
   // Nano reader ticks ~1 Hz; poll at the same cadence while the tab is visible.
@@ -130,6 +132,13 @@
     ambientWindow: "24h",
     ambientLatestNote: "Live values not loaded.",
     ambientHistoryNote: "History not loaded.",
+    coolingLatestInFlight: false,
+    coolingLatest: null,
+    coolingHistory: null,
+    coolingHistoryRequest: 0,
+    coolingWindow: "24h",
+    coolingLatestNote: "Live values not loaded.",
+    coolingHistoryNote: "History not loaded.",
     sensorHistory: null,
     sensorHistoryRequest: 0,
     sensorWindow: "24h",
@@ -158,6 +167,16 @@
     els.ambientActivityChart = $("cabinetAmbientActivityChart");
     els.ambientWindowButtons = els.panel
       ? els.panel.querySelectorAll("[data-cabinet-ambient-window]")
+      : [];
+    els.coolingStatus = $("cabinetCoolingStatus");
+    els.coolingWatts = $("cabinetCoolingWatts");
+    els.coolingVolts = $("cabinetCoolingVolts");
+    els.coolingSwitch = $("cabinetCoolingSwitch");
+    els.coolingAge = $("cabinetCoolingAge");
+    els.coolingLiveStatus = $("cabinetCoolingLiveStatus");
+    els.coolingWattsChart = $("cabinetCoolingWattsChart");
+    els.coolingWindowButtons = els.panel
+      ? els.panel.querySelectorAll("[data-cabinet-cooling-window]")
       : [];
     els.sensorHistoryStatus = $("cabinetSensorHistoryStatus");
     els.sensorHistoryGrid = $("cabinetSensorHistoryGrid");
@@ -779,6 +798,75 @@
     });
   }
 
+  function renderCoolingStatus() {
+    if (!els.coolingStatus) return;
+    els.coolingStatus.textContent = state.coolingLatestNote + " · " + state.coolingHistoryNote;
+    els.coolingStatus.className =
+      "text-[11px] min-h-[1rem] " +
+      (state.coolingLatestNote.indexOf("error") !== -1 ||
+      state.coolingHistoryNote.indexOf("error") !== -1
+        ? "text-amber-400"
+        : "text-gray-500");
+  }
+
+  function formatSwitchState(value) {
+    if (value === true) return "on";
+    if (value === false) return "off";
+    return "absent";
+  }
+
+  function renderCoolingLatest(payload) {
+    var sample = payload && payload.sample;
+    if (!sample) return;
+    if (els.coolingWatts) {
+      els.coolingWatts.textContent =
+        sample.cooling_watts === null || sample.cooling_watts === undefined
+          ? "—"
+          : num(sample.cooling_watts, 1) || "—";
+    }
+    if (els.coolingVolts) {
+      var volts = formatAbsentOrValue(sample.cooling_volts, 1);
+      els.coolingVolts.textContent = volts === null ? "absent" : volts;
+    }
+    if (els.coolingSwitch) {
+      els.coolingSwitch.textContent = formatSwitchState(sample.switch_on);
+    }
+    if (els.coolingAge) els.coolingAge.textContent = age(payload.age_sec);
+    if (els.coolingLiveStatus) {
+      var statusText = "ok";
+      if (sample.device_online === false) statusText = "device offline";
+      if (sample.controller_ready === false) {
+        statusText = statusText === "ok" ? "controller not ready" : statusText + " · controller not ready";
+      }
+      if (!payload.ok) {
+        statusText = statusText === "ok" ? "stale" : statusText + " · stale";
+      }
+      els.coolingLiveStatus.textContent = statusText;
+      els.coolingLiveStatus.className =
+        "mt-1 font-mono text-sm " + (payload.ok ? "text-emerald-300" : "text-amber-300");
+    }
+  }
+
+  function renderCoolingHistory(payload) {
+    var points = payload && Array.isArray(payload.points) ? payload.points : [];
+    renderAmbientSeries(els.coolingWattsChart, points, "cooling_watts", {
+      label: "Cooling watts",
+      digits: 1,
+      color: "#38bdf8",
+      heightClass: "h-32",
+    });
+  }
+
+  function renderCoolingWindowButtons() {
+    Array.prototype.forEach.call(els.coolingWindowButtons || [], function (button) {
+      var selected = button.getAttribute("data-cabinet-cooling-window") === state.coolingWindow;
+      button.className = selected
+        ? "px-2 py-1 rounded border border-sky-500 bg-sky-950/60 text-[11px] font-mono text-sky-200"
+        : "px-2 py-1 rounded border border-gray-700 bg-gray-900 text-[11px] font-mono text-gray-400 hover:text-gray-200";
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+    });
+  }
+
   function renderSensorHistoryStatus() {
     if (!els.sensorHistoryStatus) return;
     els.sensorHistoryStatus.textContent = state.sensorHistoryNote;
@@ -883,6 +971,72 @@
       }
     } finally {
       state.inFlight = false;
+    }
+  }
+
+  async function pollCoolingLatest() {
+    if (state.coolingLatestInFlight) return;
+    state.coolingLatestInFlight = true;
+    try {
+      var resp = await fetch(COOLING_LATEST_URL, { headers: { Accept: "application/json" } });
+      if (!resp.ok) {
+        throw new Error("HTTP " + resp.status + " from " + COOLING_LATEST_URL);
+      }
+      var payload = await resp.json();
+      if (!payload.sample) {
+        throw new Error(payload.error || "cooling sample missing");
+      }
+      state.coolingLatest = payload;
+      renderCoolingLatest(payload);
+      state.coolingLatestNote =
+        "Live updated " + new Date().toLocaleTimeString() + (payload.ok ? "" : " (stale)");
+    } catch (err) {
+      state.coolingLatestNote =
+        "live error — " +
+        (state.coolingLatest
+          ? "keeping last good live values"
+          : "no live values yet") +
+        " (" +
+        (err.message || err) +
+        ")";
+    } finally {
+      state.coolingLatestInFlight = false;
+      renderCoolingStatus();
+    }
+  }
+
+  async function fetchCoolingHistory() {
+    var requestId = ++state.coolingHistoryRequest;
+    var requestedWindow = state.coolingWindow;
+    state.coolingHistoryNote = "Loading " + requestedWindow + " history…";
+    renderCoolingStatus();
+    try {
+      var url = COOLING_HISTORY_URL + encodeURIComponent(requestedWindow);
+      var resp = await fetch(url, { headers: { Accept: "application/json" } });
+      if (!resp.ok) {
+        throw new Error("HTTP " + resp.status + " from cooling history");
+      }
+      var payload = await resp.json();
+      if (!payload.ok) {
+        throw new Error(payload.error || "cooling history unavailable");
+      }
+      if (requestId !== state.coolingHistoryRequest) return;
+      state.coolingHistory = payload;
+      renderCoolingHistory(payload);
+      state.coolingHistoryNote =
+        requestedWindow +
+        " history · n=" +
+        (Array.isArray(payload.points) ? payload.points.length : 0);
+    } catch (err) {
+      if (requestId !== state.coolingHistoryRequest) return;
+      state.coolingHistoryNote =
+        "history error — " +
+        (state.coolingHistory ? "keeping last good charts" : "no chart data yet") +
+        " (" +
+        (err.message || err) +
+        ")";
+    } finally {
+      if (requestId === state.coolingHistoryRequest) renderCoolingStatus();
     }
   }
 
@@ -1033,6 +1187,7 @@
       }
       poll();
       pollAmbientLatest();
+      pollCoolingLatest();
     }, POLL_MS);
   }
 
@@ -1041,7 +1196,9 @@
     state.active = true;
     poll();
     pollAmbientLatest();
+    pollCoolingLatest();
     fetchAmbientHistory();
+    fetchCoolingHistory();
     fetchSensorHistory();
     startTimer();
   }
@@ -1058,7 +1215,9 @@
       els.refreshBtn.addEventListener("click", function () {
         poll();
         pollAmbientLatest();
+        pollCoolingLatest();
         fetchAmbientHistory();
+        fetchCoolingHistory();
         fetchSensorHistory();
       });
     }
@@ -1071,6 +1230,15 @@
         fetchAmbientHistory();
       });
     });
+    Array.prototype.forEach.call(els.coolingWindowButtons || [], function (button) {
+      button.addEventListener("click", function () {
+        var nextWindow = button.getAttribute("data-cabinet-cooling-window");
+        if (!nextWindow || nextWindow === state.coolingWindow) return;
+        state.coolingWindow = nextWindow;
+        renderCoolingWindowButtons();
+        fetchCoolingHistory();
+      });
+    });
     Array.prototype.forEach.call(els.sensorWindowButtons || [], function (button) {
       button.addEventListener("click", function () {
         var nextWindow = button.getAttribute("data-cabinet-sensor-window");
@@ -1081,6 +1249,7 @@
       });
     });
     renderAmbientWindowButtons();
+    renderCoolingWindowButtons();
     renderSensorWindowButtons();
   }
 
@@ -1098,7 +1267,9 @@
     refresh: function () {
       poll();
       pollAmbientLatest();
+      pollCoolingLatest();
       fetchAmbientHistory();
+      fetchCoolingHistory();
       fetchSensorHistory();
     },
   };

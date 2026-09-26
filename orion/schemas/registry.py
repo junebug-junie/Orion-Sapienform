@@ -439,6 +439,11 @@ from orion.schemas.telemetry.biometrics import (
 )
 from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
 from orion.schemas.telemetry.home_cooling import HomeCoolingSampleV1
+from orion.schemas.energy import (
+    EnergyCostAccruedV1,
+    EnergyRunCostEstimatedV1,
+    EnergyUsageIntervalV1,
+)
 from orion.schemas.telemetry.dream import (
     DreamInternalTriggerV1,
     DreamRequest,
@@ -1254,6 +1259,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "BiometricsClusterV1": BiometricsClusterV1,
     "CabinetAmbientSpikeV1": CabinetAmbientSpikeV1,
     "HomeCoolingSampleV1": HomeCoolingSampleV1,
+    "EnergyUsageIntervalV1": EnergyUsageIntervalV1,
+    "EnergyCostAccruedV1": EnergyCostAccruedV1,
+    "EnergyRunCostEstimatedV1": EnergyRunCostEstimatedV1,
     "DreamRequest": DreamRequest,
     "DreamTriggerPayload": DreamTriggerPayload,
     "DreamInternalTriggerV1": DreamInternalTriggerV1,
@@ -1507,6 +1515,18 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "HomeCoolingSampleV1": SchemaRegistration(
         model=HomeCoolingSampleV1,
         kind="home.cooling.sample.v1",
+    ),
+    "EnergyUsageIntervalV1": SchemaRegistration(
+        model=EnergyUsageIntervalV1,
+        kind="energy.usage.observed.v1",
+    ),
+    "EnergyCostAccruedV1": SchemaRegistration(
+        model=EnergyCostAccruedV1,
+        kind="energy.cost.accrued.v1",
+    ),
+    "EnergyRunCostEstimatedV1": SchemaRegistration(
+        model=EnergyRunCostEstimatedV1,
+        kind="energy.run_cost.estimated.v1",
     ),
     "AffectGptAssessResultPayload": SchemaRegistration(
         model=AffectGptAssessResultPayload,

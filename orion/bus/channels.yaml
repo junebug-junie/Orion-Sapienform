@@ -1994,6 +1994,39 @@ channels:
     since: "2026-09-25"
     description: "Read-only portable AC / cabinet cooling watts from Athena Z-Wave Shelly Wave plug."
 
+  # House-level electricity (docs/superpowers/specs/2026-09-26-orion-energy-watcher-design.md).
+  # Whole-house Green Button intervals, priced by a versioned tariff, joined to settled
+  # power intents. Unknown is never zero: run cost carries a gap reason instead.
+  - name: "orion:energy:usage:observed"
+    kind: "event"
+    schema_id: "EnergyUsageIntervalV1"
+    message_kind: "energy.usage.observed.v1"
+    producer_services: ["orion-energy"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-26"
+    description: "Whole-house metered kWh per interval from Rocky Mountain Power Green Button (file drop in Plan 1)."
+
+  - name: "orion:energy:cost:accrued"
+    kind: "event"
+    schema_id: "EnergyCostAccruedV1"
+    message_kind: "energy.cost.accrued.v1"
+    producer_services: ["orion-energy"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-26"
+    description: "Usage interval priced at its billing-cycle block position (pre-tax, versioned tariff)."
+
+  - name: "orion:energy:run_cost:estimated"
+    kind: "event"
+    schema_id: "EnergyRunCostEstimatedV1"
+    message_kind: "energy.run_cost.estimated.v1"
+    producer_services: ["orion-energy"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-26"
+    description: "Dollar cost of a settled power intent: meter-side estimate plus separately labeled house share."
+
   - name: "orion:exec:request:MetaTagsService"
     kind: "request"
     schema_id: "MetaTagsRequestV1"
@@ -2757,7 +2790,7 @@ channels:
     schema_id: "PowerIntentSettledV1"
     message_kind: "power.intent.settled.v1"
     producer_services: ["orion-biometrics"]
-    consumer_services: ["orion-sql-writer"]
+    consumer_services: ["orion-sql-writer", "orion-energy"]
     stability: "experimental"
     since: "2026-08-28"
 

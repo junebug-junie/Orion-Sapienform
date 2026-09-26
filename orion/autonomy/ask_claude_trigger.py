@@ -149,6 +149,11 @@ def _assess(prior) -> PriorAssessment:
     # reading `Prior.uncertainty` already takes ("Orion never said how sure it
     # was" sorts as maximally uncertain) -- treating missing as settled would
     # silently exclude exactly the claims Orion was least sure about.
+    # Deliberately NOT the same for a broken number: since 2026-09-25
+    # `Prior.uncertainty` also reads a confidence outside [0, 1] or NaN as
+    # unrated, so Orion's own curiosity re-offers it (free). Here 1.7 still
+    # reads as settled and NaN fails the comparison, so a protocol error never
+    # spends Claude quota.
     unsettled = confidence is None or confidence <= MAX_SETTLED_CONFIDENCE
     return PriorAssessment(
         prior_id=prior.prior_id,

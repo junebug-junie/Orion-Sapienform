@@ -313,11 +313,15 @@ instruments:
       retention_setting: ATTENTION_FRAME_RETENTION_HOURS
       retention_service: orion-attention-runtime
     unlock: >-
-      Already field-native and needed no correction -- novelty_for_target() reads
-      the PREVIOUS FieldAttentionFrameV1, which is real per-tick recurrence rather
-      than a modelled proxy for it. Listed so the program can tell "already true"
-      apart from "still to build"; it is not an open work item.
-    last_reviewed: 2026-09-02
+      Field-native -- novelty_for_target() reads the PREVIOUS FieldAttentionFrameV1,
+      real per-tick recurrence rather than a modelled proxy for it. Corrected
+      2026-09-25, after this entry had said "needed no correction": it diffed this
+      tick's pressure against last tick's novelty (a steady input alternated p, 0,
+      p, 0), and targets over a per-kind cap were never recorded, so they read as
+      brand-new every other tick. Now pressure is diffed against the prior tick's
+      pressure. Frames persisted before the fix carry the artifact; replays that
+      span the fix must say so. Not an open work item.
+    last_reviewed: 2026-09-25
     claims: []
 
   - id: goal_provenance

@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from orion.attention.field_attention.candidate_precision_weighted import (
     NODE_TARGET_PREDICTION_ERROR_EWMA_ALPHA,
     NODE_TARGET_PREDICTION_ERROR_MIN_VARIANCE,
@@ -558,3 +560,76 @@ def test_select_capability_targets_multi_target_real_capabilities() -> None:
     by_id = {t.target_id: t for t in targets}
     assert by_id["capability:memory"].pressure_score == 0.7
     assert by_id["capability:vision"].pressure_score == 0.7
+
+
+# --- 2026-09-25: novelty diffs pressure against the prior PRESSURE, not the
+# prior salience (which for Candidate B targets is the prior novelty). D1 in
+# docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md.
+
+
+def _frame_of(targets: list[FieldAttentionTargetV1], tick_id: str) -> FieldAttentionFrameV1:
+    return FieldAttentionFrameV1(
+        frame_id=f"f:{tick_id}",
+        generated_at=BASE,
+        source_field_tick_id=tick_id,
+        source_field_generated_at=BASE,
+        attention_policy_id=POLICY.policy_id,
+        overall_salience=0.0,
+        capability_targets=targets,
+    )
+
+
+def test_steady_capability_pressure_reads_zero_novelty_every_tick_not_alternating() -> None:
+    # Reproduced live-code bug: a constant proxy of 0.8 used to score
+    # 0.0, 0.8, 0.0, 0.8, ... because each tick diffed against the previous
+    # tick's novelty. A steady input is not news on any tick.
+    prev = None
+    novelties = []
+    for i in range(5):
+        field = FieldStateV1(
+            generated_at=BASE,
+            tick_id=f"tick_steady_{i}",
+            capability_vectors={"capability:vision": {"execution_pressure": 0.8}},
+        )
+        targets = select_capability_targets(field, POLICY, prev)
+        assert targets[0].pressure_score == 0.8
+        novelties.append(targets[0].novelty_score)
+        prev = _frame_of(targets, field.tick_id)
+    assert novelties == [0.0, 0.0, 0.0, 0.0, 0.0]
+
+
+def test_first_appearance_in_an_existing_frame_is_news_once_then_settles() -> None:
+    # A target absent from an existing previous frame diffs against 0.0 (its
+    # first appearance is real news, confidence 0.0), then settles to 0.0.
+    other = FieldStateV1(
+        generated_at=BASE,
+        tick_id="tick_other",
+        capability_vectors={"capability:graph": {"execution_pressure": 0.1}},
+    )
+    prev = _frame_of(select_capability_targets(other, POLICY, None), other.tick_id)
+    novelties, confidences = [], []
+    for i in range(3):
+        field = FieldStateV1(
+            generated_at=BASE,
+            tick_id=f"tick_new_{i}",
+            capability_vectors={"capability:vision": {"execution_pressure": 0.6}},
+        )
+        targets = select_capability_targets(field, POLICY, prev)
+        novelties.append(targets[0].novelty_score)
+        confidences.append(targets[0].confidence_score)
+        prev = _frame_of(targets, field.tick_id)
+    assert novelties == [0.6, 0.0, 0.0]
+    assert confidences == [0.0, 1.0, 1.0]
+
+
+def test_real_change_still_reads_as_novelty_after_a_steady_run() -> None:
+    prev = None
+    for i, pressure in enumerate([0.3, 0.3, 0.3, 0.9]):
+        field = FieldStateV1(
+            generated_at=BASE,
+            tick_id=f"tick_change_{i}",
+            capability_vectors={"capability:vision": {"execution_pressure": pressure}},
+        )
+        targets = select_capability_targets(field, POLICY, prev)
+        prev = _frame_of(targets, field.tick_id)
+    assert targets[0].novelty_score == pytest.approx(0.6)

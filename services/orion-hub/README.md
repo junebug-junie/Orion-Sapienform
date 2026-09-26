@@ -1038,6 +1038,79 @@ Orion puts there needs approval.
   message to Juniper. **Absence is the safe default** — no node means no
   continuation and no message. Nothing is inferred from the prose.
 
+**What each run bought: the spend log** (2026-09-25; P1 of
+`docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md`). An
+investigation is Orion's most expensive self-directed act, so Hub now records
+what each one was offered and what it moved:
+
+- **At dispatch**, `curiosity_offer_decisions` gets one row: the offer arm,
+  every prior shown in the order shown, and the expected value it was shown at.
+- **When the turn starts** (`_run_turn`, durable or in-process), the same row
+  gets a snapshot of every prior's confidence, tested count and run stamps.
+  It is taken then, not at dispatch, because a durable run can wait hours in
+  admission while other turns move priors. The first snapshot taken wins, so
+  a retry is scored from where the run began. If the first attempt could not
+  read the graph, a retry may take the snapshot -- but a start that already
+  carries this run's own stamps (the first attempt wrote before it) is scored
+  unknown, never as a partial number.
+- **When the turn ends**, `curiosity_run_outcomes` gets the diff, in nats of
+  belief change: KL(after ‖ before) for each prior this run tested (stamped
+  `last_run_id` = run and `times_tested` went up), and `turn_ok` (did the turn
+  produce text). Changes stamped by another run are counted as unattributed
+  and not scored. A forked prior (one id, several nodes) is scored from the
+  copy the offer showed. Agreement with the `:PriorRevision` nodes Orion wrote
+  by hand is recorded as a cross-check.
+
+How to read `realized_nats`:
+
+- **0.0** -- no measurable belief change among the tests that could be
+  scored: they moved nothing, or the run tested nothing. A real result.
+  `n_invalid_confidence` counts tests that could not be scored.
+- **`NULL`** -- unknown, and `unknown_reason` says why: `no_start_snapshot`
+  (unreadable, over the Atlas query's 2000-row cap, or expired),
+  `no_end_snapshot`, `start_stamped_by_this_run` (an earlier attempt wrote
+  before the start snapshot was taken), or `no_scorable_test` (every prior it
+  tested had an unusable confidence, before or after the test). Never read as
+  0.
+- **`turn_ok = false`** -- the turn failed. It is still scored (it may have
+  written first), but its 0.0 is a failure, and the replay leaves it out.
+
+A confidence outside [0, 1], or not a number, counts as no confidence at all,
+in both offer orders and in the score: shown as maximally uncertain (so Orion
+re-tests it rather than it sinking to the bottom as the "surest" belief) and
+recorded as `null`. The same reading moves such a prior to the bottom of the
+chat context's "current beliefs" list (`orion/situational/context.py`); the
+ask-Claude trigger deliberately keeps reading it as settled, so a broken
+number never spends Claude quota. Start snapshots are dropped after 14 days;
+the outcome row keeps before/after for every prior a run changed.
+
+Measured from Hub's own snapshots because Orion writes a revision only when a
+confidence *moves*: 21 revisions across 94 journaled runs by 2026-09-14.
+
+`HUB_CURIOSITY_VALUE_ORDER_ENABLED` (default off) offers priors by *expected
+belief change* instead of raw uncertainty. Expected value is entropy times the
+prior's measured learning yield: net, straightness-discounted belief change
+per unit of uncertainty over its last `HUB_CURIOSITY_YIELD_WINDOW` tests --
+counting only progress a test made and that stuck -- shrunk toward the pool
+average by `HUB_CURIOSITY_YIELD_PSEUDO_TESTS`. Orion still chooses; only the
+order changes, and the prompt describes the order in the same words on both
+arms ("where the code estimates a test could change your mind the most,
+starting from how unsure you are"). Each run draws its arm from a
+deterministic per-run coin with P(value) = `HUB_CURIOSITY_VALUE_ORDER_PROPENSITY`,
+so the two orders can be compared on real outcomes. With no scored history the
+two orders are identical, prior for prior (checked on 2000 random populations
+in `tests/test_curiosity_worldview.py`); among priors all worth zero, the
+uncertainty order still decides.
+
+The switch stays off until
+`scripts/analysis/replay_curiosity_realized_nats.py --pg` shows the measurement
+is not degenerate and says how many runs per arm the comparison needs.
+`HUB_CURIOSITY_SPEND_LOG_ENABLED=false` stops all three writes. The migration
+must be applied first:
+`services/orion-sql-db/manual_migration_curiosity_spend_v1.sql`. Without it,
+or without a memory Postgres pool, the log warns once and records nothing; any
+other database error (a missing column, say) warns every time.
+
 **Gates, in order.** `disabled` → `daily_cap` → `cooldown` → `pg_role_missing`
 → `graph_unavailable` → `stores_not_ready` / `stores_unavailable` /
 `no_approved_material` → `empty_generation` / `no_lookup`. `stores_not_ready`

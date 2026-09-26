@@ -54,7 +54,9 @@ import logging
 import re
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
-from typing import Any, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence
+
+from orion.curiosity.value import valid_confidence
 
 logger = logging.getLogger("orion.curiosity.worldview")
 
@@ -117,7 +119,7 @@ def _as_float(value: Any) -> Optional[float]:
 def _as_int(value: Any, default: int = 0) -> int:
     try:
         return int(float(value)) if value is not None else default
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # "inf" is a float, not an int
         return default
 
 
@@ -182,12 +184,23 @@ class Prior:
     def uncertainty(self) -> float:
         """0.0 = maximally uncertain. Used only to ORDER the presentation.
 
-        A prior with no confidence recorded sorts as maximally uncertain,
-        which is the honest reading of "Orion never said how sure it was".
+        A prior with no usable confidence sorts as maximally uncertain, the
+        honest reading of "Orion never said how sure it was". Usable is
+        `valid_confidence`'s rule -- the one the spend log scores with -- so a
+        1.7 or a NaN is re-offered for testing instead of buried as Orion's
+        surest belief, and a NaN never makes the sort depend on read order.
         """
-        if self.confidence is None:
+        confidence = valid_confidence(self.confidence)
+        if confidence is None:
             return 0.0
-        return abs(self.confidence - 0.5)
+        return abs(confidence - 0.5)
+
+    @property
+    def fork_rank(self) -> tuple[int, str, str]:
+        """Which copy of a forked prior wins -- higher wins. See
+        `collapse_duplicate_priors`; the spend log's snapshot uses the same
+        rank, so the copy it scores is the copy Orion was shown."""
+        return (self.times_tested, self.last_tested_at, self.claim)
 
     def preview(self) -> str:
         confidence = (
@@ -971,11 +984,7 @@ def collapse_duplicate_priors(
     for prior in priors:
         seen[prior.prior_id] = seen.get(prior.prior_id, 0) + 1
         incumbent = best.get(prior.prior_id)
-        if incumbent is None or (
-            prior.times_tested,
-            prior.last_tested_at,
-            prior.claim,
-        ) > (incumbent.times_tested, incumbent.last_tested_at, incumbent.claim):
+        if incumbent is None or prior.fork_rank > incumbent.fork_rank:
             best[prior.prior_id] = prior
     # Insertion order, so a graph with no duplicates is returned untouched and
     # the downstream sort sees exactly what it saw before this function existed.
@@ -984,12 +993,19 @@ def collapse_duplicate_priors(
     return collapsed, duplicates
 
 
+# Expected value is compared at this precision, far below any belief change
+# a test can make (a 0.01 move near 0.5 is ~2e-4 nats) and far above float
+# noise, so exact ties in the maths tie in the sort.
+EXPECTED_NATS_DECIMALS = 9
+
+
 def select_priors(
     rows: Sequence[dict[str, Any]],
     *,
     sample: int,
     stale_after: int,
     rotate_seed: str = "",
+    expected_nats_for: Optional[Callable[[Prior], float]] = None,
 ) -> tuple[list[Prior], list[Prior], int]:
     """Split LIVE priors into (offered, stale, dropped_count).
 
@@ -1007,6 +1023,20 @@ def select_priors(
     list -- but it is still shown, in its own bucket, with the explicit option
     to retire it. Dropping it silently would leave it live in the graph
     forever with nothing able to close it, since Hub never writes.
+
+    `expected_nats_for`, when given, orders the fresh list by EXPECTED BELIEF
+    CHANGE instead of raw uncertainty: entropy times the prior's measured
+    learning yield (`orion/curiosity/value.py`). It is the value arm of the
+    curiosity offer experiment (P1 in
+    docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md). Same
+    tie-breaks, same stale bucket, same sample -- and still only an ORDER:
+    Orion still chooses. With no scored history every yield is 1.0 and the
+    two orders are identical: expected value is rounded before it is
+    compared and uncertainty breaks its ties, because entropy is symmetric
+    and clamped where `|p - 0.5|` is neither (0.2 and 0.8 differ in the last
+    float bit; 0.0 and 0.005 share one clamped entropy). The same tie-break
+    keeps the uncertainty order among priors that are all worth zero -- the
+    likely early state, when every scored test moved nothing.
     """
     priors: list[Prior] = []
     dropped = 0
@@ -1024,13 +1054,23 @@ def select_priors(
     stale = [p for p in priors if stale_after > 0 and p.times_tested >= stale_after]
     stale_ids = {p.prior_id for p in stale}
     fresh = [p for p in priors if p.prior_id not in stale_ids]
-    fresh.sort(
-        key=lambda p: (
-            p.uncertainty,
-            p.times_tested,
-            _rotation_key(p.prior_id, rotate_seed),
+    if expected_nats_for is None:
+        fresh.sort(
+            key=lambda p: (
+                p.uncertainty,
+                p.times_tested,
+                _rotation_key(p.prior_id, rotate_seed),
+            )
         )
-    )
+    else:
+        fresh.sort(
+            key=lambda p: (
+                -round(expected_nats_for(p), EXPECTED_NATS_DECIMALS),
+                p.uncertainty,
+                p.times_tested,
+                _rotation_key(p.prior_id, rotate_seed),
+            )
+        )
     stale.sort(
         key=lambda p: (-p.times_tested, _rotation_key(p.prior_id, rotate_seed))
     )
@@ -1090,6 +1130,7 @@ def read_snapshot(
     recent_runs: int = 4,
     priors_cypher: str = LIVE_PRIORS_CYPHER,
     counts_cypher: str = COUNTS_CYPHER,
+    expected_nats_for: Optional[Callable[[Prior], float]] = None,
 ) -> WorldviewSnapshot:
     """One read of everything the next prompt needs. Never raises.
 
@@ -1140,6 +1181,7 @@ def read_snapshot(
         sample=sample,
         stale_after=stale_after,
         rotate_seed=rotate_seed,
+        expected_nats_for=expected_nats_for,
     )
     if dropped:
         logger.warning(

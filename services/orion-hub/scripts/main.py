@@ -625,6 +625,11 @@ async def startup_event():
                 hub_url=settings.HUB_CURIOSITY_SANDBOX_HUB_URL,
                 prior_sample=settings.HUB_CURIOSITY_PRIOR_SAMPLE,
                 stale_prior_tests=settings.HUB_CURIOSITY_STALE_PRIOR_TESTS,
+                spend_log_enabled=settings.HUB_CURIOSITY_SPEND_LOG_ENABLED,
+                value_order_enabled=settings.HUB_CURIOSITY_VALUE_ORDER_ENABLED,
+                value_order_propensity=settings.HUB_CURIOSITY_VALUE_ORDER_PROPENSITY,
+                yield_window=settings.HUB_CURIOSITY_YIELD_WINDOW,
+                yield_pseudo_tests=settings.HUB_CURIOSITY_YIELD_PSEUDO_TESTS,
                 max_hops=settings.HUB_CURIOSITY_MAX_HOPS,
                 pg_readonly_role=settings.HUB_CURIOSITY_PG_READONLY_ROLE,
                 # A finding Orion judges worth saying goes through a SECOND

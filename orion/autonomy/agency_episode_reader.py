@@ -41,6 +41,21 @@ def collect(conn, graph, *, limit: int = 10) -> dict:
            "h.written_at AS written_at ORDER BY h.written_at DESC, h.help_id LIMIT " + str(limit))
     help_ids = [r["help_id"] for r in bundle["asks"]["rows"] if r.get("help_id")]
     if bundle["asks"]["status"] == "ok":
+        from orion.curiosity.agency_episode import decision_query, validate_decision
+
+        cypher("ask_commits", "MATCH (c:PeerAskCommit) WHERE c.help_id IN " + json.dumps(help_ids) + " "
+               "RETURN c.help_id AS help_id,c.run_id AS run_id,c.committed_at AS committed_at, "
+               "c.deadline_at AS deadline_at,c.responded_at AS responded_at ORDER BY c.help_id LIMIT 51")
+        if len(bundle["ask_commits"]["rows"]) > limit:
+            bundle["ask_commits"] = {"status": "truncated", "rows": []}
+        cypher("brief_decisions", decision_query(help_ids=help_ids))
+        if len(bundle["brief_decisions"]["rows"]) >= 33:
+            bundle["brief_decisions"] = {"status": "truncated", "rows": []}
+        else:
+            bundle["brief_decisions"]["rows"] = [
+                {**validate_decision(row), "receipt_id": str(row.get("run_id")) + ":" + str(row.get("brief_id"))}
+                for row in bundle["brief_decisions"]["rows"]
+            ]
         cypher("graph_briefs", "MATCH (b:PeerBrief) WHERE b.help_id IN " + json.dumps(help_ids) + " "
                "OPTIONAL MATCH (b)-[:ANSWERS]->(h:HelpRequest) "
                "RETURN b.brief_id AS brief_id, b.help_id AS help_id, b.run_id AS run_id, "

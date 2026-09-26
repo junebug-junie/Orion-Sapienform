@@ -7,6 +7,7 @@ Hub's WorldviewReader stays RO. MERGE Cypher here is for the system writer
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from typing import Any, Sequence
@@ -20,6 +21,7 @@ from orion.schemas.curiosity_peer import (
     PEER_BRIEF_CONSUMED_CHANNEL,
     PEER_BRIEF_CONSUMED_KIND,
     HelpRequestV1,
+    PeerAskExpectationV1,
     PeerBriefConsumedV1,
     PeerBriefV1,
     clip,
@@ -60,18 +62,22 @@ def peer_brief_merge_cypher(brief: PeerBriefV1) -> tuple[str, dict[str, Any]]:
     }
     cypher = (
         f"MERGE (b:{LABEL_PEER_BRIEF} {{brief_id: $brief_id}}) "
+        "ON CREATE SET b.consumed = false, b.written_at = timestamp() "
         "SET b.help_id = $help_id, b.run_id = $run_id, "
         "b.peer = $peer, b.status = $status, "
         "b.summary = $summary, "
         "b.evidence_pointers = $evidence_pointers, "
         "b.open_questions = $open_questions, "
         "b.suggested_next_looks = $suggested_next_looks, "
-        "b.written_at = timestamp(), b.consumed = false, "
         "b.prior_id = $prior_id, b.refusal_reason = $refusal_reason "
         "WITH b "
         f"OPTIONAL MATCH (h:{LABEL_HELP_REQUEST} {{help_id: $help_id}}) "
         "FOREACH (_ IN CASE WHEN h IS NULL THEN [] ELSE [1] END | "
-        "MERGE (b)-[:ANSWERS]->(h))"
+        "MERGE (b)-[:ANSWERS]->(h)) "
+        "WITH b OPTIONAL MATCH (c:PeerAskCommit {help_id:$help_id,run_id:$run_id}) "
+        "FOREACH (_ IN CASE WHEN c IS NULL THEN [] ELSE [1] END | "
+        "MERGE (c)-[:RETURNED]->(b) "
+        "SET c.responded_at=coalesce(c.responded_at,timestamp()))"
     )
     return cypher, params
 
@@ -111,7 +117,9 @@ def list_help_requests_for_run_cypher(run_id: str) -> str:
         "h.mode AS mode, h.question AS question, "
         "h.tried_summary AS tried_summary, "
         "h.success_criteria AS success_criteria, "
-        "h.written_at AS written_at "
+        "h.written_at AS written_at, h.expected_reply AS expected_reply, "
+        "h.if_not_asked AS if_not_asked, h.alternatives_json AS alternatives_json, "
+        "h.within_seconds AS within_seconds "
         "ORDER BY h.written_at ASC"
     )
 
@@ -121,6 +129,15 @@ def list_help_requests_from_rows(rows: Sequence[dict[str, Any]]) -> list[HelpReq
     for row in rows:
         try:
             prior = row.get("prior_id")
+            expectation = None
+            if any(row.get(k) is not None for k in ("expected_reply", "if_not_asked", "alternatives_json", "within_seconds")):
+                expectation = PeerAskExpectationV1(
+                    expected_reply=row.get("expected_reply"),
+                    if_not_asked=row.get("if_not_asked"),
+                    alternatives=json.loads(row.get("alternatives_json") or "null"),
+                    within_seconds=row.get("within_seconds"),
+                )
+            timestamp_fields = {"written_at": row["written_at"]} if row.get("written_at") is not None else {}
             out.append(
                 HelpRequestV1(
                     help_id=str(row.get("help_id") or ""),
@@ -130,9 +147,12 @@ def list_help_requests_from_rows(rows: Sequence[dict[str, Any]]) -> list[HelpReq
                     question=str(row.get("question") or ""),
                     tried_summary=str(row.get("tried_summary") or ""),
                     success_criteria=str(row.get("success_criteria") or ""),
+                    expectation=expectation,
+                    **timestamp_fields,
                 )
             )
         except Exception:
+            logger.warning("curiosity_help_request_invalid help_id=%s", row.get("help_id"))
             continue
     return out
 
@@ -198,7 +218,7 @@ async def publish_help_requests_for_run(
                 BaseEnvelope(
                     kind=HELP_REQUEST_KIND,
                     source=source_ref or {"name": "orion-hub"},
-                    payload=help_req.model_dump(mode="json"),
+                    payload=help_req.model_dump(mode="json", exclude_none=True),
                 ),
             )
             published += 1
@@ -233,10 +253,12 @@ async def publish_peer_briefs_consumed(
     bus: Any,
     brief_ids: Sequence[str],
     source_ref: Any = None,
+    consumer_run_id: str | None = None,
+    phase: str = "offered",
 ) -> int:
     """Hub (RO worldview) asks peer service to MERGE consumed=true."""
     ids = [str(b).strip() for b in brief_ids if str(b or "").strip()]
-    if not ids or bus is None:
+    if (not ids and phase != "completed") or bus is None:
         return 0
     try:
         await bus.publish(
@@ -244,7 +266,7 @@ async def publish_peer_briefs_consumed(
             BaseEnvelope(
                 kind=PEER_BRIEF_CONSUMED_KIND,
                 source=source_ref or {"name": "orion-hub"},
-                payload=PeerBriefConsumedV1(brief_ids=ids).model_dump(mode="json"),
+                payload=PeerBriefConsumedV1(brief_ids=ids, consumer_run_id=consumer_run_id, phase=phase).model_dump(mode="json", exclude_none=True, exclude={"phase"} if phase == "offered" else set()),
             ),
         )
         return len(ids)
@@ -301,7 +323,7 @@ def list_unused_ok_briefs_from_rows(rows: Sequence[dict[str, Any]]) -> list[Peer
     return out
 
 
-def format_soft_nudge(briefs: Sequence[PeerBriefV1]) -> list[str]:
+def format_soft_nudge(briefs: Sequence[PeerBriefV1], *, consumer_run_id: str | None = None) -> list[str]:
     """Invitational soft-nudge lines for kickoff. Never 'you must incorporate'."""
     ok = [b for b in briefs if b.status == "ok" and (b.summary or b.evidence_pointers)]
     refused = [b for b in briefs if b.status == "refused_budget"]
@@ -347,6 +369,12 @@ def format_soft_nudge(briefs: Sequence[PeerBriefV1]) -> list[str]:
             "Continue alone; do not invent peer evidence.",
             "",
         ]
+        for b in refused + failed:
+            lines.append(f"  brief {b.brief_id} (peer={b.peer}, status={b.status}): no usable peer help returned.")
+    if consumer_run_id and brief_ids_for_consume(briefs):
+        from orion.curiosity.agency_episode import decision_prompt
+
+        lines += decision_prompt(consumer_run_id)
     return lines
 
 

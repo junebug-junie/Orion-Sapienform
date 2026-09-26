@@ -1729,6 +1729,7 @@ class CuriosityInvestigation:
             await publish_peer_briefs_consumed(
                 bus=self._bus,
                 brief_ids=brief_ids_for_consume(peer_briefs),
+                consumer_run_id=run_id,
             )
         if self.kickoff_via_cortex:
             try:
@@ -2270,6 +2271,7 @@ class CuriosityInvestigation:
             await publish_peer_briefs_consumed(
                 bus=self._bus,
                 brief_ids=brief_ids_for_consume(peer_briefs),
+                consumer_run_id=run_id,
             )
         material = StudyMaterial(generated_at=now)
         if self.kickoff_via_cortex:
@@ -3651,6 +3653,12 @@ class CuriosityInvestigation:
         """
         if not self.contractor_peer_enabled:
             return 0
+        # An offer precedes dispatch and is not evidence that this run finished.
+        # Completion is separately replay-safe at the peer graph writer.
+        await publish_peer_briefs_consumed(
+            bus=self._bus, brief_ids=[], consumer_run_id=run_id, phase="completed",
+            source_ref=self._source_ref,
+        )
         if run_id in self._help_enqueued_runs:
             return 0
         self._help_enqueued_runs.add(run_id)

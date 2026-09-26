@@ -71,6 +71,11 @@ def reconstruct(bundle: dict) -> dict:
             "results": "result_id", "outcomes": "id", "dispatch_frames": "frame_id",
             "proposal_frames": "frame_id", "feedback_frames": "frame_id",
             "result_sample": "result_id", "outcome_sample": "dispatch_id"}
+    # Older captures predate these sources: retain their original report shape,
+    # without interpreting missing capture fields as empty live queries.
+    for key, identity in (("ask_commits", "help_id"), ("brief_decisions", "receipt_id")):
+        if key in bundle:
+            keys[key] = identity
     for source, key in keys.items():
         sources[source], bad = _unique(_rows(bundle, source), key)
         if bad:
@@ -117,6 +122,25 @@ def reconstruct(bundle: dict) -> dict:
             "responses": [{"brief_id": b["brief_id"], "status": b.get("status"), "peer": b.get("peer"), "written_at": stamp(b.get("written_at"))} for b in briefs],
             "issues": sorted(issues),
         })
+        episode = episodes[-1]
+        commits = [c for c in sources.get("ask_commits", []) if c.get("help_id") == aid and c.get("run_id") == ask.get("run_id")]
+        if commits and stamp(commits[0].get("committed_at")):
+            commit = commits[0]
+            episode["links"]["expectation_precommitted"] = _link("observed", [_ref("graph:PeerAskCommit", aid)], "Immutable expectation acknowledged before the peer invocation; a commit alone does not prove delivery.")
+            episode["links"]["alternatives"] = _link("observed", [_ref("graph:PeerAskCommit", aid)], "The immutable request snapshot records the considered alternatives and hire_peer choice; prose remains at its source.")
+            episode["source_times"]["committed_at"] = stamp(commit["committed_at"])
+            episode["source_times"]["deadline_at"] = stamp(commit.get("deadline_at"))
+            response_at = stamp(commit.get("responded_at"))
+            episode["source_times"]["responded_at"] = response_at
+            deadline = stamp(commit.get("deadline_at"))
+            now = stamp(bundle.get("captured_at"))
+            episode["response_window"] = ("late_returned" if deadline and response_at > deadline else "returned") if response_at else ("elapsed_without_recorded_reply" if deadline and now and now > deadline else "awaiting")
+        decisions = [d for d in sources.get("brief_decisions", []) if d.get("help_id") == aid]
+        verified = [d for d in decisions if d.get("status") == "attributed_self_report"]
+        if verified:
+            episode["links"]["later_choice"] = _link("attributed_self_report", [_ref("graph:PeerBriefDecision", d["receipt_id"]) for d in verified], "Offered brief and completed run join Orion's recorded decision; used claims also join a real Hop. This is attributed self-report, not a causal effect estimate.")
+        if decisions:
+            episode["decisions"] = decisions
 
     dispatches = sorted({str(r["dispatch_id"]) for src in ("results", "outcomes") for r in sources[src] if r.get("dispatch_id")})
     for did in dispatches:

@@ -620,6 +620,8 @@ from orion.schemas.attention_frame import (
 )
 from orion.schemas.attention_self_model import AttentionSelfModelV1
 from orion.schemas.attention_schema import AttentionSchemaV1
+# Additive expectation and run-completion fields retain these registrations;
+# deploy peer consumers before Hub producers (docs/peer-ask-episodes.md).
 from orion.schemas.curiosity_peer import HelpRequestV1, PeerBriefConsumedV1, PeerBriefV1
 from orion.schemas.curiosity_supervisor import READING_KIND, HopReadingV1
 from orion.schemas.durable_run import (

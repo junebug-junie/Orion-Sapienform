@@ -135,3 +135,12 @@ the repo's full metric gate against real data before use.
 
 No deployment or restart is required for this audit. Disabling it means
 stopping the local command; it leaves no daemon, schema migration or consumer.
+
+## Patch 2: contractor receipts
+
+The [contractor ask patch](peer-ask-episodes.md) adds optional commitment and
+source-checked decision reads to this audit. Historical findings above describe
+the original audit, not deployment of the new producers. Commitment metadata
+can establish pre-call alternatives; a completed run and matching Hop can
+support an attributed use account. Overall causal closure remains UNVERIFIED.
+Juniper outreach continues to depend on #2255; this patch does not fork it.

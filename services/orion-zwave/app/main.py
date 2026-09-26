@@ -20,7 +20,13 @@ from orion.schemas.telemetry.home_cooling import (
 )
 
 from .settings import Settings, get_settings
-from .zwave_client import ZWaveJSClient, extract_meter_watts, extract_switch_on
+from .zwave_client import (
+    ZWaveJSClient,
+    extract_meter_amps,
+    extract_meter_volts,
+    extract_meter_watts,
+    extract_switch_on,
+)
 
 logger = logging.getLogger("orion-zwave")
 
@@ -160,16 +166,20 @@ async def poll_cooling_loop() -> None:
     try:
         while True:
             try:
+                # Unsolicited meter reports are sparse; poll Electric_W each cycle.
+                await client.refresh_meter_watts(settings.ZWAVE_NODE_ID)
                 values = client.get_values(settings.ZWAVE_NODE_ID)
                 watts = extract_meter_watts(values)
+                volts = extract_meter_volts(values)
+                amps = extract_meter_amps(values)
                 switch_on = extract_switch_on(values)
                 sample = build_cooling_sample(
                     node_id=settings.ZWAVE_NODE_ID,
                     controller_ready=client.controller_ready,
                     device_online=client.device_online(settings.ZWAVE_NODE_ID),
                     watts=watts,
-                    volts=None,
-                    amps=None,
+                    volts=volts,
+                    amps=amps,
                     switch_on=switch_on,
                     device_path="/dev/zwave",
                     product=client.product_name(settings.ZWAVE_NODE_ID),

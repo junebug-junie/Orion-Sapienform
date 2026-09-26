@@ -93,6 +93,25 @@ def _schema_version_from_message(message: dict[str, Any]) -> Optional[int]:
     return None
 
 
+def ingest_node_values(
+    values_by_node: dict[int, dict[str, dict[str, Any]]],
+    node_id: int,
+    values: Any,
+) -> None:
+    """Store Meter/Switch value entries from a start_listening node snapshot."""
+    if isinstance(values, dict):
+        entries = list(values.values())
+    elif isinstance(values, list):
+        entries = values
+    else:
+        return
+    bucket = values_by_node.setdefault(node_id, {})
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        bucket[_value_map_key(entry)] = entry
+
+
 class ZWaveJSClient:
     """Minimal read-only zwave-js-server websocket client."""
 
@@ -108,6 +127,7 @@ class ZWaveJSClient:
         self._product_by_node: dict[int, str] = {}
         self._listener_task: Optional[asyncio.Task[None]] = None
         self._dispatch_task: Optional[asyncio.Task[None]] = None
+        self._pending_results: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
     @property
     def controller_ready(self) -> bool:
@@ -136,6 +156,10 @@ class ZWaveJSClient:
             raise
 
     async def close(self) -> None:
+        for fut in list(self._pending_results.values()):
+            if not fut.done():
+                fut.cancel()
+        self._pending_results.clear()
         for task_name in ("_dispatch_task", "_listener_task"):
             task = getattr(self, task_name)
             if task is not None:
@@ -152,9 +176,14 @@ class ZWaveJSClient:
     async def _bootstrap(self) -> None:
         hello = await self._read_until(lambda msg: msg.get("type") in {"version", "api", "event", "result"})
         schema_version = _schema_version_from_message(hello) or DEFAULT_API_SCHEMA_VERSION
-        await self._send_command("set_api_schema", schemaVersion=schema_version)
-        await self._send_command("start_listening")
-        await self._send_command("get_all_nodes_metadata")
+        await self._request("set_api_schema", schemaVersion=schema_version)
+        listening = await self._request("start_listening")
+        self._ingest_listening_result(listening)
+        # Optional metadata refresh; ignore failures.
+        try:
+            await self._request("get_all_nodes_metadata")
+        except Exception:
+            logger.debug("get_all_nodes_metadata skipped", exc_info=True)
 
     async def _listen(self) -> None:
         assert self._ws is not None
@@ -166,6 +195,12 @@ class ZWaveJSClient:
                     logger.warning("Ignoring non-JSON zwave-js message: %r", raw)
                     continue
                 await self._inbound.put(message)
+                # Resolve pending RPC waits from the same stream (bootstrap path).
+                if message.get("type") == "result":
+                    mid = message.get("messageId")
+                    fut = self._pending_results.get(str(mid)) if mid is not None else None
+                    if fut is not None and not fut.done():
+                        fut.set_result(message)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -174,6 +209,8 @@ class ZWaveJSClient:
     async def _dispatch_loop(self) -> None:
         while True:
             message = await self._inbound.get()
+            # Skip messages already consumed as RPC replies during bootstrap;
+            # still handle events/results for live updates.
             self._handle_message(message)
 
     async def _read_until(self, predicate) -> dict[str, Any]:
@@ -186,13 +223,51 @@ class ZWaveJSClient:
         self._message_id += 1
         return str(self._message_id)
 
-    async def _send_command(self, command: str, **params: Any) -> None:
+    async def _request(self, command: str, **params: Any) -> dict[str, Any]:
         assert self._ws is not None
-        payload = {"messageId": self._next_message_id(), "command": command, **params}
+        message_id = self._next_message_id()
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._pending_results[message_id] = fut
+        payload = {"messageId": message_id, "command": command, **params}
         await self._ws.send(json.dumps(payload))
+        try:
+            return await asyncio.wait_for(fut, timeout=30)
+        finally:
+            self._pending_results.pop(message_id, None)
+
+    def _ingest_listening_result(self, message: dict[str, Any]) -> None:
+        if not message.get("success", True):
+            return
+        result = message.get("result") or {}
+        state = result.get("state") if isinstance(result, dict) else None
+        if not isinstance(state, dict):
+            return
+        self._controller_ready = True
+        nodes = state.get("nodes") or []
+        if not isinstance(nodes, list):
+            return
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            node_id = node.get("nodeId")
+            if not isinstance(node_id, int):
+                continue
+            self._device_online[node_id] = bool(node.get("ready", True))
+            label = node.get("label") or node.get("name")
+            if isinstance(label, str) and label.strip():
+                self._product_by_node[node_id] = label.strip()
+            ingest_node_values(self._values_by_node, node_id, node.get("values"))
 
     def _handle_message(self, message: dict[str, Any]) -> None:
         if message.get("type") == "version":
+            return
+
+        if message.get("type") == "result":
+            # Late/duplicate start_listening-shaped payloads (defensive).
+            result = message.get("result")
+            if isinstance(result, dict) and isinstance(result.get("state"), dict):
+                self._ingest_listening_result(message)
             return
 
         event = message.get("event")
@@ -213,10 +288,12 @@ class ZWaveJSClient:
             return
 
         if source == "node" and name in {"value added", "value updated"}:
-            args = event.get("args") or []
-            if not args:
-                return
-            entry = args[0]
+            args = event.get("args")
+            entry: Any = None
+            if isinstance(args, list) and args:
+                entry = args[0]
+            elif isinstance(args, dict):
+                entry = args
             if not isinstance(entry, dict):
                 return
             node_id = entry.get("nodeId") or event.get("nodeId")

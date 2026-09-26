@@ -66,4 +66,9 @@ def test_mcp_protocol_rejects_spoofed_arguments_and_returns_receipt():
             payload = json.loads(good.content[0].text)
             assert payload["ok"] is True
             assert payload["result"]["status"] == "queued"
+            status_tool = next(t for t in listing.tools if t.name == "reading_status")
+            assert set(status_tool.inputSchema["properties"]) == {"request_id", "url"}
+            by_url = await client.call_tool("reading_status", {"url": "https://arxiv.org/abs/2310.19279"})
+            assert not by_url.isError
+            assert calls[-1] == ("reading_status", {"url": "https://arxiv.org/abs/2310.19279"})
     asyncio.run(run())

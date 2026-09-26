@@ -63,6 +63,14 @@ class ReadingQueueFakeMixin:
         return {s_key: row[s_key], a_key: attempts}
 
     async def fetchrow(self, sql, *args):
+        if "AS matched_request_count" in sql:
+            matches = sorted(
+                (r for r in self.rows.values() if r["url"] == args[0]),
+                key=lambda r: (r["created_at"], r["seed_id"]), reverse=True,
+            )
+            if not matches:
+                return None
+            return {**matches[0], "matched_request_count": len(matches)}
         if "AS position," in sql and "AS depth" in sql:
             # Interprets STAGE1_QUEUE_POSITION_SQL (queue.py): same ordering
             # as _claim_pending -- (priority, attempts, created_at, seed_id).

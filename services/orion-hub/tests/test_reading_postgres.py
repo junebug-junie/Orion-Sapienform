@@ -78,7 +78,45 @@ def test_migration_is_additive_and_rerunnable(local_pg):
         await conn.execute(retry_migration)
         legacy = await queue.claim_next_seed(conn)
         assert legacy.seed_id == "legacy"
+        legacy_status = await queue.reading_status(conn, url="https://example.org/old")
+        assert legacy_status["status"] == "started"
+        assert legacy_status["request_id"] is None
+        assert legacy_status["seed_id"] == "legacy"
+        assert legacy_status["matched_request_count"] == 1
+        from orion.schemas.reading import ReadingStatusReceiptV1
+
+        ReadingStatusReceiptV1.model_validate(legacy_status)
         assert await conn.fetchval("SELECT count(*) FROM world_pulse_read_seed") == 1
+        await conn.close()
+    asyncio.run(run())
+
+
+def test_url_status_selects_latest_alias_and_preserves_earlier_failure(local_pg):
+    async def run():
+        conn, _ = await db(local_pg)
+        url = "https://arxiv.org/abs/2310.19279"
+        old, current, alias = request(url), request(url), request(url)
+        await queue.enqueue_reading(conn, old)
+        await conn.execute(
+            "UPDATE world_pulse_read_seed SET status='done', stage2_status='failed' WHERE request_id=$1",
+            old.request_id,
+        )
+        await queue.enqueue_reading(conn, current)
+        await queue.enqueue_reading(conn, alias)
+        before = await conn.fetch("SELECT * FROM world_pulse_read_seed ORDER BY seed_id")
+        async with conn.transaction(readonly=True):
+            latest = await queue.reading_status(conn, url=url + "#abstract")
+            assert latest["request_id"] == str(alias.request_id)
+            assert latest["duplicate_of"] == "reading:" + str(current.request_id)
+            assert latest["status"] == "queued"
+            assert latest["queue_position"] == 1
+            assert latest["matched_request_count"] == 3
+            assert latest["selection"] == "latest_request"
+            assert (await queue.reading_status(conn, old.request_id))["status"] == "failed"
+            missing = await queue.reading_status(conn, url=url + "v2")
+            assert missing["status"] == "not_found"
+            assert missing["request_id"] is None
+        assert await conn.fetch("SELECT * FROM world_pulse_read_seed ORDER BY seed_id") == before
         await conn.close()
     asyncio.run(run())
 

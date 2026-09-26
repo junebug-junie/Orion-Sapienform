@@ -15,6 +15,7 @@ from orion.schemas.reading import (
 )
 from orion.world_pulse_read.events import TOOL_CHANNEL, TOOL_RESULT_PREFIX
 from orion.world_pulse_read.queue import enqueue_reading, reading_status
+from orion.world_pulse_read.urls import normalize_source_url
 
 logger = logging.getLogger(__name__)
 
@@ -98,13 +99,19 @@ class ReadingListener:
                         raise RuntimeError("enqueue returned a mismatched request_id")
                 else:
                     phase = "status"
-                    result = await reading_status(conn, command.request_id)
+                    if command.url is not None:
+                        result = await reading_status(conn, url=command.url)
+                    else:
+                        result = await reading_status(conn, command.request_id)
                     try:
                         receipt = ReadingStatusReceiptV1.model_validate(result)
                     except ValueError as exc:
                         raise RuntimeError("status returned a malformed receipt") from exc
-                    if receipt.request_id != command.request_id:
+                    if command.request_id is not None and receipt.request_id != command.request_id:
                         raise RuntimeError("status returned a mismatched request_id")
+                    if command.url is not None:
+                        if result.get("lookup_url") != normalize_source_url(command.url):
+                            raise RuntimeError("status returned a mismatched URL")
             response = ReadingToolResultV1(ok=True, result=result)
         except Exception as exc:
             logger.warning(

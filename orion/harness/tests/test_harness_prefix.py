@@ -321,6 +321,9 @@ def test_compile_harness_prefix_includes_reading_status_brief_when_attached(
     )
     assert "reading_status" in prompt
     assert "ToolSearch and call reading_status" in prompt
+    assert "with the supplied URL directly" in prompt
+    assert "Do not ask for an ID when a link is available" in prompt
+    assert "Tool discovery is not a status check" in prompt
     assert "do not guess Postgres table names" in prompt
     assert "queue_position/queue_depth" in prompt
     assert "13th of 121" in prompt

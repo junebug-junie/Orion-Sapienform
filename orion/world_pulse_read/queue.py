@@ -7,7 +7,7 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from typing import Any, Sequence
 
 from orion.schemas.reading import ReadingRequestedV1
-from orion.world_pulse_read.urls import validate_source_url
+from orion.world_pulse_read.urls import normalize_source_url, validate_source_url
 from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseReadSeedV1
 from orion.world_pulse_read.retry import FailureOutcome, is_transient_failure
 from orion.world_pulse_read.seeds import seeds_from_digest_payload
@@ -354,10 +354,39 @@ async def enqueue_reading(conn: Any, request: ReadingRequestedV1, **kwargs: Any)
     return await reading_status(conn, request.request_id)
 
 
-async def reading_status(conn: Any, request_id: UUID) -> dict[str, Any]:
+async def reading_status(
+    conn: Any, request_id: UUID | None = None, *, url: str | None = None,
+) -> dict[str, Any]:
+    if (request_id is None) == (url is None):
+        raise ValueError("reading_status requires exactly one of request_id or url")
+    if url is not None:
+        lookup_url = normalize_source_url(url)
+        match = await conn.fetchrow(
+            """SELECT *, count(*) OVER () AS matched_request_count
+               FROM world_pulse_read_seed
+               WHERE url = $1
+               ORDER BY created_at DESC, seed_id DESC LIMIT 1""",
+            lookup_url,
+        )
+        if match is None:
+            return {
+                "request_id": None, "status": "not_found",
+                "lookup_url": lookup_url, "matched_request_count": 0,
+            }
+        result = await _reading_status_row(conn, match)
+        return {
+            **result, "lookup_url": lookup_url,
+            "matched_request_count": int(match["matched_request_count"]),
+            "selection": "latest_request",
+        }
     row = await conn.fetchrow(REQUEST_ROW_SQL, request_id)
     if row is None:
         return {"request_id": str(request_id), "status": "not_found"}
+    return await _reading_status_row(conn, row)
+
+
+async def _reading_status_row(conn: Any, row: Any) -> dict[str, Any]:
+    request_id = row["request_id"]
     own = row
     if row["duplicate_of"]:
         row = await conn.fetchrow("SELECT * FROM world_pulse_read_seed WHERE seed_id = $1", row["duplicate_of"])
@@ -386,7 +415,7 @@ async def reading_status(conn: Any, request_id: UUID) -> dict[str, Any]:
     if status == "queued":
         queue_position, queue_depth = await _stage1_queue_position(conn, row)
     return {
-        "request_id": str(request_id), "status": status,
+        "request_id": str(request_id) if request_id is not None else None, "status": status,
         "request": _json_object(own["request_json"]),
         "seed_id": own["seed_id"], "duplicate_of": own["duplicate_of"],
         "stage1_status": s1, "stage2_status": s2,

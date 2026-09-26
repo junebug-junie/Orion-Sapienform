@@ -61,7 +61,14 @@ class RecommendReadingArguments(BaseModel):
 
 class ReadingStatusArguments(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    request_id: UUID
+    request_id: UUID | None = None
+    url: str | None = Field(default=None, min_length=1, max_length=8192)
+
+    @model_validator(mode="after")
+    def one_selector(self):
+        if (self.request_id is None) == (self.url is None):
+            raise ValueError("reading_status requires exactly one of request_id or url")
+        return self
 
 
 class ReadingToolRequestV1(BaseModel):
@@ -70,14 +77,15 @@ class ReadingToolRequestV1(BaseModel):
     operation: Literal["recommend_reading", "reading_status"]
     request: ReadingRequestedV1 | None = None
     request_id: UUID | None = None
+    url: str | None = Field(default=None, min_length=1, max_length=8192)
 
     @model_validator(mode="after")
     def operation_arguments(self):
         if self.operation == "recommend_reading":
-            if self.request is None or self.request_id is not None:
+            if self.request is None or self.request_id is not None or self.url is not None:
                 raise ValueError("recommend_reading requires only request")
-        elif self.request_id is None or self.request is not None:
-            raise ValueError("reading_status requires only request_id")
+        elif self.request is not None or (self.request_id is None) == (self.url is None):
+            raise ValueError("reading_status requires exactly one of request_id or url")
         return self
 
 
@@ -92,13 +100,21 @@ class ReadingStatusReceiptV1(BaseModel):
     """Minimum typed status returned by the server-owned Postgres queue."""
 
     model_config = ConfigDict(extra="allow")
-    request_id: UUID
+    request_id: UUID | None
     status: ReadingStatus
+    seed_id: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def found_request_id(self):
+        if self.request_id is None and self.status != "not_found" and self.seed_id is None:
+            raise ValueError("found reading status requires request_id or legacy seed_id")
+        return self
 
 
 class DurableReadingReceiptV1(ReadingStatusReceiptV1):
     """A row-backed receipt. ``not_found`` can never prove acceptance."""
 
+    request_id: UUID
     status: Literal[
         "queued",
         "started",

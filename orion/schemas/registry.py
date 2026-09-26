@@ -588,6 +588,7 @@ from orion.schemas.harness_finalize import (
     SubstrateFinalizeAppraisalV1,
 )
 from orion.schemas.compaction import MemoryCompactionDeltaV1
+from orion.schemas.dream_cycle import DreamCycleV1
 from orion.schemas.reverie import (
     CompactionRequestV1,
     ResonanceAlertV1,
@@ -1444,6 +1445,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ReverieRefractoryEntry": ReverieRefractoryEntry,
     "CompactionRequestV1": CompactionRequestV1,
     "MemoryCompactionDeltaV1": MemoryCompactionDeltaV1,
+    "DreamCycleV1": DreamCycleV1,
     "ResonanceAlertV1": ResonanceAlertV1,
     "VisualActivityV1": VisualActivityV1,
     "ReverieVisualContextV1": ReverieVisualContextV1,
@@ -1625,6 +1627,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "MemoryCompactionDeltaV1": SchemaRegistration(
         model=MemoryCompactionDeltaV1,
         kind="dream.compaction.delta.v1",
+    ),
+    "DreamCycleV1": SchemaRegistration(
+        model=DreamCycleV1,
+        kind="dream.cycle.v1",
     ),
     "VisualActivityV1": SchemaRegistration(model=VisualActivityV1, kind="reverie.visual.activity.v1"),
     "ReverieVisualContextV1": SchemaRegistration(model=ReverieVisualContextV1, kind="reverie.visual.context.v1"),

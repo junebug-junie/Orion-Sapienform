@@ -634,6 +634,8 @@ async def startup_event():
                 # `endogenous_outreach` is a module global reassigned above.
                 outreach_enabled=settings.HUB_CURIOSITY_OUTREACH_ENABLED,
                 contractor_peer_enabled=settings.HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED,
+                dream_hypotheses_enabled=settings.HUB_CURIOSITY_DREAM_HYPOTHESES_ENABLED,
+                dream_hypotheses_per_run=settings.HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN,
                 kickoff_via_cortex=settings.HUB_CURIOSITY_KICKOFF_VIA_CORTEX,
                 durable_admission_enabled=settings.HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED,
                 elastic_activation_enabled=settings.HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED,

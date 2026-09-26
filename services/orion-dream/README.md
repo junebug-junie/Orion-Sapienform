@@ -13,13 +13,43 @@ This service is a **donor / bridge / readout façade** while the canonical dream
 | Durable storage | `orion-sql-writer` → PostgreSQL `dreams` |
 | Wake readout | This service: **SQL-first** (`GET /dreams/wakeup/today`), optional `DREAM_LOG_DIR` JSON fallback |
 
-### Legacy code (retire after spine is proven)
+## Dream cycle v2: sleep that changes something
 
-Do not use for new flows; remove after E2E smoke green.
+A dream used to be a story written into `dreams` that nothing acted on. v2 makes
+sleep the time Orion does work it can't do while awake, and makes every dream
+scoreable. Default off (`ORION_DREAM_CYCLE_ENABLED`).
 
-- `app/dream_cycle.py` — direct gather + gateway synthesis (superseded by `dream_cycle` verb)
-- `app/aggregators_sql.py`, `app/aggregators_rdf.py`, `app/aggregators_vector.py`
-- File-log-first assumptions in `wake_readout.py` (kept only as fallback)
+```
+sleep pressure --(>= threshold AND idle AND >= min interval)--> replay
+     |                                                             |
+     |   weighted count of what the day left unprocessed          +--> REM compaction (staged, existing)
+     |   since the last sleep: degraded/critical metacog,         |
+     |   reverie compaction asks, resonance alerts, touched       +--> recombination --> dream_hypothesis
+     |   active crystallizations. Reads exactly 0 after a sleep.       dream arm:   distant replay pairs
+     |                                                                  control arm: random pairs, same prompt
+     v
+Hub curiosity kickoff shows each hypothesis once, arm hidden. Orion alone
+decides whether to form a :Prior from one (formed_from "dream_hypothesis:<id>").
+scripts/dream_hypothesis_scorecard.py compares adoption/support per arm.
+```
+
+| Piece | File |
+|---|---|
+| Candidates, weights, pressure, replay selection (deterministic) | `app/replay.py` |
+| Pairing (both arms) + LLM link prompt + hollow guard | `app/recombine.py` |
+| Orchestration + sleep loop | `app/cycle.py` |
+| Reads (4 producer tables, chat idle) / writes (v2 tables only) | `app/cycle_store.py` |
+| LLM gateway RPC (background lane) | `app/llm.py` |
+| Contract | `orion/schemas/dream_cycle.py` |
+| Offer / prompt section / scorecard | `orion/dream/hypotheses.py` |
+| Migration | `services/orion-sql-db/manual_migration_dream_cycle_v2.sql` |
+
+HTTP: `GET /dreams/cycle/pressure` (read-only), `POST /dreams/cycle/run?force=true`.
+
+Writes nothing to canonical memory. The dream never writes a belief.
+
+The legacy direct-gather path (`dream_cycle.py`, `aggregators_*`, `memory_listener.py`)
+was deleted in the same patch.
 
 ### HTTP / bus behavior
 
@@ -28,12 +58,11 @@ Do not use for new flows; remove after E2E smoke green.
 
 ## Contracts (historical)
 
-### Consumed Channels (legacy listeners may still run separately)
+### Channels
 
 | Channel | Env Var | Kind | Description |
 | :--- | :--- | :--- | :--- |
 | `orion:dream:trigger` | `CHANNEL_DREAM_TRIGGER` | `dream.trigger` | Published by clients; **handled by cortex-orch**. |
-| `orion:collapse:sql-write` | `CHANNEL_COLLAPSE_SQL_PUBLISH` | `collapse.mirror` | `memory_listener` / legacy paths. |
 
 ### Environment Variables
 

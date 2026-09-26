@@ -39,6 +39,66 @@ HELD = frozenset({"granted", "recall"})
 WAITING = frozenset({"queued", "backlogged"})
 
 
+# --- Which pool refusals end a run, and which only mean "the pool cannot answer right now" ------
+# Incident 2026-09-26: durable-runs 4.5 came up ~20 s before the 4.5 pool. The old pool's
+# GpuLeaseRequestV1 did not know the new ``hold_lease_id``/``hold_generation`` fields (its model is
+# extra="forbid"), so it answered every acquire ``unavailable reason=invalid:...extra_forbidden``
+# with no lease_id -- and durable-runs failed all 11 resumed runs terminally. A refusal like that
+# is a fact about the POOL (its version, its config, its health), not about the run: a rolled pool
+# answers the very same request. Such refusals keep the run waiting and retry with backoff.
+#
+# Reply reasons that say the pool could not even process the request (it never looked at the run):
+#   ``invalid:<validation error>`` -- the pool's request model rejected ours: contract/version skew.
+#   ``unknown_verb:<verb>``        -- the pool predates the verb: version skew.
+POOL_TROUBLE_PREFIXES = ("invalid:", "unknown_verb:")
+# Reasons that are properties of the run's own request, whatever pool version answers:
+#   ``deadline``                -- the hold's deadline_at IS the run's admission deadline_at: it passed.
+#   ``min_ctx_exceeds_class``   -- the run asks for more context than any role of its class serves
+#                                  (the pool remembers each role's last live ctx, so a role that is
+#                                  briefly restarting does not trigger it).
+#   ``backlog_max_age``         -- the pool already waited backlog_max_age_sec with nothing able to
+#                                  serve the class: the configured give-up for a backlogged hold.
+#   ``replay_payload_too_large``-- the request itself is over the pool's size cap.
+RUN_TERMINAL_PREFIXES = ("deadline", "min_ctx_exceeds_class", "backlog_max_age", "replay_payload_too_large")
+
+
+def is_pool_trouble(reply: GpuLeaseReplyV1) -> bool:
+    """A reply to status/heartbeat/release that says nothing about the lease it names: the pool
+    could not parse or does not know the verb (version skew). Treat it like an unanswered RPC.
+    No lease_id check: ``invalid:*`` never carries one, but the pool echoes the asked-about
+    lease_id on ``unknown_verb:*`` (services/orion-gpu-pool/app/main.py dispatch_lease)."""
+    return reply.status == "unavailable" and str(reply.reason or "").startswith(POOL_TROUBLE_PREFIXES)
+
+
+def refusal_is_terminal(cfg: PoolConfig, reason: str, work_class: str) -> bool:
+    """Does a pool refusal (``unavailable``/``unknown_lease`` reason) mean this run can never be
+    placed? Only when the reason is a property of the run's request, or when durable-runs' OWN
+    copy of gpu_pool.yaml -- the config the run was admitted against -- agrees with the refusal.
+
+    * ``unknown_class:<c>`` is terminal only if ``c`` is not a class in our loaded config either.
+      If we know the class and the pool does not, the pool is running a different gpu_pool.yaml
+      (a config roll in progress): transient.
+    * ``operator_only_class`` is terminal only if our config also puts an operator-only role in the
+      class (durable-runs is never an operator); otherwise the same config-skew argument applies.
+    * Everything else -- ``invalid:*``, ``unknown_verb:*``, an ``unknown_lease`` answer to an
+      acquire, an empty reason, any reason this code does not recognise -- is transient. Failing a
+      run on a reason nobody classified is exactly the incident this guards against; the run stays
+      visible (run.waiting_resource with the reason) and cancellable while it waits.
+    """
+    reason = str(reason or "")
+    if reason.startswith(POOL_TROUBLE_PREFIXES):
+        return False
+    if reason.startswith(RUN_TERMINAL_PREFIXES):
+        return True
+    if reason.startswith("unknown_class"):
+        named = reason.partition(":")[2] or work_class
+        return named not in cfg.classes
+    if reason.startswith("operator_only_class"):
+        spec = cfg.classes.get(work_class)
+        return spec is not None and any(cfg.roles[r].operator_only for r in spec.roles if r in cfg.roles)
+    return False
+
+
 class UnknownRoute(ValueError):
     """The run names a route the pool does not know: it can never be placed, so the run fails
     with that reason instead of waiting forever (the gateway refuses such a route the same way)."""

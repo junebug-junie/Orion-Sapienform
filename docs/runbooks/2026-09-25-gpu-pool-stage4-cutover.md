@@ -257,10 +257,22 @@ WITH w AS (
          decision = decision || '{"withdrawn_reason": "migrated_to_gpu_pool"}'::jsonb
    WHERE status = 'pending' AND demand_id IN ($IDS)
   RETURNING demand_id)
-SELECT CASE WHEN count(*) = $N THEN 'ok' ELSE 1/0 END FROM w;   -- aborts the transaction on a mismatch
+-- Aborts the transaction on a mismatch. The division must depend on the rows (count(*) - count(*)
+-- is 0 only at run time): a literal `ELSE 1/0` is constant-folded when the query is planned, so it
+-- raised on EVERY run -- verified live 2026-09-26, it rolled back a correct 11-row update.
+SELECT CASE WHEN count(*) = $N THEN 'ok:' || count(*) ELSE (1 / (count(*) - count(*)))::text END FROM w;
 COMMIT;
 SQL
 ```
+
+Expected output: `ok:<N>` then `COMMIT`. A mismatch prints `ERROR: division by zero` and nothing is
+changed (ON_ERROR_STOP stops before COMMIT; the transaction is rolled back).
+
+**What the leftovers were on the 2026-09-26 cutover:** 11 rows -- 9 `pending` plus 2 `suspended`
+demands, all belonging to runs already `terminal='failed'`. The `WHERE status = 'pending'` above
+does not touch `suspended` rows; to retire those too, snapshot them the same way
+(`WHERE status IN ('pending','suspended')` in the COPY) and use the same `status IN (...)` in the
+UPDATE, so `$N` still equals the snapshot's row count.
 
 (`demand_id` is the csv's first column; ids are `<run_id>:harness_turn:<resource>` and contain no
 commas or quotes.)

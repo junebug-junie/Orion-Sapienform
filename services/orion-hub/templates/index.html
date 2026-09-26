@@ -179,6 +179,8 @@
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
             role="button"
           >Attention Organ</a>
+          <a id="dreamTabButton" href="#dream" data-hash-target="#dream" role="button"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700">Dream</a>
           <a
             id="reverieTabButton"
             href="#reverie"
@@ -936,6 +938,31 @@
             <pre id="organSignalsDetail" class="flex-1 min-h-[12rem] text-[11px] leading-relaxed text-gray-200 bg-gray-950/50 border border-gray-800 rounded-lg p-2 overflow-auto whitespace-pre-wrap font-mono">Tap a node for JSON. If <code class="text-gray-500">otel_trace_id</code> is set, Hub trace chain loads here.</pre>
           </div>
         </div>
+      </section>
+
+      <section id="dream" data-panel="dream" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[40rem]">
+        <div class="flex items-start justify-between gap-4">
+          <div><h2 class="text-xl font-semibold text-gray-100">Dream</h2>
+            <p class="text-sm text-gray-400 mt-1">What Orion carries into sleep, the connections they find, and what survives waking.</p></div>
+          <button type="button" id="dreamRefresh" class="px-3 py-1.5 rounded border border-gray-600 bg-gray-800 text-sm">Refresh</button>
+        </div>
+        <p class="text-xs text-gray-400">Operator view only. Reading here does not offer hypotheses to Orion or change their memories.</p>
+        <div id="dreamPressure" aria-live="polite" class="rounded-xl border border-gray-700 p-4">Open Dream to read sleep readiness.</div>
+        <div class="rounded-xl border border-gray-700 p-4">
+          <h3 class="font-semibold text-gray-200">Does dreaming help?</h3>
+          <p class="text-xs text-gray-400 my-2">Distant memory pairs versus random pairs. Labels below are for operators; Orion sees neither group label.</p>
+          <div id="dreamScore" aria-live="polite"></div>
+        </div>
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div><h3 class="font-semibold text-gray-200 mb-2">Recent sleeps</h3><div id="dreamCycles" class="flex flex-col gap-2"></div>
+            <div class="flex gap-3 mt-3"><button id="dreamNewer" type="button" disabled>← Newer</button><button id="dreamOlder" type="button" disabled>Older →</button></div></div>
+          <div id="dreamDetail" aria-live="polite" class="lg:col-span-2 rounded-xl border border-gray-700 p-4">Choose a sleep to inspect its replay and hypotheses.</div>
+        </div>
+        <details class="rounded-xl border border-gray-700 p-4 text-sm text-gray-400"><summary class="cursor-pointer text-gray-200">How this connects to older memory work</summary>
+          <p class="mt-3">Replay reads self-observation notes, text reverie compaction requests, resonance alerts, and active memory crystallizations. The existing REM compaction pass can stage proposals during sleep; it applies nothing.</p>
+          <p class="mt-2"><a href="#reverie" class="text-indigo-300 underline">Visual reverie</a> generates images separately. Its image chains are not inputs to this sleep loop. The older narrative dream workflow and memory synthesis/consolidation pipelines remain separate; this loop reads crystallizations but does not run those pipelines.</p>
+          <p class="mt-2">After sleep, <a href="#curiosity-atlas" class="text-indigo-300 underline">Curiosity</a> may offer each hypothesis once. Only Orion can choose to form a belief from it.</p>
+        </details>
       </section>
 
       <section id="reverie" data-panel="reverie" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[40rem]">
@@ -4193,6 +4220,7 @@
   <script src="/static/js/collapse-mirror.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/aitown-panel.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/attention-organ.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/dream-tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/reverie-tab.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/exo-exploration.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cocreation-signals.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>

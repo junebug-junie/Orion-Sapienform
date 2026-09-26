@@ -196,6 +196,7 @@ from .cabinet_ambient_routes import router as cabinet_ambient_router
 from .cabinet_cooling_routes import router as cabinet_cooling_router
 from .biometrics_preview_routes import router as biometrics_preview_router
 from .reverie_routes import router as reverie_router
+from .dream_routes import router as dream_router
 router.include_router(grammar_atlas_router)
 router.include_router(chat_turn_trace_router)
 router.include_router(chat_cockpit_router)
@@ -222,6 +223,7 @@ router.include_router(cabinet_ambient_router)
 router.include_router(cabinet_cooling_router)
 router.include_router(biometrics_preview_router)
 router.include_router(reverie_router)
+router.include_router(dream_router)
 
 
 def _hub_uses_host_network_mode() -> bool:

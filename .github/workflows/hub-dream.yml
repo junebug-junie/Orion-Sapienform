@@ -1,0 +1,29 @@
+name: Hub Dream
+on:
+  pull_request:
+    paths:
+      - 'services/orion-hub/scripts/dream_routes.py'
+      - 'services/orion-hub/scripts/api_routes.py'
+      - 'services/orion-hub/tests/test_dream_routes.py'
+      - 'services/orion-hub/static/js/dream-tab.js'
+      - 'services/orion-hub/static/js/app.js'
+      - 'services/orion-hub/templates/index.html'
+      - 'services/orion-hub/app/settings.py'
+      - 'services/orion-hub/evals/dream_*'
+      - 'orion/dream/**'
+      - 'orion/schemas/dream_cycle.py'
+      - '.github/workflows/hub-dream.yml'
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest pytest-asyncio fastapi==0.111.0 httpx pydantic==2.11.5 pydantic-settings==2.5.2 SQLAlchemy Jinja2 redis PyYAML
+      - run: python -m pytest services/orion-hub/tests/test_dream_routes.py tests/test_dream_hypotheses.py -q
+      - run: node --check services/orion-hub/static/js/dream-tab.js
+      - run: node --check services/orion-hub/evals/dream_browser.cjs

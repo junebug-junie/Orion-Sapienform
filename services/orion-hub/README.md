@@ -3043,6 +3043,16 @@ past each loop's own decay threshold, not a heartbeat file).
 
 ## Deliberate reading from Unified Chat and curiosity
 
+Reading defaults to 12 settled runs per local day for each independent wallet:
+`HUB_WORLD_PULSE_READ_DAILY_CAP` (Stage 1) and
+`HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP` (Stage 2). Existing daily counts are
+preserved. The default 08:00-22:00 window spaces submissions by 70 minutes;
+with the window disabled, the unchanged 30-minute minimum cooldown applies.
+Retry limits, backoff and GPU admission safeguards are unchanged. Set both
+keys in the local Hub `.env` and recreate Hub to apply; an ordinary container
+restart does not reload its environment. Roll back by restoring both caps to 6
+and recreating Hub. This does not cancel or refund existing work.
+
 The model can call `recommend_reading(url, why_now)` to preserve a public source for asynchronous reading, or `reading_status(url=...)` / `reading_status(request_id=...)` to inspect existing work. Status requires exactly one selector. Use a supplied link directly without asking the user to remember a UUID. URL lookup uses the same normalization as ingress (including fragment removal), selects the newest matching request by creation time then seed ID, resolves duplicate aliases, and reports `lookup_url`, `matched_request_count`, and `selection=latest_request`. It does not fetch, enqueue, or retry. A missing URL returns `status=not_found`, `request_id=null`, and count zero. Different paths, queries, and arXiv versions remain distinct. Existing ID lookups are unchanged. A queued latest request does not imply earlier requests never ran; returned attempt counts and match count must not be flattened into that claim. Tool discovery alone is not evidence of status. WebFetch/search remain the tools for facts needed immediately. URL presence never automatically submits work.
 
 Deploy Hub's URL-aware listener before the governor/tool producer. Old ID callers remain compatible; an old listener rejects the new URL selector rather than fabricating status. No queue migration or env change is required.

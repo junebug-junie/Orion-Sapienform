@@ -2,12 +2,11 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 672,
   "_last_change": {
-    "base": "merge base 775c45eed (origin/main)",
-    "change_count": 2,
+    "base": "merge base 4adef55b9 (origin/main)",
+    "change_count": 0,
     "high_severity_count": 0,
     "changes": [
-      "medium added metric://bus_channel/orion-durable-runs/orion:reading:turn:request",
-      "medium added metric://bus_channel/orion-hub/orion:reading:turn:reply:*"
+      "no definition changes relative to the merge base"
     ]
   },
   "definitions": {

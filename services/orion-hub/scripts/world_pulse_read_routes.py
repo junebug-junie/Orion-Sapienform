@@ -111,7 +111,7 @@ async def world_pulse_read_schedule() -> JSONResponse:
         "available": False,
         "enabled": False,
         "done_today": 0,
-        "daily_cap": 6,
+        "daily_cap": 12,
         "cooldown_key": WALLET_A_COOLDOWN_KEY,
         "count_key_prefix": WALLET_A_COUNT_KEY_PREFIX,
         "cooldown_sec": None,
@@ -125,7 +125,7 @@ async def world_pulse_read_schedule() -> JSONResponse:
             getattr(cfg, "HUB_WORLD_PULSE_READ_ENABLED", False)
         )
         payload["daily_cap"] = int(
-            getattr(cfg, "HUB_WORLD_PULSE_READ_DAILY_CAP", 6) or 0
+            getattr(cfg, "HUB_WORLD_PULSE_READ_DAILY_CAP", 12) or 0
         )
         payload["cooldown_sec"] = float(
             getattr(cfg, "HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC", 0) or 0
@@ -176,7 +176,7 @@ async def world_pulse_read_status() -> JSONResponse:
         "tz": None,
         "wallet_a": _wallet_block(
             enabled=False,
-            daily_cap=6,
+            daily_cap=12,
             cooldown_key=WALLET_A_COOLDOWN_KEY,
             count_key_prefix=WALLET_A_COUNT_KEY_PREFIX,
             last_at=None,
@@ -184,7 +184,7 @@ async def world_pulse_read_status() -> JSONResponse:
         ),
         "wallet_b": _wallet_block(
             enabled=False,
-            daily_cap=6,
+            daily_cap=12,
             cooldown_key=WALLET_B_COOLDOWN_KEY,
             count_key_prefix=WALLET_B_COUNT_KEY_PREFIX,
             last_at=None,
@@ -207,13 +207,13 @@ async def world_pulse_read_status() -> JSONResponse:
             getattr(cfg, "HUB_WORLD_PULSE_READ_ENABLED", False)
         )
         payload["wallet_a"]["daily_cap"] = int(
-            getattr(cfg, "HUB_WORLD_PULSE_READ_DAILY_CAP", 6) or 0
+            getattr(cfg, "HUB_WORLD_PULSE_READ_DAILY_CAP", 12) or 0
         )
         payload["wallet_b"]["enabled"] = bool(
             getattr(cfg, "HUB_WORLD_PULSE_READ_STAGE2_ENABLED", False)
         )
         payload["wallet_b"]["daily_cap"] = int(
-            getattr(cfg, "HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP", 6) or 0
+            getattr(cfg, "HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP", 12) or 0
         )
         payload["stage2_max_round_trips"] = int(
             getattr(cfg, "HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS", 5) or 0

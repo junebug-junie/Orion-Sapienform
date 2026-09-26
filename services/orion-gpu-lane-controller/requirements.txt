@@ -7,3 +7,5 @@ pydantic==2.9.2
 pydantic-settings==2.5.2
 redis[hiredis]==5.0.7
 loguru
+# Stage 4.2: orion.gpu_pool.config reads config/gpu_pool.yaml (launch_digest fence).
+PyYAML>=6.0.1,<7.0.0

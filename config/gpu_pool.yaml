@@ -14,29 +14,53 @@ defaults:
   clawback_grace_sec: 60        # a recalled borrower finishes its current request, capped here
   request_lease_ttl_sec: 30     # heartbeat window, one-inference leases
   hold_lease_ttl_sec: 90        # heartbeat window, held leases (durable runs, operator)
-  swap_cooldown_sec: 600        # after a swap seat is unloaded, don't reload it for this long
-  swap_after_wait_sec: 30       # a lease must wait this long before it justifies loading a swap seat
+  swap_cooldown_sec: 600        # after a load fails (residents restored) or is refused/unanswered, don't retry for this long
+  swap_after_wait_sec: 30       # a lease must wait this long before it justifies loading a swap seat (per-seat: swap.after_wait_sec)
   swap_idle_unload_sec: 300     # an idle swap seat is unloaded and residents restored after this
   backlog_max_age_sec: 86400    # backlogged work older than this is dead-lettered
   retry: {max_attempts: 3, base_sec: 5, max_sec: 300}
+  # Stage 4.3 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md)
+  hold_clawback_grace_sec: 600  # a recalled hold (durable run) finishes its current graph node within this, then is aborted + re-queued
+  swap_min_residency_sec: 600   # after a seat unloads, its evicted residents stay this long (swap_requested reason=min_residency)
+  actuate_ack_sec: 10           # the actuator must answer "accepted" within this, else swap_failed reason=actuator_unreachable
+
+# Host actuators the pool sends GpuActuateV1 to, by name (stage 4). circe's is
+# orion-gpu-lane-controller; it acts only on the `launch` blocks below that name it.
+actuators:
+  circe: {host: circe}
 
 priorities: [interactive, system, background]   # highest first
 
 cards:
   gpu0: {vram_gb: 32, lendable: true}   # chat's card; others only while Juniper has it lent
   gpu1: {vram_gb: 32}
-  gpu2: {vram_gb: 32}                   # PG500-216 (a V100)
+  gpu2: {vram_gb: 32, index: 2}         # PG500-216 (a V100); index = CUDA device on circe
   gpu3: {vram_gb: 32}
 
 roles:
   chat:       {kind: llm, cards: [gpu0], owner: chat, port: 8011}
   agent:      {kind: llm, cards: [gpu1], owner: agent, port: 8015}
   agent-gpu2: {kind: llm, cards: [gpu2], owner: agent, port: 8016,   # diffusion reclaims gpu2 via evicts
-               swap: {evicts: [diffusion], load: gpu2/agent, unload: gpu2/restore}}
+               # How long gpu2 may stay borrowed from diffusion once the pool loaded it (was
+               # DURABLE_RUNS_ELASTIC_MAX_BORROW_SEC): then holds are recalled and the seat unloads.
+               max_hold_sec: 3600,
+               # load/unload: stage-4 bridge verbs onto the controller's fixed gpu2 transitions (deleted in stage 5).
+               # after_wait_sec keeps today's 1200s elastic trigger; guards are today's elastic eligibility checks.
+               swap: {evicts: [diffusion], load: gpu2/agent, unload: gpu2/restore,
+                      after_wait_sec: 1200, guards: [thermal, visual_baseline]},
+               launch: {actuator: circe, compose: services/orion-llamacpp-host/docker-compose.atlas-workers.yml,
+                        env_file: services/orion-llamacpp-host/.env, service: atlas-agent-burst,
+                        compose_profile: agent-burst, cuda_env: CUDA_VISIBLE_DEVICES_OVERRIDE,
+                        ready: /health, timeout_sec: 900}}
   metacog:    {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8012}
   fast:       {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8013}
   world:      {kind: service, cards: [gpu2], owner: world, port: 6613, slots: 2, vram_gb: 1}
-  diffusion:  {kind: service, cards: [gpu2], owner: diffusion, port: 8014, slots: 1, vram_gb: 24}
+  diffusion:  {kind: service, cards: [gpu2], owner: diffusion, port: 8014, slots: 1, vram_gb: 24,
+               launch: {actuator: circe, compose: services/orion-diffusion-host/docker-compose.yml,
+                        env_file: services/orion-diffusion-host/.env, service: diffusion-host,
+                        cuda_env: CUDA_VISIBLE_DEVICES,
+                        drain: {set: /v1/lifecycle/drain, status: /v1/lifecycle/status},
+                        ready: /ready, timeout_sec: 600}}
   experiment: {kind: llm, cards: [gpu0, gpu1, gpu2, gpu3], owner: experiment, port: 8099,
                operator_only: true, max_hold_sec: 14400,
                swap: {evicts: all, load: circe/experiment, unload: circe/restore}}

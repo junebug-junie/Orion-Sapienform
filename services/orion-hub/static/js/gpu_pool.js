@@ -47,15 +47,64 @@
     return `${(ms / 60000).toFixed(1)} min`;
   }
 
+  const ACTIVE = (l) => l.status === "granted" || l.status === "recalling";
+
+  /** Slots in use per role. A durable-run hold and the call running in its slot (a child,
+   *  hold_lease_id set) are ONE slot: the hold counts only while none of its calls is in flight. */
+  function slotUse(leases) {
+    const busy = {};
+    const withChild = new Set();
+    const holdRole = {};
+    (leases || []).forEach((l) => { if (l.kind === "hold") holdRole[l.lease_id] = l.role; });
+    // merged only when the call runs on its hold's role, as the scheduler counts it
+    (leases || []).forEach((l) => { if (ACTIVE(l) && l.hold_lease_id && holdRole[l.hold_lease_id] === l.role) withChild.add(l.hold_lease_id); });
+    (leases || []).forEach((l) => {
+      if (!ACTIVE(l) || !l.role) return;
+      if (l.kind === "hold" && withChild.has(l.lease_id)) return;
+      busy[l.role] = (busy[l.role] || 0) + 1;
+    });
+    return busy;
+  }
+
+  /** Per card: the swap state machine (idle | loading | unloading | fault), the action in flight
+   *  or last finished, and whether the pool actuates a seat there or only reports. */
+  function swapModel(state) {
+    const out = {};
+    (state && state.cards || []).forEach((c) => {
+      out[c.card] = {
+        swapState: c.swap_state || "idle", swapRole: c.swap_role || null, actuatedRoles: c.actuated_roles || [],
+        action: c.actuation || null, cooldownUntil: c.cooldown_until || null,
+        residencyUntil: c.residency_until || null, loadedAt: c.loaded_at || null,
+      };
+    });
+    return out;
+  }
+
+  /** Swap-load guards as the pool last read them: [{name, clear, why}]. */
+  function guardModel(state) {
+    return Object.entries((state && state.swap_guards) || {}).map(([name, why]) => ({ name, clear: why === null, why }));
+  }
+
+  /** Durable-run holds, each with the calls made under it (children), newest first. */
+  function holdModel(state) {
+    const leases = (state && state.leases) || [];
+    const children = {};
+    leases.forEach((l) => { if (l.hold_lease_id) (children[l.hold_lease_id] = children[l.hold_lease_id] || []).push(l); });
+    return leases.filter((l) => l.kind === "hold").map((h) => {
+      const kids = children[h.lease_id] || [];
+      return { leaseId: h.lease_id, holder: h.holder, workClass: h.work_class, priority: h.priority, status: h.status,
+               role: h.role || null, generation: h.generation || 0, grantedAt: h.granted_at || null,
+               recallBy: h.recall_by || null, children: kids, inFlight: kids.filter(ACTIVE).length,
+               waiting: kids.filter((k) => k.status === "queued").length };
+    }).sort((a, b) => String(b.grantedAt || "").localeCompare(String(a.grantedAt || "")));
+  }
+
   /** Cards with the roles that live on them, from the parsed YAML plus live discovery. */
   function cardModel(config, state) {
     if (!config) return { cards: [], spanning: [] };
     const discovered = {};
     (state && state.roles || []).forEach((r) => { discovered[r.role] = r; });
-    const busy = {};
-    (state && state.leases || []).forEach((l) => {
-      if ((l.status === "granted" || l.status === "recalling") && l.role) busy[l.role] = (busy[l.role] || 0) + 1;
-    });
+    const busy = slotUse(state && state.leases);
     const cardState = {};
     (state && state.cards || []).forEach((c) => { cardState[c.card] = c; });
     const classes = config.classes || {};
@@ -71,9 +120,11 @@
         ctx: d.ctx_per_slot || null, detail: d.detail || null, port: spec.port,
       };
     });
+    const swaps = swapModel(state);
     const cards = Object.entries(config.cards || {}).map(([card, spec]) => ({
       card, vramGb: spec.vram_gb, lendable: !!spec.lendable, lent: !!(cardState[card] && cardState[card].lent),
       swappedIn: (cardState[card] && cardState[card].swapped_in) || [],
+      swap: swaps[card] || { swapState: "idle", actuatedRoles: [], action: null },
       roles: roles.filter((r) => r.cards.length === 1 && r.cards[0] === card),
     }));
     return { cards, spanning: roles.filter((r) => r.cards.length > 1) };
@@ -86,9 +137,7 @@
       model[r.role] = { role: r.role, status: r.status, slots: r.slots, busy: 0, grants: 0, failures: 0,
                         recalls: 0, waits: [] };
     });
-    (state && state.leases || []).forEach((l) => {
-      if (l.role && model[l.role] && (l.status === "granted" || l.status === "recalling")) model[l.role].busy += 1;
-    });
+    Object.entries(slotUse(state && state.leases)).forEach(([role, n]) => { if (model[role]) model[role].busy = n; });
     (events || []).forEach((e) => {
       const m = e.role && model[e.role];
       if (!m) return;
@@ -162,7 +211,8 @@
     return n >= BACKFILL_LIMIT ? `${BACKFILL_LIMIT}+` : String(n);
   }
 
-  const api = { EDGES, NODES, pct, fmtMs, fmtAt, stateAgeSec, holdClassFor, backfillLabel, BACKFILL_LIMIT, cardModel, liveByRole, liveByClass, walkerPath, seriesModel };
+  const api = { EDGES, NODES, pct, fmtMs, fmtAt, stateAgeSec, holdClassFor, backfillLabel, BACKFILL_LIMIT, cardModel, liveByRole, liveByClass, walkerPath, seriesModel,
+                slotUse, swapModel, guardModel, holdModel };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.OrionGpuPool = api;
   if (typeof document === "undefined") return;
@@ -189,16 +239,60 @@
         ${r.slots ? `<div class="slotbar" aria-hidden="true">${slots}</div>` : ""}
       </div>`;
     };
+    const swapHtml = (c) => {
+      const sw = c.swap;
+      const seats = c.roles.filter((r) => r.swap).map((r) => r.name);
+      if (!seats.length && sw.swapState === "idle" && !sw.action) return "";
+      const a = sw.action;
+      const lines = [];
+      lines.push(sw.actuatedRoles.length ? `pool actuates ${esc(sw.actuatedRoles.join(", "))}` : "observe only: swaps are reported, not actuated");
+      if (a) {
+        lines.push(`${esc(a.action)} ${esc(a.role)} (g${esc(a.generation)}, ${esc(a.reason)})`
+          + (a.phase ? ` · phase ${esc(a.phase)}` : "") + (a.outcome ? ` · ${esc(a.outcome)}` : " · in flight")
+          + (a.sent_at ? ` · sent ${esc(fmtAt(a.sent_at))}` : ""));
+      }
+      if (sw.cooldownUntil) lines.push(`no load before ${esc(fmtAt(sw.cooldownUntil))} (cooldown)`);
+      if (sw.residencyUntil) lines.push(`residents stay until ${esc(fmtAt(sw.residencyUntil))}`);
+      if (sw.loadedAt) lines.push(`seat loaded ${esc(fmtAt(sw.loadedAt))}`);
+      return `<div class="swapline swap-${esc(sw.swapState)}" data-swap-state="${esc(sw.swapState)}">
+        <span class="badge swapstate">swap: ${esc(sw.swapState)}${sw.swapState !== "idle" && sw.swapRole ? ` ${esc(sw.swapRole)}` : ""}</span>
+        ${sw.swapState === "fault" ? `<div class="meta"><strong>FAULT</strong>: no grants on any role of this card until discovery sees it consistent again, or an operator clears it.</div>
+          <button type="button" data-verb="clear_fault" data-card="${esc(c.card)}">Clear fault on ${esc(c.card)} (ask the actuator, adopt what it reports)</button>` : ""}
+        ${lines.map((l) => `<div class="meta">${l}</div>`).join("")}
+      </div>`;
+    };
     $("cards").innerHTML = m.cards.map((c) => `<div class="card" data-card="${esc(c.card)}">
       <div class="card-head"><strong>${esc(c.card)}</strong><span class="muted">${esc(c.vramGb)} GB${c.lendable ? ` · ${c.lent ? "LENT" : "not lent"}` : ""}</span></div>
+      ${swapHtml(c)}
       ${c.roles.map(roleHtml).join("") || '<div class="muted">nothing configured</div>'}
     </div>`).join("");
+    const guards = guardModel(view.state);
+    $("swapGuards").innerHTML = guards.length
+      ? `Swap-load guards: ${guards.map((g) => `<span class="badge ${g.clear ? "guard-clear" : "guard-block"}" title="${esc(g.why || "clear")}">${esc(g.name)}: ${g.clear ? "clear" : esc(g.why)}</span>`).join(" ")}`
+      : "";
+    renderHolds();
     $("spanning").innerHTML = m.spanning.length
       ? `<div class="muted">Spans several cards:</div>${m.spanning.map((r) => roleHtml(r).replace('class="role', `title="${esc(r.cards.join(", "))}" class="role`)).join("")}` : "";
     const unclaimed = (view.state && view.state.unclaimed_servers) || [];
     $("unclaimed").textContent = unclaimed.length ? `Unclaimed servers (announcing, but no role in the YAML): ${unclaimed.join("; ")}` : "";
     $("yaml").textContent = view.configYaml || "";
     renderControls(m);
+  }
+
+  function renderHolds() {
+    const holds = holdModel(view.state);
+    if (!holds.length) {
+      $("holds").innerHTML = '<div class="muted">No durable-run holds. (Durable runs move onto pool holds at the stage 4.5 cutover.)</div>';
+      return;
+    }
+    const kid = (k) => `<tr class="clickable child" data-lease="${esc(k.lease_id)}"><td></td><td class="muted">call ${esc(k.lease_id.slice(0, 8))}</td>
+      <td>${esc(k.status)}</td><td>${esc(k.role || "–")}</td><td></td><td class="muted">${esc(k.turn_correlation_id || "")}</td></tr>`;
+    $("holds").innerHTML = `<div class="scroll"><table><thead><tr><th>holder</th><th>hold</th><th>status</th><th>role</th>
+      <th class="num">gen</th><th>calls</th></tr></thead><tbody>${holds.map((h) => `
+      <tr class="clickable hold" data-lease="${esc(h.leaseId)}"><td>${esc(h.holder)}</td><td>${esc(h.leaseId.slice(0, 8))} · ${esc(h.priority)}</td>
+        <td>${esc(h.status)}${h.recallBy ? ` (give back by ${esc(fmtAt(h.recallBy))})` : ""}</td><td>${esc(h.role || "waiting")}</td>
+        <td class="num">${esc(h.generation)}</td><td>${h.inFlight} running · ${h.waiting} waiting</td></tr>
+      ${h.children.map(kid).join("")}`).join("")}</tbody></table></div>`;
   }
 
   function renderControls(m) {
@@ -451,6 +545,7 @@
       if (btn.dataset.card) body.card = btn.dataset.card;
       if (btn.dataset.lease) body.lease_id = btn.dataset.lease;
       if (btn.dataset.class) body.work_class = btn.dataset.class;
+      if (body.verb === "clear_fault" && !confirm(`Clear the fault on ${body.card}? The pool asks the actuator what is loaded and believes it.`)) return;
       if (body.verb === "hold" && !confirm(`Hold ${body.work_class}? Every card it spans is drained first.`)) return;
       btn.disabled = true;   // no double-submit before the next state frame redraws the controls
       try { await control(body); } finally { btn.disabled = false; }

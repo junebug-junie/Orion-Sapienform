@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, Envelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
 from orion.bus.consumer_readiness import bus_consumer_readiness_v1, check_bus_consumer_readiness
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
 from orion.schemas.vector.schemas import VectorUpsertV1
 
@@ -35,7 +36,7 @@ from .openai_passthrough import register_openai_passthrough_routes
 from . import grammar_emit, pool_placement, upstream_cancel
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
-from .resource_lease import LeaseGuard, ResourceLeaseRejected
+from .resource_lease import LeaseGuard, ResourceLeaseRejected, gpu_lease_from_options
 from .settings import settings
 
 logger = logging.getLogger("orion-llm-gateway")
@@ -344,15 +345,18 @@ async def _dispatch_chat(body: ChatBody, *, correlation_id: str, holder: str = "
     # checked for the whole call. It is admission only: placement is the pool lease below.
     guard = LeaseGuard((body.options or {}).get("resource_lease"), lane=plan.route)
     try:
+        # Stage 4: a call carrying its run's GPU pool hold ref attaches to that hold.
+        hold = gpu_lease_from_options(body.options)
         await guard.check()
-        return await guard.run(_dispatch_on_pool(plan, correlation_id=correlation_id, holder=holder))
+        return await guard.run(_dispatch_on_pool(plan, correlation_id=correlation_id, holder=holder, hold=hold))
     except ResourceLeaseRejected as exc:
         logger.warning("resource_lease_rejected correlation_id=%s reason=%s", correlation_id, exc)
         return {"text": "", "content": "", "route": plan.route,
                 "raw": {"error": "resource_lease_rejected", "details": {"reason": str(exc)}}}
 
 
-async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, holder: str) -> Dict[str, Any]:
+async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, holder: str,
+                            hold: Optional[GpuLeaseRefV1] = None) -> Dict[str, Any]:
     """Lease -> run on the granted URL -> release. At most three acquires, never a loop:
 
     * the pool refuses a prompt bigger than every role of its class (``min_ctx_exceeds_class:<max>``)
@@ -366,6 +370,9 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
     pool wait is capped by it (and by LLM_GATEWAY_POOL_[BACKGROUND_]WAIT_SEC), and whatever is
     left after the grant bounds the upstream call, so a call that queued for most of its budget is
     not then given a fresh budget to generate for a caller that has gone.
+
+    Under a hold (``hold`` set, stage 4) every acquire is an ``attach``, and an upstream overflow is
+    returned as is: the child can only run on the hold's role, so a bigger re-lease has nowhere to go.
     """
     budget_s = resolve_caller_budget_sec(plan.body)
     deadline = time.monotonic() + budget_s
@@ -380,7 +387,7 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
         try:
             async with pool_placement.lease_for_route(
                 plan.route, holder=holder, turn_correlation_id=correlation_id,
-                min_ctx_tokens=min_ctx, deadline_sec=wait_s,
+                min_ctx_tokens=min_ctx, deadline_sec=wait_s, hold=hold,
             ) as lease:
                 read_timeout_s = deadline - time.monotonic()
                 if read_timeout_s <= 0:
@@ -392,7 +399,7 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
                     # The prompt was too big for the slot: not a GPU/server failure, so keep it out
                     # of the pool's error accounting.
                     lease.release_outcome, lease.release_detail = "ok", "context_overflow"
-                if error == CONTEXT_OVERFLOW_ERROR and overflow is None and not clamped:
+                if error == CONTEXT_OVERFLOW_ERROR and overflow is None and not clamped and hold is None:
                     raise _ContextOverflow(result, lease.grant.ctx_per_slot)
                 if error is not None:
                     raise _UpstreamFailed(result)

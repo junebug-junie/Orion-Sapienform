@@ -1,0 +1,93 @@
+name: session-scope-tests
+
+# Deterministic gate for the seams fixed 2026-09-25 (see
+# docs/superpowers/pr-reports/2026-09-25-session-scope-medium-fixes-pr.md):
+# - every Redis-backed situation store is bound through one helper, in Hub and
+#   cortex-exec alike (orion/situational/state_buses.py), and only Juniper's own
+#   unified turns record "the user just spoke";
+# - the stance step hands cortex-exec a top-level session_id;
+# - the consolidation retry baselines against the turn just before.
+# No DB, bus or LLM. Deliberately a slim dependency set rather than each
+# service's full requirements.txt (Hub's pulls faster-whisper and spaCy).
+
+on:
+  pull_request:
+    paths:
+      - "orion/situational/**"
+      - "orion/schemas/situation.py"
+      - "orion/hub/turn_orchestrator.py"
+      - "services/orion-hub/scripts/main.py"
+      - "services/orion-hub/scripts/thought_client.py"
+      - "services/orion-hub/scripts/harness_governor_client.py"
+      - "services/orion-hub/scripts/pre_turn_appraisal_client.py"
+      - "services/orion-hub/tests/test_situation_state_buses_bound.py"
+      - "services/orion-hub/tests/test_unified_turn_records_user_turn.py"
+      - "services/orion-hub/tests/test_unified_turn_surface_context.py"
+      - "services/orion-hub/tests/test_turn_orchestrator_utterance_origin.py"
+      - "services/orion-cortex-exec/app/main.py"
+      - "services/orion-cortex-exec/app/router.py"
+      - "services/orion-thought/app/bus_listener.py"
+      - "services/orion-thought/tests/test_stance_context_session_id.py"
+      - "services/orion-memory-consolidation/app/**"
+      - "services/orion-memory-consolidation/tests/**"
+      - "requirements-dev.txt"
+      - ".github/workflows/session-scope-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/situational/**"
+      - "orion/schemas/situation.py"
+      - "orion/hub/turn_orchestrator.py"
+      - "services/orion-hub/scripts/main.py"
+      - "services/orion-hub/scripts/thought_client.py"
+      - "services/orion-hub/scripts/harness_governor_client.py"
+      - "services/orion-hub/scripts/pre_turn_appraisal_client.py"
+      - "services/orion-hub/tests/test_situation_state_buses_bound.py"
+      - "services/orion-hub/tests/test_unified_turn_records_user_turn.py"
+      - "services/orion-hub/tests/test_unified_turn_surface_context.py"
+      - "services/orion-hub/tests/test_turn_orchestrator_utterance_origin.py"
+      - "services/orion-cortex-exec/app/main.py"
+      - "services/orion-cortex-exec/app/router.py"
+      - "services/orion-thought/app/bus_listener.py"
+      - "services/orion-thought/tests/test_stance_context_session_id.py"
+      - "services/orion-memory-consolidation/app/**"
+      - "services/orion-memory-consolidation/tests/**"
+      - "requirements-dev.txt"
+      - ".github/workflows/session-scope-tests.yml"
+
+jobs:
+  unit:
+    name: Situation stores, stance session, consolidation retry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip install "pydantic>=2.7,<3" "pydantic-settings==2.3.4" \
+            "fastapi==0.111.0" "httpx==0.27.0" "SQLAlchemy==2.0.43" "asyncpg==0.29.0" \
+            "python-dotenv==1.0.1" "requests==2.32.5" "loguru>=0.7" "pyaml==25.7.0"
+      - name: orion/situational (store binding gate, conversation phase)
+        run: PYTHONPATH=. python -m pytest -q orion/situational/tests
+      - name: orion-thought stance session
+        working-directory: services/orion-thought
+        run: python -m pytest -q tests/test_stance_context_session_id.py
+      - name: orion-memory-consolidation retry baseline + classify route
+        working-directory: services/orion-memory-consolidation
+        run: python -m pytest -q tests/test_retry_degraded_classifies.py tests/test_classify_turn_change.py
+      - name: orion-hub unified-turn situation wiring
+        working-directory: services/orion-hub
+        # The utterance_origin pin is selected by node id: Juniper's turns
+        # record only because run_unified_turn passes "juniper", and that
+        # file's sibling test (mind-appraisal stance text) also fails on
+        # origin/main, which is not this gate's concern.
+        run: |
+          python -m pytest -q \
+            tests/test_situation_state_buses_bound.py \
+            tests/test_unified_turn_records_user_turn.py \
+            tests/test_unified_turn_surface_context.py \
+            "tests/test_turn_orchestrator_utterance_origin.py::test_run_unified_turn_passes_juniper_utterance_origin"

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 GPU_POOL_LEASE_REQUEST_CHANNEL = "orion:gpu_pool:lease:request"
 GPU_POOL_EVENT_CHANNEL = "orion:gpu_pool:event"
@@ -18,6 +18,7 @@ GPU_POOL_STATE_CHANNEL = "orion:gpu_pool:state"
 GPU_POOL_STATE_REQUEST_CHANNEL = "orion:gpu_pool:state:request"
 GPU_POOL_CONTROL_REQUEST_CHANNEL = "orion:gpu_pool:control:request"
 GPU_POOL_ACTUATE_REQUEST_CHANNEL = "orion:gpu_pool:actuate:request"
+GPU_POOL_ACTUATE_RESULT_CHANNEL = "orion:gpu_pool:actuate:result"
 LLM_WORKER_ANNOUNCE_CHANNEL = "orion:llm:worker:announce"
 GPU_POOL_LEASE_REPLY_PREFIX = "orion:gpu_pool:reply:"
 GPU_POOL_STATE_REPLY_PREFIX = "orion:gpu_pool:state:reply:"
@@ -32,6 +33,7 @@ GPU_POOL_CONTROL_KIND = "gpu_pool.control.v1"
 GPU_POOL_CONTROL_REPLY_KIND = "gpu_pool.control.reply.v1"
 GPU_ACTUATE_KIND = "gpu_pool.actuate.v1"
 GPU_ACTUATE_RESULT_KIND = "gpu_pool.actuate.result.v1"
+GPU_LEASE_REF_KIND = "gpu_pool.lease.ref.v1"
 LLM_WORKER_ANNOUNCE_KIND = "llm.worker.announce.v1"
 
 Priority = Literal["interactive", "system", "background"]
@@ -49,11 +51,20 @@ def _now() -> datetime:
 
 
 class GpuLeaseRequestV1(BaseModel):
-    """One verb against the pool. ``acquire`` is idempotent on ``request_id``."""
+    """One verb against the pool. ``acquire`` is idempotent on ``request_id``.
+
+    Stage 4 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md):
+    ``attach`` asks for a child request lease under a hold (``hold_lease_id`` + ``hold_generation``;
+    the child's own ``lease_id`` does not exist yet, so it is not sent). Named ``hold_*``, not
+    ``parent_*``: the pool's request dict already uses ``parent_lease_id`` for dead-letter replay
+    lineage (services/orion-gpu-pool/app/runtime.py), and the two must not collide;
+    ``status`` is a read of ``lease_id`` with no side effect (resume after restart, Door-A).
+    A pool that predates the engine for them answers ``unavailable reason=verb_not_supported:<verb>``.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    verb: Literal["acquire", "heartbeat", "release", "cancel"]
+    verb: Literal["acquire", "heartbeat", "release", "cancel", "attach", "status"]
     request_id: str | None = Field(None, min_length=1, max_length=128)
     lease_id: str | None = Field(None, min_length=1, max_length=128)
     holder: str | None = Field(None, min_length=1, max_length=256)
@@ -75,6 +86,26 @@ class GpuLeaseRequestV1(BaseModel):
     retryable: bool = False
     # Size-capped caller payload the pool may re-dispatch on backlog replay.
     replay_payload: dict[str, Any] | None = None
+    # verb=attach only: the hold this call runs under, and the hold generation the caller was
+    # granted (a stale generation means the hold was re-granted and the caller must not attach).
+    hold_lease_id: str | None = Field(None, min_length=1, max_length=128)
+    hold_generation: int | None = Field(None, ge=1)
+
+    @model_validator(mode="after")
+    def _stage4_verb_shapes(self):
+        has_hold = self.hold_lease_id is not None or self.hold_generation is not None
+        if self.verb == "attach":
+            if self.hold_lease_id is None or self.hold_generation is None:
+                raise ValueError("attach needs hold_lease_id and hold_generation")
+            if self.lease_id is not None:
+                raise ValueError("attach names the hold in hold_lease_id; lease_id is the child's, not sent")
+            if self.request_id is None or self.work_class is None:
+                raise ValueError("attach needs request_id (idempotency) and work_class")
+        elif has_hold:
+            raise ValueError(f"hold_lease_id/hold_generation are only valid on attach, not {self.verb}")
+        if self.verb == "status" and self.lease_id is None:
+            raise ValueError("status needs lease_id")
+        return self
 
 
 class GpuLeaseGrantV1(BaseModel):
@@ -110,7 +141,7 @@ class GpuPoolEventV1(BaseModel):
     event: Literal[
         "admitted", "queued", "granted", "backlogged", "recalled", "aborted", "expired",
         "retried", "dead_lettered", "replayed", "released", "unavailable", "cancelled",
-        "swap_requested", "swapped", "lent", "unlent", "discovery_mismatch", "discovery_confirmed",
+        "swap_requested", "swap_started", "swapped", "swap_failed", "actuate_refused", "lent", "unlent", "discovery_mismatch", "discovery_confirmed",
     ]
     lease_id: str | None = None
     holder: str | None = None
@@ -154,8 +185,18 @@ class GpuCardStateV1(BaseModel):
     lendable: bool = False
     lent: bool = False
     swapped_in: list[str] = Field(default_factory=list)
-    swap_state: Literal["idle", "loading", "unloading"] = "idle"
+    # fault: a load failed and the actuator could not restore the evicted residents; no grants on
+    # any role of the card until an operator clears it or discovery sees the residents healthy.
+    swap_state: Literal["idle", "loading", "unloading", "fault"] = "idle"
     cooldown_until: datetime | None = None
+    # Stage 4.3 actuation engine (all optional; a pre-4.3 pool sends none of them):
+    swap_role: str | None = None              # the seat a loading/unloading/fault state is about
+    residency_until: datetime | None = None   # evicted residents stay until this after an unload
+    loaded_at: datetime | None = None         # when the pool loaded (or adopted) the seat here
+    actuated_roles: list[str] = Field(default_factory=list)   # seats on this card the pool may actuate
+    # The current or last GpuActuateV1 for this card set: action_id, role, action, generation,
+    # sent_at, acked_at, deadline_at, phase, outcome, reason.
+    actuation: dict[str, Any] | None = None
 
 
 class GpuLeaseRowV1(BaseModel):
@@ -174,6 +215,8 @@ class GpuLeaseRowV1(BaseModel):
     granted_at: datetime | None = None
     recall_by: datetime | None = None
     turn_correlation_id: str | None = None
+    generation: int = 0
+    hold_lease_id: str | None = None   # a child call: the durable-run hold whose slot it runs in
 
 
 class GpuPoolStateV1(BaseModel):
@@ -189,6 +232,8 @@ class GpuPoolStateV1(BaseModel):
     leases: list[GpuLeaseRowV1] = Field(default_factory=list)
     queue_depth: dict[str, int] = Field(default_factory=dict)
     backlog_depth: dict[str, int] = Field(default_factory=dict)
+    # Swap-load guards as the pool last read them: name -> None when clear, else why it blocks.
+    swap_guards: dict[str, str | None] = Field(default_factory=dict)
     # Filled only on request (GpuPoolStateRequestV1), never on the periodic broadcast:
     config: dict[str, Any] | None = None          # parsed config/gpu_pool.yaml (the Hub picture)
     config_yaml: str | None = None                # the file as written (the Hub "raw YAML" view)
@@ -210,7 +255,9 @@ class GpuPoolControlV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    verb: Literal["lend", "unlend", "replay", "cancel", "backfill", "hold", "release"]
+    # clear_fault (stage 4.3): take `card` out of swap_state=fault. The pool reconciles with the
+    # actuator (`status`) and adopts what it reports; with no answer it settles from discovery.
+    verb: Literal["lend", "unlend", "replay", "cancel", "backfill", "hold", "release", "clear_fault"]
     card: str | None = None
     lease_id: str | None = None
     backfill: dict[str, Any] | None = None
@@ -226,22 +273,75 @@ class GpuPoolControlReplyV1(BaseModel):
     detail: dict[str, Any] = Field(default_factory=dict)
 
 
-class GpuActuateV1(BaseModel):
+class GpuLeaseRefV1(BaseModel):
+    """A pool lease a caller carries on each LLM call made under it (stage 4: a durable run's
+    hold). The gateway turns it into ``attach`` instead of taking a lease of its own -- a call
+    whose run already holds the role's only slot would otherwise queue behind itself forever.
+    Wire: HTTP header ``X-Orion-Gpu-Lease`` (orion.llm.resource_lease) or bus ``options.gpu_lease``."""
+
     model_config = ConfigDict(extra="forbid")
 
-    action_id: str = Field(default_factory=lambda: uuid4().hex)
-    target: str  # the YAML swap verb, e.g. "gpu2/agent"
-    role: str
-    cards: list[str]
+    lease_id: str = Field(min_length=1, max_length=128)
+    generation: int = Field(ge=1)
+    role: str = Field(min_length=1, max_length=64)
+    holder: str = Field(min_length=1, max_length=256)
+
+
+ActuateAction = Literal["load", "unload", "status"]
+
+
+class GpuActuateV1(BaseModel):
+    """Pool -> host actuator: put ``role`` on (or off) ``cards``. The message names a role, never a
+    container: the actuator only touches compose services its OWN copy of config/gpu_pool.yaml lists
+    under its own actuator name, and refuses when ``launch_digest`` differs from that copy's
+    (orion.gpu_pool.config.launch_digest)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action_id: str = Field(min_length=1, max_length=128)   # idempotency key: a replay returns the recorded result
+    generation: int = Field(ge=1)       # pool-issued, increasing per card set; actuator rejects <= last seen
+    actuator: str = Field(min_length=1, max_length=64)      # the host actuator that must act; others ignore it
+    role: str = Field(min_length=1, max_length=64)
+    action: ActuateAction
+    cards: list[str] = Field(min_length=1)
+    profile: str | None = None          # llm_profiles.yaml profile; stage 4 always None (compose default)
+    launch_digest: str = Field(min_length=1, max_length=128)
+    deadline_at: datetime
+    reason: str = Field(min_length=1, max_length=256)    # demand | idle | max_hold | operator | reconcile ...
 
 
 class GpuActuateResultV1(BaseModel):
+    """Host actuator -> pool. ``accepted`` within ``defaults.actuate_ack_sec``, then ``progress``,
+    then exactly one terminal ``succeeded`` | ``failed`` | ``refused`` per ``action_id``."""
+
     model_config = ConfigDict(extra="forbid")
 
-    action_id: str
-    ok: bool
-    elapsed_ms: float | None = None
-    reason: str | None = None
+    action_id: str = Field(min_length=1, max_length=128)
+    generation: int = Field(ge=1)
+    role: str = Field(min_length=1, max_length=64)
+    action: ActuateAction
+    status: Literal["accepted", "progress", "succeeded", "failed", "refused"]
+    phase: Literal["draining", "stopping", "starting", "ready_wait", "rolling_back"] | None = None
+    restored: bool | None = None        # failed load only: were the evicted residents put back?
+    elapsed_ms: float | None = Field(None, ge=0)
+    reason: str | None = Field(None, max_length=2000)
+    # role -> container state after the action, so a restarted pool can reconcile from it.
+    observed: dict[str, Literal["running", "exited", "absent", "unknown"]] = Field(default_factory=dict)
+    # action=status only (stage 4.3; consumer-first: the pool reads them, the actuator may start
+    # sending them after that pool is deployed). in_flight: True while an action for this card set
+    # is still running (the pool keeps polling and never faults the card for a missed deadline),
+    # False when none is, None when the actuator did not say. last_action_id: the last action it
+    # finished for this card set. Structured so the pool never parses `reason` for state.
+    in_flight: bool | None = None
+    last_action_id: str | None = Field(None, max_length=128)
+
+    @model_validator(mode="after")
+    def _restored_only_on_failed_load(self):
+        if self.restored is not None and (self.status != "failed" or self.action != "load"):
+            raise ValueError("restored is only meaningful on a failed load")
+        if (self.in_flight is not None or self.last_action_id is not None) and self.action != "status":
+            raise ValueError("in_flight/last_action_id are only meaningful on a status reply")
+        return self
 
 
 class LlmWorkerAnnounceV1(BaseModel):

@@ -130,3 +130,73 @@ def test_gpu_pool_panel_browser_smoke():
         assert history_minutes == ["60"]
         assert errors == [], errors
         browser.close()
+
+
+def test_gpu_pool_panel_shows_swap_fault_guards_and_holds_with_their_calls():
+    """Stage 4.3 (acceptance check 7): a faulted card is visible as such, the guard blocking a load is
+    named, and each durable-run hold is listed with the calls running in its slot."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    config = dict(CONFIG, cards={**CONFIG["cards"], "gpu2": {"vram_gb": 32}},
+                  roles={**CONFIG["roles"],
+                         "agent-gpu2": {"kind": "llm", "cards": ["gpu2"], "owner": ["agent"], "port": 8016,
+                                        "swap": {"evicts": ["diffusion"], "load": "gpu2/agent", "unload": "gpu2/restore"}},
+                         "diffusion": {"kind": "service", "cards": ["gpu2"], "owner": ["diffusion"], "port": 8014,
+                                       "slots": 1, "vram_gb": 24}})
+    state = dict(STATE, config=config, swap_guards={"thermal": None, "visual_baseline": "visual_baseline_urgent"},
+                 cards=STATE["cards"] + [{
+                     "card": "gpu2", "vram_gb": 32, "swapped_in": [], "swap_state": "fault", "swap_role": "agent-gpu2",
+                     "actuated_roles": ["agent-gpu2"],
+                     "actuation": {"action": "load", "role": "agent-gpu2", "generation": 4, "reason": "demand",
+                                   "outcome": "failed", "sent_at": "2026-09-24T11:59:00Z"}}],
+                 leases=STATE["leases"] + [
+                     {"lease_id": "H1holdholdhold", "request_id": "run1:1", "holder": "durable-runs:run1",
+                      "work_class": "chat", "priority": "background", "kind": "hold", "status": "granted",
+                      "role": "chat", "generation": 2, "attempt": 1, "created_at": "2026-09-24T11:00:00Z",
+                      "granted_at": "2026-09-24T11:00:01Z"},
+                     {"lease_id": "C1callcallcall", "request_id": "c1", "holder": "orion-llm-gateway",
+                      "work_class": "chat", "priority": "background", "kind": "request", "status": "queued",
+                      "hold_lease_id": "H1holdholdhold", "attempt": 1, "created_at": "2026-09-24T11:59:59Z",
+                      "turn_correlation_id": "turn-7"}])
+    template = (HUB / "templates" / "gpu_pool.html").read_text().replace("{{HUB_UI_ASSET_VERSION}}", "t")
+    script = (HUB / "static" / "js" / "gpu_pool.js").read_text()
+
+    def handle(route):
+        url = route.request.url
+        if url.endswith("/gpu-pool"):
+            return route.fulfill(body=template, content_type="text/html")
+        if "/static/js/gpu_pool.js" in url:
+            return route.fulfill(body=script, content_type="application/javascript")
+        if "/api/gpu-pool/stream" in url:
+            return route.fulfill(body=f"event: snapshot\ndata: {json.dumps({'version': 1, 'state': state, 'events': []})}\n\n",
+                                 content_type="text/event-stream")
+        if "/api/gpu-pool/state" in url:
+            return route.fulfill(body=json.dumps(state), content_type="application/json")
+        if "/api/gpu-pool/history" in url:
+            return route.fulfill(body=json.dumps({"by_role": [], "by_class": [], "series": [], "events": [], "minutes": 60}),
+                                 content_type="application/json")
+        return route.fulfill(status=404, body="")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.route("http://hub.test/**", handle)
+        page.goto("http://hub.test/gpu-pool")
+        page.wait_for_selector('[data-card="gpu2"] [data-swap-state="fault"]')
+        gpu2 = page.inner_text('[data-card="gpu2"]')
+        assert "swap: fault agent-gpu2" in gpu2 and "FAULT" in gpu2 and "pool actuates agent-gpu2" in gpu2
+        assert "load agent-gpu2 (g4, demand)" in gpu2 and "failed" in gpu2
+        assert page.locator('[data-card="gpu2"] button[data-verb="clear_fault"][data-card="gpu2"]').count() == 1
+        assert "observe only" in page.inner_text('[data-card="gpu0"]') or "swap:" not in page.inner_text('[data-card="gpu0"]')
+        guards = page.inner_text("#swapGuards")
+        assert "thermal: clear" in guards and "visual_baseline: visual_baseline_urgent" in guards
+        holds = page.inner_text("#holds")
+        assert "durable-runs:run1" in holds and "0 running · 1 waiting" in holds and "turn-7" in holds
+        assert page.locator('#holds tr.child[data-lease="C1callcallcall"]').count() == 1
+        # the hold + its (queued) call hold ONE chat slot, together with the ordinary lease L1
+        assert "2/1 slots in use" in page.inner_text('[data-role="chat"]')
+        assert errors == []
+        browser.close()

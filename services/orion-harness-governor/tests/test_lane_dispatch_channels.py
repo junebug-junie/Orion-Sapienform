@@ -289,3 +289,44 @@ async def test_admitted_lanes_share_intake_without_serializing_execution(monkeyp
         release.set()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_hold_carrying_turns_are_admitted_and_deduped_like_durable_ones(monkeypatch):
+    """Stage 4.4: a turn carrying only a GPU pool hold ref (gpu_lease) runs outside the legacy lock
+    -- otherwise it would wait behind unrelated turns while its card sits reserved for it -- and a
+    duplicate delivery of the same fenced turn does not start a second motor."""
+    from orion.harness.tests.fixtures import make_thought
+    from orion.schemas.cognition.answer_contract import AnswerContract
+    from orion.schemas.context_exec import ContextExecPermissionV1
+    from orion.schemas.gpu_pool import GpuLeaseRefV1
+    from orion.schemas.harness_finalize import HarnessRunRequestV1
+    queue = asyncio.Queue()
+    bus = _FakeBus({"agent:channel": queue})
+    monkeypatch.setattr(bus_listener.settings, "orion_bus_enabled", True)
+    monkeypatch.setattr(bus_listener.settings, "orion_harness_governor_enabled", True)
+    entered: list[str] = []
+    both = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handle(_bus, msg):
+        entered.append(msg["data"]["correlation_id"])
+        if len(set(entered)) == 2:
+            both.set()
+        await release.wait()
+    monkeypatch.setattr(bus_listener, "_handle_bus_message", handle)
+    for name in ("one", "one", "two"):  # "one" delivered twice
+        ref = GpuLeaseRefV1(lease_id=f"hold-{name}", generation=1, role="agent", holder=f"durable-runs:{name}")
+        request = HarnessRunRequestV1(correlation_id=name, thought_event=make_thought(), user_message="study",
+            permissions=ContextExecPermissionV1(), answer_contract=AnswerContract(), gpu_lease=ref)
+        await queue.put({"type": "message", "data": request.model_dump(mode="json")})
+    stop = asyncio.Event()
+    task = asyncio.create_task(bus_listener.run_bus_worker("agent:channel", stop, lane="agent", bus=bus))
+    try:
+        await asyncio.wait_for(both.wait(), 1)
+        await asyncio.sleep(0.05)
+        assert sorted(entered) == ["one", "two"]
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

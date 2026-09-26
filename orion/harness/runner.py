@@ -245,6 +245,7 @@ async def default_fcc_runner(
     reading_binding: Any = None,
     reading_only: bool = False,
     resource_lease: dict[str, Any] | None = None,
+    gpu_lease: dict[str, Any] | None = None,
     **_: Any,
 ) -> AsyncIterator[dict[str, Any]]:
     env_path = expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env"))
@@ -252,6 +253,7 @@ async def default_fcc_runner(
     token = resolve_auth_token(env, override=os.environ.get("HARNESS_FCC_AUTH_TOKEN", ""))
     async for event in run_fcc_turn(
         resource_lease=resource_lease,
+        gpu_lease=gpu_lease,
         reading_binding=reading_binding,
         reading_only=reading_only,
         prompt=prompt,
@@ -434,6 +436,8 @@ class HarnessRunner:
         async for event in self.fcc_runner(
             **({"resource_lease": request.resource_lease.model_dump(mode="json")}
                if request.resource_lease is not None else {}),
+            **({"gpu_lease": request.gpu_lease.model_dump(mode="json")}
+               if getattr(request, "gpu_lease", None) is not None else {}),
             **({"reading_binding": request.reading_binding} if getattr(request, "reading_binding", None) else {}),
             **({"reading_only": True} if getattr(request, "reading_only", False) else {}),
             prompt=prompt,

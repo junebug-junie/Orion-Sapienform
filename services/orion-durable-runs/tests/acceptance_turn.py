@@ -24,7 +24,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.harness.fcc_motor import _build_subprocess_env
 from orion.harness.runner import HarnessRunner
 from orion.harness.tests.fixtures import make_appraisal, make_reflection, make_thought
-from orion.llm.resource_lease import LEASE_HEADER, decode_lease_header
+from orion.llm.resource_lease import GPU_LEASE_HEADER, LEASE_HEADER, decode_gpu_lease_header, decode_lease_header
 from orion.schemas.cortex.schemas import PlanExecutionRequest
 from orion.schemas.harness_finalize import HarnessRunRequestV1
 from orion.schemas.thought import HubAssociationBundleV1, StanceReactRequestV1
@@ -48,6 +48,11 @@ def build_turn_adapter(monkeypatch, bus, store, repair_required, *, authority_ap
     Return has handle_turn(envelope), stages (actual dispatched lease identities),
     runs (real Governor artifacts), gateway_app, and async close(). All monkeypatch
     changes must remain active until outstanding turn tasks and close() complete.
+
+    Stage 4.4: a turn may instead (or also) carry a GPU pool hold ref. ``pool_holds`` is the
+    fixture pool's live holds (lease_id -> GpuLeaseRefV1): Hub's ``status`` fence reads it over the
+    bus, and a gateway ``attach`` (``hold=``) is granted only against it. A stage row then records
+    the ref (``hold_lease_id``/``hold_generation``) alongside any durable token.
     """
     hub_root = ROOT / "services/orion-hub"
     monkeypatch.setenv("SUBSTRATE_CONTROL_PLANE_DETACHED", "1")
@@ -136,15 +141,24 @@ def build_turn_adapter(monkeypatch, bus, store, repair_required, *, authority_ap
     # Placement is a GPU pool lease (stage 3): the gateway sends each call to the URL the pool
     # grants. The pool itself is not under test here, so a fixture grants the class's own card
     # at once. Durable-runs' permits (the run's admission) stay the real, separate authority.
-    from orion.gpu_pool.client import Lease
-    from orion.schemas.gpu_pool import GpuLeaseGrantV1
+    from orion.gpu_pool.client import Lease, LeaseUnavailable
+    from orion.schemas.gpu_pool import (
+        GPU_LEASE_REPLY_KIND, GPU_POOL_LEASE_REQUEST_CHANNEL, GpuLeaseGrantV1, GpuLeaseReplyV1, GpuLeaseRequestV1,
+    )
 
     pool_grants = []
     pool_held = set()
+    pool_holds = {}
 
     @contextlib.asynccontextmanager
     async def fixture_gpu_lease(_bus, **kw):
         role = "agent" if kw["work_class"] == "agent" else "metacog"
+        hold = kw.get("hold")
+        if hold is not None:
+            live = pool_holds.get(hold.lease_id)
+            if live is None or live.generation != hold.generation:
+                raise LeaseUnavailable("unknown_lease")
+            role = "agent"  # a child runs on its hold's role (the fixture's agent card)
         grant = GpuLeaseGrantV1(
             lease_id=f"pool-{len(pool_grants) + 1}", generation=1, role=role, cards=["gpu-fixture"],
             url="http://fixture-backend" if role == "agent" else "http://fixture-metacog",
@@ -167,10 +181,15 @@ def build_turn_adapter(monkeypatch, bus, store, repair_required, *, authority_ap
     requests = []
     http_owners = {}
 
-    def observe(stage, lease):
-        assert lease is not None, f"{stage} dropped the durable owner"
-        stages.append({"stage": stage, **{key: lease[key] for key in (
-            "run_id", "lease_id", "generation", "lane", "backend_key")}})
+    def observe(stage, lease, ref=None):
+        assert lease is not None or ref is not None, f"{stage} dropped the durable owner"
+        row = {"stage": stage}
+        if lease is not None:
+            row.update({key: lease[key] for key in ("run_id", "lease_id", "generation", "lane", "backend_key")})
+        if ref is not None:
+            ref = ref if isinstance(ref, dict) else ref.model_dump(mode="json")
+            row.update(hold_lease_id=ref["lease_id"], hold_generation=ref["generation"], hold_holder=ref["holder"])
+        stages.append(row)
 
     def model_text(stage, correlation_id):
         if stage == "stance_react":
@@ -184,7 +203,7 @@ def build_turn_adapter(monkeypatch, bus, store, repair_required, *, authority_ap
     def model_dispatch(body, plan):
         lease = (body.options or {}).get("resource_lease")
         stage = (body.options or {}).get("verb")
-        observe(stage, lease)
+        observe(stage, lease, (body.options or {}).get("gpu_lease"))
         text = model_text(stage, body.trace_id)
         return {"text": text, "content": text, "route": plan.route, "model": "fixture-model"}
 
@@ -195,13 +214,17 @@ def build_turn_adapter(monkeypatch, bus, store, repair_required, *, authority_ap
             if request.url.host == "fixture-authority":
                 return await httpx.ASGITransport(app=authority_app).handle_async_request(request)
             if request.url.host == "fixture-gateway":
-                http_owners[request.headers["x-request-id"]] = decode_lease_header(request.headers[LEASE_HEADER])
+                http_owners[request.headers["x-request-id"]] = (
+                    decode_lease_header(request.headers[LEASE_HEADER]) if LEASE_HEADER in request.headers else None,
+                    decode_gpu_lease_header(request.headers[GPU_LEASE_HEADER])
+                    if GPU_LEASE_HEADER in request.headers else None)
                 return await httpx.ASGITransport(app=gateway.app).handle_async_request(request)
             if request.url.host in {"fixture-backend", "fixture-metacog"}:
                 assert request.url.path == "/v1/messages"
                 assert LEASE_HEADER not in request.headers, "Gateway must not leak its authority token upstream"
-                token = http_owners[request.headers["x-request-id"]]
-                observe("fcc_primary", token)
+                assert GPU_LEASE_HEADER not in request.headers, "Gateway must not leak the hold ref upstream"
+                token, ref = http_owners[request.headers["x-request-id"]]
+                observe("fcc_primary", token, ref)
                 # The upstream call happens only while the Gateway holds a GPU pool lease on it.
                 assert f"http://{request.url.host}" in pool_held, "upstream call without a pool lease"
                 return httpx.Response(200, request=request, json={
@@ -220,7 +243,7 @@ def build_turn_adapter(monkeypatch, bus, store, repair_required, *, authority_ap
         # Use the actual FCC environment builder to exercise owner header
         # transport; only the subprocess/model is replaced by this HTTP call.
         env = _build_subprocess_env(fcc_server_url="http://unreachable-proxy", auth_token="fixture",
-                                    resource_lease=kwargs["resource_lease"])
+                                    resource_lease=kwargs.get("resource_lease"), gpu_lease=kwargs.get("gpu_lease"))
         assert Path(env["CLAUDE_CONFIG_DIR"]).resolve() == claude_config.resolve()
         assert Path(env["HARNESS_FCC_WORKSPACE"]).resolve() == isolated_root.resolve()
         headers = {line.partition(":")[0]: line.partition(":")[2].strip()
@@ -273,12 +296,24 @@ def build_turn_adapter(monkeypatch, bus, store, repair_required, *, authority_ap
         response = await gateway.handle_chat(env)
         await bus.publish(env.reply_to, response)
 
+    async def handle_pool_lease(env):
+        # The pool's side of Hub's ``status`` fence (stage 4.3 builds the real one).
+        req = GpuLeaseRequestV1.model_validate(env.payload)
+        assert req.verb == "status", f"only Hub's status read reaches the fixture pool over the bus: {req.verb}"
+        live = pool_holds.get(req.lease_id)
+        answer = (GpuLeaseReplyV1(status="granted", lease_id=live.lease_id, grant=GpuLeaseGrantV1(
+                     lease_id=live.lease_id, generation=live.generation, role=live.role, cards=["gpu-fixture"],
+                     url="http://fixture-backend", served_by="fixture-worker-agent"))
+                 if live is not None else GpuLeaseReplyV1(status="unknown_lease", lease_id=req.lease_id))
+        await reply(env, GPU_LEASE_REPLY_KIND, answer.model_dump(mode="json"))
+
     bus.handlers[hub_settings.settings.CHANNEL_THOUGHT_REQUEST] = handle_thought
     bus.handlers[hub_settings.settings.CHANNEL_HARNESS_RUN_REQUEST] = handle_harness
     bus.handlers[hub_settings.settings.CHANNEL_HARNESS_RUN_REQUEST_AGENT] = handle_harness
     bus.handlers[thought.settings.channel_cortex_exec_request] = handle_plan
     bus.handlers[governor.settings.channel_cortex_exec_request] = handle_plan
     bus.handlers[executor.settings.channel_llm_intake] = handle_llm
+    bus.handlers[GPU_POOL_LEASE_REQUEST_CHANNEL] = handle_pool_lease
 
     loop = curiosity.CuriosityInvestigation(enabled=True, tick_interval_sec=60, min_cooldown_sec=0,
         daily_cap=10, timeout_sec=30, session_id="isolated-durable-acceptance", llm_route="agent",
@@ -295,4 +330,5 @@ def build_turn_adapter(monkeypatch, bus, store, repair_required, *, authority_ap
         policy_directory.cleanup()
 
     return SimpleNamespace(handle_turn=handle_turn, stages=stages, runs=runs, requests=requests,
-                           loop=loop, gateway_app=gateway.app, pool_grants=pool_grants, close=close)
+                           loop=loop, gateway_app=gateway.app, pool_grants=pool_grants, pool_holds=pool_holds,
+                           close=close)

@@ -11,6 +11,7 @@ from orion.core.bus.async_service import OrionBusAsync
 
 from .rpc_health import fold_bus
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.llm.resource_lease import GPU_LEASE_ROUTE
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.thought import (
     AutonomySliceV1,
@@ -143,6 +144,13 @@ def build_stance_react_context(
     if isinstance(surface_context, dict) and surface_context:
         metadata["surface_context"] = surface_context
     context: dict[str, Any] = {
+        # Top level as well as metadata: cortex-exec's router
+        # (mark_orion_turn -> conversation phase), metacog traces and grammar
+        # events read ctx["session_id"], not metadata's copy. With it only
+        # nested, every unified turn's stance step recorded "Orion spoke"
+        # under the shared "global" phase key and emitted traces with no
+        # session. cortex-orch's _build_context sets it top level too.
+        "session_id": request.session_id,
         "user_message": request.user_message,
         "stance_inputs": stance_inputs,
         "association": slim_association_for_prompt(request.association),
@@ -176,7 +184,13 @@ def build_stance_react_context(
         context["resource_lease"] = request.resource_lease.model_dump(mode="json")
         context["llm_route"] = request.resource_lease.lane
         context["llm_lane"] = request.resource_lease.lane
-    elif request.llm_route:
+    if request.gpu_lease is not None:
+        # Stage 4: stance runs under the turn's GPU pool hold; the gateway attaches the call to it.
+        context["gpu_lease"] = request.gpu_lease.model_dump(mode="json")
+        if request.resource_lease is None:
+            context["llm_route"] = GPU_LEASE_ROUTE
+            context["llm_lane"] = GPU_LEASE_ROUTE
+    if request.resource_lease is None and request.gpu_lease is None and request.llm_route:
         # Caller-requested gateway route override for stance_react's own LLM
         # call (see StanceReactRequestV1.llm_route's own docstring -- today
         # only orion.hub.turn_orchestrator's agent-lane resolution sets

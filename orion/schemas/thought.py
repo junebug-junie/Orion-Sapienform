@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.resource_admission import ResourceLeaseV1
 
 
@@ -173,6 +174,9 @@ class StanceReactRequestV1(BaseModel):
     # The turn's existing reservation owns stance inference too. Producers omit
     # this field when absent so ordinary requests keep their previous wire shape.
     resource_lease: ResourceLeaseV1 | None = None
+    # Stage 4: the durable run's GPU pool hold ref. Stance's LLM call attaches to the hold
+    # (options.gpu_lease at the gateway). Producers omit it when absent, like resource_lease.
+    gpu_lease: GpuLeaseRefV1 | None = None
     # True when the CALLER already runs its own agent-lane-then-chat-lane retry
     # around the whole turn (today: services/orion-hub/scripts/
     # endogenous_outreach.py, PR #2163) and orion-thought must not layer a

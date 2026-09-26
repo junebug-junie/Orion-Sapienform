@@ -70,7 +70,7 @@ def test_adapter_turns_off_unwired_providers_explicitly() -> None:
     # weather reads orion-hub's own ORION_SITUATION_WEATHER_* fields, the
     # runtime probe reuses HUB_LLM_GATEWAY_URL (a host orion-hub already
     # calls today), and affect reads off the bus connection orion-hub
-    # already holds (bind_juniper_affect_state_bus in scripts/main.py) --
+    # already holds (bind_situation_state_buses in scripts/main.py) --
     # none of the three costs a new, unvetted dependency, unlike
     # lab/perception's unwired DSN/HTTP needs.
     assert cfg.runtime_enabled is True

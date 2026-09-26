@@ -24,7 +24,7 @@ from .anthropic_passthrough import (
 from . import pool_placement
 from .passthrough_proxy import proxy_on_pool
 from .settings import settings
-from .resource_lease import LeaseGuard, ResourceLeaseRejected, lease_error
+from .resource_lease import LeaseGuard, ResourceLeaseRejected, gpu_lease_from_headers, lease_error
 
 logger = logging.getLogger("orion-llm-gateway.openai")
 
@@ -110,6 +110,7 @@ async def handle_chat_completions_post(request: Request) -> Response:
         forward_body["model"] = upstream_model
     try:
         guard = LeaseGuard.from_headers(request.headers, lane=route_key)
+        hold = gpu_lease_from_headers(request.headers)
     except ResourceLeaseRejected as exc:
         return JSONResponse(lease_error(str(exc)), status_code=409)
     max_tokens = body.get("max_tokens", body.get("max_completion_tokens"))
@@ -126,6 +127,7 @@ async def handle_chat_completions_post(request: Request) -> Response:
         path="/v1/chat/completions",
         holder=pool_placement.HOLDER_OPENAI,
         guard=guard,
+        hold=hold,
         correlation_id=correlation_id,
         min_ctx_tokens=pool_placement.estimate_min_ctx_tokens(
             body.get("messages") or [], max_tokens,

@@ -15,10 +15,14 @@ LEASE_COLUMNS = (
     "lease_id", "request_id", "holder", "work_class", "priority", "kind", "status", "role",
     "attempt", "generation", "operator", "min_ctx_tokens", "needs_vision", "retryable", "created_at",
     "queued_since", "granted_at", "recall_by", "not_before", "deadline_at", "expires_at",
-    "turn_correlation_id", "parent_lease_id", "reason", "updated_at",
+    "turn_correlation_id", "parent_lease_id", "hold_lease_id", "reason", "updated_at",
 )
 CARD_COLUMNS = ("card", "lent", "swapped_in", "swap_state", "cooldown_until", "last_active_at",
-                "updated_at", "updated_by")
+                "swap_role", "swap_generation", "swap_action", "residency_until", "loaded_at",
+                "seen_ctx", "updated_at", "updated_by")
+# Columns added by services/orion-sql-db/manual_migration_gpu_pool_v2_holds.sql (stage 4.3).
+V2_LEASE_COLUMNS = ("hold_lease_id",)
+V2_CARD_COLUMNS = ("swap_role", "swap_generation", "swap_action", "residency_until", "loaded_at", "seen_ctx")
 # LangGraph's checkpoint tables for lease threads live in their own schema. They used to share
 # public.checkpoints with durable-runs, whose resume sweep lists EVERY checkpoint in that table
 # (alist(None)) every 2 minutes: at one lease per inference the pool's threads became most of
@@ -202,11 +206,12 @@ class PostgresStore:
                 return forgotten
 
     async def check_schema(self) -> None:
-        """The migration is operator-applied (services/orion-sql-db/manual_migration_gpu_pool_v1.sql).
-        Refuse to start without it rather than run on an in-memory illusion."""
+        """The migrations are operator-applied (services/orion-sql-db/manual_migration_gpu_pool_v1.sql,
+        then _v2_holds.sql). Refuse to start without them rather than run on an in-memory illusion:
+        without v2 every hold/child row and every actuation state write would fail at runtime."""
         async with self.pool.connection() as conn:
-            await conn.execute("SELECT 1 FROM gpu_pool_leases LIMIT 0")
-            await conn.execute("SELECT 1 FROM gpu_pool_cards LIMIT 0")
+            await conn.execute(f"SELECT lease_id, {', '.join(V2_LEASE_COLUMNS)} FROM gpu_pool_leases LIMIT 0")
+            await conn.execute(f"SELECT card, {', '.join(V2_CARD_COLUMNS)} FROM gpu_pool_cards LIMIT 0")
 
     async def upsert_lease(self, row):
         cols = [c for c in LEASE_COLUMNS if c in row]
@@ -253,9 +258,12 @@ class PostgresStore:
             return await (await conn.execute("SELECT * FROM gpu_pool_cards")).fetchall()
 
     async def upsert_card(self, row):
+        from psycopg.types.json import Jsonb
+
         cols = [c for c in CARD_COLUMNS if c in row]
         sets = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols if c != "card")
         sql = (f"INSERT INTO gpu_pool_cards ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}) "
                f"ON CONFLICT (card) DO UPDATE SET {sets}")
+        values = [Jsonb(row[c]) if isinstance(row[c], dict) else row[c] for c in cols]
         async with self.pool.connection() as conn:
-            await conn.execute(sql, [row[c] for c in cols])
+            await conn.execute(sql, values)

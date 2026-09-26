@@ -164,3 +164,12 @@ scripts/safe_docker_build.sh orion-field-digester up -d --build
 
 Field-digester Docker build passed through the safe wrapper; no restart.
 Independent review of this correction returned no findings.
+
+## Requested configuration follow-up
+
+Juniper requested enabling the flags in the example and local env.
+`CURIOSITY_PEER_EPISODES_ENABLED=true` now matches in both. Verified
+`CURIOSITY_PEER_ENABLED` and `HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED` are
+also true in both surfaces. Ran the env sync script and peer parity check.
+Earlier default-off notes above describe initial validation, before this
+explicit configuration change. No containers were restarted.

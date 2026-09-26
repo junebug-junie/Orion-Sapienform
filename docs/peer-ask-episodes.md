@@ -77,7 +77,8 @@ and the production episode path are **UNVERIFIED**.
 
 ## Rollout and rollback
 
-The new peer flag defaults to **false**, including the synced local `.env`.
+The operator template and synced local `.env` set the peer episode flag to
+**true**, as requested. The code-only fallback remains false when unset.
 No production deploy or restart was performed. Additive fields still fail old
 extra-forbid consumers: deploy the new peer consumer first, then Hub producer.
 Use the existing Tailscale `ORION_BUS_URL=redis://<tailscale-node-ip>:6379/0`;
@@ -90,9 +91,9 @@ scripts/safe_docker_build.sh orion-curiosity-peer up -d --build
 scripts/safe_docker_build.sh orion-hub up -d --build
 ```
 
-Verify both services before setting the peer's local
-`CURIOSITY_PEER_EPISODES_ENABLED=true` and recreating the peer with the first
-command. Require one actual committed ask, matched reply, completed later run,
+The local `CURIOSITY_PEER_EPISODES_ENABLED=true` value is already prepared.
+Deploy the updated consumer before Hub; the peer recreation loads this value.
+Require one actual committed ask, matched reply, completed later run,
 and source-checked decision before claiming a production episode. Preserve
 missing evidence rather than manufacture receipts for old asks.
 

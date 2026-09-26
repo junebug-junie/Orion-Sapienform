@@ -107,7 +107,8 @@ Compose mounts `${HOME}/.local/share/cursor-agent` and
 
 ## Ask commitments and later decisions
 
-`CURIOSITY_PEER_EPISODES_ENABLED` defaults to false. When enabled, eligible
+`CURIOSITY_PEER_EPISODES_ENABLED` is true in the operator template and local
+`.env` (the code fallback when unset is false). When enabled, eligible
 requests need an explicit expectation and an acknowledged worldview commitment
 before provider invocation. Duplicate claims do not resend. Deploy this consumer
 before the updated Hub producer. See [contracts, rollout and rollback](../../docs/peer-ask-episodes.md).

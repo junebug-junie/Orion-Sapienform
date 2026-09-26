@@ -30,7 +30,7 @@ _EXPECTED_DEFAULTS = {
     "HUB_WORLD_PULSE_READ_ENABLED": ("bool", "True"),
     "HUB_WORLD_PULSE_READ_TICK_SEC": ("float", "300"),
     "HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC": ("float", "1800"),
-    "HUB_WORLD_PULSE_READ_DAILY_CAP": ("int", "6"),
+    "HUB_WORLD_PULSE_READ_DAILY_CAP": ("int", "12"),
     "HUB_WORLD_PULSE_READ_WINDOW_START_HOUR": ("int", "8"),
     "HUB_WORLD_PULSE_READ_WINDOW_END_HOUR": ("int", "22"),
     "HUB_WORLD_PULSE_READ_TIMEOUT_SEC": ("float", "3500"),
@@ -39,7 +39,7 @@ _EXPECTED_DEFAULTS = {
     "HUB_WORLD_PULSE_READ_STAGE2_ENABLED": ("bool", "True"),
     "HUB_WORLD_PULSE_READ_STAGE2_TICK_SEC": ("float", "300"),
     "HUB_WORLD_PULSE_READ_STAGE2_MIN_COOLDOWN_SEC": ("float", "1800"),
-    "HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP": ("int", "6"),
+    "HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP": ("int", "12"),
     "HUB_WORLD_PULSE_READ_STAGE2_WINDOW_START_HOUR": ("int", "8"),
     "HUB_WORLD_PULSE_READ_STAGE2_WINDOW_END_HOUR": ("int", "22"),
     "HUB_WORLD_PULSE_READ_STAGE2_TIMEOUT_SEC": ("float", "3500"),
@@ -79,12 +79,12 @@ def test_env_example_ships_keys_and_keeps_wallet_a_independent() -> None:
         "deploy default is on after migration; .env_example enabled=%r" % enabled.group(1)
     )
     cap = re.search(r"^HUB_WORLD_PULSE_READ_DAILY_CAP=(.+)$", text, re.M)
-    assert cap and int(float(cap.group(1).strip())) == 6
+    assert cap and int(float(cap.group(1).strip())) == 12
     stage2 = re.search(r"^HUB_WORLD_PULSE_READ_STAGE2_ENABLED=(.+)$", text, re.M)
     assert stage2, "HUB_WORLD_PULSE_READ_STAGE2_ENABLED missing"
     assert stage2.group(1).strip().lower() in {"true", "1", "yes"}
     wallet_b = re.search(r"^HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP=(.+)$", text, re.M)
-    assert wallet_b and int(float(wallet_b.group(1).strip())) == 6
+    assert wallet_b and int(float(wallet_b.group(1).strip())) == 12
     trips = re.search(r"^HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS=(.+)$", text, re.M)
     assert trips and int(float(trips.group(1).strip())) == 5
     assert "HUB_CURIOSITY_INVESTIGATION_DAILY_CAP" in text
@@ -94,6 +94,38 @@ def test_env_example_ships_keys_and_keeps_wallet_a_independent() -> None:
     assert "HUB_CURIOSITY_INVESTIGATION_DAILY_CAP" in wp_block[:2000]
     sync_src = HUB_ROOT.parents[1] / "scripts" / "sync_local_env_from_example.py"
     assert '"HUB_WORLD_PULSE_READ_"' in sync_src.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("module,inputs,gate,key", [
+    (wa, wa.WalletAInputs, wa.wallet_a_block_reason, "HUB_WORLD_PULSE_READ_DAILY_CAP"),
+    (wb, wb.WalletBInputs, wb.wallet_b_block_reason, "HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP"),
+])
+def test_raised_caps_preserve_pacing_and_budget(module, inputs, gate, key) -> None:
+    cap = int(_field_default(SETTINGS_PY.read_text(), key, "int"))
+    for start, end, expected_pace in [(8, 22, 4200), (0, 0, 1800)]:
+        pace = module.paced_cooldown_sec(
+            min_cooldown_sec=1800, daily_cap=cap, start_hour=start, end_hour=end,
+        )
+        assert pace == expected_pace
+        base = dict(
+            enabled=True, daily_cap=cap, seconds_since_last=pace,
+            min_cooldown_sec=pace, now_hour=12,
+            window_start_hour=start, window_end_hour=end,
+        )
+        for count in (6, 11):
+            assert gate(inputs(done_today=count, **base)) is None
+        assert gate(inputs(done_today=12, **base)) == "daily_cap"
+        assert gate(inputs(done_today=6, **{**base, "seconds_since_last": pace - 1})) == "cooldown"
+        assert gate(inputs(done_today=6, seconds_until_retry=1, **base)) == "refund_backoff"
+
+
+def test_stage2_reentry_cap_default_matches_settings() -> None:
+    from scripts.world_pulse_read_stage2 import WorldPulseReadStage2Pipeline
+
+    default = inspect.signature(WorldPulseReadStage2Pipeline).parameters["wallet_a_daily_cap"].default
+    assert default == int(_field_default(
+        SETTINGS_PY.read_text(), "HUB_WORLD_PULSE_READ_DAILY_CAP", "int",
+    ))
 
 
 def test_schedule_route_imports_wallet_a_keys_never_retyped() -> None:
@@ -163,6 +195,27 @@ def _schedule_app() -> FastAPI:
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(_schedule_app())
+
+
+@pytest.mark.parametrize("settings_fail", [False, True])
+def test_unavailable_routes_keep_current_default_caps(client, monkeypatch, settings_fail):
+    from scripts import world_pulse_read_routes as routes
+
+    def settings():
+        if settings_fail:
+            raise RuntimeError("settings unavailable")
+        return SimpleNamespace()
+
+    monkeypatch.setattr(routes, "_settings", settings)
+    monkeypatch.setattr(routes, "_redis", lambda: None)
+    monkeypatch.setattr(routes, "_pool", lambda: None)
+    schedule = client.get("/world-pulse-read/api/schedule").json()
+    status = client.get("/world-pulse-read/api/status").json()
+    assert schedule["daily_cap"] == 12
+    assert status["wallet_a"]["daily_cap"] == 12
+    assert status["wallet_b"]["daily_cap"] == 12
+    assert schedule["available"] is False
+    assert status["available"] is False
 
 
 def test_schedule_payload_includes_daily_cap_and_wallet_a_keys(

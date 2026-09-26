@@ -241,7 +241,7 @@ class WorldPulseReadStage2Pipeline:
         timezone_name: str = "UTC",
         max_round_trips: int = 5,
         max_attempts: int = 1,
-        wallet_a_daily_cap: int = 6,
+        wallet_a_daily_cap: int = 12,
         wallet_a_min_cooldown_sec: float = 1800.0,
         wallet_a_window_start_hour: int = 0,
         wallet_a_window_end_hour: int = 0,

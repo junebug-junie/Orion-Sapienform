@@ -89,6 +89,15 @@ def test_cycle_bounds_dst_end_november() -> None:
     assert start == datetime(2026, 11, 1, tzinfo=DENVER)
     assert end == datetime(2026, 12, 1, tzinfo=DENVER)
 
+    # Nov 1 00:00–04:00 local spans the DST fall-back (5 UTC hours: 06:00Z..11:00Z).
+    cycle_start_utc = datetime(2026, 11, 1, 6, tzinfo=timezone.utc)
+    for i in range(5):
+        led.upsert(_iv(cycle_start_utc + timedelta(hours=i), 1.0))
+    query_at = datetime(2026, 11, 1, 11, tzinfo=timezone.utc)
+    kwh, as_of = led.cycle_kwh_before("UP123", query_at)
+    assert kwh == pytest.approx(5.0)
+    assert as_of == query_at
+
 
 def test_cycle_start_day_clamps_to_short_month() -> None:
     led = _ledger(day=31)
@@ -118,14 +127,16 @@ def test_accrual_crosses_block_boundary_in_order() -> None:
 def test_late_interval_reprices_later_ones() -> None:
     led = _ledger()
     base = datetime(2026, 7, 2, 18, tzinfo=timezone.utc)
+    later_at = base + timedelta(hours=1)
     _backfill(led, base)
-    led.upsert(_iv(base + timedelta(hours=1), 200.0))
+    led.upsert(_iv(base, 100.0))
+    led.upsert(_iv(later_at, 200.0))
     start, _ = led.cycle_bounds(base)
     led.accrue_cycle("UP123", start, computed_at=NOW)
-    led.upsert(_iv(base, 300.0))  # arrives late, earlier in the cycle
-    rows = led.accrue_cycle("UP123", start, computed_at=NOW)
-    later = next(r for r in rows if r.interval_start == base + timedelta(hours=1))
-    assert later.interval_cost_usd == pytest.approx(100 * B1S + 100 * B2S)
+    assert led.interval_cost_usd("UP123", later_at) == pytest.approx(200 * B1S)
+    led.upsert(_iv(base, 300.0, retrieved=NOW + timedelta(days=1)))
+    led.accrue_cycle("UP123", start, computed_at=NOW)
+    assert led.interval_cost_usd("UP123", later_at) == pytest.approx(100 * B1S + 100 * B2S)
 
 
 def test_cycle_kwh_before_counts_only_finished_intervals_in_cycle() -> None:
@@ -136,10 +147,11 @@ def test_cycle_kwh_before_counts_only_finished_intervals_in_cycle() -> None:
     assert led.cycle_kwh_before("UP123", t) is None
     _backfill(led, t - timedelta(hours=2))
     led.upsert(_iv(t - timedelta(hours=2), 100.0))
+    led.upsert(_iv(t - timedelta(hours=1), 50.0))
     led.upsert(_iv(t, 7.0))  # starts at t: not finished before t
     kwh, as_of = led.cycle_kwh_before("UP123", t)
-    assert kwh == pytest.approx(100.0)
-    assert as_of == t - timedelta(hours=1)
+    assert kwh == pytest.approx(150.0)
+    assert as_of == t
 
 
 def test_cycle_kwh_before_none_when_data_starts_after_cycle_start() -> None:

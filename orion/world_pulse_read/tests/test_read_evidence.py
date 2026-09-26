@@ -82,6 +82,7 @@ def test_reading_status_reports_stage2_skip_as_skipped():
 
     rid = uuid4()
     row = {
+        "request_id": rid,
         "seed_id": "reading:x", "duplicate_of": None, "status": "done",
         "stage2_status": "skipped", "landing_at": None, "request_json": {},
         "handoff_json": None, "stage2_result_json": None, "trace_id": "t1",

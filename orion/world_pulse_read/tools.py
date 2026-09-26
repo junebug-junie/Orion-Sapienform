@@ -22,8 +22,12 @@ RECOMMEND_DESCRIPTION = (
     "candidates, not settled beliefs. Report request_id and status so reading_status can inspect it later."
 )
 STATUS_DESCRIPTION = (
-    "Read durable reading status and source-attributed result by request_id from a previous "
-    "receipt. While status is 'queued', the response also carries queue_position (1-indexed "
+    "Read durable reading status by url or request_id (supply exactly one). Use the supplied "
+    "link directly; do not ask the user for a request ID when they have a URL. URL lookup is "
+    "read-only and returns the latest matching request plus matched_request_count; it does "
+    "not enqueue or retry reading. Multiple matches mean earlier attempts may have different "
+    "outcomes. Report only the returned status, never infer that queued means never attempted. "
+    "While status is 'queued', the response also carries queue_position (1-indexed "
     "place in line) and queue_depth (total pending) -- report those instead of just 'queued' "
     "when asked how long something might take; both are null once the row leaves the queue."
 )
@@ -34,11 +38,14 @@ def reading_brief_lines() -> list[str]:
         (
             "Reading MCP is available: recommend_reading queues a public HTTP(S) source for "
             "durable async processing, and reading_status looks up a previously queued source "
-            "by its request_id. If asked about the status of something already queued for "
-            "reading, ToolSearch and call reading_status with that request_id directly -- do "
+            "by URL or request_id. If asked about the status of something already queued for "
+            "reading, ToolSearch and call reading_status with the supplied URL directly (or "
+            "request_id if provided). Do not ask for an ID when a link is available; do "
             "not guess Postgres table names, grep the repo for the id, or invent a status. A "
             "'queued' result includes queue_position/queue_depth (e.g. '13th of 121') -- use "
-            "them, don't just report 'queued' with no sense of scale."
+            "them, don't just report 'queued' with no sense of scale. Tool discovery is not "
+            "a status check: report status only after a successful tool call. URL lookup "
+            "selects the latest request; queued does not establish that no earlier attempt ran."
         ),
     ]
 
@@ -95,7 +102,10 @@ class ReadingTools:
             command = ReadingToolRequestV1(operation=name, request=request)
         elif name == "reading_status":
             args = ReadingStatusArguments.model_validate(arguments)
-            command = ReadingToolRequestV1(operation=name, request_id=args.request_id)
+            command = ReadingToolRequestV1(
+                operation=name, request_id=args.request_id,
+                url=normalize_source_url(args.url) if args.url is not None else None,
+            )
         else:
             raise ValueError("unknown reading tool")
         correlation_id = uuid4()
@@ -130,7 +140,9 @@ class ReadingTools:
                 receipt = ReadingStatusReceiptV1.model_validate(result.result)
             except ValueError as exc:
                 raise RuntimeError("invalid reading status receipt") from exc
-            if receipt.request_id != args.request_id:
+            if args.request_id is not None and receipt.request_id != args.request_id:
+                raise RuntimeError("invalid reading status receipt")
+            if command.url is not None and result.result.get("lookup_url") != command.url:
                 raise RuntimeError("invalid reading status receipt")
         # The MCP transcript must retain the explicit acceptance bit. Returning
         # only ``result`` made a merely JSON-shaped payload look authoritative.

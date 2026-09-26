@@ -3043,7 +3043,11 @@ past each loop's own decay threshold, not a heartbeat file).
 
 ## Deliberate reading from Unified Chat and curiosity
 
-The model can call `recommend_reading(url, why_now)` to preserve a public source for asynchronous reading, or `reading_status(request_id)` to inspect a previous receipt. WebFetch/search remain the tools for facts needed immediately. URL presence never automatically submits work.
+The model can call `recommend_reading(url, why_now)` to preserve a public source for asynchronous reading, or `reading_status(url=...)` / `reading_status(request_id=...)` to inspect existing work. Status requires exactly one selector. Use a supplied link directly without asking the user to remember a UUID. URL lookup uses the same normalization as ingress (including fragment removal), selects the newest matching request by creation time then seed ID, resolves duplicate aliases, and reports `lookup_url`, `matched_request_count`, and `selection=latest_request`. It does not fetch, enqueue, or retry. A missing URL returns `status=not_found`, `request_id=null`, and count zero. Different paths, queries, and arXiv versions remain distinct. Existing ID lookups are unchanged. A queued latest request does not imply earlier requests never ran; returned attempt counts and match count must not be flattened into that claim. Tool discovery alone is not evidence of status. WebFetch/search remain the tools for facts needed immediately. URL presence never automatically submits work.
+
+Deploy Hub's URL-aware listener before the governor/tool producer. Old ID callers remain compatible; an old listener rejects the new URL selector rather than fabricating status. No queue migration or env change is required.
+
+Legacy World Pulse rows without request IDs are included in URL lookup and match counts. They return their real `seed_id` with `request_id=null`; this is distinct from `not_found` and never qualifies as a durable recommendation receipt.
 
 Both turn types receive a caller-bound stdio MCP tool through the existing harness. Hub accepts its internal bus RPC into the existing Postgres `world_pulse_read_seed` queue, commits, then emits `orion:reading:requested` and returns durable state. Pub/Sub publication alone is not acceptance. World Pulse discovery/backfill, recommendations and capped Stage 2 reentry share this queue; Wallet A/B and curiosity run accounting retain their roles.
 

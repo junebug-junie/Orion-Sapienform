@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
-from orion.schemas.reading import ReadingRequestedV1, ReadingToolBindingV1, ReadingToolRequestV1
+from orion.schemas.reading import DurableReadingReceiptV1, ReadingRequestedV1, ReadingStatusArguments, ReadingStatusReceiptV1, ReadingToolBindingV1, ReadingToolRequestV1
 from orion.schemas.registry import resolve
 from orion.world_pulse_read.events import REQUESTED_CHANNEL, TOOL_RESULT_PREFIX
 from orion.world_pulse_read.tools import ReadingTools
@@ -60,6 +60,11 @@ def test_real_tool_and_listener_share_queue_and_emit_typed_acceptance(context, r
         status_response = await tools.invoke("reading_status", {"request_id": receipt["request_id"]})
         assert status_response["ok"] is True
         assert status_response["result"] == receipt
+        by_url = await tools.invoke("reading_status", {"url": "https://EXAMPLE.org/article#section"})
+        assert by_url["result"]["request_id"] == receipt["request_id"]
+        assert by_url["result"]["status"] == "queued"
+        assert by_url["result"]["matched_request_count"] == 1
+        assert by_url["result"]["lookup_url"] == "https://example.org/article"
         # Exact duplicate Pub/Sub delivery and MCP retry remain one active row.
         await bus.listener.handle(bus.commands[0])
         retry = await tools.invoke("recommend_reading", {"url": "https://example.org/article", "why_now": "Compare this with our prior source"})
@@ -69,6 +74,42 @@ def test_real_tool_and_listener_share_queue_and_emit_typed_acceptance(context, r
         assert resolve("ReadingRequestedV1").model_validate(event.payload).requested_by == requester
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("selectors", [{}, {"url": "https://example.org/a", "request_id": str(uuid4())}])
+def test_status_requires_exactly_one_selector(selectors):
+    with pytest.raises(ValidationError):
+        ReadingStatusArguments.model_validate(selectors)
+    with pytest.raises(ValidationError):
+        ReadingToolRequestV1(operation="reading_status", **selectors)
+
+
+def test_url_status_not_found_is_read_only(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("status must not resolve DNS or enqueue")
+
+    monkeypatch.setattr("socket.getaddrinfo", forbidden)
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "enqueue_reading", forbidden)
+    conn = _FakeConn()
+    bus = RpcBus(conn)
+    tools = ReadingTools(bus, ReadingToolBindingV1(invocation_context="unified_chat", parent_run_id="r", parent_trace_id="t"))
+    response = asyncio.run(tools.invoke("reading_status", {"url": "https://arxiv.org/abs/2310.19279"}))
+    assert response["ok"] is True
+    assert response["result"] == {
+        "request_id": None, "status": "not_found",
+        "lookup_url": "https://arxiv.org/abs/2310.19279", "matched_request_count": 0,
+    }
+    assert not conn.rows
+    assert not any(c == REQUESTED_CHANNEL for c, _ in bus.published)
+
+
+def test_legacy_status_requires_a_locator_and_cannot_prove_recommendation_acceptance():
+    legacy = {"request_id": None, "seed_id": "legacy", "status": "queued"}
+    ReadingStatusReceiptV1.model_validate(legacy)
+    with pytest.raises(ValidationError):
+        DurableReadingReceiptV1.model_validate(legacy)
+    with pytest.raises(ValidationError):
+        ReadingStatusReceiptV1.model_validate({"request_id": None, "status": "queued"})
 
 
 @pytest.mark.parametrize("field", ["requested_by", "invocation_context", "parent_run_id", "parent_trace_id", "request_id", "headers", "sql", "cypher"])

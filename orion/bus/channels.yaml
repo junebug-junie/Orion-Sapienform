@@ -3452,7 +3452,7 @@ channels:
     consumer_services: ["orion-hub"]
     stability: "experimental"
     since: "2026-09-10"
-    description: "Ephemeral internal tool RPC; no acceptance until a durable queue receipt arrives."
+    description: "Ephemeral internal tool RPC; no acceptance until a durable queue receipt arrives. Status accepts exactly one request_id or url; URL selects the newest matching request without enqueueing."
 
   - name: "orion:reading:tool:result:*"
     kind: "result"

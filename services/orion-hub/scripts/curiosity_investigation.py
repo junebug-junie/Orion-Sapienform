@@ -101,6 +101,7 @@ from orion.curiosity.kickoff_prompt import (
     build_kickoff_prompt,
     build_resume_preamble,
 )
+from orion.dream.hypotheses import release_hypotheses_for_run, take_hypotheses_for_offer
 from orion.curiosity.peer_briefs import (
     REFUSED_OR_FAILED_RECENT_CYPHER,
     UNUSED_OK_BRIEFS_CYPHER,
@@ -188,7 +189,9 @@ from orion.curiosity.worldview import (
     read_turn_outcome,
 )
 from orion.llm.routes import FCC_LLAMACPP_MODEL_PREFIX, fcc_model_for_route
-from orion.llm.resource_lease import validate_resource_lease
+from orion.gpu_pool.client import LeaseUnavailable, durable_run_holder, validate_hold_ref
+from orion.llm.resource_lease import GPU_LEASE_ROUTE, validate_resource_lease
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.resource_admission import ResourceRequirementV1, ResourceLeaseV1
 from orion.journaler.schemas import JournalEntryWriteV1
 from orion.curiosity.journal import (  # moved 2026-09-06; names unchanged for callers/tests
@@ -213,6 +216,9 @@ from orion.schemas.durable_run import (
     DurableRunRequestV1,
     DurableRunStateV1,
 )
+
+# RPC source name on the pool ``status`` reads Hub makes for a carried hold ref (stage 4.4).
+GPU_LEASE_STATUS_SOURCE = "orion-hub"
 
 logger = logging.getLogger("orion-hub.curiosity_investigation")
 
@@ -583,6 +589,9 @@ class CuriosityInvestigation:
         cortex_result_prefix: str = "orion:cortex:result",
         # --- contractor peer soft-nudge ------------------------------------
         contractor_peer_enabled: bool = False,
+        # --- dream hypotheses (orion/dream/hypotheses.py) -------------------
+        dream_hypotheses_enabled: bool = False,
+        dream_hypotheses_per_run: int = 3,
         # --- the self-inquiry line -----------------------------------------
         self_inquiry_enabled: bool = False,
         self_inquiry_daily_cap: int = 3,
@@ -697,6 +706,8 @@ class CuriosityInvestigation:
         self.pg_readonly_role = pg_readonly_role
         self.outreach_enabled = outreach_enabled
         self.contractor_peer_enabled = bool(contractor_peer_enabled)
+        self.dream_hypotheses_enabled = bool(dream_hypotheses_enabled)
+        self.dream_hypotheses_per_run = max(0, int(dream_hypotheses_per_run))
         # Per-run dedupe: durable admission completes via `_handle_run_state`,
         # while non-durable / dispatch-fallback journals in-process. Both call
         # `_enqueue_help_requests_after_run`; a run that hits both must not
@@ -1040,6 +1051,21 @@ class CuriosityInvestigation:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_spend_turn_end_failed run=%s err=%s", run_id, exc)
+
+    async def _take_dream_hypotheses(self, view: WorldviewSnapshot, run_id: str) -> tuple:
+        """Claim this run's dream hypotheses. () unless Orion could adopt one.
+
+        Claiming stamps `offered_at`, and each hypothesis is offered once, so
+        claim only when the prompt will actually show them: the same
+        writable condition `build_kickoff_prompt` gates the section on.
+        """
+        if not self.dream_hypotheses_enabled or self.dream_hypotheses_per_run <= 0:
+            return ()
+        if not self.graph_enabled or view.is_unavailable or not run_id:
+            return ()
+        return await take_hypotheses_for_offer(
+            self._pool_provider(), run_id=run_id, limit=self.dream_hypotheses_per_run
+        )
 
     async def _read_peer_briefs_for_nudge(self) -> tuple:
         """Unused PeerBriefs for kickoff soft-nudge (RO_QUERY only).
@@ -1670,6 +1696,7 @@ class CuriosityInvestigation:
         peer_briefs = ()
         if self.contractor_peer_enabled:
             peer_briefs = await self._read_peer_briefs_for_nudge()
+        dream_hypotheses = await self._take_dream_hypotheses(view, run_id)
         prompt = build_kickoff_prompt(
             material,
             view=view,
@@ -1686,7 +1713,14 @@ class CuriosityInvestigation:
             graph_enabled=self.graph_enabled,
             contractor_peer_enabled=self.contractor_peer_enabled,
             peer_briefs=peer_briefs,
+            dream_hypotheses=dream_hypotheses,
         )
+        if dream_hypotheses:
+            logger.info(
+                "curiosity_dream_hypotheses_offered run=%s ids=%s",
+                run_id,
+                ",".join(h.hypothesis_id for h in dream_hypotheses),
+            )
         # Claim is unset at kickoff (Orion has not chosen). Continuation note
         # rides on Mind; the HelpRequest teach block stays on the harness prompt.
         self._mind_appraisal_by_run_id[run_id] = _investigation_subject_from_view(view)
@@ -1712,6 +1746,8 @@ class CuriosityInvestigation:
                 # cooldown stamp spent for a run cortex never confirmed.
                 if not self.durable_admission_enabled:
                     await self._refund_investigation(previous_stamp)
+                    if dream_hypotheses:
+                        await release_hypotheses_for_run(self._pool_provider(), run_id=run_id)
                 raise
             if dispatched:
                 return "dispatched"
@@ -1753,6 +1789,8 @@ class CuriosityInvestigation:
             # cancellation continue -- swallowing it would leave a task the
             # shutdown is waiting on.
             await self._refund_investigation(previous_stamp)
+            if dream_hypotheses:
+                await release_hypotheses_for_run(self._pool_provider(), run_id=run_id)
             raise
         if not text:
             logger.info("curiosity_investigation_no_text run=%s debug=%s", run_id, debug)
@@ -2786,6 +2824,7 @@ class CuriosityInvestigation:
         timeout_sec: float | None = None,
         resource_lease: ResourceLeaseV1 | None = None,
         session_id: str | None = None,
+        gpu_lease: GpuLeaseRefV1 | None = None,
     ) -> Tuple[str, dict]:
         """Real unified-turn generation. Returns ("", debug) on any failure,
         defer, or degraded run -- same "never fabricate, silence over a false
@@ -2820,6 +2859,10 @@ class CuriosityInvestigation:
         payload = _turn_payload(source, fcc_model_label or self._fcc_model_label)
         if resource_lease is not None:
             payload["resource_lease"] = resource_lease.model_dump(mode="json")
+            payload["inference_timeout_sec"] = turn_timeout
+        if gpu_lease is not None:
+            # Stage 4: every LLM call of the turn attaches to the run's GPU pool hold.
+            payload["gpu_lease"] = gpu_lease.model_dump(mode="json")
             payload["inference_timeout_sec"] = turn_timeout
         appraisal = None
         if parent_run_id and source in (INVESTIGATION_TAG, SELF_INQUIRY_TAG):
@@ -3011,6 +3054,7 @@ class CuriosityInvestigation:
         hop_notes: Optional[list[tuple[int, str]]] = None,
         line: str = LINE_INVESTIGATE,
         resource_lease: ResourceLeaseV1 | None = None,
+        gpu_lease: GpuLeaseRefV1 | None = None,
     ) -> Optional[str]:
         """Orion decided a finding is worth telling Juniper about. Compose it.
 
@@ -3046,10 +3090,13 @@ class CuriosityInvestigation:
                 hop_notes=hop_notes,
                 line=line,
                 resource_lease=resource_lease,
+                gpu_lease=gpu_lease,
                 correlation_id=correlation_id,
             )
         finally:
-            if resource_lease is not None:
+            if resource_lease is not None or gpu_lease is not None:
+                # Durable-runs owns the release of either grant (a pool hold becomes a pool
+                # ``release`` there in 4.5); Hub only says it is done composing.
                 await self._release_outreach_lease(run_id)
 
     async def _maybe_reach_out_inner(
@@ -3062,6 +3109,7 @@ class CuriosityInvestigation:
         line: str,
         resource_lease: ResourceLeaseV1 | None,
         correlation_id: str,
+        gpu_lease: GpuLeaseRefV1 | None = None,
     ) -> Optional[str]:
         if not self.outreach_enabled:
             # Same order as before: the provider is not consulted when this
@@ -3113,6 +3161,21 @@ class CuriosityInvestigation:
         else:
             notes = []
 
+        if gpu_lease is not None:
+            # Door-A under a pool hold (stage 4): the pool is the fence, same check as a durable
+            # turn. Never compose without the ref -- a held agent card would queue this behind it.
+            try:
+                await validate_hold_ref(
+                    self._bus, gpu_lease, source=GPU_LEASE_STATUS_SOURCE,
+                    expected_holder=durable_run_holder(run_id),
+                )
+            except LeaseUnavailable as exc:
+                logger.warning("curiosity_outreach_gpu_lease_rejected run=%s reason=%s", run_id, exc.reason)
+                self._record_outreach_skip(
+                    outreach, "gpu_lease_invalid", correlation_id=correlation_id, run_id=run_id, line=line
+                )
+                return "gpu_lease_invalid"
+
         prompt = build_outreach_composition_prompt(
             finding_text=finding_text,
             reach_out_why=outcome.reach_out_why,
@@ -3124,6 +3187,7 @@ class CuriosityInvestigation:
             source=OUTREACH_TAG,
             require_lookup=False,
             resource_lease=resource_lease,
+            gpu_lease=gpu_lease,
         )
         if not text:
             logger.info("curiosity_outreach_no_text run=%s debug=%s", run_id, debug)
@@ -3393,7 +3457,9 @@ class CuriosityInvestigation:
             "curiosity_turn_request run=%s attempt=%s corr=%s", request.run_id, request.attempt, request.correlation_id
         )
         try:
-            result = await self._turn_result_for(request, hold_lock=request.lease is None)
+            result = await self._turn_result_for(
+                request, hold_lock=request.lease is None and request.gpu_lease is None
+            )
         except Exception as exc:
             # A stale fence is a prompt refusal, not a full inference RPC wait.
             result = CuriosityTurnResultV1(
@@ -3471,6 +3537,18 @@ class CuriosityInvestigation:
                 validation_url=self.lease_validation_url,
             )
             key = f"{request.run_id}:{request.correlation_id}:{lease.lease_id}:{lease.generation}"
+        if request.gpu_lease is not None:
+            # Stage 4: the pool is the fence. Refuse a hold that is gone, re-granted (stale
+            # generation) or another run's before spending a harness turn on it.
+            ref = request.gpu_lease
+            try:
+                await validate_hold_ref(
+                    self._bus, ref, source=GPU_LEASE_STATUS_SOURCE,
+                    expected_holder=durable_run_holder(request.run_id),
+                )
+            except LeaseUnavailable as exc:
+                raise ValueError(f"curiosity gpu lease rejected: {exc.reason}") from exc
+            key = f"{key}:hold:{ref.lease_id}:{ref.generation}"
         cached = self._turn_results.get(key)
         if cached is not None and now - cached[1] <= TURN_RESULT_CACHE_SEC and cached[0].ok:
             logger.info("curiosity_turn_request_served_from_cache run=%s attempt=%s", request.run_id, request.attempt)
@@ -3499,6 +3577,12 @@ class CuriosityInvestigation:
                     session_id=request.session_id,
                     **({"fcc_model_label": f"{FCC_LLAMACPP_MODEL_PREFIX}{request.lease.lane}", "timeout_sec": request.timeout_sec,
                         "resource_lease": request.lease} if request.lease is not None else {}),
+                    # A hold's role (e.g. agent-gpu2) is not a route: FCC names the hold's
+                    # work-class route and the gateway attaches every call to the hold.
+                    **({"fcc_model_label": f"{FCC_LLAMACPP_MODEL_PREFIX}{GPU_LEASE_ROUTE}",
+                        "timeout_sec": request.timeout_sec}
+                       if request.gpu_lease is not None and request.lease is None else {}),
+                    **({"gpu_lease": request.gpu_lease} if request.gpu_lease is not None else {}),
                 )
                 if measured:
                     await self._spend_turn_ended(request.run_id, turn_ok=bool(text))
@@ -3659,12 +3743,33 @@ class CuriosityInvestigation:
                     state.run_id,
                     exc,
                 )
+        gpu_lease = None
+        raw_ref = detail.get("gpu_lease")
+        if raw_ref is not None:
+            try:
+                gpu_lease = GpuLeaseRefV1.model_validate(raw_ref)
+            except Exception as exc:  # noqa: BLE001
+                # Composing without the ref would queue behind the run's own hold. Skip, and
+                # still hand the grant back so it is not stranded until TTL.
+                logger.warning(
+                    "curiosity_outreach_gpu_lease_invalid run=%s err=%s",
+                    state.run_id,
+                    exc,
+                )
+                self._record_outreach_skip(
+                    None, "gpu_lease_malformed",
+                    correlation_id=str(uuid5(NAMESPACE_URL, f"{OUTREACH_TAG}:{state.run_id}")),
+                    run_id=state.run_id, line=str(detail.get("line") or LINE_INVESTIGATE),
+                )
+                await self._release_outreach_lease(state.run_id)
+                return
         await self._maybe_reach_out(
             outcome=outcome,
             finding_text=str(detail.get("finding_text") or ""),
             run_id=state.run_id,
             line=str(detail.get("line") or LINE_INVESTIGATE),
             resource_lease=lease,
+            gpu_lease=gpu_lease,
         )
 
     async def _publish_attention_schema(

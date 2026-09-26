@@ -41,10 +41,14 @@ def test_hub_main_layout_is_fifty_fifty_and_scrollable_chat() -> None:
     assert 'id="conversation" class="flex-1 min-h-0' in template
 
 
-def test_hub_nav_is_horizontal_scroll_and_settings_toggle_removed() -> None:
+def test_hub_nav_lives_in_launcher_modal_and_settings_toggle_removed() -> None:
     template = (HUB_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
     assert 'id="hubPrimaryNav"' in template
     assert "hub-tab-nav" in template
+    assert 'id="hubTabLauncherButton"' in template
+    modal = template.split('id="hubTabLauncherModal"', 1)[1]
+    assert 'id="hubPrimaryNav"' in modal.split("</nav>", 1)[0]
+    assert "/static/js/hub-tab-launcher.js" in template
     assert 'id="settingsToggle"' not in template
     assert 'id="settingsOpenButton"' in template
 

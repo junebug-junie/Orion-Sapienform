@@ -80,3 +80,31 @@ def test_admitted_stance_plan_uses_owning_lease_and_assigned_lane(lane: str) -> 
 def test_stance_rejects_invalid_lease_instead_of_dispatching_without_ownership() -> None:
     with pytest.raises(ValidationError):
         _request(resource_lease={"lease_id": "lease-1", "generation": 0})
+
+
+_REF = {"lease_id": "hold-1", "generation": 3, "role": "agent-gpu2", "holder": "durable-runs:run-1"}
+
+
+def test_held_stance_carries_the_gpu_lease_ref_on_the_agent_route() -> None:
+    """Stage 4.4: stance under a durable run's GPU pool hold forwards the ref (the gateway attaches
+    the call to the hold) and names the hold's work-class route, never the role."""
+    ctx = build_stance_react_plan_request(_request(llm_route="chat", gpu_lease=_REF)).context
+    assert ctx["gpu_lease"] == _REF
+    assert ctx["llm_route"] == ctx["llm_lane"] == "agent"
+    assert "resource_lease" not in ctx
+
+
+def test_old_lease_lane_wins_when_both_ride_the_request() -> None:
+    now = datetime.now(timezone.utc)
+    lease = ResourceLeaseV1(
+        run_id="run-1", demand_id="run-1:turn", lease_id="lease-1", resource_key="llm.route.chat", lane="chat",
+        backend_key="http://worker:8000", generation=7, granted_at=now, heartbeat_at=now,
+        expires_at=now + timedelta(seconds=60),
+    )
+    ctx = build_stance_react_context(_request(resource_lease=lease.model_dump(mode="json"), gpu_lease=_REF))
+    assert ctx["llm_route"] == "chat" and ctx["gpu_lease"] == _REF
+
+
+def test_malformed_ref_is_refused_instead_of_dispatching_unheld() -> None:
+    with pytest.raises(ValidationError):
+        _request(gpu_lease={"lease_id": "hold-1", "generation": 0, "role": "agent", "holder": "x"})

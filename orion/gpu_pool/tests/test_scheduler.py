@@ -185,7 +185,8 @@ def test_gpu2_swap_loads_agent_seat_only_after_wait_and_keeps_world():
     held = [lease("agent", "granted", "agent")]
     fresh = lease("agent", lease_id="a", queued_since=T0)
     assert not of(SwapLoad, run(held + [fresh]))
-    waited = lease("agent", lease_id="a", queued_since=T0 - timedelta(seconds=31))
+    waited = lease("agent", lease_id="a",
+                   queued_since=T0 - timedelta(seconds=CFG.swap_after_wait_sec("agent-gpu2") + 1))
     world_busy = lease("world", "granted", "world")
     [s] = of(SwapLoad, run(held + [waited, world_busy]))
     assert s.role == "agent-gpu2"
@@ -194,7 +195,7 @@ def test_gpu2_swap_loads_agent_seat_only_after_wait_and_keeps_world():
 
 def test_gpu2_swap_blocked_while_diffusion_busy_or_wanted():
     held = [lease("agent", "granted", "agent")]
-    waited = lease("agent", lease_id="a", queued_since=T0 - timedelta(seconds=60))
+    waited = lease("agent", lease_id="a", queued_since=T0 - timedelta(seconds=CFG.swap_after_wait_sec("agent-gpu2") + 60))
     diff_busy = lease("diffusion", "granted", "diffusion")
     assert not of(SwapLoad, run(held + [waited, diff_busy]))
 
@@ -223,7 +224,7 @@ def test_diffusion_reclaims_gpu2():
 def test_cooldown_blocks_reload():
     cooling = cards(gpu2=CardLive("gpu2", cooldown_until=T0 + timedelta(seconds=100)))
     held = [lease("agent", "granted", "agent")]
-    waited = lease("agent", lease_id="a", queued_since=T0 - timedelta(seconds=60))
+    waited = lease("agent", lease_id="a", queued_since=T0 - timedelta(seconds=CFG.swap_after_wait_sec("agent-gpu2") + 60))
     assert not of(SwapLoad, run(held + [waited], crds=cooling))
 
 

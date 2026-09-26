@@ -728,19 +728,27 @@ def _build_subprocess_env(
     turn_step_stall_sec: Optional[float] = None,
     n_ctx: Optional[int] = None,
     resource_lease: dict | None = None,
+    gpu_lease: dict | None = None,
 ) -> Dict[str, str]:
     env = os.environ.copy()
-    from orion.llm.resource_lease import LEASE_HEADER, encode_lease_header
+    from orion.llm.resource_lease import (
+        GPU_LEASE_HEADER, LEASE_HEADER, encode_gpu_lease_header, encode_lease_header,
+    )
     # Never inherit another run's lease; preserve unrelated custom headers.
+    ours = {LEASE_HEADER.lower(), GPU_LEASE_HEADER.lower()}
     headers = [line for line in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines()
-               if line.partition(":")[0].strip().lower() != LEASE_HEADER.lower()]
+               if line.partition(":")[0].strip().lower() not in ours]
     if resource_lease is not None:
         headers.append(f"{LEASE_HEADER}: {encode_lease_header(resource_lease)}")
+    if gpu_lease is not None:
+        # Stage 4: the run's GPU pool hold. The gateway attaches every call to it, so the run's own
+        # calls never queue behind the hold that reserves their slot.
+        headers.append(f"{GPU_LEASE_HEADER}: {encode_gpu_lease_header(gpu_lease)}")
     if headers:
         env["ANTHROPIC_CUSTOM_HEADERS"] = "\n".join(headers)
     else:
         env.pop("ANTHROPIC_CUSTOM_HEADERS", None)
-    if resource_lease is not None:
+    if resource_lease is not None or gpu_lease is not None:
         # FCC's external proxy has no header-forwarding contract. Send this
         # protected request directly to the existing Anthropic Gateway route.
         env["ANTHROPIC_BASE_URL"] = os.environ.get(
@@ -846,6 +854,7 @@ async def run_fcc_turn(
     reading_binding=None,
     reading_only=False,
     resource_lease: dict | None = None,
+    gpu_lease: dict | None = None,
 ) -> AsyncIterator[Dict[str, object]]:
     """Orion capability: the actual FCC-Claude process.
 
@@ -987,6 +996,7 @@ async def run_fcc_turn(
             cwd=workspace,
             env=_build_subprocess_env(
                 resource_lease=resource_lease,
+                gpu_lease=gpu_lease,
                 n_ctx=lane_n_ctx,
                 fcc_server_url=fcc_server_url,
                 auth_token=auth_token,

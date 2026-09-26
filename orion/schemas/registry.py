@@ -588,6 +588,7 @@ from orion.schemas.harness_finalize import (
     SubstrateFinalizeAppraisalV1,
 )
 from orion.schemas.compaction import MemoryCompactionDeltaV1
+from orion.schemas.dream_cycle import DreamCycleV1
 from orion.schemas.reverie import (
     CompactionRequestV1,
     ResonanceAlertV1,
@@ -629,6 +630,8 @@ from orion.schemas.durable_run import (
 )
 from orion.schemas.resource_admission import ResourceEventV1
 from orion.schemas.gpu_pool import (
+    GpuActuateResultV1,
+    GpuActuateV1,
     GpuLeaseReplyV1,
     GpuLeaseRequestV1,
     GpuPoolControlReplyV1,
@@ -973,6 +976,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GpuPoolStateRequestV1": GpuPoolStateRequestV1,
     "GpuPoolControlV1": GpuPoolControlV1,
     "GpuPoolControlReplyV1": GpuPoolControlReplyV1,
+    "GpuActuateV1": GpuActuateV1,
+    "GpuActuateResultV1": GpuActuateResultV1,
     "LlmWorkerAnnounceV1": LlmWorkerAnnounceV1,
     "DurableRunStateV1": DurableRunStateV1,
     "CuriosityTurnRequestV1": CuriosityTurnRequestV1,
@@ -1440,6 +1445,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ReverieRefractoryEntry": ReverieRefractoryEntry,
     "CompactionRequestV1": CompactionRequestV1,
     "MemoryCompactionDeltaV1": MemoryCompactionDeltaV1,
+    "DreamCycleV1": DreamCycleV1,
     "ResonanceAlertV1": ResonanceAlertV1,
     "VisualActivityV1": VisualActivityV1,
     "ReverieVisualContextV1": ReverieVisualContextV1,
@@ -1622,6 +1628,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=MemoryCompactionDeltaV1,
         kind="dream.compaction.delta.v1",
     ),
+    "DreamCycleV1": SchemaRegistration(
+        model=DreamCycleV1,
+        kind="dream.cycle.v1",
+    ),
     "VisualActivityV1": SchemaRegistration(model=VisualActivityV1, kind="reverie.visual.activity.v1"),
     "ReverieVisualContextV1": SchemaRegistration(model=ReverieVisualContextV1, kind="reverie.visual.context.v1"),
     "VisualContextSelectionV1": SchemaRegistration(model=VisualContextSelectionV1, kind="reverie.visual.context-selection.v1"),
@@ -1778,6 +1788,9 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "GpuPoolStateRequestV1": SchemaRegistration(model=GpuPoolStateRequestV1, kind="gpu_pool.state.request.v1"),
     "GpuPoolControlV1": SchemaRegistration(model=GpuPoolControlV1, kind="gpu_pool.control.v1"),
     "GpuPoolControlReplyV1": SchemaRegistration(model=GpuPoolControlReplyV1, kind="gpu_pool.control.reply.v1"),
+    # Stage 4 actuation (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
+    "GpuActuateV1": SchemaRegistration(model=GpuActuateV1, kind="gpu_pool.actuate.v1"),
+    "GpuActuateResultV1": SchemaRegistration(model=GpuActuateResultV1, kind="gpu_pool.actuate.result.v1"),
     "LlmWorkerAnnounceV1": SchemaRegistration(model=LlmWorkerAnnounceV1, kind="llm.worker.announce.v1"),
     "CuriosityTurnRequestV1": SchemaRegistration(model=CuriosityTurnRequestV1, kind="curiosity.turn.request.v1"),
     "CuriosityTurnResultV1": SchemaRegistration(model=CuriosityTurnResultV1, kind="curiosity.turn.result.v1"),

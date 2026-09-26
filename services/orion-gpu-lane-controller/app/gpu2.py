@@ -4,16 +4,36 @@ Single uvicorn process, independent of GPU1's lock. Every Docker invocation
 names one of two locally fixed services. No ordinary transition builds images.
 """
 import asyncio
+import contextvars
 import json
 import time
 import urllib.request
 from loguru import logger
 from . import lane_control as lc
+from . import pool_fence
 from .settings import settings
 
 _lock = asyncio.Lock()
 _job = None
 _state = {"state": "neither", "error": None}
+# Stage 4.2: the pool actuator bridge sets this for the transition it runs, so each step can be
+# published as a GpuActuateResultV1 progress phase. Unset (HTTP path) -> no-op.
+progress_hook = contextvars.ContextVar("gpu2_progress_hook", default=None)
+
+
+def pool_authority() -> bool:
+    return settings.GPU2_AUTHORITY == "pool"
+
+
+async def phase(name):
+    hook = progress_hook.get()
+    if hook is None:
+        return
+    try:
+        # Bounded: a hung bus publish must not stall a transition mid-drain.
+        await asyncio.wait_for(hook(name), timeout=5)
+    except Exception:  # noqa: BLE001 -- progress telemetry never changes a transition's outcome
+        logger.warning("gpu2_progress_publish_failed phase={}", name)
 
 
 def targets():
@@ -46,7 +66,7 @@ async def status():
     # Container presence and readiness are different, especially while loading.
     live = [key for key, snap in observed.items() if any(r["state"] == "running" for r in snap["containers"])]
     active = "both" if len(live) == 2 else live[0] if live else "neither"
-    if _state["state"] == "neither" and settings.GPU2_ENABLED:
+    if _state["state"] == "neither" and settings.GPU2_ENABLED and not pool_authority():
         try:
             durable = await request(settings.GPU2_AUTHORITY_URL.rstrip("/")+"/elastic/status")
             if durable.get("state") == "failed":
@@ -58,6 +78,9 @@ async def status():
 
 
 async def authority(req, *, require_drained=True):
+    if pool_authority():
+        # Pool generation + launch_digest fence; no callback to durable-runs /elastic/status.
+        return await pool_fence.authority(req, require_drained=require_drained)
     row = await request(settings.GPU2_AUTHORITY_URL.rstrip("/")+"/elastic/status")
     if (row.get("operation_id") != req.operation_id or row.get("generation") != req.generation
             or row.get("desired_target") != req.target):
@@ -115,6 +138,7 @@ async def start(target):
     result = await asyncio.to_thread(lc._run_compose, runner, lc._repo_root(), targets()[target], "up", "-d", "--no-build", "--no-deps")
     if result.returncode:
         raise RuntimeError("startup_failed")
+    await phase("ready_wait")
     if target == "diffusion":
         deadline = time.monotonic()+settings.GPU2_MODEL_READY_TIMEOUT_SEC
         while True:
@@ -135,8 +159,11 @@ async def transition(req):
         # Reject obsolete requests before changing observable transition state.
         try:
             await authority(req, require_drained=False)
-        except Exception:
-            return {"status": "failed", "error": "stale_or_unknown_intent"}
+        except Exception as exc:
+            # Under pool authority keep the fence's own reason (e.g. a corrupt fence file) so the
+            # pool can tell it from a stale request; durable keeps its historical single reason.
+            reason = str(exc) if pool_authority() and isinstance(exc, RuntimeError) else "stale_or_unknown_intent"
+            return {"status": "failed", "error": reason}
         _state.clear()
         _state.update(state="draining", error=None, operation_id=req.operation_id, generation=req.generation)
         touched = False
@@ -161,8 +188,10 @@ async def transition(req):
                     raise RuntimeError("diffusion_state_unknown")
                 if any(r["state"] == "running" for r in diffusion["containers"]):
                     touched = True
+                    await phase("draining")
                     await drain_diffusion()
                     await authority(req)
+                    await phase("stopping")
                     await stop("diffusion")
                     diffusion_stopped = True
             else:
@@ -175,10 +204,12 @@ async def transition(req):
                             isinstance(s, dict) and s.get("is_processing") is False for s in slots):
                         raise RuntimeError("burst_upstream_not_idle")
                     await authority(req)  # closed admissions + no permits/leases
+                    await phase("stopping")
                     await stop("agent-burst")
             _state.update(state="activating")
             await authority(req)
             cold = time.monotonic()
+            await phase("starting")
             await start(req.target)
             _state.update(state="ready", cold_start_seconds=time.monotonic()-cold)
             return {"status": "success", **_state}
@@ -187,6 +218,7 @@ async def transition(req):
             # No model output, prompt or subprocess stderr in operational evidence.
             if req.target == "agent-burst" and touched:
                 try:
+                    await phase("rolling_back")
                     # Authority has never opened new admissions for this intent.
                     row = await authority(req, require_drained=False)
                     if not row.get("can_transition"):
@@ -213,6 +245,9 @@ async def flip(req):
     global _job
     if not settings.GPU2_ENABLED:
         return {"status": "disabled"}
+    if pool_authority():
+        # GPU2_AUTHORITY=pool: only pool actuation (bus, app/actuator_bus.py) may move gpu2.
+        return {"status": "refused", "error": "authority_pool"}
     if _job is not None and not _job.done():
         return {"status": "busy", **_state}
     _job = asyncio.create_task(transition(req))

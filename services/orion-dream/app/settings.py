@@ -27,15 +27,12 @@ class Settings(BaseSettings):
 
     # --- Channels ---
     CHANNEL_DREAM_TRIGGER: str = Field(default="orion:dream:trigger")
-    CHANNEL_DREAM_BUFFER: str = Field(default="orion:dream:buffer")
-    CHANNEL_DREAM_COMPLETE: str = Field(default="orion:dream:complete")
-    CHANNEL_DREAM_STATUS: str = Field(default="orion:dream:status")
-    CHANNEL_BRAIN_INTAKE: str = Field(default="orion:brain:intake") # Legacy
 
     # --- REM compaction (Phase F, default-off, staged — applies nothing) ---
     # When on, REM narration reads the Phase-E compaction-request queue + recent
     # episodes/motifs and emits a MemoryCompactionDeltaV1 (proposal_marked=true)
     # on CHANNEL_DREAM_COMPACTION_DELTA. No service applies it; the hub previews it.
+    # With the dream cycle on, this pass also runs once inside each sleep.
     ORION_DREAM_REM_ENABLED: bool = Field(default=False)
     CHANNEL_DREAM_COMPACTION_DELTA: str = Field(default="orion:dream:compaction-delta")
     # Cap on requests drained per REM pass (§cap-all-collections).
@@ -53,50 +50,31 @@ class Settings(BaseSettings):
     # §14 snapshot destination (before/after + rollback artifact).
     DREAM_COMPACTION_SNAPSHOT_DIR: str = Field(default="/tmp/dream-compaction-apply")
 
-    CHANNEL_CORTEX_GATEWAY_REQUEST: str = Field(default="orion:cortex:gateway:request", alias="CORTEX_GATEWAY_REQUEST_CHANNEL")
-    CHANNEL_DREAM_REPLY_PREFIX: str = Field(default="orion:dream:reply", alias="DREAM_REPLY_PREFIX")
-    DREAM_VERB: str = Field(default="dream_cycle", alias="DREAM_VERB")
-
-    # --- Memory streams ---
-    CHANNEL_COLLAPSE_SQL_PUBLISH: str = Field(default="orion:collapse:sql-write")
-    CHANNEL_COLLAPSE_TAGS_PUBLISH: str = Field(default="orion:tags:enriched")
-    CHANNEL_TELEMETRY_PUBLISH: str = Field(default="orion:biometrics:telemetry")
-    CHANNEL_CHAT: str = Field(default="orion:chat:history:log")
+    # --- Dream cycle v2 (sleep pressure -> replay -> REM recombination) ---
+    # Default off. When on, a background loop checks sleep pressure every
+    # DREAM_CYCLE_CHECK_INTERVAL_SEC and sleeps when pressure >= threshold AND
+    # no chat turn for DREAM_IDLE_MINUTES AND the last cycle ended at least
+    # DREAM_MIN_INTERVAL_HOURS ago. Writes only dream_cycle / dream_replay_item /
+    # dream_hypothesis (services/orion-sql-db/manual_migration_dream_cycle_v2.sql).
+    ORION_DREAM_CYCLE_ENABLED: bool = Field(default=False)
+    DREAM_CYCLE_CHECK_INTERVAL_SEC: float = Field(default=600.0, gt=0.0)
+    DREAM_SLEEP_PRESSURE_THRESHOLD: float = Field(default=3.0, ge=0.0)
+    DREAM_IDLE_MINUTES: float = Field(default=45.0, ge=0.0)
+    DREAM_MIN_INTERVAL_HOURS: float = Field(default=6.0, ge=0.0)
+    DREAM_LOOKBACK_HOURS: float = Field(default=48.0, gt=0.0)
+    DREAM_CANDIDATES_PER_SOURCE: int = Field(default=50, ge=1)
+    DREAM_REPLAY_MAX: int = Field(default=12, ge=0, le=24)
+    # Arms: dream pairs come from the replay set; control pairs are random pairs
+    # from the whole candidate pool through the same prompt (the baseline).
+    DREAM_HYPOTHESES_PER_CYCLE: int = Field(default=3, ge=0, le=8)
+    DREAM_CONTROL_PER_CYCLE: int = Field(default=1, ge=0, le=4)
+    DREAM_HYPOTHESIS_TTL_HOURS: float = Field(default=72.0, gt=0.0)
+    CHANNEL_LLM_INTAKE: str = Field(default="orion:exec:request:LLMGatewayService")
+    DREAM_LLM_ROUTE: str = Field(default="metacog_background")
+    DREAM_LLM_TIMEOUT_SEC: float = Field(default=90.0, gt=0.0)
 
     # --- Stores ---
     POSTGRES_URI: str = Field(default="postgresql://postgres:postgres@postgres:5432/conjourney")
-    VECTOR_DB_HOST: str = Field(default="vector-db")
-    VECTOR_DB_PORT: int = Field(default=8000)
-    VECTOR_DB_COLLECTION: str = Field(default="orion_main_store")
-
-    RDF_STORE_QUERY_URL: str = Field(default="")
-    RDF_STORE_USER: str = Field(default="admin")
-    RDF_STORE_PASS: str = Field(default="orion")
-    GRAPHDB_URL: str = Field(default="http://graphdb:7200")
-    GRAPHDB_REPO: str = Field(default="collapse")
-    GRAPHDB_USER: str = Field(default="admin")
-    GRAPHDB_PASS: str = Field(default="admin")
-
-    @property
-    def rdf_sparql_endpoint(self) -> str:
-        q = (self.RDF_STORE_QUERY_URL or "").strip()
-        if q:
-            return q
-        base = (self.GRAPHDB_URL or "").strip().rstrip("/")
-        if not base:
-            return ""
-        repo = (self.GRAPHDB_REPO or "collapse").strip() or "collapse"
-        return f"{base}/repositories/{repo}"
-
-    @property
-    def rdf_sparql_auth(self) -> tuple[str, str]:
-        if (self.RDF_STORE_QUERY_URL or "").strip():
-            return (self.RDF_STORE_USER or "admin", self.RDF_STORE_PASS or "orion")
-        return (self.GRAPHDB_USER, self.GRAPHDB_PASS)
-
-    # --- Brain ---
-    BRAIN_URL: str = Field(default="http://brain:8088")
-    LLM_MODEL: str = Field(default="mistral:instruct")
 
     DREAM_LOG_DIR: str = Field(default="/app/logs/dreams")
 

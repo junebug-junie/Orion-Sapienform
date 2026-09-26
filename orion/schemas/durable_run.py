@@ -35,6 +35,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.resource_admission import ResourceLeaseV1, ResourceRequirementV1
 
 DURABLE_RUN_REQUEST_CHANNEL = "orion:durable:run:request"
@@ -218,6 +219,10 @@ class CuriosityTurnRequestV1(BaseModel):
     attempt: int = Field(default=1, ge=1)
     lease: ResourceLeaseV1 | None = None
     assigned_lane: str | None = None
+    # Stage 4: the run's GPU pool hold. Hub validates it with the pool's ``status`` verb and runs
+    # the turn under it (every LLM call attaches to the hold). Consumer first: Hub must accept this
+    # before durable-runs 4.5 sends it (extra="forbid").
+    gpu_lease: GpuLeaseRefV1 | None = None
     # Additive: an explicit session to run this turn under, distinct from
     # curiosity's own shared investigation session. self_sense_eval needs
     # this -- its answers must land in the SAME clean session

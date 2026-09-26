@@ -1807,8 +1807,14 @@ TTS_REQUEST_CHANNEL=orion:tts:intake
 TOPIC_FOUNDRY_BASE_URL=http://orion-topic-foundry:8615
 ```
 
+### Section launcher (top tabs)
+
+Every Hub section lives behind the grid button next to the **Orion Hub** title (Gmail-apps style); the button shows the section you are on. Opening it shows all sections as a tile grid: **Hub** pinned top-left, everything else alphabetical (including server-injected tabs like AI Town). Type to filter, **Enter** opens the first match, **Esc** or a backdrop click closes.
+
+The tab anchors keep their ids and `data-hash-target`, so `app.js` and the `*_tab.js` controllers wire them exactly as before; `static/js/hub-tab-launcher.js` only reorders them, runs the modal, and mirrors the active tab's label. Adding a new tab = add its `<a>` inside `#hubPrimaryNav`; ordering is automatic. Tests: `node --test services/orion-hub/static/js/hub-tab-launcher.test.js`.
+
 ### Manual UI checklist
-- Navigate between **Hub** and **Topic Studio** tabs; ensure no overlays block pointer events on Hub.
+- Open the section launcher and navigate between **Hub** and **Topic Studio**; ensure no overlays block pointer events on Hub.
 - In Topic Studio, run **Preview** with `turn_pairs`, then switch to `conversation_bound` after setting a `boundary_column`.
   - Topic Studio pins `split_text_columns: false` (it has no control for it yet), so its previews keep the historical fused-column shape. The Hub's own scheduler sends `split_text_columns: true` with `column_speakers`, so scheduler-driven runs produce one document per utterance -- expect Topic Studio's document counts to differ from the scheduler's for the same window. See `docs/superpowers/specs/2026-08-28-concept-induction-topic-model-rebuild-design.md`.
 - Train a run, poll for completion, then load segments and click a segment to confirm full text renders in the detail pane.

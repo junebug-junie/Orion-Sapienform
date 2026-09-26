@@ -321,6 +321,15 @@ Sources (all SQL counts): `world_pulse_seed_pending`, `durable_demand_pending`, 
 `gpu_pool_waiting` (leases queued/backlogged in `gpu_pool_leases`; replaced the gateway's
 `/admission` waiting sum when the gateway cut over to orion-gpu-pool, 2026-09-24).
 
+GPU pool stage 4.4 (2026-09-25): `durable_demand_pending` counts durable runs waiting for a GPU
+across the move from durable-runs' own broker to pool holds -- pending `durable_resource_demands`
+plus `gpu_pool_leases` holds (`kind='hold'`, holder `durable-runs:<run_id>`) that are queued or
+backlogged, a run with both counted once as its hold (`DURABLE_WAITING_SQL` in `app/store.py`).
+Its oldest wait is the older of a demand's `created_at` and a hold's `queued_since`.
+`gpu_pool_waiting` counts `kind='request'` only, so a hold is never counted twice. Before the
+cutover the hold half is empty (live 2026-09-25: 12 pending demands, 0 holds -- identical to the
+old reading); after the migration the legacy half is, and 4.6 deletes it.
+
 ## Telemetry-anomaly metacog trigger (2026-07-21)
 
 `FIELD_CHANNEL_ANOMALY_ENABLED` (default `true` as of 2026-09-21; a real model is promoted and this ran live for ~1-2 weeks after the 2026-09-03 convergence below before something reset the flag to `false` with no record of when/why -- `.env` is gitignored and untracked, so that flip left no trace) turns on a periodic in-process rescoring loop (`app/anomaly_scorer.py`, `_anomaly_loop()` in `app/worker.py`) against a trained `orion/mood_arc/fit_encoder.py` encoder. Independent of `FIELD_CHANNEL_CORPUS_PATH` above: the scorer maintains its own small in-memory rolling buffer of the same per-tick `FieldChannelCorpusRowV1` rows (not the JSONL sink), so live rescoring works even with the JSONL corpus collector off.

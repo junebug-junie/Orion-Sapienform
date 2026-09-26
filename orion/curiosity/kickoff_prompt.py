@@ -802,6 +802,12 @@ def _peer_briefs_section(peer_briefs: Sequence = ()) -> list[str]:
     return format_soft_nudge(peer_briefs or ())
 
 
+def _dream_section(dream_hypotheses: Sequence = ()) -> list[str]:
+    from orion.dream.hypotheses import format_dream_section
+
+    return format_dream_section(dream_hypotheses or ())
+
+
 def _role_and_help_section(
     *,
     own_graph: str,
@@ -952,6 +958,7 @@ def build_kickoff_prompt(
     graph_enabled: bool = True,
     contractor_peer_enabled: bool = False,
     peer_briefs: Sequence = (),
+    dream_hypotheses: Sequence = (),
 ) -> str:
     """Assemble the whole invitation.
 
@@ -986,6 +993,10 @@ def build_kickoff_prompt(
         lines += _thread_section(view)
         lines += _priors_section(view, stale_after=stale_after)
         lines += _peer_briefs_section(peer_briefs)
+        # Only offered when Orion can write the prior that would adopt one --
+        # the caller claims (stamps offered) only on a writable graph too.
+        if writable:
+            lines += _dream_section(dream_hypotheses)
 
     lines += _material_section(material)
     lines += _access_section(

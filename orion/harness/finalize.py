@@ -35,6 +35,8 @@ from orion.schemas.harness_finalize import (
 )
 from orion.schemas.reading import ReadingRecommendationOutcomeV1
 from orion.llm.routes import is_agent_route_model_label
+from orion.llm.resource_lease import GPU_LEASE_ROUTE
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.schemas.thought import StanceHarnessSliceV1, ThoughtEventV1
 from orion.substrate.ids import stable_hash_id
@@ -349,6 +351,7 @@ def maybe_quick_lane_verdict(
 def resolve_finalize_llm_lane(
     *,
     resource_lease: ResourceLeaseV1 | None = None,
+    gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> str:
     """Gateway llm_route/llm_lane for harness finalize (reflect + repair).
@@ -357,9 +360,15 @@ def resolve_finalize_llm_lane(
     → agent; else chat (default unified Hub chat / non-agent labels including
     MODEL_SONNET). Do not hardcode ordinary finalize to agent — that stranded
     chat turns behind curiosity (corr 60f0e051).
+
+    A GPU pool hold (stage 4) is next: its calls attach to the hold's role
+    whatever route they name, so the route only names the work class
+    (``GPU_LEASE_ROUTE``, durable holds are agent class).
     """
     if resource_lease is not None:
         return str(resource_lease.lane)
+    if gpu_lease is not None:
+        return GPU_LEASE_ROUTE
     if is_agent_route_model_label(fcc_model_label):
         return "agent"
     return "chat"
@@ -375,10 +384,12 @@ def build_finalize_reflect_context(
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> dict[str, Any]:
     lane = resolve_finalize_llm_lane(
         resource_lease=resource_lease,
+        gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
     return {
@@ -395,6 +406,7 @@ def build_finalize_reflect_context(
         "llm_route": lane,
         "llm_lane": lane,
         **({"resource_lease": resource_lease.model_dump(mode="json")} if resource_lease else {}),
+        **({"gpu_lease": gpu_lease.model_dump(mode="json")} if gpu_lease else {}),
         "allow_chat_fallback": False,
         "metadata": {
             "correlation_id": correlation_id,
@@ -413,6 +425,7 @@ def build_finalize_reflect_plan_request(
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> PlanExecutionRequest:
     plan = build_plan_for_verb("harness_finalize_reflect", mode="brain")
@@ -432,6 +445,7 @@ def build_finalize_reflect_plan_request(
             user_message=user_message,
             grammar_receipts=grammar_receipts,
             resource_lease=resource_lease,
+            gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
         ),
     )
@@ -476,6 +490,7 @@ async def run_finalize_reflection(
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     cortex_client: CortexClientFn | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> tuple[FinalizeReflectionV1, bool, str | None]:
     if substrate_appraisal is None:
@@ -504,6 +519,7 @@ async def run_finalize_reflection(
         user_message=user_message,
         grammar_receipts=grammar_receipts,
         resource_lease=resource_lease,
+        gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
     try:
@@ -604,6 +620,7 @@ async def maybe_run_finalize_tool_retry(
     grammar_channel: str = DEFAULT_GRAMMAR_EVENT_CHANNEL,
     grammar_publish_fn: Any = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> tuple[FinalizeReflectionV1, list[GrammarReceiptV1], bool, str | None, str | None]:
     """One bounded tool-recall retry (loop-back beat, "finalize 5b-prime").
@@ -771,6 +788,7 @@ async def maybe_run_finalize_tool_retry(
             grammar_receipts=receipts,
             cortex_client=cortex_client,
             resource_lease=resource_lease,
+            gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
         )
     except Exception as exc:
@@ -834,10 +852,12 @@ def build_response_repair_context(
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> dict[str, Any]:
     lane = resolve_finalize_llm_lane(
         resource_lease=resource_lease,
+        gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
     return {
@@ -850,6 +870,7 @@ def build_response_repair_context(
         "llm_route": lane,
         "llm_lane": lane,
         **({"resource_lease": resource_lease.model_dump(mode="json")} if resource_lease else {}),
+        **({"gpu_lease": gpu_lease.model_dump(mode="json")} if gpu_lease else {}),
         "allow_chat_fallback": False,
         "metadata": {
             "correlation_id": correlation_id,
@@ -866,6 +887,7 @@ def build_response_repair_plan_request(
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> PlanExecutionRequest:
     plan = build_plan_for_verb("orion_response_repair", mode="brain")
@@ -883,6 +905,7 @@ def build_response_repair_plan_request(
             user_message=user_message,
             grammar_receipts=grammar_receipts,
             resource_lease=resource_lease,
+            gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
         ),
     )
@@ -927,6 +950,7 @@ async def run_orion_response_repair(
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     cortex_client: CortexClientFn | None = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Orion capability: minimal post-reflection response repair.
@@ -945,6 +969,7 @@ async def run_orion_response_repair(
         user_message=user_message,
         grammar_receipts=grammar_receipts,
         resource_lease=resource_lease,
+        gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
     exec_result = await cortex_client(plan_request)
@@ -1293,6 +1318,7 @@ async def run_harness_finalize_chain(
     grammar_channel: str = DEFAULT_GRAMMAR_EVENT_CHANNEL,
     grammar_publish_fn: Any = None,
     resource_lease: ResourceLeaseV1 | None = None,
+    gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> HarnessFinalizeChainResult:
     """Orion capability: unified-turn reflection and conditional response repair.
@@ -1335,6 +1361,7 @@ async def run_harness_finalize_chain(
         grammar_receipts=grammar_receipts,
         cortex_client=cortex_client,
         resource_lease=resource_lease,
+        gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
 
@@ -1361,6 +1388,7 @@ async def run_harness_finalize_chain(
                 grammar_receipts=grammar_receipts,
                 cortex_client=cortex_client,
                 resource_lease=resource_lease,
+                gpu_lease=gpu_lease,
                 fcc_model_label=fcc_model_label,
                 bus=bus,
                 grammar_channel=grammar_channel,
@@ -1420,6 +1448,7 @@ async def run_harness_finalize_chain(
                 grammar_receipts=grammar_receipts,
                 cortex_client=cortex_client,
                 resource_lease=resource_lease,
+                gpu_lease=gpu_lease,
                 fcc_model_label=fcc_model_label,
             )
             voice_meta = {

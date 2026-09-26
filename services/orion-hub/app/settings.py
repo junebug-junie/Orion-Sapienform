@@ -939,6 +939,19 @@ class Settings(BaseSettings):
         default=False,
         alias="HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED",
     )
+    # Dream cycle v2 hypotheses on the world-curiosity kickoff. Each is shown
+    # to Orion once (Hub stamps dream_hypothesis.offered_at), arm hidden; Orion
+    # alone decides whether to form a :Prior from one. Needs
+    # services/orion-sql-db/manual_migration_dream_cycle_v2.sql applied; a
+    # missing table reads as "nothing to offer".
+    HUB_CURIOSITY_DREAM_HYPOTHESES_ENABLED: bool = Field(
+        default=False,
+        alias="HUB_CURIOSITY_DREAM_HYPOTHESES_ENABLED",
+    )
+    HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN: int = Field(
+        default=3,
+        alias="HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN",
+    )
     # Soft Mind work-shape lines into the curiosity / self-inquiry role teach
     # (advisory only; Orion still authors :InvestigationRole / HelpRequest).
     # Default on; set false to leave motor kickoff prompts unchanged.

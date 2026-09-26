@@ -1,0 +1,28 @@
+name: orion-fcc transport tests
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-fcc/**"
+      - ".github/workflows/orion-fcc-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/orion-fcc/**"
+      - ".github/workflows/orion-fcc-tests.yml"
+
+jobs:
+  transport:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: python -m pip install -r services/orion-fcc/requirements.txt
+      - run: python services/orion-fcc/install_transport_patch.py
+      - name: Real pinned FCC route and transport regressions
+        env:
+          PYTHONPATH: services/orion-fcc
+        run: python -m unittest discover -s services/orion-fcc/tests -v

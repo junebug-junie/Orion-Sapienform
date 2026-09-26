@@ -1,9 +1,9 @@
 # Orion energy watcher — house electricity as a stake
 
-**Date:** 2026-09-26
-**Status:** Plan 1 (cost primitive) implemented on feat/orion-energy-watcher — awaiting merge. Plan 2 (portal, bill reconcile, stakes, Hub) not started.
-**Branch intent:** `docs/orion-energy-watcher` → `feat/orion-energy-watcher` (cut when implementation starts)
-**Worktree:** `/mnt/scripts/Orion-Sapienform-orion-energy-watcher`
+- **Date:** 2026-09-26
+- **Status:** Plan 1 (cost primitive) implemented on `feat/orion-energy-watcher` — awaiting merge. Plan 2 (portal, bill reconcile, stakes, Hub) not started.
+- **Branch:** `feat/orion-energy-watcher`
+- **Worktree:** `/mnt/scripts/Orion-Sapienform-orion-energy-watcher`
 
 ## Arsonist summary
 
@@ -22,6 +22,7 @@ This design adds a thin `orion-energy` service that adapts PacifiCorp’s portal
 | Architecture | New `services/orion-energy/` — not folded into biometrics |
 | Utility source | Adapt `nburns/pacificpower-import` Playwright + ESPI parser for `rockymountainpower.net`; drop Home Assistant half |
 | Cost model | Accrue/marginal from Green Button × versioned tariff; scrape bill actual + forecast as reconciliation ground truth — do not reduce everything to flat ¢/kWh |
+| Cycle usage contiguity | Cycle position is **known only for a contiguous prefix from billing-cycle start** (local midnight on `ENERGY_BILLING_CYCLE_START_DAY`). Mid-cycle holes → unknown (not zero). Accrual prices the prefix only; run-cost gap `no_cycle_usage` means missing or incomplete cycle data. Re-price pending settlements when coverage fills; expire pending after `ENERGY_RUN_COST_PENDING_HOURS`. |
 
 ## Current architecture (grounded)
 

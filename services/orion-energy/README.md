@@ -25,10 +25,13 @@ unknown, not free. All costs are pre-tax (`cost_basis: pre_tax`).
 ## Feeding it (Plan 1: file drop)
 
 1. On rockymountainpower.net: *Energy usage → Green Button → Download my data* (XML).
-2. Copy the file into `${ENERGY_HOST_DATA_DIR}/inbox/`.
+2. Copy the file into `${ENERGY_HOST_DATA_DIR}/inbox/`. Only `*.xml` files are scanned — copy large exports under a temporary name (e.g. `.xml.part`) and rename into `inbox/` when the copy finishes.
 3. Within `ENERGY_SCAN_INTERVAL_SEC` the file moves to `processed/` (or `inbox/failed/` if unparseable).
 
-Re-dropping an overlapping export is safe: the newer retrieval wins per interval.
+The first drop must cover the **current billing cycle from day one** (`ENERGY_BILLING_CYCLE_START_DAY`, your meter-read day in `ENERGY_TIMEZONE`). Mid-cycle exports publish usage but accrual and run-cost stay unknown until a contiguous prefix from cycle start exists. Look for `energy_cycle_incomplete` in logs when coverage is partial.
+
+Re-dropping an overlapping export is safe when the new file is **newer**: `retrieved_at` is the drop time, so dropping an **old** export after a newer one overwrites fresher data. Pending run-cost re-pricing state is in-memory and lost on restart. Bus publishing after a file moves to `processed/` is best-effort — re-drop the export to republish.
+
 Set `ENERGY_BILLING_CYCLE_START_DAY` to your bill's meter-read day.
 
 ## Debug queries

@@ -64,9 +64,10 @@ RUN_TERMINAL_PREFIXES = ("deadline", "min_ctx_exceeds_class", "backlog_max_age",
 
 def is_pool_trouble(reply: GpuLeaseReplyV1) -> bool:
     """A reply to status/heartbeat/release that says nothing about the lease it names: the pool
-    could not parse or does not know the verb (version skew). Treat it like an unanswered RPC."""
-    return (reply.status == "unavailable" and not reply.lease_id
-            and str(reply.reason or "").startswith(POOL_TROUBLE_PREFIXES))
+    could not parse or does not know the verb (version skew). Treat it like an unanswered RPC.
+    No lease_id check: ``invalid:*`` never carries one, but the pool echoes the asked-about
+    lease_id on ``unknown_verb:*`` (services/orion-gpu-pool/app/main.py dispatch_lease)."""
+    return reply.status == "unavailable" and str(reply.reason or "").startswith(POOL_TROUBLE_PREFIXES)
 
 
 def refusal_is_terminal(cfg: PoolConfig, reason: str, work_class: str) -> bool:

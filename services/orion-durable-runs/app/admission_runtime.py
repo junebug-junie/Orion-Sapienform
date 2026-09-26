@@ -72,6 +72,11 @@ MAX_CONCURRENT_DRIVERS = 4
 # and retries with bounded backoff (``_pool_refused``).
 
 
+def _without_backoff(hold: dict) -> dict:
+    """The hold minus the pool-refusal backoff fields: the pool answered, the episode is over."""
+    return {k: v for k, v in hold.items() if k not in ("retry_at", "refusals")}
+
+
 class HoldLost(RuntimeError):
     """The pool no longer holds this run's hold at its generation: stop using the GPU now."""
 
@@ -216,7 +221,10 @@ class AdmissionRuntime:
         await self.store.record_event(run_id, "run.waiting_resource", {
             "requested_lane": admission.get("preferred_lane"), "lease_id": hold.get("lease_id"),
             "work_class": work_class, "pool_status": pool_status, "reason": reason, "transient": True,
-            "refusals": refusals, "retry_at": retry_at}, event_id=f"pool_refused:{request_id}:{refusals}")
+            "refusals": refusals, "retry_at": retry_at},
+            # retry_at makes each refusal unique: `refusals` restarts at 1 in a later skew episode
+            # under the same request id, and a reused entry_id would be dropped (ON CONFLICT).
+            event_id=f"pool_refused:{request_id}:{refusals}:{retry_at}")
         return {"status": "waiting_resource", "hold_seq": seq,
                 "hold": {"request_id": request_id, "lease_id": hold.get("lease_id"),
                          "retry_at": retry_at, "refusals": refusals}}
@@ -247,7 +255,7 @@ class AdmissionRuntime:
                                           event_id=f"granted:{ref['lease_id']}:{ref['generation']}")
             await self.store.record_event(run_id, "run.lane_assigned", detail,
                                           event_id=f"assigned:{ref['lease_id']}:{ref['generation']}")
-            return GRANTED, {"status": "admitted", "lease": ref, "hold": dict(hold)}
+            return GRANTED, {"status": "admitted", "lease": ref, "hold": _without_backoff(hold)}
         if reply.status in POOL_WAITING:
             self._checked[run_id] = time.monotonic()   # just read: the poll fallback starts from here
             return WAITING, waiting
@@ -283,8 +291,9 @@ class AdmissionRuntime:
             logger.warning("durable_hold_heartbeat_failed lease=%s err=%s", lease["lease_id"], exc)
             return None
         if is_pool_trouble(reply):
-            # Same as an unanswered beat: the pool could not read it (version skew). The TTL (at
-            # least two beats) still bounds how long a genuinely lost hold goes unnoticed.
+            # Same as an unanswered beat: the pool could not read it (version skew). Like an RPC
+            # failure, a skew that lasts the whole turn also hides a hold the pool expired meanwhile;
+            # the next readable beat (or the tail's guard) raises HoldLost / records it lost.
             logger.warning("durable_hold_heartbeat_refused lease=%s reason=%s", lease["lease_id"], reply.reason)
             return None
         if reply.status in HELD and reply.grant is not None and reply.grant.generation == lease["generation"]:
@@ -391,7 +400,7 @@ class AdmissionRuntime:
             if reply is not None and reply.status in POOL_WAITING and not is_pool_trouble(reply):
                 if lease:
                     await self._record_lost(state, lease, reply.status, reply.reason)
-                return {"lease": None, "hold": {**hold, "lease_id": lease_id}}
+                return {"lease": None, "hold": {**_without_backoff(hold), "lease_id": lease_id}}
         await self._end_hold(state, lease_id, lease, reason)
         return {"lease": None, "hold": None}
 
@@ -421,7 +430,7 @@ class AdmissionRuntime:
             return False
         if is_pool_trouble(reply):
             # The pool could not read the release (version skew): not released. Retry it.
-            logger.warning("durable_hold_release_refused run=%s lease=%s reason=%s (will retry)",
+            logger.warning("durable_hold_release_refused run=%s lease=%s reason=%s pool_reason=%s (will retry)",
                            run_id, lease_id, reason, reply.reason)
             self._pending_release[lease_id] = (run_id, lease, reason)
             return False
@@ -521,11 +530,12 @@ class AdmissionRuntime:
         retry_at = hold.get("retry_at")
         backing_off = bool(retry_at) and self.now() < datetime.fromisoformat(retry_at)
         if run_id in self._hints:
+            # The pool only publishes events for a hold it created, so a hint means the pool is
+            # answering -- even mid-backoff (e.g. an acquire that timed out but landed and was
+            # granted: don't leave that seat idle until retry_at).
             self._hints.discard(run_id)
-            if not (backing_off and not lease_id):
-                # An event about the run's own lease is news even mid-backoff: the pool is answering.
-                self._checked[run_id] = time.monotonic()
-                return True
+            self._checked[run_id] = time.monotonic()
+            return True
         if backing_off:
             return False   # the pool refused the hold request; wait out the backoff (_pool_refused)
         if retry_at:

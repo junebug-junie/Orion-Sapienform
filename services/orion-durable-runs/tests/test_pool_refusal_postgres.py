@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -73,6 +74,25 @@ class ScriptedPoolBus(PoolBus):
         return {"type": "message", "channel": reply_channel, "data": self.codec.encode(env)}
 
 
+class FakeNow:
+    """rt.now under test control: backoff checks never race a slow Postgres round trip."""
+
+    def __init__(self):
+        self.t = datetime.now(timezone.utc)
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, sec):
+        self.t += timedelta(seconds=sec)
+
+
+def fake_now(rt) -> FakeNow:
+    clock = FakeNow()
+    rt.now = clock
+    return clock
+
+
 def scripted(rt) -> ScriptedPoolBus:
     bus = ScriptedPoolBus(rt.gpu)
     rt.holds.bus = bus
@@ -105,7 +125,8 @@ def test_only_refusals_about_the_run_itself_are_terminal(reason, terminal):
 
 def test_a_skew_refusal_to_a_lease_verb_says_nothing_about_the_lease():
     assert is_pool_trouble(GpuLeaseReplyV1(status="unavailable", reason="invalid:bad"))
-    assert is_pool_trouble(GpuLeaseReplyV1(status="unavailable", reason="unknown_verb:status"))
+    # the real pool echoes the asked-about lease_id on an unknown verb (gpu-pool main.py dispatch_lease)
+    assert is_pool_trouble(GpuLeaseReplyV1(status="unavailable", lease_id="L1", reason="unknown_verb:status"))
     assert not is_pool_trouble(GpuLeaseReplyV1(status="unavailable", lease_id="L1", reason="deadline"))
     assert not is_pool_trouble(GpuLeaseReplyV1(status="unknown_lease", lease_id="L1"))
 
@@ -115,8 +136,9 @@ def test_a_skew_refusal_to_a_lease_verb_says_nothing_about_the_lease():
 def test_version_skewed_pool_refusal_waits_backs_off_and_completes_when_the_pool_is_upgraded():
     async def scenario(pool, saver, store):
         gpu = await InProcessPool().boot()
-        rt = runtime(pool, saver, store, gpu=gpu, DURABLE_RUNS_POOL_RETRY_BASE_SEC=0.2,
-                     DURABLE_RUNS_POOL_RETRY_MAX_SEC=0.4)
+        rt = runtime(pool, saver, store, gpu=gpu, DURABLE_RUNS_POOL_RETRY_BASE_SEC=10,
+                     DURABLE_RUNS_POOL_RETRY_MAX_SEC=30)
+        clock = fake_now(rt)
         bus = scripted(rt)
         bus.old_pool = True
         req = request("skew-001")
@@ -139,16 +161,25 @@ def test_version_skewed_pool_refusal_waits_backs_off_and_completes_when_the_pool
         await rt._drive(await store.get_run(req.run_id))
         assert bus.acquires == asked
 
-        # Backoff over, pool still old: a second refusal, still waiting, delay grows (capped).
-        await asyncio.sleep(0.25)
-        await rt._drive(await store.get_run(req.run_id))
+        # Backoff over, pool still old: more refusals, still waiting; delays 10 s, 20 s, 30 s (40 capped).
+        for wait in (10, 20):
+            clock.advance(wait - 0.5)
+            await rt._drive(await store.get_run(req.run_id))
+            assert bus.acquires == asked, "asked again before retry_at"
+            clock.advance(0.5)
+            await rt._drive(await store.get_run(req.run_id))
+            assert bus.acquires > asked
+            asked = bus.acquires
         assert (await store.get_run(req.run_id))["terminal"] is None
         events = await waiting_events(store, req.run_id)
-        assert [e["refusals"] for e in events] == [1, 2]
+        assert [e["refusals"] for e in events] == [1, 2, 3]
+        gaps = [(datetime.fromisoformat(e["retry_at"]) - datetime.fromisoformat(p["retry_at"])).total_seconds()
+                for p, e in zip(events, events[1:])]
+        assert gaps == [20.0, 30.0]   # each ask happens at retry_at(n-1), so the gap is delay(n)
 
         # The upgraded pool comes up: the same request id is granted and the run completes.
         bus.old_pool = False
-        await asyncio.sleep(0.45)
+        clock.advance(30)
         await rt._drive(await store.get_run(req.run_id))
         assert (await store.get_run(req.run_id))["terminal"] == "completed"
         assert len(rt.runner.calls) == 1
@@ -162,14 +193,15 @@ def test_version_skewed_pool_refusal_waits_backs_off_and_completes_when_the_pool
 def test_rpc_timeout_backs_off_visibly_and_the_run_completes():
     async def scenario(pool, saver, store):
         gpu = await InProcessPool().boot()
-        rt = runtime(pool, saver, store, gpu=gpu, DURABLE_RUNS_POOL_RETRY_BASE_SEC=0.1,
-                     DURABLE_RUNS_POOL_RETRY_MAX_SEC=5)
+        rt = runtime(pool, saver, store, gpu=gpu, DURABLE_RUNS_POOL_RETRY_BASE_SEC=10,
+                     DURABLE_RUNS_POOL_RETRY_MAX_SEC=300)
+        clock = fake_now(rt)
         bus = scripted(rt)
         bus.fail_next = 2
         req = request("timeout-001")
         await rt.submit(req)
         await rt._drive(await store.get_run(req.run_id))
-        await asyncio.sleep(0.12)
+        clock.advance(10)
         await rt._drive(await store.get_run(req.run_id))
         assert (await store.get_run(req.run_id))["terminal"] is None
         events = await waiting_events(store, req.run_id)
@@ -177,11 +209,113 @@ def test_rpc_timeout_backs_off_visibly_and_the_run_completes():
         assert all("TimeoutError" in e["reason"] for e in events)
         snap = await rt.graph.aget_state(rt.config(req.run_id))
         assert snap.values["hold"]["refusals"] == 2
-        await rt._drive(await store.get_run(req.run_id))      # 2nd backoff (0.2 s) not over yet
+        clock.advance(19)                                     # 2nd backoff is 20 s: not over yet
+        await rt._drive(await store.get_run(req.run_id))
         assert bus.fail_next == 0 and (await store.get_run(req.run_id))["terminal"] is None
-        await asyncio.sleep(0.22)
+        clock.advance(1)
         await rt._drive(await store.get_run(req.run_id))
         assert (await store.get_run(req.run_id))["terminal"] == "completed"
+        await rt.close()
+    asyncio.run(with_database(scenario))
+
+
+@pg
+def test_a_timed_out_acquire_that_landed_is_woken_by_its_grant_event_mid_backoff():
+    """The acquire RPC timed out but the pool took it and granted it: its granted event wakes the
+    run at once instead of leaving the seat idle until retry_at."""
+    async def scenario(pool, saver, store):
+        gpu = await InProcessPool().boot()
+        rt = runtime(pool, saver, store, gpu=gpu, DURABLE_RUNS_POOL_RETRY_BASE_SEC=300)
+        fake_now(rt)
+        bus = scripted(rt)
+
+        async def landed_but_lost(req):
+            await gpu.dispatch(req)                    # the pool grants it...
+            raise TimeoutError("fixture: reply lost")  # ...but the reply never arrives
+        bus.script["acquire"] = landed_but_lost
+        req = request("landed-001")
+        await rt.submit(req)
+        await rt._drive(await store.get_run(req.run_id))
+        assert (await store.get_run(req.run_id))["terminal"] is None
+        del bus.script["acquire"]
+        [hold] = gpu.leases(holder="durable-runs:landed-001")
+        await rt.on_pool_event(pool_event(gpu, hold["lease_id"], "granted"))
+        await rt._drive(await store.get_run(req.run_id))
+        assert (await store.get_run(req.run_id))["terminal"] == "completed"
+        assert [r["request_id"] for r in gpu.leases(holder="durable-runs:landed-001")] == ["landed-001:1"]
+        await rt.close()
+    asyncio.run(with_database(scenario))
+
+
+@pg
+def test_a_status_skew_while_waiting_keeps_the_hold_and_it_is_granted_later():
+    async def scenario(pool, saver, store):
+        gpu = await InProcessPool().boot()
+        blocker = await occupy_agent(gpu)
+        rt = runtime(pool, saver, store, gpu=gpu, DURABLE_RUNS_POOL_RETRY_BASE_SEC=10)
+        clock = fake_now(rt)
+        bus = scripted(rt)
+        req = request("skew-status-001")
+        await rt.submit(req)
+        await rt._drive(await store.get_run(req.run_id))
+        [hold] = gpu.leases(holder="durable-runs:skew-status-001")
+        bus.old_pool = True
+        await rt.on_pool_event({"holder": "durable-runs:skew-status-001", "event": "retried"})
+        await rt._drive(await store.get_run(req.run_id))
+        assert (await gpu.lease(hold["lease_id"]))["status"] == "queued", "never released on a skew reply"
+        assert not any(e["event"] == "resource.lease_released" for e in await store.history(req.run_id))
+        snap = await rt.graph.aget_state(rt.config(req.run_id))
+        assert snap.values["hold"]["lease_id"] == hold["lease_id"]
+        bus.old_pool = False
+        await gpu.dispatch(GpuLeaseRequestV1(verb="release", lease_id=blocker, outcome="ok"))
+        clock.advance(10)
+        await rt._drive(await store.get_run(req.run_id))
+        assert (await store.get_run(req.run_id))["terminal"] == "completed"
+        assert len(gpu.leases(holder="durable-runs:skew-status-001")) == 1
+        await rt.close()
+    asyncio.run(with_database(scenario))
+
+
+@pg
+def test_a_skewed_release_is_retried_until_the_pool_can_read_it():
+    async def scenario(pool, saver, store):
+        gpu = await InProcessPool().boot()
+        rt = runtime(pool, saver, store, gpu=gpu)
+        bus = scripted(rt)
+        req = request("skew-release-001")
+        await rt.submit(req)
+        bus.old_pool, bus.old_verbs = True, {"release"}
+        await rt._drive(await store.get_run(req.run_id))
+        assert (await store.get_run(req.run_id))["terminal"] == "completed"
+        [hold] = gpu.leases(holder="durable-runs:skew-release-001")
+        assert hold["status"] == "granted" and hold["lease_id"] in rt._pending_release
+        assert not any(e["event"] == "resource.lease_released" for e in await store.history(req.run_id))
+        bus.old_pool = False
+        await rt.reconcile()
+        assert (await gpu.lease(hold["lease_id"]))["status"] == "released" and not rt._pending_release
+        await rt.close()
+    asyncio.run(with_database(scenario))
+
+
+@pg
+def test_a_skewed_boundary_heartbeat_keeps_the_lease():
+    async def scenario(pool, saver, store):
+        gpu = await InProcessPool().boot()
+        rt = runtime(pool, saver, store, gpu=gpu)
+        bus = scripted(rt)
+        req = request("skew-guard-001")
+        await rt.submit(req)
+        await rt._drive(await store.get_run(req.run_id))
+        [hold] = gpu.leases(holder="durable-runs:skew-guard-001")
+        lease = {"lease_id": hold["lease_id"], "generation": hold["generation"], "role": hold["role"],
+                 "holder": "durable-runs:skew-guard-001"}
+        # a completed run's row has no control; guard reads it, then heartbeats the hold
+        await gpu.dispatch(GpuLeaseRequestV1(verb="acquire", request_id="skew-guard-001:9", kind="hold",
+                           holder="durable-runs:x", work_class="agent", priority="background", retryable=True))
+        bus.old_pool, bus.old_verbs = True, {"heartbeat"}
+        state = {"run_id": req.run_id, "admission": {}, "lease": lease}
+        assert await rt.guard(state) == lease
+        assert not any(e["event"] == "resource.lease_expired" for e in await store.history(req.run_id))
         await rt.close()
     asyncio.run(with_database(scenario))
 

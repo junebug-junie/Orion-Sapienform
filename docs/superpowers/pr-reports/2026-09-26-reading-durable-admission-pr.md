@@ -56,6 +56,11 @@ rolling back, cancel/drain active reading runs first; do not revive unheld turns
 while their durable counterparts are still running. No production migration,
 restart, requeue, or paper retry was performed in this patch.
 
+Update field-digester after the migration as well: its existing head-of-line-age
+query must follow the same active-binding-first order as the worker. This is
+ordering coherence for the existing instrument, not a new signal, estimator or
+cognition input.
+
 Local .env was synced from the template. Existing window and curiosity overrides
 were reported and preserved. ORION_BUS_URL remains the Tailscale bus address;
 the sync script intentionally excludes host-specific bus and grammar values.
@@ -70,6 +75,10 @@ the sync script intentionally excludes host-specific bus and grammar values.
   Fix: explicit pre-work refusal reply with no slot/attempt charge.
 - Queued operator cancellation was charged as a failed read.
   Fix: distinct cancellation outcome and no-charge/no-attempt queue transition.
+- CI found the separate live schema lookup missing the new RPC registrations.
+  Fix: register both maps; direct resolve plus parity regression passes.
+- CI found head-of-line monitoring still using the old claim order.
+  Fix: align the existing query with the worker and retain the equality gate.
 
 ## Verification
 
@@ -79,6 +88,7 @@ the sync script intentionally excludes host-specific bus and grammar values.
 - Offline reading handoff eval: 11 passed.
 - Both affected Docker images built under isolated check project names.
 - Reply-channel catalog check: 13 prefixes resolved, zero uncovered.
+- Schema lookup/parity regression: 11 passed. Queue contention SQL tests: 18 passed.
 - Live admission-to-reading-to-journal path: UNVERIFIED until deployment and smoke.
-- PR CI and mergeability: pending.
+- PR: #2370, conflict-free at submission. Latest CI status is on the PR.
 - Independent final review: all four findings resolved; no material blocker.

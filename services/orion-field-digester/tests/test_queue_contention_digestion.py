@@ -345,7 +345,8 @@ def test_age_sql_filters_match_the_queue_they_describe() -> None:
     seed_sql, durable_sql, pool_sql = store._engine.sql
     assert "FROM world_pulse_read_seed WHERE status = 'pending'" in seed_sql
     # Head of line in CLAIM_SQL's own order.
-    assert "ORDER BY priority ASC, created_at ASC, seed_id ASC LIMIT 1" in seed_sql
+    assert "ORDER BY EXISTS (SELECT 1 FROM reading_durable_turn" in seed_sql
+    assert "priority ASC, created_at ASC, seed_id ASC LIMIT 1" in seed_sql
     # Durable: legacy pending demands UNION waiting pool holds (stage 4.4); behaviour is pinned on
     # real Postgres in test_durable_waiting_sql_postgres.py.
     assert "FROM durable_resource_demands d WHERE d.status = 'pending'" in durable_sql
@@ -365,7 +366,8 @@ def test_seed_age_order_matches_claim_sql() -> None:
     def ordering(sql):
         return " ".join(sql.split()).split("ORDER BY ", 1)[1].split(" LIMIT", 1)[0].split(" FOR UPDATE", 1)[0]
     assert ordering(store._engine.sql[0]) == ordering(CLAIM_SQL)
-    assert ordering(CLAIM_SQL) == "priority ASC, created_at ASC, seed_id ASC"
+    assert "d.stage=1 AND d.consumed_at IS NULL) DESC" in ordering(CLAIM_SQL)
+    assert ordering(CLAIM_SQL).endswith("priority ASC, created_at ASC, seed_id ASC")
 
 
 def test_age_sql_empty_queue_is_zero_and_negative_clamped() -> None:

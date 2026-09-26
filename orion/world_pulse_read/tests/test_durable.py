@@ -103,6 +103,16 @@ def test_reading_requires_admission_and_cannot_use_curiosity_brief():
         DurableRunRequestV1.model_validate(req)
 
 
+def test_reading_rpc_schemas_are_resolvable_by_the_live_bus():
+    from orion.schemas.registry import resolve, SCHEMA_REGISTRY
+    from orion.schemas.reading_turn import ReadingTurnRequestV1
+
+    assert resolve("ReadingTurnRequestV1") is ReadingTurnRequestV1
+    assert resolve("ReadingTurnResultV1") is ReadingTurnResultV1
+    assert SCHEMA_REGISTRY["ReadingTurnRequestV1"].kind == "reading.turn.request.v1"
+    assert SCHEMA_REGISTRY["ReadingTurnResultV1"].kind == "reading.turn.result.v1"
+
+
 def test_cancelled_run_has_separate_noncharging_outcome():
     req = request()
     def respond(http):

@@ -985,6 +985,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "LlmWorkerAnnounceV1": LlmWorkerAnnounceV1,
     "DurableRunStateV1": DurableRunStateV1,
     "CuriosityTurnRequestV1": CuriosityTurnRequestV1,
+    "ReadingTurnRequestV1": ReadingTurnRequestV1,
+    "ReadingTurnResultV1": ReadingTurnResultV1,
     "CuriosityTurnResultV1": CuriosityTurnResultV1,
     "HelpRequestV1": HelpRequestV1,
     "PeerBriefV1": PeerBriefV1,

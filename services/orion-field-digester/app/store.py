@@ -537,7 +537,10 @@ class FieldDigesterStore:
             """
             SELECT EXTRACT(EPOCH FROM now() - created_at)
             FROM world_pulse_read_seed WHERE status = 'pending'
-            ORDER BY priority ASC, created_at ASC, seed_id ASC
+            ORDER BY EXISTS (SELECT 1 FROM reading_durable_turn d
+                             WHERE d.seed_id=world_pulse_read_seed.seed_id
+                               AND d.stage=1 AND d.consumed_at IS NULL) DESC,
+                     priority ASC, created_at ASC, seed_id ASC
             LIMIT 1
             """
         )

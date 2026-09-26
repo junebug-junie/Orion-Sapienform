@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,14 +15,26 @@ class Settings(BaseSettings):
     GPU2_DRAIN_TIMEOUT_SEC: float = 300.0
     GPU2_MODEL_READY_TIMEOUT_SEC: float = 600.0
 
+    # GPU pool stage 4.2 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
+    # Who may move gpu2. `durable` (default) = today: durable-runs' HTTP activate route, fenced by
+    # GPU2_AUTHORITY_URL/elastic/status; pool actuation requests are refused `authority_durable`.
+    # `pool` = only GpuActuateV1 on the bus, fenced by the pool's generation (persisted at
+    # GPU2_POOL_FENCE_STATE_PATH) and launch_digest; the HTTP activate route is refused. Transitional:
+    # the `durable` branch is deleted in stage 4.6.
+    GPU2_AUTHORITY: Literal["durable", "pool"] = "durable"
+    # This host's actuator name in config/gpu_pool.yaml `actuators:`; requests for another name are ignored.
+    GPU_POOL_ACTUATOR_NAME: str = "circe"
+    # Last accepted pool generation + recent action results. Must be on a volume that survives a
+    # container recreate, or a restart would re-admit an old generation.
+    GPU2_POOL_FENCE_STATE_PATH: str = "/state/gpu2_pool_fence.json"
+
     SERVICE_NAME: str = "gpu-lane-controller"
     SERVICE_VERSION: str = "0.1.0"
     NODE_NAME: str = "circe"
     LOG_LEVEL: str = "INFO"
 
-    # Bus (heartbeat only -- this service takes no bus intake, it's HTTP-only.
-    # Heartbeat participation is cheap and keeps a GPU-controlling service
-    # visible in node liveness the same way every other circe worker is).
+    # Bus: heartbeat, plus (stage 4.2) intake on orion:gpu_pool:actuate:request and results on
+    # orion:gpu_pool:actuate:result. GPU1's flip stays HTTP-only.
     ORION_BUS_ENABLED: bool = True
     ORION_BUS_ENFORCE_CATALOG: bool = False
     ORION_BUS_URL: str = "redis://localhost:6379/0"

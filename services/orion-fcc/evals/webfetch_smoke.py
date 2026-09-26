@@ -66,6 +66,7 @@ async def run(args):
     tool_ids = set()
     wrong_tool = False
     final_error = False
+    final_text = ""
     try:
         async with asyncio.timeout(args.timeout):
             async for line in proc.stdout:
@@ -106,6 +107,7 @@ async def run(args):
                             )
                 if item.get("type") == "result":
                     final_error = bool(item.get("is_error"))
+                    final_text = str(item.get("result") or "")
                     print(
                         json.dumps(
                             {
@@ -136,13 +138,17 @@ async def run(args):
         proc.returncode
         or wrong_tool
         or final_error
+        or title not in final_text.lower()
         or len(tool_ids) != 1
         or len(valid) != 1
     ):
         raise SystemExit(
             "FAIL: expected exactly one successful, substantive WebFetch receipt"
         )
-    print("PASS: real Claude WebFetch returned source content", flush=True)
+    print(
+        "PASS: real Claude WebFetch returned source content and a grounded final reply",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

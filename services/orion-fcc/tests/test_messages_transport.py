@@ -5,14 +5,18 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 import anyio
 from api.models.anthropic import MessagesRequest
 from api.routes import create_message
+from core.anthropic.provider_stream_error import iter_provider_stream_error_sse_events
+from core.anthropic.stream_contracts import parse_sse_text
+from core.anthropic.streaming import AnthropicStreamLedger
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
-from install_transport_patch import patch_routes
+from install_transport_patch import patch_error_emitter, patch_routes
 from orion_fcc_messages_transport import adapt_message_response, with_heartbeats
 from starlette.requests import ClientDisconnect
 
@@ -60,6 +64,42 @@ async def source(items):
 
 
 class TransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_real_provider_error_emitter_never_returns_answer_text(self):
+        items = list(
+            iter_provider_stream_error_sse_events(
+                request=SimpleNamespace(model="agent"),
+                input_tokens=0,
+                error_message="gpu_pool_unavailable: deadline",
+                sent_any_event=False,
+                log_raw_sse_events=False,
+            )
+        )
+        parsed = parse_sse_text("".join(items))
+        self.assertIn("error", [e.event for e in parsed])
+        self.assertNotIn("content_block_start", [e.event for e in parsed])
+        result = await adapt_message_response(
+            StreamingResponse(source(items)), stream=False
+        )
+        self.assertEqual(result.status_code, 502)
+        self.assertIn(
+            "gpu_pool_unavailable", json.loads(result.body)["error"]["message"]
+        )
+
+    async def test_real_midstream_failure_stays_an_error(self):
+        ledger = AnthropicStreamLedger("msg_test", "agent", 12)
+        items = [
+            ledger.message_start(),
+            ledger.start_text_block(),
+            ledger.emit_text_delta("Partial"),
+        ]
+        items.extend(ledger.midstream_error_tail("gpu_pool_unavailable: deadline"))
+        parsed = parse_sse_text("".join(items))
+        self.assertIn("error", [e.event for e in parsed])
+        result = await adapt_message_response(
+            StreamingResponse(source(items)), stream=False
+        )
+        self.assertEqual(result.status_code, 502)
+
     async def test_nonstream_disconnect_cancels_async_provider_work(self):
         closed = asyncio.Event()
 
@@ -316,6 +356,8 @@ class RouteTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "FCC routes changed"):
                 patch_routes(path)
             self.assertEqual(path.read_text(), "unexpected upstream source")
+            with self.assertRaisesRegex(RuntimeError, "FCC ledger changed"):
+                patch_error_emitter(path)
 
 
 if __name__ == "__main__":

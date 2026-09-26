@@ -49,6 +49,12 @@ class MessageAssemblyError(ValueError):
     pass
 
 
+class ProviderStreamError(MessageAssemblyError):
+    def __init__(self, payload):
+        super().__init__("Provider returned an error event")
+        self.payload = deepcopy(payload)
+
+
 async def collect_message(body):
     message = None
     blocks = {}
@@ -64,7 +70,7 @@ async def collect_message(body):
                 if kind == "ping":
                     continue
                 if kind == "error":
-                    raise MessageAssemblyError("Provider returned an error event")
+                    raise ProviderStreamError(data)
                 if stopped:
                     raise MessageAssemblyError("Event after message_stop")
                 if kind == "message_start":
@@ -154,6 +160,8 @@ async def adapt_message_response(response, *, stream, disconnected=None):
         return response
     try:
         message = await collect_until_disconnect(response.body_iterator, disconnected)
+    except ProviderStreamError as exc:
+        return JSONResponse(status_code=502, content=exc.payload)
     except (MessageAssemblyError, KeyError, TypeError, ValueError):
         return JSONResponse(
             status_code=502,

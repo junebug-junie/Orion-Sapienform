@@ -5,6 +5,7 @@ import sysconfig
 from pathlib import Path
 
 EXPECTED = "09955d7712b618df8b368c21d9bba4320fa0af70e7250e1ca5f2e79bddfccaef"
+LEDGER_EXPECTED = "a6a2c1796c7165de4ea5edbfcc1a75423b546ace32343208b6077ac8296edd5f"
 
 
 def patch_routes(path):
@@ -34,5 +35,23 @@ def patch_routes(path):
     path.write_text(text)
 
 
+def patch_error_emitter(path):
+    source = path.read_bytes()
+    if hashlib.sha256(source).hexdigest() != LEDGER_EXPECTED:
+        raise RuntimeError(
+            "FCC ledger changed; review error transport patch before updating the pin"
+        )
+    text = source.decode().replace(
+        "        error_index = self.blocks.allocate_index()\n"
+        '        yield self.content_block_start(error_index, "text")\n'
+        '        yield self.content_block_delta(error_index, "text_delta", error_message)\n'
+        "        yield self.content_block_stop(error_index)",
+        "        yield self.emit_top_level_error(error_message)",
+    )
+    path.write_text(text)
+
+
 if __name__ == "__main__":
-    patch_routes(Path(sysconfig.get_paths()["purelib"]) / "api/routes.py")
+    root = Path(sysconfig.get_paths()["purelib"])
+    patch_routes(root / "api/routes.py")
+    patch_error_emitter(root / "core/anthropic/streaming/ledger.py")

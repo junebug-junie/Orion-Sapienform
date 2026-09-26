@@ -79,8 +79,8 @@ with `stream: false`. Claude's WebFetch fallback rejects that HTTP 200 as a
 malformed non-streaming response. Silent upstream waits also exceeded Claude's
 stream-idle watchdog before source summarization could finish.
 
-The image applies `install_transport_patch.py` to the audited upstream route.
-Its SHA-256 guard fails the build if that source changes; an FCC upgrade must
+The image applies `install_transport_patch.py` to the audited upstream route
+and error emitter. SHA-256 guards fail the build if either source changes; an FCC upgrade must
 review/remove the patch explicitly. The adapter leaves provider routing,
 generation settings, recovery, and deadlines unchanged:
 
@@ -90,7 +90,10 @@ generation settings, recovery, and deadlines unchanged:
   preserving content blocks, tool JSON, citations, stop metadata, and usage.
   Incomplete/error streams return HTTP 502, never a partial successful message.
 - Disconnect: cancel the pending read and finish async provider cleanup under
-  a cancellation shield. Existing local optimization responses are unchanged.
+  a cancellation shield, including buffered non-streaming requests.
+- Provider failures: emit real SSE errors, not error prose in successful
+  assistant messages. Non-streaming assembly preserves the error payload in a
+  502 response. Existing local optimization responses are unchanged.
 
 There are no new env keys, bus events, or schema registry entries. Upstream
 `config.settings.Settings` still owns FCC settings; this wrapper has no local
@@ -126,6 +129,6 @@ docker rm orion-fcc-transport-canary
 ```
 
 The eval permits exactly one WebFetch of arXiv 2310.19279, checks the source
-title in the tool receipt, and enforces a 900-second total subprocess deadline.
+title in both the tool receipt and final reply, and enforces a 900-second total subprocess deadline.
 This proves the tool path, not Stage 2 journal landing. Use the reading verifier
 after an explicitly approved queue retry to check end-to-end completion.

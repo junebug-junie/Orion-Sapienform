@@ -45,6 +45,7 @@ jobs:
             services/orion-hub/tests/test_curiosity_investigation.py \
             services/orion-hub/tests/test_curiosity_self_inquiry.py \
             services/orion-hub/tests/test_turn_orchestrator_ws_frames.py \
+            orion/world_pulse_read/tests \
             orion/fcc/tests/test_reading_mcp.py \
             orion/fcc/tests/test_mcp_config.py \
             orion/harness/tests/test_fcc_motor_mcp.py \

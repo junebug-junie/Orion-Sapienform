@@ -250,19 +250,14 @@ def test_stage2_lineage_global_roundtrip_cap_and_durable_result(local_pg):
     asyncio.run(run())
 
 
-def test_claim_prefers_fresh_seed_over_retried_seed_at_same_priority(local_pg):
-    """Real CLAIM_SQL/CLAIM_STAGE2_SQL exercise of the fresh-before-retried
-    trade-off named in the comment above them in queue.py: at the same
-    priority, `attempts ASC` sorts a never-tried row ahead of a returned
-    retry, even when the retry arrived at the queue first (older
-    `created_at`/`handoff_at`)."""
+def test_new_arrivals_cannot_starve_older_retries_at_same_priority(local_pg):
+    """Both workers preserve FIFO across failures and fresh feed arrivals."""
     async def run():
         conn, schema = await db(local_pg)
 
         # Stage 1: the retried seed is enqueued FIRST (older created_at), then
         # fails once (transient) so it returns to pending with attempts=1.
-        # A second, freshly-enqueued seed at the same priority must still be
-        # claimed first.
+        # A fresh same-priority item must not jump ahead of this retry.
         retried_req = request("https://example.org/retried-first")
         await queue.enqueue_reading(conn, retried_req)
         retried_seed = await queue.claim_next_seed(conn)
@@ -275,15 +270,13 @@ def test_claim_prefers_fresh_seed_over_retried_seed_at_same_priority(local_pg):
         await queue.enqueue_reading(conn, fresh_req)
 
         claimed = await queue.claim_next_seed(conn)
-        assert claimed.seed_id != retried_seed.seed_id
-        assert claimed.url == str(fresh_req.url)
+        assert claimed.seed_id == retried_seed.seed_id
 
-        # The retried seed is still claimable next -- not starved forever,
-        # just ordered behind fresh work at the same priority.
+        # The fresh item remains claimable once the older retry is running.
         claimed_again = await queue.claim_next_seed(conn)
-        assert claimed_again.seed_id == retried_seed.seed_id
+        assert claimed_again.url == str(fresh_req.url)
 
-        # Stage 2: same trade-off on stage2_attempts.
+        # Stage 2 uses the same FIFO contract.
         for url in ("https://example.org/s2-retried-first", "https://example.org/s2-fresh-second"):
             req = request(url)
             await queue.enqueue_reading(conn, req)
@@ -302,8 +295,66 @@ def test_claim_prefers_fresh_seed_over_retried_seed_at_same_priority(local_pg):
         assert s2_outcome.retry_scheduled
 
         s2_claimed = await queue.claim_next_stage2_seed(conn)
-        assert s2_claimed.seed.url == "https://example.org/s2-fresh-second"
+        assert s2_claimed.seed.url == "https://example.org/s2-retried-first"
 
+        await conn.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("stage2", [False, True])
+def test_capacity_outage_does_not_exhaust_reading_attempts(local_pg, stage2):
+    async def run():
+        conn, _ = await db(local_pg)
+        req = request()
+        await queue.enqueue_reading(conn, req)
+        seed = await queue.claim_next_seed(conn)
+        if stage2:
+            handoff = WorldPulseReadHandoffV1(
+                seed_ref=seed, what_i_learned="A finding.", trace_id=str(uuid4()),
+                created_at=datetime.now(timezone.utc),
+            )
+            await queue.mark_seed_done(conn, seed.seed_id, trace_id=handoff.trace_id, handoff=handoff)
+        fail = queue.mark_stage2_failed if stage2 else queue.mark_seed_failed
+        claim = queue.claim_next_stage2_seed if stage2 else queue.claim_next_seed
+        for _ in range(5):
+            if stage2 or _ > 0:
+                assert await claim(conn) is not None
+            outcome = await fail(conn, seed.seed_id,
+                                 error="turn_deferred:stance_react_failed: gpu_pool_unavailable:deadline",
+                                 max_attempts=3)
+            assert outcome.status == "pending"
+            assert outcome.attempts == 0
+        # Once the reader actually runs, failures still exhaust the budget.
+        for attempt in range(1, 4):
+            assert await claim(conn) is not None
+            outcome = await fail(conn, seed.seed_id, error="turn_error:fcc_stream_stalled", max_attempts=3)
+            assert outcome.attempts == attempt
+            assert outcome.status == ("pending" if attempt < 3 else "failed")
+        assert await claim(conn) is None
+        await conn.close()
+    asyncio.run(run())
+
+
+def test_live_verifier_reads_direct_alias_and_missing_sources_without_writes(local_pg):
+    from orion.world_pulse_read.verify import inspect_reading
+
+    async def run():
+        conn, _ = await db(local_pg)
+        original, alias = request(), request()
+        await queue.enqueue_reading(conn, original)
+        direct = await inspect_reading(conn, str(original.url))
+        assert direct["request_id"] == str(original.request_id)
+        assert direct["verified_complete"] is False
+        await queue.enqueue_reading(conn, alias)
+        before = await conn.fetch("SELECT * FROM world_pulse_read_seed ORDER BY seed_id")
+        by_alias = await inspect_reading(conn, str(alias.url))
+        assert by_alias["request_id"] == str(alias.request_id)
+        assert by_alias["seed_id"] == "reading:" + str(original.request_id)
+        assert by_alias["stage1_status"] == "pending"
+        assert by_alias["gaps"] == direct["gaps"]
+        missing = await inspect_reading(conn, "https://example.org/absent")
+        assert missing["gaps"] == ["not_found"]
+        assert await conn.fetch("SELECT * FROM world_pulse_read_seed ORDER BY seed_id") == before
         await conn.close()
     asyncio.run(run())
 

@@ -9,7 +9,7 @@ from typing import Any, Sequence
 from orion.schemas.reading import ReadingRequestedV1
 from orion.world_pulse_read.urls import normalize_source_url, validate_source_url
 from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseReadSeedV1
-from orion.world_pulse_read.retry import FailureOutcome, is_transient_failure
+from orion.world_pulse_read.retry import FailureOutcome, is_capacity_deferral, is_transient_failure
 from orion.world_pulse_read.seeds import seeds_from_digest_payload
 
 _PRIORITY = {"finding": 0, "reading": 0, "digest_item": 10}
@@ -123,30 +123,23 @@ ORDER BY created_at, seed_id LIMIT 1
 
 REQUEST_ROW_SQL = "SELECT * FROM world_pulse_read_seed WHERE request_id = $1"
 
-# `attempts ASC` / `stage2_attempts ASC` come before the age tiebreak: at the
-# same priority, a never-tried seed is always claimed ahead of one that has
-# already failed and gone back to `pending`. Deliberate trade-off (favor
-# fresh work over a queue that might be persistently unlucky), but it means a
-# retried row's actual wait time is NOT bounded by anything in this query --
-# only `max_attempts` bounds how many times a given seed can fail, not how
-# long a scheduled retry sits behind a continuously-refilled stream of fresh
-# same-priority seeds. Watch `retries.stage1_pending_retry` /
-# `.stage2_pending_retry` on `/world-pulse-read/api/status` (orion/world_pulse_read/queue.py
-# count_retry_state) for a real starvation pattern before tightening this.
+# FIFO within priority: new feed items must not continually jump ahead of
+# an older retry. Actual reader failures remain bounded by max_attempts;
+# pre-reader admission failures use the workers' existing wallet backoff.
 CLAIM_SQL = """
 UPDATE world_pulse_read_seed
 SET status = 'claimed', claimed_at = now()
 WHERE seed_id = (
     SELECT seed_id FROM world_pulse_read_seed
     WHERE status = 'pending'
-    ORDER BY priority ASC, attempts ASC, created_at ASC, seed_id ASC
+    ORDER BY priority ASC, created_at ASC, seed_id ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1
 )
 RETURNING seed_id, kind, run_id, url, title, section, item_id, request_json
 """
 
-# Same fresh-before-retried trade-off as CLAIM_SQL above.
+# Same FIFO policy as CLAIM_SQL above, ordered by handoff arrival.
 CLAIM_STAGE2_SQL = """
 UPDATE world_pulse_read_seed
 SET stage2_status = 'claimed', stage2_claimed_at = now()
@@ -155,7 +148,7 @@ WHERE seed_id = (
     WHERE status = 'done'
       AND handoff_json IS NOT NULL
       AND stage2_status = 'pending'
-    ORDER BY priority ASC, stage2_attempts ASC, handoff_at ASC NULLS LAST, seed_id ASC
+    ORDER BY priority ASC, handoff_at ASC NULLS LAST, seed_id ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1
 )
@@ -200,30 +193,28 @@ SET status = 'done',
 WHERE seed_id = $1
 """
 
-# Retry-aware failure marks. Every SET expression reads the OLD row, so
-# `attempts + 1` inside the CASE is the post-increment value. A transient
-# reason with attempts left goes straight back to `pending` (claimed_at /
-# completed_at cleared so the row is a normal claim candidate again); anything
-# else is terminal exactly as before. RETURNING lets the caller log which.
+# Every SET reads the old row. The attempt increment is zero only for known
+# admission failures before the reader starts; those remain pending even
+# after repeated capacity outages. Actual reader failures stay bounded.
 MARK_FAILED_SQL = """
 UPDATE world_pulse_read_seed
-SET attempts = attempts + 1,
+SET attempts = attempts + $5::int,
     last_error = $2,
-    status = CASE WHEN $3::boolean AND attempts + 1 < $4::int THEN 'pending' ELSE 'failed' END,
-    claimed_at = CASE WHEN $3::boolean AND attempts + 1 < $4::int THEN NULL ELSE claimed_at END,
-    completed_at = CASE WHEN $3::boolean AND attempts + 1 < $4::int THEN NULL ELSE now() END
+    status = CASE WHEN $3::boolean AND ($5::int = 0 OR attempts + $5 < $4::int) THEN 'pending' ELSE 'failed' END,
+    claimed_at = CASE WHEN $3::boolean AND ($5::int = 0 OR attempts + $5 < $4::int) THEN NULL ELSE claimed_at END,
+    completed_at = CASE WHEN $3::boolean AND ($5::int = 0 OR attempts + $5 < $4::int) THEN NULL ELSE now() END
 WHERE seed_id = $1
 RETURNING status, attempts
 """
 
 MARK_STAGE2_FAILED_SQL = """
 UPDATE world_pulse_read_seed
-SET stage2_attempts = stage2_attempts + 1,
+SET stage2_attempts = stage2_attempts + $6::int,
     stage2_error = $2,
     stage2_trace_id = COALESCE($3, stage2_trace_id),
-    stage2_status = CASE WHEN $4::boolean AND stage2_attempts + 1 < $5::int THEN 'pending' ELSE 'failed' END,
-    stage2_claimed_at = CASE WHEN $4::boolean AND stage2_attempts + 1 < $5::int THEN NULL ELSE stage2_claimed_at END,
-    stage2_completed_at = CASE WHEN $4::boolean AND stage2_attempts + 1 < $5::int THEN NULL ELSE now() END
+    stage2_status = CASE WHEN $4::boolean AND ($6::int = 0 OR stage2_attempts + $6 < $5::int) THEN 'pending' ELSE 'failed' END,
+    stage2_claimed_at = CASE WHEN $4::boolean AND ($6::int = 0 OR stage2_attempts + $6 < $5::int) THEN NULL ELSE stage2_claimed_at END,
+    stage2_completed_at = CASE WHEN $4::boolean AND ($6::int = 0 OR stage2_attempts + $6 < $5::int) THEN NULL ELSE now() END
 WHERE seed_id = $1
 RETURNING stage2_status, stage2_attempts
 """
@@ -433,18 +424,16 @@ async def _reading_status_row(conn: Any, row: Any) -> dict[str, Any]:
     }
 
 
-# Same ordering as CLAIM_SQL's claim candidate: priority ASC, attempts ASC,
+# Same ordering as CLAIM_SQL's claim candidate: priority ASC,
 # created_at ASC, seed_id ASC. Counting rows strictly ahead of this one in
 # that order (+1) gives the row's real 1-indexed place in line -- not just
 # "queued", which says nothing about whether that means seconds or days
-# (see the wallet-cap comment above REQUEST_ROW_SQL: a retry's wait time is
-# bounded only by max_attempts, never by time, and a continuously-refilled
-# stream of same-priority fresh seeds can queue-jump it indefinitely).
+# New same-priority arrivals cannot queue-jump an older pending retry.
 STAGE1_QUEUE_POSITION_SQL = """
 SELECT
     (SELECT count(*) FROM world_pulse_read_seed
      WHERE status = 'pending'
-       AND (priority, attempts, created_at, seed_id) < ($1, $2, $3, $4)) + 1 AS position,
+       AND (priority, created_at, seed_id) < ($1, $2, $3)) + 1 AS position,
     (SELECT count(*) FROM world_pulse_read_seed WHERE status = 'pending') AS depth
 """
 
@@ -452,7 +441,7 @@ SELECT
 async def _stage1_queue_position(conn: Any, row: Any) -> tuple[int, int]:
     pos_row = await conn.fetchrow(
         STAGE1_QUEUE_POSITION_SQL,
-        row["priority"], row["attempts"], row["created_at"], row["seed_id"],
+        row["priority"], row["created_at"], row["seed_id"],
     )
     return int(pos_row["position"]), int(pos_row["depth"])
 
@@ -555,14 +544,16 @@ async def mark_seed_failed(
     """Stage 1 failure. With ``max_attempts > 1`` and a transient ``error``
     (see :func:`orion.world_pulse_read.retry.is_transient_failure`) the row
     returns to ``pending`` with ``attempts`` bumped and ``last_error`` kept as
-    the last reason; otherwise it is terminal exactly as before. The default
-    ``max_attempts=1`` is the legacy no-retry behaviour."""
+    the last reason; otherwise it is terminal. Known pre-reader infrastructure
+    deferrals remain pending without spending an attempt, even at a cap of 1.
+    Historical attempt counts are not rewritten."""
     row = await conn.fetchrow(
         MARK_FAILED_SQL,
         seed_id,
         error[:2000],
         is_transient_failure(error),
         max(1, int(max_attempts)),
+        0 if is_capacity_deferral(error) else 1,
     )
     return _failure_outcome(row, status_key="status", attempts_key="attempts")
 
@@ -683,6 +674,7 @@ async def mark_stage2_failed(
         stage2_trace_id,
         is_transient_failure(error),
         max(1, int(max_attempts)),
+        0 if is_capacity_deferral(error) else 1,
     )
     return _failure_outcome(row, status_key="stage2_status", attempts_key="stage2_attempts")
 

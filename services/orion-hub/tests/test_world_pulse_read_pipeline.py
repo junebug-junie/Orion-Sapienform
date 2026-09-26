@@ -931,8 +931,8 @@ def test_real_deferred_frame_refunds_wallet_a_slot(monkeypatch: pytest.MonkeyPat
     # Retry spacing moves to its own key: floor (600s) after the refusal.
     wait = asyncio.run(wa.read_wallet_a_retry_wait(bus.redis, now=_now()))
     assert wait is not None and 590 <= wait <= 600
-    # The seed still spends one bounded attempt.
-    assert conn.rows["finding:r1:x"]["attempts"] == 1
+    # Admission failed before reading, so the seed keeps its attempt budget.
+    assert conn.rows["finding:r1:x"]["attempts"] == 0
     assert conn.rows["finding:r1:x"]["status"] == "pending"
 
 

@@ -3,7 +3,7 @@ import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from orion.world_pulse_read.retry import is_transient_failure
+from orion.world_pulse_read.retry import is_capacity_deferral, is_transient_failure
 
 
 class ReadingQueueFakeMixin:
@@ -37,8 +37,7 @@ class ReadingQueueFakeMixin:
     def _returning(self, row):
         return {**super()._returning(row), "request_json": row.get("request_json")}
 
-    # Retry ordering (a fresh seed claimed before one that already burned an
-    # attempt, at the same priority) lives in the real CLAIM_SQL / CLAIM_STAGE2_SQL
+    # FIFO retry ordering lives in the real CLAIM_SQL / CLAIM_STAGE2_SQL
     # (queue.py) and is exercised by the real-Postgres suite
     # (test_reading_postgres.py). Not duplicated here: each caller's own
     # `_claim_pending`/`_claim_stage2` already tracks caller-specific state
@@ -48,12 +47,13 @@ class ReadingQueueFakeMixin:
         """Interpret MARK_FAILED_SQL / MARK_STAGE2_FAILED_SQL exactly as Postgres would."""
         a_key, s_key, e_key = ("stage2_attempts", "stage2_status", "stage2_error") if stage2 else ("attempts", "status", "last_error")
         c_key, d_key = ("stage2_claimed_at", "stage2_completed_at") if stage2 else ("claimed_at", "completed_at")
-        attempts = int(row.get(a_key, 0)) + 1
+        deferred = is_capacity_deferral(error)
+        attempts = int(row.get(a_key, 0)) + (0 if deferred else 1)
         row[a_key] = attempts
         row[e_key] = error
         if stage2 and trace_id:
             row["stage2_trace_id"] = trace_id
-        if is_transient_failure(error) and attempts < int(max_attempts):
+        if is_transient_failure(error) and (deferred or attempts < int(max_attempts)):
             row[s_key] = "pending"
             row[c_key] = None
             row[d_key] = None
@@ -73,23 +73,23 @@ class ReadingQueueFakeMixin:
             return {**matches[0], "matched_request_count": len(matches)}
         if "AS position," in sql and "AS depth" in sql:
             # Interprets STAGE1_QUEUE_POSITION_SQL (queue.py): same ordering
-            # as _claim_pending -- (priority, attempts, created_at, seed_id).
+            # as _claim_pending -- (priority, created_at, seed_id).
             self.executed.append((sql, args))
-            priority, attempts, created_at, seed_id = args
-            key = (priority, attempts, created_at, seed_id)
+            priority, created_at, seed_id = args
+            key = (priority, created_at, seed_id)
             pending = [r for r in self.rows.values() if r["status"] == "pending"]
             position = sum(
                 1 for r in pending
-                if (r["priority"], r.get("attempts", 0), r.get("created_at", 0), r["seed_id"]) < key
+                if (r["priority"], r.get("created_at", 0), r["seed_id"]) < key
             ) + 1
             return {"position": position, "depth": len(pending)}
-        if "stage2_attempts = stage2_attempts + 1" in sql:
+        if "stage2_attempts = stage2_attempts +" in sql:
             self.executed.append((sql, args))
             row = self.rows.get(args[0])
             if row is None:
                 return None
             return self._mark_failed(row, stage2=True, error=args[1], trace_id=args[2], max_attempts=args[4])
-        if "attempts = attempts + 1" in sql:
+        if "attempts = attempts +" in sql:
             self.executed.append((sql, args))
             row = self.rows.get(args[0])
             if row is None:

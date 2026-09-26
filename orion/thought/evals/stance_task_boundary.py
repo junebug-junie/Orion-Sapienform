@@ -52,7 +52,10 @@ async def evaluate(args: argparse.Namespace) -> dict:
         'response_format': {'type': 'json_object'}, 'stream': True,
         'stream_options': {'include_usage': True},
     }
+    if args.reasoning_effort:
+        body['chat_template_kwargs'] = {'reasoning_effort': args.reasoning_effort}
     report = {'correlation_id': correlation, 'prompt_chars': len(prompt),
+              'requested_reasoning_effort': args.reasoning_effort or 'worker_default',
               'reasoning_chars': 0, 'content_chars': 0, 'passed': False}
     content = []
     started = time.monotonic()
@@ -66,6 +69,8 @@ async def evaluate(args: argparse.Namespace) -> dict:
                     if not line.startswith('data: ') or line == 'data: [DONE]':
                         continue
                     event = json.loads(line[6:])
+                    if event.get('model'):
+                        report['model'] = event['model']
                     if event.get('error'):
                         raise RuntimeError('gateway_stream_error')
                     if event.get('usage'):
@@ -86,6 +91,8 @@ async def evaluate(args: argparse.Namespace) -> dict:
         report['passed'] = report.get('finish_reason') == 'stop' and report['valid_stance']
     except Exception as exc:
         report['error'] = type(exc).__name__
+        if isinstance(exc, httpx.HTTPStatusError):
+            report['http_status'] = exc.response.status_code
     report['elapsed_sec'] = round(time.monotonic() - started, 2)
     return report
 
@@ -96,6 +103,7 @@ def main() -> int:
     parser.add_argument('--gateway-url', required=True)
     parser.add_argument('--model', default='agent')
     parser.add_argument('--timeout', type=float, default=235)
+    parser.add_argument('--reasoning-effort', choices=['xhigh', 'medium', 'low'])
     parser.add_argument('--template', type=Path, default=Path(__file__).resolve().parents[2] / 'cognition/prompts/stance_react.j2')
     args = parser.parse_args()
     report = asyncio.run(evaluate(args))

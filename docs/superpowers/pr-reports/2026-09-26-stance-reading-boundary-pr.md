@@ -38,7 +38,16 @@ started doing the downstream reading. Fix the prompt boundary, not the timeout.
 - Quoted-source candidate 2d7fbe1c-826d-4c94-9ce8-50bfd1bc70c1 passed the model
   eval in 131.68 seconds: 3813 completion tokens, 1373 final characters, valid
   stance fields, correct evidence anchor, no downstream output fields.
-- Final revision eval: pending at initial commit; result will be recorded here.
+- Final revision 7437fe8d-7d50-4558-bd01-c6ccafa37be6 did NOT pass: 235.01
+  seconds, 28563 reasoning characters and only 150 answer characters before
+  cancellation. Prompt isolation fixes a demonstrated contract ambiguity but
+  does not establish reliable completion at the worker's xhigh default.
+- Diagnostic-only medium-effort comparison 6bb8401b-ee44-4470-b772-7fc4b84baa85
+  returned HTTP 503 after 60.08 seconds with zero output; gateway logs confirm
+  GPU admission deadline exhaustion, before generation. This is not a
+  model-quality result and does not justify changing reasoning effort. The
+  worker's actual /props template supports xhigh/medium/low; thinking stays
+  enabled. No production reasoning setting is changed by this patch.
 
 These are diagnostic reconstructions, not exact historical replays or full
 pipeline completion. No reading seed, journal, or thought event was written by
@@ -72,7 +81,8 @@ the evals. Admission/accounting still runs through the normal gateway.
 Rebuild/deploy orion-cortex-exec from the merged revision using the normal
 worktree-safe deployment wrapper. Prompt is baked into that image. Reverting
 the template change rolls it back; no data migration or schedule change exists.
-No production deployment was performed by this patch. After rollout, verify
+No production deployment was performed by this patch. All four initial CI
+checks passed; live completion reliability remains a concern. After rollout, verify
 Stage 2 and its actual journal landing on the saved paper. End-to-end reading
 completion remains UNVERIFIED; this patch is not a claim that every reading
 failure or every long generation is fixed.

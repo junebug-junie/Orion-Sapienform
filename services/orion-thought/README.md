@@ -54,6 +54,8 @@ inside 235 seconds. Inspect the reported imperative for task preservation;
 schema validity alone is not semantic correctness. It reconstructs a minimal
 stance context, not an exact replay of historical transient context. Rebuild
 `orion-cortex-exec` to deploy prompt changes; the renderer lives there.
+The optional `--reasoning-effort` flag is a diagnostic-only per-request override
+for workers that support it; omitting it preserves the worker default.
 
 ```bash
 PYTHONPATH=services/orion-thought:. ./orion_dev/bin/python -m pytest services/orion-thought/tests/ -v

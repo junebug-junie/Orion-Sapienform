@@ -1,0 +1,161 @@
+{
+  "asks": {
+    "rows": [
+      {
+        "help_id": "hr_6b3e0ad9fdc6_n6_menu_assembly",
+        "run_id": "6b3e0ad9fdc6",
+        "written_at": 1790386258611
+      }
+    ],
+    "status": "ok"
+  },
+  "captured_at": "2026-09-26T08:10:37.597887+00:00",
+  "dispatch_frames": {
+    "rows": [
+      {
+        "candidates": [
+          {
+            "cortex_verb": "skills.imagination.render_scene.v1",
+            "dispatch_id": "dispatch:proposal:render_scene:tick_3aeed7bbf7f9:none:execution_dispatch_policy.v1",
+            "dispatched_at": "2026-09-26T07:54:04.747279Z",
+            "expected_effect": null,
+            "source_decision_id": "policy.decision:proposal:render_scene:tick_3aeed7bbf7f9:none:substrate_policy.v1",
+            "source_proposal_id": "proposal:render_scene:tick_3aeed7bbf7f9:none"
+          }
+        ],
+        "created_at": "2026-09-26 07:55:26.271515+00:00",
+        "frame_id": "execution.dispatch.frame:policy.frame:proposal.frame:tick_3aeed7bbf7f9:none:proposal_policy.v1:substrate_policy.v1:execution_dispatch_policy.v1",
+        "source_proposal_frame_id": "proposal.frame:tick_3aeed7bbf7f9:none:proposal_policy.v1"
+      },
+      {
+        "candidates": [
+          {
+            "cortex_verb": "skills.imagination.render_scene.v1",
+            "dispatch_id": "dispatch:proposal:render_scene:tick_d0db6ae013df:none:execution_dispatch_policy.v1",
+            "dispatched_at": "2026-09-08T08:30:20.793548Z",
+            "expected_effect": {
+              "cold_start": false,
+              "direction": "increase",
+              "predicted_delta": 0.022692399040823763,
+              "predictor_n": 8,
+              "predictor_variance": 0.00481000481000481,
+              "signal_id": "resource_pressure"
+            },
+            "source_decision_id": "policy.decision:proposal:render_scene:tick_d0db6ae013df:none:substrate_policy.v1",
+            "source_proposal_id": "proposal:render_scene:tick_d0db6ae013df:none"
+          }
+        ],
+        "created_at": "2026-09-08 08:31:33.996928+00:00",
+        "frame_id": "execution.dispatch.frame:policy.frame:proposal.frame:tick_d0db6ae013df:none:proposal_policy.v1:substrate_policy.v1:execution_dispatch_policy.v1",
+        "source_proposal_frame_id": "proposal.frame:tick_d0db6ae013df:none:proposal_policy.v1"
+      }
+    ],
+    "status": "ok"
+  },
+  "feedback_frames": {
+    "rows": [
+      {
+        "frame_id": "feedback.frame:execution.dispatch.frame:policy.frame:proposal.frame:tick_d0db6ae013df:none:proposal_policy.v1:substrate_policy.v1:execution_dispatch_policy.v1:feedback_policy.v1",
+        "source_execution_dispatch_frame_id": "execution.dispatch.frame:policy.frame:proposal.frame:tick_d0db6ae013df:none:proposal_policy.v1:substrate_policy.v1:execution_dispatch_policy.v1"
+      }
+    ],
+    "status": "ok"
+  },
+  "graph_briefs": {
+    "rows": [
+      {
+        "answers_help_id": "hr_6b3e0ad9fdc6_n6_menu_assembly",
+        "brief_id": "brief-27576141f7fd",
+        "consumed": "true",
+        "help_id": "hr_6b3e0ad9fdc6_n6_menu_assembly",
+        "peer": "cursor_auto",
+        "run_id": "6b3e0ad9fdc6",
+        "status": "ok",
+        "written_at": 1790388758210
+      }
+    ],
+    "status": "ok"
+  },
+  "outcome_sample": {
+    "rows": [
+      {
+        "dispatch_id": "dispatch:proposal:render_scene:tick_d0db6ae013df:none:execution_dispatch_policy.v1"
+      }
+    ],
+    "status": "ok"
+  },
+  "outcomes": {
+    "rows": [
+      {
+        "arm": "dispatched",
+        "dispatch_frame_id": "execution.dispatch.frame:policy.frame:proposal.frame:tick_d0db6ae013df:none:proposal_policy.v1:substrate_policy.v1:execution_dispatch_policy.v1",
+        "dispatch_id": "dispatch:proposal:render_scene:tick_d0db6ae013df:none:execution_dispatch_policy.v1",
+        "feedback_frame_id": "feedback.frame:execution.dispatch.frame:policy.frame:proposal.frame:tick_d0db6ae013df:none:proposal_policy.v1:substrate_policy.v1:execution_dispatch_policy.v1:feedback_policy.v1",
+        "frame_dispatch_count": 1,
+        "id": 144882,
+        "observed_at": "2026-09-08 08:31:49.742938+00:00",
+        "predicted_delta": 0.022692399040823763,
+        "signal_id": "resource_pressure"
+      }
+    ],
+    "status": "ok"
+  },
+  "proposal_frames": {
+    "rows": [
+      {
+        "frame_id": "proposal.frame:tick_3aeed7bbf7f9:none:proposal_policy.v1",
+        "proposal_ids": [
+          "proposal:render_scene:tick_3aeed7bbf7f9:none"
+        ]
+      }
+    ],
+    "status": "ok"
+  },
+  "result_sample": {
+    "rows": [
+      {
+        "created_at": "2026-09-26 07:55:26.247329+00:00",
+        "dispatch_id": "dispatch:proposal:render_scene:tick_3aeed7bbf7f9:none:execution_dispatch_policy.v1",
+        "frame_id": "execution.dispatch.frame:policy.frame:proposal.frame:tick_3aeed7bbf7f9:none:proposal_policy.v1:substrate_policy.v1:execution_dispatch_policy.v1",
+        "result_id": "result:dispatch:proposal:render_scene:tick_3aeed7bbf7f9:none:execution_dispatch_policy.v1",
+        "status": "success"
+      }
+    ],
+    "status": "ok"
+  },
+  "results": {
+    "rows": [
+      {
+        "created_at": "2026-09-26 07:55:26.247329+00:00",
+        "dispatch_id": "dispatch:proposal:render_scene:tick_3aeed7bbf7f9:none:execution_dispatch_policy.v1",
+        "frame_id": "execution.dispatch.frame:policy.frame:proposal.frame:tick_3aeed7bbf7f9:none:proposal_policy.v1:substrate_policy.v1:execution_dispatch_policy.v1",
+        "result_id": "result:dispatch:proposal:render_scene:tick_3aeed7bbf7f9:none:execution_dispatch_policy.v1",
+        "status": "success",
+        "visual_outcome": "produced"
+      },
+      {
+        "created_at": "2026-09-08 08:31:33.913681+00:00",
+        "dispatch_id": "dispatch:proposal:render_scene:tick_d0db6ae013df:none:execution_dispatch_policy.v1",
+        "frame_id": "execution.dispatch.frame:policy.frame:proposal.frame:tick_d0db6ae013df:none:proposal_policy.v1:substrate_policy.v1:execution_dispatch_policy.v1",
+        "result_id": "result:dispatch:proposal:render_scene:tick_d0db6ae013df:none:execution_dispatch_policy.v1",
+        "status": "success",
+        "visual_outcome": null
+      }
+    ],
+    "status": "ok"
+  },
+  "sql_briefs": {
+    "rows": [
+      {
+        "brief_id": "brief-27576141f7fd",
+        "created_at": "2026-09-26 02:12:38.216358+00:00",
+        "help_id": "hr_6b3e0ad9fdc6_n6_menu_assembly",
+        "peer": "cursor_auto",
+        "run_id": "6b3e0ad9fdc6",
+        "status": "ok",
+        "written_at": "2026-09-26 02:12:38.207566+00:00"
+      }
+    ],
+    "status": "ok"
+  }
+}

@@ -982,7 +982,7 @@ def test_stage2_real_deferred_frame_refunds_wallet_b(monkeypatch: pytest.MonkeyP
     assert bus.redis.store[_count_key_b()] == "4"
     assert wb.WALLET_B_COOLDOWN_KEY not in bus.redis.store  # no prior debit -> cleared
     assert wb.WALLET_B_RETRY_NOT_BEFORE_KEY in bus.redis.store
-    assert conn.rows["finding:r1:x"]["stage2_attempts"] == 1
+    assert conn.rows["finding:r1:x"]["stage2_attempts"] == 0
 
 
 def test_stage2_real_turn_error_keeps_wallet_b_charge(monkeypatch: pytest.MonkeyPatch) -> None:

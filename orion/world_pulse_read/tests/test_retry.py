@@ -6,7 +6,29 @@ rows and 12 Stage 2 rows dead, almost all one GPU-capacity refusal. The
 predicate exists to tell that apart from a bad seed (schema/JSON failure) --
 this test is the contract for that split, not just the prefix arithmetic.
 """
-from orion.world_pulse_read.retry import TRANSIENT_FAILURE_PREFIXES, is_transient_failure
+import pytest
+
+from orion.world_pulse_read.retry import TRANSIENT_FAILURE_PREFIXES, is_capacity_deferral, is_transient_failure
+
+
+@pytest.mark.parametrize("reason", [
+    "turn_deferred:stance_react_failed: gpu_pool_unavailable:deadline",
+    "turn_deferred:stance_react_failed: agent=gateway_capacity_rejected:capacity_wait_budget_exhausted; chat=gateway_capacity_rejected:capacity_wait_budget_exhausted",
+    "turn_deferred:stance_react_failed: timeout:caller_budget_exhausted",
+    "turn_deferred:stance_react_timeout",
+])
+def test_known_pre_reader_capacity_failures_do_not_spend_attempts(reason):
+    assert is_capacity_deferral(reason)
+
+
+@pytest.mark.parametrize("reason", [
+    None, "", "turn_deferred:refuse", "turn_deferred:empty_imperative",
+    "turn_error:gpu_pool_unavailable:deadline", "turn_error:fcc_stream_stalled",
+    "turn_deferred:stance_react_failed: exec result missing thought payload",
+    "turn_deferred:stance_react_failed: agent=gpu_pool_unavailable:deadline; chat=refused",
+])
+def test_actual_reader_failures_and_stance_refusals_remain_bounded(reason):
+    assert not is_capacity_deferral(reason)
 
 
 def test_none_and_empty_are_not_transient():

@@ -96,3 +96,25 @@ def is_refused_before_work(reason: str | None) -> bool:
         return False
     text = str(reason).strip()
     return text == "turn_deferred" or text.startswith("turn_deferred:")
+
+
+def is_capacity_deferral(reason: str | None) -> bool:
+    """Known pre-reader admission failures do not spend a reading attempt.
+
+    Actual stance refusals and unknown failures keep the bounded retry policy.
+    The workers already apply wallet refund backoff to these deferred turns.
+    """
+    text = str(reason or "").strip()
+    if text == "turn_deferred:stance_react_timeout":
+        return True
+    prefix = "turn_deferred:stance_react_failed:"
+    if not text.startswith(prefix):
+        return False
+    detail = text[len(prefix):].strip()
+    # Older Thought deployments combined agent/chat capacity failures.
+    parts = [part.strip().removeprefix("agent=").removeprefix("chat=") for part in detail.split(";")]
+    return bool(parts) and all(
+        part.startswith(("gpu_pool_unavailable:", "gateway_capacity_rejected:"))
+        or part == "timeout:caller_budget_exhausted"
+        for part in parts
+    )

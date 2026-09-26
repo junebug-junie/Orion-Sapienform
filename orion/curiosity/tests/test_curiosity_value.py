@@ -14,6 +14,11 @@ from orion.curiosity.value import (
     KIND_FORMED,
     KIND_MOVED_UNTESTED,
     KIND_TESTED,
+    UNKNOWN_NO_END_SNAPSHOT,
+    UNKNOWN_NO_RUN_ID,
+    UNKNOWN_NO_SCORABLE_TEST,
+    UNKNOWN_NO_START_SNAPSHOT,
+    UNKNOWN_START_STAMPED,
     PriorState,
     PriorTestRecord,
     build_yield_model,
@@ -50,6 +55,14 @@ def test_entropy_is_symmetric_and_clamped_at_the_edges() -> None:
     assert entropy_nats(0.2) == pytest.approx(entropy_nats(0.8))
     assert entropy_nats(0.0) == entropy_nats(0.01) > 0.0
     assert entropy_nats(1.0) == entropy_nats(0.99) > 0.0
+
+
+@pytest.mark.parametrize("broken", [1.7, -0.2, float("nan"), float("inf"), "x", True])
+def test_entropy_reads_a_broken_confidence_as_unknown_not_near_certain(broken) -> None:
+    # Review finding: entropy_nats(1.7) clamped to 0.99 and read as nearly
+    # certain, while Prior.uncertainty read it as maximally uncertain -- so
+    # cold-start identity depended on every caller remembering to validate.
+    assert entropy_nats(broken) == entropy_nats(None) == pytest.approx(math.log(2))
 
 
 def test_kl_rests_at_exactly_zero_when_nothing_moved() -> None:
@@ -154,8 +167,15 @@ def test_a_move_without_a_test_count_is_protocol_drift_not_summed() -> None:
 
 
 def test_an_unreadable_snapshot_is_unknown_never_zero() -> None:
-    assert diff_snapshots(None, {}, run_id=RUN).realized_nats is None
-    assert diff_snapshots({}, None, run_id=RUN).realized_nats is None
+    start = diff_snapshots(None, {}, run_id=RUN)
+    end = diff_snapshots({}, None, run_id=RUN)
+    assert (start.realized_nats, start.unknown_reason) == (None, UNKNOWN_NO_START_SNAPSHOT)
+    assert (end.realized_nats, end.unknown_reason) == (None, UNKNOWN_NO_END_SNAPSHOT)
+
+
+def test_a_known_result_carries_no_unknown_reason() -> None:
+    out = diff_snapshots({"p1": _state("p1", 0.55, 0)}, {"p1": _state("p1", 0.55, 1, last_run_id=RUN)}, run_id=RUN)
+    assert (out.realized_nats, out.unknown_reason) == (0.0, None)
 
 
 def test_a_start_already_stamped_by_this_run_is_unknown_not_partial() -> None:
@@ -164,16 +184,18 @@ def test_a_start_already_stamped_by_this_run_is_unknown_not_partial() -> None:
     # report part of the run as all of it.
     before = {"p1": _state("p1", 0.7, 1, last_run_id=RUN)}
     after = {"p1": _state("p1", 0.75, 2, last_run_id=RUN)}
-    assert diff_snapshots(before, after, run_id=RUN).realized_nats is None
+    out = diff_snapshots(before, after, run_id=RUN)
+    assert (out.realized_nats, out.unknown_reason) == (None, UNKNOWN_START_STAMPED)
     formed = {"p9": _state("p9", 0.55, 0, run_id=RUN)}
-    assert diff_snapshots(formed, formed, run_id=RUN).realized_nats is None
+    assert diff_snapshots(formed, formed, run_id=RUN).unknown_reason == UNKNOWN_START_STAMPED
 
 
 def test_no_run_id_attributes_nothing() -> None:
     # Unstamped priors carry last_run_id "": an empty run id would claim them.
     before = {"p1": _state("p1", 0.5, 0)}
     after = {"p1": _state("p1", 0.9, 1)}
-    assert diff_snapshots(before, after, run_id="").realized_nats is None
+    out = diff_snapshots(before, after, run_id="")
+    assert (out.realized_nats, out.unknown_reason) == (None, UNKNOWN_NO_RUN_ID)
 
 
 def test_tested_but_nothing_scorable_is_unknown_not_zero() -> None:
@@ -183,7 +205,12 @@ def test_tested_but_nothing_scorable_is_unknown_not_zero() -> None:
     after = {"p1": _state("p1", None, 1, last_run_id=RUN)}
     out = diff_snapshots(before, after, run_id=RUN)
     assert (out.n_tested, out.n_invalid_confidence) == (1, 1)
-    assert out.realized_nats is None
+    assert (out.realized_nats, out.unknown_reason) == (None, UNKNOWN_NO_SCORABLE_TEST)
+    # Repairing a broken confidence is unscorable too (unusable BEFORE the test).
+    repaired = diff_snapshots(
+        {"p1": _state("p1", None, 0)}, {"p1": _state("p1", 0.8, 1, last_run_id=RUN)}, run_id=RUN
+    )
+    assert (repaired.realized_nats, repaired.unknown_reason) == (None, UNKNOWN_NO_SCORABLE_TEST)
 
 
 def test_an_invalid_confidence_is_flagged_and_left_out_of_the_sum() -> None:
@@ -270,6 +297,52 @@ def test_yield_counts_only_moves_a_recorded_test_made() -> None:
     # One such prior no longer lifts the whole pool.
     stuck = _tests("a", [0.6, 0.6, 0.6, 0.6])
     assert build_yield_model(stuck + gap_only, window=3, pseudo_tests=2.0).pool_yield == 0.0
+
+
+def test_progress_that_was_undone_between_tests_is_not_credited() -> None:
+    # Review finding (second round): summing only recorded moves credited a
+    # belief the tests keep pushing 0.5 -> 0.7 while something off the record
+    # knocks it back each time (a self-inquiry turn, an unscored run): raw
+    # yield 0.306 -- 4x a genuine learner -- and the pool lifted 23x. Only
+    # progress a test made AND that stuck is credited now.
+    from orion.curiosity.value import straightness
+
+    undone = [PriorTestRecord("p", 0.5, 0.7)] * 3
+    assert straightness(undone) == pytest.approx(0.2)  # the gaps are path, not progress
+    assert raw_yield(undone) == pytest.approx(kl_nats(0.7, 0.5) * 0.2 / (3 * math.log(2)))
+    learner = _tests("l", [0.55, 0.775, 0.8875, 0.94375])
+    assert raw_yield(learner) > 30 * raw_yield(undone)
+    stuck = [PriorTestRecord(f"s{i}", 0.6, 0.6) for i in range(5) for _ in range(3)]
+    assert build_yield_model(stuck + undone, window=3, pseudo_tests=2.0).pool_yield < 0.002
+    # Tests pushed up, something else pushed it further down: nothing credited.
+    assert raw_yield([PriorTestRecord("p", 0.5, 0.6), PriorTestRecord("p", 0.3, 0.35)]) == 0.0
+
+
+def test_credited_progress_stays_inside_where_the_belief_actually_went() -> None:
+    # Property check over random windows with random jumps between tests: the
+    # credited end point lies between the first tested value and the last
+    # observed one, never past what either the tests or the belief did, and
+    # straightness stays in [0, 1].
+    import random
+
+    from orion.curiosity.value import _credited_net, straightness
+
+    rng = random.Random(20260926)
+    for _ in range(5000):
+        tests, value = [], rng.random()
+        for _ in range(rng.randint(1, 4)):
+            before = value if rng.random() < 0.5 else rng.random()  # sometimes a jump
+            value = rng.random()
+            tests.append(PriorTestRecord("p", before, value))
+        recorded = sum(t.after - t.before for t in tests)
+        observed = tests[-1].after - tests[0].before
+        credited = _credited_net(tests)
+        assert abs(credited) <= abs(recorded) + 1e-12 and abs(credited) <= abs(observed) + 1e-12
+        assert credited == 0.0 or (credited > 0) == (observed > 0) == (recorded > 0)
+        end = tests[0].before + credited
+        lo, hi = sorted((tests[0].before, tests[-1].after))
+        assert lo - 1e-12 <= end <= hi + 1e-12
+        assert 0.0 <= straightness(tests) <= 1.0
 
 
 def test_shrinkage_pulls_thin_evidence_toward_the_pool() -> None:

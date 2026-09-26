@@ -14,10 +14,11 @@
 -- Single writer: services/orion-hub/scripts/curiosity_offer_decisions.py,
 -- called from scripts/curiosity_investigation.py:
 --   * curiosity_offer_decisions -- one row at dispatch (`_investigate`), then
---     `turn_started_at` + `turn_snapshot` set once when the turn STARTS
---     (`_run_turn`; first attempt wins, even when the graph was unreadable
---     and the snapshot is NULL), so a run that waited in admission is scored
---     from where it actually began -- or not at all, never from a retry.
+--     `turn_started_at` + `turn_snapshot` when the turn STARTS (`_run_turn`):
+--     the first snapshot taken wins, and the first attempt's start time is
+--     kept. A retry may fill in a snapshot the first attempt could not take;
+--     a start that already carries the run's own stamps is scored unknown, so
+--     a run is scored from where it really began -- or not at all.
 --   * curiosity_run_outcomes -- one row when the turn ends, upserted on retry.
 -- Readers: the same module (learning-yield history for the next offer) and
 -- scripts/analysis/replay_curiosity_realized_nats.py.
@@ -26,14 +27,19 @@
 -- one offer, one outcome, per run. A decision row with no outcome row means
 -- the run never finished a turn (cancelled, refunded, or still queued).
 --
--- realized_nats NULL means UNKNOWN: a snapshot was unreadable (or filled the
--- Atlas query's row cap), the start snapshot already carried this run's own
--- stamps (an earlier attempt wrote before it was taken), or every prior the
--- run tested wrote an invalid confidence. 0.0 means the run moved no belief
--- it tested -- it tested and nothing moved, or it tested nothing. Never
--- conflate the two. A turn that failed (no text) is still scored, since it
--- may have written before failing, but carries turn_ok = false: read its 0.0
--- as a failure, not a result.
+-- realized_nats NULL means UNKNOWN, and unknown_reason says why:
+--   no_start_snapshot          unreadable, over the Atlas row cap, or expired
+--   no_end_snapshot            unreadable or over the row cap at the end
+--   start_stamped_by_this_run  an earlier attempt wrote before the start
+--                              snapshot was taken
+--   no_scorable_test           every prior it tested had an unusable
+--                              confidence, before or after the test
+-- 0.0 means no measurable belief change among the tests that could be
+-- scored: they moved nothing, or the run tested nothing
+-- (n_invalid_confidence counts the tests that could not be scored). Never
+-- conflate NULL and 0.0. A turn that failed (no text) is still scored, since
+-- it may have written before failing, but carries turn_ok = false: read its
+-- 0.0 as a failure, not a result.
 --
 -- Retention: turn_snapshot (every prior, every run -- the largest column) is
 -- set back to NULL after 14 days by the writer itself
@@ -71,8 +77,8 @@ CREATE TABLE IF NOT EXISTS curiosity_offer_decisions (
     -- NULL if the graph could not be read at that moment; set back to NULL
     -- after 14 days.
     turn_snapshot jsonb,
-    -- When the FIRST attempt's turn started. Set even when the snapshot
-    -- could not be taken; its being set is what stops a retry re-taking it.
+    -- When the FIRST attempt's turn started, kept across retries. Set even
+    -- when the snapshot could not be taken.
     turn_started_at timestamptz
 );
 
@@ -88,6 +94,9 @@ CREATE TABLE IF NOT EXISTS curiosity_run_outcomes (
     -- Sum of KL(after || before) over the priors this run tested (stamped
     -- last_run_id = run_id and times_tested went up). NULL = unknown.
     realized_nats double precision,
+    -- Why realized_nats is NULL, one of the reasons in the header. NULL when
+    -- the number is known.
+    unknown_reason text,
     n_tested integer NOT NULL DEFAULT 0,
     n_moved integer NOT NULL DEFAULT 0,
     n_formed integer NOT NULL DEFAULT 0,
@@ -106,3 +115,10 @@ CREATE TABLE IF NOT EXISTS curiosity_run_outcomes (
 
 CREATE INDEX IF NOT EXISTS curiosity_run_outcomes_completed_at_idx
     ON curiosity_run_outcomes (completed_at);
+
+-- Columns added while this migration was still on its branch. A no-op on a
+-- table created above; re-applying the file brings an earlier copy up to
+-- date (`CREATE TABLE IF NOT EXISTS` never adds columns, and the
+-- applied-check only looks for the table).
+ALTER TABLE curiosity_run_outcomes ADD COLUMN IF NOT EXISTS turn_ok boolean;
+ALTER TABLE curiosity_run_outcomes ADD COLUMN IF NOT EXISTS unknown_reason text;

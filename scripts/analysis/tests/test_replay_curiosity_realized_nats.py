@@ -87,3 +87,25 @@ def test_failed_turns_are_counted_per_arm_not_read_as_zero() -> None:
     assert mod.failed_turns_by_arm(rows) == {"value_order": 3, "uncertainty_order": 0}
     # Only an explicit failure is left out; a row with no flag is kept.
     assert mod.completed_turns([{"realized_nats": 0.1}]) == [{"realized_nats": 0.1}]
+
+
+def test_unknown_runs_are_counted_by_the_reason_hub_recorded() -> None:
+    rows = [
+        {"arm": "value_order", "realized_nats": None, "turn_ok": True, "unknown_reason": "no_start_snapshot"},
+        {"arm": "value_order", "realized_nats": None, "turn_ok": True, "unknown_reason": "no_start_snapshot"},
+        {"arm": "uncertainty_order", "realized_nats": None, "turn_ok": True, "unknown_reason": "start_stamped_by_this_run"},
+        {"arm": "uncertainty_order", "realized_nats": 0.0, "turn_ok": True, "unknown_reason": None},
+        {"arm": "uncertainty_order", "realized_nats": None, "turn_ok": False, "unknown_reason": "no_end_snapshot"},
+    ]
+    # The failed turn is left out here too; a row with no reason says so.
+    assert mod.unknown_by_reason(rows) == {"no_start_snapshot": 2, "start_stamped_by_this_run": 1}
+    assert mod.unknown_by_reason([{"realized_nats": None}]) == {"unrecorded": 1}
+
+
+def test_graph_summary_reads_float_string_counts_and_flags_the_row_cap(monkeypatch) -> None:
+    # Review finding: int("2.0") raised and silently dropped that prior's tests.
+    priors = [{"prior_id": "a", "times_tested": "2.0"}, {"prior_id": "b", "times_tested": 3}]
+    g = mod.summarize_graph(priors, [])
+    assert g.total_tests == 5 and not g.truncated
+    monkeypatch.setattr(mod, "ATLAS_PRIORS_LIMIT", 2)
+    assert mod.summarize_graph(priors, []).truncated

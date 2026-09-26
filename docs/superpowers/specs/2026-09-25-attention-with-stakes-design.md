@@ -382,9 +382,10 @@ nodes, because Orion writes those only when a confidence moves (G4).
   prior query (`ATLAS_PRIORS_CYPHER`). As built, the snapshot is taken in `_run_turn`, the one
   function every investigation turn passes through, durable or in-process. Taking it at dispatch
   would have credited this run with moves other turns made while it waited in admission. The
-  snapshot is persisted, not kept in memory, and the first attempt wins -- even when the graph was
-  unreadable and there is no snapshot -- so a retry is scored from where the run began, or not at
-  all.
+  snapshot is persisted, not kept in memory, and the first snapshot taken wins, so a retry is
+  scored from where the run began. If the first attempt could not read the graph, a retry may take
+  the snapshot; a start that already carries the run's own stamps (the first attempt wrote before
+  it) is scored unknown, never as a partial number.
 - *After.* When the turn ends, in the same place, Hub reads again and compares.
 - *Attribution.* Only changes this run stamped count: `last_run_id` = run for a test, `run_id` =
   run for a formation. Anything else between the two snapshots is counted as unattributed and not
@@ -396,9 +397,10 @@ nodes, because Orion writes those only when a confidence moves (G4).
   - Priors that did not exist before are counted as *formed*, not scored.
   - A confidence that moved without `times_tested` changing is flagged `moved_untested` as
     protocol drift.
-  - A run whose graph could not be read is `null`, never 0. So is a run whose snapshot filled the
-    Atlas query's 2000-row cap, whose start snapshot already carried its own stamps (an earlier
-    attempt wrote before it was taken), or whose every tested prior wrote an invalid confidence.
+  - A run whose graph could not be read is `null`, never 0, and records why (`unknown_reason`):
+    no start snapshot (unreadable, over the Atlas query's 2000-row cap, or expired), no end
+    snapshot, a start already stamped by the run (an earlier attempt wrote before it was taken),
+    or no scorable test (every tested prior had an unusable confidence before or after).
   - A turn that produced no text is still scored, since it may have written first, but carries
     `turn_ok = false`, so its 0 is not read as "tested, nothing moved".
 - *Cross-checks.* Report agreement with this run's `:PriorRevision` rows. Expect less than 100%,
@@ -414,9 +416,11 @@ arm, and its propensity. This is the choice set the supervisor has never been ab
 
 ```text
 expected_nats(prior) = H(confidence_now) × yield(prior)
-raw_yield(prior)     = min(1, KL(c_first + net ‖ c_first) × straightness / Σ H(c_before_test))   last W tests
-net                  = Σ (after − before)    the moves the recorded tests made
-straightness         = |net| / Σ |after − before|    (net displacement / path length, in [0, 1])
+raw_yield(prior)     = min(1, KL(c_first + credited ‖ c_first) × straightness / Σ H(c_before_test))   last W tests
+recorded             = Σ (after − before)                  the moves the recorded tests made
+observed             = c_last − c_first                    where the belief actually went
+credited             = the smaller of the two if they agree in sign, else 0
+straightness         = |observed| / (Σ |test moves| + Σ |jumps between tests|)    in [0, 1]
 yield(prior)         = (n × raw_yield + k × pool_yield) / (n + k)          n = tests in the window
 pool_yield           = Σ directed progress / Σ H   pooled over every prior's window
 ```
@@ -431,18 +435,33 @@ discount it scored 0.185 against 0.25 for a genuinely learning belief. Straightn
 straightness index of movement ecology (Batschelet 1981; Benhamou 2004). It is 1 for a belief that
 moved one way, and 1/3 for that flip-flop over three tests.
 
-*Why recorded moves, not `c_last − c_first`* (code review). Something else can move a prior
-between two scored tests: another run, an unstamped edit, a run scored unknown. That jump is not
-this prior's tests' doing. Measured end to end, two unmoved tests either side of a jump read as
-progress (raw yield 0.361 instead of 0), straightness reached 4.0, and one such prior lifted the
-whole pool's yield from 0.007 to 0.475. Summing only the recorded moves applies the same rule the
-snapshot diff already does: only changes a test made count.
+*Why credited progress, not either net alone* (two code reviews). Something else can move a prior
+between two scored tests: a self-inquiry turn (never measured), an unstamped edit, a run scored
+unknown. The two nets then disagree, and each alone is exploitable:
+- Observed net alone credits a jump forward that no test made. Two unmoved tests either side of a
+  jump read as progress (raw yield 0.361 instead of 0), and one such prior lifted the whole pool's
+  yield from 0.007 to 0.475.
+- Recorded net alone (the first fix) credits progress that was undone. Tests pushing 0.5 → 0.7
+  three times, knocked back to 0.5 off the record each time, scored 0.306 (4x a genuine learner)
+  and lifted the pool 23x.
+
+Credited progress must be both made by a test and still there at the end of the window. The jumps
+count toward path length, so straightness measures the belief's whole trajectory. The same
+undone-progress case now scores 0.0079, exactly what the recorded flip-flop scores.
 
 Worked examples:
 - A prior flipping 0.55 → 0.7 → 0.55 → 0.7 has a raw yield of 0.0079. It loses value.
 - A single test from 0.55 to 0.9 has a raw yield of 0.43.
 - An untested prior gets the pool yield. Offering new beliefs is exploration, and today's ordering
   already puts them near the top, at 0.55.
+
+**The prompt describes the order the same way on both arms.** Before the fix, Orion was told "the
+ones you were least sure about come first ... nothing here says which one is worth your time". On
+the value arm that was false, and changing the words per arm would confound the experiment with
+wording. Every run, and self-inquiry, which shares the section, now reads the same sentence, true
+of both orders: "first come the ones where the code estimates a test could change your mind the
+most, starting from how unsure you are ... which one, if any, is worth your time is your call".
+This is the one change to what Orion reads on today's default path.
 
 **P1d. Offer order is the only behaviour that changes.** On the value arm, `select_priors` sorts by
 `expected_nats` rounded to 9 decimals, then by uncertainty, then by the existing tie-breaks. The
@@ -915,7 +934,10 @@ They are independent and can be reviewed commit by commit. The original plan fol
 **What is live after deploy.**
 - The spend log (on by default). Every investigation run records its offer, a start snapshot, and
   what it moved, in nats.
-- Value ordering is built and **off**. With the switch off, the offer order is unchanged.
+- Value ordering is built and **off**. With the switch off, the offer order is unchanged, except
+  for priors with a broken confidence (below).
+- One sentence of the prompt changes on every run: the one describing the order, so both arms read
+  the same words (P1d).
 
 **What the simulation eval found** (`services/orion-hub/evals/test_curiosity_value_order_eval.py`).
 The eval runs the production functions over a known population: 4 learnable beliefs, 4
@@ -1017,6 +1039,34 @@ should-fix findings and six nits, all addressed:
   - A snapshot filling the 2000-row cap could differ between start and end. *Fix:* treated as
     unreadable.
   - Snapshots were never pruned. *Fix:* dropped after 14 days.
+
+### Second code review, of the fixes (2026-09-26)
+
+A second review checked the fix round. Its checks included an exhaustive cold-start check over
+100,006 confidences (zero divergences) and end-to-end retries on Postgres 16. What it found, and
+what changed:
+
+- **The first yield fix credited progress that was undone** (should-fix, introduced by the fix).
+  *Fix:* credited progress (P1c).
+- **The value arm told Orion something false about the order** (should-fix, from the first build).
+  *Fix:* one sentence on both arms (P1d).
+- **Nits.**
+  - Forks were scored from a copy the offer never showed. *Fix:* the snapshot keeps the offer's
+    copy (`Prior.fork_rank`).
+  - `entropy_nats(1.7)` read near-certain. *Fix:* it validates its own input.
+  - The NULL and 0.0 wording was inexact, and a NULL did not say why. *Fix:* `unknown_reason`,
+    and exact wording.
+  - The ask-Claude comment claimed a rule it no longer shares. *Fix:* the comment now states the
+    divergence. The behaviour is unchanged, so Claude quota is not spent on a broken number.
+  - Gating the start on its time made every retry after a graph blip unknown. *Fix:* a retry may
+    take the snapshot, and the stamp check alone keeps partial numbers out.
+  - A 42P01 query bug would read as "apply the migration". *Fix:* the warning carries the error.
+  - The replay's graph summary dropped "2.0" counts and ignored the row cap. *Fix:* both handled.
+  - Nothing upgraded an earlier copy of the tables. *Fix:* `ADD COLUMN IF NOT EXISTS`.
+- **Found outside this change, not fixed here.** With durable admission off (the settings default;
+  `.env_example` turns it on), a tick whose dispatch reply was lost can hang. Its in-process
+  fallback joins the runner's in-flight turn, which waits for the lock the tick holds. Reproduced
+  with the Hub fakes. It needs its own change to the fallback's locking.
 
 ## Sources
 

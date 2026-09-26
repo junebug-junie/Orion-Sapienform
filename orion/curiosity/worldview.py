@@ -195,6 +195,13 @@ class Prior:
             return 0.0
         return abs(confidence - 0.5)
 
+    @property
+    def fork_rank(self) -> tuple[int, str, str]:
+        """Which copy of a forked prior wins -- higher wins. See
+        `collapse_duplicate_priors`; the spend log's snapshot uses the same
+        rank, so the copy it scores is the copy Orion was shown."""
+        return (self.times_tested, self.last_tested_at, self.claim)
+
     def preview(self) -> str:
         confidence = (
             f"{self.confidence:.2f}" if self.confidence is not None else "no confidence recorded"
@@ -977,11 +984,7 @@ def collapse_duplicate_priors(
     for prior in priors:
         seen[prior.prior_id] = seen.get(prior.prior_id, 0) + 1
         incumbent = best.get(prior.prior_id)
-        if incumbent is None or (
-            prior.times_tested,
-            prior.last_tested_at,
-            prior.claim,
-        ) > (incumbent.times_tested, incumbent.last_tested_at, incumbent.claim):
+        if incumbent is None or prior.fork_rank > incumbent.fork_rank:
             best[prior.prior_id] = prior
     # Insertion order, so a graph with no duplicates is returned untouched and
     # the downstream sort sees exactly what it saw before this function existed.

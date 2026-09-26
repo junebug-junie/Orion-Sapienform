@@ -13,13 +13,16 @@ Three writes per investigation run, all by Hub:
 2. When the turn starts, the same row's `turn_started_at` and
    `turn_snapshot`: every prior's confidence, tested count and run stamps.
    Taken at turn START, not at dispatch, because a durable run can wait in
-   admission for hours while other turns move priors. Only the first attempt
-   writes it -- even when the graph could not be read and the snapshot is
-   NULL -- so a retried run is scored from where it actually began, or not at
-   all, never from wherever the retry happened to start.
+   admission for hours while other turns move priors. The first snapshot
+   taken wins, so a retried run is scored from where it began. If the first
+   attempt could not read the graph, a retry may take the snapshot -- and the
+   score refuses any start that already carries this run's own stamps
+   (`value.diff_snapshots`), so a retry is scored only when the attempt
+   before it wrote nothing: from where the run really began, or not at all.
 3. When the turn ends, `curiosity_run_outcomes`: the diff, scored in nats
    (`orion/curiosity/value.py`), whether the turn produced text (`turn_ok`),
-   plus agreement with the `:PriorRevision` nodes Orion wrote by hand.
+   why the score is unknown when it is (`unknown_reason`), plus agreement
+   with the `:PriorRevision` nodes Orion wrote by hand.
 
 Best-effort throughout: every function logs and returns a neutral value
 rather than raise into the curiosity loop. A missing table (migration not
@@ -55,7 +58,7 @@ from orion.curiosity.value import (
     prior_tests_from_rows,
     valid_confidence,
 )
-from orion.curiosity.worldview import Prior, WorldviewReader, WorldviewUnavailable
+from orion.curiosity.worldview import Prior, WorldviewReader, WorldviewUnavailable, build_prior
 
 logger = logging.getLogger("orion-hub.curiosity_offer_decisions")
 
@@ -68,7 +71,9 @@ SNAPSHOT_RETENTION_DAYS = 14.0
 
 # asyncpg's UndefinedTableError. Matched on the SQLSTATE, not the message: a
 # missing COLUMN also says "does not exist", and that is schema drift to
-# report every time, not a migration to wait for.
+# report every time, not a migration to wait for. (Postgres also raises
+# 42P01 for a query bug such as a missing FROM entry, so the one warning
+# carries the error text.)
 _UNDEFINED_TABLE = "42P01"
 
 INSERT_DECISION_SQL = """
@@ -80,8 +85,8 @@ ON CONFLICT (run_id) DO NOTHING
 
 SET_TURN_SNAPSHOT_SQL = """
 UPDATE curiosity_offer_decisions
-SET turn_snapshot = $2::jsonb, turn_started_at = now()
-WHERE run_id = $1 AND turn_started_at IS NULL
+SET turn_snapshot = $2::jsonb, turn_started_at = COALESCE(turn_started_at, now())
+WHERE run_id = $1 AND turn_snapshot IS NULL
 """
 
 PRUNE_TURN_SNAPSHOTS_SQL = """
@@ -96,13 +101,14 @@ SELECT turn_snapshot FROM curiosity_offer_decisions WHERE run_id = $1
 
 UPSERT_OUTCOME_SQL = """
 INSERT INTO curiosity_run_outcomes (
-    run_id, turn_ok, realized_nats, n_tested, n_moved, n_formed, n_moved_untested,
-    n_unattributed, n_invalid_confidence, per_prior, revision_agreement
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
+    run_id, turn_ok, realized_nats, unknown_reason, n_tested, n_moved, n_formed,
+    n_moved_untested, n_unattributed, n_invalid_confidence, per_prior, revision_agreement
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12)
 ON CONFLICT (run_id) DO UPDATE SET
     completed_at = now(),
     turn_ok = EXCLUDED.turn_ok,
     realized_nats = EXCLUDED.realized_nats,
+    unknown_reason = EXCLUDED.unknown_reason,
     n_tested = EXCLUDED.n_tested,
     n_moved = EXCLUDED.n_moved,
     n_formed = EXCLUDED.n_formed,
@@ -143,10 +149,11 @@ def _log_failure(what: str, run_id: Optional[str], exc: BaseException) -> None:
         if not _warned_missing_table:
             _warned_missing_table = True
             logger.warning(
-                "curiosity_spend_log_table_missing op=%s -- apply %s; until then "
+                "curiosity_spend_log_table_missing op=%s err=%s -- apply %s; until then "
                 "offers and outcomes are not recorded and value ordering runs on a "
                 "cold (uncertainty-equivalent) model",
                 what,
+                text[:200],
                 MIGRATION,
             )
         return
@@ -184,7 +191,20 @@ def read_prior_states(reader: WorldviewReader) -> Optional[dict[str, PriorState]
             ATLAS_PRIORS_LIMIT,
         )
         return None
-    return index_states(s for s in (PriorState.from_json(r) for r in rows) if s is not None)
+    # A forked prior (one id, several nodes) keeps the copy the OFFER keeps --
+    # `Prior.fork_rank`, via `collapse_duplicate_priors`'s rule -- so the
+    # "before" is the confidence Orion was shown, not a sibling's.
+    best: dict[str, tuple[tuple, PriorState]] = {}
+    for row in rows:
+        state = PriorState.from_json(row)
+        if state is None:
+            continue
+        prior = build_prior(row)
+        rank = prior.fork_rank if prior is not None else (state.times_tested, "", "")
+        seen = best.get(state.prior_id)
+        if seen is None or rank > seen[0]:
+            best[state.prior_id] = (rank, state)
+    return {prior_id: state for prior_id, (_, state) in best.items()}
 
 
 def read_run_revisions(
@@ -283,11 +303,12 @@ async def record_offer_decision(
 async def record_turn_snapshot(
     pool: Any, run_id: str, states: Optional[Mapping[str, PriorState]]
 ) -> bool:
-    """First attempt wins (`turn_started_at IS NULL`). `states=None` -- the
-    graph could not be read -- still marks the turn started, with no
-    snapshot, so the run is scored as unknown rather than from a retry's
-    start. A run with no decision row -- not an investigation, or its
-    dispatch write failed -- is a no-op."""
+    """The first snapshot taken wins (`turn_snapshot IS NULL`); the first
+    attempt's start time is kept either way. `states=None` -- the graph could
+    not be read -- marks the turn started with no snapshot, which a retry may
+    fill; a filled-in start that already carries this run's stamps is scored
+    unknown, never partial. A run with no decision row -- not an
+    investigation, or its dispatch write failed -- is a no-op."""
     if pool is None:
         _no_pool("record_turn_snapshot")
         return False
@@ -351,6 +372,7 @@ async def record_run_outcome(
                 run_id,
                 bool(turn_ok),
                 outcome.realized_nats,
+                outcome.unknown_reason,
                 outcome.n_tested,
                 outcome.n_moved,
                 outcome.n_formed,

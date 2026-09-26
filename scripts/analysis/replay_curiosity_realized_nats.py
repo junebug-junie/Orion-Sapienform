@@ -48,6 +48,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from orion.curiosity.atlas import ATLAS_PRIORS_LIMIT  # noqa: E402
 from orion.curiosity.value import (  # noqa: E402
     ARM_UNCERTAINTY_ORDER,
     ARM_VALUE_ORDER,
@@ -107,6 +108,9 @@ def runs_per_arm_to_detect_doubling(mean_nats: Optional[float], sd_nats: Optiona
 
 @dataclass
 class GraphSummary:
+    # True when the prior read filled the Atlas query's unordered row cap:
+    # every count below is then a lower bound.
+    truncated: bool = False
     priors: int = 0
     total_tests: int = 0
     revisions: int = 0
@@ -121,8 +125,10 @@ def summarize_graph(prior_rows: Sequence[dict[str, Any]], revision_rows: Sequenc
     confidences: list[float] = []
     for row in prior_rows:
         try:
-            tests += max(0, int(row.get("times_tested") or 0))
-        except (TypeError, ValueError):
+            # int(float(...)): FalkorDB hands numbers back as strings, and
+            # Orion sometimes writes "2.0" -- the rule the spend log reads by.
+            tests += max(0, int(float(row.get("times_tested") or 0)))
+        except (TypeError, ValueError, OverflowError):
             pass
         c = valid_confidence(row.get("confidence"))
         if c is not None:
@@ -141,6 +147,7 @@ def summarize_graph(prior_rows: Sequence[dict[str, Any]], revision_rows: Sequenc
         else None
     )
     return GraphSummary(
+        truncated=len(prior_rows) >= ATLAS_PRIORS_LIMIT,
         priors=len(prior_rows),
         total_tests=tests,
         revisions=len(revision_rows),
@@ -163,6 +170,18 @@ def completed_turns(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     """Rows whose turn produced text. A failed turn is scored (it may have
     written before failing) but its 0.0 would read as a real "moved nothing"."""
     return [r for r in rows if r.get("turn_ok") is not False]
+
+
+def unknown_by_reason(rows: Sequence[dict[str, Any]]) -> dict[str, int]:
+    """Completed turns whose realized nats is unknown, by the reason Hub
+    recorded. A high unknown share is a measurement problem to fix before
+    any arm comparison, and the reason says which one."""
+    out: dict[str, int] = {}
+    for row in completed_turns(rows):
+        if row.get("realized_nats") is None:
+            reason = row.get("unknown_reason") or "unrecorded"
+            out[reason] = out.get(reason, 0) + 1
+    return out
 
 
 def failed_turns_by_arm(rows: Sequence[dict[str, Any]]) -> dict[str, int]:
@@ -212,7 +231,7 @@ def verdict(dist: Distribution, *, max_days: int) -> tuple[str, Optional[int]]:
 # --- I/O ------------------------------------------------------------------------
 
 PG_SQL = """
-SELECT o.realized_nats, d.arm, o.turn_ok
+SELECT o.realized_nats, d.arm, o.turn_ok, o.unknown_reason
 FROM curiosity_run_outcomes o
 LEFT JOIN curiosity_offer_decisions d USING (run_id)
 ORDER BY o.completed_at ASC
@@ -226,7 +245,10 @@ def read_pg(dsn: str) -> Optional[list[dict[str, Any]]]:
     try:
         with conn.cursor() as cur:
             cur.execute(PG_SQL)
-            return [{"realized_nats": r[0], "arm": r[1], "turn_ok": r[2]} for r in cur.fetchall()]
+            return [
+                {"realized_nats": r[0], "arm": r[1], "turn_ok": r[2], "unknown_reason": r[3]}
+                for r in cur.fetchall()
+            ]
     finally:
         conn.close()
 
@@ -288,6 +310,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "runs": asdict(dist),
                 "failed_turns": len(rows) - len(completed_turns(rows)),
                 "failed_turns_by_arm": failed_turns_by_arm(rows),
+                "unknown_by_reason": unknown_by_reason(rows),
                 "fraction_zero": dist.fraction_zero,
                 "runs_per_arm_needed": need,
                 "verdict": text,
@@ -302,7 +325,8 @@ def _render(report: dict[str, Any]) -> str:
     if "graph" in report:
         g = report["graph"]
         lines += [
-            f"graph: {g['priors']} priors, {g['total_tests']} tests, {g['revisions']} revisions",
+            f"graph: {g['priors']} priors, {g['total_tests']} tests, {g['revisions']} revisions"
+            + (" (TRUNCATED at the Atlas row cap: counts are lower bounds)" if g["truncated"] else ""),
             f"  {g['verdict']}",
             f"  distinct confidences {g['distinct_confidences']}, on a 0.05 grid: {g['on_005_grid']}",
             f"  moved-test nats: {g['revision_nats']}",
@@ -312,6 +336,7 @@ def _render(report: dict[str, Any]) -> str:
         lines += [
             f"spend log (completed turns): {s['runs']}",
             f"  failed turns, left out: {s['failed_turns']} {s['failed_turns_by_arm']}",
+            f"  unknown, by reason: {s['unknown_by_reason']}",
             f"  fraction exactly 0: {s['fraction_zero']}",
             f"  {s['verdict']}",
             f"  arms: {s['arms']}",

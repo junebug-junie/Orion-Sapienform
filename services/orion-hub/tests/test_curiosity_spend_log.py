@@ -73,19 +73,21 @@ class _SpendConn(_FakeConn):
             self.decisions.setdefault(args[0], row)
         elif sql == SET_TURN_SNAPSHOT_SQL:
             row = self.decisions.get(args[0])
-            # The first-attempt-wins gate is read from the real SQL, so a
+            # The first-snapshot-wins gate is read from the real SQL, so a
             # change to it changes this fake too.
             gate = re.search(r"AND (\w+) IS NULL", SET_TURN_SNAPSHOT_SQL).group(1)
             if row is not None and row[gate] is None:
-                row["turn_started_at"] = "now()"
+                assert "COALESCE(turn_started_at, now())" in SET_TURN_SNAPSHOT_SQL
+                row["turn_started_at"] = row["turn_started_at"] or "now()"
                 # asyncpg hands jsonb back as text; None stays SQL NULL.
                 row["turn_snapshot"] = None if args[1] is None else json.dumps(_jsonb(args[1]))
         elif sql == PRUNE_TURN_SNAPSHOTS_SQL:
             self.pruned.append(args[0])
         elif sql == UPSERT_OUTCOME_SQL:
             keys = (
-                "turn_ok", "realized_nats", "n_tested", "n_moved", "n_formed", "n_moved_untested",
-                "n_unattributed", "n_invalid_confidence", "per_prior", "revision_agreement",
+                "turn_ok", "realized_nats", "unknown_reason", "n_tested", "n_moved", "n_formed",
+                "n_moved_untested", "n_unattributed", "n_invalid_confidence", "per_prior",
+                "revision_agreement",
             )
             assert len(args) == len(keys) + 1
             row = dict(zip(keys, args[1:]))
@@ -177,6 +179,7 @@ def test_a_tick_records_the_offer_the_start_snapshot_and_what_the_run_moved() ->
 
     outcome = conn.outcomes[run_id]
     assert outcome["turn_ok"] is True
+    assert outcome["unknown_reason"] is None
     assert outcome["realized_nats"] == pytest.approx(kl_nats(0.92, 0.95))
     assert (outcome["n_tested"], outcome["n_moved"], outcome["n_formed"]) == (1, 1, 1)
     assert outcome["n_unattributed"] == 1
@@ -338,7 +341,8 @@ def test_an_unreadable_graph_at_turn_start_is_scored_unknown_not_zero() -> None:
     loop._generate = _generate
     asyncio.run(loop._turn_result_for(_request(run_id), hold_lock=False))
     assert conn.outcomes[run_id]["realized_nats"] is None
-    # The start is still recorded, with no snapshot: a retry cannot take one.
+    assert conn.outcomes[run_id]["unknown_reason"] == "no_start_snapshot"
+    # The start is still recorded, with no snapshot.
     assert conn.decisions[run_id]["turn_started_at"] is not None
     assert conn.decisions[run_id]["turn_snapshot"] is None
 
@@ -373,11 +377,43 @@ def test_a_retry_after_an_unreadable_start_stays_unknown_not_partial() -> None:
     _moves_during_turn(loop, reader, lambda rid: [_state("p1", 0.7, 1, last_run_id=rid)])
     asyncio.run(loop._turn_result_for(_request(run_id, attempt=1), hold_lock=False))
     assert conn.outcomes[run_id]["realized_nats"] is None
+    started = conn.decisions[run_id]["turn_started_at"]
     _moves_during_turn(loop, reader, lambda rid: [_state("p1", 0.75, 2, last_run_id=rid)])
     loop._turn_results.clear()
     asyncio.run(loop._turn_result_for(_request(run_id, attempt=2), hold_lock=False))
-    assert conn.decisions[run_id]["turn_snapshot"] is None  # the retry did not take one
-    assert conn.outcomes[run_id]["realized_nats"] is None
+    # The retry takes the snapshot the first attempt could not -- and it
+    # already carries this run's stamp, so the score refuses it.
+    assert conn.decisions[run_id]["turn_snapshot"] is not None
+    assert conn.decisions[run_id]["turn_started_at"] == started
+    outcome = conn.outcomes[run_id]
+    assert outcome["realized_nats"] is None
+    assert outcome["unknown_reason"] == "start_stamped_by_this_run"
+
+
+def test_a_retry_after_an_unreadable_start_that_wrote_nothing_is_scored() -> None:
+    # Review finding (second round): gating the snapshot on the start TIME
+    # made every retry after a graph blip unknown, even when the blipped
+    # attempt wrote nothing -- a lost result the stamp check already guards.
+    bus = _FakeBus()
+    conn = _SpendConn()
+    run_id = "f2b2c3d4e5f6"
+    _dispatched(conn, run_id)
+    reader = _BlipAtFirstSnapshot(answers={ATLAS_NEEDLE: [_state("p1", 0.5, 0)], REVISION_NEEDLE: []})
+    loop = _graph_loop(bus, reader=reader, conn=conn)
+
+    async def _nothing_written(*_a, **_kw):
+        return "", {"error": "timeout", "elapsed_sec": 900.0}
+
+    loop._generate = _nothing_written
+    asyncio.run(loop._turn_result_for(_request(run_id, attempt=1), hold_lock=False))
+    assert conn.outcomes[run_id]["unknown_reason"] == "no_start_snapshot"
+    _moves_during_turn(loop, reader, lambda rid: [_state("p1", 0.8, 1, last_run_id=rid)])
+    loop._turn_results.clear()
+    asyncio.run(loop._turn_result_for(_request(run_id, attempt=2), hold_lock=False))
+    outcome = conn.outcomes[run_id]
+    assert outcome["turn_ok"] is True
+    assert outcome["unknown_reason"] is None
+    assert outcome["realized_nats"] == pytest.approx(kl_nats(0.8, 0.5))
 
 
 def test_a_failed_turn_is_flagged_so_its_zero_is_not_read_as_a_result() -> None:
@@ -464,7 +500,9 @@ def _columns(sql: str) -> set[str]:
 
 
 def test_the_migration_declares_every_column_the_writer_uses() -> None:
-    ddl = MIGRATION.read_text(encoding="utf-8")
+    # SQL line comments stripped first: a ");" inside one would otherwise end
+    # the table early for this parser.
+    ddl = re.sub(r"--[^\n]*", "", MIGRATION.read_text(encoding="utf-8"))
     decisions_ddl = ddl.split("CREATE TABLE IF NOT EXISTS curiosity_offer_decisions", 1)[1].split(");", 1)[0]
     outcomes_ddl = ddl.split("CREATE TABLE IF NOT EXISTS curiosity_run_outcomes", 1)[1].split(");", 1)[0]
     insert_cols = re.search(r"\(\s*([a-z_,\s]+)\)\s*VALUES", INSERT_DECISION_SQL).group(1)
@@ -475,3 +513,78 @@ def test_the_migration_declares_every_column_the_writer_uses() -> None:
         assert re.search(rf"^\s*{col}\s", outcomes_ddl, re.M), f"curiosity_run_outcomes.{col}"
     assert "run_id text PRIMARY KEY" in decisions_ddl
     assert "run_id text PRIMARY KEY" in outcomes_ddl
+
+
+# --- a forked prior is scored from the copy Orion was shown ------------------------
+
+
+def _fork_copy(claim, confidence, tested, *, last_run_id=""):
+    return {
+        "prior_id": "forked", "claim": claim, "confidence": str(confidence), "status": "open",
+        "times_tested": tested, "formed_from": "", "last_tested_at": "", "run_id": "",
+        "last_run_id": last_run_id,
+    }
+
+
+def test_a_forked_prior_is_scored_from_the_copy_the_offer_showed() -> None:
+    # Review finding (second round): the snapshot broke fork ties on
+    # confidence, the offer on (tested, last_tested_at, claim). With both
+    # copies untested -- the usual fork -- the offer showed 0.55 and the
+    # snapshot scored from 0.9, so a test binding both copies to 0.6 recorded
+    # 0.311 nats instead of 0.005, and a 0.9 -> 0.6 move entered yield history.
+    bus = _FakeBus()
+    conn = _SpendConn()
+    fork = [_fork_copy("zeta: the shown copy", 0.55, 0), _fork_copy("alpha: its sibling", 0.9, 0)]
+    reader = _reader(fork, live=fork)
+    loop = _graph_loop(bus, reader=reader, conn=conn)
+
+    def after(run_id):
+        # MATCH on prior_id binds EVERY copy, so one test moves both.
+        return [
+            _fork_copy("zeta: the shown copy", 0.6, 1, last_run_id=run_id),
+            _fork_copy("alpha: its sibling", 0.6, 1, last_run_id=run_id),
+        ]
+
+    _moves_during_turn(loop, reader, after)
+    assert asyncio.run(loop.tick()) is None
+    (decision,) = conn.decisions.values()
+    assert [o["confidence"] for o in decision["offered"]] == [0.55]
+    assert "zeta: the shown copy" in loop.seen_prompt
+    (outcome,) = conn.outcomes.values()
+    assert outcome["realized_nats"] == pytest.approx(kl_nats(0.6, 0.55))
+    assert outcome["per_prior"][0]["before"] == 0.55
+
+
+# --- the prompt describes the order the same way on both arms ----------------------
+
+
+def _ordering_lines(prompt: str) -> list[str]:
+    start = prompt.index("WHAT YOU ARE STILL UNSURE OF")
+    block = prompt[start:].split("\n  - ", 1)[0]
+    return block.splitlines()[1:]  # the header's counts can differ; the words cannot
+
+
+def test_both_arms_read_the_same_words_about_the_order() -> None:
+    # Review finding (second round): the value arm told Orion "the ones you
+    # were least sure about come first ... nothing here says which one is
+    # worth your time" above a list ordered by expected value. The order is
+    # the experiment's treatment, so the words describing it must be the same
+    # on both arms -- and true of both.
+    prompts = {}
+    for arm_on in (False, True):
+        bus = _FakeBus()
+        conn = _SpendConn()
+        states = [_state("half", 0.5, 0), _state("lean", 0.7, 0)]
+        reader = _reader(states)
+        loop = _graph_loop(
+            bus, reader=reader, conn=conn, value_order_enabled=arm_on, value_order_propensity=1.0
+        )
+        _moves_during_turn(loop, reader, lambda rid: states)
+        assert asyncio.run(loop.tick()) is None
+        (decision,) = conn.decisions.values()
+        assert decision["arm"] == (ARM_VALUE_ORDER if arm_on else ARM_UNCERTAINTY_ORDER)
+        prompts[arm_on] = loop.seen_prompt
+    assert _ordering_lines(prompts[False]) == _ordering_lines(prompts[True])
+    for prompt in prompts.values():
+        assert "least sure about come first" not in prompt
+        assert "the code estimates a test could change your mind the most" in prompt

@@ -34,10 +34,15 @@ summing surprises would make it the most valuable prior forever (the noisy-TV
 trap). Its net change over the window is ~0 -- and because a flip-flop
 nets a full swing over any odd-length window, net change is also discounted
 by the window's straightness (net displacement over path length) -- so its
-value falls. Yield is
+value falls. Only progress a recorded test MADE and that was still there at
+the end of the window is credited: a prior's scored tests are not a
+continuous chain whenever something moved it between two of them. Yield is
 pulled toward the pool average while a prior has few tests (empirical-Bayes
 shrinkage), and with no history at all the pool yield is 1.0, which makes
 value order identical to today's most-uncertain-first order.
+
+`realized_nats` of None is always paired with an `unknown_reason`, so an
+unknown run says why it is unknown.
 """
 
 from __future__ import annotations
@@ -65,6 +70,14 @@ KIND_TESTED = "tested"
 KIND_FORMED = "formed"
 KIND_MOVED_UNTESTED = "moved_untested"
 
+# Why a run's realized_nats is unknown. Recorded with the outcome, so the
+# replay can tell a flaky graph from a protocol problem.
+UNKNOWN_NO_START_SNAPSHOT = "no_start_snapshot"  # unreadable, over the row cap, or expired
+UNKNOWN_NO_END_SNAPSHOT = "no_end_snapshot"
+UNKNOWN_NO_RUN_ID = "no_run_id"
+UNKNOWN_START_STAMPED = "start_stamped_by_this_run"  # an earlier attempt wrote first
+UNKNOWN_NO_SCORABLE_TEST = "no_scorable_test"  # every tested prior had an unusable confidence
+
 
 def valid_confidence(value: Any) -> Optional[float]:
     """A usable confidence, or None. Out-of-range or non-finite is None, not
@@ -86,9 +99,12 @@ def _clamp(p: float) -> float:
 
 
 def entropy_nats(p: Optional[float]) -> float:
-    """Binary entropy in nats. A prior with no usable confidence reads as
-    maximally uncertain (ln 2), the same honest reading `Prior.uncertainty`
-    gives "Orion never said how sure it was"."""
+    """Binary entropy in nats. A prior with no usable confidence -- none, or
+    one `valid_confidence` rejects -- reads as maximally uncertain (ln 2),
+    the same honest reading `Prior.uncertainty` gives "Orion never said how
+    sure it was". Validated here, not by callers, so a 1.7 can never read as
+    near-certain through a caller that forgot."""
+    p = valid_confidence(p)
     if p is None:
         return math.log(2.0)
     q = _clamp(p)
@@ -157,11 +173,11 @@ def _fork_rank(state: PriorState) -> tuple:
 
 
 def index_states(states: Iterable[PriorState]) -> dict[str, PriorState]:
-    """By prior_id. A forked prior (one id, several nodes) keeps the copy with
-    the most tests -- the same "most evidence wins" rule
-    `worldview.collapse_duplicate_priors` applies to the offer -- and breaks
-    ties on the copy's own values, never on read order, so the start and end
-    snapshots of one run pick the same copy."""
+    """By prior_id, most-tested copy of a fork first, ties broken on the
+    copy's own values, never on read order. Graph snapshots are collapsed
+    before this, with the offer's own rule (`read_prior_states` in Hub), so
+    the copy scored is the copy Orion was shown; this is for already-unique
+    snapshots and for callers without the raw rows."""
     out: dict[str, PriorState] = {}
     for state in states:
         seen = out.get(state.prior_id)
@@ -192,10 +208,11 @@ class PriorOutcome:
 
 @dataclass(frozen=True)
 class RunOutcome:
-    """What one run changed. `realized_nats` is None when either snapshot was
-    unreadable -- unknown is never reported as zero."""
+    """What one run changed. `realized_nats` is None when it cannot be known,
+    with `unknown_reason` saying why -- unknown is never reported as zero."""
 
     realized_nats: Optional[float]
+    unknown_reason: Optional[str] = None
     per_prior: tuple[PriorOutcome, ...] = ()
     n_tested: int = 0
     n_moved: int = 0
@@ -230,10 +247,14 @@ def diff_snapshots(
     start: an earlier attempt of the same run wrote to the graph before it was
     taken (that attempt's own start was never recorded). Scoring from there
     would report part of the run as all of it, so the answer is unknown."""
-    if before is None or after is None or not run_id:
-        return RunOutcome(realized_nats=None)
+    if before is None:
+        return RunOutcome(realized_nats=None, unknown_reason=UNKNOWN_NO_START_SNAPSHOT)
+    if after is None:
+        return RunOutcome(realized_nats=None, unknown_reason=UNKNOWN_NO_END_SNAPSHOT)
+    if not run_id:
+        return RunOutcome(realized_nats=None, unknown_reason=UNKNOWN_NO_RUN_ID)
     if any(s.last_run_id == run_id or s.run_id == run_id for s in before.values()):
-        return RunOutcome(realized_nats=None)
+        return RunOutcome(realized_nats=None, unknown_reason=UNKNOWN_START_STAMPED)
     outcomes: list[PriorOutcome] = []
     total = 0.0
     n_scored = 0
@@ -280,11 +301,12 @@ def diff_snapshots(
             outcomes.append(
                 PriorOutcome(prior_id, KIND_MOVED_UNTESTED, was.confidence, now.confidence, 0, nats)
             )
-    # Tested priors, none of them scorable (every confidence invalid): what
-    # the run bought is unknown, not zero.
-    realized = None if n_tested and not n_scored else total
+    # Tested priors, none of them scorable (a confidence unusable before or
+    # after every test): what the run bought is unknown, not zero.
+    unscorable = bool(n_tested) and not n_scored
     return RunOutcome(
-        realized_nats=realized,
+        realized_nats=None if unscorable else total,
+        unknown_reason=UNKNOWN_NO_SCORABLE_TEST if unscorable else None,
         per_prior=tuple(outcomes),
         n_tested=n_tested,
         n_moved=n_moved,
@@ -337,36 +359,55 @@ def prior_tests_from_rows(rows: Iterable[Mapping[str, Any]]) -> list[PriorTestRe
     return out
 
 
-def _recorded_net(tests: Sequence[PriorTestRecord]) -> float:
-    """Sum of the moves the recorded tests made. Not `last.after -
-    first.before`: something else can move a prior BETWEEN two scored tests
-    -- another run, an unstamped edit, a run whose snapshot was unreadable --
-    and that jump is not this prior's tests' doing. Summing only recorded
-    moves keeps the rule the snapshot diff already applies: only changes a
-    test made count."""
-    return sum(t.after - t.before for t in tests)
+def _credited_net(tests: Sequence[PriorTestRecord]) -> float:
+    """The part of the window's net belief change that the recorded tests
+    made AND that was still there at the end.
+
+    A prior's scored tests are not a continuous chain whenever something
+    moved it BETWEEN two of them -- a self-inquiry turn (never measured), an
+    unstamped edit, a run scored unknown. Two nets can then disagree:
+
+    - observed, `last.after - first.before`: where the belief actually went.
+      A jump between tests is not the tests' doing, so this alone credits a
+      forward jump as progress ([0.5->0.5], gap, [0.9->0.9] "learned" 0.4).
+    - recorded, the sum of the tests' own moves. A jump that UNDID a test
+      means that progress did not stick, so this alone credits a belief the
+      tests keep pushing up and something keeps knocking back down.
+
+    Credit the smaller, when both point the same way; otherwise nothing. The
+    credited end point then always lies between the first tested value and
+    the last observed one."""
+    recorded = sum(t.after - t.before for t in tests)
+    observed = tests[-1].after - tests[0].before
+    if recorded * observed <= 0.0:
+        return 0.0
+    return math.copysign(min(abs(recorded), abs(observed)), recorded)
 
 
 def straightness(tests: Sequence[PriorTestRecord]) -> float:
-    """|net recorded move| over path length, in confidence units: 1.0 for a
-    belief that moved one way, 1/3 for one that flipped 0.7 -> 0.3 -> 0.7 ->
-    0.3, 1.0 for one that never moved (there is no wasted motion to discount;
-    its net KL is already 0). Always in [0, 1]. The straightness index of
-    movement ecology (Batschelet 1981; Benhamou 2004), used here because net
-    KL alone is parity-blind: a period-2 flip-flop nets one full swing over
-    any odd window, which would read as real progress."""
-    path = sum(abs(t.after - t.before) for t in tests)
+    """Net displacement over path length of the belief's whole trajectory in
+    the window -- the tests' moves AND any jumps between them -- in confidence
+    units: 1.0 for a belief that moved one way, 1/3 for one that flipped
+    0.7 -> 0.3 -> 0.7 -> 0.3, 1.0 for one that never moved (no wasted motion
+    to discount; its net KL is already 0). Always in [0, 1]. The straightness
+    index of movement ecology (Batschelet 1981; Benhamou 2004), used here
+    because net KL alone is parity-blind: a period-2 flip-flop nets one full
+    swing over any odd window, which would read as real progress."""
+    path = 0.0
+    for i, t in enumerate(tests):
+        path += abs(t.after - t.before)
+        if i + 1 < len(tests):
+            path += abs(tests[i + 1].before - t.after)
     if path <= 0.0:
         return 1.0
-    return abs(_recorded_net(tests)) / path
+    return min(1.0, abs(tests[-1].after - tests[0].before) / path)
 
 
 def _window_progress_and_offered(tests: Sequence[PriorTestRecord]) -> tuple[float, float]:
-    """(net KL x straightness, uncertainty offered) over one window. The net
-    end point is where the recorded moves alone would have taken the belief
-    from its first tested value."""
+    """(credited net KL x straightness, uncertainty offered) over one window.
+    Uncertainty is charged per test, at the confidence it was offered at."""
     start = tests[0].before
-    progress = kl_nats(start + _recorded_net(tests), start) * straightness(tests)
+    progress = kl_nats(start + _credited_net(tests), start) * straightness(tests)
     offered = sum(entropy_nats(t.before) for t in tests)
     return progress, offered
 

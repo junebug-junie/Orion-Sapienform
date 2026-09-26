@@ -994,8 +994,9 @@ class CuriosityInvestigation:
             return
         try:
             # None when unreadable: the start is still recorded, with no
-            # snapshot, so this run's outcome is unknown (null) -- never zero,
-            # and never a retry's partial number.
+            # snapshot. A retry may fill it in; the score refuses a start that
+            # already carries this run's stamps, so unknown is never zero and
+            # never a retry's partial number.
             states = await asyncio.to_thread(read_prior_states, self._reader)
             await record_turn_snapshot(self._pool_provider(), run_id, states)
         except Exception as exc:  # noqa: BLE001
@@ -1025,7 +1026,11 @@ class CuriosityInvestigation:
                 "formed=%s moved_untested=%s unattributed=%s revision_agreement=%s",
                 run_id,
                 turn_ok,
-                "unknown" if outcome.realized_nats is None else f"{outcome.realized_nats:.4f}",
+                (
+                    f"unknown({outcome.unknown_reason})"
+                    if outcome.realized_nats is None
+                    else f"{outcome.realized_nats:.4f}"
+                ),
                 outcome.n_tested,
                 outcome.n_moved,
                 outcome.n_formed,

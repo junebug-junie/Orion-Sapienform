@@ -1591,7 +1591,9 @@ def _normalize_home_cooling_sample_payload(write_data: dict) -> dict:
     if isinstance(provenance, dict) and provenance.get("zwave_node_id") is not None:
         out["zwave_node_id"] = int(provenance["zwave_node_id"])
 
-    out["payload_json"] = full_payload
+    # Live path often hands us model_dump() without mode="json", so nested
+    # datetime values (ts, etc.) would blow up JSON/JSONB binding. Sanitize.
+    out["payload_json"] = _json_sanitize(full_payload)
     out.pop("schema_name", None)
     out.pop("schema", None)
     return out

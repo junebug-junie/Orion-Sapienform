@@ -89,3 +89,26 @@ def test_a_real_payload_round_trips_through_the_column_filter() -> None:
     assert kept["device_online"] is True
     assert kept["payload_json"] == payload
     assert set(mapped) - cols <= {"schema_name", "schema", "controller", "device", "measurements", "state", "provenance"}
+
+
+def test_payload_json_sanitizes_datetime_from_plain_model_dump() -> None:
+    """Regression: live inserts failed with TypeError datetime not JSON serializable."""
+    now = datetime(2026, 9, 26, 4, 50, tzinfo=timezone.utc)
+    # mode="python" (default) leaves datetime objects — matches sql-writer ingest path.
+    payload = HomeCoolingSampleV1(
+        ts=now,
+        node="athena",
+        role="cabinet_cooling",
+        controller={"ready": True, "driver": "zwave-js"},
+        device={"id": "node-2", "name": "Cabinet AC", "online": True},
+        measurements={"cooling_watts": 33.11},
+        state={"switch_on": True},
+        provenance={"zwave_node_id": 2, "source": "zwave-js"},
+    ).model_dump()
+
+    assert isinstance(payload["ts"], datetime)
+    mapped = _normalize_home_cooling_sample_payload(payload)
+    blob = mapped["payload_json"]
+    assert isinstance(blob, dict)
+    assert isinstance(blob["ts"], str)
+    json.dumps(blob)  # must not raise

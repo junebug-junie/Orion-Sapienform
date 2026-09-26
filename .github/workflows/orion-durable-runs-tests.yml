@@ -98,6 +98,11 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: python services/orion-durable-runs/evals/hold_fairness.py
+      - name: Deploy-order skew eval (old pool refuses holds, then upgrades) on isolated Postgres
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
+        run: python services/orion-durable-runs/evals/deploy_order_skew.py
       - name: Gateway capacity contention eval on isolated Postgres
         env:
           PYTHONPATH: ${{ github.workspace }}

@@ -452,14 +452,17 @@ def test_unknown_route_fails_the_run_with_the_reason_instead_of_waiting_forever(
 def test_unreachable_pool_keeps_the_request_id_and_retries_idempotently():
     async def scenario(pool, saver, store):
         gpu = await InProcessPool().boot()
-        rt = runtime(pool, saver, store, gpu=gpu, DURABLE_RUNS_HOLD_STATUS_POLL_SEC=0.01)
+        rt = runtime(pool, saver, store, gpu=gpu, DURABLE_RUNS_HOLD_STATUS_POLL_SEC=0.01,
+                     DURABLE_RUNS_POOL_RETRY_BASE_SEC=0.01)
         rt.holds.bus.fail_next = 1
         req = request("unreachable-001")
         await rt.submit(req)
         await rt._drive(await store.get_run(req.run_id))
         snap = await rt.graph.aget_state(rt.config(req.run_id))
         assert snap.next == ("resource_wait",)
-        assert snap.values["hold"] == {"request_id": "unreachable-001:1", "lease_id": None}
+        hold = snap.values["hold"]
+        assert (hold["request_id"], hold["lease_id"], hold["refusals"]) == ("unreachable-001:1", None, 1)
+        assert hold["retry_at"]
         assert (await store.get_run(req.run_id))["terminal"] is None
         await asyncio.sleep(0.02)
         await rt._drive(await store.get_run(req.run_id))

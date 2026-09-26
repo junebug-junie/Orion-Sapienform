@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     # Door-A: how long a completed run's hold is kept for Hub's outreach composition before
     # durable-runs releases it itself (Hub normally releases it within minutes).
     outreach_hold_max_sec: float = Field(1800.0, gt=0.0, alias="DURABLE_RUNS_OUTREACH_HOLD_MAX_SEC")
+    # A hold request the pool could not take -- unreachable (RPC timeout), or a refusal that is
+    # about the pool rather than the run (version skew "invalid:*", a config roll's
+    # "unknown_class") -- keeps the run waiting and asks again after base * 2^(n-1) seconds,
+    # capped at max. Each refusal is a visible run.waiting_resource event with the reason.
+    pool_retry_base_sec: float = Field(15.0, gt=0.0, alias="DURABLE_RUNS_POOL_RETRY_BASE_SEC")
+    pool_retry_max_sec: float = Field(300.0, gt=0.0, alias="DURABLE_RUNS_POOL_RETRY_MAX_SEC")
     retry_max_attempts: int = Field(3, ge=1, le=20, alias="DURABLE_RUNS_RETRY_MAX_ATTEMPTS")
     retry_base_sec: float = Field(30.0, gt=0.0, alias="DURABLE_RUNS_RETRY_BASE_SEC")
     retry_max_sec: float = Field(300.0, gt=0.0, alias="DURABLE_RUNS_RETRY_MAX_SEC")

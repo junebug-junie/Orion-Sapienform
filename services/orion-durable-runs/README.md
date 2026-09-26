@@ -227,8 +227,23 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
   An unknown route fails the run with `gpu_pool_unknown_route:<route>` instead of waiting.
 - **`resource_wait`** interrupts until the pool grants. A waiting run is woken by the pool's
   `granted` event for its holder on `orion:gpu_pool:event`; the missed-event fallback is one
-  `status` read per `DURABLE_RUNS_HOLD_STATUS_POLL_SEC` (60 s). A hold the pool refuses
-  (dead-lettered, unavailable) fails the run with the pool's reason.
+  `status` read per `DURABLE_RUNS_HOLD_STATUS_POLL_SEC` (60 s).
+- **Which pool refusals fail a run** (`app/pool_hold.py` `refusal_is_terminal`). Only a refusal
+  that is a property of the run's own request: `deadline` (the hold's deadline is the run's, as
+  `workflow_deadline`), `min_ctx_exceeds_class`, `backlog_max_age`, `replay_payload_too_large`,
+  and `unknown_class` / `operator_only_class` *only when durable-runs' own `gpu_pool.yaml` agrees*.
+  Everything else is the pool's trouble, not the run's -- an unreachable pool (RPC timeout), a
+  version-skewed pool (`invalid:*`, `unknown_verb:*`; incident 2026-09-26, when an old pool
+  refused the 4.5 request shape and 11 runs were failed), a config roll, any unclassified reason.
+  Those keep the run `waiting_resource` under the same request id and ask again after
+  `DURABLE_RUNS_POOL_RETRY_BASE_SEC * 2^(n-1)` s (capped at `DURABLE_RUNS_POOL_RETRY_MAX_SEC`),
+  each one a `run.waiting_resource` event with `transient: true`, `pool_status`, `reason`,
+  `refusals`, `retry_at`. A skew refusal to `status`/`heartbeat`/`release` is treated like an
+  unanswered RPC (it says nothing about the hold). `backlogged` keeps waiting. A hold that was
+  granted and later dead-lettered/aborted is ended and re-asked under a new request id.
+- **Deploy order is not a boot gate.** durable-runs does not refuse to start or probe the pool
+  first: the hold acquire *is* the probe, and a pool that is down, old, or mid-roll now only makes
+  runs wait. A boot-time gate would add a way to hang the service without removing any failure.
 - **Work nodes** (curiosity `harness_turn`, self-sense `ask_questions`, reflect `llm_call`) run
   under `execute`, which heartbeats the hold every `DURABLE_RUNS_LEASE_HEARTBEAT_SEC` (must be at
   most half of the pool's `hold_lease_ttl_sec`, checked at boot). A lost hold stops the turn

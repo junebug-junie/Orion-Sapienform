@@ -5,11 +5,14 @@ No I/O here, so every publish decision is testable. main.py only loops and publi
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Optional
 
 from pydantic import BaseModel
+
+logger = logging.getLogger("orion-energy.pipeline")
 
 from orion.energy.ledger import UsageLedger
 from orion.energy.run_cost import estimate_run_cost
@@ -17,6 +20,7 @@ from orion.schemas.energy import (
     ENERGY_ACCRUED_KIND,
     ENERGY_RUN_COST_KIND,
     ENERGY_USAGE_KIND,
+    EnergyCostAccruedV1,
     EnergyRunCostEstimatedV1,
     EnergyUsageIntervalV1,
 )
@@ -66,7 +70,7 @@ class EnergyPipeline:
         for iv in intervals:
             self._ledger.upsert(iv)
         for point, cycle_start in sorted(self._ledger.all_cycles()):
-            self._ledger.accrue_cycle(point, cycle_start, computed_at=datetime.now(timezone.utc))
+            self._accrue_cycle(point, cycle_start, computed_at=datetime.now(timezone.utc))
 
     def ingest_intervals(self, intervals: Iterable[EnergyUsageIntervalV1], *, now: datetime) -> list[Outbound]:
         out: list[Outbound] = []
@@ -76,7 +80,7 @@ class EnergyPipeline:
                 out.append(Outbound(self._channels.usage, ENERGY_USAGE_KIND, iv))
                 affected.add((iv.usage_point_id, self._ledger.cycle_bounds(iv.interval_start)[0]))
         for point, cycle_start in sorted(affected):
-            for accrued in self._ledger.accrue_cycle(point, cycle_start, computed_at=now):
+            for accrued in self._accrue_cycle(point, cycle_start, computed_at=now):
                 out.append(Outbound(self._channels.accrued, ENERGY_ACCRUED_KIND, accrued))
         if affected:
             out.extend(self._reprice_pending(now=now))
@@ -86,6 +90,23 @@ class EnergyPipeline:
         est = self._estimate(settled, now=now)
         self._track(settled, est, now=now)
         return [Outbound(self._channels.run_cost, ENERGY_RUN_COST_KIND, est)]
+
+    def _accrue_cycle(
+        self, point: str, cycle_start: datetime, *, computed_at: datetime
+    ) -> list[EnergyCostAccruedV1]:
+        accrued_rows = self._ledger.accrue_cycle(point, cycle_start, computed_at=computed_at)
+        priced, total, covered_through = self._ledger.cycle_coverage(point, cycle_start)
+        if priced < total:
+            gap_at = covered_through if covered_through is not None else cycle_start
+            logger.warning(
+                "energy_cycle_incomplete usage_point=%s cycle_start=%s gap_at=%s priced=%d held=%d",
+                point,
+                cycle_start.date(),
+                gap_at.isoformat(),
+                priced,
+                total - priced,
+            )
+        return accrued_rows
 
     def _estimate(self, settled: PowerIntentSettledV1, *, now: datetime) -> EnergyRunCostEstimatedV1:
         return estimate_run_cost(settled, ledger=self._ledger, usage_point_id=self.usage_point(), computed_at=now)

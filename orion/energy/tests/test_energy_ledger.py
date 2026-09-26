@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -257,3 +258,56 @@ def test_all_cycles_and_usage_points() -> None:
         ("UP123", datetime(2026, 7, 1, tzinfo=DENVER)),
         ("UP9", datetime(2026, 8, 1, tzinfo=DENVER)),
     }
+
+
+def test_cycle_coverage_contiguous_prefix() -> None:
+    led = _ledger()
+    cycle_start, _ = led.cycle_bounds(datetime(2026, 9, 10, tzinfo=DENVER))
+    led.upsert(_span(cycle_start, cycle_start + timedelta(hours=2), 10.0))
+    led.upsert(_iv(cycle_start + timedelta(hours=2), 20.0))
+    priced, total, covered = led.cycle_coverage("UP123", cycle_start)
+    assert (priced, total) == (2, 2)
+    assert covered == cycle_start + timedelta(hours=3)
+
+
+def test_cycle_coverage_stops_at_hole() -> None:
+    led = _ledger()
+    cycle_start, _ = led.cycle_bounds(datetime(2026, 9, 10, tzinfo=DENVER))
+    hole_start = cycle_start + timedelta(hours=1)
+    second = cycle_start + timedelta(hours=2)
+    led.upsert(_span(cycle_start, hole_start, 10.0))
+    led.upsert(_iv(second, 20.0))
+    priced, total, covered = led.cycle_coverage("UP123", cycle_start)
+    assert (priced, total) == (1, 2)
+    assert covered == hole_start
+
+
+def test_cycle_coverage_empty_when_starts_late() -> None:
+    led = _ledger()
+    cycle_start, _ = led.cycle_bounds(datetime(2026, 9, 10, tzinfo=DENVER))
+    late = cycle_start + timedelta(hours=5)
+    led.upsert(_iv(late, 1.0))
+    priced, total, covered = led.cycle_coverage("UP123", cycle_start)
+    assert (priced, total) == (0, 1)
+    assert covered is None
+
+
+def test_reupsert_reaccrue_two_year_ledger_under_five_seconds() -> None:
+    led = _ledger()
+    cycle_start = datetime(2024, 9, 1, tzinfo=DENVER)
+    start = cycle_start.astimezone(timezone.utc)
+    retrieved = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    newer = retrieved + timedelta(days=1)
+    for i in range(17_520):
+        t = start + timedelta(hours=i)
+        led.upsert(_iv(t, 0.1, retrieved=retrieved))
+    led.accrue_cycle("UP123", cycle_start, computed_at=NOW)
+    t0 = time.perf_counter()
+    for i in range(17_520):
+        t = start + timedelta(hours=i)
+        led.upsert(_iv(t, 0.2, retrieved=newer))
+    for point, cs in sorted(led.all_cycles()):
+        led.accrue_cycle(point, cs, computed_at=NOW)
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 5.0
+    assert led.interval_cost_usd("UP123", start) is not None

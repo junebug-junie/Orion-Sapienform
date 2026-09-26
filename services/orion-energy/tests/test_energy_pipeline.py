@@ -177,3 +177,20 @@ def test_replay_warms_ledger_without_output() -> None:
     p.replay(_prepare(_iv(T - timedelta(hours=2), 100.0)))
     est = p.on_settlement(_settled(), now=NOW)[0].payload
     assert est.estimated_run_cost_usd is not None
+
+
+def test_mid_cycle_only_ingest_logs_incomplete_and_blocks_run_cost(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="orion-energy.pipeline")
+    p = _pipeline()
+    mid_cycle = datetime(2026, 9, 10, 18, tzinfo=timezone.utc)
+    iv = _iv(mid_cycle, 1.0)
+    out = p.ingest_intervals([iv], now=NOW)
+    assert len([o for o in out if o.kind == ENERGY_USAGE_KIND]) == 1
+    assert not [o for o in out if o.kind == ENERGY_ACCRUED_KIND]
+    assert any("energy_cycle_incomplete" in r.getMessage() for r in caplog.records)
+    est = p.on_settlement(_settled(), now=NOW)[0].payload
+    assert est.run_cost_gap == "no_cycle_usage"

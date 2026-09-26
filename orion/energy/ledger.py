@@ -26,7 +26,8 @@ class UsageLedger:
         self._tz = tz
         self._cycle_start_day = int(cycle_start_day)
         self._intervals: dict[str, dict[datetime, EnergyUsageIntervalV1]] = {}
-        self._accrued: dict[tuple[str, datetime], EnergyCostAccruedV1] = {}
+        self._accrued: dict[tuple[str, datetime], dict[datetime, EnergyCostAccruedV1]] = {}
+        self._dirty_cycles: set[tuple[str, datetime]] = set()
 
     @property
     def tariff(self) -> Tariff:
@@ -40,6 +41,9 @@ class UsageLedger:
     def _instant(ts: datetime) -> datetime:
         return ts.astimezone(timezone.utc)
 
+    def _cycle_key(self, usage_point_id: str, cycle_start: datetime) -> tuple[str, datetime]:
+        return usage_point_id, self._instant(cycle_start)
+
     def upsert(self, interval: EnergyUsageIntervalV1) -> bool:
         key = self._instant(interval.interval_start)
         bucket = self._intervals.setdefault(interval.usage_point_id, {})
@@ -47,8 +51,8 @@ class UsageLedger:
         if existing is not None and existing.retrieved_at > interval.retrieved_at:
             return False
         bucket[key] = interval
-        cycle_start, cycle_end = self.cycle_bounds(interval.interval_start)
-        self._purge_accrued_cycle(interval.usage_point_id, cycle_start, cycle_end)
+        cycle_start, _ = self.cycle_bounds(interval.interval_start)
+        self._dirty_cycles.add(self._cycle_key(interval.usage_point_id, cycle_start))
         return True
 
     def usage_points(self) -> set[str]:
@@ -98,18 +102,23 @@ class UsageLedger:
             prefix.append(iv)
         return prefix
 
-    def _purge_accrued_cycle(self, usage_point_id: str, cycle_start: datetime, cycle_end: datetime) -> None:
-        start_utc = self._instant(cycle_start)
-        end_utc = self._instant(cycle_end)
-        for key in [k for k in self._accrued if k[0] == usage_point_id and start_utc <= k[1] < end_utc]:
-            del self._accrued[key]
+    def cycle_coverage(
+        self, usage_point_id: str, cycle_start: datetime
+    ) -> tuple[int, int, Optional[datetime]]:
+        start, end = self.cycle_bounds(cycle_start)
+        in_cycle = self._in_cycle(usage_point_id, start, end)
+        prefix = self._contiguous_from_cycle_start(in_cycle, start)
+        covered = prefix[-1].interval_end if prefix else None
+        return len(prefix), len(in_cycle), covered
 
     def accrue_cycle(
         self, usage_point_id: str, cycle_start: datetime, *, computed_at: datetime
     ) -> list[EnergyCostAccruedV1]:
         start, end = self.cycle_bounds(cycle_start)
         prefix = self._contiguous_from_cycle_start(self._in_cycle(usage_point_id, start, end), start)
-        self._purge_accrued_cycle(usage_point_id, start, end)
+        cycle_key = self._cycle_key(usage_point_id, start)
+        self._dirty_cycles.discard(cycle_key)
+        cycle_cache: dict[datetime, EnergyCostAccruedV1] = {}
         cycle_kwh = 0.0
         cycle_cost = 0.0
         out: list[EnergyCostAccruedV1] = []
@@ -133,8 +142,9 @@ class UsageLedger:
                 cost_basis=self._tariff.cost_basis,
                 computed_at=computed_at,
             )
-            self._accrued[(usage_point_id, self._instant(iv.interval_start))] = accrued
+            cycle_cache[self._instant(iv.interval_start)] = accrued
             out.append(accrued)
+        self._accrued[cycle_key] = cycle_cache
         return out
 
     def cycle_kwh_before(self, usage_point_id: str, ts: datetime) -> Optional[tuple[float, datetime]]:
@@ -157,5 +167,9 @@ class UsageLedger:
         )
 
     def interval_cost_usd(self, usage_point_id: str, interval_start: datetime) -> Optional[float]:
-        accrued = self._accrued.get((usage_point_id, self._instant(interval_start)))
+        cycle_start, _ = self.cycle_bounds(interval_start)
+        cycle_key = self._cycle_key(usage_point_id, cycle_start)
+        if cycle_key in self._dirty_cycles:
+            return None
+        accrued = self._accrued.get(cycle_key, {}).get(self._instant(interval_start))
         return None if accrued is None else accrued.interval_cost_usd

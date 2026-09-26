@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 HELP_REQUEST_CHANNEL = "orion:curiosity:help:request"
 HELP_REQUEST_KIND = "curiosity.help.request.v1"
@@ -39,6 +39,25 @@ def clip(text: object, limit: int) -> str:
     return s if len(s) <= limit else s[: max(0, limit - 1)] + "…"
 
 
+class PeerAskExpectationV1(BaseModel):
+    """Orion's forecast and actual alternatives, authored before hiring."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    expected_reply: str = Field(min_length=1, max_length=2000)
+    if_not_asked: str = Field(min_length=1, max_length=2000)
+    alternatives: List[str] = Field(min_length=2, max_length=8)
+    chosen_action: Literal["hire_peer"] = "hire_peer"
+    within_seconds: int = Field(ge=1, le=86400)
+
+    @field_validator("alternatives")
+    @classmethod
+    def _alternatives(cls, values: List[str]) -> List[str]:
+        values = [v.strip() for v in values]
+        if "hire_peer" not in values or any(not v or len(v) > 200 for v in values) or len(set(values)) != len(values):
+            raise ValueError("record distinct nonempty alternatives including hire_peer")
+        return values
+
+
 class HelpRequestV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -51,6 +70,7 @@ class HelpRequestV1(BaseModel):
     tried_summary: str
     success_criteria: str
     written_at: datetime = Field(default_factory=_utc_now)
+    expectation: Optional[PeerAskExpectationV1] = None
 
     @field_validator("question", "tried_summary", "success_criteria", mode="before")
     @classmethod
@@ -111,6 +131,14 @@ class PeerBriefConsumedV1(BaseModel):
         "curiosity.peer.brief.consumed.v1"
     )
     brief_ids: List[str] = Field(default_factory=list)
+    consumer_run_id: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{6,32}$")
+    phase: Literal["offered", "completed"] = "offered"
+
+    @model_validator(mode="after")
+    def _completion_run(self):
+        if self.phase == "completed" and self.consumer_run_id is None:
+            raise ValueError("completion requires consumer_run_id")
+        return self
 
     @field_validator("brief_ids", mode="before")
     @classmethod

@@ -1,0 +1,40 @@
+name: Agency ask episodes
+on:
+  pull_request:
+    paths:
+      - 'orion/curiosity/**'
+      - 'orion/autonomy/agency_episode*.py'
+      - 'orion/autonomy/tests/test_agency_episode*.py'
+      - 'orion/schemas/curiosity_peer.py'
+      - 'orion/schemas/registry.py'
+      - 'orion/bus/channels.yaml'
+      - 'services/orion-curiosity-peer/**'
+      - 'services/orion-hub/scripts/curiosity_investigation.py'
+      - 'services/orion-hub/tests/test_curiosity_help_request_enqueue.py'
+      - 'tests/test_curiosity_peer*.py'
+      - '.github/workflows/agency-ask-episodes.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  contracts-and-lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r services/orion-curiosity-peer/requirements.txt pytest pytest-asyncio psycopg2-binary sqlalchemy httpx
+      # Separate service invocations avoid colliding top-level app packages.
+      - run: PYTHONPATH=services/orion-curiosity-peer:. python -m pytest services/orion-curiosity-peer/tests -q
+      - run: python -m pytest services/orion-hub/tests/test_curiosity_help_request_enqueue.py -q
+      - run: >-
+          python -m pytest tests/test_curiosity_peer_schema.py tests/test_curiosity_peer_registry.py
+          tests/test_curiosity_peer_briefs.py tests/test_curiosity_peer_brief_persist.py
+          tests/test_curiosity_peer_kickoff.py tests/test_curiosity_peer_patch0_acceptance.py
+          orion/curiosity/tests/test_self_inquiry_prompt_drawn_question.py
+          tests/scripts/test_schema_skew_discovery.py
+          orion/autonomy/tests/test_agency_episode.py orion/autonomy/tests/test_agency_episode_reader.py -q
+      - run: PYTHONPATH=services/orion-curiosity-peer:. python services/orion-curiosity-peer/evals/run_contractor_peer_eval.py
+      - run: python services/orion-curiosity-peer/evals/run_agency_episode_eval.py
+      - run: python orion/autonomy/evals/run_agency_episode_eval.py

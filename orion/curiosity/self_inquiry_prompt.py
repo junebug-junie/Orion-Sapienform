@@ -374,7 +374,7 @@ def build_self_inquiry_prompt(
         else:
             lines += _previous_section(latest, count=definition_count)
         lines += _priors_section(view, stale_after=stale_after)
-        lines += _peer_briefs_section(peer_briefs)
+        lines += _peer_briefs_section(peer_briefs, run_id=run_id if writable else None)
 
     lines += _records_section(ledger, repo_root=repo_root)
     lines += _access_section(

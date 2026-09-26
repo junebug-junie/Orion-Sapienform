@@ -14,7 +14,7 @@ import pytest
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
 from orion.curiosity.peer_briefs import publish_help_requests_for_run
-from orion.schemas.curiosity_peer import HELP_REQUEST_CHANNEL, HELP_REQUEST_KIND
+from orion.schemas.curiosity_peer import HELP_REQUEST_CHANNEL, HELP_REQUEST_KIND, PEER_BRIEF_CONSUMED_CHANNEL
 from scripts.curiosity_investigation import CuriosityInvestigation
 
 
@@ -265,6 +265,11 @@ def test_durable_completed_state_with_one_help_request_publishes_once() -> None:
     helps = _help_publishes(bus)
     assert len(helps) == 1
     assert helps[0][1].payload["help_id"] == "help-1"
+    completions = [e.payload for c, e in bus.published if c == PEER_BRIEF_CONSUMED_CHANNEL]
+    assert len(completions) == 1
+    assert completions[0]["phase"] == "completed"
+    assert completions[0]["consumer_run_id"] == RUN_ID
+    assert completions[0]["brief_ids"] == []
     # Same completed state again must not double-publish.
     asyncio.run(loop._handle_run_state({"data": bus.codec.encode(env)}))
     assert len(_help_publishes(bus)) == 1
@@ -283,3 +288,4 @@ def test_dispatched_only_tick_publishes_nothing() -> None:
     loop._generate = _fake_generate  # type: ignore[assignment]
     assert asyncio.run(loop.tick()) == "dispatched"
     assert _help_publishes(bus) == []
+    assert not [e for c, e in bus.published if c == PEER_BRIEF_CONSUMED_CHANNEL]

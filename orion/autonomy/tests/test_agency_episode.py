@@ -146,3 +146,23 @@ def test_missing_invalid_and_naive_timestamps_are_unknown(value):
 
 def test_numeric_graph_timestamp_preserved():
     assert stamp(1790386258611) == "2026-09-26T01:30:58.611000+00:00"
+
+
+def test_precommit_and_elapsed_window_do_not_invent_rejection_or_closure():
+    data=snapshot()
+    data["ask_commits"]={"status":"ok","rows":[{"help_id":"h1","run_id":"run1","committed_at":"2026-09-01T00:00:01Z","deadline_at":"2026-09-01T00:05:01Z","responded_at":None}]}
+    ask=episode(data,"contractor_ask")
+    assert ask["links"]["expectation_precommitted"]["status"]=="observed"
+    assert ask["links"]["alternatives"]["status"]=="observed"
+    assert ask["response_window"]=="elapsed_without_recorded_reply"
+    assert ask["verdict"]=="UNVERIFIED"
+    data["ask_commits"]["rows"][0]["responded_at"]="2026-09-02T00:00:00Z"
+    assert episode(data,"contractor_ask")["response_window"]=="late_returned"
+
+
+def test_attributed_use_stays_distinct_from_causal_proof():
+    data=snapshot()
+    data["brief_decisions"]={"status":"ok","rows":[{"receipt_id":"later:b1","run_id":"later","brief_id":"b1","help_id":"h1","status":"attributed_self_report","disposition":"used","hop_n":1}]}
+    ask=episode(data,"contractor_ask")
+    assert ask["links"]["later_choice"]["status"]=="attributed_self_report"
+    assert ask["verdict"]=="UNVERIFIED"

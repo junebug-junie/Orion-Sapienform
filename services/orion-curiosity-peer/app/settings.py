@@ -53,6 +53,8 @@ class Settings(BaseSettings):
 
     CURIOSITY_PEER_REPO_ROOT: str = Field(default="/repo")
     CURIOSITY_PEER_MODEL: str = Field(default="composer-2.5")
+    # Require an acknowledged immutable expectation before a real hire.
+    CURIOSITY_PEER_EPISODES_ENABLED: bool = Field(default=False)
 
     # ── Contested Cursor budget meter (fail-closed) ───────────────────
     # observe_cursor_limit() refuses hire until a real reading exists.

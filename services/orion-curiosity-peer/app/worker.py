@@ -18,6 +18,7 @@ from app.settings import Settings
 from orion.autonomy.ask_claude_trigger import _budget_refusal
 from orion.curiosity.peer_brief_persist import persist_peer_brief
 from orion.curiosity.peer_briefs import peer_brief_consume_cypher
+from orion.curiosity.agency_episode import commit_ask, offer_or_complete_cypher
 from orion.dev_economics.cursor_limit_events import (
     CursorLimitObservation,
     decide_cursor_budget,
@@ -437,7 +438,8 @@ def handle_help_request(
     context_pack: str = "",
     bus: Any = None,
     loop: Optional[asyncio.AbstractEventLoop] = None,
-) -> PeerBriefV1:
+    begin_episode: Optional[Callable[[HelpRequestV1], bool]] = None,
+) -> PeerBriefV1 | None:
     """Process one HelpRequest: budget gate → Cursor → Claude once → persist.
 
     Inject `cursor` / `claude` / `observe_limit` / `persist` in tests.
@@ -448,6 +450,10 @@ def handle_help_request(
         context_pack = context_pack_from_help(help_req)
 
     def _persist(brief: PeerBriefV1) -> None:
+        if settings.CURIOSITY_PEER_EPISODES_ENABLED and (brief.help_id != help_req.help_id or brief.run_id != help_req.run_id):
+            raise ValueError("peer returned a brief for another request")
+        if settings.CURIOSITY_PEER_EPISODES_ENABLED and brief.status == "ok" and not (brief.summary.strip() or brief.evidence_pointers):
+            raise ValueError("peer returned an empty successful brief")
         if persist is not None:
             persist(brief)
         else:
@@ -478,6 +484,16 @@ def handle_help_request(
         )
         _persist(brief)
         return brief
+
+    if settings.CURIOSITY_PEER_EPISODES_ENABLED:
+        if begin_episode is None:
+            if not _graph_credentials_ready(settings):
+                raise RuntimeError("episode commitment requires configured graph credentials")
+            graph = _build_curiosity_graph_client(settings)
+            begin_episode = lambda request: commit_ask(graph, request)
+        if not begin_episode(help_req):
+            logger.info("curiosity_peer_duplicate_commit help_id=%s", help_req.help_id)
+            return None
 
     cursor_fn = cursor or (
         lambda h, **_k: _default_cursor(h, settings=settings, context_pack=context_pack)
@@ -598,7 +614,7 @@ def apply_peer_brief_consumed(
                 body = inner
                 break
     consumed = PeerBriefConsumedV1.model_validate(body)
-    if not consumed.brief_ids:
+    if not consumed.brief_ids and consumed.phase != "completed":
         return []
 
     client = graph_client
@@ -610,7 +626,10 @@ def apply_peer_brief_consumed(
             )
             return []
         client = _build_curiosity_graph_client(settings)
-    cypher, params = peer_brief_consume_cypher(consumed.brief_ids)
+    if consumed.consumer_run_id is not None:
+        cypher, params = offer_or_complete_cypher(consumed)
+    else:
+        cypher, params = peer_brief_consume_cypher(consumed.brief_ids)
     graph_query = getattr(client, "graph_query", None)
     if graph_query is None:
         raise RuntimeError("graph client has no graph_query()")

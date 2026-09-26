@@ -3203,3 +3203,10 @@ existing Tailwind CDN used by the Hub shell. To smoke real data without starting
 Hub workers, pass `--env-file /path/to/services/orion-hub/.env` to the isolated
 loopback eval server, then GET the four routes. Real memory content and browser
 screenshots should remain local, outside git.
+
+## Contractor episode receipts
+
+Peer brief offers now carry the investigation run ID; completed investigations
+emit a separate completion receipt. Prompt-authored decisions cite existing Hop
+records. Deploy the updated peer consumer before this Hub producer. See
+[peer ask episodes](../../docs/peer-ask-episodes.md) for contracts and rollout.

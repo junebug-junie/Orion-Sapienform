@@ -104,3 +104,11 @@ Authenticate on the host first: `agent login` (or `cursor-agent login`).
 Compose mounts `${HOME}/.local/share/cursor-agent` and
 `${HOME}/.config/cursor` into the container. Set
 `CURIOSITY_PEER_AGENT_BIN` to the versioned binary under `/opt/cursor-agent`.
+
+## Ask commitments and later decisions
+
+`CURIOSITY_PEER_EPISODES_ENABLED` is true in the operator template and local
+`.env` (the code fallback when unset is false). When enabled, eligible
+requests need an explicit expectation and an acknowledged worldview commitment
+before provider invocation. Duplicate claims do not resend. Deploy this consumer
+before the updated Hub producer. See [contracts, rollout and rollback](../../docs/peer-ask-episodes.md).

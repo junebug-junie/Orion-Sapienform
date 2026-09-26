@@ -3263,7 +3263,7 @@ channels:
     message_kind: "curiosity.help.request.v1"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-curiosity-peer", "orion-sql-writer"]
-    description: "Orion-authored HelpRequest observed after a curiosity/self-inquiry run; enqueues a read-only contractor peer job. docs/superpowers/specs/2026-09-14-orion-contractor-peer-design.md"
+    description: "Orion-authored HelpRequest after a curiosity/self-inquiry run; optional expectation is committed before contractor invocation when episodes are enabled. Deploy the peer consumer before the Hub producer. docs/peer-ask-episodes.md"
 
   - name: "orion:curiosity:peer:brief"
     kind: "event"
@@ -3279,7 +3279,7 @@ channels:
     message_kind: "curiosity.peer.brief.consumed.v1"
     producer_services: ["orion-hub"]
     consumer_services: ["orion-curiosity-peer"]
-    description: "Hub (RO worldview) signals that soft-nudge injected these PeerBrief ids; curiosity-peer MERGEs consumed=true so UNUSED_* queries skip them."
+    description: "Hub (RO worldview) marks prompt offering, not learning. Optional consumer_run_id records a PeerBriefOffer; phase=completed separately marks that run finished. Legacy brief_ids-only marks remain supported. Deploy curiosity-peer consumer before Hub producer."
 
   - name: "orion:curiosity:supervisor:reading"
     kind: "event"

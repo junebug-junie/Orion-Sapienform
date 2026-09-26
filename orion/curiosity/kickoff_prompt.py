@@ -796,10 +796,10 @@ def _outcome_section(*, run_id: str) -> list[str]:
     ]
 
 
-def _peer_briefs_section(peer_briefs: Sequence = ()) -> list[str]:
+def _peer_briefs_section(peer_briefs: Sequence = (), *, run_id: str | None = None) -> list[str]:
     from orion.curiosity.peer_briefs import format_soft_nudge
 
-    return format_soft_nudge(peer_briefs or ())
+    return format_soft_nudge(peer_briefs or (), consumer_run_id=run_id)
 
 
 def _dream_section(dream_hypotheses: Sequence = ()) -> list[str]:
@@ -853,7 +853,13 @@ def _role_and_help_section(
         '    h.question = "<what you need looked at>",',
         '    h.tried_summary = "<claim / why hiring / what Cursor should dig>",',
         '    h.success_criteria = "<what would count as useful>",',
+        '    h.expected_reply = "<what you predict the peer will return, not just what you want>",',
+        '    h.if_not_asked = "<what you expect if you do not hire>",',
+        '    h.alternatives_json = \'["hire_peer", "<another action you actually considered>"]\',',
+        '    h.within_seconds = <your expected response window, 1..86400 seconds>,',
         "    h.written_at = timestamp()",
+        "  These are your pre-ask predictions. Do not revise this help_id after sending; "
+        "a changed question needs a new help_id. No reply by the deadline means unknown, not rejection.",
         "",
         "  Optional scope to a prior you hold:",
         '    MATCH (h:HelpRequest {help_id: "..."}), (p:Prior {prior_id: "..."})',
@@ -992,7 +998,7 @@ def build_kickoff_prompt(
         # the one a run cannot ask itself.
         lines += _thread_section(view)
         lines += _priors_section(view, stale_after=stale_after)
-        lines += _peer_briefs_section(peer_briefs)
+        lines += _peer_briefs_section(peer_briefs, run_id=run_id if writable else None)
         # Only offered when Orion can write the prior that would adopt one --
         # the caller claims (stamps offered) only on a writable graph too.
         if writable:

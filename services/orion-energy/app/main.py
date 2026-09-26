@@ -77,11 +77,11 @@ async def inbox_loop(bus: OrionBusAsync, settings: Settings, pipeline: EnergyPip
     inbox, processed = Path(settings.ENERGY_INBOX_DIR), Path(settings.ENERGY_PROCESSED_DIR)
     while True:
         try:
-            now = datetime.now(timezone.utc)
-            rows = await asyncio.to_thread(scan_inbox, inbox, processed, now=now)
+            scan_at = datetime.now(timezone.utc)
+            rows = await asyncio.to_thread(scan_inbox, inbox, processed, now=scan_at)
             if rows:
                 async with lock:
-                    outbound = pipeline.ingest_intervals(rows, now=now)
+                    outbound = pipeline.ingest_intervals(rows, now=datetime.now(timezone.utc))
                 await publish_all(bus, settings, outbound)
                 logger.info(
                     "energy_ingested intervals=%d published=%d pending=%d",

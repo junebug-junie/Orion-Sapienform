@@ -4,6 +4,8 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from app.inbox import load_processed, scan_inbox
 
 REPO = Path(__file__).resolve().parents[3]
@@ -47,3 +49,30 @@ def test_replay_restores_retrieved_at_from_filename(tmp_path: Path) -> None:
     rows = load_processed(processed)
     assert len(rows) == 3
     assert rows[0].retrieved_at == datetime(2026, 9, 11, 12, 0, 5, tzinfo=timezone.utc)
+
+
+def test_read_oserror_leaves_file_and_still_returns_other_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="orion-energy.inbox")
+    inbox, processed = tmp_path / "inbox", tmp_path / "processed"
+    inbox.mkdir()
+    shutil.copy(FIXTURE, inbox / "good.xml")
+    bad = inbox / "bad.xml"
+    bad.write_text("<feed/>")
+
+    real_read = Path.read_bytes
+
+    def _read_bytes(self: Path) -> bytes:
+        if self.name == "bad.xml":
+            raise OSError("read failed")
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _read_bytes)
+    rows = scan_inbox(inbox, processed, now=NOW)
+    assert len(rows) == 3
+    assert (inbox / "bad.xml").exists()
+    assert not (processed / "bad.xml").exists()
+    assert any("energy_inbox_io_failed" in r.getMessage() for r in caplog.records)

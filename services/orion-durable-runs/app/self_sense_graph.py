@@ -38,6 +38,7 @@ from typing import Any, Awaitable, Callable, TypedDict
 from orion.evals.self_sense_runner import SESSION_ID as SELF_SENSE_SESSION_ID
 from orion.evals.self_sense_runner import build_row
 from orion.schemas.durable_run import CuriosityTurnRequestV1, CuriosityTurnResultV1
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 
 from app.graph import HARNESS_META_DETAIL_KEYS, timed_turn
 
@@ -61,12 +62,22 @@ class SelfSenseRunState(TypedDict, total=False):
     # finish
     status: str
     admission: dict[str, Any]
-    lease: dict[str, Any] | None
+    lease: dict[str, Any] | None  # granted GPU pool hold ref (admitted runs)
+    hold: dict[str, Any] | None
+    hold_seq: int
+    turn_fence: int
     retry_at: str | None
     last_error: str | None
     requested_at: str
     retry_node: str | None
     tail_attempts: dict[str, int]
+
+
+def _gpu_lease(state: dict[str, Any]) -> GpuLeaseRefV1 | None:
+    lease = state.get("lease")
+    if not lease:
+        return None
+    return GpuLeaseRefV1.model_validate({key: lease[key] for key in ("lease_id", "generation", "role", "holder")})
 
 
 class SelfSenseAskFailed(RuntimeError):
@@ -116,8 +127,9 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[SelfSenseRunState], Awaitable[
                 timeout_sec=float(brief.get("timeout_sec") or 600.0),
                 source_tag=SELF_SENSE_EVAL_TAG,
                 attempt=attempt,
-                lease=state.get("lease"),
-                assigned_lane=(state.get("lease") or {}).get("lane"),
+                # The run's pool hold (stage 4.5): each question's calls attach to it. Its role is
+                # never a route, so no assigned_lane.
+                gpu_lease=_gpu_lease(state),
                 session_id=SELF_SENSE_SESSION_ID,
             )
             # Stamp the in-flight id on the same state dict execute() holds,

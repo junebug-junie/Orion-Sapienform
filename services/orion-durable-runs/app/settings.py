@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
     # RPC-health snapshot publish (orion:rpc_health:snapshot) of the long-lived rpc_bus:
-    # runner rpc_request calls + outbound HTTP hops (app/http_hops.py). Mesh transport
+    # runner rpc_request calls + GPU pool lease RPCs (no HTTP hops since 4.5). Mesh transport
     # coverage of docs/superpowers/specs/2026-09-24-metacog-capture-and-transport-ewma-
     # baseline-design.md. Defaults match .env_example.
     rpc_health_publish_enabled: bool = Field(True, alias="RPC_HEALTH_PUBLISH_ENABLED")
@@ -50,32 +50,24 @@ class Settings(BaseSettings):
     graph_port: int = Field(6379, alias="DURABLE_RUNS_GRAPH_PORT")
     graph_own: str = Field("orion_worldview", alias="DURABLE_RUNS_GRAPH_OWN")
 
-    elastic_enabled: bool = Field(False, alias="DURABLE_RUNS_ELASTIC_ENABLED")
-    elastic_shadow: bool = Field(True, alias="DURABLE_RUNS_ELASTIC_SHADOW")
-    elastic_assignments: bool = Field(False, alias="DURABLE_RUNS_ELASTIC_ASSIGNMENTS")
-    elastic_restoration: bool = Field(False, alias="DURABLE_RUNS_ELASTIC_RESTORATION")
-    elastic_controller_url: str = Field("http://100.112.254.99:8090", alias="DURABLE_RUNS_ELASTIC_CONTROLLER_URL")
-    elastic_backend: str = Field("http://100.112.254.99:8016", alias="DURABLE_RUNS_ELASTIC_BACKEND")
-    elastic_drain_budget: float = Field(300.0, alias="DURABLE_RUNS_ELASTIC_DRAIN_BUDGET_SEC", ge=0, allow_inf_nan=False)
-    elastic_transition_budget: float = Field(60.0, alias="DURABLE_RUNS_ELASTIC_TRANSITION_BUDGET_SEC", ge=0, allow_inf_nan=False)
-    elastic_cold_budget: float = Field(600.0, alias="DURABLE_RUNS_ELASTIC_COLD_BUDGET_SEC", ge=0, allow_inf_nan=False)
-    elastic_idle_grace: float = Field(300.0, alias="DURABLE_RUNS_ELASTIC_IDLE_GRACE_SEC", ge=0, allow_inf_nan=False)
-    elastic_min_residency: float = Field(600.0, alias="DURABLE_RUNS_ELASTIC_MIN_RESIDENCY_SEC", ge=0, allow_inf_nan=False)
-    elastic_max_borrow: float = Field(3600.0, alias="DURABLE_RUNS_ELASTIC_MAX_BORROW_SEC", ge=0, allow_inf_nan=False)
-    elastic_cabinet_url: str = Field("http://100.92.216.81:8080/api/cabinet/sensors/latest", alias="DURABLE_RUNS_ELASTIC_CABINET_URL")
-    elastic_thermal_enabled: bool = Field(False, alias="DURABLE_RUNS_ELASTIC_THERMAL_ENABLED")
-
+    # Admitted runs (resource admission) are driven here on GPU pool holds (stage 4.5): the pool is
+    # the only scheduler. The broker, widening and gpu2 elastic keys were deleted with the broker.
     admission_enabled: bool = Field(False, alias="DURABLE_RUNS_ADMISSION_ENABLED")
+    # Gateway capacity permits for world-model and the visual chain (/capacity). NOT GPU pool
+    # holds; stays until stage 5 moves those onto pool leases.
     capacity_enabled: bool = Field(False, alias="DURABLE_RUNS_CAPACITY_ENABLED")
-    admission_shadow: bool = Field(False, alias="DURABLE_RUNS_ADMISSION_SHADOW")
     admission_tick_sec: float = Field(5.0, gt=0.0, alias="DURABLE_RUNS_ADMISSION_TICK_SEC")
+    # Capacity permit TTL (/capacity). Admitted runs' holds use the pool's hold_lease_ttl_sec.
     lease_seconds: float = Field(90.0, ge=15.0, alias="DURABLE_RUNS_LEASE_SECONDS")
+    # How often a working run heartbeats its pool hold (must be at most half the pool's
+    # hold_lease_ttl_sec, checked at startup) and how often a Door-A hold is kept alive.
     lease_heartbeat_sec: float = Field(15.0, gt=0.0, alias="DURABLE_RUNS_LEASE_HEARTBEAT_SEC")
-    widening_enabled: bool = Field(False, alias="DURABLE_RUNS_WIDENING_ENABLED")
-    widening_after_sec: float = Field(1200.0, ge=0.0, alias="DURABLE_RUNS_WIDENING_AFTER_SEC")
-    widening_hysteresis_sec: float = Field(120.0, ge=0.0, alias="DURABLE_RUNS_WIDENING_HYSTERESIS_SEC")
-    lane_policy_json: str = Field("{}", alias="DURABLE_RUNS_LANE_POLICY_JSON")
-    gateway_url: str = Field("http://llm-gateway:8210", alias="DURABLE_RUNS_GATEWAY_URL")
+    # A run waiting in the pool's queue is woken by the pool's "granted" event for its holder.
+    # This is only the missed-event fallback: one pool status read per waiting run per interval.
+    hold_status_poll_sec: float = Field(60.0, gt=0.0, alias="DURABLE_RUNS_HOLD_STATUS_POLL_SEC")
+    # Door-A: how long a completed run's hold is kept for Hub's outreach composition before
+    # durable-runs releases it itself (Hub normally releases it within minutes).
+    outreach_hold_max_sec: float = Field(1800.0, gt=0.0, alias="DURABLE_RUNS_OUTREACH_HOLD_MAX_SEC")
     retry_max_attempts: int = Field(3, ge=1, le=20, alias="DURABLE_RUNS_RETRY_MAX_ATTEMPTS")
     retry_base_sec: float = Field(30.0, gt=0.0, alias="DURABLE_RUNS_RETRY_BASE_SEC")
     retry_max_sec: float = Field(300.0, gt=0.0, alias="DURABLE_RUNS_RETRY_MAX_SEC")
@@ -103,12 +95,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def valid_lease_heartbeat(self):
-        if self.elastic_enabled and not (self.enabled and self.admission_enabled and self.capacity_enabled):
-            raise ValueError("elastic requires enabled durable admission and capacity")
-        if self.elastic_enabled and not self.elastic_shadow and not self.elastic_restoration:
-            raise ValueError("elastic actuation requires restoration enabled")
-        if self.elastic_min_residency > self.elastic_max_borrow:
-            raise ValueError("elastic minimum residency exceeds maximum borrowing window")
         if self.lease_heartbeat_sec >= self.lease_seconds:
             raise ValueError("lease heartbeat interval must be shorter than lease duration")
         return self

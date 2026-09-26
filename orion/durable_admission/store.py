@@ -1,9 +1,13 @@
-"""Postgres inbox, resource facts and transactional lifecycle outbox.
+"""Postgres inbox (run registry) and transactional lifecycle outbox for durable runs.
 
-The `terminal` field is solely a projection written by the graph driver. This
-store neither advances a workflow nor schedules its retries. A short global
-transaction lock intentionally serializes the small background admission queue;
-no transaction/connection is held while a run waits for capacity.
+Stage 4.5 (GPU pool cutover, docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md):
+the GPU pool is the only scheduler. A run's GPU is a pool *hold* (orion.gpu_pool.client), whose id
+lives in the run's LangGraph checkpoint; this store no longer writes demands, grants or leases.
+
+``durable_resource_demands`` / ``durable_resource_leases`` / ``durable_elastic_slot`` are FROZEN:
+nothing here inserts into them. They stay because ``capacity.py`` (world-model and visual-chain
+GPU permits, deleted in stage 5) still joins them, and ``_expire`` below is its only use of the
+lease half. The `terminal` field is solely a projection written by the graph driver.
 """
 from __future__ import annotations
 
@@ -14,12 +18,14 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from psycopg.rows import dict_row
-from pydantic import ValidationError
 from psycopg.types.json import Jsonb
 
-from orion.schemas.resource_admission import ResourceRequirementV1, ResourceLeaseV1, ResourceEventV1
+from orion.schemas.resource_admission import ResourceEventV1
 
 ADMISSION_LOCK = 741853219
+# ResourceRequirementV1 fields only the deleted broker read (spec: accepted and ignored until
+# producers stop sending them in PR 4.6, because the model is extra="forbid").
+IGNORED_ADMISSION_FIELDS = frozenset({"allow_elastic_activation", "alternatives", "pinned_lane", "operator_override"})
 
 
 class SubmissionConflict(ValueError):
@@ -79,7 +85,11 @@ class PostgresAdmissionStore:
             def comparable(value):
                 result = {k: v for k, v in value.items() if k != "requested_at"}
                 if result.get("admission") is not None:
-                    result["admission"] = {"allow_elastic_activation": False, **result["admission"]}
+                    # Stage 4.5: the broker's lane-choice fields are accepted and ignored (the pool
+                    # places the run), so they cannot make a duplicate receipt a conflict. A row
+                    # accepted before the cutover carries broker-derived alternatives.
+                    result["admission"] = {k: v for k, v in result["admission"].items()
+                                           if k not in IGNORED_ADMISSION_FIELDS}
                 return result
             if comparable(row["request"]) != comparable(request):
                 raise SubmissionConflict("run_id already exists with a different request")
@@ -98,35 +108,19 @@ class PostgresAdmissionStore:
             raise ValueError("unsupported control")
         async with self.transaction() as conn:
             await conn.execute("UPDATE durable_admission_runs SET control=%s, updated_at=%s WHERE run_id=%s AND terminal IS NULL AND control IS DISTINCT FROM 'cancelled'", (control, await self.now(conn), run_id))
-            if control:
-                await conn.execute("UPDATE durable_resource_demands SET status='suspended' WHERE run_id=%s AND status='pending'", (run_id,))
 
     async def touch(self, run_id: str) -> None:
         """Fair reconciliation rotation; does not change original queue age."""
         async with self.pool.connection() as conn:
             await conn.execute("UPDATE durable_admission_runs SET updated_at=clock_timestamp() WHERE run_id=%s", (run_id,))
 
-    async def mark_terminal(self, run_id: str, status: str) -> None:
-        if status not in {"completed", "failed", "cancelled", "abandoned"}:
-            raise ValueError("not a terminal graph projection")
-        async with self.transaction() as conn:
-            await conn.execute("UPDATE durable_admission_runs SET terminal=CASE WHEN control='cancelled' THEN 'cancelled' ELSE %s END,updated_at=%s WHERE run_id=%s AND terminal IS NULL AND control IS DISTINCT FROM 'paused'", (status, await self.now(conn), run_id))
-            leases = await (await conn.execute("SELECT * FROM durable_resource_leases WHERE run_id=%s AND status='active'", (run_id,))).fetchall()
-            for lease in leases:
-                await self._release(conn, lease, status)
-            await conn.execute("UPDATE durable_resource_demands SET status='withdrawn' WHERE run_id=%s", (run_id,))
-
     async def finish_projection(self, run_id: str, status: str, detail: dict[str, Any]) -> str | None:
-        """Atomically publish graph terminal facts and release resources.
+        """Atomically publish the graph's terminal fact.
 
-        The shared transaction lock linearizes an operator control against
-        completion; a cancelled run can never acquire a completed outbox event.
-
-        Door-A (2026-09-22): when ``detail`` carries ``reach_out`` +
-        ``resource_lease``, the lease stays ``active`` past
-        ``terminal=completed`` so Hub can compose under that grant. Hub
-        releases via ``/runs/{id}/release-outreach-lease`` (or TTL expire).
-        Demand is still withdrawn so the broker does not re-grant.
+        The shared transaction lock linearizes an operator control against completion; a cancelled
+        run can never acquire a completed outbox event. The run's GPU pool hold is released by the
+        graph node that ends the run (or kept for Door-A outreach), never here: this store has no
+        grant of its own to release since stage 4.5.
         """
         if status not in {"completed", "failed", "cancelled"}:
             raise ValueError("invalid terminal graph status")
@@ -138,125 +132,40 @@ class PostgresAdmissionStore:
                 return None
             if row["control"] == "cancelled":
                 status, detail = "cancelled", {}
-            hold_lease = (
-                status == "completed"
-                and bool(detail.get("reach_out"))
-                and isinstance(detail.get("resource_lease"), dict)
-                and bool(detail.get("resource_lease"))
-            )
-            leases = await (await conn.execute("SELECT * FROM durable_resource_leases WHERE run_id=%s AND status='active'", (run_id,))).fetchall()
-            for lease in leases:
-                if hold_lease:
-                    continue
-                await self._release(conn, lease, status)
             await self._event(conn, run_id, "run."+status, detail, event_id=f"{run_id}:terminal:{status}")
             await conn.execute("UPDATE durable_admission_runs SET terminal=%s,updated_at=%s WHERE run_id=%s", (status, await self.now(conn), run_id))
-            await conn.execute("UPDATE durable_resource_demands SET status='withdrawn' WHERE run_id=%s", (run_id,))
             return status
 
-    async def register_demand(self, run_id: str, requirement: dict[str, Any], step: str = "harness_turn") -> dict[str, Any]:
-        requirement = ResourceRequirementV1.model_validate(requirement).model_dump(mode="json")
-        demand_id = f"{run_id}:{step}:{requirement['resource']}"
-        async with self.transaction() as conn:
-            row = await (await conn.execute("SELECT * FROM durable_admission_runs WHERE run_id=%s", (run_id,))).fetchone()
-            if not row:
-                raise KeyError(run_id)
-            if row["terminal"] or row["control"]:
-                raise ValueError("run cannot request capacity while controlled or terminal")
-            existing = await (await conn.execute("SELECT * FROM durable_resource_demands WHERE run_id=%s", (run_id,))).fetchone()
-            # Compare by meaning: a demand stored before a defaulted field
-            # existed is the same demand once re-read through the contract.
-            if existing:
-                try:
-                    stored = ResourceRequirementV1.model_validate(existing["requirement"]).model_dump(mode="json")
-                except ValidationError:
-                    stored = None  # no longer valid under the contract: not the same demand
-                if existing["demand_id"] != demand_id or stored != requirement:
-                    raise SubmissionConflict("run demand is immutable")
-            now = await self.now(conn)
-            demand = await (await conn.execute("INSERT INTO durable_resource_demands(demand_id,run_id,requirement,created_at,status) VALUES (%s,%s,%s,%s,'pending') ON CONFLICT(run_id) DO UPDATE SET status=CASE WHEN durable_resource_demands.status='suspended' THEN 'pending' ELSE durable_resource_demands.status END RETURNING *",
-                                              (demand_id, run_id, Jsonb(requirement), row["created_at"]))).fetchone()
-            if not existing:
-                await self._event(conn, run_id, "run.waiting_resource", {"demand_id": demand_id, "requested_lane": requirement["preferred_lane"]}, now=now)
-            return demand
-
-    async def get_demand(self, run_id: str) -> dict[str, Any] | None:
-        async with self.pool.connection() as conn:
-            return await (await conn.execute("SELECT * FROM durable_resource_demands WHERE run_id=%s", (run_id,))).fetchone()
-
-    async def suspend_demand(self, run_id: str) -> None:
-        async with self.transaction() as conn:
-            await conn.execute("UPDATE durable_resource_demands SET status='suspended' WHERE run_id=%s AND status != 'withdrawn'", (run_id,))
-
-    async def get_lease(self, run_id: str) -> dict[str, Any] | None:
-        async with self.pool.connection() as conn:
-            return await (await conn.execute("SELECT * FROM durable_resource_leases WHERE run_id=%s AND status='active' AND expires_at>%s", (run_id, await self.now(conn)))).fetchone()
-
-    async def first_granted_at(self, run_id: str) -> datetime | None:
-        """Initial admission timestamp; retries never restart queue timing."""
+    async def first_event_at(self, run_id: str, event: str) -> datetime | None:
+        """When ``event`` first happened for this run (e.g. the first pool grant: queue wait ends)."""
         async with self.pool.connection() as conn:
             row = await (await conn.execute(
-                "SELECT granted_at FROM durable_resource_leases WHERE run_id=%s ORDER BY generation LIMIT 1",
-                (run_id,),
-            )).fetchone()
-            return row["granted_at"] if row else None
+                "SELECT min(generated_at) AS at FROM durable_resource_events WHERE run_id=%s AND event=%s",
+                (run_id, event))).fetchone()
+            return row["at"] if row else None
 
-    @staticmethod
-    def _identity(lease: dict[str, Any]) -> tuple:
-        return (lease["lease_id"], lease["run_id"], lease["generation"], lease["resource_key"], lease["lane"], lease["backend_key"], lease["demand_id"])
-
-    async def validate(self, lease: dict[str, Any]) -> bool:
-        try:
-            identity = self._identity(lease)
-        except KeyError:
-            return False
+    async def outreach_holds_pending(self, max_age_seconds: float) -> list[dict[str, Any]]:
+        """Door-A holds a previous process left for Hub: completed runs whose ``run.outreach_pending``
+        names a pool hold with no ``resource.lease_released`` for it yet (restart adoption)."""
         async with self.pool.connection() as conn:
-            # Door-A hold: terminal=completed may still have an active lease
-            # until Hub releases it. Live non-terminal runs unchanged.
-            row = await (await conn.execute(
-                "SELECT 1 FROM durable_resource_leases l JOIN durable_admission_runs r USING(run_id) "
-                "WHERE lease_id=%s AND l.run_id=%s AND generation=%s AND resource_key=%s AND lane=%s "
-                "AND backend_key=%s AND demand_id=%s AND status='active' AND expires_at>%s "
-                "AND r.control IS NULL AND (r.terminal IS NULL OR r.terminal='completed')",
-                (*identity, await self.now(conn)),
-            )).fetchone()
-            return row is not None
-
-    async def renew(self, lease: dict[str, Any], ttl_seconds: float) -> dict[str, Any] | None:
-        if ttl_seconds <= 0:
-            raise ValueError("lease TTL must be positive")
-        async with self.transaction() as conn:
             now = await self.now(conn)
-            return await (await conn.execute(
-                "UPDATE durable_resource_leases l SET heartbeat_at=%s,expires_at=GREATEST(expires_at,%s) "
-                "FROM durable_admission_runs r WHERE l.run_id=r.run_id AND lease_id=%s AND l.run_id=%s "
-                "AND generation=%s AND resource_key=%s AND lane=%s AND backend_key=%s AND demand_id=%s "
-                "AND l.status='active' AND l.expires_at>%s AND r.control IS NULL "
-                "AND (r.terminal IS NULL OR r.terminal='completed') RETURNING l.*",
-                (now, now + timedelta(seconds=ttl_seconds), *self._identity(lease), now),
-            )).fetchone()
-
-    async def _release(self, conn: Any, lease: dict[str, Any], reason: str) -> bool:
-        row = await (await conn.execute("UPDATE durable_resource_leases SET status='released' WHERE lease_id=%s AND run_id=%s AND generation=%s AND resource_key=%s AND lane=%s AND backend_key=%s AND demand_id=%s AND status='active' RETURNING *", self._identity(lease))).fetchone()
-        if row:
-            await conn.execute("UPDATE durable_resource_demands SET status='suspended' WHERE demand_id=%s AND status='granted'", (row["demand_id"],))
-            await self._event(conn, row["run_id"], "resource.lease_released", {"lease_id": row["lease_id"], "generation": row["generation"], "lane": row["lane"], "reason": reason}, event_id=f"released:{row['lease_id']}")
-        return row is not None
-
-    async def release(self, lease: dict[str, Any], reason: str = "released") -> bool:
-        async with self.transaction() as conn:
-            return await self._release(conn, lease, reason)
+            rows = await (await conn.execute(
+                "SELECT e.run_id, e.generated_at, e.payload->'detail' AS detail FROM durable_resource_events e "
+                "JOIN durable_admission_runs r USING(run_id) WHERE e.event='run.outreach_pending' "
+                "AND r.terminal='completed' AND e.generated_at > %s AND e.payload->'detail' ? 'holder' "
+                "AND NOT EXISTS (SELECT 1 FROM durable_resource_events x WHERE x.run_id=e.run_id "
+                "AND x.event='resource.lease_released' "
+                "AND x.payload->'detail'->>'lease_id' = e.payload->'detail'->>'lease_id')",
+                (now - timedelta(seconds=max_age_seconds),))).fetchall()
+            return list(rows)
 
     async def _expire(self, conn: Any, now: datetime) -> list[dict[str, Any]]:
+        # Legacy (frozen) durable leases only; capacity.py's last use of this table. Stage 5 deletes it.
         rows = await (await conn.execute("UPDATE durable_resource_leases SET status='expired' WHERE status='active' AND expires_at<=%s RETURNING *", (now,))).fetchall()
         for row in rows:
             await conn.execute("UPDATE durable_resource_demands SET status='suspended' WHERE demand_id=%s AND status='granted'", (row["demand_id"],))
             await self._event(conn, row["run_id"], "resource.lease_expired", {"lease_id": row["lease_id"], "generation": row["generation"], "lane": row["lane"]}, event_id=f"expired:{row['lease_id']}", now=now)
         return rows
-
-    async def expire(self) -> list[dict[str, Any]]:
-        async with self.transaction() as conn:
-            return await self._expire(conn, await self.now(conn))
 
     async def record_event(self, run_id: str, event: str, detail: dict[str, Any], event_id: str | None = None) -> dict[str, Any]:
         async with self.transaction() as conn:
@@ -299,19 +208,3 @@ class PostgresAdmissionStore:
         async with self.pool.connection() as conn:
             await conn.execute("UPDATE durable_resource_events SET published_at=clock_timestamp() WHERE entry_id=%s AND published_at IS NULL", (event_id,))
 
-    async def queue_snapshot(self) -> dict[str, Any]:
-        async with self.pool.connection() as conn:
-            now = await self.now(conn)
-            queued = await (await conn.execute("SELECT requirement->>'preferred_lane' AS lane,count(*) AS depth,EXTRACT(EPOCH FROM %s-min(created_at))::double precision AS oldest_age_seconds FROM durable_resource_demands WHERE status='pending' GROUP BY 1", (now,))).fetchall()
-            active = await (await conn.execute("SELECT lane,count(*) AS active_leases FROM durable_resource_leases WHERE status='active' AND expires_at>%s GROUP BY lane", (now,))).fetchall()
-            counts = await (await conn.execute("SELECT event,count(*) AS count FROM durable_resource_events GROUP BY event ORDER BY event")).fetchall()
-            suppressions = await (await conn.execute("SELECT reason,count(*) AS count FROM durable_resource_events CROSS JOIN LATERAL jsonb_each_text(payload->'detail'->'suppressed') AS reasons(lane,reason) WHERE event='run.lane_swap_suppressed' GROUP BY reason")).fetchall()
-            waits = await (await conn.execute("SELECT DISTINCT ON (l.run_id) EXTRACT(EPOCH FROM l.granted_at-r.created_at)::double precision AS seconds,l.lane,d.requirement->>'preferred_lane' AS preferred FROM durable_resource_leases l JOIN durable_admission_runs r USING(run_id) JOIN durable_resource_demands d USING(demand_id) ORDER BY l.run_id,l.generation")).fetchall()
-            buckets = [0, 1, 10, 60, 300, 1200, 3600]
-            histogram = {str(bound): sum(w["seconds"] <= bound for w in waits) for bound in buckets}
-            histogram["+Inf"] = len(waits)
-            return {"queued": queued, "active": active, "lifecycle_counts": {r["event"]: r["count"] for r in counts},
-                    "widening_suppression_reasons": {r["reason"]: r["count"] for r in suppressions},
-                    "wait_duration_seconds": {"cumulative_buckets": histogram, "count": len(waits),
-                                              "sum": sum(w["seconds"] for w in waits)},
-                    "alternative_assignments": sum(w["lane"] != w["preferred"] for w in waits)}

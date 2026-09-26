@@ -40,7 +40,7 @@ from orion.schemas.durable_run import (  # noqa: E402
 from orion.schemas.self_sense import SELF_SENSE_QUESTIONS  # noqa: E402
 
 from app.admission_runtime import AdmissionRuntime  # noqa: E402
-from app.admitted_graph import AdmissionDeps, build_admitted_graph  # noqa: E402
+from app.admitted_graph import GRANTED, WAITING, AdmissionDeps, build_admitted_graph  # noqa: E402
 from app.graph import (  # noqa: E402
     Deps,
     HarnessTurnFailed,
@@ -64,13 +64,8 @@ TIMING_KEYS = ("turn_correlation_id", "harness_elapsed_sec", "harness_started_at
 
 
 def _lease(generation: int = 1) -> dict[str, Any]:
-    now = datetime.now(timezone.utc)
-    return {
-        "lease_id": f"lease-{generation}", "run_id": "run-timing-001", "demand_id": "run-timing-001:turn",
-        "resource_key": "llm.route.agent", "lane": "agent", "backend_key": "http://worker",
-        "generation": generation, "granted_at": now.isoformat(),
-        "expires_at": (now + timedelta(seconds=90)).isoformat(), "heartbeat_at": now.isoformat(), "status": "active",
-    }
+    # A granted GPU pool hold's ref (stage 4.5).
+    return {"lease_id": "hold-1", "generation": generation, "role": "agent", "holder": "durable-runs:run-timing-001"}
 
 
 def _state(*, leased: bool) -> dict[str, Any]:
@@ -283,7 +278,7 @@ def test_failed_detail_never_raises_and_is_bare_for_workflows_that_cannot_name_a
 
 
 class _AdmittedWorld:
-    """Mirror of test_admitted_graph's fake, trimmed to what this needs."""
+    """Mirror of test_admitted_graph's fake pool, trimmed to what this needs."""
 
     def __init__(self, *, fail: bool, max_attempts: int = 1):
         self.now = datetime(2026, 9, 22, tzinfo=timezone.utc)
@@ -292,7 +287,7 @@ class _AdmittedWorld:
         self.current_lease = None
 
     def grant(self, generation: int = 1) -> None:
-        self.current_lease = {**_lease(generation), "run_id": "study-001", "demand_id": "study-001:harness_turn:llm.route.agent"}
+        self.current_lease = {**_lease(generation), "holder": "durable-runs:study-001"}
 
     async def turn(self, req):
         return CuriosityTurnResultV1(run_id=req.run_id, correlation_id=req.correlation_id, text="" if self.fail else "finding", ok=not self.fail)
@@ -307,16 +302,19 @@ class _AdmittedWorld:
         return entry.entry_id
 
     async def register(self, state):
-        pass
+        return {"status": "waiting_resource", "hold": {"request_id": "study-001:1", "lease_id": "hold-1"}}
 
-    async def lease(self, run_id):
-        return self.current_lease
+    async def lease(self, state):
+        if self.current_lease:
+            return GRANTED, {"status": "admitted", "lease": dict(self.current_lease)}
+        return WAITING, {"status": "waiting_resource", "lease": None}
 
     async def execute(self, state, node):
         return await node(state)
 
-    async def release(self, run_id, reason):
+    async def release(self, state, reason, keep_requeued=False):
         self.current_lease = None
+        return {"lease": None, "hold": None}
 
     async def event(self, *args):
         pass
@@ -341,7 +339,7 @@ def test_admitted_failure_keeps_the_fenced_correlation_after_the_lease_is_cleare
     cfg = _cfg("study-001")
     final = asyncio.run(graph.ainvoke(_admitted_initial(), cfg))
     assert final["status"] == "failed" and final["lease"] is None
-    expected = turn_correlation_id({**_admitted_initial(), "lease": {**_lease(), "run_id": "study-001", "demand_id": "study-001:harness_turn:llm.route.agent"}})
+    expected = turn_correlation_id({**_admitted_initial(), "lease": {**_lease(), "holder": "durable-runs:study-001"}})
     assert final["harness_turn_meta"] == {"turn_correlation_id": expected}
     assert expected != "trace-001"
     # The runtime's terminal detail reads only the recorded value -- a fresh
@@ -356,12 +354,13 @@ def test_admitted_failure_keeps_the_fenced_correlation_after_the_lease_is_cleare
 
     runtime.store = SimpleNamespace(finish_projection=finish_projection)
     runtime._wake = asyncio.Event()
+    runtime.outreach, runtime._hints, runtime._checked = {}, set(), {}
     asyncio.run(runtime._terminal("study-001", "failed", final))
     assert seen == [("study-001", "failed", {"error": final["last_error"], "turn_correlation_id": expected})]
 
 
 def _fenced(generation: int) -> str:
-    return turn_correlation_id({**_admitted_initial(), "lease": {**_lease(generation), "run_id": "study-001", "demand_id": "study-001:harness_turn:llm.route.agent"}})
+    return turn_correlation_id({**_admitted_initial(), "lease": {**_lease(generation), "holder": "durable-runs:study-001"}})
 
 
 def test_retry_under_a_new_lease_generation_replaces_the_stale_generations_id() -> None:
@@ -423,7 +422,7 @@ def test_worker_recovery_fence_records_the_fenced_generation_before_clearing_the
     dies at the deadline. `_terminal` must then name the fenced generation."""
     import app.admission_runtime as ar
 
-    fenced_state = {**_admitted_initial(), "lease": {**_lease(3), "run_id": "study-001"}, "attempt": 1,
+    fenced_state = {**_admitted_initial(), "lease": {**_lease(3), "holder": "durable-runs:study-001"}, "attempt": 1,
                     "harness_turn_meta": {"turn_correlation_id": "older-attempt"}}
     updates: list[dict[str, Any]] = []
 
@@ -432,15 +431,15 @@ def test_worker_recovery_fence_records_the_fenced_generation_before_clearing_the
             updates.append(dict(values))
 
     # Exercise exactly the fence branch's payload, as the runtime builds it.
-    payload = {"lease": None, "status": "retrying", "retry_node": None, **ar.failed_turn_meta(fenced_state)}
+    payload = {"lease": None, "turn_fence": 1, "status": "retrying", "retry_node": None, **ar.failed_turn_meta(fenced_state)}
     asyncio.run(_Graph().aupdate_state(None, payload, as_node="retry_wait"))
     assert updates[0]["lease"] is None
     assert updates[0]["harness_turn_meta"] == {"turn_correlation_id": turn_correlation_id(fenced_state)}
     assert updates[0]["harness_turn_meta"]["turn_correlation_id"] != "older-attempt"
     # And the runtime source really uses it in that arm (not just importable).
     src = Path(ar.__file__).read_text()
-    arm = src.split('elif next_node in {"harness_turn", "run_started"}:')[1].split("else:")[0]
-    assert "failed_turn_meta(state)" in arm and '"lease": None' in arm
+    arm = src.split("async def _recover(")[1].split("if workflow == DEFAULT_WORKFLOW:")[1].split("else:")[0]
+    assert "failed_turn_meta(state)" in arm and 'as_node="retry_wait"' in arm
 
 
 def test_admitted_success_carries_full_timing_to_the_finish_detail() -> None:

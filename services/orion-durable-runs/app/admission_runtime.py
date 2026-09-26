@@ -1,25 +1,47 @@
-"""Drive admitted LangGraph threads; the broker only owns resource capacity."""
+"""Drive admitted LangGraph threads on GPU pool holds (stage 4.5).
+
+The GPU pool is the only scheduler (spec: docs/superpowers/specs/2026-09-25-gpu-pool-stage4-
+durable-runs-and-actuation.md, Decision 1). A run asks the pool for one *hold* for its whole life
+and every LLM call it makes attaches to that hold. This runtime only:
+
+* drives each run's graph (``resource_request`` asks the pool, ``resource_wait`` interrupts until
+  the pool grants, the work nodes run under the hold, the last node releases it);
+* heartbeats the hold while a node works, and at each node boundary lets a recalled hold go;
+* wakes a waiting run on the pool's ``granted`` event for its holder (``on_pool_event``), falling
+  back to one ``status`` read per run per DURABLE_RUNS_HOLD_STATUS_POLL_SEC -- never a poll storm;
+* keeps a Door-A hold alive for Hub's outreach composition until Hub releases it.
+
+Deleted here in 4.5 (kill means kill, no fallback): the durable broker, its lane policy and
+widening, the gpu2 elastic decider and its controller calls, ``/leases/validate``,
+``/admission`` and ``/elastic/*``. The run registry and lifecycle outbox
+(``durable_admission_runs`` / ``durable_resource_events``) are unchanged, so Hub's run views read
+the same event names (``run.waiting_resource``, ``run.resource_granted`` + ``run.lane_assigned``
+with lane = the hold's role, ``resource.lease_released``, ``resource.lease_expired``).
+"""
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
+import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-import httpx
 from langgraph.graph import START
 from langgraph.types import Command
 
-from app.http_hops import hop_client_kwargs
-from app.admitted_graph import AdmissionDeps, RunControlPending, WorkflowDeadline, build_admitted_graph
+from app.admitted_graph import (
+    GONE, GRANTED, REFUSED, WAITING, AdmissionDeps, HoldRecalled, RunControlPending, WorkflowDeadline,
+    build_admitted_graph,
+)
+from app.admitted_reflect_graph import build_admitted_reflect_graph
 from app.admitted_self_sense_graph import build_admitted_self_sense_graph
 from app.graph import failed_turn_meta, finish_detail, recorded_turn_correlation_id, turn_correlation_id
+from app.pool_hold import HELD, WAITING as POOL_WAITING, PoolHolds, UnknownRoute, is_hold_ref, ref_dict
+from app.reflect_graph import finish_detail as reflect_finish_detail
 from app.self_sense_graph import finish_detail as self_sense_finish_detail
-from orion.durable_admission.broker import ResourceBroker
-from orion.durable_admission.capacity import PostgresCapacityStore
-from orion.durable_admission.store import PostgresAdmissionStore, SubmissionConflict
+from orion.durable_admission.store import PostgresAdmissionStore
+from orion.gpu_pool.client import DURABLE_RUN_HOLDER_PREFIX, durable_run_holder
 from orion.schemas.durable_run import DurableRunRequestV1, DurableRunStateV1, DURABLE_RUN_STATE_KIND
 from orion.schemas.harness_finalize import HarnessRunCancelV1
 from orion.schemas.resource_admission import RESOURCE_EVENT_CHANNEL, RESOURCE_EVENT_KIND, ResourceEventV1
@@ -28,49 +50,77 @@ logger = logging.getLogger(__name__)
 TERMINAL = {"completed", "failed", "cancelled"}
 DEFAULT_WORKFLOW = "curiosity.investigate"
 SELF_SENSE_WORKFLOW = "self_sense_eval"
+REFLECT_WORKFLOW = "self_study.reflect"
+# The node of each admitted workflow that does GPU work under the hold. A restarted driver that
+# finds one of these still pending fences the previous attempt and replays it under the same hold.
+WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORKFLOW: {"ask_questions"},
+              REFLECT_WORKFLOW: {"llm_call"}}
+# Pool events (for a durable-run holder) after which a waiting run should look at its hold now.
+HINT_EVENTS = frozenset({"granted", "recalled", "aborted", "expired", "retried", "backlogged", "unavailable",
+                         "dead_lettered", "released", "cancelled"})
+# A request id already used for an ended hold is skipped (a checkpoint older than the pool's
+# record); bounded so a broken pool cannot spin a run forever.
+HOLD_SEQ_SKIP_MAX = 20
+MAX_CONCURRENT_DRIVERS = 4
+# A hold the pool reports unavailable for one of these reasons can never be placed: the run fails.
+# Any other unavailable (dead-lettered after expiries during a durable-runs outage, an abort) is
+# the hold's own history, not the run's: end it and ask again under a new request id.
+FATAL_UNAVAILABLE_PREFIXES = ("deadline", "min_ctx_exceeds_class", "backlog_max_age", "unknown_class",
+                              "operator_only_class", "replay_payload_too_large")
+
+
+class HoldLost(RuntimeError):
+    """The pool no longer holds this run's hold at its generation: stop using the GPU now."""
 
 
 class AdmissionRuntime:
-    def __init__(self, settings, runner, pool, *, store=None, broker=None, clock=None, hop_recorder_getter=None):
+    def __init__(self, settings, runner, pool, *, store=None, clock=None, holds=None):
         self.settings, self.runner, self.pool = settings, runner, pool
-        # RPC-health hop recording for outbound HTTP (app/http_hops.py); None = off.
-        self.hop_recorder_getter = hop_recorder_getter
         self.store = store or PostgresAdmissionStore(pool)
         self.now = clock or (lambda: datetime.now(timezone.utc))
-        self.broker = broker or ResourceBroker(self.store, lanes={}, lease_seconds=settings.lease_seconds,
-            widen_after_seconds=settings.widening_after_sec, hysteresis_seconds=settings.widening_hysteresis_sec,
-            widening_enabled=settings.widening_enabled, shadow=settings.admission_shadow,
-            capacity=PostgresCapacityStore(self.store, ttl_seconds=settings.lease_seconds) if settings.capacity_enabled else None)
+        self.holds = holds or PoolHolds(runner._bus, source=settings.service_name)
+        if settings.lease_heartbeat_sec * 2 > self.holds.hold_ttl_sec:
+            # Two missed beats must still land inside the pool's TTL, or a slow bus expires a
+            # healthy run's hold mid-turn.
+            raise ValueError(f"DURABLE_RUNS_LEASE_HEARTBEAT_SEC={settings.lease_heartbeat_sec} must be at most half "
+                             f"the pool's hold_lease_ttl_sec={self.holds.hold_ttl_sec}")
         admission_deps = AdmissionDeps(
-            self.register, self.store.get_lease, self.execute, self.release, self.event,
+            self.register, self.lease, self.execute, self.release, self.event,
             now=self.now, max_attempts=settings.retry_max_attempts,
             retry_base_seconds=settings.retry_base_sec, retry_max_seconds=settings.retry_max_sec,
-            guard=self.guard)
-        # One compiled graph per workflow. Before 2026-09-22 every admitted
-        # run — including self_sense_eval — shared the curiosity graph and
-        # never asked the four fixed questions.
+            guard=self.guard, keep_for_outreach=self.keep_for_outreach)
+        self.deps = admission_deps
+        # One compiled graph per workflow. Before 2026-09-22 every admitted run shared the
+        # curiosity graph; before 4.5 an admitted reflect run still did.
         self.graphs = {
-            DEFAULT_WORKFLOW: build_admitted_graph(
-                runner._curiosity_deps(), admission_deps, runner._checkpointer
-            ),
+            DEFAULT_WORKFLOW: build_admitted_graph(runner._curiosity_deps(), admission_deps, runner._checkpointer),
             SELF_SENSE_WORKFLOW: build_admitted_self_sense_graph(
-                runner._self_sense_deps(), admission_deps, runner._checkpointer
-            ),
+                runner._self_sense_deps(), admission_deps, runner._checkpointer),
+            REFLECT_WORKFLOW: build_admitted_reflect_graph(runner._reflect_deps(), admission_deps, runner._checkpointer),
         }
         # Back-compat alias used by older tests that reach for `.graph`.
         self.graph = self.graphs[DEFAULT_WORKFLOW]
         self.active: dict[str, asyncio.Task] = {}
         self._wake = asyncio.Event()
-        self._catalog_at = 0.0
-        from app.elastic_runtime import ElasticRuntime
-        self.elastic = ElasticRuntime(self) if getattr(settings,"elastic_enabled",False) else None
+        self._hints: set[str] = set()           # runs a pool event said something changed for
+        self._checked: dict[str, float] = {}    # run -> monotonic time of its last waiting-hold read
+        # Door-A: run -> {"lease": ref, "since": datetime, "beat": monotonic of last heartbeat}
+        self.outreach: dict[str, dict[str, Any]] = {}
+        self._outreach_loaded_at: float | None = None
+        # Holds whose release RPC failed: lease_id -> (run_id, lease, reason). Retried every reconcile
+        # until the pool confirms -- a retryable hold left to its TTL is re-queued and re-granted to
+        # nobody (review finding, 4.5).
+        self._pending_release: dict[str, tuple[str, dict | None, str]] = {}
 
     def _graph_for(self, workflow: str | None):
         return self.graphs.get(workflow or DEFAULT_WORKFLOW) or self.graphs[DEFAULT_WORKFLOW]
 
     def _finish_detail_for(self, workflow: str | None, state: dict):
-        if (workflow or DEFAULT_WORKFLOW) == SELF_SENSE_WORKFLOW:
+        workflow = workflow or DEFAULT_WORKFLOW
+        if workflow == SELF_SENSE_WORKFLOW:
             return self_sense_finish_detail(state)
+        if workflow == REFLECT_WORKFLOW:
+            return reflect_finish_detail(state)
         return finish_detail(state)
 
     @staticmethod
@@ -80,82 +130,350 @@ class AdmissionRuntime:
     async def submit(self, request: DurableRunRequestV1) -> dict:
         if request.admission is None:
             raise ValueError("resource admission is required on this endpoint")
-        derive_alternatives = not request.admission.alternatives
-        if derive_alternatives:
-            # The real Curiosity producer names its preferred logical lane.
-            # Expand only explicit operator declarations, frozen at acceptance
-            # so a duplicate receipt cannot mutate the durable demand.
-            existing = await self.store.get_run(request.run_id)
-            if existing:
-                alternatives = existing["request"]["admission"]["alternatives"]
-            else:
-                policy = json.loads(self.settings.lane_policy_json or "{}")
-                alternatives = sorted(lane for lane, declaration in policy.items()
-                    if lane != request.admission.preferred_lane
-                    and request.admission.preferred_lane in declaration.get("compatible_with", []))
-            request = request.model_copy(update={"admission": request.admission.model_copy(
-                update={"alternatives": alternatives})})
-        try:
-            row = await self.store.submit(request.model_dump(mode="json"))
-        except SubmissionConflict:
-            if not derive_alternatives:
-                raise
-            # Two replicas can read an empty inbox before either commits,
-            # while using different rolling policy revisions. The winner's
-            # derived candidates are immutable; all caller-supplied fields
-            # still undergo the store's full conflict check on this retry.
-            existing = await self.store.get_run(request.run_id)
-            if existing is None:
-                raise
-            request = request.model_copy(update={"admission": request.admission.model_copy(update={
-                "alternatives": existing["request"]["admission"]["alternatives"]})})
-            row = await self.store.submit(request.model_dump(mode="json"))
-        if not row.get("terminal") and not row.get("control") and not await self.store.get_demand(request.run_id):
-            await self.store.register_demand(request.run_id, request.admission.model_dump(mode="json"))
+        row = await self.store.submit(request.model_dump(mode="json"))
         self._wake.set()
         return {"run_id": request.run_id, "status": row.get("terminal") or "waiting_resource",
                 "workflow_kind": request.workflow, "requested_resource": request.admission.resource}
 
-    async def register(self, state):
-        # The accepted request row, not the checkpoint's copy, is the demand.
-        # (Only the demand follows the row; deadline checks still read the
-        # checkpoint's `admission.deadline_at`.)
-        # The checkpoint snapshots `admission` at acceptance and never
-        # refreshes it; if the durable row is ever corrected (live
-        # 2026-09-22: queued runs widened to add `chat-burst`), re-registering
-        # the stale copy hits "run demand is immutable" on every resume.
-        row = await self.store.get_run(state["run_id"])
+    # --- the run's hold (AdmissionDeps) ------------------------------------------------------
+    async def register(self, state) -> dict:
+        """resource_request: make sure the run has a live pool hold request.
+
+        The accepted request row, not the checkpoint's copy, is the demand (a corrected row must
+        not be shadowed by a stale checkpoint). Re-asking with the hold's own request id is
+        idempotent at the pool; a new id (``<run_id>:<seq+1>``) only when the previous hold ended.
+        """
+        run_id = state["run_id"]
+        row = await self.store.get_run(run_id)
         if row is None:
-            raise KeyError(state["run_id"])
-        await self.store.register_demand(state["run_id"], row["request"]["admission"])
+            raise KeyError(run_id)
+        if row.get("control"):
+            raise RunControlPending(row["control"])
+        admission = row["request"]["admission"]
+        hold = dict(state.get("hold") or {})
+        seq = int(state.get("hold_seq") or 0)
+        if not hold.get("request_id"):
+            seq += 1
+        for _ in range(HOLD_SEQ_SKIP_MAX):
+            request_id = hold.get("request_id") or f"{run_id}:{seq}"
+            try:
+                reply = await self.holds.acquire(run_id, request_id, admission, correlation_id=state.get("correlation_id"))
+            except UnknownRoute as exc:
+                return {"status": "failed", "last_error": f"gpu_pool_{exc}", "hold": None, "hold_seq": seq}
+            except Exception as exc:  # noqa: BLE001 -- unreachable pool: remember the id, retry idempotently
+                logger.warning("durable_hold_acquire_failed run=%s request_id=%s err=%s", run_id, request_id, exc)
+                return {"status": "waiting_resource", "hold": {"request_id": request_id, "lease_id": hold.get("lease_id")},
+                        "hold_seq": seq}
+            if reply.status == "ok":
+                # This request id names a hold that already ended (the checkpoint predates its
+                # release): never reuse it -- the pool would hand back the ended lease.
+                hold, seq = {}, seq + 1
+                continue
+            break
+        else:
+            return {"status": "failed", "last_error": "gpu_pool_hold_request_ids_exhausted", "hold": None, "hold_seq": seq}
+        if reply.status == "unknown_lease" or (reply.status == "unavailable" and not reply.lease_id):
+            # Refused at the door (unknown class, operator-only class): it can never be placed.
+            return {"status": "failed", "last_error": f"gpu_pool_unavailable:{reply.reason or reply.status}",
+                    "hold": None, "hold_seq": seq}
+        if reply.status in POOL_WAITING:
+            work_class, _, _ = self.holds.placement(admission)
+            await self.store.record_event(run_id, "run.waiting_resource", {
+                "requested_lane": admission.get("preferred_lane"), "lease_id": reply.lease_id,
+                "work_class": work_class, "position": reply.position, "pool_status": reply.status},
+                event_id=f"waiting:{reply.lease_id}")
+        return {"status": "waiting_resource", "hold": {"request_id": request_id, "lease_id": reply.lease_id},
+                "hold_seq": seq}
 
-    async def release(self, run_id, reason):
-        lease = await self.store.get_lease(run_id)
-        if lease:
-            await self.store.release(lease, reason)
-        await self.store.suspend_demand(run_id)
-        self._wake.set()
+    async def lease(self, state) -> tuple[str, dict]:
+        """resource_wait: what the pool says about the run's hold right now."""
+        hold = state.get("hold") or {}
+        waiting = {"status": "waiting_resource", "lease": None}
+        if not hold.get("lease_id"):
+            return WAITING, waiting
+        try:
+            reply = await self.holds.status(hold["lease_id"])
+        except Exception as exc:  # noqa: BLE001 -- pool unreachable: stay in line, the tick retries
+            logger.warning("durable_hold_status_failed run=%s lease=%s err=%s", state["run_id"], hold["lease_id"], exc)
+            return WAITING, waiting
+        run_id = state["run_id"]
+        if reply.status == "granted" and reply.grant is not None:
+            ref = ref_dict(reply, durable_run_holder(run_id))
+            detail = {"lease": ref, "lane": ref["role"], "lease_id": ref["lease_id"], "generation": ref["generation"],
+                      "role": ref["role"], "requested_lane": (state.get("admission") or {}).get("preferred_lane")}
+            await self.store.record_event(run_id, "run.resource_granted", detail,
+                                          event_id=f"granted:{ref['lease_id']}:{ref['generation']}")
+            await self.store.record_event(run_id, "run.lane_assigned", detail,
+                                          event_id=f"assigned:{ref['lease_id']}:{ref['generation']}")
+            return GRANTED, {"status": "admitted", "lease": ref, "hold": dict(hold)}
+        if reply.status in POOL_WAITING:
+            self._checked[run_id] = time.monotonic()   # just read: the poll fallback starts from here
+            return WAITING, waiting
+        if reply.status == "recall":
+            # Recalled before the run started: give the seat back now and queue afresh.
+            await self._end_hold(state, hold["lease_id"], None, "recalled_before_start")
+            return GONE, {**waiting, "hold": None}
+        if reply.status in ("ok", "unknown_lease"):
+            return GONE, {**waiting, "hold": None}
+        # unavailable / dead-lettered: this hold will not be granted again. End it (the pool keeps
+        # such a lease for operator replay; replaying it would grant a run that moved on).
+        await self._end_hold(state, hold["lease_id"], None, f"refused:{reply.reason}")
+        reason = reply.reason or reply.status
+        if not reason.startswith(FATAL_UNAVAILABLE_PREFIXES):
+            # e.g. dead-lettered after repeated expiries while durable-runs was down: the run
+            # resumes (spec Decision 1 rule 6) under a fresh request id.
+            return GONE, {**waiting, "hold": None}
+        error = "workflow_deadline" if reason == "deadline" else f"gpu_pool_unavailable:{reason}"
+        return REFUSED, {"status": "failed", "last_error": error, "lease": None, "hold": None}
 
-    async def event(self, state, name, detail):
-        await self.store.record_event(state["run_id"], name, detail)
+    async def _beat(self, lease: dict) -> str | None:
+        """Heartbeat a granted hold; raise HoldLost when the pool no longer holds it at our
+        generation. A failed RPC is tolerated: the TTL is at least two beats."""
+        try:
+            reply = await self.holds.heartbeat(lease["lease_id"])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("durable_hold_heartbeat_failed lease=%s err=%s", lease["lease_id"], exc)
+            return None
+        if reply.status in HELD and reply.grant is not None and reply.grant.generation == lease["generation"]:
+            if reply.status == "recall":
+                logger.info("durable_hold_recalled lease=%s recall_by=%s", lease["lease_id"], reply.recall_by)
+            return reply.status
+        raise HoldLost(f"gpu_hold_lost:{reply.status}" + (f":{reply.reason}" if reply.reason else ""))
+
+    async def execute(self, state, node):
+        lease = state.get("lease")
+        if not is_hold_ref(lease):
+            raise RuntimeError("gpu_hold_missing")
+        row = await self.store.get_run(state["run_id"])
+        if row.get("control"):
+            raise RunControlPending(row["control"])
+        if await self._beat(lease) == "recall":
+            # Already being recalled: never start a long turn on it. Give it back now and queue
+            # afresh; this is not a failed attempt.
+            await self._end_hold(state, lease["lease_id"], lease, "recalled_before_start")
+            raise HoldRecalled("gpu_hold_recalled_before_start")
+        detail = {"lease": lease, "lane": lease["role"]}
+        if (state.get("workflow") or DEFAULT_WORKFLOW) == DEFAULT_WORKFLOW:
+            # Joinable to the pool's child leases (acceptance check 2: no un-attached agent lease
+            # under a turn whose run holds a hold).
+            detail["turn_correlation_id"] = turn_correlation_id(state)
+        await self.event(state, "run.started", detail)
+        work = asyncio.create_task(node(state))
+        timeout = float(state["brief"]["timeout_sec"])
+        deadline = state["admission"].get("deadline_at")
+        if deadline:
+            timeout = min(timeout, max(0, (datetime.fromisoformat(deadline)-self.now()).total_seconds()))
+        try:
+            # Timeout starts only after the hold is confirmed. Each heartbeat re-reads the operator
+            # control row and asks the pool whether the hold is still ours at this generation.
+            async with asyncio.timeout(timeout):
+                while True:
+                    done, _ = await asyncio.wait({work}, timeout=self.settings.lease_heartbeat_sec)
+                    if done:
+                        return await work
+                    row = await self.store.get_run(state["run_id"])
+                    if row.get("control"):
+                        raise RuntimeError(f"run_control:{row['control']}")
+                    await self._beat(lease)
+        except TimeoutError as exc:
+            if deadline and self.now() >= datetime.fromisoformat(deadline):
+                raise WorkflowDeadline("workflow_deadline") from exc
+            raise
+        finally:
+            if not work.done():
+                # Cancel Hub before awaiting the local task's cleanup -- self-sense clears
+                # `_inflight_turn_correlation_ids` in its finally, so this must run while those ids
+                # are still stamped on `state`.
+                await self._cancel_harness(state, "durable_attempt_stopped")
+                work.cancel()
+                await asyncio.gather(work, return_exceptions=True)
 
     async def guard(self, state):
+        """Node boundary: deadline and operator control, then the hold. Returns the lease while
+        the pool still grants it; a recalled hold is released right here (the boundary its
+        clawback grace waits for) and a lost one is ended; either way None. Never waits."""
         deadline = state["admission"].get("deadline_at")
         if deadline and self.now() >= datetime.fromisoformat(deadline):
             raise WorkflowDeadline("workflow_deadline")
         row = await self.store.get_run(state["run_id"])
         if row.get("control"):
             raise RunControlPending(row["control"])
-        lease = await self.store.get_lease(state["run_id"])
-        if lease and await self.store.validate(lease):
-            await self.store.renew(lease, self.settings.lease_seconds)
+        lease = state.get("lease")
+        if not is_hold_ref(lease):
+            return None
+        try:
+            reply = await self.holds.heartbeat(lease["lease_id"])
+        except Exception as exc:  # noqa: BLE001 -- cannot tell; the tail needs no GPU, keep the ref
+            logger.warning("durable_hold_heartbeat_failed lease=%s err=%s", lease["lease_id"], exc)
             return lease
-        await self.register(state)
+        same = reply.grant is not None and reply.grant.generation == lease["generation"]
+        if reply.status == "granted" and same:
+            return lease
+        if reply.status == "recall" and same:
+            await self._end_hold(state, lease["lease_id"], lease, "recalled")
+            return None
+        await self._record_lost(state, lease, reply.status, reply.reason)
+        await self._end_hold(state, lease["lease_id"], lease, "lost")
         return None
 
+    async def release(self, state, reason, keep_requeued: bool = False) -> dict:
+        """End the run's hold (state update clears ``lease`` and ``hold``). ``keep_requeued``: a
+        hold the pool already sent back to its queue (lost heartbeat, recall past grace) is kept --
+        same lease_id, same place in line -- and the run waits for it again."""
+        hold = dict(state.get("hold") or {})
+        lease = state.get("lease") if is_hold_ref(state.get("lease")) else None
+        lease_id = hold.get("lease_id") or (lease or {}).get("lease_id")
+        if not lease_id and hold.get("request_id"):
+            lease_id = await self._lease_for_request(state, hold["request_id"])
+        if not lease_id:
+            return {"lease": None, "hold": None}
+        if keep_requeued:
+            try:
+                reply = await self.holds.status(lease_id)
+            except Exception:  # noqa: BLE001 -- unknown: hand it back rather than strand a slot
+                reply = None
+            if reply is not None and reply.status in POOL_WAITING:
+                if lease:
+                    await self._record_lost(state, lease, reply.status, reply.reason)
+                return {"lease": None, "hold": {**hold, "lease_id": lease_id}}
+        await self._end_hold(state, lease_id, lease, reason)
+        return {"lease": None, "hold": None}
+
+    async def _lease_for_request(self, state, request_id: str) -> str | None:
+        """The acquire may have landed at the pool without its reply reaching us: re-asking with the
+        same request id is idempotent and names the lease, so it can be ended."""
+        row = await self.store.get_run(state["run_id"])
+        try:
+            reply = await self.holds.acquire(state["run_id"], request_id, row["request"]["admission"],
+                                             correlation_id=state.get("correlation_id"))
+        except Exception:  # noqa: BLE001
+            return None
+        return reply.lease_id
+
+    async def _end_hold(self, state, lease_id: str, lease: dict | None, reason: str) -> bool:
+        """Release (or cancel) a hold at the pool. A failed RPC is not the end of it: the hold is
+        queued for retry on every reconcile until the pool confirms (``_retry_releases``)."""
+        run_id = state["run_id"]
+        self.outreach.pop(run_id, None)
+        try:
+            reply = await self.holds.release(lease_id, outcome="cancelled" if reason in ("cancel", "cancelled") else "ok",
+                                             detail=reason)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("durable_hold_release_failed run=%s lease=%s reason=%s err=%s (will retry)",
+                           run_id, lease_id, reason, exc)
+            self._pending_release[lease_id] = (run_id, lease, reason)
+            return False
+        self._pending_release.pop(lease_id, None)
+        await self.store.record_event(run_id, "resource.lease_released", {
+            "lease_id": lease_id, "generation": (lease or {}).get("generation"), "lane": (lease or {}).get("role"),
+            "reason": reason, "pool_status": reply.status}, event_id=f"released:{lease_id}")
+        return True
+
+    async def _retry_releases(self) -> None:
+        for lease_id, (run_id, lease, reason) in list(self._pending_release.items()):
+            await self._end_hold({"run_id": run_id}, lease_id, lease, reason)
+
+    async def _record_lost(self, state, lease: dict, status: str, reason: str | None) -> None:
+        await self.store.record_event(state["run_id"], "resource.lease_expired", {
+            "lease_id": lease["lease_id"], "generation": lease["generation"], "lane": lease.get("role"),
+            "pool_status": status, "reason": reason}, event_id=f"expired:{lease['lease_id']}:{lease['generation']}")
+
+    async def event(self, state, name, detail):
+        await self.store.record_event(state["run_id"], name, detail)
+
+    # --- Door-A: the hold outlives the run until Hub has composed --------------------------------
+    async def keep_for_outreach(self, state) -> None:
+        self.outreach[state["run_id"]] = {"lease": dict(state["lease"]), "since": self.now(), "beat": time.monotonic()}
+
+    async def _beat_outreach(self) -> None:
+        due = self._outreach_loaded_at is None or \
+            time.monotonic() - self._outreach_loaded_at >= self.settings.hold_status_poll_sec
+        if due:
+            # A restarted process adopts the Door-A holds its predecessor left, so they are neither
+            # stranded nor (after a lost heartbeat) re-queued and granted to a finished run.
+            for row in await self.store.outreach_holds_pending(self.settings.outreach_hold_max_sec):
+                detail = row["detail"] or {}
+                if is_hold_ref(detail) and detail["lease_id"] not in self._pending_release:
+                    self.outreach.setdefault(row["run_id"], {
+                        "lease": {k: detail[k] for k in ("lease_id", "generation", "role", "holder")},
+                        "since": row["generated_at"], "beat": 0.0})
+            self._outreach_loaded_at = time.monotonic()
+        for run_id, entry in list(self.outreach.items()):
+            lease, state = entry["lease"], {"run_id": run_id}
+            if (self.now() - entry["since"]).total_seconds() >= self.settings.outreach_hold_max_sec:
+                logger.warning("durable_outreach_hold_timeout run=%s lease=%s", run_id, lease["lease_id"])
+                await self._end_hold(state, lease["lease_id"], lease, "outreach_timeout")
+                continue
+            if time.monotonic() - entry["beat"] < self.settings.lease_heartbeat_sec:
+                continue
+            entry["beat"] = time.monotonic()
+            try:
+                await self._beat(lease)
+            except HoldLost as exc:
+                logger.warning("durable_outreach_hold_lost run=%s lease=%s %s", run_id, lease["lease_id"], exc)
+                await self._record_lost(state, lease, str(exc), None)
+                # Re-queued holds would be granted to a finished run: end it.
+                await self._end_hold(state, lease["lease_id"], lease, "lost")
+
+    async def release_outreach(self, run_id: str) -> dict:
+        """Hub finished composing (``/runs/{id}/release-outreach-lease``): release the Door-A hold."""
+        row = await self.store.get_run(run_id)
+        if row is None:
+            raise KeyError(run_id)
+        if row.get("terminal") != "completed":
+            raise ValueError("no door-a outreach lease hold on this run")
+        entry = self.outreach.get(run_id)
+        lease = (entry or {}).get("lease")
+        if lease is None:
+            workflow = row["request"].get("workflow") or DEFAULT_WORKFLOW
+            snap = await self._graph_for(workflow).aget_state(self.config(run_id))
+            lease = (snap.values or {}).get("lease")
+        if not is_hold_ref(lease) or any(event.get("event") == "resource.lease_released"
+                                         and (event.get("detail") or {}).get("lease_id") == lease["lease_id"]
+                                         for event in await self.store.history(run_id)):
+            self.outreach.pop(run_id, None)
+            return {"released": False, "run_id": run_id, "reason": "already_released"}
+        await self._end_hold({"run_id": run_id}, lease["lease_id"], lease, "outreach_done")
+        self._wake.set()
+        return {"released": True, "run_id": run_id}
+
+    # --- pool events -----------------------------------------------------------------------------
+    async def on_pool_event(self, payload: dict[str, Any]) -> None:
+        """A pool lifecycle event: wake the run it names (hints only -- the graph always re-reads
+        the pool's own answer, so a stale or duplicate event can never fake a grant)."""
+        holder = str(payload.get("holder") or "")
+        if not holder.startswith(DURABLE_RUN_HOLDER_PREFIX) or payload.get("event") not in HINT_EVENTS:
+            return
+        run_id = holder[len(DURABLE_RUN_HOLDER_PREFIX):]
+        self._hints.add(run_id)
+        if run_id in self.outreach:
+            self.outreach[run_id]["beat"] = 0.0
+        self._wake.set()
+
+    async def _hold_ready(self, run_id: str, state: dict) -> bool:
+        """Should a run interrupted in ``resource_wait`` be resumed now? Yes on a pool event for it;
+        otherwise one ``status`` read per DURABLE_RUNS_HOLD_STATUS_POLL_SEC (the missed-event
+        fallback), resuming only when the hold is no longer simply waiting in line."""
+        if run_id in self._hints:
+            self._hints.discard(run_id)
+            self._checked[run_id] = time.monotonic()
+            return True
+        last = self._checked.get(run_id)
+        if last is not None and time.monotonic() - last < self.settings.hold_status_poll_sec:
+            return False
+        self._checked[run_id] = time.monotonic()
+        lease_id = (state.get("hold") or {}).get("lease_id")
+        if not lease_id:
+            return True  # no hold at the pool yet (acquire never answered): ask again
+        try:
+            reply = await self.holds.status(lease_id)
+        except Exception:  # noqa: BLE001
+            return False
+        return reply.status not in POOL_WAITING
+
     async def _cancel_harness(self, state, reason):
-        # Curiosity: lease-derived turn id. Self-sense: each question is a
-        # fresh uuid4 -- cancel those from answers + any still in-flight.
+        # Curiosity: hold-derived turn id. Self-sense: each question is a fresh uuid4 -- cancel
+        # those from answers + any still in-flight.
         ids: list[str] = []
         try:
             ids.append(turn_correlation_id(state))
@@ -185,47 +503,6 @@ class AdmissionRuntime:
                 self.runner._corr_for_admission(correlation_id),
             )
 
-    async def execute(self, state, node):
-        lease = state.get("lease")
-        if not lease or not await self.store.validate(lease):
-            raise RuntimeError("resource_lease_lost")
-        row = await self.store.get_run(state["run_id"])
-        if row.get("control"):
-            raise RunControlPending(row["control"])
-        await self.event(state, "run.started", {"lease": lease})
-        work = asyncio.create_task(node(state))
-        timeout = float(state["brief"]["timeout_sec"])
-        deadline = state["admission"].get("deadline_at")
-        if deadline:
-            timeout = min(timeout, max(0, (datetime.fromisoformat(deadline)-self.now()).total_seconds()))
-        try:
-            # Timeout starts only after resource validation. Each heartbeat
-            # checks the authoritative control/lease row; old grants cannot
-            # extend a newer generation or accept a stale response.
-            async with asyncio.timeout(timeout):
-                while True:
-                    done, _ = await asyncio.wait({work}, timeout=self.settings.lease_heartbeat_sec)
-                    if done:
-                        result = await work
-                        if not await self.store.validate(lease):
-                            raise RuntimeError("resource_lease_lost")
-                        return result
-                    row = await self.store.get_run(state["run_id"])
-                    if row.get("control") or not await self.store.renew(lease, self.settings.lease_seconds):
-                        raise RuntimeError("resource_lease_lost")
-        except TimeoutError as exc:
-            if deadline and self.now() >= datetime.fromisoformat(deadline):
-                raise WorkflowDeadline("workflow_deadline") from exc
-            raise
-        finally:
-            if not work.done():
-                # Cancel Hub before awaiting the local task's cleanup -- self-sense
-                # clears `_inflight_turn_correlation_ids` in its finally, so this
-                # must run while those ids are still stamped on `state`.
-                await self._cancel_harness(state, "durable_attempt_stopped")
-                work.cancel()
-                await asyncio.gather(work, return_exceptions=True)
-
     @asynccontextmanager
     async def claim(self, run_id):
         # Session advisory locks serialize graph writers across service replicas.
@@ -239,10 +516,36 @@ class AdmissionRuntime:
                 if acquired:
                     await conn.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", ("orion:durable:"+run_id,))
 
+    async def _recover(self, graph, cfg, workflow: str, state: dict, snap) -> None:
+        """This driver took a fresh session lock on a run whose checkpoint still names a lease: its
+        predecessor died (or was stopped) mid-run and may still have a turn running in Hub.
+
+        A pool hold keeps its lease_id and generation across the restart (spec Decision 1 rule 6),
+        so the old turn is fenced explicitly -- harness cancel for its identity, and ``turn_fence``
+        gives the replay a new one -- and the work node is replayed under the same hold once the
+        pool confirms it. A legacy (pre-cutover) durable lease has no pool hold: it is dropped and
+        the run asks the pool afresh."""
+        next_node = snap.next[0]
+        held = is_hold_ref(state.get("lease"))
+        if next_node in WORK_NODES.get(workflow, WORK_NODES[DEFAULT_WORKFLOW]):
+            if held:
+                await self._cancel_harness(state, "worker_recovery")
+            update = {"lease": None, "turn_fence": int(state.get("turn_fence") or 0) + (1 if held else 0)}
+            if not held:
+                update["hold"] = None
+            if workflow == DEFAULT_WORKFLOW:
+                # Record the fenced attempt's turn identity before the lease goes: Hub may still
+                # finish that turn and write its harness_turn_trace row under this id.
+                await graph.aupdate_state(cfg, {**update, "status": "retrying", "retry_node": None,
+                                                **failed_turn_meta(state)}, as_node="retry_wait")
+            else:
+                await graph.aupdate_state(cfg, {**update, "status": "waiting_resource"}, as_node="resource_request")
+            return
+        released = await self.release(state, "worker_recovery") if held else {"lease": None, "hold": None}
+        await graph.aupdate_state(cfg, released)
+
     async def _drive(self, row):
         run_id = row["run_id"]
-        if self.settings.admission_shadow:
-            return  # Broker persists would-be decisions without driving cognition.
         async with self.claim(run_id) as acquired:
             if not acquired:
                 return
@@ -272,44 +575,22 @@ class AdmissionRuntime:
                 snap = await graph.aget_state(cfg)
             state = dict(snap.values)
             if row.get("control") == "cancelled":
-                await self.release(run_id, "cancelled")
-                await graph.aupdate_state(cfg, {"status": "cancelled", "lease": None}, as_node="finish")
+                released = await self.release(state, "cancelled")
+                await graph.aupdate_state(cfg, {**released, "status": "cancelled"}, as_node="finish")
                 await self._terminal(run_id, "cancelled", state, workflow=workflow)
                 return
             if row.get("control") == "paused":
-                await self.release(run_id, "paused")
+                await self.release(state, "paused")
                 return
             if snap.next and state.get("lease"):
-                # This driver acquired a fresh session lock for an unfinished
-                # inference attempt. Its predecessor may still be running in
-                # Hub after a broken connection. Fence that generation before
-                # replaying the expensive node under a new grant.
-                await self.release(run_id, "worker_recovery")
-                next_node = snap.next[0]
-                if workflow == SELF_SENSE_WORKFLOW and next_node == "ask_questions":
-                    # Self-sense has no retry_wait. Drop the lease and re-enter
-                    # resource_request so a fresh grant wraps the remaining
-                    # questions (answers already on state are skipped).
-                    await graph.aupdate_state(
-                        cfg, {"lease": None, "status": "waiting_resource"}, as_node="resource_request"
-                    )
-                elif next_node in {"harness_turn", "run_started"}:
-                    # Record the fenced generation's turn identity before the
-                    # lease goes: Hub may still finish that turn and write its
-                    # harness_turn_trace row under this id, and a later
-                    # deadline/cancel terminal should name it, not an older
-                    # attempt's (review finding, 2026-09-22).
-                    await graph.aupdate_state(
-                        cfg, {"lease": None, "status": "retrying", "retry_node": None, **failed_turn_meta(state)}, as_node="retry_wait"
-                    )
-                else:
-                    await graph.aupdate_state(cfg, {"lease": None})
+                await self._recover(graph, cfg, workflow, state, snap)
                 snap = await graph.aget_state(cfg)
                 state = dict(snap.values)
             deadline = state["admission"].get("deadline_at")
             if deadline and self.now() >= datetime.fromisoformat(deadline):
-                await self.release(run_id, "deadline")
-                await graph.aupdate_state(cfg, {"status": "failed", "last_error": "workflow_deadline"}, as_node="failed")
+                released = await self.release(state, "deadline")
+                await graph.aupdate_state(cfg, {**released, "status": "failed", "last_error": "workflow_deadline"},
+                                          as_node="failed")
                 await self._terminal(run_id, "failed", {**state, "last_error": "workflow_deadline"}, workflow=workflow)
                 return
             if not snap.next:
@@ -318,10 +599,7 @@ class AdmissionRuntime:
             try:
                 resume = None
                 if any(t.interrupts for t in snap.tasks):
-                    if snap.next == ("resource_wait",) and not await self.store.get_lease(run_id):
-                        # Expiry withdraws the old grant. Re-register this graph's
-                        # still-pending acquisition, keeping its original age.
-                        await self.register(state)
+                    if snap.next == ("resource_wait",) and not await self._hold_ready(run_id, state):
                         return
                     if snap.next == ("retry_wait",) and self.now() < datetime.fromisoformat(state["retry_at"]):
                         return
@@ -346,7 +624,9 @@ class AdmissionRuntime:
             except RunControlPending:
                 return
             except WorkflowDeadline:
-                await graph.aupdate_state(cfg, {"status": "failed", "last_error": "workflow_deadline"}, as_node="failed")
+                released = await self.release(state, "workflow_deadline")
+                await graph.aupdate_state(cfg, {**released, "status": "failed", "last_error": "workflow_deadline"},
+                                          as_node="failed")
                 await self._terminal(run_id, "failed", {**state, "last_error": "workflow_deadline"}, workflow=workflow)
             except Exception as exc:
                 # The checkpoint retains the failing node. Reconciliation is
@@ -371,9 +651,9 @@ class AdmissionRuntime:
             return
         last_error = f"checkpoint_resume_failed: {error} (x{failures} since last progress, at node {','.join(snap.next)})"
         logger.error("durable_checkpoint_resume_abandoned run=%s failures=%s error=%s", run_id, failures, error)
-        await self.release(run_id, "checkpoint_resume_failed")
+        released = await self.release(state, "checkpoint_resume_failed")
         try:
-            await graph.aupdate_state(cfg, {"status": "failed", "last_error": last_error, "lease": None}, as_node="failed")
+            await graph.aupdate_state(cfg, {**released, "status": "failed", "last_error": last_error}, as_node="failed")
         except Exception:  # noqa: BLE001 -- the durable row must still go terminal
             logger.exception("durable_checkpoint_abandon_graph_update_failed run=%s", run_id)
         await self._terminal(run_id, "failed", {**state, "last_error": last_error}, workflow=workflow)
@@ -393,71 +673,36 @@ class AdmissionRuntime:
         actual = await self.store.finish_projection(run_id, status, detail)
         if actual is not None and actual != status:
             await self._graph_for(wf).aupdate_state(self.config(run_id), {"status": actual}, as_node="finish")
+        if actual is not None and actual != "completed" and run_id in self.outreach:
+            # finish kept a Door-A hold, but the run did not end completed (a cancel won the race):
+            # Hub will never compose for it and release_outreach refuses it -- end it here.
+            entry = self.outreach[run_id]
+            await self._end_hold({"run_id": run_id}, entry["lease"]["lease_id"], entry["lease"], f"terminal_{actual}")
+        if actual is not None:
+            self._hints.discard(run_id)
+            self._checked.pop(run_id, None)
         self._wake.set()
 
-    async def refresh_lanes(self):
-        policy = json.loads(self.settings.lane_policy_json or "{}")
-        async with httpx.AsyncClient(timeout=5.0, **hop_client_kwargs(self.hop_recorder_getter)) as client:
-            response = await client.get(self.settings.gateway_url.rstrip("/")+"/routes")
-            response.raise_for_status()
-            routes = response.json()["routes"]
-            async def occupancy(upstream):
-                try:
-                    result = await client.get(upstream.rstrip("/")+"/slots")
-                    result.raise_for_status()
-                    slots = result.json()
-                    if not isinstance(slots, list) or not slots or not all(
-                        isinstance(slot, dict) and isinstance(slot.get("is_processing"), bool) for slot in slots
-                    ):
-                        return upstream, None
-                    return upstream, any(slot["is_processing"] for slot in slots)
-                except (httpx.HTTPError, ValueError):
-                    return upstream, None
-            occupancy_by_backend = dict(await asyncio.gather(*(
-                occupancy(upstream) for upstream in {r["upstream"] for r in routes if r.get("upstream")}
-            )))
-        lanes = {}
-        for route in routes:
-            lane = route["id"]
-            declaration = policy.get(lane, {})
-            capabilities = dict(declaration.get("capabilities", {}))
-            capabilities.pop("minimum_context_tokens", None)
-            capabilities.pop("context_tokens", None)
-            if route.get("n_ctx") is not None:
-                capabilities["context_tokens"] = route["n_ctx"]
-            if route.get("vision") is not None:
-                capabilities["vision"] = route["vision"]
-            lanes[lane] = {**declaration, "backend_key": route.get("upstream"),
-                "healthy": route.get("status") == "up",
-                "configured": bool(route.get("upstream")), "capabilities": capabilities,
-                "quality_tier": declaration.get("quality_tier", 0),
-                "external_busy": occupancy_by_backend.get(route.get("upstream"))}
-        burst = lanes.get("agent-burst")
-        if burst:
-            preferred = next((r for r in routes if r["id"] == "agent"), {})
-            actual = next((r for r in routes if r["id"] == "agent-burst"), {})
-            same_model = preferred.get("model") and burst.get("activation_model") == preferred.get("model")
-            burst["activatable"] = bool(burst.get("activatable") and self.elastic and same_model
-                and burst["backend_key"].rstrip("/") == self.settings.elastic_backend.rstrip("/"))
-            # A stopped route has no measured context. Activation may use the
-            # audited same-model contract; assignment requires live facts again.
-            burst["activation_capabilities"] = {**burst["capabilities"],
-                "context_tokens":preferred.get("n_ctx"),"vision":preferred.get("vision")} if same_model else {}
-            burst["healthy"] = bool(burst["healthy"] and same_model and actual.get("model") == preferred.get("model")
-                and actual.get("n_ctx") == preferred.get("n_ctx") and actual.get("vision") == preferred.get("vision"))
-        self.broker.lanes = lanes
-
     async def reconcile(self):
-        if self.elastic:
-            await self.elastic.tick()
-        await self.broker.tick()
+        try:
+            await self._retry_releases()
+        except Exception:  # noqa: BLE001
+            logger.exception("durable_hold_release_retry_failed")
+        try:
+            await self._beat_outreach()
+        except Exception:  # noqa: BLE001 -- Door-A upkeep must not stop the run loop
+            logger.exception("durable_outreach_hold_upkeep_failed")
         for row in await self.store.list_pending():
             run_id = row["run_id"]
             if run_id in self.active:
                 if row.get("control"):
                     self.active[run_id].cancel()
                 continue
-            if len(self.active) >= 4:
+            if row.get("control") == "paused":
+                # The pausing replica released the hold (control()); re-driving a paused run every
+                # tick would only repeat pool RPCs. Resume clears control and it is driven again.
+                continue
+            if len(self.active) >= MAX_CONCURRENT_DRIVERS:
                 break
             task = asyncio.create_task(self._drive(row), name=f"admitted-{run_id}")
             self.active[run_id] = task
@@ -482,18 +727,13 @@ class AdmissionRuntime:
                 await self.store.ack_outbox(event.entry_id)
 
     async def wakeup(self, event):
-        # Grants are hints; the graph rereads the authoritative fenced row.
+        # Another replica's lifecycle fact: a hint to look again, never a grant.
         if event.event in {"run.resource_granted", "resource.lease_released", "resource.lease_expired"}:
             self._wake.set()
 
     async def run(self, stop):
         while not stop.is_set():
             self._wake.clear()
-            try:
-                await self.refresh_lanes()
-            except Exception:
-                self.broker.lanes = {}  # stale route health cannot grant capacity
-                logger.warning("durable_route_catalog_unavailable", exc_info=True)
             try:
                 await self.reconcile()
             except Exception:
@@ -511,12 +751,19 @@ class AdmissionRuntime:
             return await self.status(run_id)
         await self.store.set_control(run_id, {"pause": "paused", "cancel": "cancelled", "resume": None}[action])
         if action in {"pause", "cancel"}:
-            await self.release(run_id, action)
             if run_id in self.active:
                 self.active[run_id].cancel()
                 await asyncio.gather(self.active[run_id], return_exceptions=True)
-        elif action == "resume":
-            await self.store.register_demand(run_id, row["request"]["admission"])
+            workflow = row["request"].get("workflow") or DEFAULT_WORKFLOW
+            snap = await self._graph_for(workflow).aget_state(self.config(run_id))
+            if snap.values:
+                state = {**dict(snap.values), "run_id": run_id}
+                await self.release(state, action)
+                if action == "cancel" and not (state.get("hold") or {}).get("request_id"):
+                    # The driver may have been cancelled mid-acquire: the hold can exist at the pool
+                    # under the next request id without ever reaching the checkpoint.
+                    probe = f"{run_id}:{int(state.get('hold_seq') or 0) + 1}"
+                    await self.release({**state, "hold": {"request_id": probe, "lease_id": None}}, action)
         await self.store.record_event(run_id, "run."+{"pause": "paused", "cancel": "cancelled", "resume": "resumed"}[action], {})
         self._wake.set()
         return await self.status(run_id)
@@ -527,21 +774,25 @@ class AdmissionRuntime:
             raise KeyError(run_id)
         workflow = row["request"].get("workflow") or DEFAULT_WORKFLOW
         snap = await self._graph_for(workflow).aget_state(self.config(run_id))
-        lease = await self.store.get_lease(run_id)
+        values = snap.values or {}
+        lease = values.get("lease") if is_hold_ref(values.get("lease")) else None
+        hold = values.get("hold") or None
+        pool = None
+        if (hold or {}).get("lease_id"):
+            try:
+                pool = (await self.holds.status(hold["lease_id"])).model_dump(mode="json")
+            except Exception as exc:  # noqa: BLE001
+                pool = {"status": "unreachable", "reason": f"{type(exc).__name__}: {exc}"[:200]}
         history = await self.store.history(run_id)
-        demand = await self.store.get_demand(run_id)
-        first_grant = await self.store.first_granted_at(run_id)
+        first_grant = await self.store.first_event_at(run_id, "run.resource_granted")
         wait_end = first_grant or (row["updated_at"] if row.get("terminal") else self.now())
         return {"run_id": run_id, "thread_id": run_id, "workflow_kind": workflow,
-                "status": row.get("terminal") or row.get("control") or snap.values.get("status", "waiting_resource"),
-                "requested_resource": row["request"]["admission"]["resource"], "lease": lease,
-                "next": list(snap.next), "created_at": row["created_at"], "history": history,
-                "admission": (demand or {}).get("decision", {}),
+                "status": row.get("terminal") or row.get("control") or values.get("status", "waiting_resource"),
+                "requested_resource": row["request"]["admission"]["resource"], "lease": lease, "hold": hold,
+                "pool": pool, "next": list(snap.next), "created_at": row["created_at"], "history": history,
                 "queue_wait_seconds": max(0, (wait_end-row["created_at"]).total_seconds())}
 
     async def close(self):
-        if self.elastic:
-            await self.elastic.close()
         tasks = list(self.active.values())
         for task in tasks:
             task.cancel()

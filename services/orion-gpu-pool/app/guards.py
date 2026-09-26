@@ -1,6 +1,7 @@
 """Swap-load guards (stage 4 spec, "Guards (pool side)"): the two physical checks durable-runs'
-elastic runtime makes today before borrowing gpu2 (services/orion-durable-runs/app/elastic_runtime.py
-``environment()``), read here so the pool is the one decider.
+elastic runtime made before borrowing gpu2 (``environment()`` in
+services/orion-durable-runs/app/elastic_runtime.py, deleted in 4.5), read here so the pool is the
+one decider.
 
 - ``thermal``: the cabinet sensor through ``orion.autonomy.thermal_gate.thermal_state`` (same
   hysteresis). Blocks when the verdict does not allow GPU work OR is degraded (no/stale reading):

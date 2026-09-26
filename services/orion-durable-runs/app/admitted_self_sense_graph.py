@@ -1,8 +1,8 @@
 """Resource wait around the self-sense-eval graph.
 
-Same admission shell as `admitted_graph.py` (register → wait for lease →
-work → release), but the work is `ask_questions → publish → finish`, not
-the curiosity harness/journal pipeline.
+Same admission shell as `admitted_graph.py` (request a GPU pool hold → wait
+for the pool's grant → work under the hold → release), but the work is
+`ask_questions → publish → finish`, not the curiosity harness/journal pipeline.
 
 Live 2026-09-22: every admitted run — including `workflow=self_sense_eval` —
 was driven through `build_admitted_graph` (curiosity only). Orion got the
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.admitted_graph import AdmissionDeps, RunControlPending, WorkflowDeadline
+from app.admitted_graph import AdmissionDeps, HoldRecalled, RunControlPending, WorkflowDeadline, resource_nodes
 from app.self_sense_graph import Deps, SelfSenseAskFailed, SelfSenseRunState, make_nodes
 from orion.schemas.durable_run import SELF_SENSE_EVAL_NODES
 
@@ -25,59 +25,53 @@ def build_admitted_self_sense_graph(deps: Deps, admission: AdmissionDeps, checkp
 
     original = make_nodes(deps)
 
-    async def resource_request(state: SelfSenseRunState) -> dict:
-        await admission.register(dict(state))
-        return {"status": "waiting_resource", "lease": None}
-
-    async def resource_wait(state: SelfSenseRunState) -> dict:
-        lease = await admission.lease(state["run_id"])
-        if lease is None:
-            from langgraph.types import interrupt
-
-            interrupt({"reason": "waiting_resource", "run_id": state["run_id"]})
-            lease = await admission.lease(state["run_id"])
-        if lease is None:
-            return {"status": "waiting_resource", "lease": None}
-        return {"status": "admitted", "lease": lease}
+    resource_request, resource_wait, after_wait = resource_nodes(admission)
 
     async def ask_questions(state: SelfSenseRunState) -> dict:
         try:
             result = await admission.execute(dict(state), original["ask_questions"])
             return {**result, "status": "running", "last_error": None}
         except WorkflowDeadline:
-            await admission.release(state["run_id"], "workflow_deadline")
-            return {"status": "failed", "last_error": "workflow_deadline", "lease": None}
+            released = await admission.release(dict(state), "workflow_deadline")
+            return {**released, "status": "failed", "last_error": "workflow_deadline"}
         except RunControlPending:
             raise
+        except HoldRecalled:
+            return {"status": "waiting_resource", "lease": None, "hold": None}
         except SelfSenseAskFailed as exc:
-            # Transport blip: release the lease and re-queue for a fresh grant.
-            # Partial answers stay on state; ask_questions skips keys already done.
-            await admission.release(state["run_id"], "attempt_failed")
+            # Transport blip: hand the hold back (or keep it if the pool already re-queued it) and
+            # wait for a fresh grant. Partial answers stay on state; ask_questions skips keys done.
+            released = await admission.release(dict(state), "attempt_failed", keep_requeued=True)
             return {
+                **released,
                 "status": "waiting_resource",
-                "lease": None,
                 "last_error": f"{type(exc).__name__}: {exc}"[:500],
             }
         except Exception as exc:  # noqa: BLE001
-            await admission.release(state["run_id"], "attempt_failed")
+            released = await admission.release(dict(state), "attempt_failed")
             return {
+                **released,
                 "status": "failed",
                 "last_error": f"{type(exc).__name__}: {exc}"[:500],
-                "lease": None,
             }
 
     async def publish(state: SelfSenseRunState) -> dict:
+        state = dict(state)
         if admission.guard is not None:
-            await admission.guard(state)
-        return await original["publish"](state)
+            # Node boundary: deadline/control, and the hold is let go if the pool recalled it.
+            state["lease"] = await admission.guard(state)
+        result = await original["publish"](state)
+        if admission.guard is not None and state["lease"] is None:
+            result = {**result, "lease": None, "hold": None}   # let go at this boundary: persist it
+        return result
 
     async def finish(state: SelfSenseRunState) -> dict:
-        await admission.release(state["run_id"], "completed")
-        return {"status": "completed"}
+        released = await admission.release(dict(state), "completed")
+        return {**released, "status": "completed"}
 
     async def failed(state: SelfSenseRunState) -> dict:
-        await admission.release(state["run_id"], "failed")
-        return {"status": "failed"}
+        released = await admission.release(dict(state), "failed")
+        return {**released, "status": "failed"}
 
     g = StateGraph(SelfSenseRunState)
     g.add_node("resource_request", resource_request)
@@ -87,11 +81,9 @@ def build_admitted_self_sense_graph(deps: Deps, admission: AdmissionDeps, checkp
     g.add_node("finish", finish)
     g.add_node("failed", failed)
     g.add_edge(START, "resource_request")
-    g.add_edge("resource_request", "resource_wait")
-    g.add_conditional_edges(
-        "resource_wait",
-        lambda s: "ask_questions" if s.get("lease") else "resource_request",
-    )
+    g.add_conditional_edges("resource_request", lambda s: "failed" if s.get("status") == "failed" else "resource_wait")
+    g.add_conditional_edges("resource_wait", after_wait,
+                            {"granted": "ask_questions", "request": "resource_request", "failed": "failed"})
     g.add_conditional_edges(
         "ask_questions",
         lambda s: (

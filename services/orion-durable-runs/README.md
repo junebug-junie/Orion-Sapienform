@@ -63,7 +63,12 @@ concepts for evidence grounding, not just the small `self_study_reflect_input` s
 this graph's brief carries -- moving it here would have meant either re-deriving that
 context inside this service (duplicating cortex-exec's repo-scan logic) or serializing
 the whole snapshot through the brief on every dispatch. Neither was worth it for a graph
-whose only real benefit is GPU2 elastic-burst eligibility on the ONE LLM call.
+whose only real benefit is running the ONE LLM call on a durable run's GPU pool hold.
+
+Admitted (stage 4.5, `app/admitted_reflect_graph.py`): `resource_request -> resource_wait ->
+llm_call -> finish`. Before 4.5 an admitted reflect run fell back to the CURIOSITY graph (the
+registry had no reflect entry). `llm_call` runs under the hold and sends its ref as
+`options.gpu_lease` (cortex-exec forwards it; the gateway attaches), `llm_route` unchanged.
 
 `llm_call` sends the exact same `CortexClientRequest` shape
 (`verb="self_study.reflect"`, `options={"policy_dispatch_only": True, ...}`)
@@ -176,11 +181,13 @@ to organ `rpc_health_durable_runs` (pass-through, unregistered/exogenous).
 Hops in `channel_latency` (when `RPC_HEALTH_CHANNEL_LATENCY_ENABLED=true`):
 
 - the runner's `rpc_request` channels (harness turn to Hub, verb dispatch to cortex-orch);
-- outbound HTTP via `app/http_hops.py` (`AsyncHopTimingTransport`, ids collapsed to `:id`
-  by `normalize_id_path`): `http:<gateway>/routes`, `http:<lane upstream>/slots`, the
-  cabinet thermal feed, `http:<thought>/visual-chain/activity`,
-  `http:<controller>/v1/gpu-slots/circe-gpu2/status` and `/v1/gpu-slots/activate`.
-  A 504 or an httpx timeout counts as a timeout; any other response is a success.
+- the GPU pool lease RPCs (`gpu_pool_lease`: acquire / status / heartbeat / release of the
+  run's hold). Waiting in the pool's line is recorded by the pool under `gpu_pool_wait`, which
+  equilibrium excludes from transport.
+
+Stage 4.5 deleted every outbound HTTP hop this service had (gateway `/routes`, lane `/slots`,
+cabinet, thought visual activity, the gpu2 controller) with `app/http_hops.py`; no reader keys
+on those hop names.
 
 Keys: `RPC_HEALTH_PUBLISH_ENABLED` (true), `RPC_HEALTH_PUBLISH_INTERVAL_SEC` (30),
 `RPC_HEALTH_CHANNEL_LATENCY_ENABLED` (true). Consumer-first: rebuild
@@ -189,12 +196,11 @@ service ships `channel_latency` (the schema is `extra="forbid"`).
 
 ## Deploy order
 
-The operator templates select admitted Curiosity. Before restarting, apply both
-admission migrations named below. Then restart this authority, every LLM Gateway
-replica, Thought, governor, Cortex Exec, Cortex Orch, and Hub, in that order.
-Thought must carry the owning lease into stance execution before Hub submits an
-admitted study; an older Thought can otherwise block a study on its own reservation.
-`orion-sql-writer` must already contain the durable-run state route/table.
+Stage 4.5 is a cutover: follow `docs/runbooks/2026-09-25-gpu-pool-stage4-cutover.md` exactly
+(wait for zero active legacy leases, freeze the old elastic decider, flip the circe controller
+and the pool, then deploy this build). Consumers first: the gateway, cortex-exec, thought,
+harness-governor, Hub and field-digester must already run stage 4.4 (they carry and honour the
+hold ref); `CuriosityTurnRequestV1.gpu_lease` is `extra="forbid"` at Hub.
 
 Set `HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=false` to retain the earlier durable
 kickoff without resource admission. To return to Hub's direct in-process path,
@@ -208,128 +214,93 @@ python scripts/check_service_env_compose_parity.py orion-durable-runs
 curl -fsS http://localhost:8124/health
 ```
 
-## Optional resource admission
+## Admitted runs: one GPU pool hold per run (stage 4.5)
 
-The admission path extends this graph with persisted demand, resource-wait and
-retry-wait boundaries. Waiting uses a LangGraph interrupt and releases the run
-task. The legacy maximum-age sweep excludes admitted threads: their queue wait
-has no deadline unless the request explicitly supplies one. Inference timeout
-starts after a validated lease, independently of queue age and lease renewal.
-For admitted turns, the Hub RPC permits at least the declared inference budget;
-the admission runtime owns the actual inference/overall deadline. Replies must
-match the expected kind, run and attempt correlation before becoming graph state.
-Legacy turns retain their configured RPC timeout.
+Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md`
+(Decision 1). The GPU pool is the only scheduler; this service no longer grants anything.
 
-Demand re-registration (every resume that passes `resource_request`, lease
-expiry, guarded tails) registers the accepted request row's `admission`, not the
-checkpoint's copy, and the store compares demands by meaning (re-read through
-`ResourceRequirementV1`). Only the demand follows the row; deadline checks
-still read the checkpoint's `admission.deadline_at`. A resume that still fails
-is retried on the next reconcile tick, but once a run has at least
-`DURABLE_RUNS_RESUME_MAX_FAILURES` (default 10) failures since its last real
-node progress AND the first of them is `DURABLE_RUNS_RESUME_MIN_FAILURE_SPAN_SEC`
-(default 600) old, it is failed terminally: `run.failed` carries
-`error: "checkpoint_resume_failed: <exception> (xN since last progress, at node <node>)"`,
-the lease is released and the demand withdrawn. Completions of the wait
-machinery (`resource_request`, `resource_wait`, `retry_wait`) are not progress,
-so a grant -> fail -> worker_recovery cycle keeps counting. A graph that has
-already finished is never relabelled; only its projection is retried. Each
-`run.checkpoint_resume_failed` event records `checkpoint_id` and `error`.
-Live 2026-09-22..25, one run failed 53k times without this.
+- **`resource_request`** asks the pool for a *hold* for the whole run
+  (`orion.gpu_pool.client.acquire_hold`, `kind=hold`, holder `durable-runs:<run_id>`,
+  request id `<run_id>:<seq>` -- idempotent, re-asked with the same id until that hold ends).
+  Class comes from the run's route in `config/gpu_pool.yaml` `routes`; priority is the
+  requirement's (`background`); `requirements.minimum_context_tokens` rides as `min_ctx_tokens`.
+  An unknown route fails the run with `gpu_pool_unknown_route:<route>` instead of waiting.
+- **`resource_wait`** interrupts until the pool grants. A waiting run is woken by the pool's
+  `granted` event for its holder on `orion:gpu_pool:event`; the missed-event fallback is one
+  `status` read per `DURABLE_RUNS_HOLD_STATUS_POLL_SEC` (60 s). A hold the pool refuses
+  (dead-lettered, unavailable) fails the run with the pool's reason.
+- **Work nodes** (curiosity `harness_turn`, self-sense `ask_questions`, reflect `llm_call`) run
+  under `execute`, which heartbeats the hold every `DURABLE_RUNS_LEASE_HEARTBEAT_SEC` (must be at
+  most half of the pool's `hold_lease_ttl_sec`, checked at boot). A lost hold stops the turn
+  (harness cancel) and the run waits for the SAME lease_id, which the pool re-queues.
+- **Every LLM call of the run carries the hold's `GpuLeaseRefV1`** (`CuriosityTurnRequestV1.gpu_lease`;
+  reflect's `options.gpu_lease`), so the gateway *attaches* it to the hold instead of queueing it
+  behind the run. The hold's role (e.g. `agent-gpu2`) is never sent as a route or `assigned_lane`:
+  held calls name the `agent` route.
+- **Recall** (the pool wants the seat back) is honoured at the next node boundary, inside
+  `hold_clawback_grace_sec`; the tail nodes need no GPU and continue without it.
+- **Restart**: the hold's ids live in the checkpoint. A restarted driver fences a turn still
+  running under the same generation (harness cancel + `turn_fence` for a new turn identity) and
+  replays it under the same hold; an expired hold is waited for by its lease_id.
+- **Door-A**: `finish` with `reach_out` keeps the hold (finish detail `gpu_lease`), heartbeats it
+  until Hub calls `POST /runs/{id}/release-outreach-lease` (a pool `release`) or
+  `DURABLE_RUNS_OUTREACH_HOLD_MAX_SEC` passes; a restarted process adopts it from the outbox.
+- Lifecycle events are unchanged for Hub's run views: `run.waiting_resource`,
+  `run.resource_granted` + `run.lane_assigned` (detail `lane` = the hold's role),
+  `run.started`, `resource.lease_released`, `resource.lease_expired`, `run.outreach_pending`.
+  `run.lane_swap_suppressed`, `run.resource_eligibility_expanded` and `resource.elastic_*` are
+  no longer emitted.
 
-Known gaps (pre-existing, unchanged): the finished-graph projection, cancel,
-deadline and worker_recovery blocks run outside this bound, and a run waiting
-days for capacity can accumulate sporadic infrastructure failures toward it.
+Deleted in 4.5 (kill means kill, no fallback): the durable broker, lane policy and widening
+(`orion/durable_admission/{broker,policy,elastic}.py`), `app/elastic_runtime.py`,
+`/leases/validate`, `/admission`, `/elastic/status`, `/elastic/target`. The frozen tables
+`durable_resource_demands` / `durable_resource_leases` / `durable_elastic_slot` get no new rows;
+they stay only because `/capacity` joins them until stage 5.
 
-Apply `services/orion-sql-db/manual_migration_durable_resource_admission_v1.sql`
-to the same Postgres database as the existing checkpointer before enabling
-`DURABLE_RUNS_ADMISSION_ENABLED`. Admission tables are operator-managed; startup
-fails if they are missing. LangGraph continues to manage its checkpoint tables.
-No migration is applied to production by this patch.
+A resume that keeps failing is retried on the next reconcile tick, but once a run has at least
+`DURABLE_RUNS_RESUME_MAX_FAILURES` (default 10) failures since its last real node progress AND
+the first of them is `DURABLE_RUNS_RESUME_MIN_FAILURE_SPAN_SEC` (default 600) old, it is failed
+terminally (`run.failed`, `error: "checkpoint_resume_failed: ..."`) and its hold is released.
 
 Internal operator endpoints (host port 8124, container port 8121):
 
 | Endpoint | Result |
 | --- | --- |
 | `POST /runs` | `DurableRunRequestV1` body; persisted receipt, HTTP 202 |
-| `GET /runs/{run_id}` | Graph position, control, lease, lane decision and history |
-| `POST /runs/{run_id}/pause` | Revoke lease, stop active attempt, retain checkpoint |
+| `GET /runs/{run_id}` | Graph position, control, the hold (`hold`, granted `lease`, live `pool` status) and history |
+| `POST /runs/{run_id}/pause` | Release the hold, stop the active attempt, retain checkpoint |
 | `POST /runs/{run_id}/resume` | Continue checkpoint; cancellation stays terminal |
-| `POST /runs/{run_id}/cancel` | Revoke lease and durably cancel |
-| `GET /admission` | Queue/lease counts, ages, first-admission wait histogram and event counts |
-| `POST /leases/validate` | Authoritative fencing validation used by Hub/Gateway |
+| `POST /runs/{run_id}/cancel` | Release the hold and durably cancel |
+| `POST /runs/{run_id}/release-outreach-lease` | Hub finished Door-A composition: release the kept hold |
 
-These follow the existing internal unauthenticated service API boundary; keep
-them on the trusted service network. Submission via Cortex remains the normal
-Curiosity entry point. Retry an ambiguous receipt with the same request/run ID.
+`DURABLE_RUNS_CAPACITY_ENABLED=true` keeps the world-model / visual-chain permit authority at
+`/capacity` (NOT durable runs; stage 5 moves those onto pool leases). Since 4.5 it is built with
+`reserve_waiting=False`: frozen pending demands no longer reserve a backend. An active legacy
+durable lease still fences its backend, which is why the cutover waits for zero of them.
 
-`DURABLE_RUNS_CAPACITY_ENABLED=true` enables the shared Gateway request authority
-at `/capacity` in the operator template. Apply the additive
-`manual_migration_gateway_capacity_v1.sql` first. Its acquire/renew/release APIs
-share the broker's transaction so an ordinary request and a durable lease cannot
-both win the same capacity. Capacity can operate while cognition admission is
-off. The service intentionally fails startup if an enabled authority lacks its
-tables. See [API, rollout and limits](../../docs/architecture/durable-gateway-capacity.md).
-
-Defaults, lane declarations, shadow mode, activation order, recovery limits,
-metrics provenance and the actual Hub/FCC/Exec execution path are documented in
-[the ADR](../../docs/architecture/durable-resource-admission.md).
-
-Run the real Postgres tests and separate evals with an explicitly disposable
-database (each creates a fresh schema). The acceptance suite additionally needs
-the test-only dependencies below:
+Run the real Postgres tests and evals with an explicitly disposable database (each creates a
+fresh schema). They run the REAL GPU pool runtime in process (`tests/pool_fixture.py`):
 
 ```bash
 python -m pip install -r services/orion-durable-runs/requirements.txt -r requirements-dev.txt -r services/orion-durable-runs/tests/requirements-acceptance.txt
 ORION_ADMISSION_TEST_DSN=postgresql://user@127.0.0.1:55439/admission_test PYTHONPATH=. python -m pytest services/orion-durable-runs/tests -q
-ORION_ADMISSION_TEST_DSN=postgresql://user@127.0.0.1:55439/admission_test PYTHONPATH=. python services/orion-durable-runs/evals/admission_fairness.py
+ORION_ADMISSION_TEST_DSN=postgresql://user@127.0.0.1:55439/admission_test PYTHONPATH=. python services/orion-durable-runs/evals/hold_fairness.py
 ORION_ADMISSION_TEST_DSN=postgresql://user@127.0.0.1:55439/admission_test PYTHONPATH=. python services/orion-durable-runs/evals/gateway_capacity.py
 ```
 
-The [connected acceptance contract](../../docs/architecture/durable-run-acceptance.md)
-exercises Cortex receipt, Postgres wait/recovery, grant-driven wakeup, Hub's real
-turn adapters and Gateway ownership through accepted drafts and conditional
-response repair. It also kills a runner process while an independently held
-backend permit drains. Model outputs, FCC execution and external knowledge reads
-are explicit isolated fixtures; this is not evidence of production cognition.
+`tests/test_durable_acceptance.py` exercises Cortex receipt, Postgres wait/restart, the pool's
+grant event waking the run over the bus, Hub's real turn adapters and the gateway attaching
+every call under the hold -- on the home agent card and on gpu2 loaded by the pool (fixture
+actuator) -- through accepted drafts and conditional response repair. Model outputs, FCC
+execution, llama.cpp servers and external knowledge reads are isolated fixtures; this is not
+evidence of production cognition.
 
+## Lent lane, alternatives, gpu2 elastic (retired in 4.5)
 
-## Lent lane: `chat-burst`
-
-`DURABLE_RUNS_LANE_POLICY_JSON` declares `chat-burst` as `compatible_with: ["agent"]`, so every
-new `agent`-preferring run derives it as an alternative at submission. It needs no
-`allow_elastic_activation`: nothing is physically borrowed. Eligibility follows the gateway
-catalog, which since the 2026-09-24 GPU pool cutover mirrors orion-gpu-pool: while gpu0 is not
-lent (Hub "Lend chat GPU" / GPU pool tab) the gateway reports `chat-burst` as `operator_closed`, which
-`refresh_lanes` maps to `healthy=False` (`health_unknown_or_unavailable` in the run's
-`suppressed` map). Runs already queued before this policy change keep their frozen
-alternatives and will not widen onto it. A run first granted `chat-burst` stays pinned to it
-(`run_assignment_locked`). Where each call actually runs is orion-gpu-pool's decision: the durable lease is an admission
-token only, and every gateway call also takes a pool lease. Taking gpu0 back (unlend) mid-run
-recalls a borrower on chat's card (grace, then abort), and the next call is placed on whatever
-card the pool allows; the GPU pool tab shows active leases.
-
-
-## Alternatives are policy-additive
-
-A demand's `alternatives` are frozen at submission (a duplicate receipt can never shrink a
-demand). On every broker tick they are additionally unioned with whatever the current
-`DURABLE_RUNS_LANE_POLICY_JSON` declares `compatible_with` the run's preferred lane
-(`orion/durable_admission/policy.py::widen_alternatives`), so a lane declared after a run was
-queued still reaches it. The stored row is not rewritten; the wider list shows in the run's
-per-tick `admission.eligible_lanes`. Live 2026-09-22: 7 runs (oldest 14 h) sat with only
-`agent-burst` while the newly opened `chat-burst` lane idled, which is what this closes.
-
-
-## Optional GPU2 elastic admission
-
-GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
-[ownership ADR](../../docs/architecture/gpu2-elastic-admission.md),
-[pre-edit repository/live evidence](../../docs/architecture/gpu2-elastic-evidence.md),
-and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
-for this service's exact flags, HTTP contracts and operator commands.
-No production env sync, migration, GPU transition or deployment was performed.
-
-GPU2 control endpoints use the existing internal service/tailnet boundary without
-bearer tokens. Durable intent, generation fencing, lease/permit protection, and
-atomic diffusion draining remain enforced. The existing GPU1 API is unchanged.
+The `chat-burst` lane policy, policy-additive alternatives and the GPU2 elastic decider are gone.
+Where a run runs is the pool's decision: its `agent` class may use `agent`, then `agent-gpu2`
+when loaded (the pool loads it after a hold waits `swap.after_wait_sec`, 1200 s, with the thermal
+and visual-baseline guards clear), then `chat` while gpu0 is lent. Unlending gpu0 recalls a hold
+borrowing it (grace, then abort and re-queue). `ResourceRequirementV1.alternatives`,
+`allow_elastic_activation`, `pinned_lane` and `operator_override` are accepted and ignored until
+producers stop sending them (PR 4.6).

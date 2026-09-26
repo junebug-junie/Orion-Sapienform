@@ -3,12 +3,15 @@ name: orion-durable-runs tests
 on:
   pull_request:
     paths:
+      - "services/orion-gpu-pool/app/**"
+      - "orion/gpu_pool/**"
+      - "config/gpu_pool.yaml"
+      - "config/llm_profiles.yaml"
       - "services/orion-durable-runs/**"
       - "orion/schemas/durable_run.py"
       - "orion/schemas/resource_admission.py"
       - "orion/durable_admission/**"
       - "services/orion-sql-db/manual_migration_gpu2_elastic_v1.sql"
-      - "orion/gpu_pool/client.py"
       - "orion/llm/resource_lease.py"
       - "orion/schemas/gpu_pool.py"
       - "orion/schemas/harness_finalize.py"
@@ -31,12 +34,15 @@ on:
   push:
     branches: [main]
     paths:
+      - "services/orion-gpu-pool/app/**"
+      - "orion/gpu_pool/**"
+      - "config/gpu_pool.yaml"
+      - "config/llm_profiles.yaml"
       - "services/orion-durable-runs/**"
       - "orion/schemas/durable_run.py"
       - "orion/schemas/resource_admission.py"
       - "orion/durable_admission/**"
       - "services/orion-sql-db/manual_migration_gpu2_elastic_v1.sql"
-      - "orion/gpu_pool/client.py"
       - "orion/llm/resource_lease.py"
       - "orion/schemas/gpu_pool.py"
       - "orion/schemas/harness_finalize.py"
@@ -87,22 +93,16 @@ jobs:
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: |
           cd services/orion-durable-runs && python -m pytest tests -q -p no:cacheprovider
-      - name: Admission fairness eval on isolated Postgres
+      - name: Durable-run GPU pool hold fairness eval (home card + gpu2) on isolated Postgres
         env:
           PYTHONPATH: ${{ github.workspace }}
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
-        run: python services/orion-durable-runs/evals/admission_fairness.py
+        run: python services/orion-durable-runs/evals/hold_fairness.py
       - name: Gateway capacity contention eval on isolated Postgres
         env:
           PYTHONPATH: ${{ github.workspace }}
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: python services/orion-durable-runs/evals/gateway_capacity.py
-
-      - name: Inactive elastic lane fairness eval
-        env:
-          PYTHONPATH: ${{ github.workspace }}
-          ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
-        run: python services/orion-durable-runs/evals/elastic_fairness.py
 
   gateway:
     name: Gateway — shared capacity and transport lifecycle

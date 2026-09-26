@@ -12,6 +12,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.schemas.durable_run import DURABLE_RUN_REQUEST_KIND, DURABLE_RUN_RECEIPT_KIND, DurableRunRequestV1, DurableRunReceiptV1
+from orion.schemas.gpu_pool import GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND
 from orion.schemas.resource_admission import RESOURCE_EVENT_CHANNEL, RESOURCE_EVENT_KIND, ResourceEventV1
 from orion.schemas.resource_admission import (
     CapacityAcquireV1, CapacityTokenV1, CapacityAcquireResultV1,
@@ -43,8 +44,9 @@ def _rpc_bus_getter() -> OrionBusAsync | None:
 
 def build_rpc_health_publisher() -> RpcHealthPublisher:
     """Publishes the long-lived rpc_bus's RPC-health window: the runner's rpc_request
-    calls (harness turn, verb dispatch) plus every outbound HTTP hop timed by
-    app/http_hops.py. Single container -> instance="main"."""
+    calls (harness turn, verb dispatch) and the GPU pool lease RPCs (``gpu_pool_lease``).
+    Stage 4.5 removed every outbound HTTP hop (gateway /routes, lane /slots, elastic
+    controller, cabinet, thought). Single container -> instance="main"."""
     s = _settings
     return RpcHealthPublisher(
         enabled=s.rpc_health_publish_enabled and s.orion_bus_enabled,
@@ -71,6 +73,11 @@ def _chassis_cfg() -> ChassisConfig:
 
 
 async def _handle_request(env: BaseEnvelope) -> None:
+    if env.kind == GPU_POOL_EVENT_KIND:
+        # The pool's lease lifecycle: a waiting run wakes on "granted" for its own holder.
+        if admission is not None and isinstance(env.payload, dict):
+            await admission.on_pool_event(env.payload)
+        return
     if env.kind == RESOURCE_EVENT_KIND:
         if admission is not None:
             await admission.wakeup(ResourceEventV1.model_validate(env.payload))
@@ -154,21 +161,18 @@ async def lifespan(app: FastAPI):
         if _settings.capacity_enabled:
             from orion.durable_admission.capacity import PostgresCapacityStore
             from orion.durable_admission.store import PostgresAdmissionStore
+            # reserve_waiting=False: pending durable demands are frozen since stage 4.5 (the pool
+            # places runs); no broker exists to honour a drain reservation for them any more.
             capacity = PostgresCapacityStore(PostgresAdmissionStore(_checkpointer_cm),
-                                             ttl_seconds=_settings.lease_seconds,
-                                             reserve_waiting=bool(_settings.admission_enabled and not _settings.admission_shadow))
+                                             ttl_seconds=_settings.lease_seconds, reserve_waiting=False)
             await capacity.snapshot()  # Additive migration must be applied first.
         if _settings.admission_enabled:
             from app.admission_runtime import AdmissionRuntime
-            admission = AdmissionRuntime(
-                _settings, runner, _checkpointer_cm,
-                hop_recorder_getter=_rpc_bus_getter if rpc_bus is not None else None,
-            )
+            admission = AdmissionRuntime(_settings, runner, _checkpointer_cm)
             # Admission migration is operator-managed, unlike saver migrations.
             # Fail startup if it has not been applied; never accept into memory.
-            await admission.store.queue_snapshot()
-            if admission.elastic:
-                await admission.elastic.store.initialize()
+            await admission.store.list_pending(limit=1)
+            await admission.store.pending_outbox(limit=1)
         if _settings.resume_on_boot:
             try:
                 counts = await runner.resume_unfinished()
@@ -180,7 +184,10 @@ async def lifespan(app: FastAPI):
         if admission is not None:
             _admission_task = asyncio.create_task(admission.run(_stop))
         if _settings.orion_bus_enabled:
-            hunter = Hunter(_chassis_cfg(), handler=_handle_request, patterns=[_settings.request_channel, RESOURCE_EVENT_CHANNEL])
+            patterns = [_settings.request_channel, RESOURCE_EVENT_CHANNEL]
+            if admission is not None:
+                patterns.append(GPU_POOL_EVENT_CHANNEL)  # wakes waiting runs on their hold's grant
+            hunter = Hunter(_chassis_cfg(), handler=_handle_request, patterns=patterns)
             await hunter.start_background()
             logger.info("durable_runs_listening channel=%s", _settings.request_channel)
     else:
@@ -281,38 +288,17 @@ async def run_control(run_id: str, action: str):
 
 @app.post("/runs/{run_id}/release-outreach-lease")
 async def release_outreach_lease(run_id: str):
-    """Hub Door-A finished composing; free the grant held past finish.
+    """Hub Door-A finished composing: release the run's GPU pool hold kept past finish.
 
-    Only acts when the run is already ``terminal=completed`` with an active
-    lease (the Door-A hold). A live in-flight investigation cannot be
-    released through this path. Idempotent when the lease is already gone.
+    Only acts when the run is already ``terminal=completed`` (the Door-A hold). A live in-flight
+    investigation cannot be released through this path. Idempotent when the hold is already gone.
     """
-    runtime = _admission()
-    row = await runtime.store.get_run(run_id)
-    if row is None:
-        raise HTTPException(404, "run not found")
-    if row.get("terminal") != "completed":
-        raise HTTPException(409, "no door-a outreach lease hold on this run")
-    lease = await runtime.store.get_lease(run_id)
-    if not lease:
-        return {"released": False, "run_id": run_id, "reason": "already_released"}
-    await runtime.store.release(lease, "outreach_done")
-    runtime._wake.set()
-    return {"released": True, "run_id": run_id}
-
-
-@app.post("/leases/validate")
-async def validate_lease(payload: dict[str, Any]):
-    lease = payload.get("lease") or {}
-    if payload.get("lane") != lease.get("lane") or payload.get("backend_key") != lease.get("backend_key"):
-        return {"valid": False, "reason": "route_mismatch"}
-    valid = await _admission().store.validate(lease)
-    return {"valid": valid, "reason": "valid" if valid else "stale_or_lost_lease"}
-
-
-@app.get("/admission")
-async def admission_snapshot():
-    return await _admission().store.queue_snapshot()
+    try:
+        return await _admission().release_outreach(run_id)
+    except KeyError as exc:
+        raise HTTPException(404, "run not found") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 def _capacity():
@@ -345,45 +331,3 @@ async def release_capacity(token: CapacityTokenV1):
 @app.get("/capacity")
 async def capacity_snapshot():
     return await _capacity().snapshot()
-
-
-@app.get("/elastic/status")
-async def elastic_status():
-    runtime = _admission()
-    if not runtime.elastic:
-        return {"enabled": False, "can_transition": False}
-    row = await runtime.elastic.store.snapshot()
-    environment = runtime.broker.elastic_environment
-    checked = environment.get("checked_at")
-    fresh = False
-    if checked:
-        from datetime import datetime
-        age = (runtime.now()-datetime.fromisoformat(checked)).total_seconds()
-        fresh = 0 <= age <= max(30, runtime.settings.admission_tick_sec*3)
-    return {**row,"activation_eligible":bool(fresh and environment.get("eligible") and
-        not runtime.settings.elastic_shadow),"eligibility_reason":environment.get("reason","not_checked")}
-
-
-from pydantic import BaseModel, ConfigDict
-from typing import Literal
-
-class ElasticTargetRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    target: Literal["diffusion", "agent-burst"]
-
-@app.post("/elastic/target")
-async def elastic_target(req: ElasticTargetRequest):
-    runtime = _admission()
-    elastic = runtime.elastic
-    if not elastic or runtime.settings.elastic_shadow:
-        raise HTTPException(503,"elastic_mutation_disabled")
-    if req.target == "agent-burst" and not (await elastic.environment()).get("eligible"):
-        raise HTTPException(409,"physical_eligibility_suppressed")
-    async with runtime.store.transaction() as conn:
-        row = await elastic.store.row(conn)
-        if row is None:
-            raise HTTPException(503,"elastic_not_initialized")
-        if row["desired_target"] != req.target:
-            await elastic.store.intent(conn,req.target,row["run_id"],{"reason":"operator_request"})
-    runtime._wake.set()
-    return await elastic.store.snapshot()

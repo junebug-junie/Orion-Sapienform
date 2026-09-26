@@ -1,33 +1,48 @@
-"""Connected receipt-to-artifact acceptance with real service adapters and Postgres."""
+"""Connected receipt-to-artifact acceptance on the GPU pool (stage 4.5): real service adapters,
+real Postgres, and the REAL pool runtime in process.
+
+cortex-orch dispatch -> durable-runs receipt -> the run asks the pool for a hold and waits (another
+run holds the agent card) -> durable-runs restarts -> the pool grants the hold (the other run ends,
+or -- ``gpu2`` -- the pool loads the second 27B on gpu2 after the run waited 1200 s, and an actuator
+fixture answers its GpuActuateV1) -> the pool's ``granted`` event wakes the run over the bus -> the
+turn runs through the production Hub, Thought, Governor, Cortex Exec and Gateway adapters, and the
+gateway places every model call on the pool as an ``attach`` under the run's hold -> journal,
+attention row and completion -> the hold is released.
+
+Only model output, FCC's subprocess, the llama.cpp servers and the gpu2 actuator are fixtures.
+"""
 import asyncio
-from datetime import datetime, timedelta, timezone
 import importlib
 import importlib.util
-import json
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from fastapi import FastAPI
 
 from app.admission_runtime import AdmissionRuntime
 from app.runner import DurableRunner
 from app.settings import Settings
-from orion.core.bus.bus_schemas import ServiceRef
-from orion.durable_admission.broker import ResourceBroker
-from orion.durable_admission.capacity import PostgresCapacityStore
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.cortex.contracts import CortexClientRequest
 from orion.schemas.durable_run import (
     DurableRunRequestV1, CURIOSITY_TURN_REQUEST_CHANNEL, DURABLE_RUN_REQUEST_CHANNEL,
     DURABLE_RUN_STATE_KIND,
 )
-from orion.schemas.resource_admission import RESOURCE_EVENT_CHANNEL, RESOURCE_EVENT_KIND, ResourceEventV1
+from orion.schemas.gpu_pool import (
+    GPU_ACTUATE_RESULT_KIND, GPU_POOL_ACTUATE_REQUEST_CHANNEL, GPU_POOL_ACTUATE_RESULT_CHANNEL, GPU_POOL_EVENT_CHANNEL, GpuActuateResultV1,
+    GpuActuateV1, GpuLeaseRequestV1,
+)
+from orion.schemas.resource_admission import RESOURCE_EVENT_CHANNEL
 from orion.schemas.attention_schema import ATTENTION_SCHEMA_KIND
 from .acceptance_bus import TypedBus
 from .acceptance_turn import build_turn_adapter, DRAFT, REPAIRED
-from .test_admission_runtime_postgres import DSN, with_database
+from .pool_fixture import CFG, LIVE, InProcessPool
+from .test_admission_runtime_postgres import DSN, legacy_rows, with_database
 
 pytestmark = pytest.mark.skipif(not DSN, reason="isolated ORION_ADMISSION_TEST_DSN required")
 ROOT = Path(__file__).resolve().parents[3]
+SEAT = "agent-gpu2"
 
 
 def cortex_dispatch():
@@ -38,51 +53,67 @@ def cortex_dispatch():
     return module.dispatch_durable_run
 
 
-@pytest.mark.parametrize("widen", [False, True, "elastic"], ids=["preferred", "widened", "elastic-burst"])
+def install_gpu2_actuator(bus, gpu, actions):
+    """circe's controller, as a fixture: answers each GpuActuateV1 accepted -> succeeded, and the
+    27B then answers discovery on gpu2 (diffusion stopped)."""
+    async def actuator(env):
+        msg = GpuActuateV1.model_validate(env.payload)
+        actions.append(msg)
+
+        async def answer(status, **kw):
+            await bus.publish(GPU_POOL_ACTUATE_RESULT_CHANNEL, BaseEnvelope(
+                kind=GPU_ACTUATE_RESULT_KIND, source=ServiceRef(name="gpu2-actuator-fixture"),
+                payload=GpuActuateResultV1(action_id=msg.action_id, generation=msg.generation, role=msg.role,
+                                           action=msg.action, status=status, **kw).model_dump(mode="json")))
+
+        await answer("accepted")
+        gpu.live[SEAT] = LIVE["agent"]
+        gpu.down.add("diffusion")
+        await answer("succeeded", elapsed_ms=90000, observed={SEAT: "running", "diffusion": "exited"})
+
+    async def result(env):
+        await gpu.rt.on_actuate_result(GpuActuateResultV1.model_validate(env.payload))
+
+    bus.handlers[GPU_POOL_ACTUATE_REQUEST_CHANNEL] = actuator
+    bus.handlers[GPU_POOL_ACTUATE_RESULT_CHANNEL] = result
+
+
+@pytest.mark.parametrize("placement", ["home", "gpu2"], ids=["home-agent-card", "gpu2-loaded-by-the-pool"])
 @pytest.mark.parametrize("repair_required", [False, True], ids=["accepted-draft", "conditional-repair"])
-def test_curiosity_receipt_wait_restart_dispatch_and_completion(monkeypatch, widen, repair_required):
+def test_curiosity_receipt_wait_restart_grant_dispatch_and_completion(monkeypatch, placement, repair_required):
     async def scenario(pool, saver, store):
-        alternate = "agent-burst" if widen == "elastic" else "metacog"
         bus = TypedBus()
+        gpu = InProcessPool(actuate=(SEAT,) if placement == "gpu2" else ())
         settings = Settings(_env_file=None, DURABLE_RUNS_GRAPH_HOST="", POSTGRES_URI=DSN, ORION_BUS_ENABLED=False,
-            DURABLE_RUNS_ADMISSION_ENABLED=True, DURABLE_RUNS_ADMISSION_SHADOW=False,
-            DURABLE_RUNS_CAPACITY_ENABLED=True, DURABLE_RUNS_TURN_RPC_TIMEOUT_SEC=0.05,
-            DURABLE_RUNS_LEASE_HEARTBEAT_SEC=0.1, DURABLE_RUNS_LEASE_SECONDS=90,
-            DURABLE_RUNS_WIDENING_ENABLED=True, DURABLE_RUNS_WIDENING_AFTER_SEC=1200,
-            DURABLE_RUNS_LANE_POLICY_JSON=json.dumps({alternate: {"compatible_with": ["agent"]}}))
-        capacity = PostgresCapacityStore(store)
-        lanes = {lane: {"backend_key": backend, "configured": True, "healthy": True,
-                       "capabilities": {"structured_output": True, "context_tokens": 32768},
-                       "compatible_with": ["agent"] if lane == alternate else []}
-                 for lane, backend in (("agent", "http://fixture-backend"), (alternate, "http://fixture-metacog"))}
-        broker = ResourceBroker(store, lanes, lease_seconds=90, widening_enabled=True,
-                                widen_after_seconds=1200, hysteresis_seconds=120, capacity=capacity)
-        if widen == "elastic":
-            from orion.durable_admission.elastic import ElasticStore
-            broker.elastic = ElasticStore(store,"http://fixture-metacog")
-            await broker.elastic.initialize()
-            broker.elastic_shadow = False
-            broker.elastic_environment = {"eligible":True}
-            broker.elastic_budget = {"drain":300,"transition":60,"cold":600}
-            lanes[alternate].update(healthy=False,activatable=True,
-                activation_capabilities={"structured_output":True,"context_tokens":32768})
+            DURABLE_RUNS_ADMISSION_ENABLED=True, DURABLE_RUNS_TURN_RPC_TIMEOUT_SEC=0.05,
+            DURABLE_RUNS_LEASE_HEARTBEAT_SEC=0.1, DURABLE_RUNS_LEASE_SECONDS=90)
         runner = DurableRunner(settings, bus=bus, checkpointer=saver)
-        runtime = AdmissionRuntime(settings, runner, pool, store=store, broker=broker)
+        runtime = AdmissionRuntime(settings, runner, pool, store=store)
         monkeypatch.setenv("POSTGRES_URI", DSN)
         main = importlib.import_module("app.main")
-        for name, value in {"runner": runner, "admission": runtime, "capacity": capacity,
+        for name, value in {"runner": runner, "admission": runtime, "capacity": None,
                             "rpc_bus": bus, "_settings": settings}.items():
             monkeypatch.setattr(main, name, value)
         bus.handlers[DURABLE_RUN_REQUEST_CHANNEL] = main._handle_request
         bus.handlers[RESOURCE_EVENT_CHANNEL] = main._handle_request
-        adapter = build_turn_adapter(monkeypatch, bus, store, repair_required, authority_app=main.app)
+        bus.handlers[GPU_POOL_EVENT_CHANNEL] = main._handle_request
+        adapter = build_turn_adapter(monkeypatch, bus, store, repair_required, authority_app=main.app, pool=gpu)
         bus.handlers[CURIOSITY_TURN_REQUEST_CHANNEL] = adapter.handle_turn
+        actions: list[GpuActuateV1] = []
+        install_gpu2_actuator(bus, gpu, actions)
+        await gpu.boot()
         dispatch = cortex_dispatch()
 
         async def submit(run_id, *, line="investigate", budget=3600):
+            # min ctx rides through to the hold (home variant). The gpu2 variant sends none: the
+            # 4.3 scheduler's ``fits`` needs a LIVE ctx_per_slot, so a hold with min_ctx_tokens can
+            # never justify loading a seat that is not loaded yet (reported in the 4.5 PR; no live
+            # producer sets minimum_context_tokens today).
+            requirements = {"structured_output": True}
+            if placement == "home":
+                requirements["minimum_context_tokens"] = 32768
             request = DurableRunRequestV1(run_id=run_id, workflow="curiosity.investigate",
-                correlation_id=str(uuid4()), admission={"allow_elastic_activation": widen == "elastic", "requirements": {
-                    "structured_output": True, "minimum_context_tokens": 32768}},
+                correlation_id=str(uuid4()), admission={"requirements": requirements},
                 brief={"prompt": "Inspect the isolated fixture ledger and state one bounded conclusion.",
                        "session_id": "isolated-durable-acceptance", "line": line,
                        "source_tag": "curiosity_self_inquiry" if line == "self_inquiry" else "curiosity_investigate",
@@ -102,60 +133,43 @@ def test_curiosity_receipt_wait_restart_dispatch_and_completion(monkeypatch, wid
             return request
 
         try:
-            holder = await submit("acceptance-holder")
-            assert len(await broker.tick()) == 1
-            holder_lease = await store.get_lease(holder.run_id)
-            # Model the continuing holder's heartbeat across the clock jump.
-            assert await store.renew(holder_lease, 3600)
+            # Another run holds the agent card (the only card class agent has today).
+            blocker = await gpu.dispatch(GpuLeaseRequestV1(verb="acquire", request_id="acceptance-holder:1",
+                kind="hold", holder="durable-runs:acceptance-holder", work_class="agent",
+                priority="background", retryable=True))
+            assert blocker.status == "granted" and blocker.grant.role == "agent"
             study = await submit("acceptance-self-study", line="self_inquiry", budget=30)
             await runtime._drive(await store.get_run(study.run_id))
             snapshot = await runtime.graph.aget_state(runtime.config(study.run_id))
             assert snapshot.next == ("resource_wait",)
+            [hold] = gpu.leases(holder=f"durable-runs:{study.run_id}")
+            assert hold["kind"] == "hold" and hold["status"] == "queued"
             assert not runtime.active and not bus.inflight_rpc and not bus.subscriptions
             assert not adapter.stages
             await asyncio.sleep(0.06)  # exceeds the configured legacy RPC budget
             assert (await runtime.status(study.run_id))["status"] == "waiting_resource"
             await runtime.close()
 
-            # New runtime and real saver connection state recover the same thread.
-            restarted = AdmissionRuntime(settings, runner, pool, store=store, broker=broker)
+            # A new runtime (restart) recovers the same thread from the real saver.
+            restarted = AdmissionRuntime(settings, runner, pool, store=store)
             monkeypatch.setattr(main, "admission", restarted)
-            if widen:
-                now = datetime.now(timezone.utc) + timedelta(seconds=1201)
-                async def advanced_now(_conn):
-                    return now
-                monkeypatch.setattr(store, "now", advanced_now)
-                restarted.now = lambda: now
+            if placement == "gpu2":
+                # The run waits past the seat's after_wait_sec (1200 s): the pool loads gpu2.
+                await gpu.later(1230, beat=[blocker.lease_id])
+                await bus.drain()
+                [load] = actions
+                assert (load.role, load.action, load.actuator) == (SEAT, "load", "circe")
+                await gpu.later(30, beat=[blocker.lease_id])   # discovery confirms the 27B
+                await bus.drain()
+                assert gpu.events("swap_started") and gpu.events("swapped")
             else:
-                await store.finish_projection(holder.run_id, "completed", {})
-            if widen == "elastic":
-                assert await broker.tick() == []
-                intent=await broker.elastic.snapshot()
-                assert intent["state"] == "requested" and intent["run_id"] == study.run_id
-                assert not adapter.stages and not bus.inflight_rpc
-                # Physical model is a fixture; SQL/FCC/Gateway fencing below is real.
-                await broker.elastic.complete(intent["operation_id"],{"status":"success"},healthy=True,assignments=True)
-                broker.lanes[alternate]["healthy"]=True
-            grants = await broker.tick()
-            assert len(grants) == 1
-            granted = grants[0]
-            expected_lane = alternate if widen else "agent"
-            assert granted["lane"] == expected_lane
-            if widen:
-                decision = (await store.get_demand(study.run_id))["decision"]
-                assert decision["eligible_lanes"] == ["agent", alternate]
-                assert await store.get_lease(holder.run_id), "widening stole the occupied preferred lane"
-            # Deliver the persisted grant through the production handler before
-            # reconciliation. Leave it unacked to exercise duplicate delivery too.
-            event = ResourceEventV1.model_validate(next(raw for raw in await store.pending_outbox()
-                if raw["run_id"] == study.run_id and raw["event"] == "run.resource_granted"))
-            restarted._wake.clear()
-            assert await runner._publish(RESOURCE_EVENT_CHANNEL, RESOURCE_EVENT_KIND, event,
-                runner._corr_for_admission(event.correlation_id))
-            await bus.drain()
-            assert restarted._wake.is_set() and not adapter.stages
-            # The holder ends after the assignment; the widened run keeps metacog.
-            await store.finish_projection(holder.run_id, "completed", {})
+                await gpu.dispatch(GpuLeaseRequestV1(verb="release", lease_id=blocker.lease_id, outcome="ok"))
+                await bus.drain()
+            granted = await gpu.lease(hold["lease_id"])
+            expected_role = SEAT if placement == "gpu2" else "agent"
+            assert granted["status"] == "granted" and granted["role"] == expected_role
+            # The pool's granted event reached durable-runs over the bus and woke the run.
+            assert study.run_id in restarted._hints and restarted._wake.is_set()
             await restarted.reconcile()
             await asyncio.wait_for(asyncio.gather(*list(restarted.active.values())), 40)
             await bus.drain()
@@ -169,20 +183,28 @@ def test_curiosity_receipt_wait_restart_dispatch_and_completion(monkeypatch, wid
                 expected_stages.append("orion_response_repair")
             assert [row["stage"] for row in adapter.stages] == expected_stages
             for row in adapter.stages:
-                assert row["run_id"] == study.run_id and row["lane"] == expected_lane
-                assert row["lease_id"] == granted["lease_id"] and row["generation"] == granted["generation"]
-            assert adapter.runs[0].response_repair_ran is repair_required
-            await store.finish_projection(holder.run_id, "completed", {})
-            await restarted.reconcile()
-            await bus.drain()
-            await restarted.reconcile()  # duplicate wakeup/outbox flush is harmless
-            await bus.drain()
+                assert (row["hold_lease_id"], row["hold_generation"]) == (hold["lease_id"], 1)
+                assert row["hold_holder"] == f"durable-runs:{study.run_id}"
+                assert "lease_id" not in row  # no durable-runs token rode this turn
+            # Every model call was an attach under the run's hold (no self-deadlock), on the
+            # hold's role -- and the FCC route was the agent route, never the pool role.
+            agent_calls = [g for g in adapter.pool_grants if g["work_class"] == "agent"]
+            assert agent_calls and all(g["pool_verb"] == "attach" and g["pool_status"] == "granted"
+                                       for g in agent_calls)
+            children = gpu.leases(hold_lease_id=hold["lease_id"])
+            assert children and {c["role"] for c in children} == {expected_role}
+            assert not gpu.leases(kind="request", work_class="agent", hold_lease_id=None)
+            [harness] = adapter.requests
+            assert harness.fcc_model_label == "llamacpp/agent"
+            assert SEAT not in harness.model_dump_json(exclude={"gpu_lease"})
             journal = [env for _channel, env in bus.events if env.kind == "journal.entry.write.v1"
                        and env.payload["entry_id"] == "curiosity-self-inquiry:" + study.run_id]
             assert len(journal) == 1 and journal[0].payload["correlation_id"] == study.correlation_id
             attention = [env for _channel, env in bus.events if env.kind == ATTENTION_SCHEMA_KIND
                          and env.payload["entry_id"] == "curiosity-" + study.run_id]
             assert len(attention) == 1 and attention[0].payload["correlation_id"] == study.correlation_id
+            await restarted.reconcile()  # duplicate wakeup/outbox flush is harmless
+            await bus.drain()
             completion = [env for _channel, env in bus.events if env.kind == DURABLE_RUN_STATE_KIND
                           and env.payload["run_id"] == study.run_id and env.payload["status"] == "completed"]
             assert len(completion) == 1
@@ -190,8 +212,10 @@ def test_curiosity_receipt_wait_restart_dispatch_and_completion(monkeypatch, wid
             assert completion[0].payload["correlation_id"] == study.correlation_id
             history = await store.history(study.run_id)
             assert sum(event["event"] == "run.completed" for event in history) == 1
-            assert not await store.get_lease(study.run_id)
-            assert not (await capacity.snapshot())["active_permits"]
+            assigned = next(e for e in history if e["event"] == "run.lane_assigned")
+            assert assigned["detail"]["lane"] == expected_role    # Hub's run view: lane = the hold's role
+            assert (await gpu.lease(hold["lease_id"]))["status"] == "released"
+            assert await legacy_rows(store) == (0, 0)
             assert not bus.inflight_rpc and not bus.subscriptions
             await restarted.close()
         finally:

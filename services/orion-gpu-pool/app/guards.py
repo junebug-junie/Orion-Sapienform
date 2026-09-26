@@ -17,15 +17,23 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from orion.autonomy.thermal_gate import thermal_state
 
 
+# The activity endpoint stamps observed_at while answering, i.e. after the caller took its "now".
+# A same-host reading can therefore look a few ms in the future; that is not staleness. Beyond this,
+# a future stamp is a real clock problem and still blocks.
+VISUAL_CLOCK_SKEW_SEC = 2.0
+
+
 class GuardReader:
-    def __init__(self, *, cabinet_url: str, visual_activity_url: str):
+    def __init__(self, *, cabinet_url: str, visual_activity_url: str,
+                 clock: Callable[[], datetime] | None = None):
         self.cabinet_url = cabinet_url
         self.visual_activity_url = visual_activity_url
+        self._clock = clock
         self._thermal = "hot"   # conservative until the first real reading (as elastic_runtime)
 
     async def read(self, client: Any, now: datetime) -> dict[str, str | None]:
@@ -65,8 +73,12 @@ class GuardReader:
             activity = VisualActivityV1.model_validate(r.json())
         except Exception as exc:  # noqa: BLE001
             return f"unavailable:{type(exc).__name__}"[:120]
+        # Age against when the answer arrived, not when the read began (live 2026-09-26: a "now" taken
+        # before the request made every fresh reading ~ms "in the future" -> visual_activity_unavailable,
+        # so the pool could never load gpu2).
+        now = max(now, self._clock()) if self._clock else now
         age = (now - activity.observed_at).total_seconds()
-        if activity.history_status != "ok" or not 0 <= age <= policy.freshness_sec:
+        if activity.history_status != "ok" or not -VISUAL_CLOCK_SKEW_SEC <= age <= policy.freshness_sec:
             return "visual_activity_unavailable"
         if activity.active_attempt_id:
             return "visual_attempt_running"

@@ -76,3 +76,22 @@ def test_visual_baseline_overdue_running_or_unreadable_blocks():
     stale = activity(observed_at=(NOW - timedelta(hours=1)).isoformat())
     assert read({CAB: cabinet(22.0), VIS: stale})["visual_baseline"] == "visual_activity_unavailable"
     assert read({CAB: cabinet(22.0), VIS: Resp({}, 503)})["visual_baseline"].startswith("unavailable")
+
+
+def test_a_reading_stamped_just_after_the_read_began_is_fresh_not_unavailable():
+    """Live 2026-09-26: the endpoint stamps observed_at while answering, after the caller took its
+    "now", so every fresh reading was ~ms "in the future" and read as visual_activity_unavailable --
+    the pool could never load gpu2. Age is measured when the answer arrives."""
+    stamped = NOW + timedelta(milliseconds=40)
+    reader = GuardReader(cabinet_url=CAB, visual_activity_url=VIS, clock=lambda: stamped + timedelta(milliseconds=5))
+    got = asyncio.run(reader.read(Client({CAB: cabinet(22.0), VIS: activity(observed_at=stamped.isoformat())}), NOW))
+    assert got["visual_baseline"] is None
+    # without a clock (old behaviour) a tiny skew is still tolerated
+    plain = read({CAB: cabinet(22.0), VIS: activity(observed_at=stamped.isoformat())})
+    assert plain["visual_baseline"] is None
+
+
+def test_a_reading_far_in_the_future_is_still_a_clock_problem():
+    future = NOW + timedelta(seconds=30)
+    assert read({CAB: cabinet(22.0), VIS: activity(observed_at=future.isoformat())})["visual_baseline"] \
+        == "visual_activity_unavailable"

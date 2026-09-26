@@ -1,0 +1,24 @@
+name: Agency episode audit
+on:
+  pull_request:
+    paths:
+      - 'orion/autonomy/agency_episode*.py'
+      - 'orion/autonomy/tests/test_agency_episode*.py'
+      - 'orion/autonomy/evals/run_agency_episode_eval.py'
+      - 'orion/autonomy/evals/fixtures/agency_episode_metadata.json'
+      - 'scripts/analysis/report_agency_episodes.py'
+      - '.github/workflows/agency-episode-audit.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  evidence-honesty:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pytest psycopg2-binary
+      - run: python -m pytest orion/autonomy/tests/test_agency_episode.py orion/autonomy/tests/test_agency_episode_reader.py -q
+      - run: python orion/autonomy/evals/run_agency_episode_eval.py

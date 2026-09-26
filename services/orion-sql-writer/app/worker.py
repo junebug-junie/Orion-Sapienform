@@ -26,6 +26,9 @@ from app.models import (
     PowerIntentSettledSQL,
     CabinetAmbientSpikeSQL,
     HomeCoolingSampleSQL,
+    EnergyCostAccruedSQL,
+    EnergyRunCostSQL,
+    EnergyUsageIntervalSQL,
     BiometricsSummarySQL,
     BiometricsInductionSQL,
     CausalGeometrySnapshotSQL,
@@ -145,6 +148,8 @@ from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.power import PowerIntentSettledV1
 from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
 from orion.schemas.telemetry.home_cooling import HomeCoolingSampleV1
+from orion.schemas.energy import EnergyCostAccruedV1, EnergyRunCostEstimatedV1, EnergyUsageIntervalV1
+from app.energy_persist import ENERGY_UPSERTS
 from orion.schemas.telemetry.biometrics import (
     BiometricsPayload,
     BiometricsSummaryV1,
@@ -466,6 +471,9 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "PowerIntentSettledSQL": (PowerIntentSettledSQL, PowerIntentSettledV1),
     "CabinetAmbientSpikeSQL": (CabinetAmbientSpikeSQL, CabinetAmbientSpikeV1),
     "HomeCoolingSampleSQL": (HomeCoolingSampleSQL, HomeCoolingSampleV1),
+    "EnergyUsageIntervalSQL": (EnergyUsageIntervalSQL, EnergyUsageIntervalV1),
+    "EnergyCostAccruedSQL": (EnergyCostAccruedSQL, EnergyCostAccruedV1),
+    "EnergyRunCostSQL": (EnergyRunCostSQL, EnergyRunCostEstimatedV1),
     "BiometricsInductionSQL": (BiometricsInductionSQL, BiometricsInductionV1),
     "CausalGeometrySnapshotSQL": (CausalGeometrySnapshotSQL, CausalGeometrySnapshotV1),
     "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),
@@ -1759,6 +1767,9 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                 except Exception as ex:
                     logger.warning(f"Could not back-populate chat log spark_meta: {ex}")
             return True
+
+        if sql_model_cls in ENERGY_UPSERTS:
+            return ENERGY_UPSERTS[sql_model_cls](sess, filtered_data)
 
         if sql_model_cls is HarnessTurnTraceSQL:
             # Raw write_data, not filtered_data: none of the four source

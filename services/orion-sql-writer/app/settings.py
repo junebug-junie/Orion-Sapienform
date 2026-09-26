@@ -34,6 +34,9 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "power.intent.settled.v1": "PowerIntentSettledSQL",
     "cabinet.ambient.spike.v1": "CabinetAmbientSpikeSQL",
     "home.cooling.sample.v1": "HomeCoolingSampleSQL",
+    "energy.usage.observed.v1": "EnergyUsageIntervalSQL",
+    "energy.cost.accrued.v1": "EnergyCostAccruedSQL",
+    "energy.run_cost.estimated.v1": "EnergyRunCostSQL",
     "biometrics.induction.v1": "BiometricsInductionSQL",
     "causal.geometry.snapshot.v1": "CausalGeometrySnapshotSQL",
     "spark.telemetry": "SparkTelemetrySQL",
@@ -160,6 +163,9 @@ class Settings(BaseSettings):
             "orion:power:intent:settled",
             "orion:cabinet:ambient:spike",
             "orion:home:cooling:sample",
+            "orion:energy:usage:observed",
+            "orion:energy:cost:accrued",
+            "orion:energy:run_cost:estimated",
             "orion:biometrics:induction",
             "orion:spark:telemetry",
             "orion:cognition:trace",
@@ -665,6 +671,15 @@ class Settings(BaseSettings):
             channels.append("orion:cabinet:ambient:spike")
         if "orion:home:cooling:sample" not in channels:
             channels.append("orion:home:cooling:sample")
+        # Same guarantee as cooling: SQL_WRITER_SUBSCRIBE_CHANNELS replaces rather
+        # than merges, so a pre-energy operator .env would leave these routes inert.
+        for energy_channel in (
+            "orion:energy:usage:observed",
+            "orion:energy:cost:accrued",
+            "orion:energy:run_cost:estimated",
+        ):
+            if energy_channel not in channels:
+                channels.append(energy_channel)
         # Same guarantee again, same reason, same failure shape review caught
         # before this shipped: self_study.items.write.v1 is a code-default
         # route with no feature toggle, and SQL_WRITER_SUBSCRIBE_CHANNELS

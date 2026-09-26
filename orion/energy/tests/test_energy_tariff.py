@@ -63,3 +63,76 @@ def test_rejects_block_without_open_top(tmp_path: Path) -> None:
     bad.write_text(yaml.safe_dump(raw))
     with pytest.raises(TariffError, match="open"):
         load_tariff(bad)
+
+
+@pytest.fixture
+def tariff():
+    return load_tariff(TARIFF)
+
+
+def test_energy_cost_rejects_nan_kwh(tariff) -> None:
+    with pytest.raises(TariffError, match="kwh"):
+        tariff.energy_cost_usd(float("nan"), cycle_kwh_before=0.0, month=7)
+
+
+def test_energy_cost_rejects_negative_kwh(tariff) -> None:
+    with pytest.raises(TariffError, match="kwh"):
+        tariff.energy_cost_usd(-1.0, cycle_kwh_before=0.0, month=7)
+
+
+def test_energy_cost_rejects_nan_cycle_kwh_before(tariff) -> None:
+    with pytest.raises(TariffError, match="cycle_kwh_before"):
+        tariff.energy_cost_usd(1.0, cycle_kwh_before=float("nan"), month=7)
+
+
+def test_energy_cost_rejects_inf_kwh(tariff) -> None:
+    with pytest.raises(TariffError, match="kwh"):
+        tariff.energy_cost_usd(float("inf"), cycle_kwh_before=0.0, month=7)
+
+
+def test_marginal_rejects_nan_cycle_kwh(tariff) -> None:
+    with pytest.raises(TariffError, match="cycle_kwh"):
+        tariff.marginal_usd_per_kwh(cycle_kwh=float("nan"), month=7)
+
+
+def test_marginal_rejects_inf_cycle_kwh(tariff) -> None:
+    with pytest.raises(TariffError, match="cycle_kwh"):
+        tariff.marginal_usd_per_kwh(cycle_kwh=float("inf"), month=7)
+
+
+def test_rejects_duplicate_block_bounds(tmp_path: Path) -> None:
+    raw = yaml.safe_load(TARIFF.read_text())
+    raw["seasons"]["summer"]["blocks"] = [
+        {"up_to_kwh": 400, "cents_per_kwh": 9.8332},
+        {"up_to_kwh": 400, "cents_per_kwh": 12.5263},
+        {"up_to_kwh": None, "cents_per_kwh": 12.5263},
+    ]
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(yaml.safe_dump(raw))
+    with pytest.raises(TariffError, match="ascend"):
+        load_tariff(bad)
+
+
+def test_rejects_missing_tariff_version(tmp_path: Path) -> None:
+    raw = yaml.safe_load(TARIFF.read_text())
+    del raw["tariff_version"]
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(yaml.safe_dump(raw))
+    with pytest.raises(TariffError, match="tariff_version"):
+        load_tariff(bad)
+
+
+def test_rejects_empty_file(tmp_path: Path) -> None:
+    bad = tmp_path / "empty.yaml"
+    bad.write_text("")
+    with pytest.raises(TariffError):
+        load_tariff(bad)
+
+
+def test_rejects_non_pre_tax_cost_basis(tmp_path: Path) -> None:
+    raw = yaml.safe_load(TARIFF.read_text())
+    raw["cost_basis"] = "post_tax"
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(yaml.safe_dump(raw))
+    with pytest.raises(TariffError, match="cost_basis"):
+        load_tariff(bad)

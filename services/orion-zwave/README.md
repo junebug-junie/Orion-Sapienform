@@ -45,10 +45,36 @@ Host compose lives at `/home/athena/zwave-js/docker-compose.yml`. Only that cont
 
 Absent meter readings stay absent — the poller never publishes `0.0` watts when the value map lacks a meter entry.
 
+## Enable + deploy (after pair)
+
+Only after Z-Wave JS shows the Shelly plug included and you know its node id:
+
+```bash
+# services/orion-zwave/.env
+ORION_ZWAVE_ENABLED=true
+ZWAVE_NODE_ID=<node id from Z-Wave JS UI>
+
+cd /mnt/scripts/Orion-Sapienform-zwave-cabinet-cooling
+python scripts/sync_local_env_from_example.py orion-zwave
+scripts/safe_docker_build.sh orion-zwave up -d --build
+scripts/safe_docker_build.sh orion-sql-writer up -d --build
+scripts/safe_docker_build.sh orion-hub up -d --build
+```
+
+## Live smoke (operator)
+
+1. **Bus:** `redis-cli -u "$ORION_BUS_URL" SUBSCRIBE orion:home:cooling:sample` — expect `home.cooling.sample.v1` with `cooling_watts` while the AC runs.
+2. **Hub:** Biometrics → Cabinet → Cooling strip shows watts beside Environment; no on/off control.
+3. **Isolation:** Host biometrics `peak_pressure` unchanged when AC watts move.
+4. **Failure:** Stop `athena-zwave-js-ui` briefly → Cooling shows stale/absent (`ok: false`, no `0.0` watts), not a fake zero.
+
+With `ORION_ZWAVE_ENABLED=false` (default), `orion-zwave` publishes heartbeats only; Hub `/api/cabinet/cooling/latest` returns `{"ok": false, "sample": null}`.
+
 ## Local dev / tests
 
 ```bash
 PYTHONPATH="services/orion-zwave:." pytest services/orion-zwave/tests -q
+pytest tests/test_home_cooling_bus_catalog.py -q
 ```
 
 After editing `.env_example`:

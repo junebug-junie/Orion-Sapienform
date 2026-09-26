@@ -1,7 +1,7 @@
 # Z-Wave cabinet cooling telemetry — design
 
 **Date:** 2026-09-25  
-**Status:** Approved — implementation plan at `docs/superpowers/plans/2026-09-25-zwave-cabinet-cooling.md`  
+**Status:** Implemented — awaiting merge (`feat/zwave-cabinet-cooling`). Live watts smoke blocked on Shelly pair + `ORION_ZWAVE_ENABLED=true` (operator).
 **Branch intent:** `docs/zwave-cabinet-cooling` → `feat/zwave-cabinet-cooling`  
 **Worktree:** `/mnt/scripts/Orion-Sapienform-zwave-cabinet-cooling`
 

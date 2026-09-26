@@ -1984,6 +1984,16 @@ channels:
     stability: "experimental"
     since: "2026-08-29"
 
+  - name: "orion:home:cooling:sample"
+    kind: "telemetry"
+    schema_id: "HomeCoolingSampleV1"
+    message_kind: "home.cooling.sample.v1"
+    producer_services: ["orion-zwave"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-25"
+    description: "Read-only portable AC / cabinet cooling watts from Athena Z-Wave Shelly Wave plug."
+
   - name: "orion:exec:request:MetaTagsService"
     kind: "request"
     schema_id: "MetaTagsRequestV1"

@@ -67,6 +67,13 @@ def test_template_declares_panel_and_script_tag() -> None:
         "cabinetAmbientLiveStatus",
         "cabinetAmbientRmsChart",
         "cabinetAmbientActivityChart",
+        "cabinetCoolingStatus",
+        "cabinetCoolingWatts",
+        "cabinetCoolingVolts",
+        "cabinetCoolingSwitch",
+        "cabinetCoolingAge",
+        "cabinetCoolingLiveStatus",
+        "cabinetCoolingWattsChart",
         "cabinetSensorHistoryStatus",
         "cabinetSensorHistoryGrid",
     ):
@@ -86,6 +93,28 @@ def test_template_declares_sensor_history_windows_and_biometrics_grain_caption()
     assert "uv_raw" in section_html
     assert "~30s" in section_html
     assert "biometrics" in section_html.lower()
+
+
+def test_template_declares_cooling_strip_without_control_button() -> None:
+    section_start = INDEX_HTML.index('id="cabinet" data-panel="cabinet"')
+    section_end = INDEX_HTML.index("</section>", section_start)
+    section_html = INDEX_HTML[section_start:section_end]
+
+    assert "Cooling — portable AC (Shelly Wave)" in section_html
+    assert 'id="cabinetCoolingWattsChart"' in section_html
+    for window in ("24h", "3d", "7d"):
+        assert f'data-cabinet-cooling-window="{window}"' in section_html
+    assert "read-only" in section_html.lower() or "no Hub control" in section_html
+    assert 'type="button"' in section_html  # refresh/window buttons only
+    cooling_start = section_html.index("Cooling — portable AC")
+    cooling_block = section_html[cooling_start : section_html.index("cabinetSensorGrid", cooling_start)]
+    assert "switch_on" not in cooling_block.lower()
+    assert "zwave" not in INDEX_HTML.lower() or "z-wave" in section_html.lower()
+
+
+def test_template_no_primary_nav_zwave_tab() -> None:
+    assert 'data-hash-target="#zwave"' not in INDEX_HTML
+    assert "Z-Wave" not in INDEX_HTML.split("<nav")[0] if "<nav" in INDEX_HTML else True
 
 
 def test_template_declares_ambient_windows_and_biometrics_grain_caption() -> None:
@@ -163,6 +192,39 @@ def test_cabinet_sensors_js_is_standalone_and_reads_only_its_own_api() -> None:
     assert '"POST"' not in CABINET_SENSORS_JS and "method: 'POST'" not in CABINET_SENSORS_JS
 
 
+def test_cabinet_sensors_js_wires_cooling_latest_and_history_contracts() -> None:
+    assert '"/api/cabinet/cooling/latest"' in CABINET_SENSORS_JS
+    assert '"/api/cabinet/cooling/history?window="' in CABINET_SENSORS_JS
+    assert "function pollCoolingLatest(" in CABINET_SENSORS_JS
+    assert "function fetchCoolingHistory(" in CABINET_SENSORS_JS
+    assert "function renderCoolingLatest(" in CABINET_SENSORS_JS
+    assert 'querySelectorAll("[data-cabinet-cooling-window]")' in CABINET_SENSORS_JS
+    assert "formatSwitchState" in CABINET_SENSORS_JS
+    assert '"POST"' not in CABINET_SENSORS_JS and "method: 'POST'" not in CABINET_SENSORS_JS
+
+
+def test_cabinet_sensors_js_cooling_empty_db_is_calm_absent() -> None:
+    """Empty DB (ok:false, sample:null) must not throw or zero-fill live tiles."""
+    assert "function renderCoolingAbsent(" in CABINET_SENSORS_JS
+    poll_region = CABINET_SENSORS_JS[
+        CABINET_SENSORS_JS.index("async function pollCoolingLatest") : CABINET_SENSORS_JS.index(
+            "async function fetchCoolingHistory"
+        )
+    ]
+    assert "payload.sample === null" in poll_region
+    assert "renderCoolingAbsent();" in poll_region
+    assert "no samples yet" in poll_region
+    assert 'throw new Error(payload.error || "cooling sample missing")' not in poll_region
+    absent_region = CABINET_SENSORS_JS[
+        CABINET_SENSORS_JS.index("function renderCoolingAbsent") : CABINET_SENSORS_JS.index(
+            "function renderCoolingLatest"
+        )
+    ]
+    assert '"—"' in absent_region
+    assert '"absent"' in absent_region
+    assert '"no samples yet"' in absent_region
+
+
 def test_cabinet_sensors_js_wires_ambient_latest_and_history_contracts() -> None:
     assert '"/api/cabinet/ambient/latest"' in CABINET_SENSORS_JS
     assert '"/api/cabinet/ambient/history?window="' in CABINET_SENSORS_JS
@@ -196,7 +258,9 @@ def test_cabinet_sensors_js_polls_only_latest_and_bounds_history_state() -> None
         )
     ]
     assert "pollAmbientLatest();" in timer_region
+    assert "pollCoolingLatest();" in timer_region
     assert "fetchAmbientHistory" not in timer_region
+    assert "fetchCoolingHistory" not in timer_region
     assert "fetchSensorHistory" not in timer_region
     assert ".push(" not in CABINET_SENSORS_JS
     assert "state.ambientHistory =" in CABINET_SENSORS_JS
@@ -221,8 +285,10 @@ def test_cabinet_sensors_js_fetches_history_only_on_explicit_ui_events() -> None
         )
     ]
     assert "fetchAmbientHistory();" in activate_region
+    assert "fetchCoolingHistory();" in activate_region
     assert "fetchSensorHistory();" in activate_region
     assert controls_region.count("fetchAmbientHistory();") >= 2
+    assert controls_region.count("fetchCoolingHistory();") >= 2
     assert controls_region.count("fetchSensorHistory();") >= 2
 
 

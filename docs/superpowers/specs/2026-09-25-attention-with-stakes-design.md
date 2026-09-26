@@ -382,8 +382,9 @@ nodes, because Orion writes those only when a confidence moves (G4).
   prior query (`ATLAS_PRIORS_CYPHER`). As built, the snapshot is taken in `_run_turn`, the one
   function every investigation turn passes through, durable or in-process. Taking it at dispatch
   would have credited this run with moves other turns made while it waited in admission. The
-  snapshot is persisted, not kept in memory, and the first attempt wins, so a retry is scored from
-  where the run began.
+  snapshot is persisted, not kept in memory, and the first attempt wins -- even when the graph was
+  unreadable and there is no snapshot -- so a retry is scored from where the run began, or not at
+  all.
 - *After.* When the turn ends, in the same place, Hub reads again and compares.
 - *Attribution.* Only changes this run stamped count: `last_run_id` = run for a test, `run_id` =
   run for a formation. Anything else between the two snapshots is counted as unattributed and not
@@ -395,7 +396,11 @@ nodes, because Orion writes those only when a confidence moves (G4).
   - Priors that did not exist before are counted as *formed*, not scored.
   - A confidence that moved without `times_tested` changing is flagged `moved_untested` as
     protocol drift.
-  - A run whose graph could not be read is `null`, never 0.
+  - A run whose graph could not be read is `null`, never 0. So is a run whose snapshot filled the
+    Atlas query's 2000-row cap, whose start snapshot already carried its own stamps (an earlier
+    attempt wrote before it was taken), or whose every tested prior wrote an invalid confidence.
+  - A turn that produced no text is still scored, since it may have written first, but carries
+    `turn_ok = false`, so its 0 is not read as "tested, nothing moved".
 - *Cross-checks.* Report agreement with this run's `:PriorRevision` rows. Expect less than 100%,
   since inconclusive tests have no revision by design. Also report agreement with
   `HopReadingV1.moved_the_claim` (`orion/schemas/curiosity_supervisor.py:75`) wherever supervisor
@@ -409,8 +414,9 @@ arm, and its propensity. This is the choice set the supervisor has never been ab
 
 ```text
 expected_nats(prior) = H(confidence_now) × yield(prior)
-raw_yield(prior)     = min(1, KL(c_last ‖ c_first) × straightness / Σ H(c_before_test))   last W tests
-straightness         = |c_last − c_first| / Σ |after − before|    (net displacement / path length)
+raw_yield(prior)     = min(1, KL(c_first + net ‖ c_first) × straightness / Σ H(c_before_test))   last W tests
+net                  = Σ (after − before)    the moves the recorded tests made
+straightness         = |net| / Σ |after − before|    (net displacement / path length, in [0, 1])
 yield(prior)         = (n × raw_yield + k × pool_yield) / (n + k)          n = tests in the window
 pool_yield           = Σ directed progress / Σ H   pooled over every prior's window
 ```
@@ -425,6 +431,13 @@ discount it scored 0.185 against 0.25 for a genuinely learning belief. Straightn
 straightness index of movement ecology (Batschelet 1981; Benhamou 2004). It is 1 for a belief that
 moved one way, and 1/3 for that flip-flop over three tests.
 
+*Why recorded moves, not `c_last − c_first`* (code review). Something else can move a prior
+between two scored tests: another run, an unstamped edit, a run scored unknown. That jump is not
+this prior's tests' doing. Measured end to end, two unmoved tests either side of a jump read as
+progress (raw yield 0.361 instead of 0), straightness reached 4.0, and one such prior lifted the
+whole pool's yield from 0.007 to 0.475. Summing only the recorded moves applies the same rule the
+snapshot diff already does: only changes a test made count.
+
 Worked examples:
 - A prior flipping 0.55 → 0.7 → 0.55 → 0.7 has a raw yield of 0.0079. It loses value.
 - A single test from 0.55 to 0.9 has a raw yield of 0.43.
@@ -432,8 +445,11 @@ Worked examples:
   already puts them near the top, at 0.55.
 
 **P1d. Offer order is the only behaviour that changes.** On the value arm, `select_priors` sorts by
-`expected_nats`. The existing tie-breaks stay, and so does the stale bucket, which is a
-presentation feature with an explicit retire option. The other arm keeps today's
+`expected_nats` rounded to 9 decimals, then by uncertainty, then by the existing tie-breaks. The
+rounding and the uncertainty tie-break are what make the cold start *exactly* today's order:
+entropy is symmetric and clamped where `|p − 0.5|` is neither (0.2 and 0.8 differ in the last
+float bit), and when every scored test moved nothing, every untested prior is worth exactly 0. The
+stale bucket stays, a presentation feature with an explicit retire option. The other arm keeps today's
 uncertainty-first order.
 - *Randomization.* Assign the arm per run, with propensity 0.5. This is safe because offer order
   does not share a budget across arms: both arms get the same runs, at the same times. Arms do
@@ -924,9 +940,16 @@ still spends runs on the best bad option. Refusing to spend needs phase 2's floo
 **Changed during build, from the eval.** Yield now includes the straightness discount (P1c). Net
 KL alone let an odd-length flip-flop score close to a real learner.
 
+**One small change to today's order.** A prior whose confidence is outside [0, 1], or not a number,
+now counts as no confidence at all everywhere (`valid_confidence`): offered as maximally
+uncertain, in both arms, instead of sinking to the bottom as the "surest" belief (1.7) or sorting
+by read order (NaN). Only priors with a broken confidence move.
+
 **To go live.**
 1. Apply `services/orion-sql-db/manual_migration_curiosity_spend_v1.sql`.
 2. Sync the local `.env` (`python scripts/sync_local_env_from_example.py` adds the five keys).
+   The migration now includes `turn_ok`; it has never been applied anywhere, so there is nothing
+   to alter.
 3. Restart Hub.
 4. After a week or more of runs, run
    `python scripts/analysis/replay_curiosity_realized_nats.py --pg --graph`.
@@ -965,6 +988,35 @@ An adversarial review ran against the code before commit. The material findings,
 - **Math wording:** the H(p) bound, the "share of uncertainty resolved" phrasing, comparing across
   models, and "worth more than GPU time" (which broke rule 2).
   - *Fix:* all corrected.
+
+### Code review of the build (2026-09-25)
+
+A second review ran against the built code, with experiments on a scratch Postgres 16. Three
+should-fix findings and six nits, all addressed:
+
+- **Yield counted movement no recorded test made** (should-fix). *Fix:* recorded moves only (P1c);
+  straightness is now always in [0, 1].
+- **"No history means today's order" was false** (should-fix). 90 of 2000 random populations came
+  out in a different order, and with a zero pool yield the rotation hash alone ordered untested
+  priors. *Fix:* the rounded key with an uncertainty tie-break (P1d); a 2000-population test pins
+  it. Against the old key it finds 95 divergences.
+- **A retry after an unreadable start turned unknown into a partial number** (should-fix). *Fix:*
+  the start is recorded even with no snapshot, the snapshot write is gated on `turn_started_at`,
+  and the diff refuses a start that already carries the run's own stamps.
+- **Nits.**
+  - A missing column was silenced as a missing table. *Fix:* matched on SQLSTATE 42P01.
+  - No pool meant no log at all. *Fix:* warns once.
+  - Failed turns and invalid-only runs read 0.0. *Fix:* `turn_ok`, and unknown when nothing
+    tested was scorable.
+  - Offer time and outcome time parsed confidence differently, and a NaN made jsonb reject the
+    whole row. *Fix:* one rule, `valid_confidence`, with `allow_nan=False`.
+  - Over-cap targets trailed the below-threshold ones, and the panel subtitle and README still
+    described the old state. *Fix:* sorted, and both reworded.
+  - The arm's draw could equal 1.0. *Fix:* divided by 2³².
+  - Forks broke ties on read order. *Fix:* a value-based tie-break.
+  - A snapshot filling the 2000-row cap could differ between start and end. *Fix:* treated as
+    unreadable.
+  - Snapshots were never pruned. *Fix:* dropped after 14 days.
 
 ## Sources
 

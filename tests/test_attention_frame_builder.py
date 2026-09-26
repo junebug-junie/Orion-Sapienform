@@ -172,3 +172,27 @@ def test_over_cap_active_targets_are_recorded_and_do_not_fake_novelty() -> None:
     assert len(every) == 7
     assert all(t.novelty_score == 0.0 for t in every)
     assert all(t.confidence_score == 1.0 for t in every)
+
+
+def test_suppressed_targets_are_strongest_first_like_every_other_bucket() -> None:
+    # Review finding on D1: over-cap targets were appended after the
+    # below-threshold ones, so the panel listed 0.08 and 0.01 above 0.8.
+    def field(tick: str, hi: float, low: float, mid: float) -> FieldStateV1:
+        return FieldStateV1(
+            generated_at=NOW,
+            tick_id=tick,
+            capability_vectors={
+                **{f"capability:c{i}": {"execution_pressure": hi} for i in range(7)},
+                "capability:low": {"execution_pressure": low},
+                "capability:mid": {"execution_pressure": mid},
+            },
+        )
+
+    frame1 = build_attention_frame(field=field("t1", 0.1, 0.1, 0.1), policy=POLICY, now=NOW)
+    frame2 = build_attention_frame(
+        field=field("t2", 0.9, 0.11, 0.18), policy=POLICY, previous_frame=frame1, now=NOW
+    )
+    saliences = [t.salience_score for t in frame2.suppressed_targets]
+    assert saliences == sorted(saliences, reverse=True)
+    over_cap = ["over the per-kind target cap" in " ".join(t.reasons) for t in frame2.suppressed_targets]
+    assert over_cap == sorted(over_cap, reverse=True) and any(over_cap) and not all(over_cap)

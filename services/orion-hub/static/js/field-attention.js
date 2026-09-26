@@ -332,7 +332,7 @@
     renderTargetsTable(
       els.suppressed,
       "Suppressed targets",
-      "below the policy's suppress_below threshold -- still real competitors, muted",
+      "below the policy's suppress_below threshold, or past a per-kind target cap this tick -- still real competitors, muted",
       frame.suppressed_targets || [],
       { muted: true, emptyText: "Nothing suppressed this tick." }
     );

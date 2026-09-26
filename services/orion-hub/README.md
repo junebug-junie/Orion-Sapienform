@@ -1048,14 +1048,32 @@ what each one was offered and what it moved:
 - **When the turn starts** (`_run_turn`, durable or in-process), the same row
   gets a snapshot of every prior's confidence, tested count and run stamps.
   It is taken then, not at dispatch, because a durable run can wait hours in
-  admission while other turns move priors. The first attempt wins, so a retry
-  is scored from where the run began.
+  admission while other turns move priors. The first attempt wins -- even
+  when the graph could not be read and there is no snapshot -- so a retry is
+  scored from where the run began, or not at all.
 - **When the turn ends**, `curiosity_run_outcomes` gets the diff, in nats of
   belief change: KL(after ‖ before) for each prior this run tested (stamped
-  `last_run_id` = run and `times_tested` went up). A test that moved nothing
-  scores 0.0. An unreadable graph is `NULL`, never 0. Changes stamped by
-  another run are counted as unattributed and not scored. Agreement with the
-  `:PriorRevision` nodes Orion wrote by hand is recorded as a cross-check.
+  `last_run_id` = run and `times_tested` went up), and `turn_ok` (did the turn
+  produce text). Changes stamped by another run are counted as unattributed
+  and not scored. Agreement with the `:PriorRevision` nodes Orion wrote by
+  hand is recorded as a cross-check.
+
+How to read `realized_nats`:
+
+- **0.0** -- the run moved no belief it tested: it tested and nothing moved, or
+  it tested nothing. A real result.
+- **`NULL`** -- unknown: a snapshot was unreadable or filled the Atlas query's
+  2000-row cap, the start snapshot already carried this run's own stamps (an
+  earlier attempt wrote before it), or every prior it tested wrote an invalid
+  confidence. Never read as 0.
+- **`turn_ok = false`** -- the turn failed. It is still scored (it may have
+  written first), but its 0.0 is a failure, and the replay leaves it out.
+
+A confidence outside [0, 1], or not a number, counts as no confidence at all,
+in both offer orders and in the score: shown as maximally uncertain (so Orion
+re-tests it rather than it sinking to the bottom as the "surest" belief) and
+recorded as `null`. Start snapshots are dropped after 14 days; the outcome row
+keeps before/after for every prior a run changed.
 
 Measured from Hub's own snapshots because Orion writes a revision only when a
 confidence *moves*: 21 revisions across 94 journaled runs by 2026-09-14.
@@ -1068,7 +1086,9 @@ shrunk toward the pool average by `HUB_CURIOSITY_YIELD_PSEUDO_TESTS`. Orion
 still chooses; only the order changes. Each run draws its arm from a
 deterministic per-run coin with P(value) = `HUB_CURIOSITY_VALUE_ORDER_PROPENSITY`,
 so the two orders can be compared on real outcomes. With no scored history the
-two orders are identical.
+two orders are identical, prior for prior (checked on 2000 random populations
+in `tests/test_curiosity_worldview.py`); among priors all worth zero, the
+uncertainty order still decides.
 
 The switch stays off until
 `scripts/analysis/replay_curiosity_realized_nats.py --pg` shows the measurement
@@ -1076,7 +1096,8 @@ is not degenerate and says how many runs per arm the comparison needs.
 `HUB_CURIOSITY_SPEND_LOG_ENABLED=false` stops all three writes. The migration
 must be applied first:
 `services/orion-sql-db/manual_migration_curiosity_spend_v1.sql`. Without it,
-the log warns once and records nothing.
+or without a memory Postgres pool, the log warns once and records nothing; any
+other database error (a missing column, say) warns every time.
 
 **Gates, in order.** `disabled` → `daily_cap` → `cooldown` → `pg_role_missing`
 → `graph_unavailable` → `stores_not_ready` / `stores_unavailable` /

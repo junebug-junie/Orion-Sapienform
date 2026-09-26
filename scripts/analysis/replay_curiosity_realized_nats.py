@@ -16,7 +16,9 @@ Two sources, either or both:
             nothing.
   --pg      The spend log itself (`curiosity_run_outcomes` joined to
             `curiosity_offer_decisions`) once Hub has written rows: the real
-            per-run distribution, and value-vs-uncertainty arm means.
+            per-run distribution, and value-vs-uncertainty arm means. Turns
+            that failed (`turn_ok` false) are counted per arm and left out of
+            both: their 0.0 is a failure, not a run that moved nothing.
 
 Degenerate means: essentially never non-zero, or a sample size per arm no
 realistic number of runs can reach (at 7 runs a day, --max-days, default 60).
@@ -157,10 +159,26 @@ class ArmComparison:
     ci95: Optional[tuple[float, float]] = None
 
 
-def compare_arms(rows: Sequence[dict[str, Any]]) -> ArmComparison:
-    """Welch difference of mean realized nats, value minus uncertainty."""
-    by_arm: dict[str, list[Optional[float]]] = {ARM_VALUE_ORDER: [], ARM_UNCERTAINTY_ORDER: []}
+def completed_turns(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Rows whose turn produced text. A failed turn is scored (it may have
+    written before failing) but its 0.0 would read as a real "moved nothing"."""
+    return [r for r in rows if r.get("turn_ok") is not False]
+
+
+def failed_turns_by_arm(rows: Sequence[dict[str, Any]]) -> dict[str, int]:
+    out = {ARM_VALUE_ORDER: 0, ARM_UNCERTAINTY_ORDER: 0}
     for row in rows:
+        if row.get("turn_ok") is False and row.get("arm") in out:
+            out[row["arm"]] += 1
+    return out
+
+
+def compare_arms(rows: Sequence[dict[str, Any]]) -> ArmComparison:
+    """Welch difference of mean realized nats, value minus uncertainty, over
+    turns that completed. If one arm fails more often, that shows in
+    `failed_turns_by_arm`, not as extra zeros here."""
+    by_arm: dict[str, list[Optional[float]]] = {ARM_VALUE_ORDER: [], ARM_UNCERTAINTY_ORDER: []}
+    for row in completed_turns(rows):
         arm = row.get("arm")
         if arm in by_arm:
             v = row.get("realized_nats")
@@ -194,7 +212,7 @@ def verdict(dist: Distribution, *, max_days: int) -> tuple[str, Optional[int]]:
 # --- I/O ------------------------------------------------------------------------
 
 PG_SQL = """
-SELECT o.realized_nats, d.arm
+SELECT o.realized_nats, d.arm, o.turn_ok
 FROM curiosity_run_outcomes o
 LEFT JOIN curiosity_offer_decisions d USING (run_id)
 ORDER BY o.completed_at ASC
@@ -208,7 +226,7 @@ def read_pg(dsn: str) -> Optional[list[dict[str, Any]]]:
     try:
         with conn.cursor() as cur:
             cur.execute(PG_SQL)
-            return [{"realized_nats": r[0], "arm": r[1]} for r in cur.fetchall()]
+            return [{"realized_nats": r[0], "arm": r[1], "turn_ok": r[2]} for r in cur.fetchall()]
     finally:
         conn.close()
 
@@ -263,11 +281,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             print("UNKNOWN: could not open a read-only Postgres session", file=sys.stderr)
             status = 2
         else:
-            dist = distribution(r["realized_nats"] for r in rows)
+            dist = distribution(r["realized_nats"] for r in completed_turns(rows))
             text, need = verdict(dist, max_days=args.max_days)
             arms = compare_arms(rows)
             report["spend_log"] = {
                 "runs": asdict(dist),
+                "failed_turns": len(rows) - len(completed_turns(rows)),
+                "failed_turns_by_arm": failed_turns_by_arm(rows),
                 "fraction_zero": dist.fraction_zero,
                 "runs_per_arm_needed": need,
                 "verdict": text,
@@ -290,7 +310,8 @@ def _render(report: dict[str, Any]) -> str:
     if "spend_log" in report:
         s = report["spend_log"]
         lines += [
-            f"spend log: {s['runs']}",
+            f"spend log (completed turns): {s['runs']}",
+            f"  failed turns, left out: {s['failed_turns']} {s['failed_turns_by_arm']}",
             f"  fraction exactly 0: {s['fraction_zero']}",
             f"  {s['verdict']}",
             f"  arms: {s['arms']}",

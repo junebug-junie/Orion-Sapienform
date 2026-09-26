@@ -56,6 +56,8 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Sequence
 
+from orion.curiosity.value import valid_confidence
+
 logger = logging.getLogger("orion.curiosity.worldview")
 
 # Orion's runs are named by `uuid4().hex[:12]` in the Hub loop. Anything else
@@ -117,7 +119,7 @@ def _as_float(value: Any) -> Optional[float]:
 def _as_int(value: Any, default: int = 0) -> int:
     try:
         return int(float(value)) if value is not None else default
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # "inf" is a float, not an int
         return default
 
 
@@ -182,12 +184,16 @@ class Prior:
     def uncertainty(self) -> float:
         """0.0 = maximally uncertain. Used only to ORDER the presentation.
 
-        A prior with no confidence recorded sorts as maximally uncertain,
-        which is the honest reading of "Orion never said how sure it was".
+        A prior with no usable confidence sorts as maximally uncertain, the
+        honest reading of "Orion never said how sure it was". Usable is
+        `valid_confidence`'s rule -- the one the spend log scores with -- so a
+        1.7 or a NaN is re-offered for testing instead of buried as Orion's
+        surest belief, and a NaN never makes the sort depend on read order.
         """
-        if self.confidence is None:
+        confidence = valid_confidence(self.confidence)
+        if confidence is None:
             return 0.0
-        return abs(self.confidence - 0.5)
+        return abs(confidence - 0.5)
 
     def preview(self) -> str:
         confidence = (
@@ -984,6 +990,12 @@ def collapse_duplicate_priors(
     return collapsed, duplicates
 
 
+# Expected value is compared at this precision, far below any belief change
+# a test can make (a 0.01 move near 0.5 is ~2e-4 nats) and far above float
+# noise, so exact ties in the maths tie in the sort.
+EXPECTED_NATS_DECIMALS = 9
+
+
 def select_priors(
     rows: Sequence[dict[str, Any]],
     *,
@@ -1016,7 +1028,12 @@ def select_priors(
     docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md). Same
     tie-breaks, same stale bucket, same sample -- and still only an ORDER:
     Orion still chooses. With no scored history every yield is 1.0 and the
-    two orders are identical.
+    two orders are identical: expected value is rounded before it is
+    compared and uncertainty breaks its ties, because entropy is symmetric
+    and clamped where `|p - 0.5|` is neither (0.2 and 0.8 differ in the last
+    float bit; 0.0 and 0.005 share one clamped entropy). The same tie-break
+    keeps the uncertainty order among priors that are all worth zero -- the
+    likely early state, when every scored test moved nothing.
     """
     priors: list[Prior] = []
     dropped = 0
@@ -1045,7 +1062,8 @@ def select_priors(
     else:
         fresh.sort(
             key=lambda p: (
-                -expected_nats_for(p),
+                -round(expected_nats_for(p), EXPECTED_NATS_DECIMALS),
+                p.uncertainty,
                 p.times_tested,
                 _rotation_key(p.prior_id, rotate_seed),
             )

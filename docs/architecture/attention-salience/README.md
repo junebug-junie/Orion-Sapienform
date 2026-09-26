@@ -283,7 +283,12 @@ is "more correct."
   2026-09-25 fix, the first tick after deploy diffs this tick's proxy
   against the last pre-fix frame's `pressure_score`. That is the same
   quantity measured on the same scale, so no transition artifact is
-  expected.
+  expected for any target that frame recorded. One exception, for one
+  tick: a target that was over its per-kind cap in the last pre-fix frame
+  is in no bucket (the old builder dropped it), so on the first post-fix
+  tick its prior reads 0.0 and its whole pressure scores as novelty. From
+  the next tick on, over-cap targets are recorded in `suppressed_targets`
+  and the diff has a real prior.
 - **Open, not part of this system:** `orion/proposals/scoring.py`'s
   `proposal_priority()` — see [Downstream](#downstream-what-consumes-this)
   above.

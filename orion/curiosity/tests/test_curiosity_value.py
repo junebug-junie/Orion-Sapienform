@@ -87,6 +87,20 @@ def test_index_states_keeps_the_most_tested_fork() -> None:
     assert set(idx) == {"p1", "p2"}
 
 
+@pytest.mark.parametrize("raw,expected", [("2.0", 2), (2.0, 2), ("3", 3), ("inf", 0), ("nan", 0), ("x", 0), (None, 0)])
+def test_prior_state_reads_tested_counts_the_way_the_offer_does(raw, expected) -> None:
+    # Review finding: int("2.0") raised and read as 0 here while the offer's
+    # `_as_int` read it as 2, so one prior had two tested counts.
+    assert PriorState.from_json({"prior_id": "p1", "times_tested": raw}).times_tested == expected
+
+
+def test_index_states_breaks_fork_ties_on_values_not_read_order() -> None:
+    # Two copies with the same tested count: the start and end snapshots of one
+    # run must pick the same one whatever order FalkorDB returns them in.
+    a, b = _state("p1", 0.6, 2), _state("p1", 0.8, 2)
+    assert index_states([a, b])["p1"] == index_states([b, a])["p1"] == b
+
+
 # --- what a run bought ----------------------------------------------------------
 
 
@@ -142,6 +156,34 @@ def test_a_move_without_a_test_count_is_protocol_drift_not_summed() -> None:
 def test_an_unreadable_snapshot_is_unknown_never_zero() -> None:
     assert diff_snapshots(None, {}, run_id=RUN).realized_nats is None
     assert diff_snapshots({}, None, run_id=RUN).realized_nats is None
+
+
+def test_a_start_already_stamped_by_this_run_is_unknown_not_partial() -> None:
+    # An earlier attempt of this run moved p1 0.5 -> 0.7 before this "start"
+    # was taken; the retry moved it on to 0.75. Scoring 0.7 -> 0.75 would
+    # report part of the run as all of it.
+    before = {"p1": _state("p1", 0.7, 1, last_run_id=RUN)}
+    after = {"p1": _state("p1", 0.75, 2, last_run_id=RUN)}
+    assert diff_snapshots(before, after, run_id=RUN).realized_nats is None
+    formed = {"p9": _state("p9", 0.55, 0, run_id=RUN)}
+    assert diff_snapshots(formed, formed, run_id=RUN).realized_nats is None
+
+
+def test_no_run_id_attributes_nothing() -> None:
+    # Unstamped priors carry last_run_id "": an empty run id would claim them.
+    before = {"p1": _state("p1", 0.5, 0)}
+    after = {"p1": _state("p1", 0.9, 1)}
+    assert diff_snapshots(before, after, run_id="").realized_nats is None
+
+
+def test_tested_but_nothing_scorable_is_unknown_not_zero() -> None:
+    # Review finding: a run whose only test wrote an invalid confidence summed
+    # nothing and recorded 0.0 -- "tested, nothing moved", which it was not.
+    before = {"p1": _state("p1", 0.5, 0)}
+    after = {"p1": _state("p1", None, 1, last_run_id=RUN)}
+    out = diff_snapshots(before, after, run_id=RUN)
+    assert (out.n_tested, out.n_invalid_confidence) == (1, 1)
+    assert out.realized_nats is None
 
 
 def test_an_invalid_confidence_is_flagged_and_left_out_of_the_sum() -> None:
@@ -209,6 +251,27 @@ def test_straightness_discounts_back_and_forth_whatever_the_window_parity() -> N
     assert raw_yield(learner) > 3 * raw_yield(odd_flip)
 
 
+def test_yield_counts_only_moves_a_recorded_test_made() -> None:
+    # Review finding: net displacement was last.after - first.before, so a
+    # jump BETWEEN two scored tests (another run, an unstamped edit, a run
+    # scored unknown) read as this prior's progress: [0.5->0.5, 0.9->0.9]
+    # yielded 0.361 and [0.5->0.6, 0.9->0.9] had straightness 4.0.
+    from orion.curiosity.value import straightness
+
+    gap_only = [PriorTestRecord("p", 0.5, 0.5), PriorTestRecord("p", 0.9, 0.9)]
+    assert raw_yield(gap_only) == 0.0
+    small_then_gap = [PriorTestRecord("p", 0.5, 0.6), PriorTestRecord("p", 0.9, 0.9)]
+    assert straightness(small_then_gap) == pytest.approx(1.0)
+    # Progress is the 0.5 -> 0.6 test alone; both tests still offered their
+    # own uncertainty (H at 0.5 and at 0.9).
+    assert raw_yield(small_then_gap) == pytest.approx(
+        kl_nats(0.6, 0.5) / (entropy_nats(0.5) + entropy_nats(0.9))
+    )
+    # One such prior no longer lifts the whole pool.
+    stuck = _tests("a", [0.6, 0.6, 0.6, 0.6])
+    assert build_yield_model(stuck + gap_only, window=3, pseudo_tests=2.0).pool_yield == 0.0
+
+
 def test_shrinkage_pulls_thin_evidence_toward_the_pool() -> None:
     history = _tests("a", [0.5, 0.9]) + _tests("b", [0.5, 0.5])
     model = build_yield_model(history, window=3, pseudo_tests=2.0)
@@ -256,3 +319,11 @@ def test_offer_arm_is_deterministic_per_run_and_roughly_fair() -> None:
     ids = [f"{i:012x}" for i in range(2000)]
     share = sum(offer_arm(i, enabled=True, propensity=0.5)[0] == ARM_VALUE_ORDER for i in ids) / len(ids)
     assert 0.45 < share < 0.55
+
+
+def test_offer_arm_at_propensity_one_is_always_the_value_arm() -> None:
+    # The draw is in [0, 1) -- its largest value is 0xffffffff / 2**32 -- so
+    # a recorded propensity of 1.0 can never have assigned the other arm.
+    assert 0xFFFFFFFF / float(2**32) < 1.0
+    ids = [f"{i:012x}" for i in range(5000)]
+    assert all(offer_arm(i, enabled=True, propensity=1.0) == (ARM_VALUE_ORDER, 1.0) for i in ids)

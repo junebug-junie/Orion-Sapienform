@@ -73,3 +73,17 @@ def test_arm_comparison_is_value_minus_uncertainty_with_a_ci() -> None:
     lo, hi = cmp.ci95
     assert lo < cmp.difference < hi
     assert cmp.value.n == 4 and cmp.uncertainty.n == 4
+
+
+def test_failed_turns_are_counted_per_arm_not_read_as_zero() -> None:
+    rows = (
+        [{"arm": "value_order", "realized_nats": v, "turn_ok": True} for v in (0.2, 0.3)]
+        + [{"arm": "value_order", "realized_nats": 0.0, "turn_ok": False}] * 3
+        + [{"arm": "uncertainty_order", "realized_nats": v, "turn_ok": True} for v in (0.1, 0.05)]
+    )
+    cmp = mod.compare_arms(rows)
+    assert cmp.value.n == 2 and cmp.value.n_zero == 0
+    assert cmp.value.mean == pytest.approx(0.25)
+    assert mod.failed_turns_by_arm(rows) == {"value_order": 3, "uncertainty_order": 0}
+    # Only an explicit failure is left out; a row with no flag is kept.
+    assert mod.completed_turns([{"realized_nats": 0.1}]) == [{"realized_nats": 0.1}]

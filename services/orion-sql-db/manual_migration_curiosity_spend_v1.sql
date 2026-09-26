@@ -14,9 +14,10 @@
 -- Single writer: services/orion-hub/scripts/curiosity_offer_decisions.py,
 -- called from scripts/curiosity_investigation.py:
 --   * curiosity_offer_decisions -- one row at dispatch (`_investigate`), then
---     `turn_snapshot` set once when the turn STARTS (`_run_turn`; first
---     attempt wins), so a run that waited in admission is scored from where it
---     actually began.
+--     `turn_started_at` + `turn_snapshot` set once when the turn STARTS
+--     (`_run_turn`; first attempt wins, even when the graph was unreadable
+--     and the snapshot is NULL), so a run that waited in admission is scored
+--     from where it actually began -- or not at all, never from a retry.
 --   * curiosity_run_outcomes -- one row when the turn ends, upserted on retry.
 -- Readers: the same module (learning-yield history for the next offer) and
 -- scripts/analysis/replay_curiosity_realized_nats.py.
@@ -25,8 +26,19 @@
 -- one offer, one outcome, per run. A decision row with no outcome row means
 -- the run never finished a turn (cancelled, refunded, or still queued).
 --
--- realized_nats is NULL when a snapshot could not be read. NULL means
--- unknown; 0.0 means "tested, and nothing moved" -- never conflate them.
+-- realized_nats NULL means UNKNOWN: a snapshot was unreadable (or filled the
+-- Atlas query's row cap), the start snapshot already carried this run's own
+-- stamps (an earlier attempt wrote before it was taken), or every prior the
+-- run tested wrote an invalid confidence. 0.0 means the run moved no belief
+-- it tested -- it tested and nothing moved, or it tested nothing. Never
+-- conflate the two. A turn that failed (no text) is still scored, since it
+-- may have written before failing, but carries turn_ok = false: read its 0.0
+-- as a failure, not a result.
+--
+-- Retention: turn_snapshot (every prior, every run -- the largest column) is
+-- set back to NULL after 14 days by the writer itself
+-- (SNAPSHOT_RETENTION_DAYS). Nothing needs it once the run's last attempt
+-- has ended: the outcome row keeps before/after for every prior it changed.
 --
 -- Deliberately no GRANT to orion_readonly: the FCC sandbox should not read
 -- its own scores (see the design's Goodhart section). Apply as the same role
@@ -55,9 +67,12 @@ CREATE TABLE IF NOT EXISTS curiosity_offer_decisions (
     -- window, pseudo_tests, pool_yield, history_tests, clamp, sample sizes.
     constants jsonb NOT NULL DEFAULT '{}'::jsonb,
     -- Every prior's {prior_id, confidence, times_tested, status,
-    -- last_run_id, run_id} when the turn started. NULL until then, and stays
-    -- NULL if the graph could not be read at that moment.
+    -- last_run_id, run_id} when the turn started. NULL until then; stays
+    -- NULL if the graph could not be read at that moment; set back to NULL
+    -- after 14 days.
     turn_snapshot jsonb,
+    -- When the FIRST attempt's turn started. Set even when the snapshot
+    -- could not be taken; its being set is what stops a retry re-taking it.
     turn_started_at timestamptz
 );
 
@@ -67,6 +82,9 @@ CREATE INDEX IF NOT EXISTS curiosity_offer_decisions_decided_at_idx
 CREATE TABLE IF NOT EXISTS curiosity_run_outcomes (
     run_id text PRIMARY KEY,
     completed_at timestamptz NOT NULL DEFAULT now(),
+    -- Whether the last attempt's turn produced text. False rows are failures,
+    -- not zero-value runs; the replay leaves them out of the distribution.
+    turn_ok boolean NOT NULL,
     -- Sum of KL(after || before) over the priors this run tested (stamped
     -- last_run_id = run_id and times_tested went up). NULL = unknown.
     realized_nats double precision,

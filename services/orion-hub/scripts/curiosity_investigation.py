@@ -152,6 +152,7 @@ from orion.curiosity.value import (
     diff_snapshots,
     offer_arm,
     revision_agreement,
+    valid_confidence,
 )
 from orion.curiosity.study_material import (
     APPROVED_COUNT_SQL,
@@ -992,17 +993,19 @@ class CuriosityInvestigation:
         if not self.spend_log_enabled or self._reader is None:
             return
         try:
+            # None when unreadable: the start is still recorded, with no
+            # snapshot, so this run's outcome is unknown (null) -- never zero,
+            # and never a retry's partial number.
             states = await asyncio.to_thread(read_prior_states, self._reader)
-            if states is None:
-                # Unreadable at start: no snapshot, so this run's outcome is
-                # recorded as unknown (null), never as zero.
-                return
             await record_turn_snapshot(self._pool_provider(), run_id, states)
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_spend_turn_start_failed run=%s err=%s", run_id, exc)
 
-    async def _spend_turn_ended(self, run_id: str) -> None:
-        """Diff against the start snapshot and record what the run moved."""
+    async def _spend_turn_ended(self, run_id: str, *, turn_ok: bool) -> None:
+        """Diff against the start snapshot and record what the run moved.
+        `turn_ok` is whether the turn produced text: a failed turn is still
+        scored (it may have written before failing) but flagged, so its 0.0
+        is not read as "tested, nothing moved"."""
         if not self.spend_log_enabled or self._reader is None:
             return
         try:
@@ -1016,11 +1019,12 @@ class CuriosityInvestigation:
             revisions = await asyncio.to_thread(read_run_revisions, self._reader, run_id)
             outcome = diff_snapshots(before, after, run_id=run_id)
             agreement = revision_agreement(outcome, revisions) if revisions is not None else None
-            await record_run_outcome(pool, run_id, outcome, agreement)
+            await record_run_outcome(pool, run_id, outcome, agreement, turn_ok=turn_ok)
             logger.info(
-                "curiosity_spend_outcome run=%s realized_nats=%s tested=%s moved=%s "
+                "curiosity_spend_outcome run=%s turn_ok=%s realized_nats=%s tested=%s moved=%s "
                 "formed=%s moved_untested=%s unattributed=%s revision_agreement=%s",
                 run_id,
+                turn_ok,
                 "unknown" if outcome.realized_nats is None else f"{outcome.realized_nats:.4f}",
                 outcome.n_tested,
                 outcome.n_moved,
@@ -1604,7 +1608,11 @@ class CuriosityInvestigation:
         )
         yield_model = await self._load_yield_model()
         expected_nats_for = (
-            (lambda prior: yield_model.expected_nats(prior.prior_id, prior.confidence))
+            (
+                lambda prior: yield_model.expected_nats(
+                    prior.prior_id, valid_confidence(prior.confidence)
+                )
+            )
             if arm == ARM_VALUE_ORDER
             else None
         )
@@ -1734,7 +1742,7 @@ class CuriosityInvestigation:
             else:
                 await self._spend_turn_started(run_id)
                 text, debug = await self._generate(prompt, correlation_id, parent_run_id=run_id)
-                await self._spend_turn_ended(run_id)
+                await self._spend_turn_ended(run_id, turn_ok=bool(text))
         except asyncio.CancelledError:
             # Hub is going away mid-turn. Give the slot back and let the
             # cancellation continue -- swallowing it would leave a task the
@@ -3488,7 +3496,7 @@ class CuriosityInvestigation:
                         "resource_lease": request.lease} if request.lease is not None else {}),
                 )
                 if measured:
-                    await self._spend_turn_ended(request.run_id)
+                    await self._spend_turn_ended(request.run_id, turn_ok=bool(text))
                 return CuriosityTurnResultV1(
                     run_id=request.run_id,
                     correlation_id=request.correlation_id,

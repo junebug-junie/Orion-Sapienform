@@ -90,6 +90,10 @@ def build_attention_frame(
         for t in active
         if id(t) not in kept
     )
+    # Same order as every other bucket: strongest first (stable, so ties keep
+    # the pre-cap order). Unsorted, the over-cap targets -- the strongest
+    # ones here -- trailed the below-threshold ones.
+    suppressed.sort(key=lambda t: t.salience_score, reverse=True)
     capped = (nodes + caps + systems)[: policy.limits.max_targets_total]
     capped.sort(key=lambda t: t.salience_score, reverse=True)
 

@@ -132,8 +132,10 @@ class PriorState:
         if not prior_id:
             return None
         try:
-            tested = int(row.get("times_tested") or 0)
-        except (TypeError, ValueError):
+            # int(float(...)), same as worldview._as_int: FalkorDB hands numbers
+            # back as strings and Orion sometimes writes "2.0".
+            tested = int(float(row.get("times_tested") or 0))
+        except (TypeError, ValueError, OverflowError):
             tested = 0
         return cls(
             prior_id=prior_id,
@@ -145,14 +147,25 @@ class PriorState:
         )
 
 
+def _fork_rank(state: PriorState) -> tuple:
+    return (
+        state.times_tested,
+        -1.0 if state.confidence is None else state.confidence,
+        state.last_run_id,
+        state.run_id,
+    )
+
+
 def index_states(states: Iterable[PriorState]) -> dict[str, PriorState]:
     """By prior_id. A forked prior (one id, several nodes) keeps the copy with
     the most tests -- the same "most evidence wins" rule
-    `worldview.collapse_duplicate_priors` applies to the offer."""
+    `worldview.collapse_duplicate_priors` applies to the offer -- and breaks
+    ties on the copy's own values, never on read order, so the start and end
+    snapshots of one run pick the same copy."""
     out: dict[str, PriorState] = {}
     for state in states:
         seen = out.get(state.prior_id)
-        if seen is None or state.times_tested > seen.times_tested:
+        if seen is None or _fork_rank(state) > _fork_rank(seen):
             out[state.prior_id] = state
     return out
 
@@ -211,11 +224,19 @@ def diff_snapshots(
     run_id: str,
 ) -> RunOutcome:
     """Score one run from the snapshot taken when its turn started and the one
-    taken when it ended. See the module docstring for the attribution rule."""
-    if before is None or after is None:
+    taken when it ended. See the module docstring for the attribution rule.
+
+    A start snapshot that already carries this run's own stamps is not a
+    start: an earlier attempt of the same run wrote to the graph before it was
+    taken (that attempt's own start was never recorded). Scoring from there
+    would report part of the run as all of it, so the answer is unknown."""
+    if before is None or after is None or not run_id:
+        return RunOutcome(realized_nats=None)
+    if any(s.last_run_id == run_id or s.run_id == run_id for s in before.values()):
         return RunOutcome(realized_nats=None)
     outcomes: list[PriorOutcome] = []
     total = 0.0
+    n_scored = 0
     n_tested = n_moved = n_formed = n_moved_untested = n_unattributed = n_invalid = 0
     for prior_id in sorted(after):
         now = after[prior_id]
@@ -247,6 +268,7 @@ def diff_snapshots(
                 n_moved += 1
             if nats is not None:
                 total += nats
+                n_scored += 1
             outcomes.append(
                 PriorOutcome(prior_id, KIND_TESTED, was.confidence, now.confidence, delta, nats)
             )
@@ -258,8 +280,11 @@ def diff_snapshots(
             outcomes.append(
                 PriorOutcome(prior_id, KIND_MOVED_UNTESTED, was.confidence, now.confidence, 0, nats)
             )
+    # Tested priors, none of them scorable (every confidence invalid): what
+    # the run bought is unknown, not zero.
+    realized = None if n_tested and not n_scored else total
     return RunOutcome(
-        realized_nats=total,
+        realized_nats=realized,
         per_prior=tuple(outcomes),
         n_tested=n_tested,
         n_moved=n_moved,
@@ -312,23 +337,36 @@ def prior_tests_from_rows(rows: Iterable[Mapping[str, Any]]) -> list[PriorTestRe
     return out
 
 
+def _recorded_net(tests: Sequence[PriorTestRecord]) -> float:
+    """Sum of the moves the recorded tests made. Not `last.after -
+    first.before`: something else can move a prior BETWEEN two scored tests
+    -- another run, an unstamped edit, a run whose snapshot was unreadable --
+    and that jump is not this prior's tests' doing. Summing only recorded
+    moves keeps the rule the snapshot diff already applies: only changes a
+    test made count."""
+    return sum(t.after - t.before for t in tests)
+
+
 def straightness(tests: Sequence[PriorTestRecord]) -> float:
-    """Net displacement over path length, in confidence units: 1.0 for a
+    """|net recorded move| over path length, in confidence units: 1.0 for a
     belief that moved one way, 1/3 for one that flipped 0.7 -> 0.3 -> 0.7 ->
     0.3, 1.0 for one that never moved (there is no wasted motion to discount;
-    its net KL is already 0). The straightness index of movement ecology
-    (Batschelet 1981; Benhamou 2004), used here because net KL alone is
-    parity-blind: a period-2 flip-flop nets one full swing over any odd
-    window, which would read as real progress."""
+    its net KL is already 0). Always in [0, 1]. The straightness index of
+    movement ecology (Batschelet 1981; Benhamou 2004), used here because net
+    KL alone is parity-blind: a period-2 flip-flop nets one full swing over
+    any odd window, which would read as real progress."""
     path = sum(abs(t.after - t.before) for t in tests)
     if path <= 0.0:
         return 1.0
-    return abs(tests[-1].after - tests[0].before) / path
+    return abs(_recorded_net(tests)) / path
 
 
 def _window_progress_and_offered(tests: Sequence[PriorTestRecord]) -> tuple[float, float]:
-    """(net KL x straightness, uncertainty offered) over one window."""
-    progress = kl_nats(tests[-1].after, tests[0].before) * straightness(tests)
+    """(net KL x straightness, uncertainty offered) over one window. The net
+    end point is where the recorded moves alone would have taken the belief
+    from its first tested value."""
+    start = tests[0].before
+    progress = kl_nats(start + _recorded_net(tests), start) * straightness(tests)
     offered = sum(entropy_nats(t.before) for t in tests)
     return progress, offered
 
@@ -420,5 +458,5 @@ def offer_arm(run_id: str, *, enabled: bool, propensity: float) -> tuple[str, fl
     if p <= 0.0:
         return ARM_UNCERTAINTY_ORDER, 0.0
     digest = hashlib.sha256(f"curiosity-offer-arm:{run_id}".encode("utf-8")).hexdigest()
-    draw = int(digest[:8], 16) / float(0xFFFFFFFF)
+    draw = int(digest[:8], 16) / float(2**32)  # [0, 1): propensity 1.0 always assigns value
     return (ARM_VALUE_ORDER if draw < p else ARM_UNCERTAINTY_ORDER), p

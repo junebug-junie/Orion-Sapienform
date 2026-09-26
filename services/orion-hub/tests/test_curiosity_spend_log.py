@@ -10,20 +10,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import math
 import re
 from pathlib import Path
 
 import pytest
 
+import scripts.curiosity_offer_decisions as spend
 from orion.curiosity.journal import INVESTIGATION_TAG
 from orion.curiosity.self_inquiry import SELF_INQUIRY_TAG
-from orion.curiosity.value import ARM_UNCERTAINTY_ORDER, ARM_VALUE_ORDER, kl_nats
+from orion.curiosity.value import ARM_UNCERTAINTY_ORDER, ARM_VALUE_ORDER, RunOutcome, kl_nats
 from orion.schemas.durable_run import CuriosityTurnRequestV1
 from scripts.curiosity_offer_decisions import (
     INSERT_DECISION_SQL,
     LOAD_HISTORY_SQL,
     LOAD_TURN_SNAPSHOT_SQL,
+    PRUNE_TURN_SNAPSHOTS_SQL,
     SET_TURN_SNAPSHOT_SQL,
+    SNAPSHOT_RETENTION_DAYS,
     UPSERT_OUTCOME_SQL,
 )
 from test_curiosity_investigation import _FakeBus, _FakeConn, _FakeReader, _graph_loop
@@ -34,6 +39,15 @@ REVISION_NEEDLE = "MATCH (n:PriorRevision)"
 MIGRATION = Path(__file__).resolve().parents[3] / "services/orion-sql-db/manual_migration_curiosity_spend_v1.sql"
 
 
+def _jsonb(text):
+    """Parse the way Postgres jsonb does: NaN and Infinity are not JSON."""
+
+    def _reject(constant):
+        raise ValueError(f"invalid input syntax for type json: {constant}")
+
+    return json.loads(text, parse_constant=_reject)
+
+
 class _SpendConn(_FakeConn):
     """`_FakeConn` plus the two spend tables, in memory."""
 
@@ -42,32 +56,40 @@ class _SpendConn(_FakeConn):
         self.decisions: dict[str, dict] = {}
         self.outcomes: dict[str, dict] = {}
         self.history_rows: list[list[dict]] = []
+        self.pruned: list[float] = []
 
     async def execute(self, sql, *args):
         if sql == INSERT_DECISION_SQL:
-            self.decisions.setdefault(
-                args[0],
-                {
-                    "arm": args[1],
-                    "value_arm_propensity": args[2],
-                    "offered": json.loads(args[3]),
-                    "stale_offered": json.loads(args[4]),
-                    "material_ids": json.loads(args[5]),
-                    "constants": json.loads(args[6]),
-                    "turn_snapshot": None,
-                },
-            )
+            row = {
+                "arm": args[1],
+                "value_arm_propensity": args[2],
+                "offered": _jsonb(args[3]),
+                "stale_offered": _jsonb(args[4]),
+                "material_ids": _jsonb(args[5]),
+                "constants": _jsonb(args[6]),
+                "turn_snapshot": None,
+                "turn_started_at": None,
+            }
+            self.decisions.setdefault(args[0], row)
         elif sql == SET_TURN_SNAPSHOT_SQL:
             row = self.decisions.get(args[0])
-            if row is not None and row["turn_snapshot"] is None:
-                row["turn_snapshot"] = args[1]  # asyncpg hands jsonb back as text
+            # The first-attempt-wins gate is read from the real SQL, so a
+            # change to it changes this fake too.
+            gate = re.search(r"AND (\w+) IS NULL", SET_TURN_SNAPSHOT_SQL).group(1)
+            if row is not None and row[gate] is None:
+                row["turn_started_at"] = "now()"
+                # asyncpg hands jsonb back as text; None stays SQL NULL.
+                row["turn_snapshot"] = None if args[1] is None else json.dumps(_jsonb(args[1]))
+        elif sql == PRUNE_TURN_SNAPSHOTS_SQL:
+            self.pruned.append(args[0])
         elif sql == UPSERT_OUTCOME_SQL:
             keys = (
-                "realized_nats", "n_tested", "n_moved", "n_formed", "n_moved_untested",
+                "turn_ok", "realized_nats", "n_tested", "n_moved", "n_formed", "n_moved_untested",
                 "n_unattributed", "n_invalid_confidence", "per_prior", "revision_agreement",
             )
+            assert len(args) == len(keys) + 1
             row = dict(zip(keys, args[1:]))
-            row["per_prior"] = json.loads(row["per_prior"])
+            row["per_prior"] = _jsonb(row["per_prior"])
             self.outcomes[args[0]] = row
         return "OK"
 
@@ -154,9 +176,12 @@ def test_a_tick_records_the_offer_the_start_snapshot_and_what_the_run_moved() ->
     assert decision["constants"]["pool_yield"] == 1.0
 
     outcome = conn.outcomes[run_id]
+    assert outcome["turn_ok"] is True
     assert outcome["realized_nats"] == pytest.approx(kl_nats(0.92, 0.95))
     assert (outcome["n_tested"], outcome["n_moved"], outcome["n_formed"]) == (1, 1, 1)
     assert outcome["n_unattributed"] == 1
+    # Old start snapshots are dropped as each new run is recorded.
+    assert conn.pruned == [SNAPSHOT_RETENTION_DAYS]
 
 
 def test_revision_agreement_is_recorded_against_orions_own_revisions() -> None:
@@ -242,7 +267,7 @@ def _request(run_id, source_tag=INVESTIGATION_TAG, attempt=1):
 
 
 def _dispatched(conn, run_id):
-    conn.decisions[run_id] = {"arm": ARM_UNCERTAINTY_ORDER, "turn_snapshot": None}
+    conn.decisions[run_id] = {"arm": ARM_UNCERTAINTY_ORDER, "turn_snapshot": None, "turn_started_at": None}
 
 
 def test_a_durable_investigation_turn_is_measured_at_turn_start_not_dispatch() -> None:
@@ -313,6 +338,122 @@ def test_an_unreadable_graph_at_turn_start_is_scored_unknown_not_zero() -> None:
     loop._generate = _generate
     asyncio.run(loop._turn_result_for(_request(run_id), hold_lock=False))
     assert conn.outcomes[run_id]["realized_nats"] is None
+    # The start is still recorded, with no snapshot: a retry cannot take one.
+    assert conn.decisions[run_id]["turn_started_at"] is not None
+    assert conn.decisions[run_id]["turn_snapshot"] is None
+
+
+class _BlipAtFirstSnapshot(_FakeReader):
+    """The graph is unreadable for the first prior snapshot only."""
+
+    def __init__(self, **kw) -> None:
+        super().__init__(**kw)
+        self.blip = True
+
+    def query(self, cypher: str):
+        if self.blip and ATLAS_NEEDLE in cypher:
+            self.blip = False
+            from orion.curiosity.worldview import WorldviewUnavailable
+
+            raise WorldviewUnavailable("ConnectionError: blip")
+        return super().query(cypher)
+
+
+def test_a_retry_after_an_unreadable_start_stays_unknown_not_partial() -> None:
+    # Review finding: attempt 1 could not read the graph at start, then moved
+    # p1 0.5 -> 0.7; the retry took ITS start snapshot (0.7) and moved p1 on
+    # to 0.75, so the run was recorded as 0.0062 nats -- attempt 2 alone --
+    # where from the run's real start it was 0.1308.
+    bus = _FakeBus()
+    conn = _SpendConn()
+    run_id = "f1b2c3d4e5f6"
+    _dispatched(conn, run_id)
+    reader = _BlipAtFirstSnapshot(answers={ATLAS_NEEDLE: [_state("p1", 0.5, 0)], REVISION_NEEDLE: []})
+    loop = _graph_loop(bus, reader=reader, conn=conn)
+    _moves_during_turn(loop, reader, lambda rid: [_state("p1", 0.7, 1, last_run_id=rid)])
+    asyncio.run(loop._turn_result_for(_request(run_id, attempt=1), hold_lock=False))
+    assert conn.outcomes[run_id]["realized_nats"] is None
+    _moves_during_turn(loop, reader, lambda rid: [_state("p1", 0.75, 2, last_run_id=rid)])
+    loop._turn_results.clear()
+    asyncio.run(loop._turn_result_for(_request(run_id, attempt=2), hold_lock=False))
+    assert conn.decisions[run_id]["turn_snapshot"] is None  # the retry did not take one
+    assert conn.outcomes[run_id]["realized_nats"] is None
+
+
+def test_a_failed_turn_is_flagged_so_its_zero_is_not_read_as_a_result() -> None:
+    bus = _FakeBus()
+    conn = _SpendConn()
+    run_id = "a2b2c3d4e5f6"
+    _dispatched(conn, run_id)
+    loop = _graph_loop(bus, reader=_reader([_state("p1", 0.5, 0)]), conn=conn)
+
+    async def _generate(*_a, **_kw):
+        return "", {"error": "timeout", "elapsed_sec": 900.0}
+
+    loop._generate = _generate
+    result = asyncio.run(loop._turn_result_for(_request(run_id), hold_lock=False))
+    assert not result.ok
+    outcome = conn.outcomes[run_id]
+    assert outcome["turn_ok"] is False
+    assert outcome["realized_nats"] == 0.0  # nothing moved -- and the flag says why
+
+
+def test_a_broken_confidence_is_offered_as_unknown_and_the_row_still_lands() -> None:
+    # Review finding: "nan" became NaN in json.dumps, jsonb rejected it, and
+    # the whole decision row -- with its snapshot and outcome -- was lost on
+    # every run while that prior existed. 1.7 was clamped to 0.99 at offer
+    # time but scored as no confidence at outcome time.
+    bus = _FakeBus()
+    conn = _SpendConn()
+    states = [_state("pn", "nan", 0), _state("pb", 1.7, 0), _state("p1", 0.6, 0)]
+    reader = _reader(states)
+    loop = _graph_loop(bus, reader=reader, conn=conn)
+    _moves_during_turn(loop, reader, lambda rid: states)
+    assert asyncio.run(loop.tick()) is None
+    (decision,) = conn.decisions.values()
+    offered = {o["prior_id"]: o for o in decision["offered"]}
+    for pid in ("pn", "pb"):
+        assert offered[pid]["confidence"] is None
+        assert offered[pid]["entropy_nats"] == pytest.approx(math.log(2))
+    assert offered["p1"]["confidence"] == 0.6
+
+
+# --- failures are visible, in proportion -----------------------------------------
+
+
+class _PgError(Exception):
+    def __init__(self, sqlstate: str, text: str) -> None:
+        super().__init__(text)
+        self.sqlstate = sqlstate
+
+
+def test_only_a_missing_table_is_reported_once_schema_drift_every_time(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(spend, "_warned_missing_table", False)
+    with caplog.at_level(logging.WARNING, logger=spend.logger.name):
+        for _ in range(3):
+            spend._log_failure("op", "r1", _PgError("42P01", 'relation "curiosity_run_outcomes" does not exist'))
+            spend._log_failure("op", "r1", _PgError("42703", 'column "turn_ok" does not exist'))
+    messages = [r.getMessage() for r in caplog.records]
+    assert sum("curiosity_spend_log_table_missing" in m for m in messages) == 1
+    assert sum("curiosity_spend_log_failed" in m for m in messages) == 3
+
+
+def test_no_pool_is_reported_once_not_never(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(spend, "_warned_no_pool", False)
+    with caplog.at_level(logging.WARNING, logger=spend.logger.name):
+        assert asyncio.run(spend.record_run_outcome(None, "r1", RunOutcome(realized_nats=None), None, turn_ok=True)) is False
+        assert asyncio.run(spend.load_prior_test_history(None, days=1.0)) == []
+    assert sum("curiosity_spend_log_no_pool" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_a_snapshot_that_fills_the_row_cap_is_unknown(monkeypatch) -> None:
+    # The Atlas query is capped with no order: at the cap, the start and end
+    # snapshots could hold different subsets.
+    monkeypatch.setattr(spend, "ATLAS_PRIORS_LIMIT", 2)
+    reader = _FakeReader(answers={ATLAS_NEEDLE: [_state("p1", 0.5, 0), _state("p2", 0.5, 0)]})
+    assert spend.read_prior_states(reader) is None
+    reader.answers[ATLAS_NEEDLE] = [_state("p1", 0.5, 0)]
+    assert set(spend.read_prior_states(reader)) == {"p1"}
 
 
 # --- the migration is the contract --------------------------------------------------

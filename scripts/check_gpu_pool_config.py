@@ -10,6 +10,10 @@ Fails on:
     path onto chat's card is the operator lend flag
   - service roles whose declared VRAM does not fit their card, alone or after a swap
   - a big-model class listing an 8B role (nothing spills down to gpu3)
+  - stage 4 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md):
+    a swap seat with neither a load/unload bridge nor a launch on itself and every role it evicts;
+    a launch naming an unknown actuator; a launch role on a card with no index; and a launch whose
+    compose file/service/profile/LLM_ROLE/port/cuda_env does not match what it names
 
 Exit 0 = clean. Model-dependent VRAM for LLM roles is checked live by the pool against the
 discovered profile, not here: the YAML deliberately carries no model names.
@@ -23,7 +27,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from orion.gpu_pool.config import check_vram, load_pool_config  # noqa: E402
+from orion.gpu_pool.config import check_launch, check_vram, load_pool_config  # noqa: E402
 
 COMPOSE = [
     ROOT / "services/orion-llamacpp-host/docker-compose.atlas-workers.yml",
@@ -67,12 +71,14 @@ def main() -> int:
 
     services = {r: s.vram_gb for r, s in cfg.roles.items() if s.kind == "service" and s.vram_gb}
     problems += check_vram(cfg, services)
+    problems += check_launch(cfg, ROOT)
 
     for p in problems:
         print(f"check_gpu_pool_config: {p}")
     if not problems:
         print(f"check_gpu_pool_config: ok ({len(cfg.cards)} cards, {len(cfg.roles)} roles, "
-              f"{len(cfg.classes)} classes, digest {cfg.digest})")
+              f"{len(cfg.classes)} classes, "
+              f"{sum(1 for r in cfg.roles.values() if r.launch)} launch blocks, digest {cfg.digest})")
     return 1 if problems else 0
 
 

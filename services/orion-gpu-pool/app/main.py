@@ -82,17 +82,30 @@ async def _on_lease(env: BaseEnvelope) -> BaseEnvelope | None:
         req = GpuLeaseRequestV1.model_validate(env.payload or {})
     except Exception as exc:  # noqa: BLE001
         return _reply(env, GPU_LEASE_REPLY_KIND, GpuLeaseReplyV1(status="unavailable", reason=f"invalid:{exc}"[:300]))
+    return _reply(env, GPU_LEASE_REPLY_KIND, await dispatch_lease(runtime, req))
+
+
+# Verbs the contract accepts (stage 4.1) but this pool has no engine for yet (holds + attach land in
+# stage 4.3). Answered explicitly: before this, any verb that was not acquire/heartbeat/release fell
+# through to cancel, so a "status" read would have ended the very lease it asked about.
+UNSUPPORTED_LEASE_VERBS = frozenset({"attach", "status"})
+
+
+async def dispatch_lease(rt: Any, req: GpuLeaseRequestV1) -> GpuLeaseReplyV1:
+    if req.verb in UNSUPPORTED_LEASE_VERBS:
+        return GpuLeaseReplyV1(status="unavailable", lease_id=req.lease_id,
+                               reason=f"verb_not_supported:{req.verb}")
     if req.verb == "acquire":
-        out = await runtime.acquire(req)
-    elif not req.lease_id:
-        out = GpuLeaseReplyV1(status="unknown_lease", reason="lease_id required")
-    elif req.verb == "heartbeat":
-        out = await runtime.heartbeat(req.lease_id)
-    elif req.verb == "release":
-        out = await runtime.release(req.lease_id, req.outcome or "ok", req.detail)
-    else:
-        out = await runtime.cancel(req.lease_id)
-    return _reply(env, GPU_LEASE_REPLY_KIND, out)
+        return await rt.acquire(req)
+    if not req.lease_id:
+        return GpuLeaseReplyV1(status="unknown_lease", reason="lease_id required")
+    if req.verb == "heartbeat":
+        return await rt.heartbeat(req.lease_id)
+    if req.verb == "release":
+        return await rt.release(req.lease_id, req.outcome or "ok", req.detail)
+    if req.verb == "cancel":
+        return await rt.cancel(req.lease_id)
+    return GpuLeaseReplyV1(status="unavailable", lease_id=req.lease_id, reason=f"unknown_verb:{req.verb}")
 
 
 async def _on_state(env: BaseEnvelope) -> BaseEnvelope | None:

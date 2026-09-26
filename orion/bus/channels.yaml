@@ -3193,6 +3193,26 @@ channels:
     since: "2026-09-24"
     description: "Operator verbs (lend, unlend, replay, cancel, backfill) checked against GPU_POOL_OPERATOR_TOKEN; fail closed when unset. Reply GpuPoolControlReplyV1 on orion:gpu_pool:control:reply:*."
 
+  - name: "orion:gpu_pool:actuate:request"
+    kind: "request"
+    schema_id: "GpuActuateV1"
+    message_kind: "gpu_pool.actuate.v1"
+    producer_services: ["orion-gpu-pool"]
+    consumer_services: ["orion-gpu-lane-controller"]
+    stability: "experimental"
+    since: "2026-09-25"
+    description: "Stage 4 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md): pool -> host actuator, load|unload|status of a role on its cards. Names a role, never a container; the actuator acts only on its own gpu_pool.yaml launch blocks and refuses a launch_digest mismatch or a generation <= the last it accepted. Answer on orion:gpu_pool:actuate:result. Contract only in 4.1: no producer until 4.3, no consumer until 4.2."
+
+  - name: "orion:gpu_pool:actuate:result"
+    kind: "result"
+    schema_id: "GpuActuateResultV1"
+    message_kind: "gpu_pool.actuate.result.v1"
+    producer_services: ["orion-gpu-lane-controller"]
+    consumer_services: ["orion-gpu-pool"]
+    stability: "experimental"
+    since: "2026-09-25"
+    description: "Stage 4: host actuator -> pool, per action_id: accepted (within defaults.actuate_ack_sec), progress (phase), then one terminal succeeded|failed|refused with restored (failed loads) and the observed container state per role. Contract only in 4.1: no producer until 4.2, no consumer until 4.3."
+
   - name: "orion:llm:worker:announce"
     kind: "event"
     schema_id: "LlmWorkerAnnounceV1"

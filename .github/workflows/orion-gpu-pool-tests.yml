@@ -14,6 +14,10 @@ on:
       - "services/orion-equilibrium-service/.env_example"
       - "services/orion-equilibrium-service/docker-compose.yml"
       - "scripts/check_gpu_pool_config.py"
+      # check_gpu_pool_config.py's launch-block check reads these (stage 4.1)
+      - "services/orion-diffusion-host/docker-compose.yml"
+      - "services/orion-diffusion-host/.env_example"
+      - "orion/llm/resource_lease.py"
       - "services/orion-hub/scripts/gpu_pool_routes.py"
       - "services/orion-hub/templates/gpu_pool.html"
       - "services/orion-hub/static/js/gpu_pool*.js"
@@ -30,6 +34,10 @@ on:
       - "services/orion-llamacpp-host/**"
       - "services/orion-hub/scripts/gpu_pool_routes.py"
       - "services/orion-hub/static/js/gpu_pool*.js"
+      - "scripts/check_gpu_pool_config.py"
+      - "services/orion-diffusion-host/docker-compose.yml"
+      - "services/orion-diffusion-host/.env_example"
+      - "orion/llm/resource_lease.py"
 
 jobs:
   pool:

@@ -34,7 +34,8 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from orion.schemas.reading_turn import ReadingRunBriefV1, READING_WORKFLOW
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.resource_admission import ResourceLeaseV1, ResourceRequirementV1
 
@@ -50,7 +51,7 @@ DURABLE_RUN_REPLY_PREFIX = "orion:durable:run:reply"
 CURIOSITY_TURN_REQUEST_KIND = "curiosity.turn.request.v1"
 CURIOSITY_TURN_RESULT_KIND = "curiosity.turn.result.v1"
 
-DurableWorkflowV1 = Literal["curiosity.investigate", "self_sense_eval", "self_study.reflect"]
+DurableWorkflowV1 = Literal["curiosity.investigate", "self_sense_eval", "self_study.reflect", "reading.turn"]
 
 # The runner's node names, in order. `attention_reason` on the surface lane
 # walks this list for a run; `DurableRunStateV1.node` is always one of them.
@@ -159,8 +160,16 @@ class DurableRunRequestV1(BaseModel):
     workflow: DurableWorkflowV1
     correlation_id: str
     requested_at: datetime = Field(default_factory=_utc_now)
-    brief: CuriosityRunBriefV1
+    brief: CuriosityRunBriefV1 | ReadingRunBriefV1
     admission: ResourceRequirementV1 | None = None
+
+    @model_validator(mode="after")
+    def reading_requires_admission(self):
+        if (self.workflow == READING_WORKFLOW) != isinstance(self.brief, ReadingRunBriefV1):
+            raise ValueError("workflow and reading brief must agree")
+        if self.workflow == READING_WORKFLOW and self.admission is None:
+            raise ValueError("reading turns require durable resource admission")
+        return self
 
 
 class DurableRunReceiptV1(BaseModel):

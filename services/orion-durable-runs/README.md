@@ -38,6 +38,22 @@ Hub tick (scheduling, material, worldview, prompt)
 
 ## Workflow registry (2026-09-21)
 
+### Admitted reading turns (2026-09-26)
+
+`reading.turn` exists only in the admission registry, not the legacy unleased
+runner. Its typed brief names a seed, stage, immutable prompt, session and turn
+budget. Resource waiting uses the same checkpoint/hold/heartbeat/recovery machinery
+as the existing admitted graphs. The work node calls Hub over
+`orion:reading:turn:request`, with a required hold, and checkpoints its result and
+source-fetch receipts. Hub owns parsing, evidence validation and journal landing.
+There is no second model retry loop: Hub's seed queue retains bounded retries.
+Hold recall/loss requeues without spending a reading attempt.
+
+The status API includes `reading_result`, `error` and `work_started` for this
+workflow. The last field comes from the existing persisted `run.started` event,
+not config or a guessed elapsed-time threshold. Failed/completed events carry
+the actual hold-fenced turn correlation. Queue cancellation is not completion.
+
 `DurableRunner` can drive more than one compiled graph, keyed by
 `DurableRunRequestV1.workflow`. Today only `"curiosity.investigate"` is registered --
 this is plumbing for a second and third workflow (self-sense-eval's own graph, reflect's

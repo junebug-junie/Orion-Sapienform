@@ -76,6 +76,8 @@ def test_migration_is_additive_and_rerunnable(local_pg):
         retry_migration = (ROOT / "services/orion-sql-db/manual_migration_world_pulse_read_retry_v1.sql").read_text()
         await conn.execute(retry_migration)
         await conn.execute(retry_migration)
+        from orion.world_pulse_read.durable import READING_DURABLE_SQL
+        await conn.execute(READING_DURABLE_SQL)
         legacy = await queue.claim_next_seed(conn)
         assert legacy.seed_id == "legacy"
         legacy_status = await queue.reading_status(conn, url="https://example.org/old")
@@ -87,6 +89,69 @@ def test_migration_is_additive_and_rerunnable(local_pg):
 
         ReadingStatusReceiptV1.model_validate(legacy_status)
         assert await conn.fetchval("SELECT count(*) FROM world_pulse_read_seed") == 1
+        await conn.close()
+    asyncio.run(run())
+
+
+def test_reading_durable_binding_survives_restart_and_retires_atomically(local_pg):
+    from orion.world_pulse_read.durable import bind_turn, consume_turn, release_claim
+    from orion.schemas.reading_turn import ReadingRunBriefV1
+
+    async def run():
+        conn, schema = await db(local_pg)
+        req = request()
+        await queue.enqueue_reading(conn, req)
+        seed = await queue.claim_next_seed(conn)
+        brief = ReadingRunBriefV1(seed_id=seed.seed_id, stage=1, prompt="Original prompt",
+                                  session_id="reading", timeout_sec=900)
+        first = await bind_turn(conn, brief, str(uuid4()))
+        await release_claim(conn, seed.seed_id, 1)
+        await conn.close()
+        conn = await asyncpg.connect(**local_pg)
+        await conn.execute(f'SET search_path TO "{schema}"')
+        replay = await bind_turn(conn, brief.model_copy(update={"prompt": "Changed prompt"}), str(uuid4()))
+        assert replay == first
+        assert await conn.fetchval("SELECT attempts FROM world_pulse_read_seed") == 0
+        async with conn.transaction():
+            await queue.mark_seed_failed(conn, seed.seed_id,
+                error="turn_deferred:stance_react_timeout", max_attempts=3)
+            await consume_turn(conn, first.run_id)
+        retry = await bind_turn(conn, brief, str(uuid4()))
+        assert retry.run_id != first.run_id
+        assert await conn.fetchval("SELECT attempts FROM world_pulse_read_seed") == 0
+        await conn.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_worker_wait_or_cancel_does_not_charge_or_spend_attempt(local_pg, cancelled):
+    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+    from fakeredis.aioredis import FakeRedis
+    from scripts.world_pulse_read_pipeline import WorldPulseReadPipeline
+    from orion.world_pulse_read.durable import ReadingPending, ReadingCancelled
+    from orion.world_pulse_read.wallet_a import read_wallet_a_state
+
+    async def run():
+        conn, _ = await db(local_pg)
+        await queue.enqueue_reading(conn, request())
+        redis = FakeRedis()
+        pipe = WorldPulseReadPipeline(enabled=True, tick_interval_sec=60, min_cooldown_sec=0,
+            daily_cap=6, timeout_sec=900, session_id="reading", pool_provider=lambda: None,
+            source_ref=ServiceRef(name="orion-hub"))
+        async def with_conn(callback):
+            return await callback(conn)
+        pipe._with_conn = with_conn
+        pipe._bus = SimpleNamespace(redis=redis, publish=AsyncMock())
+        pipe._maybe_enqueue_recent = AsyncMock()
+        pipe._generate = AsyncMock(side_effect=ReadingCancelled("run") if cancelled else ReadingPending("queued"))
+        assert await pipe.tick(force=True) == ("cancelled" if cancelled else "waiting_resource")
+        row = await conn.fetchrow("SELECT status, attempts FROM world_pulse_read_seed")
+        assert row["attempts"] == 0
+        assert row["status"] == ("skipped" if cancelled else "pending")
+        _, count = await read_wallet_a_state(redis, now=datetime.now(timezone.utc), timezone_name="UTC")
+        assert count == 0
+        await redis.aclose()
         await conn.close()
     asyncio.run(run())
 

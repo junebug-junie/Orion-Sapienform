@@ -110,6 +110,17 @@ def _decode(raw: object) -> str | None:
     return str(raw)
 
 
+async def settle_durable_turn(redis, *, run_id, now, timezone_name, refused,
+                              backoff_base_sec, backoff_cap_sec):
+    from orion.world_pulse_read.wallet_refund import settle_durable
+
+    await settle_durable(redis, run_id=run_id, now=now,
+        cooldown_key=WALLET_A_COOLDOWN_KEY, count_key=_daily_key(now, timezone_name),
+        retry_key=WALLET_A_RETRY_NOT_BEFORE_KEY, streak_key=WALLET_A_REFUND_STREAK_KEY,
+        ttl_sec=_STATE_TTL_SEC, refused=refused,
+        backoff_base_sec=backoff_base_sec, backoff_cap_sec=backoff_cap_sec)
+
+
 async def debit_wallet_a(
     redis,
     *,

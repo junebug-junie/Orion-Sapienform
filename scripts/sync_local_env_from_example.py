@@ -209,6 +209,7 @@ SYNC_PREFIXES = (
     # without this prefix the default sync reports "no changes" and the keys
     # never land in the live .env.
     "HUB_WORLD_PULSE_READ_",
+    "HUB_READING_",
     "HUB_LLM_GATEWAY_",
     "HUB_CHAT_ATTACHMENT_",
     "HUB_AGENT_CONTEXT_EXEC_",

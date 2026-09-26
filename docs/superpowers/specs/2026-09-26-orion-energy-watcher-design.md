@@ -1,8 +1,8 @@
 # Orion energy watcher — house electricity as a stake
 
-**Date:** 2026-09-26  
-**Status:** DESIGN, proposal mode (CLAUDE.md 0A: touches attention/spend and resource governance). Nothing implemented.  
-**Branch intent:** `docs/orion-energy-watcher` → `feat/orion-energy-watcher` (cut when implementation starts)  
+**Date:** 2026-09-26
+**Status:** Plan 1 (cost primitive) implemented on feat/orion-energy-watcher — awaiting merge. Plan 2 (portal, bill reconcile, stakes, Hub) not started.
+**Branch intent:** `docs/orion-energy-watcher` → `feat/orion-energy-watcher` (cut when implementation starts)
 **Worktree:** `/mnt/scripts/Orion-Sapienform-orion-energy-watcher`
 
 ## Arsonist summary
@@ -254,7 +254,7 @@ Implementation is **two plans** (this spec is one contract; do not one-shot all 
 1. Schemas + channels + sql-writer tables + fixtures.
 2. File-drop ESPI path.
 3. Tariff engine + `energy.cost.accrued` + run-cost join on `PowerIntentSettled`.
-4. Minimal Hub/debug read of accrued + run_cost (strip can wait for Plan 2).
+4. Debug surface: Postgres tables + README queries (Hub strip is Plan 2).
 
 **Plan 2 — portal + reconcile + stakes (C + attention):**
 5. Playwright RMP adapter + importer status / reauth.

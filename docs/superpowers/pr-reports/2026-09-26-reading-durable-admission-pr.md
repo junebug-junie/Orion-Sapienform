@@ -79,6 +79,9 @@ the sync script intentionally excludes host-specific bus and grammar values.
   Fix: register both maps; direct resolve plus parity regression passes.
 - CI found head-of-line monitoring still using the old claim order.
   Fix: align the existing query with the worker and retain the equality gate.
+- The definition-drift gate requires fingerprints for bus RPC contracts too.
+  Fix: regenerate the lock; exactly the two reading request/reply channels are
+  added, with no estimator or cognition-metric definition changes.
 
 ## Verification
 
@@ -86,7 +89,8 @@ the sync script intentionally excludes host-specific bus and grammar values.
 - Full reading CI selection: 658 passed, 1 unrelated opt-in skip.
 - Durable-run suite: 89 passed, 54 opt-in integration tests skipped.
 - Offline reading handoff eval: 11 passed.
-- Both affected Docker images built under isolated check project names.
+- Hub, durable-runs and field-digester Docker images built under isolated check
+  project names. Hub and durable reading imports also passed with networking off.
 - Reply-channel catalog check: 13 prefixes resolved, zero uncovered.
 - Schema lookup/parity regression: 11 passed. Queue contention SQL tests: 18 passed.
 - Live admission-to-reading-to-journal path: UNVERIFIED until deployment and smoke.

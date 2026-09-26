@@ -815,6 +815,17 @@
     return "absent";
   }
 
+  function renderCoolingAbsent() {
+    if (els.coolingWatts) els.coolingWatts.textContent = "—";
+    if (els.coolingVolts) els.coolingVolts.textContent = "absent";
+    if (els.coolingSwitch) els.coolingSwitch.textContent = "absent";
+    if (els.coolingAge) els.coolingAge.textContent = "—";
+    if (els.coolingLiveStatus) {
+      els.coolingLiveStatus.textContent = "no samples yet";
+      els.coolingLiveStatus.className = "mt-1 font-mono text-sm text-gray-500";
+    }
+  }
+
   function renderCoolingLatest(payload) {
     var sample = payload && payload.sample;
     if (!sample) return;
@@ -983,13 +994,16 @@
         throw new Error("HTTP " + resp.status + " from " + COOLING_LATEST_URL);
       }
       var payload = await resp.json();
-      if (!payload.sample) {
-        throw new Error(payload.error || "cooling sample missing");
+      if (payload.sample === null || payload.sample === undefined) {
+        state.coolingLatest = null;
+        renderCoolingAbsent();
+        state.coolingLatestNote = "no samples yet";
+      } else {
+        state.coolingLatest = payload;
+        renderCoolingLatest(payload);
+        state.coolingLatestNote =
+          "Live updated " + new Date().toLocaleTimeString() + (payload.ok ? "" : " (stale)");
       }
-      state.coolingLatest = payload;
-      renderCoolingLatest(payload);
-      state.coolingLatestNote =
-        "Live updated " + new Date().toLocaleTimeString() + (payload.ok ? "" : " (stale)");
     } catch (err) {
       state.coolingLatestNote =
         "live error — " +

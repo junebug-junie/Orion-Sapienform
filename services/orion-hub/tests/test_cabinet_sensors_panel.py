@@ -203,6 +203,28 @@ def test_cabinet_sensors_js_wires_cooling_latest_and_history_contracts() -> None
     assert '"POST"' not in CABINET_SENSORS_JS and "method: 'POST'" not in CABINET_SENSORS_JS
 
 
+def test_cabinet_sensors_js_cooling_empty_db_is_calm_absent() -> None:
+    """Empty DB (ok:false, sample:null) must not throw or zero-fill live tiles."""
+    assert "function renderCoolingAbsent(" in CABINET_SENSORS_JS
+    poll_region = CABINET_SENSORS_JS[
+        CABINET_SENSORS_JS.index("async function pollCoolingLatest") : CABINET_SENSORS_JS.index(
+            "async function fetchCoolingHistory"
+        )
+    ]
+    assert "payload.sample === null" in poll_region
+    assert "renderCoolingAbsent();" in poll_region
+    assert "no samples yet" in poll_region
+    assert 'throw new Error(payload.error || "cooling sample missing")' not in poll_region
+    absent_region = CABINET_SENSORS_JS[
+        CABINET_SENSORS_JS.index("function renderCoolingAbsent") : CABINET_SENSORS_JS.index(
+            "function renderCoolingLatest"
+        )
+    ]
+    assert '"—"' in absent_region
+    assert '"absent"' in absent_region
+    assert '"no samples yet"' in absent_region
+
+
 def test_cabinet_sensors_js_wires_ambient_latest_and_history_contracts() -> None:
     assert '"/api/cabinet/ambient/latest"' in CABINET_SENSORS_JS
     assert '"/api/cabinet/ambient/history?window="' in CABINET_SENSORS_JS

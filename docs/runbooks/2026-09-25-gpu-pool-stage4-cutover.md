@@ -189,6 +189,13 @@ curl -fsS localhost:8127/v1/pool | python3 -c "import json,sys; d=json.load(sys.
 
 The window between steps 2 and 4 is one pool restart: nobody opens gpu2 in it (no load happens).
 
+**Before step 5, confirm the pool knows gpu2's context size.** Until a 4.3 pool has seen agent-gpu2 loaded at least once, a hold that states `min_ctx_tokens` can't trigger the load. It shows as `swap_requested reason=ctx_unknown` instead. Adopting the seat the old path loaded fills it in. Check:
+
+```bash
+docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "select card, seen_ctx from gpu_pool_cards where card='gpu2'"
+# expect {"agent-gpu2": <n>}; if empty, wait for discovery to see the loaded seat before continuing
+```
+
 ## Step 5 — deploy durable-runs 4.5
 
 ```bash

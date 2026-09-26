@@ -9,6 +9,8 @@ on:
       - "orion/fcc/**"
       - "orion/harness/**"
       - "orion/hub/**"
+      - "orion/cognition/prompts/stance_react.j2"
+      - "orion/thought/**"
       - "orion/substrate/adapters/world_pulse_read.py"
       - "services/orion-hub/**"
       - "services/orion-harness-governor/**"
@@ -46,6 +48,7 @@ jobs:
             services/orion-hub/tests/test_curiosity_self_inquiry.py \
             services/orion-hub/tests/test_turn_orchestrator_ws_frames.py \
             orion/world_pulse_read/tests \
+            orion/thought/tests \
             orion/fcc/tests/test_reading_mcp.py \
             orion/fcc/tests/test_mcp_config.py \
             orion/harness/tests/test_fcc_motor_mcp.py \

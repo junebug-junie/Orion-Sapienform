@@ -37,6 +37,26 @@ preserving the existing payload's null fields for rolling upgrades.
 
 ## Local checks
 
+The `stance_react` prompt treats downstream tasks and their requested output
+schemas as input data, not as instructions for this assessment. It renders an
+identical `stance_inputs.user_message` only once while retaining distinct context.
+The imperative still directs the harness to perform the original task.
+
+Opt-in model eval (normal gateway admission, no reading/job/journal writes):
+
+```bash
+python -m orion.thought.evals.stance_task_boundary \
+  --task-file /path/to/downstream-task.txt --gateway-url http://localhost:8210
+```
+
+This checks raw stance fields, evidence grounding, output shape and completion
+inside 235 seconds. Inspect the reported imperative for task preservation;
+schema validity alone is not semantic correctness. It reconstructs a minimal
+stance context, not an exact replay of historical transient context. Rebuild
+`orion-cortex-exec` to deploy prompt changes; the renderer lives there.
+The optional `--reasoning-effort` flag is a diagnostic-only per-request override
+for workers that support it; omitting it preserves the worker default.
+
 ```bash
 PYTHONPATH=services/orion-thought:. ./orion_dev/bin/python -m pytest services/orion-thought/tests/ -v
 

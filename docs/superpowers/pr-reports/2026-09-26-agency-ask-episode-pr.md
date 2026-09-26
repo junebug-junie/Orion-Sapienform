@@ -123,3 +123,44 @@ No production episode, Juniper outreach, posterior update or sentience is claime
 PR: https://github.com/junebug-junie/Orion-Sapienform/pull/2366
 
 Base: #2365. Final-head CI status is reported in the handoff after all checks finish.
+
+## CI-discovered queue monitor correction
+
+The broad GPU caller job exposed a pre-existing mismatch from base PR #2364:
+reading claims now use FIFO within priority, while the digester's head-of-line
+age query still sorted attempts before age. Updated that query/docstring and
+made its regression compare the actual monitor and claim ordering directly.
+This preserves the existing signal's meaning. Focused digestion tests: 18 passed.
+The service has no eval directory; this follow-up remains: add a dedicated
+queue-monitor replay harness. Existing tests cover empty/negative age and
+reader failure; no additional eval coverage is claimed for this correction.
+
+Metric gate recheck for this existing instrument:
+
+1. Producer: `FieldDigesterStore.oldest_world_pulse_seed_pending_age_sec` in
+   `services/orion-field-digester/app/store.py`; reads `now()-created_at` from
+   the first pending row ordered exactly as `orion/world_pulse_read/queue.py::CLAIM_SQL`.
+2. Independence: age and pending count share the seed queue, so are related,
+   not independent evidence. Existing durable/pool waiting readers measure
+   different queues but can share capacity causes. No new input or weight is added.
+3. Anchor: FIFO head-of-line waiting time in priority queueing. This measures
+   delay of the next eligible item, not an inferred emotion or independent cause.
+4. Live read-only sanity (2026-09-26): 65 pending rows; youngest 75,008 seconds,
+   oldest 1,651,559 seconds. Old and corrected queries currently select the
+   same priority-0, attempts-1 head. The regression catches divergent ordering
+   when fresh arrivals coexist with retries. Empty queue returns SQL NULL,
+   mapped directly to 0 by `_oldest_age_sec`; there is no decay or permanent
+   positive floor. Existing regression covers empty and negative/clamped values.
+5. Existing mechanism: corrected this producer, without adding a second one.
+6. Reversibility: one query ordering/docstring and its regression; no schema,
+   manifest, config, training default or new producer to retire.
+
+This additionally affects the field-digester image. Its restart, only after
+production authorization, is:
+
+```bash
+scripts/safe_docker_build.sh orion-field-digester up -d --build
+```
+
+Field-digester Docker build passed through the safe wrapper; no restart.
+Independent review of this correction returned no findings.

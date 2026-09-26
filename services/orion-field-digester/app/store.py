@@ -527,9 +527,9 @@ class FieldDigesterStore:
     def oldest_world_pulse_seed_pending_age_sec(self) -> float:
         """Age of the head-of-line pending seed: the one CLAIM_SQL would take next.
 
-        Not min(created_at): claims go by priority, then attempts, then age, so a
-        low-priority or already-retried seed can legitimately sit behind fresh
-        work while the queue flows. Head-of-line age only stays high when the
+        Not min(created_at): claims go by priority, then age, so a
+        low-priority seed can legitimately sit behind higher-priority
+        work while the queue flows. Retries retain their FIFO position. Head-of-line age only stays high when the
         worker is not taking even the next item. Ordering must match
         orion/world_pulse_read/queue.py::CLAIM_SQL.
         """
@@ -537,7 +537,7 @@ class FieldDigesterStore:
             """
             SELECT EXTRACT(EPOCH FROM now() - created_at)
             FROM world_pulse_read_seed WHERE status = 'pending'
-            ORDER BY priority ASC, attempts ASC, created_at ASC, seed_id ASC
+            ORDER BY priority ASC, created_at ASC, seed_id ASC
             LIMIT 1
             """
         )

@@ -1,0 +1,136 @@
+"""Green Button (NAESB ESPI) Atom feed -> whole-house usage intervals.
+
+Linking follows the ESPI href convention: an IntervalBlock's self link is
+``.../UsagePoint/<up>/MeterReading/<mr>/IntervalBlock/<ib>``; the MeterReading at
+``.../UsagePoint/<up>/MeterReading/<mr>`` carries a ``related`` link to its
+ReadingType, which holds unit, scale and flow direction. When a feed has exactly
+one ReadingType and the link is absent, that ReadingType is used.
+
+Only forward flow (delivered to the house, flowDirection 1) is kept. Reverse flow
+(19, e.g. solar export) is a different quantity and is skipped, not netted.
+
+Input is the operator's own utility export or Orion's own scraper output, parsed
+with the stdlib parser (expat does not fetch external entities).
+"""
+
+from __future__ import annotations
+
+import re
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+from orion.schemas.energy import EnergySource, EnergyUsageIntervalV1
+
+ATOM = "{http://www.w3.org/2005/Atom}"
+ESPI = "{http://naesb.org/espi}"
+UOM_WATT_HOURS = 72
+FLOW_FORWARD = 1
+
+_USAGE_POINT = re.compile(r"/UsagePoint/([^/]+)")
+_METER_READING = re.compile(r"^(.*/UsagePoint/[^/]+/MeterReading/[^/]+)")
+
+
+class EspiError(ValueError):
+    """The file is not a usable ESPI usage feed."""
+
+
+def _links(entry: ET.Element) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for link in entry.findall(f"{ATOM}link"):
+        out.setdefault(link.get("rel", ""), []).append(link.get("href", ""))
+    return out
+
+
+def _int(el: Optional[ET.Element], default: Optional[int] = None) -> Optional[int]:
+    if el is None or el.text is None or not el.text.strip():
+        return default
+    return int(el.text.strip())
+
+
+def _reading_type(content: ET.Element) -> Optional[dict[str, int]]:
+    rt = content.find(f"{ESPI}ReadingType")
+    if rt is None:
+        return None
+    return {
+        "uom": _int(rt.find(f"{ESPI}uom"), UOM_WATT_HOURS),
+        "pow10": _int(rt.find(f"{ESPI}powerOfTenMultiplier"), 0),
+        "flow": _int(rt.find(f"{ESPI}flowDirection"), FLOW_FORWARD),
+    }
+
+
+def parse_espi(
+    xml_bytes: bytes,
+    *,
+    retrieved_at: datetime,
+    source: EnergySource,
+    source_file: Optional[str] = None,
+) -> list[EnergyUsageIntervalV1]:
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError as exc:
+        raise EspiError(f"not parseable XML: {exc}") from exc
+
+    reading_types: dict[str, dict[str, int]] = {}
+    meter_to_rt: dict[str, str] = {}
+    blocks: list[tuple[str, ET.Element]] = []
+
+    for entry in root.iter(f"{ATOM}entry"):
+        content = entry.find(f"{ATOM}content")
+        if content is None:
+            continue
+        links = _links(entry)
+        self_href = (links.get("self") or [""])[0]
+        rt = _reading_type(content)
+        if rt is not None:
+            reading_types[self_href] = rt
+            continue
+        if content.find(f"{ESPI}MeterReading") is not None:
+            related = links.get("related") or []
+            if related:
+                meter_to_rt[self_href] = related[0]
+            continue
+        block = content.find(f"{ESPI}IntervalBlock")
+        if block is not None:
+            blocks.append((self_href, block))
+
+    only_rt = next(iter(reading_types.values())) if len(reading_types) == 1 else None
+    rows: list[EnergyUsageIntervalV1] = []
+    for self_href, block in blocks:
+        up_match = _USAGE_POINT.search(self_href)
+        mr_match = _METER_READING.match(self_href)
+        rt = None
+        if mr_match is not None:
+            rt = reading_types.get(meter_to_rt.get(mr_match.group(1), ""))
+        rt = rt or only_rt
+        if rt is None:
+            raise EspiError(f"no ReadingType resolvable for block {self_href!r}")
+        if rt["flow"] != FLOW_FORWARD:
+            continue
+        if rt["uom"] != UOM_WATT_HOURS:
+            raise EspiError(f"unsupported uom {rt['uom']} (only 72 = Wh)")
+        usage_point = up_match.group(1) if up_match else "unknown"
+        scale = 10.0 ** rt["pow10"]
+        for reading in block.findall(f"{ESPI}IntervalReading"):
+            period = reading.find(f"{ESPI}timePeriod")
+            start = _int(period.find(f"{ESPI}start")) if period is not None else None
+            duration = _int(period.find(f"{ESPI}duration")) if period is not None else None
+            value = _int(reading.find(f"{ESPI}value"))
+            if start is None or not duration or value is None:
+                continue
+            begin = datetime.fromtimestamp(start, tz=timezone.utc)
+            rows.append(
+                EnergyUsageIntervalV1(
+                    source=source,
+                    usage_point_id=usage_point,
+                    interval_start=begin,
+                    interval_end=begin + timedelta(seconds=duration),
+                    energy_kwh=value * scale / 1000.0,
+                    retrieved_at=retrieved_at,
+                    source_file=source_file,
+                )
+            )
+    if not rows:
+        raise EspiError("no forward-flow interval readings in feed")
+    rows.sort(key=lambda r: (r.usage_point_id, r.interval_start))
+    return rows

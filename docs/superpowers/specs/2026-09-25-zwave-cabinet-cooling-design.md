@@ -1,7 +1,7 @@
 # Z-Wave cabinet cooling telemetry — design
 
 **Date:** 2026-09-25  
-**Status:** Draft for Juniper review (approved verbally; awaiting spec sign-off)  
+**Status:** Approved — implementation plan at `docs/superpowers/plans/2026-09-25-zwave-cabinet-cooling.md`  
 **Branch intent:** `docs/zwave-cabinet-cooling` → `feat/zwave-cabinet-cooling`  
 **Worktree:** `/mnt/scripts/Orion-Sapienform-zwave-cabinet-cooling`
 

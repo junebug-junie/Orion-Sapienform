@@ -35,6 +35,11 @@ class WorkflowDeadline(RuntimeError):
     """The optional overall deadline expired, independently of inference timeout."""
 
 
+class HoldRecalled(RuntimeError):
+    """The hold was already being recalled when the work node was about to start. The runtime has
+    released it; the run queues afresh. Not a failed attempt."""
+
+
 # ``AdmissionDeps.lease`` outcomes (resource_wait's decision).
 GRANTED, WAITING, GONE, REFUSED = "granted", "waiting", "gone", "refused"
 
@@ -107,6 +112,10 @@ def build_admitted_graph(deps: Deps, admission: AdmissionDeps, checkpointer: Any
             return {**released, "status": "failed", "last_error": "workflow_deadline", **failed_meta}
         except RunControlPending:
             raise
+        except HoldRecalled:
+            # Released by the runtime before the turn started: straight back to resource_request.
+            return {"status": "retrying", "lease": None, "hold": None, "retry_node": None,
+                    "retry_at": admission.now().isoformat()}
         except Exception as exc:
             # GraphBubbleUp/interrupt is a BaseException and is not caught here.
             attempt = int(state.get("attempt") or 0) + 1

@@ -354,6 +354,7 @@ def test_admitted_failure_keeps_the_fenced_correlation_after_the_lease_is_cleare
 
     runtime.store = SimpleNamespace(finish_projection=finish_projection)
     runtime._wake = asyncio.Event()
+    runtime.outreach, runtime._hints, runtime._checked = {}, set(), {}
     asyncio.run(runtime._terminal("study-001", "failed", final))
     assert seen == [("study-001", "failed", {"error": final["last_error"], "turn_correlation_id": expected})]
 

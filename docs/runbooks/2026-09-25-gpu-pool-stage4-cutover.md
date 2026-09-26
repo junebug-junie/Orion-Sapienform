@@ -18,7 +18,23 @@ visual baseline itself.
 Conventions: athena commands run from a **worktree** of the merged `main` (the deploy wrapper
 refuses the shared checkout); `$WT` is that worktree. Postgres reads use
 `docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "..."` (alias `PSQL` below).
-Nothing in this runbook writes production data except step 6, which needs Juniper's explicit go.
+
+**Every step that changes production needs Juniper's explicit go before it runs**, and each such
+step is marked **[GO]**: the P2 migration (DDL), the pause/resume calls (run control rows), the env
+flips and restarts in steps 2–5, and the step-6 row update. The read-only checks are not marked.
+
+**Env files.** `.env` files exist only in the primary checkout (`/mnt/scripts/Orion-Sapienform`),
+but `scripts/safe_docker_build.sh` reads `.env` and `services/<svc>/.env` relative to the worktree
+it runs in. Before any deploy from `$WT`, link them, so a flip made in the primary copy is the one
+the container gets:
+
+```bash
+for f in .env services/orion-durable-runs/.env services/orion-gpu-pool/.env; do
+  ln -sf /mnt/scripts/Orion-Sapienform/$f $WT/$f; done
+```
+
+After every flip, check the value INSIDE the container (commands given per step) -- a flip that did
+not reach the container is the failure this runbook exists to prevent.
 
 ```bash
 PSQL() { docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "$1"; }
@@ -42,7 +58,7 @@ PSQL "SELECT column_name FROM information_schema.columns WHERE table_name='gpu_p
 # expect: hold_lease_id   (empty = migration NOT applied -- stop. A 4.3 pool refuses to boot without it)
 # (2026-09-25 read: the column is ABSENT on live -- the migration has not been applied yet.)
 
-# apply it (additive, lock_timeout 5s) if missing:
+# [GO] apply it (additive DDL, lock_timeout 5s) if missing:
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < $WT/services/orion-sql-db/manual_migration_gpu_pool_v2_holds.sql
 
 docker logs --since 10m orion-athena-gpu-pool 2>&1 | grep -c gpu_pool_guard_read_failed   # expect 0
@@ -87,38 +103,58 @@ docker exec orion-athena-hub           sh -c 'grep -rn "validate_hold_ref" /app 
 docker exec orion-athena-field-digester sh -c "grep -rn \"kind = 'hold'\" /app --include=store.py | head -2"
 ```
 
-## Step 1 — wait for zero active legacy durable leases (LOAD-BEARING)
+## Step 1 — stop new legacy grants, then wait for zero active legacy leases (LOAD-BEARING)
 
 The pool cannot see `durable_resource_leases`. A legacy lease still running when the pool starts
-deciding means two schedulers on one card.
+deciding means two schedulers on one card. Waiting alone does not converge: the old broker grants
+the next pending demand whenever a lease ends. So first stop it granting, then wait.
+
+**1a [GO] pause every waiting (not running) run** -- a paused run's demand is suspended and the old
+broker never grants it. Record the list; step 5 resumes exactly these.
+
+```bash
+# every live run that does not hold a legacy lease right now (pending, suspended-for-retry, or new)
+PSQL "SELECT r.run_id FROM durable_admission_runs r WHERE r.terminal IS NULL AND r.control IS NULL
+      AND NOT EXISTS (SELECT 1 FROM durable_resource_leases l WHERE l.run_id=r.run_id AND l.status='active')" \
+  | tee /tmp/gpu-pool-stage4-cutover-paused.txt
+while read run; do curl -fsS -X POST "localhost:8124/runs/$run/pause" >/dev/null && echo "paused $run"; done \
+  < /tmp/gpu-pool-stage4-cutover-paused.txt
+```
+
+**1b wait for the running ones to finish** (their turns complete normally):
 
 ```bash
 PSQL "SELECT count(*) FROM durable_resource_leases WHERE status='active' AND expires_at > now()"
-# repeat until 0.  (2026-09-25 read: 2 active.)
+# repeat until 0.  (2026-09-25 read: 2 active.)  A run accepted after 1a may still be granted --
+# pause it the same way and keep waiting. Re-run this count right before steps 2, 4 and 5.
 ```
 
-While waiting, also record the legacy baseline (for acceptance check 1 later):
+Then record the baseline (for acceptance check 1). Take START only now, after the count is 0:
 
 ```bash
 PSQL "SELECT now()" | tee /tmp/gpu-pool-stage4-cutover-start.txt
 PSQL "SELECT (SELECT count(*) FROM durable_resource_demands), (SELECT count(*) FROM durable_resource_leases)"
 ```
 
-If an active lease never ends (a run stuck mid-turn), pause that run instead of waiting forever:
-`curl -fsS -X POST localhost:8124/runs/<run_id>/pause` (releases its lease; resumes after 4.5).
-
 ## Step 2 — freeze the old elastic decider (on the CURRENT durable-runs build)
 
 gpu2 stays in whatever state it is in. (2026-09-25 read: `durable_elastic_slot` generation 9,
 `state=ready`, `desired_target=agent-burst` — the 27B is loaded on gpu2 by the old path.)
 
+Also set `DURABLE_RUNS_ADMISSION_SHADOW=true`: the old broker then grants nothing at all (a run
+submitted during the window only registers its demand) and drives nothing. Do this only with the
+step-1b count at 0 -- shadow stops renewing a running lease.
+
 ```bash
-# in the PRIMARY checkout's live env file (not committed):
-sed -i 's/^DURABLE_RUNS_ELASTIC_SHADOW=.*/DURABLE_RUNS_ELASTIC_SHADOW=true/' /mnt/scripts/Orion-Sapienform/services/orion-durable-runs/.env
-grep '^DURABLE_RUNS_ELASTIC_SHADOW=' /mnt/scripts/Orion-Sapienform/services/orion-durable-runs/.env   # =true
-cd $WT_CURRENT_DURABLE_RUNS_BUILD   # a worktree at the commit durable-runs runs today
+# [GO] in the PRIMARY checkout's live env file (not committed):
+ENVF=/mnt/scripts/Orion-Sapienform/services/orion-durable-runs/.env
+sed -i -e 's/^DURABLE_RUNS_ELASTIC_SHADOW=.*/DURABLE_RUNS_ELASTIC_SHADOW=true/' \
+       -e 's/^DURABLE_RUNS_ADMISSION_SHADOW=.*/DURABLE_RUNS_ADMISSION_SHADOW=true/' $ENVF
+cd $WT_CURRENT_DURABLE_RUNS_BUILD   # a worktree at the commit durable-runs runs today, env files linked
 scripts/safe_docker_build.sh orion-durable-runs up -d --force-recreate durable-runs
+docker exec orion-athena-durable-runs env | grep -E 'DURABLE_RUNS_(ELASTIC|ADMISSION)_SHADOW'   # both =true
 PSQL "SELECT slot, generation, state, desired_target FROM durable_elastic_slot"   # unchanged from before
+PSQL "SELECT count(*) FROM durable_resource_leases WHERE status='active' AND expires_at > now()"   # still 0
 ```
 
 ## Step 3 — circe controller trusts the pool (`GPU2_AUTHORITY=pool`)
@@ -129,18 +165,23 @@ checks thermal, the visual baseline or durable leases itself.
 ```bash
 ssh circe@circe
 cd /mnt/scripts/Orion-Sapienform
+# [GO]
 sed -i 's/^GPU2_AUTHORITY=.*/GPU2_AUTHORITY=pool/' services/orion-gpu-lane-controller/.env
 docker compose --env-file .env --env-file services/orion-gpu-lane-controller/.env \
   -f services/orion-gpu-lane-controller/docker-compose.yml up -d --force-recreate gpu-lane-controller
 curl -fsS http://localhost:8090/health
 docker logs --tail=50 orion-circe-gpu-lane-controller 2>&1 | grep "gpu_pool_actuator_started authority=pool"
+docker exec orion-circe-gpu-lane-controller env | grep '^GPU2_AUTHORITY='   # =pool
 ```
 
 ## Step 4 — the pool arms actuation for `agent-gpu2`
 
 ```bash
+PSQL "SELECT count(*) FROM durable_resource_leases WHERE status='active' AND expires_at > now()"   # must be 0
+# [GO]
 sed -i 's/^GPU_POOL_ACTUATE_ROLES=.*/GPU_POOL_ACTUATE_ROLES=agent-gpu2/' /mnt/scripts/Orion-Sapienform/services/orion-gpu-pool/.env
 cd $WT && scripts/safe_docker_build.sh orion-gpu-pool up -d --force-recreate gpu-pool
+docker exec orion-athena-gpu-pool env | grep '^GPU_POOL_ACTUATE_ROLES='   # =agent-gpu2
 curl -fsS localhost:8127/v1/pool | python3 -c "import json,sys; d=json.load(sys.stdin); print({c['card']: (c.get('swap_state'), c.get('swapped_in')) for c in d['cards']})"
 # gpu2 must show the seat ADOPTED (swapped_in contains agent-gpu2 if the old path left it loaded),
 # swap_state idle -- never a second transition. Controller access log on circe: no new activate call.
@@ -151,10 +192,16 @@ The window between steps 2 and 4 is one pool restart: nobody opens gpu2 in it (n
 ## Step 5 — deploy durable-runs 4.5
 
 ```bash
-cd $WT   # worktree at merged main containing 4.5
+cd $WT   # worktree at merged main containing 4.5, env files linked
+PSQL "SELECT count(*) FROM durable_resource_leases WHERE status='active' AND expires_at > now()"   # must be 0
+# [GO]
 python3 scripts/sync_local_env_from_example.py orion-durable-runs   # adds HOLD_STATUS_POLL_SEC, OUTREACH_HOLD_MAX_SEC
 scripts/safe_docker_build.sh orion-durable-runs up -d --build durable-runs
 curl -fsS localhost:8124/health
+docker exec orion-athena-durable-runs env | grep -E 'DURABLE_RUNS_HOLD_STATUS_POLL_SEC|DURABLE_RUNS_OUTREACH_HOLD_MAX_SEC'
+# [GO] resume the runs paused in step 1a -- paused runs never resume on their own:
+while read run; do curl -fsS -X POST "localhost:8124/runs/$run/resume" >/dev/null && echo "resumed $run"; done \
+  < /tmp/gpu-pool-stage4-cutover-paused.txt
 docker logs --since 5m orion-athena-durable-runs 2>&1 | grep -E "durable_hold_|durable_admission_reconcile_failed|Traceback" | tail -20
 ```
 
@@ -188,20 +235,28 @@ PSQL "SELECT d.run_id FROM durable_resource_demands d JOIN durable_admission_run
       WHERE l.kind='hold' AND l.holder='durable-runs:'||d.run_id)"
 ```
 
-Then, ONLY after Juniper says go:
+Then, ONLY after Juniper says go. The update is limited to the snapshot's own ids, and it aborts
+itself (rolls back) unless it touched exactly that many rows:
 
 ```bash
-docker exec -i orion-athena-sql-db psql -U postgres -d conjourney <<'SQL'
+# [GO]
+IDS=$(tail -n +2 /tmp/gpu-pool-stage4-migrate/pending_demands.csv | cut -d, -f1 | sed "s/.*/'&'/" | paste -sd,)
+N=$(tail -n +2 /tmp/gpu-pool-stage4-migrate/pending_demands.csv | wc -l)
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 <<SQL
 BEGIN;
-UPDATE durable_resource_demands
-   SET status = 'withdrawn',
-       decision = decision || '{"withdrawn_reason": "migrated_to_gpu_pool"}'::jsonb
- WHERE status = 'pending'
-RETURNING demand_id, run_id;
--- the RETURNING count must equal the snapshot's row count; if not: ROLLBACK;
+WITH w AS (
+  UPDATE durable_resource_demands
+     SET status = 'withdrawn',
+         decision = decision || '{"withdrawn_reason": "migrated_to_gpu_pool"}'::jsonb
+   WHERE status = 'pending' AND demand_id IN ($IDS)
+  RETURNING demand_id)
+SELECT CASE WHEN count(*) = $N THEN 'ok' ELSE 1/0 END FROM w;   -- aborts the transaction on a mismatch
 COMMIT;
 SQL
 ```
+
+(`demand_id` is the csv's first column; ids are `<run_id>:harness_turn:<resource>` and contain no
+commas or quotes.)
 
 Undo (from the snapshot): `UPDATE durable_resource_demands SET status='pending', decision = decision - 'withdrawn_reason' WHERE demand_id IN (<ids from the csv>);`
 
@@ -244,12 +299,14 @@ Any step can be reversed in reverse order; the later the step, the more has to b
 1. **Before step 5:** reverse steps 4, 3, 2 exactly (`GPU_POOL_ACTUATE_ROLES=`, `GPU2_AUTHORITY=durable`,
    `DURABLE_RUNS_ELASTIC_SHADOW=false`, restarting pool, controller, durable-runs). The pool adopts
    whatever gpu2 holds; the controller fence falls back to durable-runs' `/elastic/status`.
-2. **After step 5:** redeploy the previous durable-runs image (the build from step 2), then reverse
-   4, 3, 2 as above. The pool still has one hold per non-terminal run; cancel them so they are not
-   granted to nobody (the old build re-registers its demands on resume):
+2. **After step 5 [GO]:** in this order -- (a) stop the 4.5 durable-runs container
+   (`docker stop orion-athena-durable-runs`); (b) cancel every durable-run hold at the pool (below),
+   so no pool hold and no legacy lease are ever live at once; (c) reverse 4 and 3; (d) start the
+   previous durable-runs image (the step-2 build) with both shadow flags back to `false`. The old
+   build re-registers its demands on resume.
 
    ```bash
-   cd $WT && PYTHONPATH=. python3 - <<'PY'
+   cd $WT && PYTHONPATH=. /mnt/scripts/Orion-Sapienform/.venv/bin/python - <<'PY'
    import asyncio, os
    from orion.core.bus.async_service import OrionBusAsync
    from orion.gpu_pool.client import release_lease
@@ -266,8 +323,11 @@ Any step can be reversed in reverse order; the later the step, the more has to b
    PY
    ```
    (`ORION_BUS_URL=redis://100.92.216.81:6379/0`, `PG_DSN` = the conjourney DSN.) Checkpoints written by
-   4.5 carry a hold ref in `lease`; the old build's worker-recovery path releases and clears it on
-   the next drive. Rollback after step 6 also needs the step-6 undo SQL above.
+   4.5 carry a hold ref in `lease`; the old build's worker-recovery path is EXPECTED to clear it on
+   the next drive (UNVERIFIED -- not exercised by a test). An admitted reflect run checkpointed by 4.5
+   (graph `llm_call`) cannot be driven by the old build, which has no admitted reflect graph: cancel
+   such runs (`POST /runs/<id>/cancel`) before step (d). Rollback after step 6 also needs the step-6
+   undo SQL above.
 3. Do not roll back 4.4 consumers: they accept both the old token and the hold ref.
 
 ## After the cutover (PR 4.6, not this runbook)

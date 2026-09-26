@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.admitted_graph import AdmissionDeps, RunControlPending, WorkflowDeadline, resource_nodes
+from app.admitted_graph import AdmissionDeps, HoldRecalled, RunControlPending, WorkflowDeadline, resource_nodes
 from app.self_sense_graph import Deps, SelfSenseAskFailed, SelfSenseRunState, make_nodes
 from orion.schemas.durable_run import SELF_SENSE_EVAL_NODES
 
@@ -36,6 +36,8 @@ def build_admitted_self_sense_graph(deps: Deps, admission: AdmissionDeps, checkp
             return {**released, "status": "failed", "last_error": "workflow_deadline"}
         except RunControlPending:
             raise
+        except HoldRecalled:
+            return {"status": "waiting_resource", "lease": None, "hold": None}
         except SelfSenseAskFailed as exc:
             # Transport blip: hand the hold back (or keep it if the pool already re-queued it) and
             # wait for a fresh grant. Partial answers stay on state; ask_questions skips keys done.
@@ -58,7 +60,10 @@ def build_admitted_self_sense_graph(deps: Deps, admission: AdmissionDeps, checkp
         if admission.guard is not None:
             # Node boundary: deadline/control, and the hold is let go if the pool recalled it.
             state["lease"] = await admission.guard(state)
-        return await original["publish"](state)
+        result = await original["publish"](state)
+        if admission.guard is not None and state["lease"] is None:
+            result = {**result, "lease": None, "hold": None}   # let go at this boundary: persist it
+        return result
 
     async def finish(state: SelfSenseRunState) -> dict:
         released = await admission.release(dict(state), "completed")

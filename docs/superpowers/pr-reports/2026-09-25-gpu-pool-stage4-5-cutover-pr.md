@@ -120,7 +120,7 @@
 
 ```text
 services/orion-durable-runs (throwaway postgres:16 on :55491, ORION_ADMISSION_TEST_DSN):
-  pytest tests -q                                  -> see final count in the review section
+  pytest tests -q                                  -> 117 passed (incl. 6 hold-leak-path tests added after review)
 services/orion-gpu-pool: pytest tests -q            -> 84 passed, 7 skipped
 orion/gpu_pool/tests -q                             -> 174 passed
 services/orion-hub: test_curiosity_gpu_lease + test_curiosity_routes_runs -> 29 passed
@@ -164,7 +164,63 @@ reads routes and hold_lease_ttl_sec from it at startup).
 
 ## Review findings fixed
 
-(filled in after the review subagent)
+Code-review subagent (read-only) on the 4.5 commits: 16 findings (0 blocker, 12 should, 4 nit).
+The top-priority checks came back clean: the hold ref rides every admitted LLM path, the pool role
+never reaches a route label, and every returned state key is declared.
+
+- Finding: a failed release RPC leaked the hold (a retryable hold is re-granted to nobody until
+  dead-lettered) and the run could queue behind its own leak.
+  - Fix: `_end_hold` records failures in `_pending_release`; every reconcile retries until the pool
+    confirms.
+  - Evidence: `test_a_failed_release_rpc_is_retried_until_the_pool_confirms`; mutation (no record) fails it.
+- Finding: a Door-A hold whose release failed was never retried; adoption ran only once at boot.
+  - Fix: covered by the retry above; adoption now re-runs every `DURABLE_RUNS_HOLD_STATUS_POLL_SEC`
+    and skips holds pending release.
+  - Evidence: `test_door_a_keeps_heartbeating_the_hold_until_hub_releases_it_and_a_restart_adopts_it`.
+- Finding: a Door-A hold was kept for a run that did not end completed (a cancel raced the terminal).
+  - Fix: `_terminal` ends the outreach hold when the projected status is not `completed`.
+  - Evidence: `test_a_door_a_hold_is_ended_when_the_run_does_not_end_completed`.
+- Finding: a hold dead-lettered by expiries during a durable-runs outage failed the run.
+  - Fix: only door refusals, `deadline` and `backlog_max_age` fail the run; any other unavailable
+    ends the hold and the run asks again under a new request id.
+  - Evidence: `test_a_hold_dead_lettered_during_an_outage_is_replaced_not_fatal`; mutation fails it.
+- Finding: a cancel during an in-flight acquire left the landed hold.
+  - Fix: cancel with no checkpointed request id probes `<run_id>:<seq+1>` and ends it.
+  - Evidence: `test_cancel_during_an_in_flight_acquire_ends_the_hold_that_landed`; mutation fails it.
+- Finding: a turn could start on a hold already being recalled, and burn an attempt at the grace abort.
+  - Fix: `execute` releases it and raises `HoldRecalled`; all three graphs requeue without counting
+    an attempt.
+  - Evidence: `test_work_never_starts_on_a_hold_already_being_recalled`.
+- Finding: paused runs were re-driven every tick, with one pool RPC each, forever.
+  - Fix: reconcile skips paused runs; the pausing `control()` already released the hold.
+  - Evidence: `test_a_paused_run_is_not_re_driven_every_tick`.
+- Finding: runbook step 1 does not converge, because the old broker keeps granting.
+  - Fix: step 1a pauses every live run without an active lease, and step 2 also sets
+    `DURABLE_RUNS_ADMISSION_SHADOW=true`. The count is re-checked before steps 2, 4 and 5, START is
+    taken after it reaches 0, and step 5 resumes the paused runs explicitly.
+- Finding: the runbook edited the primary `.env` but deployed from a worktree that reads its own.
+  - Fix: link the env files into `$WT`, and check each flip inside the container.
+- Finding: the step-6 rollback guard could not work (`COMMIT` always ran), and "only step 6
+  writes" was false.
+  - Fix: the UPDATE is limited to the snapshot's ids and aborts on a count mismatch (division by
+    zero). Every production-changing step is marked **[GO]**.
+- Finding: rollback ordering let two schedulers overlap, and ran on a bare interpreter.
+  - Fix: stop 4.5, cancel holds, then start the old image; use the repo venv.
+  - Remaining: the old build clearing 4.5 checkpoints is marked UNVERIFIED, and reflect runs are
+    cancelled first.
+- Finding (nit): self-sense `publish` did not persist a hold released at recall.
+  - Fix: done.
+- Finding (nit): `_hints`/`_checked` never pruned.
+  - Fix: pruned at `_terminal`.
+- Not fixed, accepted:
+  - (nit) a replayed reflect call after a restart is not fenced; the old cortex RPC cannot be
+    cancelled, and the duplicate call attaches to the same hold.
+  - (nit) a turn that finishes after its hold was lost between beats is accepted; the pool refuses
+    stale-generation attaches, so its calls ran under a valid generation.
+- Partly covered (finding 12): `runner._call_reflect_llm` building `options.gpu_lease` IS tested
+  (`test_reflect_llm_call_sends_the_hold_ref_in_options_and_keeps_its_route`). cortex-orch passing
+  `options` through to cortex-exec is not exercised end to end here (UNVERIFIED; it is the same
+  path `llm_route` already rides).
 
 ## Restart required
 
@@ -211,6 +267,6 @@ Juniper's go.
 
 ## PR link
 
-(filled in on creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2356
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

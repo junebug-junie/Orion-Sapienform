@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.admitted_graph import AdmissionDeps, RunControlPending, WorkflowDeadline, resource_nodes
+from app.admitted_graph import AdmissionDeps, HoldRecalled, RunControlPending, WorkflowDeadline, resource_nodes
 from app.reflect_graph import Deps, ReflectRunState, make_nodes
 
 
@@ -33,6 +33,8 @@ def build_admitted_reflect_graph(deps: Deps, admission: AdmissionDeps, checkpoin
             return {**released, "status": "failed", "last_error": "workflow_deadline"}
         except RunControlPending:
             raise
+        except HoldRecalled:
+            return {"status": "waiting_resource", "lease": None, "hold": None}
         except Exception as exc:  # noqa: BLE001 -- transport failure / lost hold: bounded re-try
             attempt = int(state.get("attempt") or 0) + 1
             error = f"{type(exc).__name__}: {exc}"[:500]

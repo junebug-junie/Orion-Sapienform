@@ -738,3 +738,38 @@ def test_attach_never_hands_back_another_lease_and_is_never_retryable():
         assert (await rt.store.lease(c.lease_id))["retryable"] is False
         assert (await rt.store.lease(h.lease_id))["status"] == "granted"
     run(go())
+
+
+def test_min_ctx_hold_loads_gpu2_once_seen_even_after_a_pool_restart():
+    """4.5 finding: a hold with min_ctx_tokens never triggered the gpu2 load (an unloaded seat has
+    no live ctx) and nothing said why. Now: unknown -> swap_requested ctx_unknown; once the seat
+    has been seen its context is persisted and a restarted pool loads it for such a hold."""
+    async def go():
+        store, saver, clock = MemoryStore(), MemorySaver(), Clock()
+        rt, _ = make(store=store, saver=saver, clock=clock)
+        await boot(rt)
+        home = await rt.acquire(hold("home:1"))
+        big = await rt.acquire(hold("big:1", min_ctx_tokens=32768))
+        assert big.status == "queued"
+        await step(rt, clock, SEAT_WAIT + 1, beat=[home.lease_id])
+        assert actuations(rt) == []
+        assert [e["reason"] for e in rt.bus.events("swap_requested")] == ["ctx_unknown"]
+        # the seat is seen once (loaded by the old path), then goes away again
+        rt._world.up.add(SEAT)
+        rt._world.up.discard("diffusion")
+        await step(rt, clock, 30, beat=[home.lease_id])
+        assert rt._ctx_seen[SEAT] == 131072
+        assert {c["card"]: c.get("seen_ctx") for c in await store.cards()}["gpu2"][SEAT] == 131072
+        assert (await rt.store.lease(big.lease_id))["role"] == SEAT   # it ran there meanwhile
+        await rt.release(big.lease_id, "ok")
+        rt2, _ = make(store=store, saver=saver, clock=clock, bus=FakeBus())
+        rt2._world.up.discard(SEAT)
+        rt2._world.up.add("diffusion")
+        await boot(rt2)
+        assert rt2._ctx_seen[SEAT] == 131072 and SEAT not in rt2.cards["gpu2"].swapped_in
+        big2 = await rt2.acquire(hold("big:2", min_ctx_tokens=32768))
+        assert big2.status == "queued"
+        await step(rt2, clock, SEAT_WAIT + 1, beat=[home.lease_id])
+        [load] = actuations(rt2)
+        assert (load.role, load.action) == (SEAT, "load")
+    run(go())

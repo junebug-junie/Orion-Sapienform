@@ -19,10 +19,10 @@ LEASE_COLUMNS = (
 )
 CARD_COLUMNS = ("card", "lent", "swapped_in", "swap_state", "cooldown_until", "last_active_at",
                 "swap_role", "swap_generation", "swap_action", "residency_until", "loaded_at",
-                "updated_at", "updated_by")
+                "seen_ctx", "updated_at", "updated_by")
 # Columns added by services/orion-sql-db/manual_migration_gpu_pool_v2_holds.sql (stage 4.3).
 V2_LEASE_COLUMNS = ("hold_lease_id",)
-V2_CARD_COLUMNS = ("swap_role", "swap_generation", "swap_action", "residency_until", "loaded_at")
+V2_CARD_COLUMNS = ("swap_role", "swap_generation", "swap_action", "residency_until", "loaded_at", "seen_ctx")
 # LangGraph's checkpoint tables for lease threads live in their own schema. They used to share
 # public.checkpoints with durable-runs, whose resume sweep lists EVERY checkpoint in that table
 # (alist(None)) every 2 minutes: at one lease per inference the pool's threads became most of

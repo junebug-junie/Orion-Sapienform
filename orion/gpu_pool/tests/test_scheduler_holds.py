@@ -251,3 +251,33 @@ def test_a_hold_does_not_borrow_a_role_its_owner_is_using():
     h = hold(lease_id="h")
     decisions = run([busy_agent, owner, h], roles=roles, crds=crds)
     assert "h" not in grants(decisions) and not of(Recall, decisions)
+
+
+# --- 4.5 finding: an unloaded seat has no live context; min_ctx holds must still load it -------
+def _big_demand():
+    return [lease("agent", "granted", "agent"),
+            hold(lease_id="w", min_ctx_tokens=32768, queued_since=T0 - timedelta(seconds=AFTER + 1))]
+
+
+def _unloaded_seat():
+    return live(**{"agent-gpu2": live()["agent-gpu2"].__class__("agent-gpu2", False, 0, None, None)})
+
+
+def test_min_ctx_hold_loads_the_seat_from_its_last_seen_context():
+    decisions = schedule(CFG, _unloaded_seat(), cards(), _big_demand(), T0,
+                         seen_ctx={"agent-gpu2": 131072}, guards=CLEAR)
+    assert [(s.role, s.reason) for s in of(SwapLoad, decisions)] == [("agent-gpu2", "demand")]
+    assert "w" not in grants(decisions)                   # placement still waits for live context
+
+
+def test_min_ctx_hold_with_no_known_seat_context_says_so():
+    decisions = schedule(CFG, _unloaded_seat(), cards(), _big_demand(), T0, seen_ctx={}, guards=CLEAR)
+    assert not of(SwapLoad, decisions)
+    assert [(b.role, b.reason, b.detail) for b in of(SwapBlocked, decisions)] == \
+        [("agent-gpu2", "ctx_unknown", "min_ctx_tokens=32768")]
+
+
+def test_a_seat_known_to_be_too_small_is_not_loaded_for_it():
+    decisions = schedule(CFG, _unloaded_seat(), cards(), _big_demand(), T0,
+                         seen_ctx={"agent-gpu2": 16384}, guards=CLEAR)
+    assert not of(SwapLoad, decisions) and not of(SwapBlocked, decisions)

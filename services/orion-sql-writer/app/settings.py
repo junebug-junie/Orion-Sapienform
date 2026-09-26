@@ -33,6 +33,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "biometrics.cluster.v1": "BiometricsClusterSQL",
     "power.intent.settled.v1": "PowerIntentSettledSQL",
     "cabinet.ambient.spike.v1": "CabinetAmbientSpikeSQL",
+    "home.cooling.sample.v1": "HomeCoolingSampleSQL",
     "biometrics.induction.v1": "BiometricsInductionSQL",
     "causal.geometry.snapshot.v1": "CausalGeometrySnapshotSQL",
     "spark.telemetry": "SparkTelemetrySQL",
@@ -158,6 +159,7 @@ class Settings(BaseSettings):
             "orion:biometrics:cluster",
             "orion:power:intent:settled",
             "orion:cabinet:ambient:spike",
+            "orion:home:cooling:sample",
             "orion:biometrics:induction",
             "orion:spark:telemetry",
             "orion:cognition:trace",
@@ -661,6 +663,8 @@ class Settings(BaseSettings):
             channels.append("orion:power:intent:settled")
         if "orion:cabinet:ambient:spike" not in channels:
             channels.append("orion:cabinet:ambient:spike")
+        if "orion:home:cooling:sample" not in channels:
+            channels.append("orion:home:cooling:sample")
         # Same guarantee again, same reason, same failure shape review caught
         # before this shipped: self_study.items.write.v1 is a code-default
         # route with no feature toggle, and SQL_WRITER_SUBSCRIBE_CHANNELS

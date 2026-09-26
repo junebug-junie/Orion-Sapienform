@@ -25,6 +25,7 @@ from app.models import (
     BiometricsClusterSQL,
     PowerIntentSettledSQL,
     CabinetAmbientSpikeSQL,
+    HomeCoolingSampleSQL,
     BiometricsSummarySQL,
     BiometricsInductionSQL,
     CausalGeometrySnapshotSQL,
@@ -143,6 +144,7 @@ from orion.schemas.repair_pressure_appraisal import RepairPressureAppraisalV1
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.power import PowerIntentSettledV1
 from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
+from orion.schemas.telemetry.home_cooling import HomeCoolingSampleV1
 from orion.schemas.telemetry.biometrics import (
     BiometricsPayload,
     BiometricsSummaryV1,
@@ -463,6 +465,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "BiometricsClusterSQL": (BiometricsClusterSQL, BiometricsClusterV1),
     "PowerIntentSettledSQL": (PowerIntentSettledSQL, PowerIntentSettledV1),
     "CabinetAmbientSpikeSQL": (CabinetAmbientSpikeSQL, CabinetAmbientSpikeV1),
+    "HomeCoolingSampleSQL": (HomeCoolingSampleSQL, HomeCoolingSampleV1),
     "BiometricsInductionSQL": (BiometricsInductionSQL, BiometricsInductionV1),
     "CausalGeometrySnapshotSQL": (CausalGeometrySnapshotSQL, CausalGeometrySnapshotV1),
     "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),
@@ -1553,6 +1556,47 @@ def _ensure_chat_history_from_message(
         own_sess.close()
 
 
+def _normalize_home_cooling_sample_payload(write_data: dict) -> dict:
+    """Map ``home.cooling.sample.v1`` onto HomeCoolingSampleSQL columns.
+
+    Nested controller/device/measurements/state/provenance objects are flattened
+    for indexed history queries. The full validated payload is kept in
+    ``payload_json``.
+    """
+    full_payload = dict(write_data)
+    out = dict(write_data)
+
+    measurements = out.pop("measurements", None)
+    if isinstance(measurements, dict):
+        for key in ("cooling_watts", "cooling_volts", "cooling_amps"):
+            value = measurements.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                out[key] = float(value)
+            elif key in measurements:
+                out[key] = value
+
+    controller = out.pop("controller", None)
+    if isinstance(controller, dict) and "ready" in controller:
+        out["controller_ready"] = bool(controller["ready"])
+
+    device = out.pop("device", None)
+    if isinstance(device, dict) and "online" in device:
+        out["device_online"] = bool(device["online"])
+
+    state = out.pop("state", None)
+    if isinstance(state, dict) and "switch_on" in state:
+        out["switch_on"] = state.get("switch_on")
+
+    provenance = out.pop("provenance", None)
+    if isinstance(provenance, dict) and provenance.get("zwave_node_id") is not None:
+        out["zwave_node_id"] = int(provenance["zwave_node_id"])
+
+    out["payload_json"] = full_payload
+    out.pop("schema_name", None)
+    out.pop("schema", None)
+    return out
+
+
 def _normalize_biometrics_cluster_payload(write_data: dict) -> dict:
     """Map a ``biometrics.cluster.v1`` payload onto BiometricsClusterSQL's columns.
 
@@ -1608,6 +1652,8 @@ def _write_row(sql_model_cls, data: dict) -> bool:
             write_data = _normalize_notification_request_payload(write_data)
         if sql_model_cls is BiometricsClusterSQL:
             write_data = _normalize_biometrics_cluster_payload(write_data)
+        if sql_model_cls is HomeCoolingSampleSQL:
+            write_data = _normalize_home_cooling_sample_payload(write_data)
 
         col_key_by_name = {col.name: col.key for col in mapper.columns}
         valid_keys = set(attr.key for attr in mapper.attrs)

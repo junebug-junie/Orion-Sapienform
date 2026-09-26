@@ -13,6 +13,14 @@ METER_CC = 50
 BINARY_SWITCH_CC = 37
 DEFAULT_API_SCHEMA_VERSION = 33
 
+# zwave-js Meter propertyKey / propertyKeyName for Shelly Wave Plug (and peers).
+# 65537 is Electric_kWh_Consumed (energy) — NOT watts. Treating it as W pinned
+# Hub at ~33 "watts" while the AC drew ~700 W on Electric_W_Consumed (66049).
+METER_W_PROPERTY_KEY = 66049
+METER_V_PROPERTY_KEY = 66561
+METER_A_PROPERTY_KEY = 66817
+METER_KWH_PROPERTY_KEY = 65537
+
 
 def _numeric_value(raw: Any) -> Optional[float]:
     if isinstance(raw, bool):
@@ -22,37 +30,83 @@ def _numeric_value(raw: Any) -> Optional[float]:
     return None
 
 
+def _entry_numeric(entry: dict[str, Any]) -> Optional[float]:
+    """Prefer ``value``, then zwave-js event fields ``newValue`` / ``prevValue``."""
+    for key in ("value", "newValue"):
+        parsed = _numeric_value(entry.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _value_label(entry: dict[str, Any]) -> str:
-    return str(entry.get("label") or entry.get("propertyLabel") or "")
+    return str(
+        entry.get("propertyKeyName")
+        or entry.get("label")
+        or entry.get("propertyLabel")
+        or ""
+    )
+
+
+def _meter_entries(values: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        entry
+        for entry in values.values()
+        if isinstance(entry, dict)
+        and entry.get("commandClass") == METER_CC
+        and entry.get("property") == "value"
+    ]
+
+
+def _is_electric_watts(entry: dict[str, Any]) -> bool:
+    if entry.get("propertyKey") == METER_W_PROPERTY_KEY:
+        return True
+    name = _value_label(entry).upper()
+    if "KWH" in name or "KW/H" in name:
+        return False
+    if entry.get("propertyKey") == METER_KWH_PROPERTY_KEY:
+        return False
+    # Electric_W_Consumed, "Electric W", "Power (W)", etc.
+    if "ELECTRIC_W" in name or name.endswith("_W_CONSUMED"):
+        return True
+    if "WATT" in name:
+        return True
+    if name == "W" or name.endswith(" W") or " (W)" in name:
+        return True
+    return False
 
 
 def extract_meter_watts(values: dict[str, dict[str, Any]]) -> Optional[float]:
-    """Return Electric W consumed from Meter CC 50, or None if absent."""
-    for entry in values.values():
-        if entry.get("commandClass") != METER_CC:
-            continue
-        if entry.get("propertyKey") == 65537:
-            watts = _numeric_value(entry.get("value"))
-            if watts is not None:
-                return watts
+    """Return Electric W consumed from Meter CC 50, or None if absent.
 
-    for entry in values.values():
-        if entry.get("commandClass") != METER_CC:
+    Never treats kWh / energy scales as watts.
+    """
+    for entry in _meter_entries(values):
+        if not _is_electric_watts(entry):
             continue
-        label = _value_label(entry).upper()
-        if " W" in label or label.endswith("W") or "WATT" in label:
-            watts = _numeric_value(entry.get("value"))
-            if watts is not None:
-                return watts
+        watts = _entry_numeric(entry)
+        if watts is not None:
+            return watts
+    return None
 
-    for entry in values.values():
-        if entry.get("commandClass") != METER_CC:
-            continue
-        if entry.get("property") == "value":
-            watts = _numeric_value(entry.get("value"))
-            if watts is not None:
-                return watts
 
+def extract_meter_volts(values: dict[str, dict[str, Any]]) -> Optional[float]:
+    for entry in _meter_entries(values):
+        name = _value_label(entry).upper()
+        if entry.get("propertyKey") == METER_V_PROPERTY_KEY or "ELECTRIC_V" in name:
+            volts = _entry_numeric(entry)
+            if volts is not None:
+                return volts
+    return None
+
+
+def extract_meter_amps(values: dict[str, dict[str, Any]]) -> Optional[float]:
+    for entry in _meter_entries(values):
+        name = _value_label(entry).upper()
+        if entry.get("propertyKey") == METER_A_PROPERTY_KEY or "ELECTRIC_A" in name:
+            amps = _entry_numeric(entry)
+            if amps is not None:
+                return amps
     return None
 
 
@@ -64,9 +118,20 @@ def extract_switch_on(values: dict[str, dict[str, Any]]) -> Optional[bool]:
         if entry.get("property") != "currentValue":
             continue
         raw = entry.get("value")
+        if raw is None and "newValue" in entry:
+            raw = entry.get("newValue")
         if isinstance(raw, bool):
             return raw
     return None
+
+
+def normalize_value_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Copy a zwave-js value / event args dict into a cacheable shape with ``value``."""
+    out = dict(entry)
+    if "value" not in out or out.get("value") is None:
+        if "newValue" in out:
+            out["value"] = out["newValue"]
+    return out
 
 
 def _value_map_key(entry: dict[str, Any]) -> str:
@@ -109,7 +174,8 @@ def ingest_node_values(
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        bucket[_value_map_key(entry)] = entry
+        normalized = normalize_value_entry(entry)
+        bucket[_value_map_key(normalized)] = normalized
 
 
 class ZWaveJSClient:
@@ -144,6 +210,42 @@ class ZWaveJSClient:
     def get_values(self, node_id: Optional[int] = None) -> dict[str, dict[str, Any]]:
         target = self.node_id if node_id is None else node_id
         return dict(self._values_by_node.get(target, {}))
+
+    async def refresh_meter_watts(self, node_id: Optional[int] = None) -> Optional[float]:
+        """Ask the stick for a fresh Electric_W reading; update local cache on success."""
+        target = self.node_id if node_id is None else node_id
+        try:
+            result = await self._request(
+                "node.poll_value",
+                nodeId=target,
+                valueId={
+                    "commandClass": METER_CC,
+                    "endpoint": 0,
+                    "property": "value",
+                    "propertyKey": METER_W_PROPERTY_KEY,
+                },
+            )
+        except Exception:
+            logger.debug("node.poll_value Electric_W failed node=%s", target, exc_info=True)
+            return None
+        if not result.get("success", True):
+            return None
+        body = result.get("result") if isinstance(result.get("result"), dict) else {}
+        watts = _numeric_value((body or {}).get("value"))
+        if watts is None:
+            return None
+        bucket = self._values_by_node.setdefault(target, {})
+        key = f"{METER_CC}-0-value-{METER_W_PROPERTY_KEY}"
+        bucket[key] = {
+            "commandClass": METER_CC,
+            "endpoint": 0,
+            "property": "value",
+            "propertyKey": METER_W_PROPERTY_KEY,
+            "propertyKeyName": "Electric_W_Consumed",
+            "value": watts,
+            "nodeId": target,
+        }
+        return watts
 
     async def connect(self) -> None:
         try:
@@ -299,8 +401,12 @@ class ZWaveJSClient:
             node_id = entry.get("nodeId") or event.get("nodeId")
             if not isinstance(node_id, int):
                 return
+            # Events carry newValue/prevValue; cache must expose ``value`` for readers.
+            normalized = normalize_value_entry(entry)
+            if "nodeId" not in normalized:
+                normalized["nodeId"] = node_id
             bucket = self._values_by_node.setdefault(node_id, {})
-            bucket[_value_map_key(entry)] = entry
+            bucket[_value_map_key(normalized)] = normalized
             return
 
         if source == "node" and name == "metadata updated":

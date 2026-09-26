@@ -250,6 +250,37 @@ class _Ctx:
             return False
         return True
 
+    def fits_for_load(self, lease: LeaseView, role: str, seen_ctx: dict[str, int]) -> bool | None:
+        """``fits`` for the LOAD decision only: an unloaded seat reports no live context, so its
+        expected context is the last one seen there. None = cannot tell (never seen): the caller
+        reports that instead of staying silent. Placement still uses live context alone."""
+        spec = self.cfg.roles[role]
+        live = self.roles.get(role)
+        if live is None:
+            return False
+        if lease.min_ctx_tokens and spec.kind == "llm":
+            expected = live.ctx_per_slot or seen_ctx.get(role)
+            if expected is None:
+                probe = RoleLive(role, live.healthy, live.slots, None, live.vision)
+                return None if self._fits_ignoring_ctx(lease, role, probe) else False
+            live = RoleLive(role, live.healthy, live.slots, expected, live.vision)
+        return self._fits_ignoring_ctx(lease, role, live) and (
+            not lease.min_ctx_tokens or spec.kind != "llm" or live.ctx_per_slot >= lease.min_ctx_tokens)
+
+    def _fits_ignoring_ctx(self, lease: LeaseView, role: str, live: RoleLive) -> bool:
+        spec = self.cfg.roles[role]
+        if spec.operator_only and not lease.operator:
+            return False
+        if role in self.draining:
+            return False
+        if not self.cfg.owns(lease.work_class, role):
+            for card in self.cfg.lendable_cards(role):
+                if not self.cards[card].lent:
+                    return False
+        if lease.needs_vision and not live.vision:
+            return False
+        return True
+
     def placeable(self, lease: LeaseView, role: str) -> bool:
         return self.usable(role) and self.fits(lease, role)
 
@@ -545,13 +576,18 @@ def schedule(
             if wanting and all(ctx.occupancy(r) == 0 for r in evicted):
                 out.append(SwapLoad(seat, "operator"))
             continue
-        wanting = [
-            q for q in waiting
-            if seat in cfg.classes[q.work_class].roles and ctx.fits(q, seat)
-            and (now - (q.queued_since or q.created_at)).total_seconds() >= cfg.swap_after_wait_sec(seat)
-        ]
+        waited = [q for q in waiting if seat in cfg.classes[q.work_class].roles
+                  and (now - (q.queued_since or q.created_at)).total_seconds() >= cfg.swap_after_wait_sec(seat)]
+        fit = {q.lease_id: ctx.fits_for_load(q, seat, seen_ctx or {}) for q in waited}
+        wanting = [q for q in waited if fit[q.lease_id]]
+        unknown = [q for q in waited if fit[q.lease_id] is None]
         residents_idle = all(ctx.occupancy(r) == 0 for r in evicted)
         residents_wanted = any(cfg.owns(q.work_class, r) for q in waiting for r in evicted)
+        if residents_idle and not residents_wanted and unknown and not wanting:
+            # Demand the seat could serve, but its context size was never seen: say so, not silence.
+            out.append(SwapBlocked(seat, "ctx_unknown",
+                                   f"min_ctx_tokens={max(q.min_ctx_tokens for q in unknown)}"))
+            continue
         if not (wanting and residents_idle and not residents_wanted):
             continue
         blocked = _load_blocked(spec.swap.guards if spec.swap else [], seat_cards, now, guards)

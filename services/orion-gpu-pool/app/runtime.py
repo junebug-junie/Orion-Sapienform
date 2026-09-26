@@ -167,6 +167,7 @@ class PoolRuntime:
         self.guard_states: dict[str, str | None] = {g: "unread" for g in SWAP_GUARDS}
         self._started = False
         self._recent_actions: dict[str, list[str]] = {}
+        self._ctx_saved: dict[str, int] = {}
 
     # --- lifecycle --------------------------------------------------------------------
     async def start(self) -> None:
@@ -185,6 +186,10 @@ class PoolRuntime:
                     swap_role=row.get("swap_role"), residency_until=_ts(row.get("residency_until")),
                     loaded_at=_ts(row.get("loaded_at")), swap_generation=int(row.get("swap_generation") or 0),
                     swap_action=_action(row.get("swap_action")))
+            for role, size in (_action((row or {}).get("seen_ctx")) or {}).items():
+                if role in self.cfg.roles and size:
+                    self._ctx_seen.setdefault(role, int(size))
+        self._ctx_saved = dict(self._ctx_seen)
         for row in await self.store.live_leases():
             await self._sync_row(row["lease_id"])
         self._resolve()
@@ -495,6 +500,7 @@ class PoolRuntime:
                     event="discovery_confirmed" if d.status == "confirmed" else "discovery_mismatch",
                     role=d.role, cards=d.cards, reason=d.detail,
                     detail={"profile_name": d.profile_name, "model_file": d.model_file}))
+            await self._save_seen_ctx()
             t = time.monotonic()
             await self._check_actuation()
             await self._clear_faults()
@@ -869,6 +875,18 @@ class PoolRuntime:
             await self._emit(GpuPoolEventV1(event="swapped", cards=[card.card], holder=ctl.actor,
                                             reason="fault_cleared:operator", detail={"swap_role": seat}))
             return GpuPoolControlReplyV1(ok=True, reason="cleared", detail={"card": card.card})
+
+    async def _save_seen_ctx(self) -> None:
+        """Persist each role's last-seen context on its card, only when it changed (rare): the load
+        decision for an unloaded seat needs it after a pool restart too."""
+        changed = {r for r, n in self._ctx_seen.items() if self._ctx_saved.get(r) != n}
+        if not changed:
+            return
+        for card in {c for r in changed for c in self.cfg.roles[r].cards}:
+            sizes = {r: n for r, n in self._ctx_seen.items() if card in self.cfg.roles[r].cards}
+            await self.store.upsert_card({"card": card, "seen_ctx": sizes, "updated_at": self.now(),
+                                          "updated_by": "discovery"})
+        self._ctx_saved.update({r: self._ctx_seen[r] for r in changed})
 
     async def _clear_faults(self) -> None:
         """fault -> idle once discovery sees a consistent card: the evicted residents healthy and

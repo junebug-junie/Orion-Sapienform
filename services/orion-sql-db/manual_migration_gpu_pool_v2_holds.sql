@@ -19,6 +19,9 @@ ALTER TABLE gpu_pool_cards ADD COLUMN IF NOT EXISTS swap_generation integer NOT 
 ALTER TABLE gpu_pool_cards ADD COLUMN IF NOT EXISTS swap_action jsonb;
 ALTER TABLE gpu_pool_cards ADD COLUMN IF NOT EXISTS residency_until timestamptz;
 ALTER TABLE gpu_pool_cards ADD COLUMN IF NOT EXISTS loaded_at timestamptz;
+-- role -> per-slot context last seen on this card. An unloaded swap seat reports none, and the
+-- load decision for a hold with min_ctx_tokens needs it; kept across pool restarts.
+ALTER TABLE gpu_pool_cards ADD COLUMN IF NOT EXISTS seen_ctx jsonb;
 
 -- Children of one hold (acceptance check 2 joins on it). Partial: almost every lease is not a child.
 -- If this build fails (e.g. lock_timeout) it leaves an INVALID index that IF NOT EXISTS then skips on

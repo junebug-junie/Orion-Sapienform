@@ -376,6 +376,10 @@ def test_holds_children_and_a_mid_load_card_survive_a_restart_on_postgres():
             rt2 = runtime(bus2)
             await rt2.start()
             assert rt2.cards["gpu2"].swap_state == "loading" and rt2.cards["gpu2"].swap_generation == 1
+            rt2._ctx_seen["agent-gpu2"] = 131072              # seen_ctx jsonb round trip
+            await rt2._save_seen_ctx()
+            row = {c["card"]: c for c in await rt2.store.cards()}["gpu2"]
+            assert row["seen_ctx"]["agent-gpu2"] == 131072 and row["swap_state"] == "loading"
             msgs = [GpuActuateV1.model_validate(e.payload) for ch, e in bus2.published
                     if ch == "orion:gpu_pool:actuate:request"]
             assert [(m.action, m.generation) for m in msgs] == [("status", load.generation)]

@@ -154,9 +154,9 @@ asks for a hold until durable-runs moves over (4.5), and actuation stays off unt
 ## Tests run
 
 ```text
-PYTHONPATH=. python -m pytest orion/gpu_pool/tests -q                          -> 160 passed
+PYTHONPATH=. python -m pytest orion/gpu_pool/tests -q                          -> 163 passed
 cd services/orion-gpu-pool && GPU_POOL_TEST_POSTGRES_URI=<throwaway postgres:16> \
-  python -m pytest tests -q   (clean venv: only the pool's requirements + pytest) -> 90 passed
+  python -m pytest tests -q   (clean venv: only the pool's requirements + pytest) -> 91 passed
 node --test services/orion-hub/static/js/gpu_pool.test.js                        -> 15 passed
 cd services/orion-hub && pytest tests/test_gpu_pool_routes.py (Postgres)          -> 11 passed
 cd services/orion-hub && pytest tests/test_gpu_pool_panel_browser_smoke.py        -> 2 passed (Chromium)
@@ -245,6 +245,25 @@ finding is fixed below, each with a regression test.
 - Finding (MINOR): tests drove `in_flight` fields that 4.2 does not send, and answered a status id
   with `progress`.
   - Fix: tests now use the real reply shape (see above); the restart test was rewritten.
+- Finding (from 4.5, PR #2356, confirmed on the real runtime): the pool never loaded gpu2 for a
+  hold carrying `min_ctx_tokens`, and emitted nothing to say why.
+  - Cause: the load decision checked the seat's *live* context size, and an unloaded seat has none.
+  - Fix:
+    - The load decision (only) uses the seat's last-seen context size (`fits_for_load`). It is
+      persisted per card in the new v2 column `gpu_pool_cards.seen_ctx` jsonb, so it survives pool
+      restarts.
+    - When no size has ever been seen, the pool emits
+      `swap_requested reason=ctx_unknown detail=min_ctx_tokens=<n>` instead of staying silent.
+    - Placement still uses live context only.
+    - A static declaration was not possible: the seat's profile is chosen on circe by
+      `ATLAS_AGENT_PROFILE_NAME`, which the pool cannot read.
+  - Evidence: `test_min_ctx_hold_loads_the_seat_from_its_last_seen_context`,
+    `test_min_ctx_hold_with_no_known_seat_context_says_so`,
+    `test_a_seat_known_to_be_too_small_is_not_loaded_for_it`,
+    `test_min_ctx_hold_loads_gpu2_once_seen_even_after_a_pool_restart`, and a Postgres round trip
+    of `seen_ctx`.
+  - Residual: until a 4.3 pool has seen agent-gpu2 loaded once, min-ctx holds show `ctx_unknown`
+    rather than loading it. That state is visible, not silent.
 - NIT: the Hub `slotUse` merged a hold and a call on different roles.
   - Fix: they are merged only when on the same role, as the scheduler does.
 - NIT: every refused attach cost an extra locked RPC, because the client re-sent it.

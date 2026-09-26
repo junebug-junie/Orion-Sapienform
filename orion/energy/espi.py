@@ -2,9 +2,12 @@
 
 Linking follows the ESPI href convention: an IntervalBlock's self link is
 ``.../UsagePoint/<up>/MeterReading/<mr>/IntervalBlock/<ib>``; the MeterReading at
-``.../UsagePoint/<up>/MeterReading/<mr>`` carries a ``related`` link to its
-ReadingType, which holds unit, scale and flow direction. When a feed has exactly
-one ReadingType and the link is absent, that ReadingType is used.
+``.../UsagePoint/<up>/MeterReading/<mr>`` may carry several ``related`` links
+(e.g. IntervalBlock collection and ReadingType). The ReadingType link is the
+first ``related`` href whose self entry is a ReadingType present in the feed.
+If related links exist but none resolve to a feed ReadingType, the feed is
+rejected. When a MeterReading has no related ReadingType-shaped link and the
+feed has exactly one ReadingType, that ReadingType is used.
 
 Only forward flow (delivered to the house, flowDirection 1) is kept. Reverse flow
 (19, e.g. solar export) is a different quantity and is skipped, not netted.
@@ -66,13 +69,9 @@ def _reading_type(content: ET.Element, href: str) -> Optional[dict[str, Optional
         uom = _int(rt.find(f"{ESPI}uom"))
         pow10 = _int(rt.find(f"{ESPI}powerOfTenMultiplier"), 0)
         flow = _int(rt.find(f"{ESPI}flowDirection"))
-    except (ValueError, OverflowError, OSError) as exc:
+    except (ValueError, OverflowError) as exc:
         raise EspiError(f"invalid ReadingType at {href!r}") from exc
-    if pow10 is None:
-        pow10 = 0
-    if not POW10_MIN <= pow10 <= POW10_MAX:
-        raise EspiError(f"powerOfTenMultiplier out of range at {href!r}")
-    return {"uom": uom, "pow10": pow10, "flow": flow}
+    return {"uom": uom, "pow10": pow10 if pow10 is not None else 0, "flow": flow}
 
 
 def parse_espi(
@@ -88,7 +87,7 @@ def parse_espi(
         raise EspiError(f"not parseable XML: {exc}") from exc
 
     reading_types: dict[str, dict[str, Optional[int]]] = {}
-    meter_to_rt: dict[str, str] = {}
+    meter_related: dict[str, list[str]] = {}
     blocks: list[tuple[str, ET.Element]] = []
 
     for entry in root.iter(f"{ATOM}entry"):
@@ -104,11 +103,18 @@ def parse_espi(
         if content.find(f"{ESPI}MeterReading") is not None:
             related = links.get("related") or []
             if related:
-                meter_to_rt[self_href] = related[0]
+                meter_related[self_href] = related
             continue
         block = content.find(f"{ESPI}IntervalBlock")
         if block is not None:
             blocks.append((self_href, block))
+
+    meter_to_rt: dict[str, Optional[str]] = {}
+    for mr_href, related_hrefs in meter_related.items():
+        resolved = next((href for href in related_hrefs if href in reading_types), None)
+        meter_to_rt[mr_href] = resolved if resolved is not None else (
+            related_hrefs[0] if related_hrefs else None
+        )
 
     only_rt = next(iter(reading_types.values())) if len(reading_types) == 1 else None
     rows: list[EnergyUsageIntervalV1] = []

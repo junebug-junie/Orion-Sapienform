@@ -8,6 +8,7 @@ import pytest
 from orion.energy.espi import EspiError, parse_espi
 
 FIXTURE = Path(__file__).parent / "fixtures" / "espi_two_flows.xml"
+GBA_LINK_ORDER = Path(__file__).parent / "fixtures" / "espi_gba_link_order.xml"
 RETRIEVED = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
 
 
@@ -93,7 +94,7 @@ def test_feed_without_readings_raises() -> None:
 
 def test_non_integer_reading_type_uom_raises_espi_error() -> None:
     xml = FIXTURE.read_bytes().replace(b"<espi:uom>72</espi:uom>", b"<espi:uom>Wh</espi:uom>", 1)
-    with pytest.raises(EspiError):
+    with pytest.raises(EspiError, match="invalid ReadingType"):
         parse_espi(xml, retrieved_at=RETRIEVED, source="file_drop")
 
 
@@ -101,8 +102,15 @@ def test_out_of_range_pow10_raises_espi_error() -> None:
     xml = FIXTURE.read_bytes().replace(
         b"<espi:powerOfTenMultiplier>0<", b"<espi:powerOfTenMultiplier>400<", 1
     )
-    with pytest.raises(EspiError):
+    with pytest.raises(EspiError, match="powerOfTenMultiplier"):
         parse_espi(xml, retrieved_at=RETRIEVED, source="file_drop")
+
+
+def test_gba_link_order_parses_same_forward_rows() -> None:
+    rows = parse_espi(GBA_LINK_ORDER.read_bytes(), retrieved_at=RETRIEVED, source="file_drop")
+    expected = parse_espi(FIXTURE.read_bytes(), retrieved_at=RETRIEVED, source="file_drop")
+    assert [r.energy_kwh for r in rows] == pytest.approx([r.energy_kwh for r in expected])
+    assert [r.interval_start for r in rows] == [r.interval_start for r in expected]
 
 
 def test_single_reading_type_used_when_no_related_link() -> None:

@@ -1,0 +1,36 @@
+services:
+  orion-zwave:
+    container_name: ${PROJECT}-orion-zwave
+    build:
+      context: ../..
+      dockerfile: services/orion-zwave/Dockerfile
+    restart: unless-stopped
+
+    env_file:
+      - .env
+    environment:
+      SERVICE_NAME: ${SERVICE_NAME}
+      SERVICE_VERSION: ${SERVICE_VERSION:-0.1.0}
+      INSTANCE_ID: ${INSTANCE_ID}
+      ORION_BUS_ENABLED: ${ORION_BUS_ENABLED}
+      ORION_BUS_URL: ${ORION_BUS_URL}
+      ORION_ZWAVE_ENABLED: ${ORION_ZWAVE_ENABLED:-false}
+      ZWAVE_JS_WS_URL: ${ZWAVE_JS_WS_URL}
+      ZWAVE_NODE_ID: ${ZWAVE_NODE_ID}
+      ZWAVE_DEVICE_ID: ${ZWAVE_DEVICE_ID}
+      ZWAVE_DEVICE_NAME: ${ZWAVE_DEVICE_NAME}
+      COOLING_SAMPLE_CHANNEL: ${COOLING_SAMPLE_CHANNEL}
+      COOLING_POLL_INTERVAL_SEC: ${COOLING_POLL_INTERVAL_SEC:-5}
+      HEARTBEAT_INTERVAL_SEC: ${HEARTBEAT_INTERVAL_SEC:-10}
+      ORION_HEALTH_CHANNEL: ${ORION_HEALTH_CHANNEL:-orion:system:health}
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    networks:
+      - app-net
+
+
+networks:
+  app-net:
+    external: true

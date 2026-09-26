@@ -78,6 +78,16 @@ svg text { fill: var(--ink-2); font-size: 11px; }
 .ev-aborted, .ev-expired, .ev-dead_lettered, .ev-unavailable, .ev-discovery_mismatch { color: var(--critical); }
 .ev-recalled, .ev-backlogged, .ev-swap_requested { color: var(--warning); }
 #controlStatus { min-height: 1.4em; }
+.swapline { border: 1px solid var(--hairline); border-radius: 8px; padding: 4px 8px; }
+.swapline .meta { color: var(--ink-muted); font-size: 11px; }
+.swap-loading, .swap-unloading { border-color: var(--warning); }
+.swap-fault { border-color: var(--critical); border-width: 2px; }
+.swap-fault .swapstate { color: var(--critical); border-color: var(--critical); font-weight: 600; }
+.guard-clear { color: var(--good-text); }
+.guard-block { color: var(--critical); }
+tr.child td { font-size: 11px; }
+.ev-swap_failed, .ev-actuate_refused { color: var(--critical); }
+.ev-swap_started, .ev-swapped { color: var(--good-text); }
 </style>
 </head>
 <body>
@@ -95,7 +105,14 @@ svg text { fill: var(--ink-2); font-size: 11px; }
     <div class="cards" id="cards"></div>
     <div class="spanning" id="spanning"></div>
     <div class="muted" id="unclaimed"></div>
+<div class="muted" id="swapGuards"></div>
     <details><summary>Raw config/gpu_pool.yaml</summary><pre id="yaml"></pre></details>
+  </section>
+
+  <section class="panel" aria-labelledby="holdsTitle">
+<h2 id="holdsTitle">Durable-run holds</h2>
+<p class="muted">A hold keeps one run on one model for the whole run. Its calls ("children") run in the hold's slot; between them, strictly higher-priority calls may use the card. Click a row to walk its path.</p>
+<div id="holds"></div>
   </section>
 
   <section class="panel" aria-labelledby="controlsTitle">

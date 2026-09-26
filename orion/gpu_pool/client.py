@@ -266,3 +266,52 @@ async def _withdraw(bus: Any, req: GpuLeaseRequestV1, reply: GpuLeaseReplyV1 | N
 async def _quiet(coro) -> None:
     with contextlib.suppress(Exception):
         await coro
+
+
+# --- stage 4.3: a durable run's own hold (what durable-runs calls in 4.5) --------------------------
+# The calls made UNDER a hold go through ``gpu_lease(..., hold=ref)`` above (verb=attach).
+#
+#     reply = await acquire_hold(bus, holder=durable_run_holder(run_id), work_class="agent",
+#                                request_id=f"{run_id}:{attempt}", priority="background")
+#     granted -> ref = hold_ref(reply, holder); queued/backlogged -> interrupt, wake on the pool's
+#     "granted" event for reply.lease_id; unavailable -> fail the run with reply.reason
+#     beat = await heartbeat_lease(bus, ref.lease_id, source=...)  # "recall": release at next node
+#     st = await lease_status(bus, lease_id, source=...)           # resume after restart
+#     await release_lease(bus, ref.lease_id, source=...)
+
+
+async def acquire_hold(
+    bus: Any, *, holder: str, work_class: str, request_id: str, priority: str = "background",
+    deadline_at: datetime | None = None, min_ctx_tokens: int = 0, turn_correlation_id: str | None = None,
+    source: str | None = None, timeout_sec: float = LEASE_RPC_TIMEOUT_SEC,
+) -> GpuLeaseReplyV1:
+    """Ask for a durable run's hold; answers at once (granted / queued / backlogged / unavailable).
+    Idempotent on ``request_id`` (``<run_id>:<attempt>``): re-asking after a lost reply returns the
+    same lease. Always retryable: an expired or aborted hold re-queues with the same lease_id (and a
+    new generation -- refs to the old one are refused by attach and by validate_hold_ref)."""
+    req = GpuLeaseRequestV1(verb="acquire", request_id=request_id, holder=holder, work_class=work_class,
+                            priority=priority, kind="hold", min_ctx_tokens=min_ctx_tokens, deadline_at=deadline_at,
+                            turn_correlation_id=turn_correlation_id, retryable=True)
+    return await lease_rpc(bus, req, source=source or holder, timeout_sec=timeout_sec)
+
+
+async def heartbeat_lease(bus: Any, lease_id: str, *, source: str,
+                          timeout_sec: float = LEASE_RPC_TIMEOUT_SEC) -> GpuLeaseReplyV1:
+    """granted -> keep going; recall -> finish the current node and release before ``recall_by``
+    (hold_clawback_grace_sec); anything else -> no longer held (``lease_status`` says why)."""
+    return await lease_rpc(bus, GpuLeaseRequestV1(verb="heartbeat", lease_id=lease_id), source=source,
+                           timeout_sec=timeout_sec)
+
+
+async def release_lease(bus: Any, lease_id: str, *, source: str, outcome: str = "ok", detail: str | None = None,
+                        timeout_sec: float = LEASE_RPC_TIMEOUT_SEC) -> GpuLeaseReplyV1:
+    return await lease_rpc(bus, GpuLeaseRequestV1(verb="release", lease_id=lease_id, outcome=outcome,
+                                                  detail=detail), source=source, timeout_sec=timeout_sec)
+
+
+def hold_ref(reply: GpuLeaseReplyV1, holder: str) -> GpuLeaseRefV1:
+    """The GpuLeaseRefV1 a granted hold's calls carry (header X-Orion-Gpu-Lease / options.gpu_lease)."""
+    if reply.status not in HOLD_LIVE_STATUSES or reply.grant is None:
+        raise LeaseUnavailable(f"hold_not_granted:{reply.status}", reply.lease_id)
+    return GpuLeaseRefV1(lease_id=reply.grant.lease_id, generation=reply.grant.generation,
+                         role=reply.grant.role, holder=holder)

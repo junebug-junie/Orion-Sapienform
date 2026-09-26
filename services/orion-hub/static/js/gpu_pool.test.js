@@ -107,3 +107,49 @@ test("backfillLabel says N+ at the pool's cap", () => {
   assert.equal(gp.backfillLabel(12), "12");
   assert.equal(gp.backfillLabel(gp.BACKFILL_LIMIT), "1000+");
 });
+
+// --- stage 4.3: holds, children, swap state --------------------------------------------------
+const HOLD_STATE = {
+  cards: [{ card: "gpu2", swap_state: "fault", swap_role: "agent-gpu2", actuated_roles: ["agent-gpu2"],
+            actuation: { action: "load", role: "agent-gpu2", generation: 3, reason: "demand", outcome: "failed" },
+            cooldown_until: null }, { card: "gpu1" }],
+  swap_guards: { thermal: null, visual_baseline: "visual_baseline_urgent" },
+  leases: [
+    { lease_id: "h1", kind: "hold", holder: "durable-runs:r1", status: "granted", role: "agent", generation: 2, granted_at: "2026-09-25T10:00:00Z" },
+    { lease_id: "c1", kind: "request", hold_lease_id: "h1", status: "granted", role: "agent" },
+    { lease_id: "c2", kind: "request", hold_lease_id: "h1", status: "queued" },
+    { lease_id: "h2", kind: "hold", holder: "durable-runs:r2", status: "queued" },
+    { lease_id: "x", kind: "request", status: "granted", role: "metacog" },
+  ],
+};
+
+test("slotUse counts a hold and its running call as one slot, an idle hold as one", () => {
+  assert.deepEqual(gp.slotUse(HOLD_STATE.leases), { agent: 1, metacog: 1 });
+  const idle = HOLD_STATE.leases.filter((l) => l.lease_id !== "c1");
+  assert.deepEqual(gp.slotUse(idle), { agent: 1, metacog: 1 });
+});
+
+test("holdModel lists holds with their calls", () => {
+  const holds = gp.holdModel(HOLD_STATE);
+  assert.deepEqual(holds.map((h) => h.leaseId), ["h1", "h2"]);
+  assert.equal(holds[0].inFlight, 1);
+  assert.equal(holds[0].waiting, 1);
+  assert.deepEqual(holds[0].children.map((c) => c.lease_id), ["c1", "c2"]);
+  assert.equal(holds[1].role, null);
+});
+
+test("swapModel exposes fault and the action; guardModel says which guard blocks", () => {
+  const sw = gp.swapModel(HOLD_STATE);
+  assert.equal(sw.gpu2.swapState, "fault");
+  assert.equal(sw.gpu2.action.outcome, "failed");
+  assert.deepEqual(sw.gpu2.actuatedRoles, ["agent-gpu2"]);
+  assert.equal(sw.gpu1.swapState, "idle");                       // a pre-4.3 pool sends none of it
+  assert.deepEqual(gp.guardModel(HOLD_STATE), [{ name: "thermal", clear: true, why: null },
+    { name: "visual_baseline", clear: false, why: "visual_baseline_urgent" }]);
+});
+
+test("the template carries the holds and guards mount points the renderer writes to", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "..", "templates", "gpu_pool.html"), "utf8");
+  for (const id of ["holds", "swapGuards"]) assert.ok(html.includes(`id="${id}"`), id);
+  assert.ok(html.includes(".swap-fault"));
+});

@@ -271,3 +271,62 @@ def test_withdraw_rpcs_are_bounded_short():
         release.set()
         await holder
     asyncio.run(go())
+
+
+# --- stage 4.3: the durable-run hold API (what 4.4 gateway / 4.5 durable-runs call) ---------------
+def test_hold_lifecycle_through_the_real_client_and_codec():
+    from orion.gpu_pool.client import (
+        acquire_hold, durable_run_holder, gpu_lease, heartbeat_lease, hold_ref, lease_status, release_lease,
+        validate_hold_ref,
+    )
+
+    async def go():
+        bus = WiredBus()
+        rt, _ = await pool(bus)
+        assert durable_run_holder("run-1") == "durable-runs:run-1"
+        reply = await acquire_hold(bus, holder="durable-runs:run-1", work_class="agent", request_id="run-1:1")
+        assert reply.status == "granted" and reply.grant.role == "agent"
+        again = await acquire_hold(bus, holder="durable-runs:run-1", work_class="agent", request_id="run-1:1")
+        assert again.lease_id == reply.lease_id                   # idempotent on request_id
+        ref = hold_ref(reply, "durable-runs:run-1")
+        assert (ref.lease_id, ref.generation, ref.role) == (reply.lease_id, reply.grant.generation, "agent")
+        await validate_hold_ref(bus, ref, source="hub", expected_holder="durable-runs:run-1")   # 4.4's fence
+        async with gpu_lease(bus, work_class="agent", holder="orion-llm-gateway", hold=ref,
+                             turn_correlation_id=str(uuid.uuid4())) as call:
+            assert call.grant.role == "agent" and call.lease_id != ref.lease_id
+            child = call.lease_id
+        row = await rt.store.lease(child)
+        assert row["status"] == "released" and row["hold_lease_id"] == ref.lease_id
+        assert (await heartbeat_lease(bus, ref.lease_id, source="durable-runs")).status == "granted"
+        st = await lease_status(bus, ref.lease_id, source="durable-runs")
+        assert st.status == "granted" and st.grant.generation == ref.generation
+        assert (await lease_status(bus, "missing", source="durable-runs")).status == "unknown_lease"
+        assert (await release_lease(bus, ref.lease_id, source="durable-runs")).status == "ok"
+        with pytest.raises(LeaseUnavailable) as err:
+            async with gpu_lease(bus, work_class="agent", holder="orion-llm-gateway", hold=ref):
+                pass
+        assert err.value.reason == "hold_not_granted:released"
+        with pytest.raises(LeaseUnavailable):
+            await validate_hold_ref(bus, ref, source="hub")
+    asyncio.run(go())
+
+
+def test_a_refused_attach_never_cancels_the_runs_hold():
+    """The client withdraws (cancels) the reply's lease_id when an acquire/attach fails. A refused
+    attach must therefore never name the hold there, or one stale call would end the whole run."""
+    from orion.gpu_pool.client import acquire_hold, gpu_lease, hold_ref, validate_hold_ref
+    from orion.schemas.gpu_pool import GpuLeaseRefV1
+
+    async def go():
+        bus = WiredBus()
+        rt, _ = await pool(bus)
+        reply = await acquire_hold(bus, holder="durable-runs:run-1", work_class="agent", request_id="run-1:1")
+        ref = hold_ref(reply, "durable-runs:run-1")
+        stale = GpuLeaseRefV1(lease_id=ref.lease_id, generation=ref.generation + 1, role=ref.role, holder=ref.holder)
+        with pytest.raises(LeaseUnavailable) as err:
+            async with gpu_lease(bus, work_class="agent", holder="orion-llm-gateway", hold=stale):
+                pass
+        assert err.value.reason.startswith("stale_hold_generation")
+        assert (await rt.store.lease(ref.lease_id))["status"] == "granted"
+        await validate_hold_ref(bus, ref, source="hub")          # the run still holds it
+    asyncio.run(go())

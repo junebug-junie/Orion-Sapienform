@@ -19,16 +19,17 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter, Rabbit
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
-from orion.gpu_pool.config import load_pool_config
+from orion.gpu_pool.config import SWAP_GUARDS, load_pool_config
 from orion.gpu_pool.discovery import Probe, load_profiles
 from orion.gpu_pool.lease_graph import build_lease_graph
 from orion.schemas.gpu_pool import (
-    GPU_LEASE_REPLY_KIND, GPU_POOL_CONTROL_REPLY_KIND, GPU_POOL_CONTROL_REQUEST_CHANNEL,
-    GPU_POOL_LEASE_REQUEST_CHANNEL, GPU_POOL_STATE_KIND, GPU_POOL_STATE_REQUEST_CHANNEL,
-    LLM_WORKER_ANNOUNCE_CHANNEL, GpuLeaseReplyV1, GpuLeaseRequestV1, GpuPoolControlReplyV1,
-    GpuPoolControlV1, GpuPoolStateRequestV1, LlmWorkerAnnounceV1,
+    GPU_LEASE_REPLY_KIND, GPU_POOL_ACTUATE_RESULT_CHANNEL, GPU_POOL_CONTROL_REPLY_KIND,
+    GPU_POOL_CONTROL_REQUEST_CHANNEL, GPU_POOL_LEASE_REQUEST_CHANNEL, GPU_POOL_STATE_KIND,
+    GPU_POOL_STATE_REQUEST_CHANNEL, LLM_WORKER_ANNOUNCE_CHANNEL, GpuActuateResultV1, GpuLeaseReplyV1,
+    GpuLeaseRequestV1, GpuPoolControlReplyV1, GpuPoolControlV1, GpuPoolStateRequestV1, LlmWorkerAnnounceV1,
 )
 
+from app.guards import GuardReader
 from app.runtime import SLOW_LOCK_MS, PoolRuntime
 from app.settings import get_settings
 from app.store import CHECKPOINT_SCHEMA, PostgresStore, ensure_checkpoint_schema, pool_kwargs
@@ -85,20 +86,17 @@ async def _on_lease(env: BaseEnvelope) -> BaseEnvelope | None:
     return _reply(env, GPU_LEASE_REPLY_KIND, await dispatch_lease(runtime, req))
 
 
-# Verbs the contract accepts (stage 4.1) but this pool has no engine for yet (holds + attach land in
-# stage 4.3). Answered explicitly: before this, any verb that was not acquire/heartbeat/release fell
-# through to cancel, so a "status" read would have ended the very lease it asked about.
-UNSUPPORTED_LEASE_VERBS = frozenset({"attach", "status"})
-
-
 async def dispatch_lease(rt: Any, req: GpuLeaseRequestV1) -> GpuLeaseReplyV1:
-    if req.verb in UNSUPPORTED_LEASE_VERBS:
-        return GpuLeaseReplyV1(status="unavailable", lease_id=req.lease_id,
-                               reason=f"verb_not_supported:{req.verb}")
+    # Every verb is named explicitly: an unknown verb must never fall through to cancel (before
+    # 4.1 it did, so a "status" read would have ended the very lease it asked about).
     if req.verb == "acquire":
         return await rt.acquire(req)
+    if req.verb == "attach":
+        return await rt.attach(req)
     if not req.lease_id:
         return GpuLeaseReplyV1(status="unknown_lease", reason="lease_id required")
+    if req.verb == "status":
+        return await rt.status(req.lease_id)
     if req.verb == "heartbeat":
         return await rt.heartbeat(req.lease_id)
     if req.verb == "release":
@@ -122,6 +120,31 @@ async def _on_control(env: BaseEnvelope) -> BaseEnvelope | None:
     out = await runtime.control(ctl)
     logger.info("gpu_pool_control verb=%s actor=%s ok=%s reason=%s", ctl.verb, ctl.actor, out.ok, out.reason)
     return _reply(env, GPU_POOL_CONTROL_REPLY_KIND, out)
+
+
+async def _on_actuate_result(env: BaseEnvelope) -> None:
+    try:
+        res = GpuActuateResultV1.model_validate(env.payload or {})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gpu_pool_actuate_result_invalid err=%s", exc)
+        return
+    await runtime.on_actuate_result(res)
+
+
+async def _guards_forever(reader: GuardReader) -> None:
+    """Read the swap-load guards outside the runtime lock (HTTP must not stall lease RPCs) and
+    hand the result over with one attribute assignment."""
+    async with httpx.AsyncClient(timeout=3) as client:
+        while not _stop.is_set():
+            try:
+                runtime.guard_states = await reader.read(client, datetime.now(timezone.utc))
+            except Exception as exc:  # noqa: BLE001 -- a guard that cannot be read blocks loads
+                runtime.guard_states = {g: f"unavailable:{type(exc).__name__}" for g in SWAP_GUARDS}
+                logger.warning("gpu_pool_guard_read_failed err=%s", exc)
+            try:
+                await asyncio.wait_for(_stop.wait(), timeout=_settings.guard_refresh_sec)
+            except asyncio.TimeoutError:
+                pass
 
 
 async def _on_announce(env: BaseEnvelope) -> None:
@@ -222,7 +245,14 @@ async def lifespan(app: FastAPI):
         prober=prober, mode=_settings.mode,
         service_name=_settings.service_name, announce_stale_sec=_settings.announce_stale_sec,
         probe_interval_sec=_settings.probe_interval_sec, state_publish_sec=_settings.state_publish_sec,
-        replay_payload_max_bytes=_settings.replay_payload_max_bytes)
+        replay_payload_max_bytes=_settings.replay_payload_max_bytes,
+        actuate_roles=_settings.actuate_role_list)
+    logger.info("gpu_pool_actuation roles=%s", sorted(runtime.actuate_roles) or "off")
+    # The actuator's replies are subscribed BEFORE start(): start() asks about a swap the previous
+    # process left in flight, and the answer must not arrive to nobody. Lease RPCs start after it.
+    results = Hunter(_cfg(), handler=_on_actuate_result, patterns=[GPU_POOL_ACTUATE_RESULT_CHANNEL])
+    await results.start_background()
+    _chassis.append(results)
     await runtime.start()
 
     for channel, handler in ((GPU_POOL_LEASE_REQUEST_CHANNEL, _on_lease),
@@ -235,10 +265,16 @@ async def lifespan(app: FastAPI):
     await hunter.start_background()
     _chassis.append(hunter)
     _stop.clear()
+    if any(spec.swap and spec.swap.guards for spec in cfg.roles.values()):
+        _tasks.append(asyncio.create_task(_guards_forever(GuardReader(
+            cabinet_url=_settings.cabinet_url, visual_activity_url=_settings.visual_activity_url))))
+    else:
+        runtime.guard_states = {g: None for g in SWAP_GUARDS}
     _tasks.append(asyncio.create_task(_tick_forever()))
     _tasks.append(asyncio.create_task(_prune_forever()))
     logger.info("gpu_pool_ready channels=%s", [GPU_POOL_LEASE_REQUEST_CHANNEL, GPU_POOL_STATE_REQUEST_CHANNEL,
-                                              GPU_POOL_CONTROL_REQUEST_CHANNEL, LLM_WORKER_ANNOUNCE_CHANNEL])
+                                              GPU_POOL_CONTROL_REQUEST_CHANNEL, LLM_WORKER_ANNOUNCE_CHANNEL,
+                                              GPU_POOL_ACTUATE_RESULT_CHANNEL])
     try:
         yield
     finally:

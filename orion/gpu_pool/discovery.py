@@ -59,7 +59,7 @@ def resolve_roles(
 ) -> tuple[list[DiscoveredRoleV1], dict[str, RoleLive], list[str]]:
     from orion.gpu_pool.scheduler import _Ctx  # evicted/loaded logic lives with the scheduler
 
-    view = _Ctx(cfg, {}, cards, now, {}, set(), set())
+    view = _Ctx(cfg, {}, cards, now, {}, {}, set(), set(), set())
     discovered: list[DiscoveredRoleV1] = []
     live: dict[str, RoleLive] = {}
 

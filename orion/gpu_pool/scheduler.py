@@ -14,6 +14,19 @@ Rules implemented (numbers match docs/superpowers/specs/2026-09-24-gpu-pool-desi
   8  operator-only multi-card seats drain everything they evict
   9  lendable cards: non-owners only while lent; unlending recalls borrowers
   10 on_unavailable: wait / backlog / fail
+
+Stage 4.3 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md):
+  H1 a hold (kind="hold") is placed like any lease, at most one per role, and reserves one slot
+  H2 a child (hold_lease_id set) runs in its hold's slot: only on the hold's role, ahead of the
+     role's queue, never behind its own run, never taking a second slot for the pair
+  H3 interleave: while a hold has no child in flight, a lease of STRICTLY higher priority may use
+     that slot (gaps are shared, Juniper 2026-09-25); equal/lower priority and other holds may not
+  H4 hold recall uses defaults.hold_clawback_grace_sec; a swap seat with max_hold_sec drains once
+     it has been loaded that long, then unloads (today's DURABLE_RUNS_ELASTIC_MAX_BORROW_SEC)
+  S1 a seat load is blocked -- reported as SwapBlocked, never silent -- by min residency after an
+     unload, cooldown after a failed load, or a failing guard (thermal, visual_baseline)
+  S2 a card in "fault" grants nothing on any of its roles; a card mid-swap grants nothing on the
+     seat or the roles it evicts
 """
 from __future__ import annotations
 
@@ -42,9 +55,15 @@ class CardLive:
     card: str
     lent: bool = False
     swapped_in: set[str] = field(default_factory=set)
-    swap_state: str = "idle"      # idle | loading | unloading
-    cooldown_until: datetime | None = None   # set when a swap seat unloads; blocks reload
+    swap_state: str = "idle"      # idle | loading | unloading | fault
+    cooldown_until: datetime | None = None   # set after a failed/refused load; blocks reload
     last_active_at: datetime | None = None   # last time a lease held a swap seat on this card
+    swap_role: str | None = None             # the seat a loading/unloading/fault state is about
+    residency_until: datetime | None = None  # after an unload, the evicted residents stay until this
+    loaded_at: datetime | None = None        # when the seat on this card was loaded (max_hold_sec)
+    # Runtime bookkeeping for the actuation engine; the scheduler reads neither.
+    swap_generation: int = 0
+    swap_action: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +84,8 @@ class LeaseView:
     expires_at: datetime | None = None
     operator: bool = False
     retryable: bool = False   # someone will use a re-grant; otherwise "backlog" behaves like "wait"
+    kind: str = "request"     # request | hold
+    hold_lease_id: str | None = None   # set on a child: the hold whose slot it runs in
 
 
 @dataclass(frozen=True)
@@ -128,7 +149,17 @@ class SwapUnload:
     reason: str
 
 
-Decision = Union[Grant, Recall, Abort, Expire, Unavailable, Backlog, Requeue, DeadLetter, SwapLoad, SwapUnload]
+@dataclass(frozen=True)
+class SwapBlocked:
+    """A load the demand justifies but a precondition refuses: min_residency, cooldown or
+    guard:<name>. Reported (edge-triggered by the runtime), never actuated."""
+    role: str
+    reason: str
+    detail: str | None = None
+
+
+Decision = Union[Grant, Recall, Abort, Expire, Unavailable, Backlog, Requeue, DeadLetter, SwapLoad, SwapUnload,
+                 SwapBlocked]
 
 
 @dataclass
@@ -137,7 +168,9 @@ class _Ctx:
     roles: dict[str, RoleLive]
     cards: dict[str, CardLive]
     now: datetime
-    occupancy: dict[str, int]
+    used: dict[str, int]                  # active requests + children, per role
+    holds: dict[str, list[LeaseView]]     # active holds, per role (at most one each)
+    busy_holds: set[str]                  # holds with a child in flight (the child sits in `used`)
     draining: set[str]
     operator_granted: set[str]
 
@@ -155,13 +188,47 @@ class _Ctx:
                 return True
         return False
 
+    def swap_blocked(self, role: str) -> bool:
+        """S2: a faulted card grants nothing; a card mid-swap grants nothing on the seat or on
+        what it evicts (a mid-swap card with no recorded seat blocks everything on it)."""
+        for c in self.cfg.roles[role].cards:
+            card = self.cards[c]
+            if card.swap_state == "fault":
+                return True
+            if card.swap_state in ("loading", "unloading"):
+                seat = card.swap_role
+                if seat is None or seat not in self.cfg.roles or role == seat \
+                        or role in self.cfg.evicted_by(seat):
+                    return True
+        return False
+
     def usable(self, role: str) -> bool:
         live = self.roles.get(role)
-        return bool(live and live.healthy and live.slots > 0 and self.loaded(role))
+        return bool(live and live.healthy and live.slots > 0 and self.loaded(role)
+                    and not self.swap_blocked(role))
 
-    def free(self, role: str) -> int:
+    def idle_holds(self, role: str) -> list[LeaseView]:
+        return [h for h in self.holds.get(role, []) if h.lease_id not in self.busy_holds]
+
+    def occupancy(self, role: str) -> int:
+        """Slots taken, counting a hold with no child in flight as holding its one slot."""
+        return self.used.get(role, 0) + len(self.idle_holds(role))
+
+    def free_for(self, lease: LeaseView, role: str) -> int:
+        """H1-H3: free slots on ``role`` as ``lease`` sees them."""
+        if lease.kind == "hold" and self.holds.get(role):
+            return 0  # at most one hold per role
         live = self.roles.get(role)
-        return (live.slots if live else 0) - self.occupancy.get(role, 0)
+        n = (live.slots if live else 0) - self.used.get(role, 0)
+        rank = self.cfg.priority_rank
+        for hold in self.idle_holds(role):
+            if lease.hold_lease_id == hold.lease_id:
+                continue  # a child runs in its own hold's slot
+            if lease.kind != "hold" and lease.hold_lease_id is None \
+                    and rank(lease.priority) < rank(hold.priority):
+                continue  # strictly higher priority may use the gap between the run's calls
+            n -= 1
+        return n
 
     def fits(self, lease: LeaseView, role: str) -> bool:
         spec = self.cfg.roles[role]
@@ -183,6 +250,37 @@ class _Ctx:
             return False
         return True
 
+    def fits_for_load(self, lease: LeaseView, role: str, seen_ctx: dict[str, int]) -> bool | None:
+        """``fits`` for the LOAD decision only: an unloaded seat reports no live context, so its
+        expected context is the last one seen there. None = cannot tell (never seen): the caller
+        reports that instead of staying silent. Placement still uses live context alone."""
+        spec = self.cfg.roles[role]
+        live = self.roles.get(role)
+        if live is None:
+            return False
+        if lease.min_ctx_tokens and spec.kind == "llm":
+            expected = live.ctx_per_slot or seen_ctx.get(role)
+            if expected is None:
+                probe = RoleLive(role, live.healthy, live.slots, None, live.vision)
+                return None if self._fits_ignoring_ctx(lease, role, probe) else False
+            live = RoleLive(role, live.healthy, live.slots, expected, live.vision)
+        return self._fits_ignoring_ctx(lease, role, live) and (
+            not lease.min_ctx_tokens or spec.kind != "llm" or live.ctx_per_slot >= lease.min_ctx_tokens)
+
+    def _fits_ignoring_ctx(self, lease: LeaseView, role: str, live: RoleLive) -> bool:
+        spec = self.cfg.roles[role]
+        if spec.operator_only and not lease.operator:
+            return False
+        if role in self.draining:
+            return False
+        if not self.cfg.owns(lease.work_class, role):
+            for card in self.cfg.lendable_cards(role):
+                if not self.cards[card].lent:
+                    return False
+        if lease.needs_vision and not live.vision:
+            return False
+        return True
+
     def placeable(self, lease: LeaseView, role: str) -> bool:
         return self.usable(role) and self.fits(lease, role)
 
@@ -198,31 +296,57 @@ def schedule(
     leases: list[LeaseView],
     now: datetime,
     seen_ctx: dict[str, int] | None = None,
+    guards: dict[str, str | None] | None = None,
 ) -> list[Decision]:
     """``seen_ctx``: each role's last-seen per-slot context, kept by the caller across restarts of
     the role. Used ONLY to decide "too big for this class" -- a briefly-down big role must not make
-    its class look small. Placement, swaps and serviceability use live ``roles`` alone."""
+    its class look small. Placement, swaps and serviceability use live ``roles`` alone.
+
+    ``guards``: swap-guard name -> None when clear, else why it fails (a guard the caller could not
+    read must be passed as failing, e.g. "unavailable"). A name missing from a dict fails closed.
+    ``None`` means the caller evaluates no guards at all (pure tests, the replay eval)."""
     d = cfg.defaults
     out: list[Decision] = []
 
-    occupancy: dict[str, int] = {}
-    for lease in leases:
-        if lease.status in ACTIVE and lease.role and not (
-                lease.expires_at is not None and lease.expires_at <= now):
-            occupancy[lease.role] = occupancy.get(lease.role, 0) + 1
+    active_now = [l for l in leases if l.status in ACTIVE and l.role
+                  and not (l.expires_at is not None and l.expires_at <= now)]
+    used: dict[str, int] = {}
+    holds: dict[str, list[LeaseView]] = {}
+    for lease in active_now:
+        if lease.kind == "hold":
+            holds.setdefault(lease.role, []).append(lease)
+        else:
+            used[lease.role] = used.get(lease.role, 0) + 1
+    hold_by_id = {h.lease_id: h for hs in holds.values() for h in hs}
+    # A child only fills its hold's slot when both sit on the same role (a re-granted hold may
+    # have moved while an old child finishes elsewhere; that child then just counts as used).
+    busy = {l.hold_lease_id for l in active_now
+            if l.hold_lease_id in hold_by_id and hold_by_id[l.hold_lease_id].role == l.role}
 
-    ctx = _Ctx(cfg, roles, cards, now, occupancy, set(), set())
+    ctx = _Ctx(cfg, roles, cards, now, used, holds, busy, set(), set())
+    rank = cfg.priority_rank
 
     # --- 1. timeouts that need no placement -----------------------------------------
     queued: list[LeaseView] = []
+    children: list[LeaseView] = []
     backlogged: list[LeaseView] = []
     for lease in leases:
         if lease.status == "retry_wait":
             if lease.deadline_at is not None and lease.deadline_at <= now:
                 out.append(Unavailable(lease.lease_id, "deadline"))
+            elif lease.hold_lease_id is not None and lease.hold_lease_id not in hold_by_id:
+                out.append(Unavailable(lease.lease_id, "hold_not_granted"))   # never re-queue for a gone run
             elif lease.not_before is None or lease.not_before <= now:
                 out.append(Requeue(lease.lease_id, "retry_due"))
-                queued.append(lease)
+                (children if lease.hold_lease_id else queued).append(lease)
+            continue
+        if lease.status == "queued" and lease.hold_lease_id is not None:
+            if lease.deadline_at is not None and lease.deadline_at <= now:
+                out.append(Unavailable(lease.lease_id, "deadline"))
+            elif lease.hold_lease_id not in hold_by_id:
+                out.append(Unavailable(lease.lease_id, "hold_not_granted"))
+            else:
+                children.append(lease)
             continue
         if lease.status == "queued":
             too_big = _exceeds_class(cfg, roles, lease, seen_ctx or {})
@@ -246,6 +370,7 @@ def schedule(
 
     # --- 2. what is draining this tick (no new grants there) -------------------------
     swap_roles = [r for r, spec in cfg.roles.items() if spec.swap is not None]
+    max_held: set[str] = set()
     for seat in swap_roles:
         spec = cfg.roles[seat]
         if ctx.loaded(seat):
@@ -254,6 +379,13 @@ def schedule(
                     ctx.cfg.owns(q.work_class, ev) and ctx.fits(q, ev)
                     for q in queued + backlogged for ev in cfg.evicted_by(seat)):
                 ctx.draining.add(seat)
+            # H4: a seat loaded for max_hold_sec gives its card back (loaded_at is only set when
+            # the pool itself loaded or adopted the seat, never by observation alone).
+            loaded_at = [cards[c].loaded_at for c in spec.cards if cards[c].loaded_at]
+            if not spec.operator_only and spec.max_hold_sec and loaded_at \
+                    and (now - min(loaded_at)).total_seconds() >= spec.max_hold_sec:
+                ctx.draining.add(seat)
+                max_held.add(seat)
         elif spec.operator_only and any(q.work_class in spec.owner and q.operator for q in queued):
             # An operator is taking the cards: everything the seat evicts drains.
             ctx.draining.update(cfg.evicted_by(seat))
@@ -268,18 +400,41 @@ def schedule(
             still_backlogged.append(lease)
     backlogged = still_backlogged
 
-    # --- 3. grants: owners on their own roles first, then everyone else -------------
+    # --- 3. grants: a run's own calls first, then owners on their own roles, then the rest
     order = _order(cfg, queued)
     granted: set[str] = set()
+    granted_role: dict[str, str] = {}
 
     def grant(lease: LeaseView, role: str) -> None:
         out.append(Grant(lease.lease_id, role))
         granted.add(lease.lease_id)
-        occupancy[role] = occupancy.get(role, 0) + 1
+        granted_role[lease.lease_id] = role
+        if lease.kind == "hold":
+            holds.setdefault(role, []).append(lease)
+            hold_by_id[lease.lease_id] = lease
+        else:
+            used[role] = used.get(role, 0) + 1
+            if lease.hold_lease_id is not None:
+                busy.add(lease.hold_lease_id)
+
+    # H2: a child jumps its role's queue and needs only its hold's slot. Not `fits`: a recalled or
+    # draining hold still finishes its current node inside the grace, and that needs its calls.
+    # One slot per hold: while one of its calls is in flight the next waits for it, and never takes
+    # a second slot ahead of the role's queue.
+    for lease in sorted(children, key=lambda l: (l.created_at, l.lease_id)):
+        hold = hold_by_id.get(lease.hold_lease_id)
+        if hold is None or lease.hold_lease_id in busy:
+            continue
+        if ctx.usable(hold.role) and ctx.free_for(lease, hold.role) > 0:
+            grant(lease, hold.role)
+
+    # Roles whose owner already has work running there: a hold must not borrow them only to be
+    # recalled on the next tick (the owner-demand recall below).
+    owner_active = {l.role for l in active_now if l.hold_lease_id is None and cfg.owns(l.work_class, l.role)}
 
     for lease in order:
         for role in cfg.classes[lease.work_class].roles:
-            if cfg.owns(lease.work_class, role) and ctx.placeable(lease, role) and ctx.free(role) > 0:
+            if cfg.owns(lease.work_class, role) and ctx.placeable(lease, role) and ctx.free_for(lease, role) > 0:
                 grant(lease, role)
                 break
 
@@ -291,22 +446,27 @@ def schedule(
         if lease.lease_id in granted:
             continue
         for role in cfg.classes[lease.work_class].roles:
-            if not ctx.placeable(lease, role) or ctx.free(role) <= 0:
+            if not ctx.placeable(lease, role) or ctx.free_for(lease, role) <= 0:
                 continue
             if not cfg.owns(lease.work_class, role) and owners_waiting(role):
+                continue
+            if lease.kind == "hold" and not cfg.owns(lease.work_class, role) and (
+                    role in owner_active or any(granted_role.get(q.lease_id) == role
+                                                and cfg.owns(q.work_class, role) for q in order)):
                 continue
             grant(lease, role)
             break
 
     # --- 4. recalls ------------------------------------------------------------------
-    recall_by = now + timedelta(seconds=d.clawback_grace_sec)
     recalled: set[str] = set()
-    active = [l for l in leases if l.status == "granted" and l.role]
+    # A child is never recalled on its own: its hold is, and the child finishes inside that grace.
+    active = [l for l in leases if l.status == "granted" and l.role and l.hold_lease_id is None]
 
     def recall(lease: LeaseView, reason: str) -> None:
         if lease.lease_id not in recalled:
             recalled.add(lease.lease_id)
-            out.append(Recall(lease.lease_id, recall_by, reason))
+            grace = d.hold_clawback_grace_sec if lease.kind == "hold" else d.clawback_grace_sec
+            out.append(Recall(lease.lease_id, now + timedelta(seconds=grace), reason))
 
     for role in cfg.roles:
         starving = owners_waiting(role)
@@ -315,7 +475,7 @@ def schedule(
         # Borrowers already giving the slot back count toward the owners waiting for it; without
         # this one waiting owner would recall one more borrower every tick of the grace period.
         already = sum(1 for l in leases if l.status == "recalling" and l.role == role
-                      and not cfg.owns(l.work_class, role))
+                      and l.hold_lease_id is None and not cfg.owns(l.work_class, role))
         needed = len(starving) - already
         if needed <= 0:
             continue
@@ -326,12 +486,35 @@ def schedule(
         for lease in borrowers[:needed]:
             recall(lease, "owner_waiting")
 
+    # A hold borrowing someone else's role gives it back once the owner has ANY demand there --
+    # also when that demand is being served through the hold's gaps right now (H3), which would
+    # otherwise hide the owner from `owners_waiting` for as long as the run keeps pausing.
+    owner_demand: set[str] = set()
+    for l in leases:
+        if l.hold_lease_id is not None:
+            continue
+        role = granted_role.get(l.lease_id) or (l.role if l.status in ACTIVE else None)
+        if role and cfg.owns(l.work_class, role):
+            owner_demand.add(role)
+    for role in cfg.roles:
+        if owners_waiting(role):
+            owner_demand.add(role)
+    for lease in active:
+        if lease.kind == "hold" and lease.role in owner_demand and not cfg.owns(lease.work_class, lease.role):
+            recall(lease, "owner_waiting")
+
     for lease in active:
         if not cfg.owns(lease.work_class, lease.role):
             if any(not cards[c].lent for c in cfg.lendable_cards(lease.role)):
                 recall(lease, "card_unlent")
-        if lease.role in ctx.draining:
+        if lease.role in max_held:
+            recall(lease, "max_hold")
+        elif lease.role in ctx.draining:
             recall(lease, "draining")
+        spec = cfg.roles[lease.role]
+        if lease.kind == "hold" and not lease.operator and spec.swap is None and spec.max_hold_sec \
+                and lease.granted_at and (now - lease.granted_at).total_seconds() >= spec.max_hold_sec:
+            recall(lease, "max_hold")
 
     # --- 5. nothing can serve it: wait / backlog / fail ------------------------------
     def reclaimable(role: str) -> bool:
@@ -343,7 +526,8 @@ def schedule(
         for role in cfg.classes[lease.work_class].roles:
             if ctx.fits(lease, role) and (ctx.usable(role) or _loadable(ctx, role)):
                 return True
-            if role in ctx.draining and ctx.roles.get(role) and ctx.roles[role].healthy:
+            if role in ctx.draining and role not in max_held and ctx.roles.get(role) \
+                    and ctx.roles[role].healthy:
                 return True  # it comes back after the drain
             if cfg.owns(lease.work_class, role) and reclaimable(role):
                 return True  # waiting for its card back is not "nothing can serve it"
@@ -369,9 +553,9 @@ def schedule(
             continue
         evicted = cfg.evicted_by(seat)
         if ctx.loaded(seat):
-            busy = occupancy.get(seat, 0) > 0
-            if seat in ctx.draining and not busy:
-                out.append(SwapUnload(seat, "owner_reclaim"))
+            busy_seat = ctx.occupancy(seat) > 0
+            if seat in ctx.draining and not busy_seat:
+                out.append(SwapUnload(seat, "max_hold" if seat in max_held else "owner_reclaim"))
             elif spec.operator_only:
                 holders = [l for l in leases if l.work_class in spec.owner and l.status in ACTIVE + ("queued",)]
                 over = spec.max_hold_sec and any(
@@ -382,28 +566,49 @@ def schedule(
                     for l in holders:
                         if l.status == "granted":
                             recall(l, "max_hold")
-            elif not busy and not any(seat in cfg.classes[q.work_class].roles for q in waiting):
+            elif not busy_seat and not any(seat in cfg.classes[q.work_class].roles for q in waiting):
                 last = max((c.last_active_at for c in seat_cards if c.last_active_at), default=None)
                 if last is None or (now - last).total_seconds() >= d.swap_idle_unload_sec:
                     out.append(SwapUnload(seat, "idle"))
             continue
-        if any(c.cooldown_until and c.cooldown_until > now for c in seat_cards) and not spec.operator_only:
-            continue
         if spec.operator_only:
             wanting = [q for q in order if q.work_class in spec.owner and q.operator]
-            if wanting and all(occupancy.get(r, 0) == 0 for r in evicted):
+            if wanting and all(ctx.occupancy(r) == 0 for r in evicted):
                 out.append(SwapLoad(seat, "operator"))
             continue
-        wanting = [
-            q for q in waiting
-            if seat in cfg.classes[q.work_class].roles and ctx.fits(q, seat)
-            and (now - (q.queued_since or q.created_at)).total_seconds() >= d.swap_after_wait_sec
-        ]
-        residents_idle = all(occupancy.get(r, 0) == 0 for r in evicted)
+        waited = [q for q in waiting if seat in cfg.classes[q.work_class].roles
+                  and (now - (q.queued_since or q.created_at)).total_seconds() >= cfg.swap_after_wait_sec(seat)]
+        fit = {q.lease_id: ctx.fits_for_load(q, seat, seen_ctx or {}) for q in waited}
+        wanting = [q for q in waited if fit[q.lease_id]]
+        unknown = [q for q in waited if fit[q.lease_id] is None]
+        residents_idle = all(ctx.occupancy(r) == 0 for r in evicted)
         residents_wanted = any(cfg.owns(q.work_class, r) for q in waiting for r in evicted)
-        if wanting and residents_idle and not residents_wanted:
-            out.append(SwapLoad(seat, "demand"))
+        if residents_idle and not residents_wanted and unknown and not wanting:
+            # Demand the seat could serve, but its context size was never seen: say so, not silence.
+            out.append(SwapBlocked(seat, "ctx_unknown",
+                                   f"min_ctx_tokens={max(q.min_ctx_tokens for q in unknown)}"))
+            continue
+        if not (wanting and residents_idle and not residents_wanted):
+            continue
+        blocked = _load_blocked(spec.swap.guards if spec.swap else [], seat_cards, now, guards)
+        out.append(SwapBlocked(seat, *blocked) if blocked else SwapLoad(seat, "demand"))
     return out
+
+
+def _load_blocked(seat_guards: list[str], seat_cards: list[CardLive], now: datetime,
+                  guards: dict[str, str | None] | None) -> tuple[str, str | None] | None:
+    """S1: why a justified load may not start yet, or None."""
+    if any(c.residency_until and c.residency_until > now for c in seat_cards):
+        return "min_residency", None
+    if any(c.cooldown_until and c.cooldown_until > now for c in seat_cards):
+        return "cooldown", None
+    if guards is None:
+        return None
+    for name in seat_guards:
+        state = guards.get(name, "unavailable")
+        if state:
+            return f"guard:{name}", state
+    return None
 
 
 def _exceeds_class(cfg: PoolConfig, roles: dict[str, RoleLive], lease: LeaseView,

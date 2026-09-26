@@ -37,6 +37,20 @@ class Settings(BaseSettings):
     replay_payload_max_bytes: int = Field(262144, alias="GPU_POOL_REPLAY_PAYLOAD_MAX_BYTES")
     lease_retention_hours: float = Field(168.0, gt=0, alias="GPU_POOL_LEASE_RETENTION_HOURS")
 
+    # Stage 4.3 actuation. Comma-separated swap seats the pool may load/unload itself by sending
+    # GpuActuateV1 to the seat's host actuator. Empty (default) = actuation OFF: every swap stays a
+    # published swap_requested {actuated: false}, exactly as before. `agent-gpu2` at the 4.5 cutover.
+    actuate_roles: str = Field("", alias="GPU_POOL_ACTUATE_ROLES")
+    # Swap-load guards (read outside the runtime lock, every guard_refresh_sec).
+    cabinet_url: str = Field("http://100.92.216.81:8080/api/cabinet/sensors/latest", alias="GPU_POOL_CABINET_URL")
+    visual_activity_url: str = Field("http://orion-athena-thought:7155/visual-chain/activity",
+                                     alias="GPU_POOL_VISUAL_ACTIVITY_URL")
+    guard_refresh_sec: float = Field(30.0, gt=0, alias="GPU_POOL_GUARD_REFRESH_SEC")
+
+    @property
+    def actuate_role_list(self) -> list[str]:
+        return [r.strip() for r in self.actuate_roles.split(",") if r.strip()]
+
 
 @lru_cache
 def get_settings() -> Settings:

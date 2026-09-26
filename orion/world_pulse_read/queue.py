@@ -132,7 +132,10 @@ SET status = 'claimed', claimed_at = now()
 WHERE seed_id = (
     SELECT seed_id FROM world_pulse_read_seed
     WHERE status = 'pending'
-    ORDER BY priority ASC, created_at ASC, seed_id ASC
+    ORDER BY EXISTS (SELECT 1 FROM reading_durable_turn d
+                     WHERE d.seed_id=world_pulse_read_seed.seed_id
+                       AND d.stage=1 AND d.consumed_at IS NULL) DESC,
+             priority ASC, created_at ASC, seed_id ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1
 )
@@ -148,7 +151,10 @@ WHERE seed_id = (
     WHERE status = 'done'
       AND handoff_json IS NOT NULL
       AND stage2_status = 'pending'
-    ORDER BY priority ASC, handoff_at ASC NULLS LAST, seed_id ASC
+    ORDER BY EXISTS (SELECT 1 FROM reading_durable_turn d
+                     WHERE d.seed_id=world_pulse_read_seed.seed_id
+                       AND d.stage=2 AND d.consumed_at IS NULL) DESC,
+             priority ASC, handoff_at ASC NULLS LAST, seed_id ASC
     FOR UPDATE SKIP LOCKED
     LIMIT 1
 )
@@ -279,6 +285,8 @@ async def ensure_seed_queue_schema(conn: Any) -> None:
     await conn.execute(ENSURE_STAGE2_INDEX_SQL)
     await conn.execute(GENERAL_READING_SQL)
     await conn.execute(WORLD_PULSE_READ_RETRY_SQL)
+    from orion.world_pulse_read.durable import READING_DURABLE_SQL
+    await conn.execute(READING_DURABLE_SQL)
 
 
 def request_for_seed(seed: WorldPulseReadSeedV1) -> ReadingRequestedV1:
@@ -589,6 +597,10 @@ SET status = 'skipped', last_error = $2, completed_at = now()
 WHERE status = 'pending'
   AND kind = 'digest_item'
   AND created_at < now() - ($1 * interval '1 second')
+  AND NOT EXISTS (
+      SELECT 1 FROM reading_durable_turn d
+      WHERE d.seed_id=world_pulse_read_seed.seed_id AND d.consumed_at IS NULL
+  )
   AND NOT EXISTS (
       SELECT 1 FROM world_pulse_read_seed AS alias
       WHERE alias.duplicate_of = world_pulse_read_seed.seed_id

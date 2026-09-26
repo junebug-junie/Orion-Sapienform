@@ -13,6 +13,7 @@ on:
       - "orion/thought/**"
       - "orion/substrate/adapters/world_pulse_read.py"
       - "services/orion-hub/**"
+      - "services/orion-durable-runs/**"
       - "services/orion-harness-governor/**"
       - "services/orion-sql-db/manual_migration*reading*"
       - "services/orion-sql-db/manual_migration_world_pulse_read*"
@@ -42,6 +43,7 @@ jobs:
         run: |
           python -m pytest -q \
             services/orion-hub/tests/test_reading_ingress.py \
+            services/orion-hub/tests/test_reading_turn_listener.py \
             services/orion-hub/tests/test_reading_postgres.py \
             services/orion-hub/tests/test_world_pulse_read_*.py \
             services/orion-hub/tests/test_curiosity_investigation.py \
@@ -57,3 +59,7 @@ jobs:
             tests/test_unified_turn_bus_catalog.py
       - name: Offline source handoff behavior eval
         run: python -m pytest services/orion-hub/evals/test_reading_handoff_eval.py -q
+      - name: Checkpointed reading admission
+        run: |
+          python -m pip install langgraph==1.2.11
+          python -m pytest services/orion-durable-runs/tests/test_reading_graph.py -q

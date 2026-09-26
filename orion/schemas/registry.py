@@ -738,6 +738,7 @@ from orion.schemas.workflow_execution import (
     WorkflowScheduleRunRecordV1,
     WorkflowScheduleSpecV1,
 )
+from orion.schemas.reading_turn import ReadingTurnRequestV1, ReadingTurnResultV1
 from orion.schemas.reading import (
     ReadingRequestedV1, ReadingToolBindingV1, ReadingToolRequestV1, ReadingToolResultV1, ReadingLifecycleV1
 )
@@ -984,6 +985,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "LlmWorkerAnnounceV1": LlmWorkerAnnounceV1,
     "DurableRunStateV1": DurableRunStateV1,
     "CuriosityTurnRequestV1": CuriosityTurnRequestV1,
+    "ReadingTurnRequestV1": ReadingTurnRequestV1,
+    "ReadingTurnResultV1": ReadingTurnResultV1,
     "CuriosityTurnResultV1": CuriosityTurnResultV1,
     "HelpRequestV1": HelpRequestV1,
     "PeerBriefV1": PeerBriefV1,
@@ -1801,6 +1804,8 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "GpuActuateResultV1": SchemaRegistration(model=GpuActuateResultV1, kind="gpu_pool.actuate.result.v1"),
     "LlmWorkerAnnounceV1": SchemaRegistration(model=LlmWorkerAnnounceV1, kind="llm.worker.announce.v1"),
     "CuriosityTurnRequestV1": SchemaRegistration(model=CuriosityTurnRequestV1, kind="curiosity.turn.request.v1"),
+    "ReadingTurnRequestV1": SchemaRegistration(model=ReadingTurnRequestV1, kind="reading.turn.request.v1"),
+    "ReadingTurnResultV1": SchemaRegistration(model=ReadingTurnResultV1, kind="reading.turn.result.v1"),
     "CuriosityTurnResultV1": SchemaRegistration(model=CuriosityTurnResultV1, kind="curiosity.turn.result.v1"),
     "HelpRequestV1": SchemaRegistration(
         model=HelpRequestV1,

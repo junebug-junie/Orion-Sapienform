@@ -743,6 +743,9 @@ class Settings(BaseSettings):
     )
 
     # --- World-pulse Stage 1 concept-read loop ----------------------------
+    HUB_READING_DURABLE_URL: str = Field(
+        default="http://127.0.0.1:8124", alias="HUB_READING_DURABLE_URL"
+    )
     # Sibling of curiosity: same tick / Wallet / unified-turn lifecycle, a
     # different Redis prefix (Wallet A). Default True once the seed-queue
     # migration is applied (operator can still set false to pause).

@@ -7,6 +7,33 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def held_model_boundary(monkeypatch):
+    """These parsing/wallet tests exercise the relocated model boundary.
+
+    Durable submission, waiting and RPC fencing have separate integration tests.
+    """
+    from scripts.reading_turn_listener import ReadingTurnListener
+    from orion.schemas.reading_turn import ReadingRunBriefV1, ReadingTurnRequestV1
+    from scripts.world_pulse_read_pipeline import GenerateOutcome
+
+    async def generate(pipe, prompt, correlation_id, *, seed_id="test-seed"):
+        listener = ReadingTurnListener(pipe._source_ref, pipe._step_relay_provider)
+        listener.bus = pipe._bus
+        listener.rpc_bus = pipe._harness_rpc_bus or pipe._bus
+        result = await listener._execute(ReadingTurnRequestV1(
+            run_id="test-run", correlation_id=correlation_id,
+            brief=ReadingRunBriefV1(seed_id=seed_id, stage=1, prompt=prompt,
+                session_id=pipe.session_id, timeout_sec=pipe.timeout_sec,
+                fcc_model_label=pipe._fcc_model_label),
+            gpu_lease={"lease_id": "test-hold", "generation": 1,
+                       "role": "agent", "holder": "durable-runs:test-run"},
+        ))
+        return GenerateOutcome(result.text, result.error, result.source_fetches)
+
+    monkeypatch.setattr(WorldPulseReadPipeline, "_generate", generate)
+
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.reading import SourceFetchEvidenceV1
 from orion.schemas.world_pulse_read import (

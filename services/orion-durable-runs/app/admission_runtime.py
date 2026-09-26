@@ -42,6 +42,8 @@ from app.pool_hold import (
     refusal_is_terminal,
 )
 from app.reflect_graph import finish_detail as reflect_finish_detail
+from app.reading_graph import build_reading_graph, finish_detail as reading_finish_detail
+from orion.schemas.reading_turn import READING_WORKFLOW
 from app.self_sense_graph import finish_detail as self_sense_finish_detail
 from orion.durable_admission.store import PostgresAdmissionStore
 from orion.gpu_pool.client import DURABLE_RUN_HOLDER_PREFIX, durable_run_holder
@@ -57,7 +59,7 @@ REFLECT_WORKFLOW = "self_study.reflect"
 # The node of each admitted workflow that does GPU work under the hold. A restarted driver that
 # finds one of these still pending fences the previous attempt and replays it under the same hold.
 WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORKFLOW: {"ask_questions"},
-              REFLECT_WORKFLOW: {"llm_call"}}
+              REFLECT_WORKFLOW: {"llm_call"}, READING_WORKFLOW: {"reading_turn"}}
 # Pool events (for a durable-run holder) after which a waiting run should look at its hold now.
 HINT_EVENTS = frozenset({"granted", "recalled", "aborted", "expired", "retried", "backlogged", "unavailable",
                          "dead_lettered", "released", "cancelled"})
@@ -77,8 +79,7 @@ def _without_backoff(hold: dict) -> dict:
     return {k: v for k, v in hold.items() if k not in ("retry_at", "refusals")}
 
 
-class HoldLost(RuntimeError):
-    """The pool no longer holds this run's hold at its generation: stop using the GPU now."""
+from app.admitted_graph import HoldLost
 
 
 class AdmissionRuntime:
@@ -105,6 +106,7 @@ class AdmissionRuntime:
             SELF_SENSE_WORKFLOW: build_admitted_self_sense_graph(
                 runner._self_sense_deps(), admission_deps, runner._checkpointer),
             REFLECT_WORKFLOW: build_admitted_reflect_graph(runner._reflect_deps(), admission_deps, runner._checkpointer),
+            READING_WORKFLOW: build_reading_graph(lambda request: runner._run_reading_turn(request), admission_deps, runner._checkpointer),
         }
         # Back-compat alias used by older tests that reach for `.graph`.
         self.graph = self.graphs[DEFAULT_WORKFLOW]
@@ -129,6 +131,8 @@ class AdmissionRuntime:
             return self_sense_finish_detail(state)
         if workflow == REFLECT_WORKFLOW:
             return reflect_finish_detail(state)
+        if workflow == READING_WORKFLOW:
+            return reading_finish_detail(state)
         return finish_detail(state)
 
     @staticmethod
@@ -315,7 +319,7 @@ class AdmissionRuntime:
             await self._end_hold(state, lease["lease_id"], lease, "recalled_before_start")
             raise HoldRecalled("gpu_hold_recalled_before_start")
         detail = {"lease": lease, "lane": lease["role"]}
-        if (state.get("workflow") or DEFAULT_WORKFLOW) == DEFAULT_WORKFLOW:
+        if (state.get("workflow") or DEFAULT_WORKFLOW) in {DEFAULT_WORKFLOW, READING_WORKFLOW}:
             # Joinable to the pool's child leases (acceptance check 2: no un-attached agent lease
             # under a turn whose run holds a hold).
             detail["turn_correlation_id"] = turn_correlation_id(state)
@@ -872,7 +876,10 @@ class AdmissionRuntime:
                 "status": row.get("terminal") or row.get("control") or values.get("status", "waiting_resource"),
                 "requested_resource": row["request"]["admission"]["resource"], "lease": lease, "hold": hold,
                 "pool": pool, "next": list(snap.next), "created_at": row["created_at"], "history": history,
-                "queue_wait_seconds": max(0, (wait_end-row["created_at"]).total_seconds())}
+                "queue_wait_seconds": max(0, (wait_end-row["created_at"]).total_seconds()),
+                **({"reading_result": values.get("result"), "error": values.get("last_error"),
+                    "work_started": await self.store.first_event_at(run_id, "run.started") is not None}
+                   if workflow == READING_WORKFLOW else {})}
 
     async def close(self):
         tasks = list(self.active.values())

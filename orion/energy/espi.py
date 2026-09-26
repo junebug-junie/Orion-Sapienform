@@ -28,6 +28,8 @@ ATOM = "{http://www.w3.org/2005/Atom}"
 ESPI = "{http://naesb.org/espi}"
 UOM_WATT_HOURS = 72
 FLOW_FORWARD = 1
+POW10_MIN = -9
+POW10_MAX = 9
 
 _USAGE_POINT = re.compile(r"/UsagePoint/([^/]+)")
 _METER_READING = re.compile(r"^(.*/UsagePoint/[^/]+/MeterReading/[^/]+)")
@@ -50,15 +52,27 @@ def _int(el: Optional[ET.Element], default: Optional[int] = None) -> Optional[in
     return int(el.text.strip())
 
 
-def _reading_type(content: ET.Element) -> Optional[dict[str, Optional[int]]]:
+def _scale(pow10: int) -> float:
+    if not POW10_MIN <= pow10 <= POW10_MAX:
+        raise EspiError(f"powerOfTenMultiplier {pow10} out of range ({POW10_MIN}..{POW10_MAX})")
+    return 10.0 ** pow10
+
+
+def _reading_type(content: ET.Element, href: str) -> Optional[dict[str, Optional[int]]]:
     rt = content.find(f"{ESPI}ReadingType")
     if rt is None:
         return None
-    return {
-        "uom": _int(rt.find(f"{ESPI}uom")),
-        "pow10": _int(rt.find(f"{ESPI}powerOfTenMultiplier"), 0),
-        "flow": _int(rt.find(f"{ESPI}flowDirection")),
-    }
+    try:
+        uom = _int(rt.find(f"{ESPI}uom"))
+        pow10 = _int(rt.find(f"{ESPI}powerOfTenMultiplier"), 0)
+        flow = _int(rt.find(f"{ESPI}flowDirection"))
+    except (ValueError, OverflowError, OSError) as exc:
+        raise EspiError(f"invalid ReadingType at {href!r}") from exc
+    if pow10 is None:
+        pow10 = 0
+    if not POW10_MIN <= pow10 <= POW10_MAX:
+        raise EspiError(f"powerOfTenMultiplier out of range at {href!r}")
+    return {"uom": uom, "pow10": pow10, "flow": flow}
 
 
 def parse_espi(
@@ -83,7 +97,7 @@ def parse_espi(
             continue
         links = _links(entry)
         self_href = (links.get("self") or [""])[0]
-        rt = _reading_type(content)
+        rt = _reading_type(content, self_href)
         if rt is not None:
             reading_types[self_href] = rt
             continue
@@ -105,8 +119,16 @@ def parse_espi(
         mr_match = _METER_READING.match(self_href)
         rt = None
         if mr_match is not None:
-            rt = reading_types.get(meter_to_rt.get(mr_match.group(1), ""))
-        rt = rt or only_rt
+            mr_href = mr_match.group(1)
+            rt_href = meter_to_rt.get(mr_href)
+            if rt_href is not None:
+                rt = reading_types.get(rt_href)
+                if rt is None:
+                    raise EspiError(
+                        f"ReadingType {rt_href!r} not in feed for block {self_href!r}"
+                    )
+            elif only_rt is not None:
+                rt = only_rt
         if rt is None:
             raise EspiError(f"no ReadingType resolvable for block {self_href!r}")
         if rt["flow"] is None:
@@ -118,7 +140,7 @@ def parse_espi(
         if rt["uom"] != UOM_WATT_HOURS:
             raise EspiError(f"unsupported uom {rt['uom']} (only 72 = Wh)")
         usage_point = up_match.group(1)
-        scale = 10.0 ** rt["pow10"]
+        scale = _scale(rt["pow10"])
         for reading in block.findall(f"{ESPI}IntervalReading"):
             try:
                 period = reading.find(f"{ESPI}timePeriod")

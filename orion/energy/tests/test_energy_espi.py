@@ -89,3 +89,47 @@ def test_feed_without_readings_raises() -> None:
     empty = b'<feed xmlns="http://www.w3.org/2005/Atom"></feed>'
     with pytest.raises(EspiError, match="no forward-flow"):
         parse_espi(empty, retrieved_at=RETRIEVED, source="file_drop")
+
+
+def test_non_integer_reading_type_uom_raises_espi_error() -> None:
+    xml = FIXTURE.read_bytes().replace(b"<espi:uom>72</espi:uom>", b"<espi:uom>Wh</espi:uom>", 1)
+    with pytest.raises(EspiError):
+        parse_espi(xml, retrieved_at=RETRIEVED, source="file_drop")
+
+
+def test_out_of_range_pow10_raises_espi_error() -> None:
+    xml = FIXTURE.read_bytes().replace(
+        b"<espi:powerOfTenMultiplier>0<", b"<espi:powerOfTenMultiplier>400<", 1
+    )
+    with pytest.raises(EspiError):
+        parse_espi(xml, retrieved_at=RETRIEVED, source="file_drop")
+
+
+def test_single_reading_type_used_when_no_related_link() -> None:
+    xml = FIXTURE.read_bytes()
+    xml = xml.replace(
+        b'<link rel="related" href="https://csapps.example/espi/1_1/resource/ReadingType/RT-FWD"/>',
+        b"",
+        1,
+    )
+    for marker in (
+        b"  <entry>\n    <id>urn:uuid:mr2</id>",
+        b"  <entry>\n    <id>urn:uuid:rtr</id>",
+        b"  <entry>\n    <id>urn:uuid:ib2</id>",
+    ):
+        start = xml.index(marker)
+        end = xml.index(b"  </entry>", start) + len(b"  </entry>\n")
+        xml = xml[:start] + xml[end:]
+    rows = parse_espi(xml, retrieved_at=RETRIEVED, source="file_drop")
+    assert len(rows) == 3
+    assert rows[0].energy_kwh == pytest.approx(1.234)
+
+
+def test_unresolved_related_reading_type_raises() -> None:
+    xml = FIXTURE.read_bytes().replace(
+        b'<link rel="related" href="https://csapps.example/espi/1_1/resource/ReadingType/RT-FWD"/>',
+        b'<link rel="related" href="https://csapps.example/espi/1_1/resource/ReadingType/MISSING"/>',
+        1,
+    )
+    with pytest.raises(EspiError, match="MISSING"):
+        parse_espi(xml, retrieved_at=RETRIEVED, source="file_drop")

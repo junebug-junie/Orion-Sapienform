@@ -267,7 +267,8 @@ async def lifespan(app: FastAPI):
     _stop.clear()
     if any(spec.swap and spec.swap.guards for spec in cfg.roles.values()):
         _tasks.append(asyncio.create_task(_guards_forever(GuardReader(
-            cabinet_url=_settings.cabinet_url, visual_activity_url=_settings.visual_activity_url))))
+            cabinet_url=_settings.cabinet_url, visual_activity_url=_settings.visual_activity_url,
+            clock=lambda: datetime.now(timezone.utc)))))
     else:
         runtime.guard_states = {g: None for g in SWAP_GUARDS}
     _tasks.append(asyncio.create_task(_tick_forever()))

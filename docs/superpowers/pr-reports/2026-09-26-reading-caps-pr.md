@@ -29,6 +29,8 @@
 - Ran sync_local_env_from_example.py orion-hub; preserved intentional local
   Stage 1 window 0/0 and curiosity elastic-activation overrides.
 - No new metrics; metric quality gate not applicable.
+- CI required refreshing the metric lock's generated previous-change summary:
+  zero metric definitions changed; definition drift gate passes after regeneration.
 
 ## Review findings fixed
 

@@ -3,6 +3,8 @@
 Rebuilt from the processed drop directory at boot, so it needs no database of its
 own. Accrual always recomputes a whole billing cycle in time order: a late interval
 earlier in the cycle moves every later interval's block position.
+
+Mid-cycle holes mean cycle position is UNKNOWN — never treated as zero usage.
 """
 
 from __future__ import annotations
@@ -34,13 +36,19 @@ class UsageLedger:
     def tz(self) -> ZoneInfo:
         return self._tz
 
+    @staticmethod
+    def _instant(ts: datetime) -> datetime:
+        return ts.astimezone(timezone.utc)
+
     def upsert(self, interval: EnergyUsageIntervalV1) -> bool:
-        key = interval.interval_start.astimezone(timezone.utc)
+        key = self._instant(interval.interval_start)
         bucket = self._intervals.setdefault(interval.usage_point_id, {})
         existing = bucket.get(key)
         if existing is not None and existing.retrieved_at > interval.retrieved_at:
             return False
         bucket[key] = interval
+        cycle_start, cycle_end = self.cycle_bounds(interval.interval_start)
+        self._purge_accrued_cycle(interval.usage_point_id, cycle_start, cycle_end)
         return True
 
     def usage_points(self) -> set[str]:
@@ -73,14 +81,39 @@ class UsageLedger:
             key=lambda iv: iv.interval_start,
         )
 
+    def _contiguous_from_cycle_start(
+        self,
+        intervals: list[EnergyUsageIntervalV1],
+        cycle_start: datetime,
+    ) -> list[EnergyUsageIntervalV1]:
+        if not intervals:
+            return []
+        expected = self._instant(cycle_start)
+        if self._instant(intervals[0].interval_start) != expected:
+            return []
+        prefix = [intervals[0]]
+        for iv in intervals[1:]:
+            if self._instant(iv.interval_start) != self._instant(prefix[-1].interval_end):
+                break
+            prefix.append(iv)
+        return prefix
+
+    def _purge_accrued_cycle(self, usage_point_id: str, cycle_start: datetime, cycle_end: datetime) -> None:
+        start_utc = self._instant(cycle_start)
+        end_utc = self._instant(cycle_end)
+        for key in [k for k in self._accrued if k[0] == usage_point_id and start_utc <= k[1] < end_utc]:
+            del self._accrued[key]
+
     def accrue_cycle(
         self, usage_point_id: str, cycle_start: datetime, *, computed_at: datetime
     ) -> list[EnergyCostAccruedV1]:
         start, end = self.cycle_bounds(cycle_start)
+        prefix = self._contiguous_from_cycle_start(self._in_cycle(usage_point_id, start, end), start)
+        self._purge_accrued_cycle(usage_point_id, start, end)
         cycle_kwh = 0.0
         cycle_cost = 0.0
         out: list[EnergyCostAccruedV1] = []
-        for iv in self._in_cycle(usage_point_id, start, end):
+        for iv in prefix:
             month = iv.interval_start.astimezone(self._tz).month
             cost = self._tariff.energy_cost_usd(iv.energy_kwh, cycle_kwh_before=cycle_kwh, month=month)
             cycle_kwh += iv.energy_kwh
@@ -100,16 +133,19 @@ class UsageLedger:
                 cost_basis=self._tariff.cost_basis,
                 computed_at=computed_at,
             )
-            self._accrued[(usage_point_id, iv.interval_start.astimezone(timezone.utc))] = accrued
+            self._accrued[(usage_point_id, self._instant(iv.interval_start))] = accrued
             out.append(accrued)
         return out
 
     def cycle_kwh_before(self, usage_point_id: str, ts: datetime) -> Optional[tuple[float, datetime]]:
-        start, _ = self.cycle_bounds(ts)
-        done = [iv for iv in self._in_cycle(usage_point_id, start, ts) if iv.interval_end <= ts]
+        start, end = self.cycle_bounds(ts)
+        done = [iv for iv in self._in_cycle(usage_point_id, start, end) if iv.interval_end <= ts]
         if not done:
             return None
-        return sum(iv.energy_kwh for iv in done), max(iv.interval_end for iv in done)
+        prefix = self._contiguous_from_cycle_start(done, start)
+        if len(prefix) != len(done):
+            return None
+        return sum(iv.energy_kwh for iv in prefix), max(iv.interval_end for iv in prefix)
 
     def intervals_overlapping(
         self, usage_point_id: str, start: datetime, end: datetime
@@ -121,5 +157,5 @@ class UsageLedger:
         )
 
     def interval_cost_usd(self, usage_point_id: str, interval_start: datetime) -> Optional[float]:
-        accrued = self._accrued.get((usage_point_id, interval_start.astimezone(timezone.utc)))
+        accrued = self._accrued.get((usage_point_id, self._instant(interval_start)))
         return None if accrued is None else accrued.interval_cost_usd

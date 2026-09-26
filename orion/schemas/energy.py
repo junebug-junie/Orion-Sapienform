@@ -43,7 +43,7 @@ class EnergyUsageIntervalV1(BaseModel):
     usage_point_id: str = Field(min_length=1)
     interval_start: datetime
     interval_end: datetime
-    energy_kwh: float = Field(ge=0.0)
+    energy_kwh: float = Field(ge=0.0, allow_inf_nan=False)
     quality: Optional[str] = None
     # When the utility data was fetched. Late AMI corrections re-deliver the same
     # interval; the newer retrieved_at wins.

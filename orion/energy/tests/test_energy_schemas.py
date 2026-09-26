@@ -44,6 +44,13 @@ def test_usage_interval_rejects_negative_kwh() -> None:
         _usage(energy_kwh=-0.1)
 
 
+def test_usage_interval_rejects_non_finite_kwh() -> None:
+    with pytest.raises(ValidationError):
+        _usage(energy_kwh=float("inf"))
+    with pytest.raises(ValidationError):
+        _usage(energy_kwh=float("nan"))
+
+
 def test_accrued_round_trips_json() -> None:
     acc = EnergyCostAccruedV1(
         usage_point_id="UP123",

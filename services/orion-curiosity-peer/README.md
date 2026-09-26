@@ -29,6 +29,27 @@ Until a first-party Cursor usage API lands, set one of:
 File wins over STATE. `limited` / `unknown` / garbage / missing all refuse.
 `decide_cursor_budget` still requires observed `clear` with a staleness value.
 
+## Claude fallback budget
+
+When Cursor fails for lack of tokens, the peer may try Claude once. That
+spend is Claude quota Orion shares with Juniper, so it is gated on the
+**Claude** meter (`orion.dev_economics.rate_limit_events.observe`), which
+fails closed on anything short of a fresh, observed `clear`.
+
+Until 2026-09-25 this gate read the **Cursor** meter by accident. A local
+variable shadowed the Claude reader, so a clear Cursor reading was enough to
+spend Claude. That is fixed. The meter reads Claude Code transcripts on disk,
+and this container does not mount them, so in production the Claude fallback
+now refuses with `claude_budget_unobserved`. That is the intended fail-closed
+behaviour, not a new outage.
+
+Re-enabling the fallback is a separate decision. Either give this container a
+readable Claude meter (for example by consuming the observation the
+`orion-cocreation-signals` Claude-limit publisher emits, which is currently
+off: `COCREATION_SIGNALS_CLAUDE_LIMIT_ENABLED=false`), or accept that it stays
+off. D2 in `docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md`
+has the full account.
+
 ## Why this is a separate service
 
 Cursor desktop CLI auth (`agent login` → `~/.config/cursor/auth.json`)

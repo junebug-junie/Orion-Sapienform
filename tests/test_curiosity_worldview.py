@@ -1560,3 +1560,146 @@ def test_collapsing_can_drop_a_forked_claim_out_of_the_sample():
     ]
     offered, _, _ = select_priors(rows, sample=3, stale_after=0)
     assert "a" not in [p.prior_id for p in offered]
+
+
+# --- the value-ordered offer (P1, 2026-09-25 attention-with-stakes design) ----
+
+
+def _value_rows():
+    return [
+        _prior_row("sure", confidence="0.95", tested=1),
+        _prior_row("half", confidence="0.5", tested=2),
+        _prior_row("lean", confidence="0.7", tested=0),
+        _prior_row("fresh", confidence="0.55", tested=0),
+        _prior_row("tie_a", confidence="0.6", tested=1),
+        _prior_row("tie_b", confidence="0.4", tested=1),
+        _prior_row("unknown", confidence=None, tested=0),
+    ]
+
+
+def test_value_order_on_a_cold_model_is_identical_to_the_uncertainty_order() -> None:
+    from orion.curiosity.value import build_yield_model
+
+    cold = build_yield_model([], window=3, pseudo_tests=2.0)
+    for seed in ("", "run-a", "run-b"):
+        default = [p.prior_id for p in select_priors(_value_rows(), sample=8, stale_after=5, rotate_seed=seed)[0]]
+        valued = [
+            p.prior_id
+            for p in select_priors(
+                _value_rows(),
+                sample=8,
+                stale_after=5,
+                rotate_seed=seed,
+                expected_nats_for=lambda p: cold.expected_nats(p.prior_id, p.confidence),
+            )[0]
+        ]
+        assert valued == default
+
+
+def test_value_order_demotes_a_prior_that_stopped_teaching() -> None:
+    from orion.curiosity.value import PriorTestRecord, build_yield_model
+
+    # "half" was tested three times and never moved; "lean" moved every time.
+    history = [PriorTestRecord("half", 0.5, 0.5)] * 3 + [
+        PriorTestRecord("lean", 0.55, 0.62),
+        PriorTestRecord("lean", 0.62, 0.7),
+    ]
+    model = build_yield_model(history, window=3, pseudo_tests=2.0)
+    default = [p.prior_id for p in select_priors(_value_rows(), sample=8, stale_after=5)[0]]
+    valued = [
+        p.prior_id
+        for p in select_priors(
+            _value_rows(),
+            sample=8,
+            stale_after=5,
+            expected_nats_for=lambda p: model.expected_nats(p.prior_id, p.confidence),
+        )[0]
+    ]
+    assert default.index("half") < default.index("lean")  # uncertainty says "half" first
+    assert valued.index("lean") < valued.index("half")  # measured progress says otherwise
+    assert set(valued) == set(default)  # an order, never a filter
+
+
+def _orders(rows, model, *, seed: str = "") -> tuple[list[str], list[str]]:
+    from orion.curiosity.value import valid_confidence
+
+    default = [p.prior_id for p in select_priors(rows, sample=len(rows), stale_after=0, rotate_seed=seed)[0]]
+    valued = [
+        p.prior_id
+        for p in select_priors(
+            rows,
+            sample=len(rows),
+            stale_after=0,
+            rotate_seed=seed,
+            expected_nats_for=lambda p: model.expected_nats(p.prior_id, valid_confidence(p.confidence)),
+        )[0]
+    ]
+    return default, valued
+
+
+def test_cold_value_order_matches_on_mirror_clamped_and_broken_confidences() -> None:
+    # Review finding: entropy is symmetric and clamped where |p - 0.5| is
+    # neither -- |0.8 - 0.5| is 0.30000000000000004 -- so a bare entropy key
+    # re-ordered mirror pairs whenever their tested counts differed.
+    from orion.curiosity.value import build_yield_model
+
+    cold = build_yield_model([], window=3, pseudo_tests=2.0)
+    rows = [
+        _prior_row("low", confidence="0.2", tested=2),
+        _prior_row("high", confidence="0.8", tested=0),
+        _prior_row("a45", confidence="0.45", tested=3),
+        _prior_row("a55", confidence="0.55", tested=0),
+        _prior_row("zero", confidence="0.0", tested=0),
+        _prior_row("near_zero", confidence="0.005", tested=4),
+        _prior_row("one", confidence="1.0", tested=1),
+        _prior_row("broken", confidence="1.7", tested=0),
+        _prior_row("nan", confidence="nan", tested=0),
+        _prior_row("unknown", confidence=None, tested=2),
+    ]
+    for seed in ("", "run-a", "run-b"):
+        default, valued = _orders(rows, cold, seed=seed)
+        assert valued == default
+    # A number outside [0, 1] is no usable confidence: offered as maximally
+    # uncertain, like one never recorded, not buried as the surest belief.
+    assert default.index("broken") < default.index("low")
+    assert default.index("nan") < default.index("low")
+
+
+def test_cold_value_order_matches_on_random_populations() -> None:
+    import random
+
+    from orion.curiosity.value import build_yield_model
+
+    cold = build_yield_model([], window=3, pseudo_tests=2.0)
+    rng = random.Random(20260925)
+    for trial in range(2000):
+        rows = [
+            _prior_row(
+                f"p{i}",
+                confidence=f"{rng.randint(0, 100) / 100:.2f}",
+                tested=rng.randint(0, 3),
+            )
+            for i in range(8)
+        ]
+        default, valued = _orders(rows, cold, seed=f"trial{trial}")
+        assert valued == default, (trial, rows)
+
+
+def test_priors_worth_nothing_keep_the_uncertainty_order() -> None:
+    # Review finding: when every scored test moved nothing, the pool yield is
+    # 0 and every untested prior is worth exactly 0 -- the likely early
+    # state. The rotation hash alone then decided, and a 0.95 prior could be
+    # offered ahead of a 0.5 one.
+    from orion.curiosity.value import PriorTestRecord, build_yield_model
+
+    stuck = build_yield_model([PriorTestRecord("elsewhere", 0.6, 0.6)] * 3, window=3, pseudo_tests=2.0)
+    assert stuck.pool_yield == 0.0
+    rows = [
+        _prior_row("sure", confidence="0.95", tested=0),
+        _prior_row("half", confidence="0.5", tested=0),
+        _prior_row("lean", confidence="0.7", tested=0),
+        _prior_row("mid", confidence="0.4", tested=0),
+    ]
+    for seed in ("", "run-a", "run-b", "run-c"):
+        default, valued = _orders(rows, stuck, seed=seed)
+        assert valued == default == ["half", "mid", "lean", "sure"]

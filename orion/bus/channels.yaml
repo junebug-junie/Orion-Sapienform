@@ -258,6 +258,9 @@ channels:
       - "orion-hub"
       - "orion-mind"
       - "orion-memory-consolidation"
+      # Added 2026-09-25: dream cycle v2 REM recombination (one short
+      # background-lane call per replay pair). services/orion-dream/app/llm.py
+      - "orion-dream"
       # Added 2026-08-26: the vision affect backend sends the clip's frames
       # here as AttachmentRefV1(kind="percept") rather than to the retired
       # orion-affectgpt-worker. See services/orion-juniper-affective-state/
@@ -288,7 +291,7 @@ channels:
     kind: "result"
     schema_id: "ChatResultPayload"
     producer_services: ["orion-llm-gateway"]
-    consumer_services: ["orion-cortex-exec", "orion-hub", "orion-memory-consolidation"]
+    consumer_services: ["orion-cortex-exec", "orion-hub", "orion-memory-consolidation", "orion-dream"]
     stability: "experimental"
     since: "2026-01-08"
 

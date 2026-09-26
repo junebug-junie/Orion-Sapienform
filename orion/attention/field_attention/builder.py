@@ -15,6 +15,12 @@ from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAtte
 from orion.schemas.field_state import FieldStateV1
 
 
+_OVER_CAP_REASON = (
+    "over the per-kind target cap this tick: observed, not attended "
+    "(kept here so the next tick's novelty diff has a real prior)"
+)
+
+
 def stable_frame_id(*, tick_id: str, policy_id: str) -> str:
     return f"attention.frame:{tick_id}:{policy_id}"
 
@@ -73,6 +79,21 @@ def build_attention_frame(
     nodes = [t for t in active if t.target_kind == "node"][: policy.limits.max_node_targets]
     caps = [t for t in active if t.target_kind == "capability"][: policy.limits.max_capability_targets]
     systems = [t for t in active if t.target_kind == "system"][: policy.limits.max_system_targets]
+    # Active targets past a per-kind cap are not attended this tick, but they
+    # were observed: record them with the suppressed ones. Dropping them left
+    # no entry for next tick's novelty diff to find, so the same steady target
+    # read its whole pressure as fresh novelty on the following tick
+    # (2026-09-25, D1 in docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md).
+    kept = {id(t) for t in (*nodes, *caps, *systems)}
+    suppressed.extend(
+        t.model_copy(update={"reasons": [*t.reasons, _OVER_CAP_REASON]})
+        for t in active
+        if id(t) not in kept
+    )
+    # Same order as every other bucket: strongest first (stable, so ties keep
+    # the pre-cap order). Unsorted, the over-cap targets -- the strongest
+    # ones here -- trailed the below-threshold ones.
+    suppressed.sort(key=lambda t: t.salience_score, reverse=True)
     capped = (nodes + caps + systems)[: policy.limits.max_targets_total]
     capped.sort(key=lambda t: t.salience_score, reverse=True)
 

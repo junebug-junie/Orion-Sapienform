@@ -38,12 +38,22 @@ def _find_prior_target(
     return None
 
 
-def prior_salience_for_target(
+def prior_pressure_for_target(
     target_id: str,
     previous_frame: FieldAttentionFrameV1 | None,
 ) -> float:
+    """The target's pressure proxy as the previous frame recorded it
+    (`pressure_score`), or 0.0 when it had no entry there.
+
+    Pressure, not `salience_score`: for Candidate B targets `salience_score`
+    IS the novelty (`selectors._novelty_targets`), so diffing against it
+    compared this tick's pressure with last tick's novelty. A steady
+    non-zero input then scored p, 0, p, 0 forever -- reproduced 2026-09-25
+    with a constant 0.8 proxy (D1 in
+    docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md).
+    """
     found = _find_prior_target(target_id, previous_frame)
-    return found.salience_score if found is not None else 0.0
+    return found.pressure_score if found is not None else 0.0
 
 
 def target_had_real_prior_entry(
@@ -52,7 +62,7 @@ def target_had_real_prior_entry(
 ) -> bool:
     """Whether `target_id` had a real entry in ANY of the previous frame's
     five target buckets (dominant/node/capability/system/suppressed) --
-    the same search `prior_salience_for_target()` uses. A caller reporting
+    the same search `prior_pressure_for_target()` uses. A caller reporting
     `confidence_score` for a novelty claim must ask this, not just whether
     `previous_frame is not None` or whether the target is in one particular
     "active" bucket -- both under-report confidence for a target that
@@ -65,10 +75,16 @@ def target_had_real_prior_entry(
 
 def novelty_for_target(
     target_id: str,
-    current_salience: float,
+    current_pressure: float,
     previous_frame: FieldAttentionFrameV1 | None,
 ) -> float:
+    """|this tick's pressure proxy - the same target's proxy last tick|.
+
+    A steady input reads 0 from its second tick on. A target absent from an
+    existing previous frame diffs against 0.0 (its first appearance is real
+    news); no previous frame at all reads 0.0 (nothing to compare against).
+    """
     if previous_frame is None:
         return 0.0
-    prior = prior_salience_for_target(target_id, previous_frame)
-    return clamp01(abs(current_salience - prior))
+    prior = prior_pressure_for_target(target_id, previous_frame)
+    return clamp01(abs(current_pressure - prior))

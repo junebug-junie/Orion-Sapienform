@@ -38,10 +38,12 @@ def _get_engine():
     return _engine
 
 
-def load_pending_requests(limit: int) -> list[dict]:
+def load_pending_requests(limit: int, since=None) -> list[dict]:
     """Recent un-consumed compaction requests (Phase-E queue). [] on any miss.
 
     Read-only. Returns raw request_json dicts so the caller owns interpretation.
+    `since` (the dream cycle's window start) keeps each sleep from re-staging
+    the same requests: nothing ever sets `consumed_at` while REM is staged-only.
     """
     limit = max(0, int(limit))
     if limit == 0:
@@ -57,11 +59,12 @@ def load_pending_requests(limit: int) -> list[dict]:
                         """
                         SELECT request_json FROM dream_compaction_request_queue
                         WHERE consumed_at IS NULL
+                          AND (CAST(:since AS timestamptz) IS NULL OR created_at > :since)
                         ORDER BY created_at DESC
                         LIMIT :limit
                         """
                     ),
-                    {"limit": limit},
+                    {"limit": limit, "since": since},
                 )
                 .mappings()
                 .all()

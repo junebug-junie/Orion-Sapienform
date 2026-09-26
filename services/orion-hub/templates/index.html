@@ -6,7 +6,7 @@
   <title>Orion Hub</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/css/style.css?v=1.1.0" />
+  <link rel="stylesheet" href="/static/css/style.css?v={{HUB_UI_ASSET_VERSION}}" />
   <link rel="stylesheet" href="/static/css/substrate-effect.css" />
   <link rel="stylesheet" href="/static/css/cockpit-hud.css?v={{HUB_UI_ASSET_VERSION}}" />
   <link rel="stylesheet" href="/static/css/runtime-activity.css?v={{HUB_UI_ASSET_VERSION}}" />
@@ -21,7 +21,28 @@
     <div class="fixed top-0 left-0 right-0 z-40 bg-black/95 border-b border-gray-800 h-14 flex items-center justify-between px-6">
       <div class="flex items-center gap-3 min-w-0 flex-1">
         <div class="text-sm font-semibold text-gray-200 shrink-0">Orion Hub</div>
-        <nav id="hubPrimaryNav" class="flex items-center gap-1.5 overflow-x-auto flex-nowrap min-w-0 hub-tab-nav" aria-label="Hub sections">
+        <!-- Section launcher (Gmail-apps style): every tab lives in the grid
+             modal below; Hub pinned first, the rest alphabetical. The anchors
+             keep their ids so app.js still wires them. hub-tab-launcher.js. -->
+        <button type="button" id="hubTabLauncherButton" class="hub-tab-launcher-button"
+                aria-haspopup="dialog" aria-expanded="false" aria-controls="hubTabLauncherModal"
+                title="All sections">
+          <svg class="hub-tab-launcher-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="5" cy="5" r="2"/><circle cx="12" cy="5" r="2"/><circle cx="19" cy="5" r="2"/>
+            <circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/>
+            <circle cx="5" cy="19" r="2"/><circle cx="12" cy="19" r="2"/><circle cx="19" cy="19" r="2"/>
+          </svg>
+          <span id="hubTabLauncherCurrent" class="hub-tab-launcher-current">Hub</span>
+        </button>
+        <div id="hubTabLauncherModal" class="hub-tab-launcher-overlay" role="dialog" aria-modal="true" aria-label="Hub sections" hidden>
+          <div class="hub-tab-launcher-panel">
+            <div class="hub-tab-launcher-head">
+              <input id="hubTabLauncherFilter" type="search" autocomplete="off" spellcheck="false"
+                     class="hub-tab-launcher-filter" placeholder="Jump to a section… (Enter opens first match)"
+                     aria-label="Filter sections" />
+              <span class="hub-tab-launcher-hint">Esc to close</span>
+            </div>
+            <nav id="hubPrimaryNav" class="hub-tab-nav" aria-label="Hub sections">
           <a id="graphWorkbenchTabButton" href="#graph-workbench" data-hash-target="#graph-workbench"
              class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
              role="button">Graphs</a>
@@ -201,7 +222,10 @@
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
             role="button"
           >GPU pool</a>
-        </nav>
+            </nav>
+            <div id="hubTabLauncherEmpty" class="hub-tab-launcher-empty" hidden>No section matches.</div>
+          </div>
+        </div>
       </div>
       <div class="flex items-center gap-3 shrink-0">
         <!-- Runtime activity marquee: what Orion is running right now
@@ -4157,6 +4181,7 @@
   <script src="/static/js/cognitive-loop-card.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/turn-timer.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/cockpit-hud.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/hub-tab-launcher.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>
 </html>

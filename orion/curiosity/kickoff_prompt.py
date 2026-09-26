@@ -13,10 +13,14 @@ with nothing behind it:
   1. NOT CHOOSE. No ranking language, no "notably", no "this one stands out".
      The crystallization sample is explicitly described as random so Orion does
      not read position in the list as significance. Open priors ARE ordered --
-     by how uncertain Orion itself said it was -- and the prompt says so out
-     loud, because an ordering presented as neutral is the back-door ranking
-     this whole arc exists to delete. Uncertainty orders the presentation;
-     Orion still chooses.
+     by the code's estimate of where a test could change Orion's mind most,
+     starting from how uncertain Orion itself said it was -- and the prompt
+     says so out loud, because an ordering presented as neutral is the
+     back-door ranking this whole arc exists to delete. The sentence is the
+     same whichever order a run gets (most-uncertain first, or the spend
+     log's value order: uncertainty weighed by measured learning yield), and
+     true of both: the order is the experiment's treatment, so the words
+     describing it must not differ between arms. Orion still chooses.
   2. SAY WHAT IS NOT SHOWN. The counts are included precisely because the
      sample is a slice of 646 -- without them, a menu of 12 reads as the whole
      of Orion's mind.
@@ -168,9 +172,11 @@ def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
             "or revised is still here on purpose: one test is not a settled "
             "question, and confidence is allowed to move DOWN on the second "
             "look.",
-            "These are ORDERED, and the order is not neutral: the ones you were "
-            "least sure about come first. That is a presentation choice, not a "
-            "recommendation -- nothing here says which one is worth your time.",
+            "These are ORDERED, and the order is not neutral: first come the ones "
+            "where the code estimates a test could change your mind the most, "
+            "starting from how unsure you are. That is a presentation choice, "
+            "not a recommendation -- which one, if any, is worth your time is "
+            "your call.",
             "",
         ]
         lines += [f"  - {p.preview()}" for p in view.live_priors]
@@ -796,6 +802,12 @@ def _peer_briefs_section(peer_briefs: Sequence = ()) -> list[str]:
     return format_soft_nudge(peer_briefs or ())
 
 
+def _dream_section(dream_hypotheses: Sequence = ()) -> list[str]:
+    from orion.dream.hypotheses import format_dream_section
+
+    return format_dream_section(dream_hypotheses or ())
+
+
 def _role_and_help_section(
     *,
     own_graph: str,
@@ -946,6 +958,7 @@ def build_kickoff_prompt(
     graph_enabled: bool = True,
     contractor_peer_enabled: bool = False,
     peer_briefs: Sequence = (),
+    dream_hypotheses: Sequence = (),
 ) -> str:
     """Assemble the whole invitation.
 
@@ -980,6 +993,10 @@ def build_kickoff_prompt(
         lines += _thread_section(view)
         lines += _priors_section(view, stale_after=stale_after)
         lines += _peer_briefs_section(peer_briefs)
+        # Only offered when Orion can write the prior that would adopt one --
+        # the caller claims (stamps offered) only on a writable graph too.
+        if writable:
+            lines += _dream_section(dream_hypotheses)
 
     lines += _material_section(material)
     lines += _access_section(

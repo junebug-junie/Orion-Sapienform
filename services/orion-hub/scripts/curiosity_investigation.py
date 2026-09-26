@@ -84,6 +84,16 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
 from .endogenous_outreach import in_quiet_hours
+from .curiosity_offer_decisions import (
+    load_prior_test_history,
+    load_turn_snapshot,
+    offered_rows,
+    read_prior_states,
+    read_run_revisions,
+    record_offer_decision,
+    record_run_outcome,
+    record_turn_snapshot,
+)
 from orion.curiosity.acl import assert_orion_acl, ensure_graph_exists
 from orion.curiosity.investigation_subject import build_investigation_subject
 from orion.curiosity.kickoff_prompt import (
@@ -91,6 +101,7 @@ from orion.curiosity.kickoff_prompt import (
     build_kickoff_prompt,
     build_resume_preamble,
 )
+from orion.dream.hypotheses import release_hypotheses_for_run, take_hypotheses_for_offer
 from orion.curiosity.peer_briefs import (
     REFUSED_OR_FAILED_RECENT_CYPHER,
     UNUSED_OK_BRIEFS_CYPHER,
@@ -135,6 +146,15 @@ from orion.curiosity.self_question_pool import (
     pick_question,
 )
 from orion.curiosity.outreach_prompt import build_outreach_composition_prompt
+from orion.curiosity.value import (
+    ARM_VALUE_ORDER,
+    YieldModel,
+    build_yield_model,
+    diff_snapshots,
+    offer_arm,
+    revision_agreement,
+    valid_confidence,
+)
 from orion.curiosity.study_material import (
     APPROVED_COUNT_SQL,
     APPROVED_SAMPLE_SQL,
@@ -211,6 +231,9 @@ ATTENTION_SCHEMA_GRAPH_READ_TIMEOUT_SEC = 6.0
 # the same run_id (a runner that restarted mid-turn asks again). One hour
 # covers the longest turn plus the runner's own RPC timeout.
 TURN_RESULT_CACHE_SEC = 3600.0
+# How far back the spend log's scored tests feed learning yield. Matches the
+# curiosity lifecycle tables' 90-day window (curiosity_run_store.py).
+SPEND_HISTORY_DAYS = 90.0
 
 # Cooldown/daily-count state lives in Redis, not in the process. Review finding
 # 2026-08-26: both were plain instance fields, so every Hub restart reset the
@@ -566,6 +589,9 @@ class CuriosityInvestigation:
         cortex_result_prefix: str = "orion:cortex:result",
         # --- contractor peer soft-nudge ------------------------------------
         contractor_peer_enabled: bool = False,
+        # --- dream hypotheses (orion/dream/hypotheses.py) -------------------
+        dream_hypotheses_enabled: bool = False,
+        dream_hypotheses_per_run: int = 3,
         # --- the self-inquiry line -----------------------------------------
         self_inquiry_enabled: bool = False,
         self_inquiry_daily_cap: int = 3,
@@ -577,6 +603,12 @@ class CuriosityInvestigation:
         self_sense_eval_enabled: bool = False,
         self_sense_eval_daily_cap: int = 1,
         self_sense_eval_min_cooldown_sec: float = 43200.0,
+        # --- the spend log and the value-ordered offer (P1, 2026-09-25) -----
+        spend_log_enabled: bool = True,
+        value_order_enabled: bool = False,
+        value_order_propensity: float = 0.5,
+        yield_window: int = 3,
+        yield_pseudo_tests: float = 2.0,
     ) -> None:
         # Durable runs: when on, `_investigate` builds the same prompt and
         # hands the run to cortex instead of running the turn here; the
@@ -674,6 +706,8 @@ class CuriosityInvestigation:
         self.pg_readonly_role = pg_readonly_role
         self.outreach_enabled = outreach_enabled
         self.contractor_peer_enabled = bool(contractor_peer_enabled)
+        self.dream_hypotheses_enabled = bool(dream_hypotheses_enabled)
+        self.dream_hypotheses_per_run = max(0, int(dream_hypotheses_per_run))
         # Per-run dedupe: durable admission completes via `_handle_run_state`,
         # while non-durable / dispatch-fallback journals in-process. Both call
         # `_enqueue_help_requests_after_run`; a run that hits both must not
@@ -746,6 +780,15 @@ class CuriosityInvestigation:
         self._sense_eval_last_monotonic: Optional[float] = None
         self._sense_eval_done_today = 0
         self._sense_eval_done_today_date: Optional[str] = None
+        # The spend log (P1 of the 2026-09-25 attention-with-stakes design):
+        # what each investigation run was offered, what it moved, in nats.
+        # Measurement runs whenever the log is on; the value-ordered offer is
+        # a separate, default-off switch with a per-run random arm.
+        self.spend_log_enabled = bool(spend_log_enabled)
+        self.value_order_enabled = bool(value_order_enabled)
+        self.value_order_propensity = float(value_order_propensity)
+        self.yield_window = int(yield_window)
+        self.yield_pseudo_tests = float(yield_pseudo_tests)
 
     @property
     def graph_enabled(self) -> bool:
@@ -883,6 +926,7 @@ class CuriosityInvestigation:
         rotate_seed: str = "",
         priors_cypher: str = LIVE_PRIORS_CYPHER,
         counts_cypher: str = COUNTS_CYPHER,
+        expected_nats_for: Optional[Callable[[Any], float]] = None,
     ) -> WorldviewSnapshot:
         """Orion's own graph, plus the note the previous run left itself."""
         if self._reader is None:
@@ -897,6 +941,7 @@ class CuriosityInvestigation:
                 rotate_seed=rotate_seed,
                 priors_cypher=priors_cypher,
                 counts_cypher=counts_cypher,
+                expected_nats_for=expected_nats_for,
             )
             if view.is_unavailable or not run_id_of_last:
                 return view
@@ -908,6 +953,119 @@ class CuriosityInvestigation:
             return WorldviewSnapshot(
                 unavailable_reason=f"{type(exc).__name__}: {str(exc)[:160]}"
             )
+
+    # --- the spend log (P1, 2026-09-25 attention-with-stakes design) ---------
+
+    async def _load_yield_model(self) -> YieldModel:
+        """Learning yield per prior from scored history. Empty history -- log
+        off, table missing, nothing scored yet -- is the cold model, whose
+        order is identical to today's most-uncertain-first."""
+        history = []
+        if self.spend_log_enabled:
+            history = await load_prior_test_history(
+                self._pool_provider(), days=SPEND_HISTORY_DAYS
+            )
+        return build_yield_model(
+            history, window=self.yield_window, pseudo_tests=self.yield_pseudo_tests
+        )
+
+    async def _record_offer(
+        self,
+        *,
+        run_id: str,
+        arm: str,
+        value_arm_propensity: float,
+        view: WorldviewSnapshot,
+        material: StudyMaterial,
+        model: YieldModel,
+    ) -> None:
+        if not self.spend_log_enabled:
+            return
+        material_ids = [f"crystallization:{c.crystallization_id}" for c in material.crystallizations]
+        material_ids += [f"relation:{r.decision_id}" for r in material.relations]
+        await record_offer_decision(
+            self._pool_provider(),
+            run_id=run_id,
+            arm=arm,
+            value_arm_propensity=value_arm_propensity,
+            offered=offered_rows(view.live_priors, model),
+            stale_offered=offered_rows(view.stale_priors, model),
+            material_ids=material_ids,
+            constants={
+                **model.constants(),
+                "prior_sample": self.prior_sample,
+                "stale_after": self.stale_prior_tests,
+                "graph_unavailable": view.unavailable_reason,
+            },
+        )
+
+    async def _spend_turn_started(self, run_id: str) -> None:
+        """Snapshot every prior as the turn begins. Never raises into the turn."""
+        if not self.spend_log_enabled or self._reader is None:
+            return
+        try:
+            # None when unreadable: the start is still recorded, with no
+            # snapshot. A retry may fill it in; the score refuses a start that
+            # already carries this run's stamps, so unknown is never zero and
+            # never a retry's partial number.
+            states = await asyncio.to_thread(read_prior_states, self._reader)
+            await record_turn_snapshot(self._pool_provider(), run_id, states)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_spend_turn_start_failed run=%s err=%s", run_id, exc)
+
+    async def _spend_turn_ended(self, run_id: str, *, turn_ok: bool) -> None:
+        """Diff against the start snapshot and record what the run moved.
+        `turn_ok` is whether the turn produced text: a failed turn is still
+        scored (it may have written before failing) but flagged, so its 0.0
+        is not read as "tested, nothing moved"."""
+        if not self.spend_log_enabled or self._reader is None:
+            return
+        try:
+            pool = self._pool_provider()
+            found, before = await load_turn_snapshot(pool, run_id)
+            if not found:
+                # No decision row: not an investigation Hub dispatched, or its
+                # dispatch-time write failed. Nothing to score it against.
+                return
+            after = await asyncio.to_thread(read_prior_states, self._reader)
+            revisions = await asyncio.to_thread(read_run_revisions, self._reader, run_id)
+            outcome = diff_snapshots(before, after, run_id=run_id)
+            agreement = revision_agreement(outcome, revisions) if revisions is not None else None
+            await record_run_outcome(pool, run_id, outcome, agreement, turn_ok=turn_ok)
+            logger.info(
+                "curiosity_spend_outcome run=%s turn_ok=%s realized_nats=%s tested=%s moved=%s "
+                "formed=%s moved_untested=%s unattributed=%s revision_agreement=%s",
+                run_id,
+                turn_ok,
+                (
+                    f"unknown({outcome.unknown_reason})"
+                    if outcome.realized_nats is None
+                    else f"{outcome.realized_nats:.4f}"
+                ),
+                outcome.n_tested,
+                outcome.n_moved,
+                outcome.n_formed,
+                outcome.n_moved_untested,
+                outcome.n_unattributed,
+                agreement,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_spend_turn_end_failed run=%s err=%s", run_id, exc)
+
+    async def _take_dream_hypotheses(self, view: WorldviewSnapshot, run_id: str) -> tuple:
+        """Claim this run's dream hypotheses. () unless Orion could adopt one.
+
+        Claiming stamps `offered_at`, and each hypothesis is offered once, so
+        claim only when the prompt will actually show them: the same
+        writable condition `build_kickoff_prompt` gates the section on.
+        """
+        if not self.dream_hypotheses_enabled or self.dream_hypotheses_per_run <= 0:
+            return ()
+        if not self.graph_enabled or view.is_unavailable or not run_id:
+            return ()
+        return await take_hypotheses_for_offer(
+            self._pool_provider(), run_id=run_id, limit=self.dream_hypotheses_per_run
+        )
 
     async def _read_peer_briefs_for_nudge(self) -> tuple:
         """Unused PeerBriefs for kickoff soft-nudge (RO_QUERY only).
@@ -1472,9 +1630,36 @@ class CuriosityInvestigation:
     ) -> Optional[str]:
         """The turn itself. Split out so `tick` can hold one lock across it."""
         last_run_id = await self._read_last_run_id()
+        # Which order Orion is shown its priors in: today's most-uncertain
+        # first, or expected belief change (entropy x measured learning
+        # yield). A per-run random arm, so the two can be compared; with the
+        # switch off every run is the uncertainty arm. See orion/curiosity/value.py.
+        arm, value_arm_propensity = offer_arm(
+            run_id, enabled=self.value_order_enabled, propensity=self.value_order_propensity
+        )
+        yield_model = await self._load_yield_model()
+        expected_nats_for = (
+            (
+                lambda prior: yield_model.expected_nats(
+                    prior.prior_id, valid_confidence(prior.confidence)
+                )
+            )
+            if arm == ARM_VALUE_ORDER
+            else None
+        )
         # Seeded with THIS run's id so ties in the prior ordering rotate
         # between runs instead of pinning the same `sample` priors forever.
-        view = await self._read_worldview(last_run_id, rotate_seed=run_id)
+        view = await self._read_worldview(
+            last_run_id, rotate_seed=run_id, expected_nats_for=expected_nats_for
+        )
+        await self._record_offer(
+            run_id=run_id,
+            arm=arm,
+            value_arm_propensity=value_arm_propensity,
+            view=view,
+            material=material,
+            model=yield_model,
+        )
         if view.is_unavailable and self.graph_enabled:
             # The ACL assert above succeeded, so this is a query-level failure
             # rather than a missing grant. Reported and NOT fatal: Orion can
@@ -1511,6 +1696,7 @@ class CuriosityInvestigation:
         peer_briefs = ()
         if self.contractor_peer_enabled:
             peer_briefs = await self._read_peer_briefs_for_nudge()
+        dream_hypotheses = await self._take_dream_hypotheses(view, run_id)
         prompt = build_kickoff_prompt(
             material,
             view=view,
@@ -1527,7 +1713,14 @@ class CuriosityInvestigation:
             graph_enabled=self.graph_enabled,
             contractor_peer_enabled=self.contractor_peer_enabled,
             peer_briefs=peer_briefs,
+            dream_hypotheses=dream_hypotheses,
         )
+        if dream_hypotheses:
+            logger.info(
+                "curiosity_dream_hypotheses_offered run=%s ids=%s",
+                run_id,
+                ",".join(h.hypothesis_id for h in dream_hypotheses),
+            )
         # Claim is unset at kickoff (Orion has not chosen). Continuation note
         # rides on Mind; the HelpRequest teach block stays on the harness prompt.
         self._mind_appraisal_by_run_id[run_id] = _investigation_subject_from_view(view)
@@ -1553,6 +1746,8 @@ class CuriosityInvestigation:
                 # cooldown stamp spent for a run cortex never confirmed.
                 if not self.durable_admission_enabled:
                     await self._refund_investigation(previous_stamp)
+                    if dream_hypotheses:
+                        await release_hypotheses_for_run(self._pool_provider(), run_id=run_id)
                 raise
             if dispatched:
                 return "dispatched"
@@ -1586,12 +1781,16 @@ class CuriosityInvestigation:
                 )
                 text, debug = turn.text, dict(turn.debug)
             else:
+                await self._spend_turn_started(run_id)
                 text, debug = await self._generate(prompt, correlation_id, parent_run_id=run_id)
+                await self._spend_turn_ended(run_id, turn_ok=bool(text))
         except asyncio.CancelledError:
             # Hub is going away mid-turn. Give the slot back and let the
             # cancellation continue -- swallowing it would leave a task the
             # shutdown is waiting on.
             await self._refund_investigation(previous_stamp)
+            if dream_hypotheses:
+                await release_hypotheses_for_run(self._pool_provider(), run_id=run_id)
             raise
         if not text:
             logger.info("curiosity_investigation_no_text run=%s debug=%s", run_id, debug)
@@ -3361,8 +3560,12 @@ class CuriosityInvestigation:
         future: asyncio.Future = asyncio.get_running_loop().create_future()
         self._turn_inflight[key] = future
 
+        measured = request.source_tag == INVESTIGATION_TAG
+
         async def _run_turn() -> CuriosityTurnResultV1:
             try:
+                if measured:
+                    await self._spend_turn_started(request.run_id)
                 prompt = await self._prompt_for_attempt(request)
                 text, debug = await self._generate(
                     prompt, request.correlation_id, source=request.source_tag,
@@ -3381,6 +3584,8 @@ class CuriosityInvestigation:
                        if request.gpu_lease is not None and request.lease is None else {}),
                     **({"gpu_lease": request.gpu_lease} if request.gpu_lease is not None else {}),
                 )
+                if measured:
+                    await self._spend_turn_ended(request.run_id, turn_ok=bool(text))
                 return CuriosityTurnResultV1(
                     run_id=request.run_id,
                     correlation_id=request.correlation_id,

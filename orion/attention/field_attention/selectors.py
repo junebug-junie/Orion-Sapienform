@@ -92,7 +92,7 @@ def _current_pressure_proxy(vector: dict[str, float]) -> float:
     vector -- `max()`, an order statistic with zero free parameters, not a
     weighted combination of the vector's channels.
 
-    2026-07-30: `novelty_scorer()` (Candidate B) needs a `current_salience`
+    2026-07-30: `novelty_scorer()` (Candidate B) needs a current pressure
     value per target to diff against that target's *prior* frame -- for
     `node:substrate.*` targets this doesn't apply (Candidate A's precision-
     weighting already IS the theory of "how surprising is this now," a
@@ -152,60 +152,36 @@ def _novelty_targets(
     already returns a real `[0,1]` value (no separate normalization needed,
     unlike Candidate A's unbounded precision-weighted salience).
 
-    Targets with zero real prior context (`previous_frame is None`, i.e.
-    the very first tick, or a target absent from the prior frame) get
-    `novelty_score=0.0` -- correctly "no observed change," per `novelty_
-    for_target()`'s own contract -- not excluded, since "this vector exists
-    right now" is itself real evidence, unlike Candidate A's targets where
-    zero history means zero evidence at all.
+    Novelty is this tick's pressure proxy diffed against the same target's
+    proxy in the previous frame (`pressure_score`, `scoring.
+    novelty_for_target()`). With no previous frame at all (the very first
+    tick after a restart) it is 0.0. For a target absent from an existing
+    previous frame it is the full proxy -- a first appearance is real news
+    -- and `confidence_score=0.0` says there was no prior to compare
+    against. The target is never excluded: "this vector exists right now"
+    is itself real evidence, unlike Candidate A's targets where zero
+    history means zero evidence at all.
 
-    2026-07-30 fix (code review Finding 2, HIGH): `confidence_score` must
-    reflect whether THIS SPECIFIC target_id had a real entry in the
-    previous frame, not just whether any previous frame existed at all.
-    `novelty_for_target()`/`prior_salience_for_target()` return the same
-    0.0 novelty for "no previous frame" and "target absent from an
-    existing previous frame" -- but claiming `confidence_score=1.0` for a
-    target that is brand-new to this tick (e.g. a capability that just
-    started reporting) would be dishonest: there is no real prior
-    observation backing that confidence, identical to the no-frame-at-all
-    case.
+    `confidence_score` answers whether THIS target_id had a real entry in
+    the previous frame, from the same five-bucket search the novelty diff
+    uses (`target_had_real_prior_entry()`), so confidence and novelty are
+    always answered from the same fact (2026-07-30 code review, two rounds:
+    first "any previous frame exists" was conflated with "this target was
+    in it", then only two of the five buckets were searched).
 
-    2026-07-30 second fix (code review verification pass, same day): the
-    first version of this fix checked presence in only `previous_frame.
-    node_targets`/`.capability_targets` -- the two "active" buckets -- but
-    `prior_salience_for_target()` (what `novelty_scorer()` actually uses to
-    compute the novelty diff above) searches five buckets, including
-    `suppressed_targets`. A target scored below `suppress_below` last tick
-    lands ONLY in `suppressed_targets` (`build_attention_frame()`), a real
-    prior observation, not an absent one -- the two-bucket check
-    under-reported confidence=0.0 for such a target even though a real
-    prior value was actually used to compute its novelty. Now uses
-    `target_had_real_prior_entry()` (`scoring.py`), the same five-bucket
-    search `prior_salience_for_target()` uses, so confidence and novelty
-    are always answered from the same real fact.
-
-    **One-time transition artifact, disclosed (2026-07-30):** `novelty_for_
-    target()` diffs this tick's `_current_pressure_proxy()` value against
-    whatever `salience_score` the *previous persisted frame* recorded for
-    the same target_id, regardless of what formula produced that prior
-    value. Confirmed live: the currently-deployed frame (pre-this-patch)
-    has real `compute_salience()`-blend scores for `node:athena`/`atlas`
-    (0.295/0.110) -- a different scale and formula than this patch's
-    `_current_pressure_proxy()`. The FIRST real tick after this patch
-    deploys will diff the new proxy against that old-formula value,
-    producing an artificially large "novelty" reading that reflects the
-    formula changeover, not a real event. Self-resolving after exactly one
-    tick (every subsequent frame diffs new-formula against new-formula) --
-    not fixed here, since there is no principled way to retroactively
-    reinterpret an old frame's score under a formula it was never computed
-    with; disclosed so a post-deploy operator doesn't misread tick one as a
-    real signal.
+    2026-09-25 fix: novelty used to diff against the prior entry's
+    `salience_score`. For these targets that value IS the prior novelty, so
+    a steady non-zero proxy p read p, 0, p, 0 forever -- the "self-resolving
+    after one tick" transition note that used to sit here was wrong for the
+    same reason. Reproduced with a constant 0.8 proxy; regression tests in
+    `tests/test_attention_field_selectors.py`. See D1 in
+    docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md.
     """
     target_ids = sorted(vectors.keys())
     if not target_ids:
         return []
-    current_salience = {tid: _current_pressure_proxy(vectors[tid]) for tid in target_ids}
-    novelty_scores = novelty_scorer(target_ids, current_salience, previous_frame)
+    current_pressure = {tid: _current_pressure_proxy(vectors[tid]) for tid in target_ids}
+    novelty_scores = novelty_scorer(target_ids, current_pressure, previous_frame)
 
     targets: list[FieldAttentionTargetV1] = []
     for target_id in target_ids:
@@ -216,14 +192,14 @@ def _novelty_targets(
                 target_id=target_id,
                 target_kind=target_kind,
                 salience_score=novelty,
-                pressure_score=current_salience[target_id],
+                pressure_score=current_pressure[target_id],
                 novelty_score=novelty,
                 urgency_score=0.0,
                 confidence_score=confidence,
                 dominant_channels={},
                 reasons=[
                     f"Candidate B novelty-only salience: current-tick pressure proxy "
-                    f"{current_salience[target_id]:.4f} vs. prior frame "
+                    f"{current_pressure[target_id]:.4f} vs. prior frame "
                     f"(novelty={novelty:.4f}); magnitude/dwell scorers not applied "
                     "(no real data for this target universe / near-always-empty "
                     "coalition, respectively -- see selector docstring)"

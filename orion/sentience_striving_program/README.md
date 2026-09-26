@@ -1068,7 +1068,14 @@ fix — see §7.
    separate instrument.
 5. **Recurrent Processing Theory (Lamme)** — confirmed real, tight, per-tick recurrence
    inside Layer 5 itself (`novelty_for_target()` reads the *previous*
-   `FieldAttentionFrameV1`) — already field-native, no correction needed here. Top-down
+   `FieldAttentionFrameV1`) — field-native. **Corrected 2026-09-25**, after this item had
+   said "no correction needed": the recurrence read the wrong value. It diffed this tick's
+   pressure against last tick's *novelty*, so a steady input alternated p, 0, p, 0, and
+   targets over a per-kind cap were never recorded, so they read as brand-new every other
+   tick. Both are fixed; novelty now diffs pressure against the prior tick's pressure. Any
+   replay of Candidate B novelty over frames persisted before that fix measures the
+   artifact, not recurrence (D1 in
+   `docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md`). Top-down
    feedback (`TopDownBiasCombiner`/`VoluntaryOverrideV1`, `ORION_ATTENTION_TOPDOWN_ENABLED`)
    confirmed live 2026-07-18 (PRs #1170, #1174) after finding the feature's docker-compose
    wiring had never been added, independent of its flag value.

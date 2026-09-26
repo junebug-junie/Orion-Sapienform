@@ -459,8 +459,13 @@ def handle_help_request(
             file_path=(settings.CURIOSITY_PEER_CURSOR_BUDGET_FILE or None),
         )
 
-    observe = observe_limit or _observe_default
-    observation = observe()
+    # NOT named `observe`: that name is the module-level Claude meter
+    # (`rate_limit_events.observe`), which the Claude fallback gate below
+    # must read. A local `observe` shadowed it for the whole function, so
+    # production's Claude gate read the Cursor meter (2026-09-25, D2 in
+    # docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md).
+    cursor_observe = observe_limit or _observe_default
+    observation = cursor_observe()
     refusal = decide_cursor_budget(observation)
     if refusal is not None:
         brief = _refused_budget_brief(help_req, refusal, peer="cursor_auto")
@@ -503,6 +508,9 @@ def handle_help_request(
             return brief
 
     # Token / unavailable → Claude meter (fail-closed) then exactly one attempt.
+    # The default is the real Claude meter. It reads Claude Code transcripts
+    # on disk, and fails closed (`claude_budget_unobserved`) wherever it
+    # cannot see them.
     assert cursor_error is not None
     claude_observe = observe_claude_limit or observe
     claude_limit = claude_observe()

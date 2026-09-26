@@ -625,6 +625,11 @@ async def startup_event():
                 hub_url=settings.HUB_CURIOSITY_SANDBOX_HUB_URL,
                 prior_sample=settings.HUB_CURIOSITY_PRIOR_SAMPLE,
                 stale_prior_tests=settings.HUB_CURIOSITY_STALE_PRIOR_TESTS,
+                spend_log_enabled=settings.HUB_CURIOSITY_SPEND_LOG_ENABLED,
+                value_order_enabled=settings.HUB_CURIOSITY_VALUE_ORDER_ENABLED,
+                value_order_propensity=settings.HUB_CURIOSITY_VALUE_ORDER_PROPENSITY,
+                yield_window=settings.HUB_CURIOSITY_YIELD_WINDOW,
+                yield_pseudo_tests=settings.HUB_CURIOSITY_YIELD_PSEUDO_TESTS,
                 max_hops=settings.HUB_CURIOSITY_MAX_HOPS,
                 pg_readonly_role=settings.HUB_CURIOSITY_PG_READONLY_ROLE,
                 # A finding Orion judges worth saying goes through a SECOND
@@ -634,6 +639,8 @@ async def startup_event():
                 # `endogenous_outreach` is a module global reassigned above.
                 outreach_enabled=settings.HUB_CURIOSITY_OUTREACH_ENABLED,
                 contractor_peer_enabled=settings.HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED,
+                dream_hypotheses_enabled=settings.HUB_CURIOSITY_DREAM_HYPOTHESES_ENABLED,
+                dream_hypotheses_per_run=settings.HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN,
                 kickoff_via_cortex=settings.HUB_CURIOSITY_KICKOFF_VIA_CORTEX,
                 durable_admission_enabled=settings.HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED,
                 elastic_activation_enabled=settings.HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED,

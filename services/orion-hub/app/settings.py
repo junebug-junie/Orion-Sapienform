@@ -885,6 +885,32 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_STALE_PRIOR_TESTS: int = Field(
         default=3, alias="HUB_CURIOSITY_STALE_PRIOR_TESTS"
     )
+    # The curiosity spend log and value-ordered offer (P1 of
+    # docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md).
+    # SPEND_LOG: record what each investigation run was offered and what it
+    # moved, in nats (apply services/orion-sql-db/manual_migration_curiosity_spend_v1.sql
+    # first; without it this is a logged no-op). VALUE_ORDER: offer priors by
+    # expected belief change (entropy x measured learning yield) instead of raw
+    # uncertainty, on a per-run random arm with P(value) = PROPENSITY. Off until
+    # the replay (scripts/analysis/replay_curiosity_realized_nats.py) shows the
+    # measurement is not degenerate. YIELD_WINDOW / YIELD_PSEUDO_TESTS: how many
+    # recent tests a prior's yield is read over, and how many pool-average
+    # tests pull a thinly-tested prior toward the pool. Hand-picked, disclosed.
+    HUB_CURIOSITY_SPEND_LOG_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_SPEND_LOG_ENABLED"
+    )
+    HUB_CURIOSITY_VALUE_ORDER_ENABLED: bool = Field(
+        default=False, alias="HUB_CURIOSITY_VALUE_ORDER_ENABLED"
+    )
+    HUB_CURIOSITY_VALUE_ORDER_PROPENSITY: float = Field(
+        default=0.5, ge=0.0, le=1.0, alias="HUB_CURIOSITY_VALUE_ORDER_PROPENSITY"
+    )
+    HUB_CURIOSITY_YIELD_WINDOW: int = Field(
+        default=3, ge=1, alias="HUB_CURIOSITY_YIELD_WINDOW"
+    )
+    HUB_CURIOSITY_YIELD_PSEUDO_TESTS: float = Field(
+        default=2.0, ge=0.0, alias="HUB_CURIOSITY_YIELD_PSEUDO_TESTS"
+    )
     # Stopping points inside one turn: places Orion states what it just learned
     # and decides whether to keep pulling. Juniper's number. A cap exists so
     # the reasoning is inspectable rather than one long ramble; the real
@@ -912,6 +938,19 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED: bool = Field(
         default=False,
         alias="HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED",
+    )
+    # Dream cycle v2 hypotheses on the world-curiosity kickoff. Each is shown
+    # to Orion once (Hub stamps dream_hypothesis.offered_at), arm hidden; Orion
+    # alone decides whether to form a :Prior from one. Needs
+    # services/orion-sql-db/manual_migration_dream_cycle_v2.sql applied; a
+    # missing table reads as "nothing to offer".
+    HUB_CURIOSITY_DREAM_HYPOTHESES_ENABLED: bool = Field(
+        default=False,
+        alias="HUB_CURIOSITY_DREAM_HYPOTHESES_ENABLED",
+    )
+    HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN: int = Field(
+        default=3,
+        alias="HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN",
     )
     # Soft Mind work-shape lines into the curiosity / self-inquiry role teach
     # (advisory only; Orion still authors :InvestigationRole / HelpRequest).

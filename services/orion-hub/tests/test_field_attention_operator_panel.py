@@ -170,6 +170,15 @@ def test_field_attention_js_dominant_and_suppressed_targets_both_rendered() -> N
     assert "muted" in FIELD_ATTENTION_JS
 
 
+def test_field_attention_js_suppressed_subtitle_names_both_ways_in() -> None:
+    """2026-09-25 (D1): active targets past a per-kind cap now land in
+    suppressed_targets too (orion/attention/field_attention/builder.py). A
+    subtitle naming only the threshold would tell an operator a 0.8-salience
+    target fell below 0.03."""
+    assert "suppress_below threshold" in FIELD_ATTENTION_JS
+    assert "per-kind target cap" in FIELD_ATTENTION_JS
+
+
 def test_field_attention_js_renders_recent_perturbations_and_warnings() -> None:
     assert "recent_perturbations" in FIELD_ATTENTION_JS
     assert "warnings" in FIELD_ATTENTION_JS

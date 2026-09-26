@@ -790,7 +790,7 @@ def test_live_priors_are_shown_with_the_ordering_disclosed() -> None:
     asyncio.run(loop.tick())
     assert "the foveal tier never runs on a schedule" in loop.seen_prompt
     assert "the order is not neutral" in loop.seen_prompt
-    assert "nothing here says which one is worth your time" in loop.seen_prompt
+    assert "which one, if any, is worth your time is your call" in loop.seen_prompt
 
 
 def test_an_empty_graph_is_named_as_a_starting_point_not_a_failure() -> None:

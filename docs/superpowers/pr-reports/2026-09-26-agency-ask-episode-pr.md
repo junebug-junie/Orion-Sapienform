@@ -120,4 +120,6 @@ No production episode, Juniper outreach, posterior update or sentience is claime
 
 ## PR / CI
 
-PR link and final CI status are recorded in the handoff. Base: #2365.
+PR: https://github.com/junebug-junie/Orion-Sapienform/pull/2366
+
+Base: #2365. Final-head CI status is reported in the handoff after all checks finish.

@@ -761,6 +761,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // Cabinet is no longer a standalone top-level tab -- it's a subview inside
   // the Biometrics modal (biometrics-view.js), which owns its own DOM lookup
   // and activate()/deactivate() calls now.
+  const dreamTabButton = document.getElementById("dreamTabButton");
+  const dreamPanel = document.getElementById("dream");
   const reverieTabButton = document.getElementById("reverieTabButton");
   const reveriePanel = document.getElementById("reverie");
   const exoExplorationTabButton = document.getElementById("exoExplorationTabButton");
@@ -1112,6 +1114,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const isAttentionOrgan = effectiveTab === "attention-organ";
     const isCocreationSignals = effectiveTab === "cocreation-signals";
     const isFieldAttention = effectiveTab === "field-attention";
+    const isDream = effectiveTab === "dream";
     const isReverie = effectiveTab === "reverie";
     const isExoExploration = effectiveTab === "exo-exploration";
     hubTabPanel.classList.toggle("hidden", !isHub);
@@ -1320,6 +1323,12 @@ document.addEventListener("DOMContentLoaded", () => {
         window.OrionFieldAttention.deactivate();
       }
     }
+    if (dreamPanel) {
+      dreamPanel.classList.toggle("hidden", !isDream);
+      if (isDream) window.OrionDream?.activate();
+      else window.OrionDream?.deactivate();
+    }
+    if (dreamTabButton) styleTabButton(dreamTabButton, isDream);
     if (reveriePanel) {
       reveriePanel.classList.toggle("hidden", !isReverie);
       // No poll loop (historical browsing tool, not live telemetry) --
@@ -2005,6 +2014,8 @@ document.addEventListener("DOMContentLoaded", () => {
       setActiveTab("cocreation-signals");
     } else if (h === "#field-attention" && fieldAttentionPanel && fieldAttentionTabButton) {
       setActiveTab("field-attention");
+    } else if (h === "#dream" && dreamPanel && dreamTabButton) {
+      setActiveTab("dream");
     } else if (h === "#reverie" && reveriePanel && reverieTabButton) {
       setActiveTab("reverie");
     } else if (h === "#exo-exploration" && exoExplorationPanel && exoExplorationTabButton) {
@@ -2029,6 +2040,7 @@ document.addEventListener("DOMContentLoaded", () => {
         || h === "#cocreation-signals"
         || h === "#field-attention"
         || h === "#cabinet"
+        || h === "#dream"
         || h === "#reverie"
         || h === "#exo-exploration"
       ) {
@@ -13411,6 +13423,13 @@ document.addEventListener("DOMContentLoaded", () => {
         event.preventDefault();
         setActiveTab("attention-organ");
         history.replaceState(null, "", "#attention-organ");
+      });
+    }
+    if (dreamTabButton && dreamPanel) {
+      dreamTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("dream");
+        history.replaceState(null, "", "#dream");
       });
     }
     if (reverieTabButton && reveriePanel) {

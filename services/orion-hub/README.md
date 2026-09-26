@@ -3136,3 +3136,62 @@ Walkway camera idea 3 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-wo
 - `POST /api/asks/{ask_id}/answer` with `{"answer": "..."}` and `POST /api/asks/{ask_id}/dismiss` -- only an open, unexpired row moves (409 otherwise, 404 if unknown). Sets `status`, `answer`, `answered_at`, then publishes `OrionAskAnsweredV1` on `orion:ask:answered` (consumed by `orion-substrate-runtime`). If the publish fails the answer is still saved (`published: false` in the response); `orion-sql-writer` applies labels from the row itself.
 
 Asks are opened by `orion-sql-writer`'s individuals loop (row insert only, no bus event); the card polls every 60s. Needs `services/orion-sql-db/manual_migration_walkway_camera_v1.sql` applied, otherwise the routes return 503 `ask_schema_missing`. Pictures: a `thumb:<sha256>` ref is served by `GET /api/vision/crop-thumbs/{sha256}` from the read-only `HUB_VISION_CROP_THUMB_DIR` mount (hex-only ids, regular files only, size-capped); an http(s) URL is shown as-is; anything else is shown as text.
+
+## Dream operator surface
+
+Open **Dream** in the section launcher (`/#dream`). It reads sleep readiness,
+recent sleeps, replay reasons, proposed links and waking offer state, plus the
+existing dream-versus-random scorecard. Refresh reads a new snapshot; paging
+uses `(started_at, cycle_id)` so ties and new sleeps cannot shift older pages.
+The tab fetches on entry and refresh, cancels requests on exit, and does not poll.
+
+This is an operator-only inspection path under Hub's existing trusted-network
+access boundary. All four routes are GET-only, return `Cache-Control: no-store`,
+and never trigger sleep, claim offers, write beliefs, or apply memory changes:
+
+- `/api/dream/pressure`: proxies `/dreams/cycle/pressure`; ready requires the
+  sleep loop enabled, pressure/idleness satisfied, and minimum interval clear.
+  Also reports Hub's actual waking-offer enable flag.
+- `/api/dream/cycles?limit=12`: bounded history (maximum 50). For older pages,
+  round-trip both `next_cursor.before` and `next_cursor.before_id`.
+- `/api/dream/cycles/{cycle_id}`: stored replay/cycle receipt and current
+  hypothesis offer/expiry state, including operator-visible group labels.
+- `/api/dream/scorecard`: the shared `orion.dream.hypotheses.score_hypotheses`
+  join, using Hub's configured curiosity worldview. The existing verdict needs
+  at least 20 dream and 5 control offers and compares adoption rates; it is not
+  a statistical significance test. Support includes supported **or revised**
+  priors, divided by tested hypotheses. Null means not measured.
+
+Configure `HUB_DREAM_SERVICE_URL` (default `http://127.0.0.1:8620`, reachable
+from Hub's host network). Existing `POSTGRES_URI` and `HUB_CURIOSITY_GRAPH_*`
+settings supply the stores. Missing tables/services return 503, distinct from
+an empty history. Scorecards over 10,000 offers or matching priors return 503
+instead of presenting a truncated comparison. Pressure retains the producer's
+existing limitation: individual source-read failures may be reported there as
+empty sources; this view cannot certify those sources healthy.
+
+**What is connected?** The sleep loop reads text reverie compaction requests,
+resonance alerts, metacog notes and active memory crystallizations. Its existing
+REM compaction pass is separately gated by `ORION_DREAM_REM_ENABLED` and stages
+proposals only. A recorded delta ID is shown as a receipt, not as applied memory.
+Visual reverie's image generation remains separate in `orion-thought`, available
+under **Reverie**; the sleep loop does not read its image chains. The older
+Recall-based `dream_cycle`/`dream_synthesis` narrative workflow and the memory
+synthesis/consolidation producers are not invoked by v2. Existing crystallization
+outputs can contribute to replay; this is not a rerun of their synthesis pipeline.
+
+Validation (use an environment with Hub's Python requirements and pytest):
+
+```bash
+python -m pytest services/orion-hub/tests/test_dream_routes.py -q
+python services/orion-hub/evals/dream_server.py --port 18091
+node services/orion-hub/evals/dream_browser.cjs http://127.0.0.1:18091
+```
+
+The browser eval uses the actual Hub template/navigation with fixture GET
+responses, checking deep links, paging, refresh, empty/unavailable states,
+escaping and absence of writes. It requires Hub's Puppeteer dependency and the
+existing Tailwind CDN used by the Hub shell. To smoke real data without starting
+Hub workers, pass `--env-file /path/to/services/orion-hub/.env` to the isolated
+loopback eval server, then GET the four routes. Real memory content and browser
+screenshots should remain local, outside git.

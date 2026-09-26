@@ -944,6 +944,10 @@ class Settings(BaseSettings):
     # alone decides whether to form a :Prior from one. Needs
     # services/orion-sql-db/manual_migration_dream_cycle_v2.sql applied; a
     # missing table reads as "nothing to offer".
+    HUB_DREAM_SERVICE_URL: str = Field(
+        default="http://127.0.0.1:8620", alias="HUB_DREAM_SERVICE_URL"
+    )
+
     HUB_CURIOSITY_DREAM_HYPOTHESES_ENABLED: bool = Field(
         default=False,
         alias="HUB_CURIOSITY_DREAM_HYPOTHESES_ENABLED",

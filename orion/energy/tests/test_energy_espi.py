@@ -23,7 +23,46 @@ def test_parses_forward_flow_hourly_kwh() -> None:
 
 def test_reverse_flow_block_is_skipped() -> None:
     rows = parse_espi(FIXTURE.read_bytes(), retrieved_at=RETRIEVED, source="file_drop")
-    assert 0.999 not in [r.energy_kwh for r in rows]
+    assert len(rows) == 3
+    assert [r.interval_start for r in rows] == [
+        datetime(2026, 9, 10, 18, 0, tzinfo=timezone.utc),
+        datetime(2026, 9, 10, 19, 0, tzinfo=timezone.utc),
+        datetime(2026, 9, 10, 20, 0, tzinfo=timezone.utc),
+    ]
+
+
+def test_missing_flow_direction_raises() -> None:
+    xml = FIXTURE.read_bytes().replace(b"<espi:flowDirection>19</espi:flowDirection>", b"", 1)
+    with pytest.raises(EspiError, match="flowDirection"):
+        parse_espi(xml, retrieved_at=RETRIEVED, source="file_drop")
+
+
+def test_missing_forward_uom_raises() -> None:
+    xml = FIXTURE.read_bytes().replace(b"<espi:uom>72</espi:uom>", b"", 1)
+    with pytest.raises(EspiError, match="uom"):
+        parse_espi(xml, retrieved_at=RETRIEVED, source="file_drop")
+
+
+def test_non_integer_value_raises_espi_error() -> None:
+    xml = FIXTURE.read_bytes().replace(b"<espi:value>1234</espi:value>", b"<espi:value>5.5</espi:value>", 1)
+    with pytest.raises(EspiError):
+        parse_espi(xml, retrieved_at=RETRIEVED, source="file_drop")
+
+
+def test_negative_value_raises_espi_error() -> None:
+    xml = FIXTURE.read_bytes().replace(b"<espi:value>1234</espi:value>", b"<espi:value>-100</espi:value>", 1)
+    with pytest.raises(EspiError):
+        parse_espi(xml, retrieved_at=RETRIEVED, source="file_drop")
+
+
+def test_block_without_usage_point_raises() -> None:
+    xml = FIXTURE.read_bytes().replace(
+        b"/UsagePoint/UP123/MeterReading/MR1/IntervalBlock/IB1",
+        b"/MeterReading/MR1/IntervalBlock/IB1",
+        1,
+    )
+    with pytest.raises(EspiError, match="UsagePoint"):
+        parse_espi(xml, retrieved_at=RETRIEVED, source="file_drop")
 
 
 def test_power_of_ten_multiplier_applied() -> None:

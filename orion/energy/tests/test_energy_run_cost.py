@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -172,4 +173,68 @@ def test_house_share_needs_full_coverage() -> None:
     led = _ledger(_iv(T - timedelta(hours=2), 100.0), _iv(T, 1.0))
     long_run = _settled(window_end=T + timedelta(hours=2), energy_joules=250.0 * 7200)
     est = estimate_run_cost(long_run, ledger=led, usage_point_id="UP123", computed_at=NOW)
+    assert est.house_share_cost_usd is None and est.house_share_gap == "house_interval_missing"
+
+
+def test_nan_baseline_is_settlement_not_measured() -> None:
+    led = _ledger(_iv(T - timedelta(hours=2), 100.0))
+    est = estimate_run_cost(
+        _settled(baseline_watts=math.nan),
+        ledger=led,
+        usage_point_id="UP123",
+        computed_at=NOW,
+    )
+    assert est.energy_kwh is None
+    assert est.estimated_run_cost_usd is None and est.run_cost_gap == "settlement_not_measured"
+    assert est.house_share_cost_usd is None and est.house_share_gap == "settlement_not_measured"
+
+
+def test_nan_mean_is_settlement_not_measured() -> None:
+    led = _ledger(_iv(T - timedelta(hours=2), 100.0))
+    est = estimate_run_cost(
+        _settled(actual_mean_watts=math.nan),
+        ledger=led,
+        usage_point_id="UP123",
+        computed_at=NOW,
+    )
+    assert est.energy_kwh is None
+    assert est.estimated_run_cost_usd is None and est.run_cost_gap == "settlement_not_measured"
+    assert est.house_share_cost_usd is None and est.house_share_gap == "settlement_not_measured"
+
+
+def test_negative_energy_joules_gross_is_settlement_not_measured() -> None:
+    led = _ledger(_iv(T - timedelta(hours=2), 100.0))
+    est = estimate_run_cost(
+        _settled(baseline_watts=None, actual_mean_watts=None, energy_joules=-100.0),
+        ledger=led,
+        usage_point_id="UP123",
+        computed_at=NOW,
+    )
+    assert est.energy_kwh is None
+    assert est.estimated_run_cost_usd is None and est.run_cost_gap == "settlement_not_measured"
+    assert est.house_share_cost_usd is None and est.house_share_gap == "settlement_not_measured"
+
+
+def test_below_baseline_mean_is_zero_cost_not_gap() -> None:
+    led = _ledger(_iv(T - timedelta(hours=2), 100.0))
+    est = estimate_run_cost(
+        _settled(actual_mean_watts=30.0, baseline_watts=50.0, energy_joules=30.0 * 3600),
+        ledger=led,
+        usage_point_id="UP123",
+        computed_at=NOW,
+    )
+    assert est.energy_kwh == pytest.approx(0.0)
+    assert est.estimated_run_cost_usd == pytest.approx(0.0)
+    assert est.run_cost_gap is None
+    assert est.energy_basis == "incremental_over_baseline"
+
+
+def test_partial_interval_overlap_is_house_share_gap() -> None:
+    led = _ledger(_iv(T - timedelta(hours=2), 100.0), _iv(T, 1.0))
+    partial = _settled(
+        window_start=T - timedelta(minutes=30),
+        window_end=T + timedelta(hours=1, minutes=30),
+        energy_joules=250.0 * 7200,
+    )
+    est = estimate_run_cost(partial, ledger=led, usage_point_id="UP123", computed_at=NOW)
     assert est.house_share_cost_usd is None and est.house_share_gap == "house_interval_missing"

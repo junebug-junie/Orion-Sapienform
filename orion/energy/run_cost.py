@@ -8,12 +8,17 @@ The house share apportions each overlapping whole-house interval by the run's sh
 of that interval's kWh. It needs the utility data, which lags about a day, so it is
 usually a gap at settlement time and filled in when the pipeline re-prices.
 
+Cycle position and season are taken from ``window_start`` only. A run that crosses a
+billing-cycle or season boundary is priced at its start position; ``marginal_usd_per_kwh``
+is the blended rate when incremental kWh straddle a block threshold.
+
 ``no_cycle_usage`` means the billing cycle's usage before the run is missing or
 incomplete (no intervals yet, a mid-cycle hole, or no usage point).
 """
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any, Optional
 
@@ -26,15 +31,24 @@ _COVERAGE_SLACK_SEC = 1.0
 
 
 def _run_kwh(settled: PowerIntentSettledV1) -> tuple[Optional[float], Optional[str]]:
-    if settled.outcome != "settled" or settled.energy_joules is None:
+    if settled.outcome != "settled":
         return None, None
     elapsed = (settled.window_end - settled.window_start).total_seconds()
     if elapsed <= 0:
         return None, None
     if settled.baseline_watts is not None and settled.actual_mean_watts is not None:
-        delta_w = max(0.0, settled.actual_mean_watts - settled.baseline_watts)
+        mean = settled.actual_mean_watts
+        baseline = settled.baseline_watts
+        if not (math.isfinite(mean) and math.isfinite(baseline)) or mean < 0.0:
+            return None, None
+        delta_w = max(0.0, mean - baseline)
         return delta_w * elapsed / JOULES_PER_KWH, "incremental_over_baseline"
-    return settled.energy_joules / JOULES_PER_KWH, "gross"
+    if settled.energy_joules is None:
+        return None, None
+    joules = settled.energy_joules
+    if not math.isfinite(joules) or joules < 0.0:
+        return None, None
+    return joules / JOULES_PER_KWH, "gross"
 
 
 def _run_cost_fields(

@@ -33,6 +33,7 @@ from orion.gpu_pool.client import gpu_lease as _client_gpu_lease
 from orion.gpu_pool.config import PoolConfig, RouteSpec, load_pool_config
 from orion.llm.routes import BACKGROUND_LLM_ROUTES, LLM_ROUTE_DISPLAY_ORDER, SYSTEM_LLM_ROUTES
 from orion.schemas.gpu_pool import (
+    GpuLeaseRefV1,
     GPU_POOL_STATE_REPLY_PREFIX,
     GPU_POOL_STATE_REQUEST_CHANNEL,
     GPU_POOL_STATE_REQUEST_KIND,
@@ -200,8 +201,11 @@ class PoolLease:
     """One pool lease whose release may happen in a different task (streaming responses)."""
 
     def __init__(self, *, route: str, spec: RouteSpec, holder: str, turn_correlation_id: Optional[str],
-                 min_ctx_tokens: int, deadline_sec: float) -> None:
+                 min_ctx_tokens: int, deadline_sec: float, hold: Optional[GpuLeaseRefV1] = None) -> None:
         self.route = route
+        # Stage 4: the call runs under a durable run's hold -> ``attach`` (a child lease on the
+        # hold's role), never a second lease of its own that would queue behind the run.
+        self.hold = hold
         self.spec = spec
         self.holder = holder
         self.turn_correlation_id = turn_correlation_id
@@ -222,7 +226,7 @@ class PoolLease:
         cm = gpu_lease(
             bus, work_class=self.spec.work_class, holder=self.holder, priority=self.spec.priority,
             kind="request", deadline_sec=self.deadline_sec, min_ctx_tokens=self.min_ctx_tokens,
-            turn_correlation_id=self.turn_correlation_id,
+            turn_correlation_id=self.turn_correlation_id, **({"hold": self.hold} if self.hold is not None else {}),
         )
         try:
             self.lease = await cm.__aenter__()
@@ -242,10 +246,16 @@ class PoolLease:
         self._cm = cm
         logger.info(
             "gpu_pool_lease_granted route=%s class=%s priority=%s holder=%s role=%s url=%s ctx_per_slot=%s "
-            "min_ctx=%s corr=%s",
+            "min_ctx=%s corr=%s hold=%s",
             self.route, self.spec.work_class, self.spec.priority, self.holder, self.lease.grant.role,
             self.lease.grant.url, self.lease.grant.ctx_per_slot, self.min_ctx_tokens, self.turn_correlation_id,
+            self.hold.lease_id if self.hold is not None else "-",
         )
+        if self.hold is not None and self.lease.grant.role != self.hold.role:
+            # The pool places children on the hold's role only; a mismatch is a pool bug worth seeing,
+            # not a reason to refuse a call the pool itself granted.
+            logger.warning("gpu_pool_attach_role_mismatch hold=%s hold_role=%s granted_role=%s corr=%s",
+                           self.hold.lease_id, self.hold.role, self.lease.grant.role, self.turn_correlation_id)
         return self.lease
 
     async def release(self, error: Optional[BaseException] = None) -> None:
@@ -261,11 +271,12 @@ class PoolLease:
 
 @contextlib.asynccontextmanager
 async def lease_for_route(route: str, *, holder: str, turn_correlation_id: Optional[str],
-                          min_ctx_tokens: int, deadline_sec: float) -> AsyncIterator[Lease]:
+                          min_ctx_tokens: int, deadline_sec: float,
+                          hold: Optional[GpuLeaseRefV1] = None) -> AsyncIterator[Lease]:
     """``async with`` form: released ``ok`` on normal exit, ``upstream_error`` if the block raises."""
     handle = PoolLease(route=route, spec=route_spec(route), holder=holder,
                        turn_correlation_id=turn_correlation_id, min_ctx_tokens=min_ctx_tokens,
-                       deadline_sec=deadline_sec)
+                       deadline_sec=deadline_sec, hold=hold)
     lease = await handle.acquire()
     try:
         yield lease

@@ -64,7 +64,7 @@ class TypedBus:
             task.add_done_callback(self.tasks.discard)
         return 1
 
-    async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec):
+    async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec, health_label=None):
         assert reply_channel not in self.inflight_rpc, "RPC reply channels must be unique"
         future = asyncio.get_running_loop().create_future()
         self.inflight_rpc[reply_channel] = future

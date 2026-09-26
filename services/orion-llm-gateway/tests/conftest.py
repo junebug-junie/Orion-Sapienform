@@ -38,7 +38,11 @@ class FakePool:
       that big the answer is immediate: ``min_ctx_exceeds_class:<largest ctx in the class>``;
     * each role has ``slots`` concurrent leases; with none free the acquire waits (tests shrink the
       wait with ``max_wait_sec``) and then fails ``deadline``, like a queued lease past deadline_at;
-    * the release outcome honours ``lease.release_outcome``, like the real client.
+    * the release outcome honours ``lease.release_outcome``, like the real client;
+    * stage 4 holds: ``holds[lease_id] = GpuLeaseRefV1`` is a live hold that occupies one slot of its
+      role (``busy``). A call with ``hold=`` attaches: it runs on the hold's role in the slot the hold
+      reserves (never waits for another), or is refused ``attach_refused`` when the hold is unknown
+      or its generation stale -- the pool-side rule the gateway codes against.
     """
 
     def __init__(self) -> None:
@@ -57,6 +61,13 @@ class FakePool:
         self.withdrawn = 0
         self.on_grant: Optional[Callable[[Any], None]] = None
         self.urls: Dict[str, str] = dict(FAKE_ROLE_URLS)  # tests may point a role at a local server
+        self.holds: Dict[str, Any] = {}
+        self.attach_refused = "unknown_lease"
+
+    def add_hold(self, ref: Any) -> None:
+        """A durable run's hold, granted: it takes one slot of its role until the test ends."""
+        self.holds[ref.lease_id] = ref
+        self.busy[ref.role] += 1
 
     def grant(self, role: str, n: int):
         from orion.schemas.gpu_pool import GpuLeaseGrantV1
@@ -106,15 +117,23 @@ class FakePool:
         self.calls.append(dict(kw))
         if self.unavailable:
             raise LeaseUnavailable(self.unavailable)
-        try:
-            role = await self._place(kw)
-        except asyncio.CancelledError:
-            self.withdrawn += 1
-            raise
+        hold = kw.get("hold")
+        if hold is not None:
+            live = self.holds.get(hold.lease_id)
+            if live is None or live.generation != hold.generation:
+                raise LeaseUnavailable(self.attach_refused)
+            role = live.role  # the child runs in the slot its hold reserves: no queue, no second slot
+        else:
+            try:
+                role = await self._place(kw)
+            except asyncio.CancelledError:
+                self.withdrawn += 1
+                raise
         grant = self.grant(role, len(self.calls))
         lease = Lease(grant.lease_id, grant)
         self.leases.append(lease)
-        self.busy[role] += 1
+        if hold is None:
+            self.busy[role] += 1
         self.active += 1
         self.max_active = max(self.max_active, self.active)
         if self.on_grant is not None:
@@ -126,7 +145,8 @@ class FakePool:
             outcome = "upstream_error"
             raise
         finally:
-            self.busy[role] -= 1
+            if hold is None:
+                self.busy[role] -= 1
             self.active -= 1
             self.releases.append(lease.release_outcome or outcome)
 

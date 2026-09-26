@@ -110,8 +110,9 @@ async def test_thought_client_react_returns_thought_event() -> None:
     sent_envelope = bus.rpc_request.await_args.args[1]
     assert sent_envelope.kind == "stance.react.request.v1"
     assert bus.rpc_request.await_args.args[0] == settings.CHANNEL_THOUGHT_REQUEST
-    assert sent_envelope.payload == _stance_request().model_dump(mode="json", exclude={"resource_lease"})
+    assert sent_envelope.payload == _stance_request().model_dump(mode="json", exclude={"resource_lease", "gpu_lease"})
     assert "resource_lease" not in sent_envelope.payload
+    assert "gpu_lease" not in sent_envelope.payload  # stage 4.4: absent ref keeps the old wire shape
     assert sent_envelope.payload["repair_bundle"] is None
     assert sent_envelope.payload["llm_route"] is None
 
@@ -219,3 +220,21 @@ async def test_thought_client_react_proceeds_when_subscriber_probe_fails() -> No
 
     assert result.thought is not None
     bus.rpc_request.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_thought_client_sends_the_gpu_pool_hold_ref_when_set() -> None:
+    from orion.schemas.gpu_pool import GpuLeaseRefV1
+
+    ref = GpuLeaseRefV1(lease_id="hold-1", generation=2, role="agent", holder="durable-runs:run-1")
+    request = _stance_request().model_copy(update={"gpu_lease": ref})
+    bus = MagicMock()
+    bus.redis.pubsub_numsub = AsyncMock(return_value=[(settings.CHANNEL_THOUGHT_REQUEST, 1)])
+    bus.rpc_request = AsyncMock(side_effect=TimeoutError())
+
+    await ThoughtClient(bus).react(request)
+
+    envelope = bus.rpc_request.await_args.args[1]
+    assert envelope.payload["gpu_lease"] == ref.model_dump(mode="json")
+    assert "resource_lease" not in envelope.payload
+    assert StanceReactRequestV1.model_validate(envelope.payload).gpu_lease == ref

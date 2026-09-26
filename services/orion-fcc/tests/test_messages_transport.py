@@ -9,11 +9,12 @@ from tempfile import TemporaryDirectory
 import anyio
 from api.models.anthropic import MessagesRequest
 from api.routes import create_message
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 from install_transport_patch import patch_routes
 from orion_fcc_messages_transport import adapt_message_response, with_heartbeats
+from starlette.requests import ClientDisconnect
 
 
 def event(kind, **kwargs):
@@ -59,6 +60,47 @@ async def source(items):
 
 
 class TransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_nonstream_disconnect_cancels_async_provider_work(self):
+        closed = asyncio.Event()
+
+        async def delayed():
+            try:
+                await asyncio.Event().wait()
+                yield "unreachable"
+            finally:
+                await asyncio.sleep(0.01)
+                closed.set()
+
+        async def disconnected():
+            return True
+
+        with self.assertRaises(ClientDisconnect):
+            await adapt_message_response(
+                StreamingResponse(delayed()), stream=False, disconnected=disconnected
+            )
+        self.assertTrue(closed.is_set())
+
+    async def test_nonstream_cancelled_scope_completes_async_cleanup(self):
+        started, closed = asyncio.Event(), asyncio.Event()
+
+        async def delayed():
+            try:
+                started.set()
+                await asyncio.Event().wait()
+                yield "unreachable"
+            finally:
+                await asyncio.sleep(0.01)
+                closed.set()
+
+        async def consume():
+            await adapt_message_response(StreamingResponse(delayed()), stream=False)
+
+        async with anyio.create_task_group() as group:
+            group.start_soon(consume)
+            await started.wait()
+            group.cancel_scope.cancel()
+        self.assertTrue(closed.is_set())
+
     async def test_nonstream_complete_json(self):
         result = await adapt_message_response(
             StreamingResponse(source(events())), stream=False
@@ -244,8 +286,8 @@ class RouteTests(unittest.TestCase):
         app = FastAPI()
 
         @app.post("/v1/messages")
-        async def route(body: MessagesRequest):
-            return await create_message(body, Handler(), None)
+        async def route(body: MessagesRequest, request: Request):
+            return await create_message(body, request, Handler(), None)
 
         with TestClient(app) as client:
             for options in [{"stream": False}, {}, {"stream": None}, {"stream": True}]:

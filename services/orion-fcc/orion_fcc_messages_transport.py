@@ -13,6 +13,7 @@ import anyio
 from core.anthropic.stream_contracts import parse_sse_text
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.requests import ClientDisconnect
 
 PING = 'event: ping\ndata: {"type":"ping"}\n\n'
 
@@ -129,7 +130,22 @@ async def collect_message(body):
             await body.aclose()
 
 
-async def adapt_message_response(response, *, stream):
+async def collect_until_disconnect(body, disconnected):
+    pending = asyncio.create_task(collect_message(body))
+    try:
+        while not (await asyncio.wait({pending}, timeout=0.25))[0]:
+            if disconnected is not None and await disconnected():
+                raise ClientDisconnect()
+        return pending.result()
+    finally:
+        with anyio.CancelScope(shield=True):
+            if not pending.done():
+                pending.cancel()
+                with suppress(asyncio.CancelledError):
+                    await pending
+
+
+async def adapt_message_response(response, *, stream, disconnected=None):
     if not isinstance(response, StreamingResponse):
         # Keep upstream local optimization responses unchanged.
         return response
@@ -137,7 +153,7 @@ async def adapt_message_response(response, *, stream):
         response.body_iterator = with_heartbeats(response.body_iterator)
         return response
     try:
-        message = await collect_message(response.body_iterator)
+        message = await collect_until_disconnect(response.body_iterator, disconnected)
     except (MessageAssemblyError, KeyError, TypeError, ValueError):
         return JSONResponse(
             status_code=502,

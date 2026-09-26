@@ -15,6 +15,10 @@ def patch_routes(path):
         )
     text = source.decode()
     text = text.replace(
+        "async def create_message(\n    request_data: MessagesRequest,",
+        "async def create_message(\n    request_data: MessagesRequest,\n    request: Request,",
+    )
+    text = text.replace(
         "from . import dependencies",
         "from orion_fcc_messages_transport import adapt_message_response\n\nfrom . import dependencies",
     )
@@ -24,6 +28,7 @@ def patch_routes(path):
         "    return await adapt_message_response(\n"
         "        handler.create(request_data),\n"
         '        stream="stream" in request_data.model_fields_set and request_data.stream is True,\n'
+        "        disconnected=request.is_disconnected,\n"
         "    )",
     )
     path.write_text(text)

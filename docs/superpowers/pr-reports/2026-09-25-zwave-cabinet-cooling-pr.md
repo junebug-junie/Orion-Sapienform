@@ -103,7 +103,7 @@ Already restarted during Task 6 smoke (heartbeat-only mode).
 
 ## PR link
 
-(filled after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2359
 
 ## Concerns (post-merge operator steps)
 

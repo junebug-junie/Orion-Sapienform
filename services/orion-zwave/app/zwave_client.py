@@ -126,10 +126,14 @@ class ZWaveJSClient:
         return dict(self._values_by_node.get(target, {}))
 
     async def connect(self) -> None:
-        self._ws = await websockets.connect(self.ws_url, open_timeout=10)
-        self._listener_task = asyncio.create_task(self._listen())
-        await self._bootstrap()
-        self._dispatch_task = asyncio.create_task(self._dispatch_loop())
+        try:
+            self._ws = await websockets.connect(self.ws_url, open_timeout=10)
+            self._listener_task = asyncio.create_task(self._listen())
+            await self._bootstrap()
+            self._dispatch_task = asyncio.create_task(self._dispatch_loop())
+        except Exception:
+            await self.close()
+            raise
 
     async def close(self) -> None:
         for task_name in ("_dispatch_task", "_listener_task"):

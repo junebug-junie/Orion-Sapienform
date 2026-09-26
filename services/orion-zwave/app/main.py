@@ -128,14 +128,6 @@ async def poll_cooling_loop() -> None:
         settings.ZWAVE_JS_WS_URL,
     )
 
-    bus = OrionBusAsync(
-        url=settings.ORION_BUS_URL,
-        enabled=settings.ORION_BUS_ENABLED,
-        codec=OrionCodec(),
-    )
-    if bus.enabled:
-        await bus.connect()
-
     if not settings.ORION_ZWAVE_ENABLED:
         logger.info(
             "ORION_ZWAVE_ENABLED=false; heartbeat-only mode until Shelly is paired"
@@ -143,6 +135,14 @@ async def poll_cooling_loop() -> None:
         while True:
             await asyncio.sleep(settings.COOLING_POLL_INTERVAL_SEC)
         return
+
+    bus = OrionBusAsync(
+        url=settings.ORION_BUS_URL,
+        enabled=settings.ORION_BUS_ENABLED,
+        codec=OrionCodec(),
+    )
+    if bus.enabled:
+        await bus.connect()
 
     client = ZWaveJSClient(settings.ZWAVE_JS_WS_URL, settings.ZWAVE_NODE_ID)
     try:

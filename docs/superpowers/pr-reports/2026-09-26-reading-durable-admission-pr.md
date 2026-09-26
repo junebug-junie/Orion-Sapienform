@@ -74,9 +74,11 @@ the sync script intentionally excludes host-specific bus and grammar values.
 ## Verification
 
 - 217 reading/worker/real-PostgreSQL tests passed.
+- Full reading CI selection: 658 passed, 1 unrelated opt-in skip.
 - Durable-run suite: 89 passed, 54 opt-in integration tests skipped.
 - Offline reading handoff eval: 11 passed.
 - Both affected Docker images built under isolated check project names.
 - Reply-channel catalog check: 13 prefixes resolved, zero uncovered.
 - Live admission-to-reading-to-journal path: UNVERIFIED until deployment and smoke.
 - PR CI and mergeability: pending.
+- Independent final review: all four findings resolved; no material blocker.

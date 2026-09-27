@@ -30,6 +30,9 @@ _SCRIPT = re.compile(rf"(<script\b{_ATTRS}>).*?(</script\s*>|\Z)", re.IGNORECASE
 _INPUT = re.compile(rf"<input\b{_ATTRS}>", re.IGNORECASE)
 _HIDDEN = re.compile(r"""(?<![\w-])type\s*=\s*["']?hidden\b""", re.IGNORECASE)
 _VALUE = re.compile(r"""(?<![\w-])(value\s*=\s*)("[^"]*"|'[^']*'|[^\s>]+)""", re.IGNORECASE)
+_META = re.compile(rf"<meta\b{_ATTRS}>", re.IGNORECASE)
+_SECRET_META = re.compile(r"""(?<![\w-])(?:name|property)\s*=\s*["']?[^"'\s>]*(?:csrf|token)""", re.IGNORECASE)
+_CONTENT = re.compile(r"""(?<![\w-])(content\s*=\s*)("[^"]*"|'[^']*'|[^\s>]+)""", re.IGNORECASE)
 # Per-retrieval stamps; a bill whose other fields are unchanged is the same bill.
 _VOLATILE_KEYS = ("retrieved_at", "as_of")
 
@@ -52,13 +55,18 @@ def _atomic_write(directory: Path, name: str, data: bytes) -> Path:
 
 
 def scrub_html(html: str) -> str:
-    """Drop inline script bodies and hidden-input values (CSRF/session tokens) before disk."""
+    """Drop inline script bodies, hidden-input values, and csrf/token meta content before disk."""
 
     def _input(match: re.Match[str]) -> str:
         tag = match.group(0)
         return _VALUE.sub(r'\1""', tag) if _HIDDEN.search(tag) else tag
 
-    return _INPUT.sub(_input, _SCRIPT.sub(lambda m: m.group(1) + m.group(2), html))
+    def _meta(match: re.Match[str]) -> str:
+        tag = match.group(0)
+        return _CONTENT.sub(r'\1""', tag) if _SECRET_META.search(tag) else tag
+
+    html = _SCRIPT.sub(lambda m: m.group(1) + m.group(2), html)
+    return _META.sub(_meta, _INPUT.sub(_input, html))
 
 
 def _scrub_bytes(data: bytes) -> bytes:
@@ -125,13 +133,22 @@ def _store_seen(path: Optional[Path], seen: dict[str, str]) -> None:
         logger.warning("energy_portal_bills_seen_write_failed error=%s", type(exc).__name__)
 
 
+def _one_per_period(payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Two rows for one period would alternate in the seen-state and both be re-sent daily."""
+    kept: dict[str, dict[str, Any]] = {}
+    for payload in payloads:
+        # Table is newest-first (UNVERIFIED), so the first row wins, e.g. a rebill over its original.
+        kept.setdefault(_natural_key(payload), payload)
+    return list(kept.values())
+
+
 def _write_new_bills(
     payloads: list[dict[str, Any]], *, bill_inbox_dir: Path, seen_path: Optional[Path], stamp: str
 ) -> tuple[Path, ...]:
     """Write only bills/forecasts whose content changed since the last delivered copy."""
     seen = _load_seen(seen_path)
     written: list[Path] = []
-    for i, payload in enumerate(payloads):
+    for i, payload in enumerate(_one_per_period(payloads)):
         key, digest = _natural_key(payload), _content_hash(payload)
         if seen.get(key) == digest:
             continue
@@ -189,7 +206,12 @@ async def run_once(
             except ValueError as exc:
                 await _snapshot_html(driver, raw_dir, now)
                 forecast_error = _field_reason("forecast_parse_failed", exc)
-        bill_files = _write_new_bills(payloads, bill_inbox_dir=bill_inbox_dir, seen_path=seen_path, stamp=stamp)
+        try:
+            bill_files = _write_new_bills(
+                payloads, bill_inbox_dir=bill_inbox_dir, seen_path=seen_path, stamp=stamp
+            )
+        except OSError as exc:
+            return PortalOutcome("error", f"bill_write_failed:{type(exc).__name__}", xml_file=xml_file)
         if forecast_error:
             return PortalOutcome("error", forecast_error, xml_file=xml_file, bill_files=bill_files)
         return PortalOutcome("ok", "fetched", xml_file=xml_file, bill_files=bill_files)

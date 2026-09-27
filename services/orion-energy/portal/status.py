@@ -14,8 +14,14 @@ from .fetch import PortalOutcome
 
 def read_status(path: Path) -> Optional[PortalStatus]:
     try:
-        return parse_portal_status(json.loads(path.read_text()))
+        raw = json.loads(path.read_text())
     except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return parse_portal_status(raw)
+    except ValueError:
         return None
 
 
@@ -45,4 +51,20 @@ def write_reauth_status(path: Path, *, now: datetime) -> PortalStatus:
     """A login fetched nothing, so it clears reauth_required without claiming a new success."""
     return _write(path, PortalStatus(
         state="ok", reason="reauth_completed", last_attempt_at=now, last_success_at=_previous_success(path),
+    ))
+
+
+def write_attempt_started(path: Path, *, now: datetime) -> PortalStatus:
+    """Stamp last_attempt_at before the browser starts, so a killed attempt still counts.
+
+    Keeps the previous state/reason/success; with no history there is nothing to call ok yet.
+    """
+    previous = read_status(path)
+    if previous is None:
+        return _write(path, PortalStatus(
+            state="error", reason="attempt_started", last_attempt_at=now, last_success_at=None,
+        ))
+    return _write(path, PortalStatus(
+        state=previous.state, reason=previous.reason, last_attempt_at=now,
+        last_success_at=previous.last_success_at,
     ))

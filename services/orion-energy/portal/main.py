@@ -15,7 +15,7 @@ from orion.energy.importer_status import PortalStatus
 from .driver import open_playwright_driver
 from .fetch import PortalOutcome, run_once
 from .settings import PortalSettings, get_portal_settings
-from .status import read_status, write_status
+from .status import read_status, write_attempt_started, write_status
 
 logger = logging.getLogger("orion-energy-portal")
 
@@ -48,8 +48,11 @@ def seconds_until_due(previous: Optional[PortalStatus], *, now: datetime, interv
     return min(interval, max(0.0, interval - elapsed))
 
 
-def record_status(path: Path, outcome: PortalOutcome, *, now: datetime) -> Optional[PortalStatus]:
+def record_status(path: Path, outcome: Optional[PortalOutcome], *, now: datetime) -> Optional[PortalStatus]:
+    """Write the attempt's outcome, or with `outcome=None` stamp that an attempt started."""
     try:
+        if outcome is None:
+            return write_attempt_started(path, now=now)
         return write_status(path, outcome, now=now)
     except Exception as exc:  # noqa: BLE001 -- a status write must never crash the loop into a restart
         logger.error("energy_portal_status_write_failed path=%s error=%s", path, type(exc).__name__)
@@ -59,6 +62,7 @@ def record_status(path: Path, outcome: PortalOutcome, *, now: datetime) -> Optio
 async def attempt(settings: PortalSettings, *, days: int) -> PortalOutcome:
     now = _utcnow()
     status_path = Path(settings.ENERGY_PORTAL_STATUS_PATH)
+    record_status(status_path, None, now=now)
     try:
         async with open_playwright_driver(
             profile_dir=settings.ENERGY_PORTAL_PROFILE_DIR,

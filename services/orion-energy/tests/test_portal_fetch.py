@@ -45,12 +45,12 @@ class FakeDriver:
         return self.html
 
 
-def _run(tmp_path, driver, *, now=NOW, raw_dir=None) -> PortalOutcome:
+def _run(tmp_path, driver, *, now=NOW, raw_dir=None, bill_dir=None) -> PortalOutcome:
     return asyncio.run(
         run_once(
             driver,
             inbox_dir=tmp_path / "inbox",
-            bill_inbox_dir=tmp_path / "bills",
+            bill_inbox_dir=bill_dir or tmp_path / "bills",
             raw_dir=raw_dir or tmp_path / "raw",
             seen_path=tmp_path / "portal" / "bills_seen.json",
             backfill_days=3,
@@ -137,7 +137,11 @@ def test_raw_save_failure_keeps_original_reason(tmp_path) -> None:
 
 def test_raw_html_is_scrubbed_and_private(tmp_path) -> None:
     html = (
-        "<html><head><script>window.__TOKEN='sekrit-script-body';</script></head><body>"
+        "<html><head><script>window.__TOKEN='sekrit-script-body';</script>"
+        '<meta name="csrf-token" content="meta-csrf-111">'
+        "<META content='meta-tok-222' property='og:session_token'>"
+        '<meta name="description" content="keep-description">'
+        "</head><body>"
         '<form><input type="hidden" name="__RequestVerificationToken" value="tok-12345">'
         "<input type='text' name='q' value='keep-me'>"
         "<INPUT value=\"tok-67890\" TYPE=HIDDEN name=csrf></form></body></html>"
@@ -147,8 +151,9 @@ def test_raw_html_is_scrubbed_and_private(tmp_path) -> None:
     [saved] = list((tmp_path / "raw").glob("*billing.html"))
     text = saved.read_text()
     assert "tok-12345" not in text and "tok-67890" not in text
+    assert "meta-csrf-111" not in text and "meta-tok-222" not in text
     assert "sekrit-script-body" not in text
-    assert "keep-me" in text and "__RequestVerificationToken" in text
+    assert "keep-me" in text and "__RequestVerificationToken" in text and "keep-description" in text
     assert stat.S_IMODE(saved.stat().st_mode) == 0o600
     assert stat.S_IMODE((tmp_path / "raw").stat().st_mode) == 0o700
 
@@ -187,3 +192,39 @@ def test_status_file_keeps_last_success_across_failures(tmp_path) -> None:
     s = write_status(path, PortalOutcome("reauth_required", "session_expired"), now=later)
     assert (s.state, s.last_attempt_at, s.last_success_at) == ("reauth_required", later, NOW)
     assert read_status(path) == s
+
+
+def test_same_period_rows_collapse_to_first_and_stay_quiet(tmp_path) -> None:
+    rebill = {**ROW, "current_charges": "$99.87"}
+    rows = [rebill, ROW]
+    first = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=rows))
+    assert (first.state, len(first.bill_files)) == ("ok", 1)
+    assert json.loads(first.bill_files[0].read_text())["current_charges"] == 99.87
+    second = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=rows), now=NOW + timedelta(days=1))
+    assert (second.state, second.bill_files) == ("ok", ())
+
+
+def test_changed_forecast_total_is_written_again(tmp_path) -> None:
+    _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[ROW], forecast=FORECAST))
+    moved = {**FORECAST, "projected_total": "$120.00"}
+    out = _run(
+        tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[ROW], forecast=moved), now=NOW + timedelta(days=1),
+    )
+    assert len(out.bill_files) == 1
+    written = json.loads(out.bill_files[0].read_text())
+    assert (written["kind"], written["projected_total_usd"]) == ("energy.bill.forecast.v1", 120.0)
+
+
+def test_bill_write_failure_keeps_delivered_xml(tmp_path) -> None:
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x")
+    out = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[ROW]), bill_dir=blocker / "bills")
+    assert (out.state, out.reason) == ("error", "bill_write_failed:NotADirectoryError")
+    assert out.xml_file is not None and out.xml_file.exists()
+
+
+def test_non_object_status_json_reads_as_missing(tmp_path) -> None:
+    path = tmp_path / "status.json"
+    for raw in ("null", "[]", "42", '"ok"'):
+        path.write_text(raw)
+        assert read_status(path) is None

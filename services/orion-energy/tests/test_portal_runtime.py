@@ -64,6 +64,38 @@ def test_attempt_survives_browser_and_status_failures(tmp_path, monkeypatch) -> 
     assert (outcome.state, outcome.reason) == ("error", "browser_failed:RuntimeError")
 
 
+def test_attempt_start_is_stamped_before_browser_launch(tmp_path, monkeypatch) -> None:
+    status_path = tmp_path / "status.json"
+    earlier = NOW - timedelta(days=2)
+    write_status(status_path, PortalOutcome("ok", "fetched"), now=earlier)
+    seen_at_launch: list = []
+
+    @asynccontextmanager
+    async def killed_mid_attempt(**_kwargs):
+        seen_at_launch.append(read_status(status_path))
+        raise RuntimeError("oom")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(portal_main, "open_playwright_driver", killed_mid_attempt)
+    monkeypatch.setattr(portal_main, "_utcnow", lambda: NOW)
+    settings = PortalSettings(ENERGY_PORTAL_STATUS_PATH=str(status_path))
+    asyncio.run(portal_main.attempt(settings, days=3))
+    [started] = seen_at_launch
+    assert (started.state, started.reason, started.last_success_at, started.last_attempt_at) == (
+        "ok", "fetched", earlier, NOW,
+    )
+    assert portal_main.seconds_until_due(started, now=NOW, interval_hours=24) == pytest.approx(24 * 3600)
+
+
+def test_attempt_started_without_history_is_not_ok(tmp_path) -> None:
+    path = tmp_path / "status.json"
+    s = portal_main.record_status(path, None, now=NOW)
+    assert s is not None and s.state != "ok" and s.last_success_at is None and s.last_attempt_at == NOW
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    assert portal_main.record_status(blocker / "status.json", None, now=NOW) is None
+
+
 def test_loop_waits_before_first_attempt_after_recent_status(tmp_path, monkeypatch) -> None:
     status_path = tmp_path / "status.json"
     write_status(status_path, PortalOutcome("reauth_required", "session_expired"), now=NOW - timedelta(hours=1))

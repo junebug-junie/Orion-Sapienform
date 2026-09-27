@@ -3096,6 +3096,16 @@ A completed source can be reread in a later turn. Concurrent requests for an act
 
 See [implementation, exact checks and runtime limits](../../docs/superpowers/pr-reports/2026-09-10-general-reading-pr.md). The dedicated local/CI gate installs `tests/requirements-reading.txt`; `RUN_READING_POSTGRES=1` enables disposable local PostgreSQL integration tests, never a production DSN.
 
+**Reading tab (operator).** Hub's **Reading** tab (`#reading`, standalone at `/reading`) lists every read newest-first and shows what each produced: Stage 1's `what_i_learned`, candidate priors, concept candidates, open threads and `read_evidence`; Stage 2's summary, priors tested, hops and round trips; matching journal entries; durable runs and duplicate requests. A handoff on a row whose Stage 1 did not finish is labelled rejected, never shown as learning. Old skipped digest items are hidden unless asked for. Endpoints (under `/world-pulse-read`):
+
+- `GET /api/reads?phase=all|active|done|failed|skipped|with_output&kind=&include_stale=&limit=&offset=`
+- `GET /api/reads/{seed_id}`
+- `POST /api/reads` `{url, why_now, title}` -- the same `enqueue_reading` ingress as `recommend_reading`, with provenance `invocation_context="operator"`, `requested_by="juniper"`.
+- `POST /api/reads/{seed_id}/cancel` -- a stage with an open durable binding is cancelled at `HUB_READING_DURABLE_URL` and finished by the worker's existing cancel path; a waiting stage with no binding is skipped here. Both use `reading_cancelled_by_operator` and never charge a wallet. `run_already_finished: true` means the run had already completed or failed, so the cancel changed nothing.
+- `POST /api/reads/{seed_id}/retry` `{stage: 1|2}` -- terminal (`failed`/`skipped`) stages only, not aliases, no open binding; Stage 1 also refuses a URL already active elsewhere and any digest item older than `HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS` (the stale sweep would skip it again next tick; the tab's **Read this URL again** button queues it as a new read instead); Stage 2 needs Stage 1 `done` with read evidence. Resets that stage's attempts; spends a normal wallet slot when it runs.
+
+Controls require `X-Requested-With: orion-hub` with a JSON body (same cross-site guard as the GPU pool panel); there is no operator token. Refusals return a short code (for example `url_already_active`) that the tab explains in plain words. Logs: `reading_operator_submit`, `reading_operator_cancel`, `reading_operator_retry`. Query/control code: `orion/world_pulse_read/operator.py`.
+
 ## Curiosity resource admission
 
 `HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=true` is the operator-template default.

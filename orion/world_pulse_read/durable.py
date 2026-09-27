@@ -150,14 +150,18 @@ async def consume_turn(conn, run_id):
     )
 
 
+OPERATOR_CANCEL_REASON = "reading_cancelled_by_operator"
+
+
 async def cancel_claim(conn, seed_id, stage):
     status, error = (
         ("status", "last_error") if stage == 1 else ("stage2_status", "stage2_error")
     )
     async with conn.transaction():
         await conn.execute(
-            f"UPDATE world_pulse_read_seed SET {status}='skipped', {error}='reading_cancelled_by_operator' WHERE seed_id=$1",
+            f"UPDATE world_pulse_read_seed SET {status}='skipped', {error}=$2 WHERE seed_id=$1",
             seed_id,
+            OPERATOR_CANCEL_REASON,
         )
         await conn.execute(
             "UPDATE reading_durable_turn SET consumed_at=now() WHERE seed_id=$1 AND stage=$2 AND consumed_at IS NULL",

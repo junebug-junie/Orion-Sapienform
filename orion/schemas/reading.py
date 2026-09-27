@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
-ReadingContext = Literal["unified_chat", "curiosity", "world_pulse"]
+ReadingContext = Literal["unified_chat", "curiosity", "world_pulse", "operator"]
 ReadingStatus = Literal[
     "queued",
     "started",
@@ -37,7 +37,10 @@ class ReadingRequestedV1(BaseModel):
 
     @model_validator(mode="after")
     def coherent_provenance(self):
-        expected = {"unified_chat": "juniper", "curiosity": "orion", "world_pulse": "world_pulse"}
+        expected = {
+            "unified_chat": "juniper", "curiosity": "orion",
+            "world_pulse": "world_pulse", "operator": "juniper",
+        }
         if self.requested_by != expected[self.invocation_context]:
             raise ValueError("requester does not match the runtime binding")
         if self.requested_at.tzinfo is None:

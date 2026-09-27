@@ -3269,6 +3269,27 @@ channels:
     since: "2026-09-24"
     description: "Each llama.cpp worker says which gpu_pool.yaml role and llm_profiles.yaml profile it serves (every 30s). The pool confirms it against the server's /props before granting anything."
 
+  - name: "orion:reading:turn:request"
+    kind: "request"
+    schema_id: "ReadingTurnRequestV1"
+    message_kind: "reading.turn.request.v1"
+    producer_services: ["orion-durable-runs"]
+    consumer_services: ["orion-hub"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-09-26"
+    description: "Admitted reading-only turn. Required GPU hold is validated by Hub; reply uses the correlation ID."
+
+  - name: "orion:reading:turn:reply:*"
+    kind: "result"
+    schema_id: "ReadingTurnResultV1"
+    message_kind: "reading.turn.result.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-durable-runs"]
+    stability: "experimental"
+    since: "2026-09-26"
+    description: "Reading turn result with source-fetch receipts, checkpointed before Hub landing."
+
   - name: "orion:curiosity:turn:request"
     kind: "request"
     schema_id: "CuriosityTurnRequestV1"

@@ -99,6 +99,10 @@ from app.reflect_graph import (
     parse_reflect_findings,
 )
 from app.settings import Settings
+from orion.schemas.reading_turn import (
+    READING_TURN_CHANNEL, READING_TURN_REPLY_PREFIX, READING_TURN_REQUEST_KIND,
+    READING_TURN_RESULT_KIND, ReadingTurnRequestV1, ReadingTurnResultV1,
+)
 
 logger = logging.getLogger("orion-durable-runs.runner")
 
@@ -363,6 +367,23 @@ class DurableRunner:
             return result
         except Exception as exc:  # noqa: BLE001
             return CuriosityTurnResultV1(run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error=f"bad_reply:{exc}")
+
+    async def _run_reading_turn(self, request: ReadingTurnRequestV1) -> ReadingTurnResultV1:
+        reply = f"{READING_TURN_REPLY_PREFIX}:{request.correlation_id}"
+        envelope = BaseEnvelope(kind=READING_TURN_REQUEST_KIND, source=self._source(),
+            correlation_id=_corr_uuid(request.correlation_id), reply_to=reply,
+            payload=request.model_dump(mode="json"))
+        raw = await self._bus.rpc_request(READING_TURN_CHANNEL, envelope,
+            reply_channel=reply, timeout_sec=max(self._settings.turn_rpc_timeout_sec, request.brief.timeout_sec))
+        decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
+        if not decoded.ok or decoded.envelope is None:
+            raise ValueError("invalid reading turn reply envelope")
+        if decoded.envelope.kind != READING_TURN_RESULT_KIND or decoded.envelope.correlation_id != envelope.correlation_id:
+            raise ValueError("reading turn reply identity mismatch")
+        result = ReadingTurnResultV1.model_validate(decoded.envelope.payload)
+        if result.run_id != request.run_id or result.correlation_id != request.correlation_id:
+            raise ValueError("reading turn result identity mismatch")
+        return result
 
     async def _read_turn_result(self, run_id: str) -> dict[str, Any]:
         reader = self._reader

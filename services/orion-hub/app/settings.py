@@ -743,6 +743,9 @@ class Settings(BaseSettings):
     )
 
     # --- World-pulse Stage 1 concept-read loop ----------------------------
+    HUB_READING_DURABLE_URL: str = Field(
+        default="http://127.0.0.1:8124", alias="HUB_READING_DURABLE_URL"
+    )
     # Sibling of curiosity: same tick / Wallet / unified-turn lifecycle, a
     # different Redis prefix (Wallet A). Default True once the seed-queue
     # migration is applied (operator can still set false to pause).
@@ -758,7 +761,7 @@ class Settings(BaseSettings):
     # Wallet A daily cap. Independent of HUB_CURIOSITY_INVESTIGATION_DAILY_CAP
     # — a debit here must not move the curiosity counter, and vice versa.
     HUB_WORLD_PULSE_READ_DAILY_CAP: int = Field(
-        default=6, alias="HUB_WORLD_PULSE_READ_DAILY_CAP"
+        default=12, alias="HUB_WORLD_PULSE_READ_DAILY_CAP"
     )
     # Hours in HUB_ENDOGENOUS_OUTREACH_TZ. START == END or -1 disables the
     # window. Bounded: an out-of-range hour is a permanent silent deadlock.
@@ -803,7 +806,7 @@ class Settings(BaseSettings):
         default=1800.0, alias="HUB_WORLD_PULSE_READ_STAGE2_MIN_COOLDOWN_SEC"
     )
     HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP: int = Field(
-        default=6, alias="HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP"
+        default=12, alias="HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP"
     )
     HUB_WORLD_PULSE_READ_STAGE2_WINDOW_START_HOUR: int = Field(
         default=8, ge=-1, le=23,

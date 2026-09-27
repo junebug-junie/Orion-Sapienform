@@ -40,6 +40,10 @@ class HoldRecalled(RuntimeError):
     released it; the run queues afresh. Not a failed attempt."""
 
 
+class HoldLost(RuntimeError):
+    """The pool no longer holds this run's hold at its generation."""
+
+
 # ``AdmissionDeps.lease`` outcomes (resource_wait's decision).
 GRANTED, WAITING, GONE, REFUSED = "granted", "waiting", "gone", "refused"
 

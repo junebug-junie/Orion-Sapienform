@@ -19,6 +19,8 @@ from orion.core.llm_json import parse_json_object
 from orion.world_pulse_read.journal import publish_journal
 from orion.llm.routes import fcc_model_for_route
 from orion.schemas.reading import SourceFetchEvidenceV1
+from orion.schemas.reading_turn import ReadingRunBriefV1
+from orion.world_pulse_read.durable import ReadingCancelled, ReadingPending, bind_turn, cancel_claim, poll_turn, release_claim
 from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseReadSeedV1
 from orion.substrate.adapters.world_pulse_read import map_world_pulse_read_handoff_to_substrate
 from orion.substrate.materializer import SubstrateGraphMaterializer
@@ -40,7 +42,6 @@ from orion.world_pulse_read.retry import is_refused_before_work
 from orion.world_pulse_read.read_evidence import (
     NO_READ_EVIDENCE,
     no_evidence_reason,
-    parse_source_fetches,
     source_read_evidence,
 )
 from orion.world_pulse_read.url_filters import url_looks_like_section_index
@@ -95,6 +96,7 @@ class GenerateOutcome(NamedTuple):
     # `harness_source_fetches` off the final frame, parsed. None when the frame
     # carried no report (governor predates the field) -- see read_evidence.py.
     source_fetches: Optional[list[SourceFetchEvidenceV1]] = None
+    trace_id: str | None = None
 
 
 class NoReadEvidenceError(ValueError):
@@ -191,8 +193,10 @@ class WorldPulseReadPipeline:
         source_ref: ServiceRef,
         step_relay_provider: Optional[Callable[[], Any]] = None,
         store_provider: Optional[Callable[[], Any]] = None,
+        durable_url: str = "http://127.0.0.1:8124",
     ) -> None:
         self.enabled = enabled
+        self.durable_url = durable_url
         self.tick_interval_sec = tick_interval_sec
         self.min_cooldown_sec = min_cooldown_sec
         self.daily_cap = daily_cap
@@ -357,8 +361,7 @@ class WorldPulseReadPipeline:
             return "skipped_index_url"
 
         receipt = None
-        if redis is not None:
-            receipt = await debit_wallet_a(redis, now=now, timezone_name=self.timezone_name)
+        self._settlement_run_id = None
 
         try:
             handoff = await self._stage1_read(seed)
@@ -366,6 +369,13 @@ class WorldPulseReadPipeline:
                 # Belt and braces for any reader that skips _stage1_read's own
                 # check: a handoff with no tool-trace read is never `done`.
                 raise NoReadEvidenceError(NO_READ_EVIDENCE)
+        except ReadingCancelled:
+            await self._with_conn(lambda conn: cancel_claim(conn, seed.seed_id, 1))
+            return "cancelled"
+        except ReadingPending as exc:
+            await self._with_conn(lambda conn: release_claim(conn, seed.seed_id, 1))
+            logger.info("reading_stage1_waiting seed=%s detail=%s", seed.seed_id, exc)
+            return "waiting_resource"
         except NoReadEvidenceError as exc:
             reason = str(exc) or NO_READ_EVIDENCE
             logger.warning(
@@ -408,7 +418,7 @@ class WorldPulseReadPipeline:
             logger.warning(
                 "world_pulse_read_post_read_failed seed=%s err=%s", seed.seed_id, exc
             )
-            await self._fail_seed(seed.seed_id, str(exc) or "post_read_failed")
+            await self._fail_seed(seed.seed_id, str(exc) or "post_read_failed", consume=False)
             await publish_lifecycle(self._bus, seed, "stage1_failed", source=self._source_ref, error=str(exc))
             return "post_read_failed"
         await publish_lifecycle(self._bus, seed, "stage1_completed", source=self._source_ref, trace_id=handoff.trace_id)
@@ -480,9 +490,21 @@ class WorldPulseReadPipeline:
         (``reason`` None on success, or a real failure) keeps the charge and
         resets the refusal streak. Best-effort: a Redis error here must not
         stop the seed from being marked done/failed."""
-        if receipt is None:
-            return
         try:
+            if receipt is None and getattr(self, "_settlement_run_id", None):
+                from orion.world_pulse_read.wallet_a import settle_durable_turn
+
+                await settle_durable_turn(redis, run_id=self._settlement_run_id,
+                    now=datetime.now(timezone.utc), timezone_name=self.timezone_name,
+                    refused=is_refused_before_work(reason),
+                    backoff_base_sec=self.min_cooldown_sec,
+                    backoff_cap_sec=max(self.effective_cooldown_sec,
+                        _REFUND_BACKOFF_CAP_MULTIPLIER * self.min_cooldown_sec))
+                return
+            if receipt is None:
+                receipt = await debit_wallet_a(
+                    redis, now=datetime.now(timezone.utc), timezone_name=self.timezone_name
+                )
             if not is_refused_before_work(reason):
                 await settle_wallet_a(redis, receipt)
                 return
@@ -507,12 +529,18 @@ class WorldPulseReadPipeline:
                 str(reason)[:_FAIL_REASON_DETAIL_MAX_LEN],
             )
 
-    async def _fail_seed(self, seed_id: str, error: str) -> None:
-        outcome = await self._with_conn(
-            lambda conn: mark_seed_failed(
-                conn, seed_id, error=error, max_attempts=self.max_attempts
-            )
-        )
+    async def _fail_seed(self, seed_id: str, error: str, *, consume: bool = True) -> None:
+        async def fail(conn):
+            async def mark():
+                return await mark_seed_failed(conn, seed_id, error=error, max_attempts=self.max_attempts)
+            if consume and getattr(self, "_settlement_run_id", None) and getattr(self, "_settlement_seed_id", None) == seed_id:
+                from orion.world_pulse_read.durable import consume_turn
+                async with conn.transaction():
+                    outcome = await mark()
+                    await consume_turn(conn, self._settlement_run_id)
+                    return outcome
+            return await mark()
+        outcome = await self._with_conn(fail)
         if outcome is not None and outcome.retry_scheduled:
             logger.warning(
                 "world_pulse_read_retry_scheduled seed=%s attempts=%s max=%s reason=%s",
@@ -529,7 +557,8 @@ class WorldPulseReadPipeline:
         """Production path: unified turn + fenced JSON. Tests replace this."""
         trace_id = str(uuid4())
         created_at = datetime.now(timezone.utc)
-        outcome = await self._generate(_build_stage1_prompt(seed, trace_id), trace_id)
+        outcome = await self._generate(_build_stage1_prompt(seed, trace_id), trace_id, seed_id=seed.seed_id)
+        trace_id = outcome.trace_id or trace_id
         if not outcome.text:
             raise ValueError(outcome.fail_reason or "empty_generation")
         parsed = parse_json_object(outcome.text)
@@ -556,52 +585,17 @@ class WorldPulseReadPipeline:
             raise NoReadEvidenceError(no_evidence_reason(seed.url, fetches))
         return handoff
 
-    async def _generate(self, prompt: str, correlation_id: str) -> GenerateOutcome:
-        """Real unified-turn generation. Every failure path returns a distinct,
-        short `fail_reason` instead of collapsing to a bare empty string --
-        see `GenerateOutcome` for why that used to make root-causing a stall
-        indistinguishable from other, very different failures."""
-        if self._bus is None:
-            return GenerateOutcome("", "bus_unavailable")
-        from orion.cognition.cortex_payload_extract import looks_like_error_text
-        from orion.hub.turn_orchestrator import execute_unified_turn
-
+    async def _generate(self, prompt: str, correlation_id: str, *, seed_id: str) -> GenerateOutcome:
+        brief = ReadingRunBriefV1(seed_id=seed_id, stage=1, prompt=prompt,
+            session_id=self.session_id, timeout_sec=self.timeout_sec,
+            fcc_model_label=self._fcc_model_label)
         try:
-            frames = await asyncio.wait_for(
-                execute_unified_turn(
-                    reading_only=True,
-                    bus=self._bus,
-                    correlation_id=correlation_id,
-                    session_id=self.session_id,
-                    user_message=prompt,
-                    payload=_turn_payload(PIPELINE_TAG, self._fcc_model_label),
-                    continuity_messages=None,
-                    harness_rpc_bus=self._harness_rpc_bus or self._bus,
-                    harness_step_relay=(
-                        self._step_relay_provider() if self._step_relay_provider else None
-                    ),
-                    harness_step_queue=None,
-                ),
-                timeout=self.timeout_sec,
-            )
-        except (TimeoutError, asyncio.TimeoutError):
-            logger.warning("world_pulse_read_generate_timeout corr=%s", correlation_id)
-            return GenerateOutcome("", "stage1_turn_timeout")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("world_pulse_read_generate_failed corr=%s err=%s", correlation_id, exc)
-            detail = str(exc)[:_FAIL_REASON_DETAIL_MAX_LEN]
-            return GenerateOutcome("", f"turn_exception:{detail}" if detail else "turn_exception")
-
-        final = next(
-            (f for f in frames if isinstance(f, dict) and f.get("type") == "final"), None
-        )
-        if final is None:
-            return GenerateOutcome("", _reason_from_non_final_frame(frames))
-        text = str(final.get("llm_response") or "").strip()
-        if not text:
-            return GenerateOutcome("", "blank_final_response")
-        if looks_like_error_text(text):
-            return GenerateOutcome("", "looks_like_error_text")
-        return GenerateOutcome(
-            text, None, parse_source_fetches(final.get("harness_source_fetches"))
-        )
+            request = await self._with_conn(lambda conn: bind_turn(conn, brief, correlation_id))
+            if request is None:
+                raise RuntimeError("reading_queue_unavailable")
+        except Exception as exc:
+            raise ReadingPending(f"reading_binding_unavailable:{type(exc).__name__}") from exc
+        self._settlement_run_id = request.run_id
+        self._settlement_seed_id = seed_id
+        result = await poll_turn(request, self.durable_url)
+        return GenerateOutcome(result.text, result.error, result.source_fetches, result.correlation_id)

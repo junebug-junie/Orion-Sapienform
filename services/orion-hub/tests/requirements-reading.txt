@@ -1,6 +1,7 @@
 # Minimal dependency set for reading ingress, workers, transport and regression gates.
 pytest>=8.2,<10
 pytest-asyncio>=0.23,<1
+fakeredis[lua]>=2.23,<3
 mcp>=1,<2
 fastapi>=0.115,<1
 redis>=5,<6

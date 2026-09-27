@@ -21,6 +21,8 @@ from orion.core.llm_json import parse_json_object
 from orion.world_pulse_read.journal import publish_journal
 from orion.llm.routes import fcc_model_for_route
 from orion.schemas.reading import ReadingRequestedV1
+from orion.schemas.reading_turn import ReadingRunBriefV1
+from orion.world_pulse_read.durable import ReadingCancelled, ReadingPending, bind_turn, cancel_claim, poll_turn, release_claim
 from orion.world_pulse_read.events import publish_lifecycle
 from orion.world_pulse_read.urls import validate_source_url
 from orion.schemas.world_pulse_read import (
@@ -94,6 +96,7 @@ class GenerateOutcome(NamedTuple):
 
     text: str
     fail_reason: Optional[str] = None
+    trace_id: str | None = None
 
 
 def _reason_from_non_final_frame(frames: list[Any]) -> str:
@@ -238,7 +241,7 @@ class WorldPulseReadStage2Pipeline:
         timezone_name: str = "UTC",
         max_round_trips: int = 5,
         max_attempts: int = 1,
-        wallet_a_daily_cap: int = 6,
+        wallet_a_daily_cap: int = 12,
         wallet_a_min_cooldown_sec: float = 1800.0,
         wallet_a_window_start_hour: int = 0,
         wallet_a_window_end_hour: int = 0,
@@ -246,8 +249,10 @@ class WorldPulseReadStage2Pipeline:
         source_ref: ServiceRef,
         step_relay_provider: Optional[Callable[[], Any]] = None,
         store_provider: Optional[Callable[[], Any]] = None,
+        durable_url: str = "http://127.0.0.1:8124",
     ) -> None:
         self.enabled = enabled
+        self.durable_url = durable_url
         self.tick_interval_sec = tick_interval_sec
         self.min_cooldown_sec = min_cooldown_sec
         self.daily_cap = daily_cap
@@ -432,8 +437,7 @@ class WorldPulseReadStage2Pipeline:
         # Debit only once a turn is actually about to run: an invalid stored
         # handoff never reaches the model and must not spend a Wallet B slot.
         receipt = None
-        if redis is not None:
-            receipt = await debit_wallet_b(redis, now=now, timezone_name=self.timezone_name)
+        self._settlement_run_id = None
 
         try:
             result = _as_stage2_result(
@@ -442,6 +446,13 @@ class WorldPulseReadStage2Pipeline:
                 seed_id=claim.seed.seed_id,
                 on_dropped=self._note_dropped_keys,
             )
+        except ReadingCancelled:
+            await self._with_conn(lambda conn: cancel_claim(conn, claim.seed.seed_id, 2))
+            return "cancelled"
+        except ReadingPending as exc:
+            await self._with_conn(lambda conn: release_claim(conn, claim.seed.seed_id, 2))
+            logger.info("reading_stage2_waiting seed=%s detail=%s", claim.seed.seed_id, exc)
+            return "waiting_resource"
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "world_pulse_read_stage2_failed seed=%s err=%s", claim.seed.seed_id, exc
@@ -487,7 +498,7 @@ class WorldPulseReadStage2Pipeline:
                 claim.seed.seed_id,
                 exc,
             )
-            await self._fail_stage2(claim.seed.seed_id, str(exc) or "post_failed")
+            await self._fail_stage2(claim.seed.seed_id, str(exc) or "post_failed", consume=False)
             await publish_lifecycle(self._bus, claim.seed, "stage2_failed", source=self._source_ref, error=str(exc))
             return "post_failed"
         await publish_lifecycle(self._bus, claim.seed, "stage2_completed", source=self._source_ref, trace_id=result.trace_id)
@@ -532,9 +543,21 @@ class WorldPulseReadStage2Pipeline:
         (``reason`` None on success, or a real failure) keeps the charge and
         resets the refusal streak. Best-effort: a Redis error here must not
         stop the seed from being marked done/failed."""
-        if receipt is None:
-            return
         try:
+            if receipt is None and getattr(self, "_settlement_run_id", None):
+                from orion.world_pulse_read.wallet_b import settle_durable_turn
+
+                await settle_durable_turn(redis, run_id=self._settlement_run_id,
+                    now=datetime.now(timezone.utc), timezone_name=self.timezone_name,
+                    refused=is_refused_before_work(reason),
+                    backoff_base_sec=self.min_cooldown_sec,
+                    backoff_cap_sec=max(self.effective_cooldown_sec,
+                        _REFUND_BACKOFF_CAP_MULTIPLIER * self.min_cooldown_sec))
+                return
+            if receipt is None:
+                receipt = await debit_wallet_b(
+                    redis, now=datetime.now(timezone.utc), timezone_name=self.timezone_name
+                )
             if not is_refused_before_work(reason):
                 await settle_wallet_b(redis, receipt)
                 return
@@ -559,12 +582,18 @@ class WorldPulseReadStage2Pipeline:
                 str(reason)[:_FAIL_REASON_DETAIL_MAX_LEN],
             )
 
-    async def _fail_stage2(self, seed_id: str, error: str) -> None:
-        outcome = await self._with_conn(
-            lambda conn: mark_stage2_failed(
-                conn, seed_id, error=error, max_attempts=self.max_attempts
-            )
-        )
+    async def _fail_stage2(self, seed_id: str, error: str, *, consume: bool = True) -> None:
+        async def fail(conn):
+            async def mark():
+                return await mark_stage2_failed(conn, seed_id, error=error, max_attempts=self.max_attempts)
+            if consume and getattr(self, "_settlement_run_id", None) and getattr(self, "_settlement_seed_id", None) == seed_id:
+                from orion.world_pulse_read.durable import consume_turn
+                async with conn.transaction():
+                    outcome = await mark()
+                    await consume_turn(conn, self._settlement_run_id)
+                    return outcome
+            return await mark()
+        outcome = await self._with_conn(fail)
         if outcome is not None and outcome.retry_scheduled:
             logger.warning(
                 "world_pulse_read_stage2_retry_scheduled seed=%s attempts=%s max=%s reason=%s",
@@ -656,7 +685,8 @@ class WorldPulseReadStage2Pipeline:
         """Production path: unified turn + fenced JSON. Tests replace this."""
         trace_id = str(uuid4())
         created_at = datetime.now(timezone.utc)
-        outcome = await self._generate(_build_stage2_prompt(handoff, trace_id), trace_id)
+        outcome = await self._generate(_build_stage2_prompt(handoff, trace_id), trace_id, seed_id=handoff.seed_ref.seed_id)
+        trace_id = outcome.trace_id or trace_id
         if not outcome.text:
             raise ValueError(outcome.fail_reason or "empty_generation")
         parsed = parse_json_object(outcome.text)
@@ -671,52 +701,17 @@ class WorldPulseReadStage2Pipeline:
             on_dropped=self._note_dropped_keys,
         )
 
-    async def _generate(self, prompt: str, correlation_id: str) -> GenerateOutcome:
-        """Real unified-turn generation. Every failure path returns a distinct,
-        short `fail_reason` instead of collapsing to a bare empty string --
-        see `GenerateOutcome` for why that used to make root-causing a stall
-        indistinguishable from five other, very different failures."""
-        if self._bus is None:
-            return GenerateOutcome("", "bus_unavailable")
-        from orion.cognition.cortex_payload_extract import looks_like_error_text
-        from orion.hub.turn_orchestrator import execute_unified_turn
-
+    async def _generate(self, prompt: str, correlation_id: str, *, seed_id: str) -> GenerateOutcome:
+        brief = ReadingRunBriefV1(seed_id=seed_id, stage=2, prompt=prompt,
+            session_id=self.session_id, timeout_sec=self.timeout_sec,
+            fcc_model_label=self._fcc_model_label)
         try:
-            frames = await asyncio.wait_for(
-                execute_unified_turn(
-                    reading_only=True,
-                    bus=self._bus,
-                    correlation_id=correlation_id,
-                    session_id=self.session_id,
-                    user_message=prompt,
-                    payload=_turn_payload(PIPELINE_TAG, self._fcc_model_label),
-                    continuity_messages=None,
-                    harness_rpc_bus=self._harness_rpc_bus or self._bus,
-                    harness_step_relay=(
-                        self._step_relay_provider() if self._step_relay_provider else None
-                    ),
-                    harness_step_queue=None,
-                ),
-                timeout=self.timeout_sec,
-            )
-        except (TimeoutError, asyncio.TimeoutError):
-            logger.warning("world_pulse_read_stage2_generate_timeout corr=%s", correlation_id)
-            return GenerateOutcome("", "stage2_turn_timeout")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "world_pulse_read_stage2_generate_failed corr=%s err=%s", correlation_id, exc
-            )
-            detail = str(exc)[:_FAIL_REASON_DETAIL_MAX_LEN]
-            return GenerateOutcome("", f"turn_exception:{detail}" if detail else "turn_exception")
-
-        final = next(
-            (f for f in frames if isinstance(f, dict) and f.get("type") == "final"), None
-        )
-        if final is None:
-            return GenerateOutcome("", _reason_from_non_final_frame(frames))
-        text = str(final.get("llm_response") or "").strip()
-        if not text:
-            return GenerateOutcome("", "blank_final_response")
-        if looks_like_error_text(text):
-            return GenerateOutcome("", "looks_like_error_text")
-        return GenerateOutcome(text, None)
+            request = await self._with_conn(lambda conn: bind_turn(conn, brief, correlation_id))
+            if request is None:
+                raise RuntimeError("reading_queue_unavailable")
+        except Exception as exc:
+            raise ReadingPending(f"reading_binding_unavailable:{type(exc).__name__}") from exc
+        self._settlement_run_id = request.run_id
+        self._settlement_seed_id = seed_id
+        result = await poll_turn(request, self.durable_url)
+        return GenerateOutcome(result.text, result.error, result.correlation_id)

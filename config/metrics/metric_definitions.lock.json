@@ -1,12 +1,16 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 675,
+  "metric_count": 680,
   "_last_change": {
-    "base": "merge base a18545312 (origin/main)",
-    "change_count": 0,
+    "base": "merge base d16e9adf9 (origin/main)",
+    "change_count": 5,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://bus_channel/orion-energy/orion:energy:bill:actual",
+      "medium added metric://bus_channel/orion-energy/orion:energy:bill:forecast",
+      "medium added metric://bus_channel/orion-energy/orion:energy:importer:status",
+      "medium added metric://bus_channel/orion-energy/orion:energy:reconcile",
+      "medium added metric://bus_channel/orion-energy/orion:energy:stakes:snapshot"
     ]
   },
   "definitions": {
@@ -1358,6 +1362,28 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-energy/orion:energy:bill:actual": {
+      "schema_id": "EnergyBillActualV1",
+      "all_producers": [
+        "orion-energy"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-energy/orion:energy:bill:forecast": {
+      "schema_id": "EnergyBillForecastV1",
+      "all_producers": [
+        "orion-energy"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-energy/orion:energy:cost:accrued": {
       "schema_id": "EnergyCostAccruedV1",
       "all_producers": [
@@ -1369,8 +1395,41 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-energy/orion:energy:importer:status": {
+      "schema_id": "EnergyImporterStatusV1",
+      "all_producers": [
+        "orion-energy"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-energy/orion:energy:reconcile": {
+      "schema_id": "EnergyReconcileV1",
+      "all_producers": [
+        "orion-energy"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-energy/orion:energy:run_cost:estimated": {
       "schema_id": "EnergyRunCostEstimatedV1",
+      "all_producers": [
+        "orion-energy"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-energy/orion:energy:stakes:snapshot": {
+      "schema_id": "EnergyStakesSnapshotV1",
       "all_producers": [
         "orion-energy"
       ],

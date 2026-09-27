@@ -111,6 +111,16 @@ class UsageLedger:
         covered = prefix[-1].interval_end if prefix else None
         return len(prefix), len(in_cycle), covered
 
+    def window_prefix(
+        self, usage_point_id: str, start: datetime, end: datetime
+    ) -> tuple[list[EnergyUsageIntervalV1], Optional[datetime]]:
+        """Intervals contiguous from `start` inside [start, end), and where coverage stops."""
+        prefix = self._contiguous_from_cycle_start(self._in_cycle(usage_point_id, start, end), start)
+        return prefix, (prefix[-1].interval_end if prefix else None)
+
+    def latest_interval_end(self, usage_point_id: str) -> Optional[datetime]:
+        return max((iv.interval_end for iv in self._intervals.get(usage_point_id, {}).values()), default=None)
+
     def accrue_cycle(
         self, usage_point_id: str, cycle_start: datetime, *, computed_at: datetime
     ) -> list[EnergyCostAccruedV1]:

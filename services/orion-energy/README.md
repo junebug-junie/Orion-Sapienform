@@ -13,6 +13,11 @@ Spec: `docs/superpowers/specs/2026-09-26-orion-energy-watcher-design.md`
 | `orion:energy:usage:observed` | `energy.usage.observed.v1` | Metered house kWh per interval |
 | `orion:energy:cost:accrued` | `energy.cost.accrued.v1` | Interval priced at its billing-cycle block position |
 | `orion:energy:run_cost:estimated` | `energy.run_cost.estimated.v1` | Cost of one settled power intent |
+| `orion:energy:bill:actual` | `energy.bill.actual.v1` | A closed RMP bill (dropped JSON or portal) |
+| `orion:energy:bill:forecast` | `energy.bill.forecast.v1` | RMP's in-cycle bill estimate |
+| `orion:energy:reconcile` | `energy.reconcile.v1` | Orion's estimate minus RMP's bill or forecast |
+| `orion:energy:stakes:snapshot` | `energy.stakes.snapshot.v1` | Cycle-to-date cost and pressure vs RMP forecast |
+| `orion:energy:importer:status` | `energy.importer.status.v1` | Whether house usage is actually arriving |
 
 It consumes `orion:power:intent:settled`.
 
@@ -34,6 +39,40 @@ Re-dropping an overlapping export is safe when the new file is **newer**: `retri
 
 Set `ENERGY_BILLING_CYCLE_START_DAY` to your bill's meter-read day.
 
+## Bills (file drop)
+
+Drop one JSON file per bill into `${ENERGY_HOST_DATA_DIR}/bills/inbox/`. Lines the bill
+does not show are simply omitted (unknown, not $0):
+
+```json
+{"kind": "energy.bill.actual.v1", "billing_period_start": "2026-08-12",
+ "billing_period_end": "2026-09-11", "kwh_billed": 712, "energy_charge": 85.10,
+ "customer_charge": 12.00, "taxes": 4.10, "current_charges": 101.23}
+```
+
+Only `*.json` files are scanned, so write the file as `name.json.part` and rename it to
+`name.json` once it is complete — a half-written file would otherwise be read, fail to
+parse, and land in `bills/inbox/failed/`. A file that fails to parse is kept there under a
+`<timestamp>__<name>` prefix, so repeated failures never overwrite each other.
+
+RMP's in-cycle estimate uses `"kind": "energy.bill.forecast.v1"` with `billing_period_start`,
+`as_of`, and `projected_total_usd` and/or `projected_kwh`. The period is
+`[billing_period_start, billing_period_end)` at local midnight. Each bill publishes a
+`energy.reconcile.v1` row (Orion minus RMP); late usage re-reconciles automatically.
+
+## Status and stakes
+
+Every `ENERGY_STATUS_INTERVAL_SEC` the service publishes `energy.importer.status.v1`
+(`healthy` / `stale` / `reauth_required` / `degraded`) and `energy.stakes.snapshot.v1`
+(cycle-to-date cost, next-kWh price, projected total vs RMP forecast). Pressure is
+`unknown` whenever the importer isn't healthy or a forecast is missing.
+
+| Key | Default | What it does |
+|---|---|---|
+| `ENERGY_STALE_AFTER_HOURS` | `48` | Newest metered interval older than this makes the importer `stale` (usage is then unknown, never $0). RMP data normally lags ~24h. |
+| `ENERGY_STAKES_NEAR_RATIO` | `1.0` | Orion's projected cycle total / RMP's forecast total at or above this reads `near_forecast`. |
+| `ENERGY_STAKES_OVER_RATIO` | `1.10` | Same ratio at or above this reads `over_forecast`. Hub curiosity holds on either (only when `ORION_ENERGY_STAKES_ENABLED=true` on Hub). |
+
 ## Debug queries
 
 ```sql
@@ -45,7 +84,67 @@ FROM energy_cost_accrued GROUP BY cycle_start ORDER BY cycle_start DESC LIMIT 3;
 SELECT intent_id, workload_kind, energy_kwh, energy_basis, estimated_run_cost_usd,
        run_cost_gap, house_share_cost_usd, house_share_gap
 FROM energy_run_cost ORDER BY window_start DESC LIMIT 20;
+
+SELECT reconcile_kind, billing_period_start, orion_total_usd, utility_total_usd, utility_basis, delta_usd, reconcile_gap
+FROM energy_reconcile ORDER BY computed_at DESC LIMIT 5;
+SELECT as_of, state, reason, usage_lag_hours FROM energy_importer_status ORDER BY as_of DESC LIMIT 3;
+SELECT as_of, pressure, pressure_reason, cycle_to_date_total_usd, orion_projected_total_usd, forecast_total_usd
+FROM energy_stakes_snapshot ORDER BY as_of DESC LIMIT 3;
 ```
+
+## Portal (optional, compose profile `portal`)
+
+`orion-energy-portal` reuses a saved browser session to download Green Button XML and
+scrape bills into the same drop directories. It stores **no** RMP password; MFA stays on.
+Selectors are UNVERIFIED until the first live run (`portal/selectors.py`).
+
+| Key | Default | What it does |
+|---|---|---|
+| `ENERGY_PORTAL_TIMEOUT_SEC` | `300` | Hard cap on one whole fetch attempt; hitting it records `error`/`timeout` in `status.json`. |
+| `ENERGY_PORTAL_RAW_DIR` | `/data/energy/portal/raw` | Where a failed download/scrape keeps its raw artifact (see below). |
+| `ENERGY_PORTAL_BACKFILL_DAYS` | `3` | Days of usage each daily fetch requests (1-730); `--days` overrides it for a one-off backfill. |
+
+**Stop the running portal service before a headed reauth or a `run --rm ... --once`.**
+Both use the same persistent Chromium profile, and two browsers on one profile can
+corrupt the saved session:
+
+```bash
+scripts/safe_docker_build.sh orion-energy --profile portal stop orion-energy-portal
+```
+
+Bring it back with the `up -d` line in step 2 once the reauth or one-off fetch is done.
+
+1. One-time login on a host with a display (same profile dir the container mounts;
+   stop `orion-energy-portal` first if it is running):
+   ```bash
+   pip install playwright==1.49.0 pydantic-settings==2.7.1 && python -m playwright install chromium
+   cd services/orion-energy && PYTHONPATH=../..:. python -m portal.reauth \
+     --profile /mnt/storage-warm/orion-energy/portal/profile \
+     --status /mnt/storage-warm/orion-energy/portal/status.json
+   ```
+2. Two-year backfill once (portal service stopped), then the daily loop:
+   ```bash
+   scripts/safe_docker_build.sh orion-energy --profile portal run --rm orion-energy-portal python -m portal.main --once --days 730
+   scripts/safe_docker_build.sh orion-energy --profile portal up -d --build orion-energy-portal
+   ```
+3. Set `ENERGY_PORTAL_ENABLED=true` for `orion-energy` and restart it.
+
+When the session dies the importer reads `reauth_required`; stop the portal service,
+repeat step 1, then the
+`--once` fetch from step 2 (the loop otherwise waits a full `ENERGY_PORTAL_INTERVAL_HOURS`
+after any recorded attempt, including across container restarts). Reauth clears
+`reauth_required` but does not count as a successful fetch.
+
+The profile dir holds live session cookies and is forced to mode `0700`. UNVERIFIED:
+the container runs as root, so after it has used the profile, files in it may be
+root-owned and a host-user reauth can fail with permission errors. Fix ownership first:
+`sudo chown -R "$(id -u):$(id -g)" /mnt/storage-warm/orion-energy/portal/profile`.
+
+Failed downloads/scrapes keep the raw artifact in `${ENERGY_HOST_DATA_DIR}/portal/raw/`
+(dir `0700`, files `0600`). Inline `<script>` bodies and hidden-input values are
+stripped before writing, but visible page text may still contain account details —
+local disk only. Unchanged bills are not re-sent: `bills_seen.json` next to
+`status.json` remembers a content hash per billing period; delete it to force a resend.
 
 ## Run
 

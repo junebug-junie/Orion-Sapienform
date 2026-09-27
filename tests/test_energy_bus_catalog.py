@@ -6,8 +6,13 @@ import pytest
 import yaml
 
 from orion.schemas.energy import (
+    EnergyBillActualV1,
+    EnergyBillForecastV1,
     EnergyCostAccruedV1,
+    EnergyImporterStatusV1,
+    EnergyReconcileV1,
     EnergyRunCostEstimatedV1,
+    EnergyStakesSnapshotV1,
     EnergyUsageIntervalV1,
 )
 from orion.schemas.registry import SCHEMA_REGISTRY, resolve
@@ -18,6 +23,11 @@ CASES = [
     ("orion:energy:usage:observed", "EnergyUsageIntervalV1", "energy.usage.observed.v1", EnergyUsageIntervalV1),
     ("orion:energy:cost:accrued", "EnergyCostAccruedV1", "energy.cost.accrued.v1", EnergyCostAccruedV1),
     ("orion:energy:run_cost:estimated", "EnergyRunCostEstimatedV1", "energy.run_cost.estimated.v1", EnergyRunCostEstimatedV1),
+    ("orion:energy:bill:actual", "EnergyBillActualV1", "energy.bill.actual.v1", EnergyBillActualV1),
+    ("orion:energy:bill:forecast", "EnergyBillForecastV1", "energy.bill.forecast.v1", EnergyBillForecastV1),
+    ("orion:energy:reconcile", "EnergyReconcileV1", "energy.reconcile.v1", EnergyReconcileV1),
+    ("orion:energy:stakes:snapshot", "EnergyStakesSnapshotV1", "energy.stakes.snapshot.v1", EnergyStakesSnapshotV1),
+    ("orion:energy:importer:status", "EnergyImporterStatusV1", "energy.importer.status.v1", EnergyImporterStatusV1),
 ]
 
 

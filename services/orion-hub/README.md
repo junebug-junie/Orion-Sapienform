@@ -1333,6 +1333,27 @@ content hash changed, and an open run story survives a poll unless its own
 summary changed -- the previous page rewrote all eight sections from scratch
 every minute and lost every open disclosure and scroll position doing it.
 
+#### 4.2.4 Energy stakes hold (house bill vs RMP forecast)
+
+`ORION_ENERGY_STAKES_ENABLED` (default **false**) lets a *scheduled* curiosity
+investigation stand down when the house bill is trending at or over Rocky Mountain
+Power's own forecast. Off, curiosity is unchanged and the snapshot is never read.
+On, each scheduled tick reads the newest `energy_stakes_snapshot` row (Hub's
+`DATABASE_URL`) and holds only if that row is fresh (younger than
+`ORION_ENERGY_STAKES_MAX_AGE_SEC`, default 1800), came from a `healthy` importer, and
+says `near_forecast` or `over_forecast` (ratios set by `ENERGY_STAKES_NEAR_RATIO` /
+`ENERGY_STAKES_OVER_RATIO` in `orion-energy`). Missing, stale, unknown, unhealthy, or
+unreadable never holds -- a broken meter must not silence curiosity -- and a forced
+(operator) run is never held. Scheduling blocks (daily cap, window) still win first.
+
+A hold logs `curiosity_investigation_blocked reason=held_off:energy_stakes ...
+correlation_id=<uuid>` and publishes one `AttentionSchemaV1` row per hold *episode*:
+`entry_id = curiosity:held_off:energy_stakes:<cycle_start>:<pressure>` with
+`correlation_id = uuid5(NAMESPACE_URL, entry_id)`. Repeat ticks in the same episode are
+an ON CONFLICT no-op; a new cycle or a pressure change is a new row. Only
+`estimated_run_cost_usd` is a run cost autonomy may read; this gate never reads
+`house_share_cost_usd`. (`scripts/energy_stakes_gate.py`, `scripts/curiosity_investigation.py`.)
+
 ### 3. Speech-to-Text (ASR)
 
 *   **Note**: Hub no longer performs local ASR.
@@ -2859,6 +2880,35 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 API: `GET /api/cabinet/ambient/latest`, `GET /api/cabinet/ambient/history?window=24h|3d|7d`
 (`scripts/cabinet_ambient_routes.py`, `/static/js/cabinet-sensors.js`). Latest polls ~1s only
 while `#cabinet` is visible; history fetches on tab activation, window toggle, or Refresh.
+
+### House electricity (Energy strip)
+
+Below the cooling strip, **House electricity — Rocky Mountain Power** shows what the house
+bill looks like right now, read-only from the tables `orion-energy` writes through
+sql-writer (Hub's `DATABASE_URL`). Spec:
+`docs/superpowers/specs/2026-09-26-orion-energy-watcher-design.md`.
+
+- Tiles: cycle to date (with "through <time>" -- the end of the newest metered interval the
+  total covers), Orion's projected cycle total, RMP's own forecast, the price of the next
+  kWh, and pressure (under / near / over RMP forecast, or `unknown (<reason>)`).
+- Importer state (`healthy` / `stale` / `reauth_required` / `degraded`), the last closed
+  bill's reconcile (Orion vs RMP), and 14 days of daily kWh bars.
+- **Unknown is never $0.** A null amount renders "unknown". A stakes snapshot older than
+  `ORION_ENERGY_STAKES_MAX_AGE_SEC` comes back `stale: true`; the strip then shows every
+  tile as unknown with an amber "stale since <as_of>" note instead of old numbers. A
+  failed or unparseable fetch blanks the tiles and bars the same way; each endpoint
+  renders on its own, so one failing does not freeze the other.
+
+| Key | Default | What it does |
+|---|---|---|
+| `HUB_ENERGY_TIMEZONE` | `America/Denver` | Local day boundary for the daily kWh bars (Postgres `AT TIME ZONE` name). |
+| `ORION_ENERGY_STAKES_MAX_AGE_SEC` | `1800` | Snapshot age past which the strip reads stale (and curiosity never holds -- section 4.2.4). |
+
+API: `GET /api/energy/latest` (stakes, importer, reconcile, `stale`, `as_of`,
+`covered_through`), `GET /api/energy/usage/daily?days=1..90` (`scripts/energy_routes.py`,
+`/static/js/energy-strip.js`). Polls every 60s while `#cabinet` is visible. Needs
+`orion-energy` running; restart Hub after env changes with
+`scripts/safe_docker_build.sh orion-hub up -d --build`.
 
 ## Reverie tab
 

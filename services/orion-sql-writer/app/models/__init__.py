@@ -17,7 +17,16 @@ from .biometrics_cluster import BiometricsClusterSQL
 from .power_intent_settled import PowerIntentSettledSQL
 from .cabinet_ambient_spike import CabinetAmbientSpikeSQL
 from .home_cooling_sample import HomeCoolingSampleSQL
-from .energy import EnergyCostAccruedSQL, EnergyRunCostSQL, EnergyUsageIntervalSQL
+from .energy import (
+    EnergyBillActualSQL,
+    EnergyBillForecastSQL,
+    EnergyCostAccruedSQL,
+    EnergyImporterStatusSQL,
+    EnergyReconcileSQL,
+    EnergyRunCostSQL,
+    EnergyStakesSnapshotSQL,
+    EnergyUsageIntervalSQL,
+)
 from .biometrics_summary import BiometricsSummarySQL
 from .biometrics_induction import BiometricsInductionSQL
 from .causal_geometry_snapshot import CausalGeometrySnapshotSQL
@@ -119,6 +128,11 @@ __all__ = [
     "EnergyUsageIntervalSQL",
     "EnergyCostAccruedSQL",
     "EnergyRunCostSQL",
+    "EnergyBillActualSQL",
+    "EnergyBillForecastSQL",
+    "EnergyReconcileSQL",
+    "EnergyStakesSnapshotSQL",
+    "EnergyImporterStatusSQL",
     "BiometricsSummarySQL",
     "BiometricsInductionSQL",
     "CausalGeometrySnapshotSQL",

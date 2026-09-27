@@ -16,8 +16,10 @@ from orion.energy.ledger import UsageLedger
 from orion.energy.tariff import load_tariff
 from orion.schemas.power import PowerIntentSettledV1
 
-from .inbox import load_processed, scan_inbox
-from .pipeline import EnergyChannels, EnergyPipeline, Outbound
+from .bills import load_processed_bills, scan_bills
+from .inbox import latest_processed_at, load_processed, scan_inbox
+from .pipeline import EnergyChannels, EnergyPipeline, Outbound, StakesConfig
+from .portal_status import read_portal_status
 from .settings import Settings, get_settings
 
 logger = logging.getLogger("orion-energy")
@@ -44,13 +46,30 @@ def build_pipeline(settings: Settings) -> EnergyPipeline:
             usage=settings.ENERGY_USAGE_CHANNEL,
             accrued=settings.ENERGY_ACCRUED_CHANNEL,
             run_cost=settings.ENERGY_RUN_COST_CHANNEL,
+            bill_actual=settings.ENERGY_BILL_ACTUAL_CHANNEL,
+            bill_forecast=settings.ENERGY_BILL_FORECAST_CHANNEL,
+            reconcile=settings.ENERGY_RECONCILE_CHANNEL,
+            stakes=settings.ENERGY_STAKES_CHANNEL,
+            importer_status=settings.ENERGY_IMPORTER_STATUS_CHANNEL,
         ),
         usage_point_id=settings.ENERGY_USAGE_POINT_ID or None,
         pending_hours=settings.ENERGY_RUN_COST_PENDING_HOURS,
+        stakes=StakesConfig(
+            near_ratio=settings.ENERGY_STAKES_NEAR_RATIO,
+            over_ratio=settings.ENERGY_STAKES_OVER_RATIO,
+            stale_after_hours=settings.ENERGY_STALE_AFTER_HOURS,
+            portal_enabled=settings.ENERGY_PORTAL_ENABLED,
+            portal_interval_hours=settings.ENERGY_PORTAL_INTERVAL_HOURS,
+        ),
     )
     replayed = load_processed(Path(settings.ENERGY_PROCESSED_DIR))
     pipeline.replay(replayed)
-    logger.info("energy_ledger_replayed intervals=%d usage_point=%s", len(replayed), pipeline.usage_point())
+    bills = load_processed_bills(Path(settings.ENERGY_BILL_PROCESSED_DIR))
+    pipeline.replay_bills(bills)
+    logger.info(
+        "energy_ledger_replayed intervals=%d bills=%d usage_point=%s",
+        len(replayed), len(bills), pipeline.usage_point(),
+    )
     return pipeline
 
 
@@ -75,23 +94,52 @@ async def publish_all(bus: OrionBusAsync, settings: Settings, outbound: Iterable
 
 async def inbox_loop(bus: OrionBusAsync, settings: Settings, pipeline: EnergyPipeline, lock: asyncio.Lock) -> None:
     inbox, processed = Path(settings.ENERGY_INBOX_DIR), Path(settings.ENERGY_PROCESSED_DIR)
+    bill_inbox, bill_processed = Path(settings.ENERGY_BILL_INBOX_DIR), Path(settings.ENERGY_BILL_PROCESSED_DIR)
     while True:
+        # Usage and bills run in separate try blocks: scanning moves files to processed/,
+        # so a failure in one must not drop rows the other already moved.
         try:
-            scan_at = datetime.now(timezone.utc)
-            rows = await asyncio.to_thread(scan_inbox, inbox, processed, now=scan_at)
+            rows = await asyncio.to_thread(scan_inbox, inbox, processed, now=datetime.now(timezone.utc))
             if rows:
                 async with lock:
                     outbound = pipeline.ingest_intervals(rows, now=datetime.now(timezone.utc))
                 await publish_all(bus, settings, outbound)
                 logger.info(
                     "energy_ingested intervals=%d published=%d pending=%d",
-                    len(rows),
-                    len(outbound),
-                    pipeline.pending_count(),
+                    len(rows), len(outbound), pipeline.pending_count(),
                 )
         except Exception:
-            logger.exception("energy_inbox_cycle_failed")
+            logger.exception("energy_inbox_cycle_failed kind=usage")
+        try:
+            bills = await asyncio.to_thread(scan_bills, bill_inbox, bill_processed, now=datetime.now(timezone.utc))
+            if bills:
+                async with lock:
+                    outbound = pipeline.ingest_bills(bills, now=datetime.now(timezone.utc))
+                await publish_all(bus, settings, outbound)
+                logger.info("energy_ingested bills=%d published=%d", len(bills), len(outbound))
+        except Exception:
+            logger.exception("energy_inbox_cycle_failed kind=bills")
         await asyncio.sleep(settings.ENERGY_SCAN_INTERVAL_SEC)
+
+
+async def status_loop(bus: OrionBusAsync, settings: Settings, pipeline: EnergyPipeline, lock: asyncio.Lock) -> None:
+    processed = Path(settings.ENERGY_PROCESSED_DIR)
+    status_path = Path(settings.ENERGY_PORTAL_STATUS_PATH)
+    while True:
+        try:
+            portal = await asyncio.to_thread(read_portal_status, status_path) if settings.ENERGY_PORTAL_ENABLED else None
+            last_file_at = await asyncio.to_thread(latest_processed_at, processed, ".xml")
+            async with lock:
+                outbound = pipeline.status_tick(now=datetime.now(timezone.utc), portal=portal, last_file_at=last_file_at)
+            await publish_all(bus, settings, outbound)
+            importer, stakes = outbound[0].payload, outbound[1].payload
+            logger.info(
+                "energy_status state=%s reason=%s pressure=%s pressure_reason=%s",
+                importer.state, importer.reason, stakes.pressure, stakes.pressure_reason,
+            )
+        except Exception:
+            logger.exception("energy_status_cycle_failed")
+        await asyncio.sleep(settings.ENERGY_STATUS_INTERVAL_SEC)
 
 
 async def settlement_loop(bus: OrionBusAsync, settings: Settings, pipeline: EnergyPipeline, lock: asyncio.Lock) -> None:
@@ -156,6 +204,7 @@ async def _main_async() -> None:
         await asyncio.gather(
             inbox_loop(bus, settings, pipeline, lock),
             settlement_loop(bus, settings, pipeline, lock),
+            status_loop(bus, settings, pipeline, lock),
         )
     finally:
         if heartbeat is not None:

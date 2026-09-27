@@ -9,6 +9,7 @@ import pytest
 
 from orion.energy.ledger import UsageLedger
 from orion.energy.tariff import load_tariff
+from orion.energy.testing import hourly, make_test_ledger
 from orion.schemas.energy import EnergyUsageIntervalV1
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -311,3 +312,30 @@ def test_reupsert_reaccrue_two_year_ledger_under_five_seconds() -> None:
         led.accrue_cycle(point, cs, computed_at=NOW)
     assert elapsed < 5.0
     assert led.interval_cost_usd("UP123", start) is not None
+
+
+_S = datetime(2026, 9, 1, tzinfo=timezone.utc)
+
+
+def test_window_prefix_stops_at_the_first_hole() -> None:
+    led = make_test_ledger()
+    for iv in hourly(_S, 10, skip=frozenset({4})):
+        led.upsert(iv)
+    prefix, covered = led.window_prefix("UP1", _S, _S + timedelta(hours=10))
+    assert len(prefix) == 4
+    assert covered == _S + timedelta(hours=4)
+
+
+def test_window_prefix_empty_when_start_missing() -> None:
+    led = make_test_ledger()
+    for iv in hourly(_S + timedelta(hours=1), 3):
+        led.upsert(iv)
+    assert led.window_prefix("UP1", _S, _S + timedelta(hours=5)) == ([], None)
+
+
+def test_latest_interval_end() -> None:
+    led = make_test_ledger()
+    assert led.latest_interval_end("UP1") is None
+    for iv in hourly(_S, 5, skip=frozenset({2})):
+        led.upsert(iv)
+    assert led.latest_interval_end("UP1") == _S + timedelta(hours=5)

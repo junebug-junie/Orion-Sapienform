@@ -112,6 +112,10 @@ NEVER_SYNC_KEYS = frozenset(
         # Empty in .env_example; --force must never wipe a pasted live value.
         "CURSOR_API_KEY",
         "ORION_CURIOSITY_GRAPH_PASSWORD",
+        # The house meter's Green Button usage point (orion-energy). Empty in
+        # .env_example; the ENERGY_ prefix below would otherwise let --force
+        # flatten a pasted live value back to "guess the meter from the data".
+        "ENERGY_USAGE_POINT_ID",
     }
 )
 
@@ -133,6 +137,12 @@ SYNC_PREFIXES = (
     "POLICY_RECONCILE_",
     "DISPATCH_RECONCILE_",
     "FEEDBACK_RECONCILE_",
+    # orion-energy (only service with ENERGY_ keys); DEFAULT_SERVICES entry below.
+    "ENERGY_",
+    # Hub's curiosity energy-stakes hold; no HUB_ prefix, so ENERGY_ above misses it.
+    "ORION_ENERGY_STAKES_",
+    # Hub Energy strip (daily-bar timezone); no generic HUB_ prefix is synced.
+    "HUB_ENERGY_",
     # orion-whisper-tts, added 2026-08-29. None of this service's 26 keys
     # matched any prefix below, and the service itself was absent from
     # DEFAULT_SERVICES, so the default invocation considered ZERO of them
@@ -490,6 +500,9 @@ DEFAULT_SERVICES = (
     # requirement as orion-cocreation-signals: DEFAULT_SERVICES visit +
     # CURIOSITY_PEER_ / ORION_CURIOSITY_GRAPH_ prefixes above.
     "orion-curiosity-peer",
+    # Energy watcher (2026-09-27). Same dual-half blind spot: absent here and no
+    # ENERGY_ prefix, so the default run added none of its 14 plan-2 keys.
+    "orion-energy",
 )
 
 

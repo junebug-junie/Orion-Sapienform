@@ -49,6 +49,7 @@ from scripts.notification_cache import NotificationCache
 from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
 from orion.core.bus.bus_schemas import ServiceRef
 from scripts.curiosity_investigation import CuriosityInvestigation
+from scripts.energy_stakes_gate import read_latest_energy_stakes
 from scripts.reading_listener import ReadingListener
 from scripts.reading_turn_listener import ReadingTurnListener
 from scripts.world_pulse_read_pipeline import WorldPulseReadPipeline
@@ -632,6 +633,11 @@ async def startup_event():
                 value_order_propensity=settings.HUB_CURIOSITY_VALUE_ORDER_PROPENSITY,
                 yield_window=settings.HUB_CURIOSITY_YIELD_WINDOW,
                 yield_pseudo_tests=settings.HUB_CURIOSITY_YIELD_PSEUDO_TESTS,
+                # Energy as a stake (default off): reads the latest
+                # energy_stakes_snapshot row sql-writer persists.
+                energy_stakes_enabled=settings.ORION_ENERGY_STAKES_ENABLED,
+                energy_stakes_reader=lambda: read_latest_energy_stakes(os.getenv("DATABASE_URL", "").strip()),
+                energy_stakes_max_age_sec=settings.ORION_ENERGY_STAKES_MAX_AGE_SEC,
                 max_hops=settings.HUB_CURIOSITY_MAX_HOPS,
                 pg_readonly_role=settings.HUB_CURIOSITY_PG_READONLY_ROLE,
                 # A finding Orion judges worth saying goes through a SECOND

@@ -482,6 +482,8 @@ class Settings(BaseSettings):
         default=10.0,
         alias="CABINET_SENSORS_STALE_AFTER_SEC",
     )
+    # Local day boundary for the Hub Energy strip's daily kWh bars (Postgres AT TIME ZONE name).
+    HUB_ENERGY_TIMEZONE: str = Field(default="America/Denver", alias="HUB_ENERGY_TIMEZONE")
     # Host ambient-audio snapshot plus biometrics-summary history for Cabinet.
     AMBIENT_AUDIO_PATH: str = Field(
         default="/run/orion-audio/latest.json",
@@ -913,6 +915,14 @@ class Settings(BaseSettings):
     )
     HUB_CURIOSITY_YIELD_PSEUDO_TESTS: float = Field(
         default=2.0, ge=0.0, alias="HUB_CURIOSITY_YIELD_PSEUDO_TESTS"
+    )
+    # Let curiosity hold a scheduled investigation when orion-energy's stakes snapshot
+    # says the house bill is at/over RMP's forecast. Off = curiosity unchanged.
+    # A snapshot older than MAX_AGE_SEC never holds (scripts/energy_stakes_gate.py), and
+    # the Energy strip shows its numbers as unknown/"stale since" (scripts/energy_routes.py).
+    ORION_ENERGY_STAKES_ENABLED: bool = Field(default=False, alias="ORION_ENERGY_STAKES_ENABLED")
+    ORION_ENERGY_STAKES_MAX_AGE_SEC: float = Field(
+        default=1800.0, gt=0.0, alias="ORION_ENERGY_STAKES_MAX_AGE_SEC"
     )
     # Stopping points inside one turn: places Orion states what it just learned
     # and decides whether to keep pulling. Juniper's number. A cap exists so

@@ -766,11 +766,11 @@ class Settings(BaseSettings):
     # Hours in HUB_ENDOGENOUS_OUTREACH_TZ. START == END or -1 disables the
     # window. Bounded: an out-of-range hour is a permanent silent deadlock.
     HUB_WORLD_PULSE_READ_WINDOW_START_HOUR: int = Field(
-        default=8, ge=-1, le=23,
+        default=0, ge=-1, le=23,
         alias="HUB_WORLD_PULSE_READ_WINDOW_START_HOUR",
     )
     HUB_WORLD_PULSE_READ_WINDOW_END_HOUR: int = Field(
-        default=22, ge=-1, le=23,
+        default=0, ge=-1, le=23,
         alias="HUB_WORLD_PULSE_READ_WINDOW_END_HOUR",
     )
     HUB_WORLD_PULSE_READ_TIMEOUT_SEC: float = Field(
@@ -809,11 +809,11 @@ class Settings(BaseSettings):
         default=12, alias="HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP"
     )
     HUB_WORLD_PULSE_READ_STAGE2_WINDOW_START_HOUR: int = Field(
-        default=8, ge=-1, le=23,
+        default=0, ge=-1, le=23,
         alias="HUB_WORLD_PULSE_READ_STAGE2_WINDOW_START_HOUR",
     )
     HUB_WORLD_PULSE_READ_STAGE2_WINDOW_END_HOUR: int = Field(
-        default=22, ge=-1, le=23,
+        default=0, ge=-1, le=23,
         alias="HUB_WORLD_PULSE_READ_STAGE2_WINDOW_END_HOUR",
     )
     HUB_WORLD_PULSE_READ_STAGE2_TIMEOUT_SEC: float = Field(

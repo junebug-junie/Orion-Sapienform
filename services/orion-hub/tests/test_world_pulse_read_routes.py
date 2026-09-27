@@ -31,8 +31,8 @@ _EXPECTED_DEFAULTS = {
     "HUB_WORLD_PULSE_READ_TICK_SEC": ("float", "300"),
     "HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC": ("float", "1800"),
     "HUB_WORLD_PULSE_READ_DAILY_CAP": ("int", "12"),
-    "HUB_WORLD_PULSE_READ_WINDOW_START_HOUR": ("int", "8"),
-    "HUB_WORLD_PULSE_READ_WINDOW_END_HOUR": ("int", "22"),
+    "HUB_WORLD_PULSE_READ_WINDOW_START_HOUR": ("int", "0"),
+    "HUB_WORLD_PULSE_READ_WINDOW_END_HOUR": ("int", "0"),
     "HUB_WORLD_PULSE_READ_TIMEOUT_SEC": ("float", "3500"),
     "HUB_WORLD_PULSE_READ_SESSION_ID": ("str", '"orion_world_pulse_read"'),
     "HUB_WORLD_PULSE_READ_LLM_ROUTE": ("str", '"agent"'),
@@ -40,8 +40,8 @@ _EXPECTED_DEFAULTS = {
     "HUB_WORLD_PULSE_READ_STAGE2_TICK_SEC": ("float", "300"),
     "HUB_WORLD_PULSE_READ_STAGE2_MIN_COOLDOWN_SEC": ("float", "1800"),
     "HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP": ("int", "12"),
-    "HUB_WORLD_PULSE_READ_STAGE2_WINDOW_START_HOUR": ("int", "8"),
-    "HUB_WORLD_PULSE_READ_STAGE2_WINDOW_END_HOUR": ("int", "22"),
+    "HUB_WORLD_PULSE_READ_STAGE2_WINDOW_START_HOUR": ("int", "0"),
+    "HUB_WORLD_PULSE_READ_STAGE2_WINDOW_END_HOUR": ("int", "0"),
     "HUB_WORLD_PULSE_READ_STAGE2_TIMEOUT_SEC": ("float", "3500"),
     "HUB_WORLD_PULSE_READ_STAGE2_SESSION_ID": ("str", '"orion_world_pulse_read_stage2"'),
     "HUB_WORLD_PULSE_READ_STAGE2_LLM_ROUTE": ("str", '"agent"'),
@@ -117,6 +117,30 @@ def test_raised_caps_preserve_pacing_and_budget(module, inputs, gate, key) -> No
         assert gate(inputs(done_today=12, **base)) == "daily_cap"
         assert gate(inputs(done_today=6, **{**base, "seconds_since_last": pace - 1})) == "cooldown"
         assert gate(inputs(done_today=6, seconds_until_retry=1, **base)) == "refund_backoff"
+
+
+@pytest.mark.parametrize("module,inputs,gate,prefix", [
+    (wa, wa.WalletAInputs, wa.wallet_a_block_reason, "HUB_WORLD_PULSE_READ"),
+    (wb, wb.WalletBInputs, wb.wallet_b_block_reason, "HUB_WORLD_PULSE_READ_STAGE2"),
+])
+def test_default_reading_windows_allow_every_hour(module, inputs, gate, prefix):
+    settings = SETTINGS_PY.read_text()
+    template = ENV_EXAMPLE.read_text()
+    hours = []
+    for suffix in ("START_HOUR", "END_HOUR"):
+        key = f"{prefix}_WINDOW_{suffix}"
+        hours.append(int(_field_default(settings, key, "int")))
+        assert re.search(rf"^{key}=0$", template, re.M)
+    assert hours == [0, 0]
+    assert module.paced_cooldown_sec(
+        min_cooldown_sec=1800, daily_cap=12, start_hour=hours[0], end_hour=hours[1],
+    ) == 1800
+    for hour in range(24):
+        assert gate(inputs(
+            enabled=True, done_today=0, daily_cap=12, seconds_since_last=1800,
+            min_cooldown_sec=1800, now_hour=hour,
+            window_start_hour=hours[0], window_end_hour=hours[1],
+        )) is None
 
 
 def test_stage2_reentry_cap_default_matches_settings() -> None:

@@ -132,6 +132,10 @@ SET status = 'claimed', claimed_at = now()
 WHERE seed_id = (
     SELECT seed_id FROM world_pulse_read_seed
     WHERE status = 'pending'
+      AND (NOT $1::boolean OR EXISTS (
+          SELECT 1 FROM reading_durable_turn d
+          WHERE d.seed_id=world_pulse_read_seed.seed_id
+            AND d.stage=1 AND d.consumed_at IS NULL))
     ORDER BY EXISTS (SELECT 1 FROM reading_durable_turn d
                      WHERE d.seed_id=world_pulse_read_seed.seed_id
                        AND d.stage=1 AND d.consumed_at IS NULL) DESC,
@@ -151,6 +155,10 @@ WHERE seed_id = (
     WHERE status = 'done'
       AND handoff_json IS NOT NULL
       AND stage2_status = 'pending'
+      AND (NOT $1::boolean OR EXISTS (
+          SELECT 1 FROM reading_durable_turn d
+          WHERE d.seed_id=world_pulse_read_seed.seed_id
+            AND d.stage=2 AND d.consumed_at IS NULL))
     ORDER BY EXISTS (SELECT 1 FROM reading_durable_turn d
                      WHERE d.seed_id=world_pulse_read_seed.seed_id
                        AND d.stage=2 AND d.consumed_at IS NULL) DESC,
@@ -471,8 +479,8 @@ def _seed_from_row(row: Any) -> WorldPulseReadSeedV1:
     )
 
 
-async def claim_next_seed(conn: Any) -> WorldPulseReadSeedV1 | None:
-    row = await conn.fetchrow(CLAIM_SQL)
+async def claim_next_seed(conn: Any, *, active_only: bool = False) -> WorldPulseReadSeedV1 | None:
+    row = await conn.fetchrow(CLAIM_SQL, active_only)
     if not row:
         return None
     return _seed_from_row(row)
@@ -634,8 +642,8 @@ async def mark_stage2_skipped(conn: Any, seed_id: str, *, reason: str) -> None:
     )
 
 
-async def claim_next_stage2_seed(conn: Any) -> Stage2Claim | None:
-    row = await conn.fetchrow(CLAIM_STAGE2_SQL)
+async def claim_next_stage2_seed(conn: Any, *, active_only: bool = False) -> Stage2Claim | None:
+    row = await conn.fetchrow(CLAIM_STAGE2_SQL, active_only)
     if not row:
         return None
     raw = row["handoff_json"]

@@ -61,6 +61,63 @@ def request(url="https://example.org/article", **kwargs):
     return ReadingRequestedV1(url=url, requested_by="juniper", invocation_context="unified_chat", why_now="A new context", **kwargs)
 
 
+@pytest.mark.parametrize("stage", [1, 2])
+@pytest.mark.parametrize("reason", ["outside_window", "daily_cap", "cooldown", "refund_backoff", "disabled"])
+@pytest.mark.parametrize("active", [False, True, "consumed", "other_stage"])
+def test_admission_gates_only_allow_existing_bindings(local_pg, monkeypatch, stage, reason, active):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from orion.schemas.reading import SourceFetchEvidenceV1
+    from orion.schemas.reading_turn import ReadingRunBriefV1
+    from orion.world_pulse_read.durable import bind_turn, ReadingPending
+    from scripts import world_pulse_read_pipeline as s1
+    from scripts import world_pulse_read_stage2 as s2
+
+    async def run():
+        conn, _ = await db(local_pg)
+        await queue.enqueue_reading(conn, request())
+        seed = await queue.claim_next_seed(conn)
+        handoff = WorldPulseReadHandoffV1(
+            seed_ref=seed, what_i_learned="A source-backed finding.",
+            trace_id=str(uuid4()), created_at=datetime.now(timezone.utc),
+            read_evidence=[SourceFetchEvidenceV1(
+                tool_name="WebFetch", url=seed.url, content_chars=500,
+            )],
+        )
+        if stage == 2:
+            await queue.mark_seed_done(conn, seed.seed_id, trace_id=handoff.trace_id, handoff=handoff)
+        else:
+            await conn.execute("UPDATE world_pulse_read_seed SET status='pending', claimed_at=NULL")
+        if active:
+            binding = await bind_turn(conn, ReadingRunBriefV1(
+                seed_id=seed.seed_id, stage=3-stage if active == "other_stage" else stage, prompt="Saved prompt",
+                session_id="reading", timeout_sec=900,
+            ), str(uuid4()))
+            if active == "consumed":
+                await conn.execute("UPDATE reading_durable_turn SET consumed_at=now() WHERE run_id=$1", binding.run_id)
+        module = s1 if stage == 1 else s2
+        cls = s1.WorldPulseReadPipeline if stage == 1 else s2.WorldPulseReadStage2Pipeline
+        monkeypatch.setattr(module, f"wallet_{'a' if stage == 1 else 'b'}_block_reason", lambda _: reason)
+        pipe = cls(enabled=reason != "disabled", tick_interval_sec=60, min_cooldown_sec=0,
+            daily_cap=12, timeout_sec=900, session_id="reading",
+            pool_provider=lambda: None, source_ref=ServiceRef(name="orion-hub"))
+        async def with_conn(callback):
+            return await callback(conn)
+        pipe._with_conn = with_conn
+        pipe._bus = SimpleNamespace(redis=None, publish=AsyncMock())
+        if stage == 1:
+            pipe._maybe_enqueue_recent = AsyncMock()
+        work = AsyncMock(side_effect=ReadingPending("existing run"))
+        setattr(pipe, "_stage1_read" if stage == 1 else "_stage2_pass", work)
+        expected_poll = active is True and reason != "disabled"
+        assert await pipe.tick() == ("waiting_resource" if expected_poll else reason)
+        assert work.await_count == int(expected_poll)
+        row = await conn.fetchrow("SELECT attempts, stage2_attempts FROM world_pulse_read_seed")
+        assert tuple(row) == (0, 0)
+        await conn.close()
+    asyncio.run(run())
+
+
 def test_migration_is_additive_and_rerunnable(local_pg):
     async def run():
         conn = await asyncpg.connect(**local_pg)

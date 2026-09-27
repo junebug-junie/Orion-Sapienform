@@ -112,6 +112,10 @@ NEVER_SYNC_KEYS = frozenset(
         # Empty in .env_example; --force must never wipe a pasted live value.
         "CURSOR_API_KEY",
         "ORION_CURIOSITY_GRAPH_PASSWORD",
+        # The house meter's Green Button usage point (orion-energy). Empty in
+        # .env_example; the ENERGY_ prefix below would otherwise let --force
+        # flatten a pasted live value back to "guess the meter from the data".
+        "ENERGY_USAGE_POINT_ID",
     }
 )
 

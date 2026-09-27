@@ -320,4 +320,24 @@ def test_energy_keys_are_reached_by_the_default_sync() -> None:
             if k.startswith("ENERGY_")]
     assert len(keys) >= 14, keys
     for key in keys:
+        if key in NEVER_SYNC_KEYS:
+            continue
         assert should_sync_key(key, all_keys=False), key
+
+
+def test_energy_usage_point_id_never_synced_even_with_force(tmp_path: Path) -> None:
+    """The template ships ENERGY_USAGE_POINT_ID empty; the live value identifies the house's
+    meter. --force must never flatten a pasted value back to that placeholder."""
+    assert "ENERGY_USAGE_POINT_ID" in NEVER_SYNC_KEYS
+    assert should_sync_key("ENERGY_USAGE_POINT_ID", all_keys=True) is False
+    svc = tmp_path / "orion-energy"
+    svc.mkdir()
+    (svc / ".env_example").write_text("ENERGY_USAGE_POINT_ID=\nENERGY_STAKES_NEAR_RATIO=0.95\n", encoding="utf-8")
+    (svc / ".env").write_text("ENERGY_USAGE_POINT_ID=up-123\nENERGY_STAKES_NEAR_RATIO=0.9\n", encoding="utf-8")
+
+    result = sync_file(svc / ".env", svc / ".env_example", dry_run=False, all_keys=True, force=True)
+
+    text = (svc / ".env").read_text(encoding="utf-8")
+    assert "ENERGY_USAGE_POINT_ID=up-123\n" in text
+    assert "ENERGY_STAKES_NEAR_RATIO=0.95" in text
+    assert not any("ENERGY_USAGE_POINT_ID" in c for c in result.updated + result.diverged)

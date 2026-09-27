@@ -6,7 +6,7 @@ Not used at runtime. The flat tariff makes every oracle doable on paper:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -47,12 +47,13 @@ def hourly(
     skip: frozenset[int] = frozenset(),
 ) -> list[EnergyUsageIntervalV1]:
     got = retrieved_at or (start + timedelta(days=60))
+    start_utc = start.astimezone(timezone.utc)
     return [
         EnergyUsageIntervalV1(
             source="file_drop",
             usage_point_id=point,
-            interval_start=start + timedelta(hours=h),
-            interval_end=start + timedelta(hours=h + 1),
+            interval_start=start_utc + timedelta(hours=h),
+            interval_end=start_utc + timedelta(hours=h + 1),
             energy_kwh=kwh,
             retrieved_at=got,
         )

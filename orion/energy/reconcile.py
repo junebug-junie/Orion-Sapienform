@@ -82,14 +82,13 @@ def project_period(
     prefix, covered = ledger.window_prefix(usage_point_id, start, end)
     if not prefix or covered is None:
         return None, _empty_prefix_gap(ledger, usage_point_id, start, end), None
-    if _duration_seconds(start, covered) < MIN_RUN_RATE_HOURS * 3600.0:
+    covered_sec = _duration_seconds(start, covered)
+    if covered_sec < MIN_RUN_RATE_HOURS * 3600.0:
         return None, "usage_incomplete", covered
     tariff, tz = ledger.tariff, ledger.tz
     kwh, energy = price_intervals(tariff, prefix, tz=tz)
     period_sec = _duration_seconds(start, end)
-    # Each metered interval is one nominal hour; real period length can differ across DST.
-    nominal_covered_sec = len(prefix) * 3600.0
-    projected_kwh = kwh * period_sec / nominal_covered_sec
+    projected_kwh = kwh if covered >= end else kwh * period_sec / covered_sec
     last_month = (end - timedelta(seconds=1)).astimezone(tz).month
     remaining = max(0.0, projected_kwh - kwh)
     projected_energy = energy + tariff.energy_cost_usd(remaining, cycle_kwh_before=kwh, month=last_month)

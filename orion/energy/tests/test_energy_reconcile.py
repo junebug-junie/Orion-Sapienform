@@ -8,7 +8,7 @@ import pytest
 from orion.energy.ledger import UsageLedger
 from orion.energy.reconcile import reconcile_actual, reconcile_forecast
 from orion.energy.testing import flat_test_tariff, hourly, make_test_ledger
-from orion.schemas.energy import EnergyBillActualV1, EnergyBillForecastV1
+from orion.schemas.energy import EnergyBillActualV1, EnergyBillForecastV1, EnergyUsageIntervalV1
 
 DENVER = ZoneInfo("America/Denver")
 
@@ -91,6 +91,8 @@ def test_actual_first_hour_missing_is_usage_incomplete() -> None:
         _bill(), ledger=_ledger_with(hourly(S, 48, skip=frozenset({0}))), usage_point_id="UP1", computed_at=NOW
     )
     assert rec.reconcile_gap == "usage_incomplete"
+    assert rec.orion_covered_through is None
+    assert rec.orion_total_usd is None
 
 
 def _forecast(**over) -> EnergyBillForecastV1:
@@ -125,23 +127,55 @@ def test_forecast_needs_a_day_of_usage() -> None:
     assert rec.orion_covered_through == S + timedelta(hours=12)
 
 
-def test_forecast_dst_fall_back_projects_real_elapsed_hours() -> None:
-    # Oct 15–Nov 15 Denver: wall-clock span is 744 h, real elapsed is 745 h (fall-back hour).
+def _denver_dst_forecast(*, hours: int, as_of_hours: int) -> tuple[UsageLedger, EnergyBillForecastV1]:
     start = datetime(2026, 10, 15, tzinfo=DENVER)
     led = UsageLedger(flat_test_tariff(), tz=DENVER, cycle_start_day=1)
-    for iv in hourly(start, 744):
+    for iv in hourly(start, hours):
         led.upsert(iv)
+    as_of = start.astimezone(timezone.utc) + timedelta(hours=as_of_hours)
     forecast = EnergyBillForecastV1(
         source="file_drop",
         billing_period_start=date(2026, 10, 15),
         billing_period_end=date(2026, 11, 15),
-        as_of=start + timedelta(hours=744),
+        as_of=as_of,
         projected_kwh=700.0,
         projected_total_usd=80.0,
-        retrieved_at=start + timedelta(hours=744),
+        retrieved_at=as_of,
     )
+    return led, forecast
+
+
+def test_forecast_dst_partial_coverage_projects_over_real_seconds() -> None:
+    # Oct 15–Nov 15 Denver is 745 real hours; 744 UTC-hourly intervals end 1 h before period end.
+    led, forecast = _denver_dst_forecast(hours=744, as_of_hours=744)
     rec = reconcile_forecast(forecast, ledger=led, usage_point_id="UP1", computed_at=NOW)
     assert rec.orion_kwh == pytest.approx(745.0)
+
+
+def test_forecast_dst_full_coverage_returns_metered_kwh() -> None:
+    led, forecast = _denver_dst_forecast(hours=745, as_of_hours=745)
+    rec = reconcile_forecast(forecast, ledger=led, usage_point_id="UP1", computed_at=NOW)
+    assert rec.orion_kwh == pytest.approx(745.0)
+
+
+def test_forecast_quarter_hour_intervals_use_real_covered_time() -> None:
+    # 72 h of 15-min intervals at 0.25 kWh = 72 kWh; same 720 h oracle as hourly.
+    got = S + timedelta(days=60)
+    start_utc = S.astimezone(timezone.utc)
+    intervals = [
+        EnergyUsageIntervalV1(
+            source="file_drop",
+            usage_point_id="UP1",
+            interval_start=start_utc + timedelta(minutes=15 * i),
+            interval_end=start_utc + timedelta(minutes=15 * (i + 1)),
+            energy_kwh=0.25,
+            retrieved_at=got,
+        )
+        for i in range(72 * 4)
+    ]
+    rec = reconcile_forecast(_forecast(), ledger=_ledger_with(intervals), usage_point_id="UP1", computed_at=NOW)
+    assert rec.orion_kwh == pytest.approx(720.0)
+    assert rec.orion_total_usd == pytest.approx(88.4)
 
 
 def test_forecast_without_end_uses_ledger_cycle() -> None:

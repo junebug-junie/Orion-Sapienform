@@ -440,8 +440,13 @@ from orion.schemas.telemetry.biometrics import (
 from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
 from orion.schemas.telemetry.home_cooling import HomeCoolingSampleV1
 from orion.schemas.energy import (
+    EnergyBillActualV1,
+    EnergyBillForecastV1,
     EnergyCostAccruedV1,
+    EnergyImporterStatusV1,
+    EnergyReconcileV1,
     EnergyRunCostEstimatedV1,
+    EnergyStakesSnapshotV1,
     EnergyUsageIntervalV1,
 )
 from orion.schemas.telemetry.dream import (
@@ -1265,6 +1270,11 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "EnergyUsageIntervalV1": EnergyUsageIntervalV1,
     "EnergyCostAccruedV1": EnergyCostAccruedV1,
     "EnergyRunCostEstimatedV1": EnergyRunCostEstimatedV1,
+    "EnergyBillActualV1": EnergyBillActualV1,
+    "EnergyBillForecastV1": EnergyBillForecastV1,
+    "EnergyReconcileV1": EnergyReconcileV1,
+    "EnergyStakesSnapshotV1": EnergyStakesSnapshotV1,
+    "EnergyImporterStatusV1": EnergyImporterStatusV1,
     "DreamRequest": DreamRequest,
     "DreamTriggerPayload": DreamTriggerPayload,
     "DreamInternalTriggerV1": DreamInternalTriggerV1,
@@ -1530,6 +1540,26 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "EnergyRunCostEstimatedV1": SchemaRegistration(
         model=EnergyRunCostEstimatedV1,
         kind="energy.run_cost.estimated.v1",
+    ),
+    "EnergyBillActualV1": SchemaRegistration(
+        model=EnergyBillActualV1,
+        kind="energy.bill.actual.v1",
+    ),
+    "EnergyBillForecastV1": SchemaRegistration(
+        model=EnergyBillForecastV1,
+        kind="energy.bill.forecast.v1",
+    ),
+    "EnergyReconcileV1": SchemaRegistration(
+        model=EnergyReconcileV1,
+        kind="energy.reconcile.v1",
+    ),
+    "EnergyStakesSnapshotV1": SchemaRegistration(
+        model=EnergyStakesSnapshotV1,
+        kind="energy.stakes.snapshot.v1",
+    ),
+    "EnergyImporterStatusV1": SchemaRegistration(
+        model=EnergyImporterStatusV1,
+        kind="energy.importer.status.v1",
     ),
     "AffectGptAssessResultPayload": SchemaRegistration(
         model=AffectGptAssessResultPayload,

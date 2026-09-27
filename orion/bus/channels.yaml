@@ -2027,6 +2027,56 @@ channels:
     since: "2026-09-26"
     description: "Dollar cost of a settled power intent: meter-side estimate plus separately labeled house share."
 
+  - name: "orion:energy:bill:actual"
+    kind: "event"
+    schema_id: "EnergyBillActualV1"
+    message_kind: "energy.bill.actual.v1"
+    producer_services: ["orion-energy"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-27"
+    description: "Closed Rocky Mountain Power billing period (portal scrape or hand-entered bill JSON)."
+
+  - name: "orion:energy:bill:forecast"
+    kind: "event"
+    schema_id: "EnergyBillForecastV1"
+    message_kind: "energy.bill.forecast.v1"
+    producer_services: ["orion-energy"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-27"
+    description: "RMP's in-cycle bill projection; rejected when it carries no projected number."
+
+  - name: "orion:energy:reconcile"
+    kind: "event"
+    schema_id: "EnergyReconcileV1"
+    message_kind: "energy.reconcile.v1"
+    producer_services: ["orion-energy"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-27"
+    description: "Orion tariff estimate vs RMP bill/forecast; deltas are Orion minus utility, gap when usage is incomplete."
+
+  - name: "orion:energy:stakes:snapshot"
+    kind: "event"
+    schema_id: "EnergyStakesSnapshotV1"
+    message_kind: "energy.stakes.snapshot.v1"
+    producer_services: ["orion-energy"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-27"
+    description: "Cycle-to-date cost, marginal rate, and projected-vs-forecast pressure for spend gates (Hub reads the SQL row)."
+
+  - name: "orion:energy:importer:status"
+    kind: "event"
+    schema_id: "EnergyImporterStatusV1"
+    message_kind: "energy.importer.status.v1"
+    producer_services: ["orion-energy"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-09-27"
+    description: "healthy / stale / reauth_required / degraded for house usage ingest."
+
   - name: "orion:exec:request:MetaTagsService"
     kind: "request"
     schema_id: "MetaTagsRequestV1"

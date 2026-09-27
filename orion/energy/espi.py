@@ -3,11 +3,13 @@
 Linking follows the ESPI href convention: an IntervalBlock's self link is
 ``.../UsagePoint/<up>/MeterReading/<mr>/IntervalBlock/<ib>``; the MeterReading at
 ``.../UsagePoint/<up>/MeterReading/<mr>`` may carry several ``related`` links
-(e.g. IntervalBlock collection and ReadingType). The ReadingType link is the
-first ``related`` href whose self entry is a ReadingType present in the feed.
-If related links exist but none resolve to a feed ReadingType, the feed is
-rejected. When a MeterReading has no related ReadingType-shaped link and the
-feed has exactly one ReadingType, that ReadingType is used.
+(e.g. IntervalBlock collection and ReadingType). For each MeterReading, the
+ReadingType href is the first ``related`` href whose self entry is a
+ReadingType present in the feed; if none match, the first ``related`` href is
+kept anyway. When that href is not a feed ReadingType (e.g. only an
+IntervalBlock collection link), the feed is rejected. When a MeterReading
+carries no ``related`` links and the feed has exactly one ReadingType, that
+ReadingType is used.
 
 Only forward flow (delivered to the house, flowDirection 1) is kept. Reverse flow
 (19, e.g. solar export) is a different quantity and is skipped, not netted.

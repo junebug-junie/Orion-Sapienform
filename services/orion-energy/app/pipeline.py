@@ -12,8 +12,6 @@ from typing import Iterable, Optional
 
 from pydantic import BaseModel
 
-logger = logging.getLogger("orion-energy.pipeline")
-
 from orion.energy.ledger import UsageLedger
 from orion.energy.run_cost import estimate_run_cost
 from orion.schemas.energy import (
@@ -25,6 +23,8 @@ from orion.schemas.energy import (
     EnergyUsageIntervalV1,
 )
 from orion.schemas.power import PowerIntentSettledV1
+
+logger = logging.getLogger("orion-energy.pipeline")
 
 
 @dataclass(frozen=True)

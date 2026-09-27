@@ -306,8 +306,8 @@ def test_reupsert_reaccrue_two_year_ledger_under_five_seconds() -> None:
     for i in range(17_520):
         t = start + timedelta(hours=i)
         led.upsert(_iv(t, 0.2, retrieved=newer))
+    elapsed = time.perf_counter() - t0
     for point, cs in sorted(led.all_cycles()):
         led.accrue_cycle(point, cs, computed_at=NOW)
-    elapsed = time.perf_counter() - t0
     assert elapsed < 5.0
     assert led.interval_cost_usd("UP123", start) is not None

@@ -78,12 +78,18 @@ import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Awaitable, Callable, Mapping, Optional, Tuple
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
 from .endogenous_outreach import in_quiet_hours
+from .energy_stakes_gate import (
+    HOLD_REASON as ENERGY_HOLD_REASON,
+    EnergyHold,
+    energy_stakes_hold,
+    hold_attention_row,
+)
 from .curiosity_offer_decisions import (
     load_prior_test_history,
     load_turn_snapshot,
@@ -609,6 +615,10 @@ class CuriosityInvestigation:
         value_order_propensity: float = 0.5,
         yield_window: int = 3,
         yield_pseudo_tests: float = 2.0,
+        # --- energy stakes hold (ORION_ENERGY_STAKES_ENABLED, default off) ---
+        energy_stakes_enabled: bool = False,
+        energy_stakes_reader: Optional[Callable[[], Awaitable[Optional[Mapping[str, Any]]]]] = None,
+        energy_stakes_max_age_sec: float = 1800.0,
     ) -> None:
         # Durable runs: when on, `_investigate` builds the same prompt and
         # hands the run to cortex instead of running the turn here; the
@@ -789,6 +799,11 @@ class CuriosityInvestigation:
         self.value_order_propensity = float(value_order_propensity)
         self.yield_window = int(yield_window)
         self.yield_pseudo_tests = float(yield_pseudo_tests)
+        # Energy as a stake: a fresh orion-energy snapshot at/over RMP's
+        # forecast holds a scheduled run. See scripts/energy_stakes_gate.py.
+        self.energy_stakes_enabled = bool(energy_stakes_enabled)
+        self.energy_stakes_reader = energy_stakes_reader
+        self.energy_stakes_max_age_sec = float(energy_stakes_max_age_sec)
 
     @property
     def graph_enabled(self) -> bool:
@@ -1440,7 +1455,8 @@ class CuriosityInvestigation:
         `force` SKIPS THE SCHEDULING GATE AND NOTHING ELSE -- cooldown, daily
         cap, and the waking window. Those exist to bound cost and to keep Orion
         off Juniper's small hours; an
-        operator asking for a run on purpose has already made that call. Every
+        operator asking for a run on purpose has already made that call. The
+        energy-stakes hold is discretionary-spend only and is skipped too. Every
         other gate still applies -- `enabled`, the Postgres role, the graph ACL,
         the stores, whether there is any material -- because those answer "can
         this run work at all", which an operator cannot override by wanting it.
@@ -1524,6 +1540,11 @@ class CuriosityInvestigation:
             # indistinguishable from a loop that is dead.
             logger.info("curiosity_investigation_blocked reason=%s", reason)
             return reason
+
+        # Discretionary spend only: a forced run is an operator's call, not curiosity's.
+        if self.energy_stakes_enabled and not force:
+            if await self._energy_stakes_hold(now) is not None:
+                return ENERGY_HOLD_REASON
 
         if self.pg_readonly_role and await self._pg_role_missing():
             logger.warning(
@@ -3779,6 +3800,39 @@ class CuriosityInvestigation:
             resource_lease=lease,
             gpu_lease=gpu_lease,
         )
+
+    async def _energy_stakes_hold(self, now: datetime) -> Optional[EnergyHold]:
+        """A fresh, healthy snapshot at/over RMP's forecast holds; anything else never does."""
+        reader = self.energy_stakes_reader
+        if reader is None:
+            return None
+        try:
+            snapshot = await asyncio.wait_for(reader(), timeout=5.0)
+            hold = energy_stakes_hold(snapshot, now=now, max_age_sec=self.energy_stakes_max_age_sec)
+        except Exception:  # noqa: BLE001 -- unreadable is "no stake", never a hold
+            logger.warning("curiosity_energy_stakes_unreadable -- not holding", exc_info=True)
+            return None
+        if hold is None:
+            return None
+        logger.info(
+            "curiosity_investigation_blocked reason=%s pressure=%s ratio=%s snapshot_as_of=%s",
+            ENERGY_HOLD_REASON, hold.pressure, hold.ratio, hold.as_of.isoformat(),
+        )
+        if self._bus is not None:
+            try:
+                row, corr = bind_correlation(hold_attention_row(hold, now=now))
+                await self._bus.publish(
+                    ATTENTION_SCHEMA_CHANNEL,
+                    BaseEnvelope(
+                        kind=ATTENTION_SCHEMA_KIND,
+                        source=self._source_ref,
+                        correlation_id=corr,
+                        payload=row.model_dump(mode="json"),
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("curiosity_energy_hold_publish_failed", exc_info=True)
+        return hold
 
     async def _publish_attention_schema(
         self,

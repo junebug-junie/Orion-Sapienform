@@ -2706,3 +2706,76 @@ def test_actual_curiosity_run_id_reaches_reading_binding(monkeypatch):
     assert captured["reading_context"] == "curiosity"
     assert captured["reading_parent_run_id"] == "run-id"
     assert captured["correlation_id"] == "trace-id"
+
+
+# --- energy stakes hold (ORION_ENERGY_STAKES_ENABLED) ------------------------
+
+from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL  # noqa: E402
+
+
+def _energy_snapshot(pressure="over_forecast", age_sec=60.0) -> dict:
+    return {
+        "as_of": datetime.now(timezone.utc) - timedelta(seconds=age_sec), "pressure": pressure,
+        "pressure_reason": "ratio=1.105", "projected_to_forecast_ratio": 1.105,
+        "orion_projected_total_usd": 88.4, "forecast_total_usd": 80.0,
+        "marginal_usd_per_kwh": 0.12, "importer_state": "healthy",
+    }
+
+
+def _energy_reader(snapshot, calls: list):
+    async def read():
+        calls.append(1)
+        if isinstance(snapshot, Exception):
+            raise snapshot
+        return snapshot
+    return read
+
+
+def test_energy_flag_off_never_reads_the_snapshot() -> None:
+    bus, calls = _FakeBus(), []
+    loop = _loop(bus, energy_stakes_enabled=False, energy_stakes_reader=_energy_reader(_energy_snapshot(), calls))
+    assert asyncio.run(loop.tick()) is None
+    assert calls == []
+    assert len(bus.journal) == 1
+
+
+def test_energy_over_forecast_holds_and_leaves_an_attention_row() -> None:
+    bus = _FakeBus()
+    loop = _loop(bus, energy_stakes_enabled=True, energy_stakes_reader=_energy_reader(_energy_snapshot(), []))
+    assert asyncio.run(loop.tick()) == "held_off:energy_stakes"
+    assert bus.journal == []
+    assert loop._done_today == 0
+    rows = [e.payload for c, e in bus.published if c == ATTENTION_SCHEMA_CHANNEL]
+    assert len(rows) == 1
+    assert rows[0]["attention_reason"] == "held_off:energy_stakes"
+    assert rows[0]["process"] == "curiosity"
+
+
+def test_energy_hold_never_blocks_a_forced_run() -> None:
+    bus, calls = _FakeBus(), []
+    loop = _loop(bus, energy_stakes_enabled=True, energy_stakes_reader=_energy_reader(_energy_snapshot(), calls))
+    assert asyncio.run(loop.tick(force=True)) is None
+    assert calls == []
+    assert len(bus.journal) == 1
+
+
+def test_energy_scheduling_block_wins_before_the_snapshot_is_read() -> None:
+    bus, calls = _FakeBus(), []
+    loop = _loop(
+        bus, daily_cap=0, energy_stakes_enabled=True,
+        energy_stakes_reader=_energy_reader(_energy_snapshot(), calls),
+    )
+    assert asyncio.run(loop.tick()) == "daily_cap"
+    assert calls == []
+    assert bus.published == []
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [_energy_snapshot("normal"), _energy_snapshot("unknown"), _energy_snapshot(age_sec=7200.0), None, RuntimeError("pg down")],
+)
+def test_energy_no_fresh_pressure_never_holds(snapshot) -> None:
+    bus = _FakeBus()
+    loop = _loop(bus, energy_stakes_enabled=True, energy_stakes_reader=_energy_reader(snapshot, []))
+    assert asyncio.run(loop.tick()) is None
+    assert len(bus.journal) == 1

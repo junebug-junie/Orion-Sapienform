@@ -914,6 +914,13 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_YIELD_PSEUDO_TESTS: float = Field(
         default=2.0, ge=0.0, alias="HUB_CURIOSITY_YIELD_PSEUDO_TESTS"
     )
+    # Let curiosity hold a scheduled investigation when orion-energy's stakes snapshot
+    # says the house bill is at/over RMP's forecast. Off = curiosity unchanged.
+    # A snapshot older than MAX_AGE_SEC never holds (scripts/energy_stakes_gate.py).
+    ORION_ENERGY_STAKES_ENABLED: bool = Field(default=False, alias="ORION_ENERGY_STAKES_ENABLED")
+    ORION_ENERGY_STAKES_MAX_AGE_SEC: float = Field(
+        default=1800.0, gt=0.0, alias="ORION_ENERGY_STAKES_MAX_AGE_SEC"
+    )
     # Stopping points inside one turn: places Orion states what it just learned
     # and decides whether to keep pulling. Juniper's number. A cap exists so
     # the reasoning is inspectable rather than one long ramble; the real

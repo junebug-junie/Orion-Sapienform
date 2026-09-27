@@ -78,10 +78,14 @@ def _settings() -> Any:
     return get_settings()
 
 
-def _redis() -> Any:
+def _bus() -> Any:
     from . import main as hub_main
 
-    return getattr(getattr(hub_main, "bus", None), "redis", None)
+    return getattr(hub_main, "bus", None)
+
+
+def _redis() -> Any:
+    return getattr(_bus(), "redis", None)
 
 
 def _pool() -> Any:
@@ -356,13 +360,11 @@ async def submit_read(
 ) -> JSONResponse:
     _require_operator(request, x_requested_with, x_orion_operator_token)
     pool = _require_pool()
-    from . import main as hub_main
-
     try:
         async with pool.acquire() as conn:
             receipt = await reading_operator.submit_read(
                 conn, url=body.url.strip(), why_now=body.why_now.strip(), title=body.title.strip(),
-                bus=getattr(hub_main, "bus", None), source=_source_ref(),
+                bus=_bus(), source=_source_ref(),
             )
     except ValidationError as exc:
         raise HTTPException(400, "invalid_source_url") from exc

@@ -39,6 +39,7 @@ def routes(monkeypatch):
         HUB_READING_DURABLE_URL="http://durable.test", HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS=5.0,
     ))
     monkeypatch.setattr(routes, "_source_ref", lambda: None)
+    monkeypatch.setattr(routes, "_bus", lambda: None)
     monkeypatch.delenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", raising=False)
     return routes
 

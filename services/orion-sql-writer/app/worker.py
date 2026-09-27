@@ -26,8 +26,13 @@ from app.models import (
     PowerIntentSettledSQL,
     CabinetAmbientSpikeSQL,
     HomeCoolingSampleSQL,
+    EnergyBillActualSQL,
+    EnergyBillForecastSQL,
     EnergyCostAccruedSQL,
+    EnergyImporterStatusSQL,
+    EnergyReconcileSQL,
     EnergyRunCostSQL,
+    EnergyStakesSnapshotSQL,
     EnergyUsageIntervalSQL,
     BiometricsSummarySQL,
     BiometricsInductionSQL,
@@ -148,7 +153,16 @@ from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.power import PowerIntentSettledV1
 from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
 from orion.schemas.telemetry.home_cooling import HomeCoolingSampleV1
-from orion.schemas.energy import EnergyCostAccruedV1, EnergyRunCostEstimatedV1, EnergyUsageIntervalV1
+from orion.schemas.energy import (
+    EnergyBillActualV1,
+    EnergyBillForecastV1,
+    EnergyCostAccruedV1,
+    EnergyImporterStatusV1,
+    EnergyReconcileV1,
+    EnergyRunCostEstimatedV1,
+    EnergyStakesSnapshotV1,
+    EnergyUsageIntervalV1,
+)
 from app.energy_persist import ENERGY_UPSERTS
 from orion.schemas.telemetry.biometrics import (
     BiometricsPayload,
@@ -474,6 +488,11 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "EnergyUsageIntervalSQL": (EnergyUsageIntervalSQL, EnergyUsageIntervalV1),
     "EnergyCostAccruedSQL": (EnergyCostAccruedSQL, EnergyCostAccruedV1),
     "EnergyRunCostSQL": (EnergyRunCostSQL, EnergyRunCostEstimatedV1),
+    "EnergyBillActualSQL": (EnergyBillActualSQL, EnergyBillActualV1),
+    "EnergyBillForecastSQL": (EnergyBillForecastSQL, EnergyBillForecastV1),
+    "EnergyReconcileSQL": (EnergyReconcileSQL, EnergyReconcileV1),
+    "EnergyStakesSnapshotSQL": (EnergyStakesSnapshotSQL, EnergyStakesSnapshotV1),
+    "EnergyImporterStatusSQL": (EnergyImporterStatusSQL, EnergyImporterStatusV1),
     "BiometricsInductionSQL": (BiometricsInductionSQL, BiometricsInductionV1),
     "CausalGeometrySnapshotSQL": (CausalGeometrySnapshotSQL, CausalGeometrySnapshotV1),
     "CognitionTraceSQL": (CognitionTraceSQL, CognitionTracePayload),

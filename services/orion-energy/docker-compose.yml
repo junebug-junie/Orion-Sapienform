@@ -12,6 +12,22 @@ services:
     networks:
       - app-net
 
+  orion-energy-portal:
+    container_name: ${PROJECT}-orion-energy-portal
+    # Not started by a plain `up`: needs a one-time headed reauth first (README "Portal").
+    profiles: ["portal"]
+    build:
+      context: ../..
+      dockerfile: services/orion-energy/Dockerfile.portal
+    restart: unless-stopped
+    env_file:
+      - .env
+    shm_size: "1gb"
+    volumes:
+      - ${ENERGY_HOST_DATA_DIR:-/mnt/storage-warm/orion-energy}:/data/energy
+    networks:
+      - app-net
+
 networks:
   app-net:
     external: true

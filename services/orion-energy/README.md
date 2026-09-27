@@ -86,6 +86,30 @@ SELECT as_of, pressure, pressure_reason, cycle_to_date_total_usd, orion_projecte
 FROM energy_stakes_snapshot ORDER BY as_of DESC LIMIT 3;
 ```
 
+## Portal (optional, compose profile `portal`)
+
+`orion-energy-portal` reuses a saved browser session to download Green Button XML and
+scrape bills into the same drop directories. It stores **no** RMP password; MFA stays on.
+Selectors are UNVERIFIED until the first live run (`portal/selectors.py`).
+
+1. One-time login on a host with a display (same profile dir the container mounts):
+   ```bash
+   pip install playwright==1.49.0 pydantic-settings==2.7.1 && python -m playwright install chromium
+   cd services/orion-energy && PYTHONPATH=../..:. python -m portal.reauth \
+     --profile /mnt/storage-warm/orion-energy/portal/profile \
+     --status /mnt/storage-warm/orion-energy/portal/status.json
+   ```
+2. Two-year backfill once, then the daily loop:
+   ```bash
+   scripts/safe_docker_build.sh orion-energy --profile portal run --rm orion-energy-portal python -m portal.main --once --days 730
+   scripts/safe_docker_build.sh orion-energy --profile portal up -d --build orion-energy-portal
+   ```
+3. Set `ENERGY_PORTAL_ENABLED=true` for `orion-energy` and restart it.
+
+When the session dies the importer reads `reauth_required`; repeat step 1. Failed
+downloads/scrapes keep the raw artifact in `${ENERGY_HOST_DATA_DIR}/portal/raw/` (may
+contain account details — local disk only).
+
 ## Run
 
 ```bash

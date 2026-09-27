@@ -15,6 +15,7 @@ from orion.schemas.energy import EnergyImporterStatusV1
 
 PortalState = Literal["ok", "reauth_required", "error"]
 _PORTAL_STATES = ("ok", "reauth_required", "error")
+DEFAULT_STALE_AFTER_HOURS = 48.0
 
 
 @dataclass(frozen=True)

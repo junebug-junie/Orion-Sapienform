@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from orion.energy.stakes import build_stakes_snapshot, current_forecast
 from orion.energy.testing import UTC, hourly, make_test_ledger
 from orion.schemas.energy import EnergyBillForecastV1, EnergyImporterStatusV1
+
+DENVER = ZoneInfo("America/Denver")
 
 S = datetime(2026, 9, 1, tzinfo=timezone.utc)
 NOW = S + timedelta(hours=72)
@@ -83,3 +86,58 @@ def test_current_forecast_picks_latest_live_period() -> None:
     late = _forecast(80.0)
     assert current_forecast([old, early, late], now=NOW, tz=UTC) is late
     assert current_forecast([old], now=NOW, tz=UTC) is None
+
+
+def test_mid_cycle_gap_blocks_pressure_on_stale_coverage() -> None:
+    """Healthy importer + fresh tail, but projection prefix frozen at hour 72."""
+    hours = 25 * 24
+    gap_at = 72
+    now = S + timedelta(hours=hours - 2)
+    led = make_test_ledger()
+    for iv in hourly(S, hours, skip=frozenset({gap_at})):
+        led.upsert(iv)
+    forecast = _forecast(80.0, as_of=now)
+    importer = EnergyImporterStatusV1(state="healthy", reason="usage_fresh", source="file_drop", as_of=now)
+    s = build_stakes_snapshot(
+        ledger=led, usage_point_id="UP1", forecast=forecast, importer=importer,
+        now=now, near_ratio=1.0, over_ratio=1.10,
+    )
+    covered = S + timedelta(hours=gap_at)
+    lag_hours = (now - covered).total_seconds() / 3600.0
+    assert s.importer_state == "healthy"
+    assert (s.pressure, s.pressure_reason) == ("unknown", f"coverage_lag_hours={lag_hours:.1f}")
+    assert s.projected_to_forecast_ratio is None
+    assert s.orion_projected_total_usd == pytest.approx(88.4)
+    assert s.covered_through == covered
+
+
+def test_closed_forecast_is_unknown() -> None:
+    aug_forecast = _forecast(
+        70.0, billing_period_start=date(2026, 8, 1), billing_period_end=date(2026, 9, 1),
+    )
+    now = datetime(2026, 9, 26, 12, tzinfo=timezone.utc)
+    led = make_test_ledger()
+    for iv in hourly(S, 72):
+        led.upsert(iv)
+    importer = EnergyImporterStatusV1(state="healthy", reason="x", source="file_drop", as_of=now)
+    s = build_stakes_snapshot(
+        ledger=led, usage_point_id="UP1", forecast=aug_forecast, importer=importer,
+        now=now, near_ratio=1.0, over_ratio=1.10,
+    )
+    assert (s.pressure, s.pressure_reason) == ("unknown", "forecast_not_current")
+    assert s.projected_to_forecast_ratio is None
+    assert s.forecast_total_usd is None
+
+
+def test_current_forecast_denver_last_local_day_of_period() -> None:
+    now = datetime(2026, 9, 1, 4, 0, tzinfo=timezone.utc)  # Aug 31 22:00 MDT
+    aug = EnergyBillForecastV1(
+        source="file_drop", billing_period_start=date(2026, 8, 1), billing_period_end=date(2026, 9, 1),
+        as_of=now - timedelta(hours=1), projected_total_usd=75.0, retrieved_at=now,
+    )
+    sep = EnergyBillForecastV1(
+        source="file_drop", billing_period_start=date(2026, 9, 1), billing_period_end=date(2026, 10, 1),
+        as_of=now - timedelta(hours=2), projected_total_usd=80.0, retrieved_at=now,
+    )
+    assert current_forecast([aug, sep], now=now, tz=UTC) is sep
+    assert current_forecast([aug, sep], now=now, tz=DENVER) is aug

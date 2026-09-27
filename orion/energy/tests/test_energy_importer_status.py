@@ -54,7 +54,9 @@ def test_reauth_beats_fresh_usage() -> None:
 
 
 def test_portal_missing_status_is_degraded() -> None:
-    assert _status(portal_enabled=True, portal=None).reason == "portal_status_missing"
+    s = _status(portal_enabled=True, portal=None)
+    assert s.state == "degraded"
+    assert s.reason == "portal_status_missing"
 
 
 def test_portal_error_is_degraded_with_its_reason() -> None:
@@ -72,6 +74,20 @@ def test_portal_ok_uses_portal_times() -> None:
     assert s.state == "healthy"
     assert s.last_success_at == NOW - timedelta(hours=26)
     assert s.last_attempt_at == NOW - timedelta(hours=1)
+
+
+def test_portal_not_running_boundary_still_healthy() -> None:
+    s = _status(portal_enabled=True, portal=_portal("ok", attempt_hours_ago=30.0))
+    assert s.state == "healthy"
+
+
+def test_portal_ok_stale_usage_is_stale() -> None:
+    s = _status(
+        portal_enabled=True, portal=_portal("ok"),
+        latest_interval_end=NOW - timedelta(hours=50),
+    )
+    assert s.state == "stale"
+    assert s.reason.startswith("usage_lag_hours=50.0")
 
 
 def test_parse_portal_status_roundtrip_and_rejects_unknown() -> None:

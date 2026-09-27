@@ -11,9 +11,19 @@ from datetime import datetime, timedelta
 from typing import Any, Iterable, Optional
 from zoneinfo import ZoneInfo
 
+from orion.energy.importer_status import DEFAULT_STALE_AFTER_HOURS
 from orion.energy.ledger import UsageLedger
 from orion.energy.reconcile import period_bounds, price_intervals, project_period
 from orion.schemas.energy import EnergyBillForecastV1, EnergyImporterStatusV1, EnergyStakesSnapshotV1
+
+
+def _forecast_is_current(forecast: EnergyBillForecastV1, *, now: datetime, tz: ZoneInfo) -> bool:
+    today = now.astimezone(tz).date()
+    if forecast.billing_period_start > today:
+        return False
+    if forecast.billing_period_end is not None and forecast.billing_period_end <= today:
+        return False
+    return True
 
 
 def current_forecast(
@@ -36,17 +46,19 @@ def build_stakes_snapshot(
     now: datetime,
     near_ratio: float,
     over_ratio: float,
+    stale_after_hours: float = DEFAULT_STALE_AFTER_HOURS,
 ) -> EnergyStakesSnapshotV1:
     tz, tariff = ledger.tz, ledger.tariff
     snap: dict[str, Any] = dict(
         as_of=now, usage_point_id=usage_point_id, importer_state=importer.state, tariff_version=tariff.version,
     )
-    if forecast is not None:
+    forecast_current = forecast is not None and _forecast_is_current(forecast, now=now, tz=tz)
+    if forecast is not None and forecast_current:
         snap.update(forecast_total_usd=forecast.projected_total_usd, forecast_as_of=forecast.as_of)
     if usage_point_id is None:
         return EnergyStakesSnapshotV1(**snap, pressure="unknown", pressure_reason="no_usage_point")
 
-    if forecast is not None:
+    if forecast_current:
         start, end = period_bounds(forecast.billing_period_start, forecast.billing_period_end, ledger)
     else:
         start, end = ledger.cycle_bounds(now)
@@ -67,8 +79,15 @@ def build_stakes_snapshot(
 
     if importer.state != "healthy":
         return EnergyStakesSnapshotV1(**snap, pressure="unknown", pressure_reason=f"importer_{importer.state}")
+    if forecast is not None and not forecast_current:
+        return EnergyStakesSnapshotV1(**snap, pressure="unknown", pressure_reason="forecast_not_current")
     if projection is None:
         return EnergyStakesSnapshotV1(**snap, pressure="unknown", pressure_reason=f"projection_{gap}")
+    coverage_lag = max(0.0, (now - projection.covered_through).total_seconds() / 3600.0)
+    if coverage_lag > stale_after_hours:
+        return EnergyStakesSnapshotV1(
+            **snap, pressure="unknown", pressure_reason=f"coverage_lag_hours={coverage_lag:.1f}",
+        )
     if forecast is None or forecast.projected_total_usd is None:
         return EnergyStakesSnapshotV1(**snap, pressure="unknown", pressure_reason="no_forecast_total")
     if forecast.projected_total_usd <= 0.0:

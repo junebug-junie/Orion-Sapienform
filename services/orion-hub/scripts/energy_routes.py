@@ -1,6 +1,8 @@
 """Hub read APIs for house electricity (orion-energy tables written by sql-writer).
 
 NULL stays null in JSON: an unknown dollar amount is never rendered as $0.
+A stakes snapshot older than ORION_ENERGY_STAKES_MAX_AGE_SEC is flagged `stale`
+so the strip never shows old numbers as current.
 """
 
 from __future__ import annotations
@@ -78,6 +80,21 @@ async def _daily_query(days: int, tz: str) -> list[Mapping[str, Any]]:
         await conn.close()
 
 
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _stale(stakes: Optional[Mapping[str, Any]]) -> Optional[bool]:
+    if stakes is None:
+        return None
+    as_of = stakes.get("as_of")
+    if not isinstance(as_of, datetime):
+        return True
+    if as_of.tzinfo is None:
+        as_of = as_of.replace(tzinfo=timezone.utc)
+    return (_now() - as_of).total_seconds() > float(settings.ORION_ENERGY_STAKES_MAX_AGE_SEC)
+
+
 def _jsonable(row: Optional[Mapping[str, Any]]) -> Optional[dict[str, Any]]:
     if row is None:
         return None
@@ -101,9 +118,16 @@ async def api_energy_latest() -> dict[str, Any]:
         stakes, importer, reconcile = await _latest_query()
     except Exception as exc:  # noqa: BLE001
         logger.warning("Energy latest unavailable: %s", exc)
-        return {"ok": False, "error": "energy_unavailable", "stakes": None, "importer": None, "reconcile": {}}
+        return {
+            "ok": False, "error": "energy_unavailable", "stale": None, "as_of": None, "covered_through": None,
+            "stakes": None, "importer": None, "reconcile": {},
+        }
+    stakes_json = _jsonable(stakes) or {}
     return {
         "ok": stakes is not None,
+        "stale": _stale(stakes),
+        "as_of": stakes_json.get("as_of"),
+        "covered_through": stakes_json.get("covered_through"),
         "stakes": _jsonable(stakes),
         "importer": _jsonable(importer),
         "reconcile": {row["reconcile_kind"]: _jsonable(row) for row in reconcile},

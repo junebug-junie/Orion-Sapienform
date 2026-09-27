@@ -37,12 +37,12 @@
 
   function importerLabel(imp) {
     if (!imp) return "importer: no status yet";
-    return "importer: " + imp.state + (imp.reason ? " (" + imp.reason + ")" : "");
+    return "importer: " + (imp.state || "unknown") + (imp.reason ? " (" + imp.reason + ")" : "");
   }
 
   function reconcileLine(kind, r) {
     if (!r) return kind === "actual" ? "No closed bill reconciled yet." : "No RMP forecast yet.";
-    const label = (kind === "actual" ? "Last bill " : "RMP forecast ") + r.billing_period_start;
+    const label = (kind === "actual" ? "Last bill " : "RMP forecast ") + (r.billing_period_start || "unknown");
     if (r.reconcile_gap) return label + ": Orion can't price this period yet (" + r.reconcile_gap + ")";
     return label + ": Orion " + fmtUsd(r.orion_total_usd) + " vs RMP " + fmtUsd(r.utility_total_usd) + " (diff " + fmtUsd(r.delta_usd) + ")";
   }
@@ -62,12 +62,16 @@
     if (el) el.textContent = text;
   }
 
+  // A stale snapshot's numbers are history, not the present: show them as unknown.
   function renderLatest(body) {
-    const s = (body && body.stakes) || {};
+    const stale = Boolean(body && body.stale);
+    const s = (!stale && body && body.stakes) || {};
     const importerText = body && body.error
       ? "energy data unavailable (" + body.error + ")"
       : importerLabel(body && body.importer);
     setText("energyImporterState", importerText);
+    setText("energyStaleNote", stale ? "stale since " + ((body && body.as_of) || "unknown") : "");
+    setText("energyCoveredThrough", "through " + ((body && body.covered_through) || "unknown"));
     setText("energyCycleToDate", fmtUsd(s.cycle_to_date_total_usd));
     setText("energyProjected", fmtUsd(s.orion_projected_total_usd));
     setText("energyForecast", fmtUsd(s.forecast_total_usd));
@@ -94,17 +98,20 @@
     });
   }
 
+  async function fetchJson(url) {
+    const r = await fetch(url);
+    if (r && r.ok === false) throw new Error("HTTP " + r.status);
+    return r.json();
+  }
+
+  // Each endpoint renders on its own; a failure blanks its own surface instead of
+  // leaving the last good numbers on screen as if they were current.
   async function poll() {
-    try {
-      const [latest, daily] = await Promise.all([
-        fetch(LATEST_URL).then(function (r) { return r.json(); }),
-        fetch(DAILY_URL).then(function (r) { return r.json(); }),
-      ]);
-      renderLatest(latest);
-      renderDaily(daily);
-    } catch (err) {
-      setText("energyImporterState", "energy API unavailable");
-    }
+    const results = await Promise.allSettled([fetchJson(LATEST_URL), fetchJson(DAILY_URL)]);
+    const latest = results[0];
+    const daily = results[1];
+    renderLatest(latest.status === "fulfilled" ? latest.value : { error: "energy_api_unreachable" });
+    renderDaily(daily.status === "fulfilled" ? daily.value : { points: [] });
   }
 
   function activate() {

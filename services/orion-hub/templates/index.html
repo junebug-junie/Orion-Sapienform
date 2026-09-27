@@ -3191,12 +3191,16 @@
                     Read-only from orion-energy's Postgres tables. Unknown amounts say "unknown", never $0.
                   </p>
                 </div>
-                <span id="energyImporterState" class="text-[11px] font-mono text-gray-400">importer: no status yet</span>
+                <div class="flex flex-col items-end gap-1">
+                  <span id="energyImporterState" class="text-[11px] font-mono text-gray-400">importer: no status yet</span>
+                  <span id="energyStaleNote" class="text-[11px] font-mono text-amber-400"></span>
+                </div>
               </div>
               <div class="grid grid-cols-2 sm:grid-cols-5 gap-2">
                 <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
                   <div class="text-[10px] uppercase tracking-wide text-gray-500">Cycle to date</div>
                   <div id="energyCycleToDate" class="mt-1 font-mono text-sm text-gray-200">unknown</div>
+                  <div id="energyCoveredThrough" class="mt-0.5 font-mono text-[10px] text-gray-500">through unknown</div>
                 </div>
                 <div class="rounded-lg border border-gray-800 bg-gray-950/60 px-3 py-2">
                   <div class="text-[10px] uppercase tracking-wide text-gray-500">Orion projects</div>

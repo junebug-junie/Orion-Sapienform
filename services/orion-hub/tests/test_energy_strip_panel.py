@@ -13,7 +13,7 @@ BIOMETRICS_VIEW_JS = (HUB / "static/js/biometrics-view.js").read_text()
 STRIP_IDS = (
     "energyStrip", "energyImporterState", "energyCycleToDate", "energyProjected",
     "energyForecast", "energyMarginal", "energyPressure", "energyReconcileActual",
-    "energyReconcileForecast", "energyDailyBars",
+    "energyReconcileForecast", "energyDailyBars", "energyCoveredThrough", "energyStaleNote",
 )
 
 

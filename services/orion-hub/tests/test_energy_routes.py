@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -96,7 +96,43 @@ def test_latest_without_rows_is_not_ok(client, monkeypatch) -> None:
         return None, None, []
 
     monkeypatch.setattr(energy_routes, "_latest_query", fake)
-    assert client.get("/api/energy/latest").json() == {"ok": False, "stakes": None, "importer": None, "reconcile": {}}
+    assert client.get("/api/energy/latest").json() == {
+        "ok": False, "stale": None, "as_of": None, "covered_through": None,
+        "stakes": None, "importer": None, "reconcile": {},
+    }
+
+
+def _latest_with(monkeypatch, stakes):
+    async def fake():
+        return stakes, None, []
+
+    monkeypatch.setattr(energy_routes, "_latest_query", fake)
+    monkeypatch.setattr(energy_routes, "_now", lambda: AS_OF)
+
+
+def test_latest_fresh_snapshot_is_not_stale_and_surfaces_coverage(client, monkeypatch) -> None:
+    covered = datetime(2026, 9, 26, 6, 0, tzinfo=timezone.utc)
+    _latest_with(monkeypatch, {"as_of": AS_OF - timedelta(seconds=60), "covered_through": covered, "pressure": "normal"})
+    body = client.get("/api/energy/latest").json()
+    assert body["stale"] is False
+    assert body["as_of"] == "2026-09-27T17:59:00Z"
+    assert body["covered_through"] == "2026-09-26T06:00:00Z"
+
+
+def test_latest_old_snapshot_is_flagged_stale(client, monkeypatch) -> None:
+    max_age = float(energy_routes.settings.ORION_ENERGY_STAKES_MAX_AGE_SEC)
+    _latest_with(monkeypatch, {"as_of": AS_OF - timedelta(seconds=max_age + 1), "covered_through": None,
+                               "pressure": "over_forecast", "orion_projected_total_usd": 88.4})
+    body = client.get("/api/energy/latest").json()
+    assert body["stale"] is True
+    assert body["covered_through"] is None
+    # The numbers still ship (for debugging); the flag is what stops them rendering as current.
+    assert body["stakes"]["orion_projected_total_usd"] == 88.4
+
+
+def test_latest_unreadable_as_of_is_stale_not_fresh(client, monkeypatch) -> None:
+    _latest_with(monkeypatch, {"as_of": None, "pressure": "normal"})
+    assert client.get("/api/energy/latest").json()["stale"] is True
 
 
 def test_latest_db_failure_is_reported(client, monkeypatch) -> None:
@@ -107,6 +143,7 @@ def test_latest_db_failure_is_reported(client, monkeypatch) -> None:
     body = client.get("/api/energy/latest").json()
     assert body["ok"] is False and body["error"] == "energy_unavailable"
     assert body["stakes"] is None and body["reconcile"] == {}
+    assert body["stale"] is None
 
 
 def test_daily_usage(client, monkeypatch) -> None:

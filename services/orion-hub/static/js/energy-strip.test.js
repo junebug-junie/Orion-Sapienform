@@ -22,6 +22,7 @@ test("rate and labels", () => {
   assert.equal(importerLabel(null), "importer: no status yet");
   assert.equal(importerLabel({ state: "reauth_required", reason: "session_expired" }), "importer: reauth_required (session_expired)");
   assert.equal(importerLabel({ state: "healthy", reason: null }), "importer: healthy");
+  assert.equal(importerLabel({ state: null }), "importer: unknown");
 });
 
 test("unknown pressure says why", () => {
@@ -46,6 +47,10 @@ test("reconcile lines say gaps plainly", () => {
   assert.equal(
     reconcileLine("forecast", { billing_period_start: "2026-09-11", orion_total_usd: 88.4, utility_total_usd: null, delta_usd: null }),
     "RMP forecast 2026-09-11: Orion $88.40 vs RMP unknown (diff unknown)",
+  );
+  assert.equal(
+    reconcileLine("actual", { billing_period_start: null, reconcile_gap: "usage_incomplete" }),
+    "Last bill unknown: Orion can't price this period yet (usage_incomplete)",
   );
 });
 
@@ -75,7 +80,23 @@ function fakeDocument(ids) {
 const IDS = [
   "energyImporterState", "energyCycleToDate", "energyProjected", "energyForecast", "energyMarginal",
   "energyPressure", "energyReconcileActual", "energyReconcileForecast", "energyDailyBars",
+  "energyCoveredThrough", "energyStaleNote",
 ];
+
+const FRESH_BODY = {
+  ok: true,
+  stale: false,
+  as_of: "2026-09-27T18:00:00Z",
+  covered_through: "2026-09-26T06:00:00Z",
+  stakes: {
+    cycle_to_date_total_usd: 17.2, orion_projected_total_usd: 88.4, forecast_total_usd: 80,
+    marginal_usd_per_kwh: 0.12, pressure: "over_forecast", pressure_reason: "ratio=1.105",
+  },
+  importer: { state: "healthy", reason: "usage_fresh" },
+  reconcile: {},
+};
+
+const TILE_IDS = ["energyCycleToDate", "energyProjected", "energyForecast", "energyMarginal", "energyPressure"];
 
 test("renderLatest writes unknown for null values and real numbers otherwise", () => {
   const doc = fakeDocument(IDS);
@@ -111,6 +132,106 @@ test("renderLatest reports an unavailable API instead of zeros", () => {
     assert.equal(doc.els.energyImporterState.textContent, "energy data unavailable (energy_unavailable)");
     assert.equal(doc.els.energyCycleToDate.textContent, "unknown");
     assert.equal(doc.els.energyPressure.textContent, "unknown");
+  } finally {
+    delete globalThis.document;
+  }
+});
+
+test("a fresh snapshot shows numbers, covered-through, and no stale note", () => {
+  const doc = fakeDocument(IDS);
+  globalThis.document = doc;
+  try {
+    strip.renderLatest(FRESH_BODY);
+    assert.equal(doc.els.energyCycleToDate.textContent, "$17.20");
+    assert.equal(doc.els.energyPressure.textContent, "over RMP forecast (ratio=1.105)");
+    assert.equal(doc.els.energyCoveredThrough.textContent, "through 2026-09-26T06:00:00Z");
+    assert.equal(doc.els.energyStaleNote.textContent, "");
+  } finally {
+    delete globalThis.document;
+  }
+});
+
+test("a stale snapshot never shows its numbers as current", () => {
+  const doc = fakeDocument(IDS);
+  globalThis.document = doc;
+  try {
+    strip.renderLatest(FRESH_BODY);
+    strip.renderLatest(Object.assign({}, FRESH_BODY, { stale: true }));
+    TILE_IDS.forEach(function (id) { assert.equal(doc.els[id].textContent, "unknown", id); });
+    assert.equal(doc.els.energyStaleNote.textContent, "stale since 2026-09-27T18:00:00Z");
+    assert.equal(doc.els.energyCoveredThrough.textContent, "through 2026-09-26T06:00:00Z");
+  } finally {
+    delete globalThis.document;
+  }
+});
+
+test("missing covered_through says unknown", () => {
+  const doc = fakeDocument(IDS);
+  globalThis.document = doc;
+  try {
+    strip.renderLatest(Object.assign({}, FRESH_BODY, { covered_through: null }));
+    assert.equal(doc.els.energyCoveredThrough.textContent, "through unknown");
+  } finally {
+    delete globalThis.document;
+  }
+});
+
+function withFetch(handler, fn) {
+  globalThis.fetch = handler;
+  return Promise.resolve()
+    .then(fn)
+    .finally(function () { delete globalThis.fetch; });
+}
+
+test("a network failure turns every tile unknown and clears the bars", async () => {
+  const doc = fakeDocument(IDS);
+  globalThis.document = doc;
+  try {
+    strip.renderLatest(FRESH_BODY);
+    strip.renderDaily({ ok: true, points: [{ day: "2026-09-26", kwh: 24, hours: 24 }] });
+    await withFetch(async function () { throw new Error("offline"); }, strip.refresh);
+    TILE_IDS.forEach(function (id) { assert.equal(doc.els[id].textContent, "unknown", id); });
+    assert.equal(doc.els.energyImporterState.textContent, "energy data unavailable (energy_api_unreachable)");
+    assert.equal(doc.els.energyCoveredThrough.textContent, "through unknown");
+    assert.equal(doc.els.energyDailyBars.children.length, 0);
+  } finally {
+    delete globalThis.document;
+  }
+});
+
+test("bad JSON or an HTTP error counts as unreachable", async () => {
+  const doc = fakeDocument(IDS);
+  globalThis.document = doc;
+  try {
+    strip.renderLatest(FRESH_BODY);
+    await withFetch(async function (url) {
+      if (url.indexOf("daily") >= 0) return { ok: false, status: 502, json: async () => ({}) };
+      return { ok: true, json: async () => { throw new SyntaxError("bad json"); } };
+    }, strip.refresh);
+    assert.equal(doc.els.energyCycleToDate.textContent, "unknown");
+    assert.equal(doc.els.energyDailyBars.children.length, 0);
+  } finally {
+    delete globalThis.document;
+  }
+});
+
+test("one endpoint failing does not block the other", async () => {
+  const doc = fakeDocument(IDS);
+  globalThis.document = doc;
+  try {
+    await withFetch(async function (url) {
+      if (url.indexOf("daily") >= 0) return { ok: true, json: async () => ({ ok: true, points: [{ day: "2026-09-26", kwh: 24, hours: 24 }] }) };
+      throw new Error("offline");
+    }, strip.refresh);
+    assert.equal(doc.els.energyCycleToDate.textContent, "unknown");
+    assert.equal(doc.els.energyDailyBars.children.length, 1);
+
+    await withFetch(async function (url) {
+      if (url.indexOf("daily") >= 0) throw new Error("offline");
+      return { ok: true, json: async () => FRESH_BODY };
+    }, strip.refresh);
+    assert.equal(doc.els.energyCycleToDate.textContent, "$17.20");
+    assert.equal(doc.els.energyDailyBars.children.length, 0);
   } finally {
     delete globalThis.document;
   }

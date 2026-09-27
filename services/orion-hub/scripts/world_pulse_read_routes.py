@@ -14,9 +14,7 @@ take Hub down.
 
 from __future__ import annotations
 
-import hmac
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 from zoneinfo import ZoneInfo
@@ -293,17 +291,11 @@ def _operator_error(exc: reading_operator.OperatorActionError) -> HTTPException:
     return HTTPException(exc.http_status, exc.code)
 
 
-def _require_operator(request: Request, x_requested_with: str | None, token: str | None) -> None:
+def _require_operator(request: Request, x_requested_with: str | None) -> None:
     # Same cross-site request forgery rule as the GPU pool panel: a custom header
     # forces a CORS preflight Hub never grants, and JSON rules out simple POSTs.
     if x_requested_with != CSRF_HEADER_VALUE or "application/json" not in request.headers.get("content-type", ""):
         raise HTTPException(403, "reading_control_requires_hub_page")
-    expected = str(os.getenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "")).strip()
-    if not expected:
-        return
-    supplied = str(token or request.cookies.get("orion_operator_token") or "").strip()
-    if not supplied or not hmac.compare_digest(supplied, expected):
-        raise HTTPException(403, "operator_guard_rejected")
 
 
 @router.get("/api/reads")
@@ -356,9 +348,8 @@ def _source_ref() -> Any:
 async def submit_read(
     body: SubmitReadBody, request: Request,
     x_requested_with: str | None = Header(default=None),
-    x_orion_operator_token: str | None = Header(default=None),
 ) -> JSONResponse:
-    _require_operator(request, x_requested_with, x_orion_operator_token)
+    _require_operator(request, x_requested_with)
     pool = _require_pool()
     try:
         async with pool.acquire() as conn:
@@ -397,9 +388,8 @@ async def _cancel_durable_run(run_id: str) -> dict[str, Any]:
 async def cancel_read(
     seed_id: str, request: Request,
     x_requested_with: str | None = Header(default=None),
-    x_orion_operator_token: str | None = Header(default=None),
 ) -> JSONResponse:
-    _require_operator(request, x_requested_with, x_orion_operator_token)
+    _require_operator(request, x_requested_with)
     pool = _require_pool()
     try:
         async with pool.acquire() as conn:
@@ -420,9 +410,8 @@ async def cancel_read(
 async def retry_read(
     seed_id: str, body: RetryReadBody, request: Request,
     x_requested_with: str | None = Header(default=None),
-    x_orion_operator_token: str | None = Header(default=None),
 ) -> JSONResponse:
-    _require_operator(request, x_requested_with, x_orion_operator_token)
+    _require_operator(request, x_requested_with)
     pool = _require_pool()
     try:
         async with pool.acquire() as conn:

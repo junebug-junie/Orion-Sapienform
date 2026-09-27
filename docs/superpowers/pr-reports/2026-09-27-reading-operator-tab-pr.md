@@ -38,7 +38,7 @@ Before, Juniper could not see what a read produced without querying Postgres by 
 - `services/orion-hub/templates/reading.html`, `static/js/reading.js`, `static/js/reading_tab.js`, `templates/index.html`: the tab UI.
 - `services/orion-hub/static/js/reading.test.js`: tests for the page script's pure helper functions, plus a check that the script never writes read content as HTML.
 - `services/orion-hub/tests/test_world_pulse_read_operator_postgres.py`: 13 real-SQL tests.
-- `services/orion-hub/tests/test_world_pulse_read_operator_routes.py`: tests for the guard, the token, error mapping, durable cancel, submit and page wiring.
+- `services/orion-hub/tests/test_world_pulse_read_operator_routes.py`: tests for the guard (and that no token is needed), error mapping, durable cancel, submit and page wiring.
 - `services/orion-hub/tests/test_reading_panel_browser_smoke.py`: Playwright smoke that loads the real template and script.
 - `.github/workflows/schedule-browser-smoke.yml`: runs the smoke.
 - `services/orion-hub/README.md`: documents the endpoints, guard and refusal codes.
@@ -59,7 +59,7 @@ Before, Juniper could not see what a read produced without querying Postgres by 
 
 ## Env/config changes
 
-- Added keys: none. Existing settings are reused: `HUB_READING_DURABLE_URL`, `HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS` and the optional `SUBSTRATE_MUTATION_OPERATOR_TOKEN`.
+- Added keys: none. Existing settings are reused: `HUB_READING_DURABLE_URL` and `HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS`.
 - Removed keys: none.
 - Renamed keys: none.
 - `.env_example` updated: no.
@@ -134,8 +134,8 @@ bash scripts/safe_docker_build.sh orion-hub up -d --build
 ## Risks / concerns
 
 - Severity: low
-  - Concern: the design said controls "use the operator token", but `SUBSTRATE_MUTATION_OPERATOR_TOKEN` is empty on the live Hub. With it empty, the guard is the same cross-site check the GPU pool panel uses (`X-Requested-With: orion-hub` plus a JSON body). The token is enforced whenever it is set.
-  - Mitigation: set `SUBSTRATE_MUTATION_OPERATOR_TOKEN` to require it. Hub already sets the HttpOnly cookie that the tab sends.
+  - Concern: controls use no operator token, by Juniper's decision. The only guard is the cross-site check the GPU pool panel uses (`X-Requested-With: orion-hub` plus a JSON body). That stops another website from triggering them, but anyone who can reach Hub can cancel, retry or submit reads.
+  - Mitigation: cancel never charges a wallet, and retries and submits stay inside the normal daily wallet caps.
 - Severity: low
   - Concern: a retry or submit spends a normal wallet slot when it runs.
   - Mitigation: the button tooltips say so. The daily caps are unchanged.

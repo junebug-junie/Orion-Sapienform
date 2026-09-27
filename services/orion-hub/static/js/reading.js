@@ -88,7 +88,6 @@
     url_already_active: "Another read of this same URL is already queued or running.",
     stale_digest_item_would_be_reskipped: "Old digest items are skipped automatically, so a retry would be skipped again. Use \"Read this URL again\" to queue it as a new read.",
     durable_run_not_found_retry_shortly: "The run hasn't reached the run service yet; try again shortly.",
-    operator_guard_rejected: "Operator token missing or wrong. Reload Hub to refresh it.",
     reading_control_requires_hub_page: "Controls only work from the Hub page.",
     reading_db_unavailable: "Hub has no database connection right now.",
   };

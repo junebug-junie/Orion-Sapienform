@@ -31,9 +31,8 @@ as learning.
 
 ### Controls
 
-Guard: the GPU pool CSRF rule (`X-Requested-With: orion-hub` + JSON body). If
-`SUBSTRATE_MUTATION_OPERATOR_TOKEN` is configured, the token (header or the
-HttpOnly `orion_operator_token` cookie Hub already sets) is also required.
+Guard: the GPU pool CSRF rule (`X-Requested-With: orion-hub` + JSON body). No
+operator token (Juniper's call, 2026-09-27).
 
 - `POST /api/reads` `{url, why_now, title}` — builds `ReadingRequestedV1`
   with new `invocation_context="operator"` → `requested_by="juniper"` and calls
@@ -70,7 +69,7 @@ live streaming (page polls ~15 s), new env keys.
 - Disposable-PostgreSQL tests: list phases/stale filter, detail with journal
   and aliases, cancel (pending / bound / claimed-unbound), retry rules, submit
   with operator provenance.
-- Route tests: guard (CSRF, optional token), error mapping, durable cancel call.
+- Route tests: guard (CSRF), error mapping, durable cancel call.
 - JS rendering test and a browser smoke that loads `/reading` and opens detail.
 - Live: `/world-pulse-read/api/reads` returns real rows after deploy (else
   UNVERIFIED).

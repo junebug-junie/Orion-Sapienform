@@ -40,7 +40,6 @@ def routes(monkeypatch):
     ))
     monkeypatch.setattr(routes, "_source_ref", lambda: None)
     monkeypatch.setattr(routes, "_bus", lambda: None)
-    monkeypatch.delenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", raising=False)
     return routes
 
 
@@ -77,9 +76,9 @@ def test_controls_require_hub_page_headers(client, routes, monkeypatch, headers)
     assert called == []
 
 
-def test_configured_operator_token_is_required_via_header_or_cookie(client, routes, monkeypatch):
+def test_controls_need_no_operator_token(client, routes, monkeypatch):
+    # Even with the substrate token configured, the Hub page header is the whole guard.
     monkeypatch.setenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "sekrit")
-
     ages = []
 
     async def retry(conn, seed_id, *, stage, digest_item_max_age_sec):
@@ -88,15 +87,9 @@ def test_configured_operator_token_is_required_via_header_or_cookie(client, rout
 
     monkeypatch.setattr(routes.reading_operator, "retry_read", retry)
     url = "/world-pulse-read/api/reads/reading:x/retry"
-    assert client.post(url, headers=HEADERS, json={"stage": 1}).json()["detail"] == "operator_guard_rejected"
-    wrong = {**HEADERS, "X-Orion-Operator-Token": "nope"}
-    assert client.post(url, headers=wrong, json={"stage": 1}).status_code == 403
-    ok = {**HEADERS, "X-Orion-Operator-Token": "sekrit"}
-    assert client.post(url, headers=ok, json={"stage": 2}).json() == {"action": "requeued", "stage": 2}
-    client.cookies.set("orion_operator_token", "sekrit")
-    assert client.post(url, headers=HEADERS, json={"stage": 1}).status_code == 200
+    assert client.post(url, headers=HEADERS, json={"stage": 2}).json() == {"action": "requeued", "stage": 2}
     # Retry must refuse exactly what the Stage 1 stale sweep would re-skip.
-    assert ages == [5 * 86400.0, 5 * 86400.0]
+    assert ages == [5 * 86400.0]
 
 
 def test_retry_rejects_bad_stage_before_touching_queue(client):

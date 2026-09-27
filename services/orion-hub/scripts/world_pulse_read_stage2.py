@@ -396,13 +396,18 @@ class WorldPulseReadStage2Pipeline:
                 self.daily_cap,
             )
             reason = None
-        if reason is not None:
+        if reason == "disabled":
             logger.info("world_pulse_read_stage2_blocked reason=%s", reason)
             return reason
 
-        claim = await self._with_conn(claim_next_stage2_seed)
+        # Admission gates must not strand an already-submitted durable result.
+        claim = await self._with_conn(
+            lambda conn: claim_next_stage2_seed(conn, active_only=reason is not None)
+        )
         if claim is None:
-            return "empty_queue"
+            if reason is not None:
+                logger.info("world_pulse_read_stage2_blocked reason=%s", reason)
+            return reason or "empty_queue"
 
         await publish_lifecycle(self._bus, claim.seed, "stage2_started", source=self._source_ref)
 

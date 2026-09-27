@@ -63,6 +63,10 @@ class ReadingQueueFakeMixin:
         return {s_key: row[s_key], a_key: attempts}
 
     async def fetchrow(self, sql, *args):
+        if "NOT $1::boolean" in sql and args[0]:
+            # Legacy fixtures have no durable bindings. Real SQL coverage
+            # exercises active-only selection against disposable PostgreSQL.
+            return None
         if "AS matched_request_count" in sql:
             matches = sorted(
                 (r for r in self.rows.values() if r["url"] == args[0]),

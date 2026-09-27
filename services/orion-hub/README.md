@@ -3043,6 +3043,15 @@ past each loop's own decay threshold, not a heartbeat file).
 
 ## Deliberate reading from Unified Chat and curiosity
 
+Admission windows, daily caps, cooldowns and retry backoff gate new bindings,
+not recovery of already-bound durable work. Both workers continue polling an
+unconsumed binding for their own stage while those gates are closed; disabled
+workers still stop. This also retries delivery of the same immutable request
+if its original acceptance was uncertain. It never creates a fresh binding
+under a closed gate. Stage 1 and Stage 2 have independent windows: operators
+wanting around-the-clock reading must set both pairs of window hours to 0/0,
+then recreate Hub. Existing once-per-run wallet settlement remains unchanged.
+
 Reading defaults to 12 settled runs per local day for each independent wallet:
 `HUB_WORLD_PULSE_READ_DAILY_CAP` (Stage 1) and
 `HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP` (Stage 2). Existing daily counts are

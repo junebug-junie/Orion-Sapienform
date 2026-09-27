@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
+from orion.energy.ledger import UsageLedger
 from orion.energy.reconcile import reconcile_actual, reconcile_forecast
-from orion.energy.testing import hourly, make_test_ledger
+from orion.energy.testing import flat_test_tariff, hourly, make_test_ledger
 from orion.schemas.energy import EnergyBillActualV1, EnergyBillForecastV1
+
+DENVER = ZoneInfo("America/Denver")
 
 S = datetime(2026, 9, 1, tzinfo=timezone.utc)
 NOW = datetime(2026, 10, 5, tzinfo=timezone.utc)
@@ -82,6 +86,13 @@ def test_actual_with_no_usage() -> None:
     assert rec.orion_covered_through is None
 
 
+def test_actual_first_hour_missing_is_usage_incomplete() -> None:
+    rec = reconcile_actual(
+        _bill(), ledger=_ledger_with(hourly(S, 48, skip=frozenset({0}))), usage_point_id="UP1", computed_at=NOW
+    )
+    assert rec.reconcile_gap == "usage_incomplete"
+
+
 def _forecast(**over) -> EnergyBillForecastV1:
     base = dict(
         source="file_drop",
@@ -111,6 +122,26 @@ def test_forecast_linear_run_rate_hand_oracle() -> None:
 def test_forecast_needs_a_day_of_usage() -> None:
     rec = reconcile_forecast(_forecast(), ledger=_ledger_with(hourly(S, 12)), usage_point_id="UP1", computed_at=NOW)
     assert rec.reconcile_gap == "usage_incomplete"
+    assert rec.orion_covered_through == S + timedelta(hours=12)
+
+
+def test_forecast_dst_fall_back_projects_real_elapsed_hours() -> None:
+    # Oct 15–Nov 15 Denver: wall-clock span is 744 h, real elapsed is 745 h (fall-back hour).
+    start = datetime(2026, 10, 15, tzinfo=DENVER)
+    led = UsageLedger(flat_test_tariff(), tz=DENVER, cycle_start_day=1)
+    for iv in hourly(start, 744):
+        led.upsert(iv)
+    forecast = EnergyBillForecastV1(
+        source="file_drop",
+        billing_period_start=date(2026, 10, 15),
+        billing_period_end=date(2026, 11, 15),
+        as_of=start + timedelta(hours=744),
+        projected_kwh=700.0,
+        projected_total_usd=80.0,
+        retrieved_at=start + timedelta(hours=744),
+    )
+    rec = reconcile_forecast(forecast, ledger=led, usage_point_id="UP1", computed_at=NOW)
+    assert rec.orion_kwh == pytest.approx(745.0)
 
 
 def test_forecast_without_end_uses_ledger_cycle() -> None:

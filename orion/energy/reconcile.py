@@ -8,7 +8,7 @@ never a partial number dressed up as a total.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Iterable, Optional
 from zoneinfo import ZoneInfo
 
@@ -25,6 +25,19 @@ from orion.schemas.energy import (
 
 # A run rate from less than a day of data is mostly time-of-day noise.
 MIN_RUN_RATE_HOURS = 24.0
+
+
+def _duration_seconds(start: datetime, end: datetime) -> float:
+    """Elapsed seconds between instants — always UTC, never wall-clock DST arithmetic."""
+    return (end.astimezone(timezone.utc) - start.astimezone(timezone.utc)).total_seconds()
+
+
+def _any_usage_in_period(ledger: UsageLedger, usage_point_id: str, start: datetime, end: datetime) -> bool:
+    return any(start <= iv.interval_start < end for iv in ledger.intervals_overlapping(usage_point_id, start, end))
+
+
+def _empty_prefix_gap(ledger: UsageLedger, usage_point_id: str, start: datetime, end: datetime) -> ReconcileGap:
+    return "usage_incomplete" if _any_usage_in_period(ledger, usage_point_id, start, end) else "no_usage"
 
 
 def local_midnight(day: date, tz: ZoneInfo) -> datetime:
@@ -68,14 +81,15 @@ def project_period(
 ) -> tuple[Optional[PeriodProjection], Optional[ReconcileGap], Optional[datetime]]:
     prefix, covered = ledger.window_prefix(usage_point_id, start, end)
     if not prefix or covered is None:
-        return None, "no_usage", None
-    covered_sec = (covered - start).total_seconds()
-    if covered_sec < MIN_RUN_RATE_HOURS * 3600.0:
+        return None, _empty_prefix_gap(ledger, usage_point_id, start, end), None
+    if _duration_seconds(start, covered) < MIN_RUN_RATE_HOURS * 3600.0:
         return None, "usage_incomplete", covered
     tariff, tz = ledger.tariff, ledger.tz
     kwh, energy = price_intervals(tariff, prefix, tz=tz)
-    period_sec = (end - start).total_seconds()
-    projected_kwh = kwh if covered >= end else kwh * period_sec / covered_sec
+    period_sec = _duration_seconds(start, end)
+    # Each metered interval is one nominal hour; real period length can differ across DST.
+    nominal_covered_sec = len(prefix) * 3600.0
+    projected_kwh = kwh * period_sec / nominal_covered_sec
     last_month = (end - timedelta(seconds=1)).astimezone(tz).month
     remaining = max(0.0, projected_kwh - kwh)
     projected_energy = energy + tariff.energy_cost_usd(remaining, cycle_kwh_before=kwh, month=last_month)
@@ -128,7 +142,7 @@ def reconcile_actual(
         computed_at=computed_at,
     )
     if not prefix or covered is None:
-        return EnergyReconcileV1(**common, reconcile_gap="no_usage")
+        return EnergyReconcileV1(**common, reconcile_gap=_empty_prefix_gap(ledger, usage_point_id, start, end))
     if covered < end:
         return EnergyReconcileV1(**common, reconcile_gap="usage_incomplete")
     kwh, energy = price_intervals(tariff, prefix, tz=tz)

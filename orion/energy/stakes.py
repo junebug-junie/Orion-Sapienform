@@ -11,7 +11,6 @@ from datetime import datetime, timedelta
 from typing import Any, Iterable, Optional
 from zoneinfo import ZoneInfo
 
-from orion.energy.importer_status import DEFAULT_STALE_AFTER_HOURS
 from orion.energy.ledger import UsageLedger
 from orion.energy.reconcile import period_bounds, price_intervals, project_period
 from orion.schemas.energy import EnergyBillForecastV1, EnergyImporterStatusV1, EnergyStakesSnapshotV1
@@ -29,11 +28,7 @@ def _forecast_is_current(forecast: EnergyBillForecastV1, *, now: datetime, tz: Z
 def current_forecast(
     forecasts: Iterable[EnergyBillForecastV1], *, now: datetime, tz: ZoneInfo
 ) -> Optional[EnergyBillForecastV1]:
-    today = now.astimezone(tz).date()
-    live = [
-        f for f in forecasts
-        if f.billing_period_start <= today and (f.billing_period_end is None or today < f.billing_period_end)
-    ]
+    live = [f for f in forecasts if _forecast_is_current(f, now=now, tz=tz)]
     return max(live, key=lambda f: (f.billing_period_start, f.as_of), default=None)
 
 
@@ -46,7 +41,7 @@ def build_stakes_snapshot(
     now: datetime,
     near_ratio: float,
     over_ratio: float,
-    stale_after_hours: float = DEFAULT_STALE_AFTER_HOURS,
+    stale_after_hours: float,
 ) -> EnergyStakesSnapshotV1:
     tz, tariff = ledger.tz, ledger.tariff
     snap: dict[str, Any] = dict(

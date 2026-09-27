@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -17,17 +18,19 @@ FORECAST = {"billing_period": "Sep 11, 2026 - Oct 12, 2026", "projected_total": 
 
 
 class FakeDriver:
-    def __init__(self, *, url=USAGE_URL, xml=b"", rows=None, forecast=None, raise_on=None):
+    def __init__(self, *, url=USAGE_URL, xml=b"", rows=None, forecast=None, raise_on=None, html=None):
         self.url, self.xml, self.rows, self.forecast, self.raise_on = url, xml, rows, forecast, raise_on
+        self.html = html or "<html>snapshot</html>"
         self.days = None
+        self.now = None
 
     async def open_usage(self):
         if self.raise_on == "open":
             raise RuntimeError("boom")
         return self.url
 
-    async def download_green_button(self, *, days):
-        self.days = days
+    async def download_green_button(self, *, days, now):
+        self.days, self.now = days, now
         return self.xml
 
     async def billing_rows(self):
@@ -39,18 +42,19 @@ class FakeDriver:
         return self.forecast
 
     async def page_html(self):
-        return "<html>snapshot</html>"
+        return self.html
 
 
-def _run(tmp_path, driver) -> PortalOutcome:
+def _run(tmp_path, driver, *, now=NOW, raw_dir=None) -> PortalOutcome:
     return asyncio.run(
         run_once(
             driver,
             inbox_dir=tmp_path / "inbox",
             bill_inbox_dir=tmp_path / "bills",
-            raw_dir=tmp_path / "raw",
+            raw_dir=raw_dir or tmp_path / "raw",
+            seen_path=tmp_path / "portal" / "bills_seen.json",
             backfill_days=3,
-            now=NOW,
+            now=now,
         )
     )
 
@@ -65,7 +69,7 @@ def test_good_fetch_delivers_xml_and_bills(tmp_path) -> None:
     driver = FakeDriver(xml=FIXTURE.read_bytes(), rows=[ROW], forecast=FORECAST)
     out = _run(tmp_path, driver)
     assert (out.state, out.reason) == ("ok", "fetched")
-    assert driver.days == 3
+    assert (driver.days, driver.now) == (3, NOW)
     assert out.xml_file.name.startswith("rmp-portal-") and out.xml_file.suffix == ".xml"
     assert out.xml_file.read_bytes() == FIXTURE.read_bytes()
     assert len(out.bill_files) == 2
@@ -100,6 +104,74 @@ def test_unparseable_bill_row_is_error(tmp_path) -> None:
     out = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[{"billing_period": "soon"}]))
     assert out.state == "error" and out.reason.startswith("bill_parse_failed")
     assert out.bill_files == ()
+
+
+def test_bill_parse_reason_names_field_not_raw_text(tmp_path) -> None:
+    row = {**ROW, "current_charges": "pending acct SECRET"}
+    out = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[row]))
+    assert (out.state, out.reason) == ("error", "bill_parse_failed:ValueError:current_charges")
+    assert "SECRET" not in out.reason and "pending" not in out.reason
+
+
+def test_forecast_panel_without_parseable_fields_is_error_but_bills_delivered(tmp_path) -> None:
+    out = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[ROW], forecast={}))
+    assert out.state == "error" and out.reason.startswith("forecast_parse_failed")
+    assert len(out.bill_files) == 1
+    assert json.loads(out.bill_files[0].read_text())["kind"] == "energy.bill.actual.v1"
+
+
+def test_zero_byte_download_is_error(tmp_path) -> None:
+    out = _run(tmp_path, FakeDriver(xml=b"", rows=[ROW]))
+    assert (out.state, out.reason) == ("error", "empty_download")
+    assert not (tmp_path / "inbox").exists()
+
+
+def test_raw_save_failure_keeps_original_reason(tmp_path) -> None:
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x")
+    out = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[]), raw_dir=blocker / "raw")
+    assert (out.state, out.reason) == ("error", "bill_rows_empty")
+    out = _run(tmp_path, FakeDriver(xml=b"<html>not espi</html>"), raw_dir=blocker / "raw")
+    assert out.state == "error" and out.reason.startswith("espi_invalid")
+
+
+def test_raw_html_is_scrubbed_and_private(tmp_path) -> None:
+    html = (
+        "<html><head><script>window.__TOKEN='sekrit-script-body';</script></head><body>"
+        '<form><input type="hidden" name="__RequestVerificationToken" value="tok-12345">'
+        "<input type='text' name='q' value='keep-me'>"
+        "<INPUT value=\"tok-67890\" TYPE=HIDDEN name=csrf></form></body></html>"
+    )
+    out = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[], html=html))
+    assert out.reason == "bill_rows_empty"
+    [saved] = list((tmp_path / "raw").glob("*billing.html"))
+    text = saved.read_text()
+    assert "tok-12345" not in text and "tok-67890" not in text
+    assert "sekrit-script-body" not in text
+    assert "keep-me" in text and "__RequestVerificationToken" in text
+    assert stat.S_IMODE(saved.stat().st_mode) == 0o600
+    assert stat.S_IMODE((tmp_path / "raw").stat().st_mode) == 0o700
+
+
+def test_unchanged_bill_history_is_written_once(tmp_path) -> None:
+    first = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[ROW], forecast=FORECAST))
+    assert len(first.bill_files) == 2
+    second = _run(
+        tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[ROW], forecast=FORECAST),
+        now=NOW + timedelta(days=1),
+    )
+    assert (second.state, second.reason, second.bill_files) == ("ok", "fetched", ())
+    assert len(list((tmp_path / "bills").glob("*.json"))) == 2
+    assert (tmp_path / "portal" / "bills_seen.json").exists()
+    assert not list((tmp_path / "portal").glob(".*"))
+
+
+def test_corrected_bill_is_written_again(tmp_path) -> None:
+    _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[ROW]))
+    corrected = {**ROW, "current_charges": "$99.87"}
+    out = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[corrected]), now=NOW + timedelta(days=1))
+    assert len(out.bill_files) == 1
+    assert json.loads(out.bill_files[0].read_text())["current_charges"] == 99.87
 
 
 def test_driver_crash_is_error(tmp_path) -> None:

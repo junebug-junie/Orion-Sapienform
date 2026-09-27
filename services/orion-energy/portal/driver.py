@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional, Protocol
 
@@ -12,10 +12,23 @@ from . import selectors
 
 class PortalDriver(Protocol):
     async def open_usage(self) -> str: ...
-    async def download_green_button(self, *, days: int) -> bytes: ...
+    async def download_green_button(self, *, days: int, now: datetime) -> bytes: ...
     async def billing_rows(self) -> list[dict[str, str]]: ...
     async def forecast_fields(self) -> Optional[dict[str, str]]: ...
     async def page_html(self) -> str: ...
+
+
+def green_button_range(now: datetime, *, days: int) -> tuple[date, date]:
+    end = now.date()
+    return end - timedelta(days=days), end
+
+
+def prepare_profile_dir(profile_dir: str | Path) -> Path:
+    """The profile holds live session cookies: owner-only, even if the dir already existed."""
+    path = Path(profile_dir)
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.chmod(0o700)
+    return path
 
 
 class PlaywrightDriver:
@@ -27,10 +40,9 @@ class PlaywrightDriver:
         await self._page.goto(self._base + selectors.USAGE_PATH, wait_until="networkidle")
         return self._page.url
 
-    async def download_green_button(self, *, days: int) -> bytes:
+    async def download_green_button(self, *, days: int, now: datetime) -> bytes:
         page = self._page
-        end = date.today()
-        start = end - timedelta(days=days)
+        start, end = green_button_range(now, days=days)
         await page.click(selectors.GREEN_BUTTON_OPEN)
         await page.fill(selectors.GREEN_BUTTON_FROM, start.strftime(selectors.GREEN_BUTTON_DATE_FORMAT))
         await page.fill(selectors.GREEN_BUTTON_TO, end.strftime(selectors.GREEN_BUTTON_DATE_FORMAT))
@@ -70,9 +82,10 @@ async def open_playwright_driver(
 ) -> AsyncIterator[PlaywrightDriver]:
     from playwright.async_api import async_playwright  # portal image only; tests use fakes
 
+    profile = prepare_profile_dir(profile_dir)
     async with async_playwright() as pw:
         context = await pw.chromium.launch_persistent_context(
-            profile_dir, headless=headless, accept_downloads=True
+            str(profile), headless=headless, accept_downloads=True
         )
         try:
             page = context.pages[0] if context.pages else await context.new_page()

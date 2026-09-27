@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, TypeVar
+
+from pydantic import ValidationError
 
 from orion.schemas.energy import (
     ENERGY_BILL_ACTUAL_KIND,
@@ -20,6 +22,7 @@ _DATE_FORMATS = ("%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%Y-%m-%d")
 _PERIOD_SPLIT = re.compile(r"\s+(?:-|–|—|to)\s+")
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
 _OPTIONAL_MONEY = ("energy_charge", "customer_charge", "adjustments", "fees", "taxes", "credits", "amount_due")
+T = TypeVar("T")
 
 
 def parse_money(text: str) -> Optional[float]:
@@ -66,43 +69,62 @@ def is_login_url(url: str) -> bool:
     return any(marker in low for marker in LOGIN_URL_MARKERS)
 
 
-def _required(fields: Mapping[str, str], key: str) -> str:
-    value = (fields.get(key) or "").strip()
-    if not value:
-        raise ValueError(f"portal row has no {key}")
+class PortalFieldError(ValueError):
+    """A portal field failed to parse. Carries the field name and error class, never the raw text."""
+
+    def __init__(self, field: str, cause: str) -> None:
+        super().__init__(f"{cause}:{field}")
+        self.field = field
+        self.cause = cause
+
+
+def _parsed(fields: Mapping[str, str], key: str, parse: Callable[[str], T], *, required: bool = False) -> Optional[T]:
+    raw = (fields.get(key) or "").strip()
+    value: Optional[T] = None
+    if raw:
+        try:
+            value = parse(raw)
+        except ValueError as exc:
+            raise PortalFieldError(key, type(exc).__name__) from None
+    if required and value is None:
+        raise PortalFieldError(key, "ValueError")
     return value
 
 
+def _build(model: Callable[..., T], **kwargs: Any) -> T:
+    try:
+        return model(**kwargs)
+    except ValidationError as exc:
+        loc = exc.errors()[0].get("loc") or ()
+        raise PortalFieldError(".".join(map(str, loc)) or "model", "ValidationError") from None
+
+
 def bill_payload_from_fields(fields: Mapping[str, str], *, retrieved_at: datetime) -> dict[str, Any]:
-    start, end = parse_period(_required(fields, "billing_period"))
-    kwh = parse_kwh(_required(fields, "kwh"))
-    charges = parse_money(_required(fields, "current_charges"))
-    if kwh is None or charges is None:
-        raise ValueError("portal row has blank kWh or current charges")
-    money = {k: parse_money(fields[k]) for k in _OPTIONAL_MONEY if fields.get(k)}
-    due = fields.get("due_date")
-    bill = EnergyBillActualV1(
+    start, end = _parsed(fields, "billing_period", parse_period, required=True)
+    bill = _build(
+        EnergyBillActualV1,
         source="rockymountain_power",
         billing_period_start=start,
         billing_period_end=end,
-        kwh_billed=kwh,
-        current_charges=charges,
-        due_date=parse_date(due) if due else None,
+        kwh_billed=_parsed(fields, "kwh", parse_kwh, required=True),
+        current_charges=_parsed(fields, "current_charges", parse_money, required=True),
+        due_date=_parsed(fields, "due_date", parse_date),
         retrieved_at=retrieved_at,
-        **money,
+        **{k: _parsed(fields, k, parse_money) for k in _OPTIONAL_MONEY if fields.get(k)},
     )
     return {"kind": ENERGY_BILL_ACTUAL_KIND, **bill.model_dump(mode="json", exclude={"source_file"})}
 
 
 def forecast_payload_from_fields(fields: Mapping[str, str], *, retrieved_at: datetime) -> dict[str, Any]:
-    start, end = parse_period(_required(fields, "billing_period"))
-    forecast = EnergyBillForecastV1(
+    start, end = _parsed(fields, "billing_period", parse_period, required=True)
+    forecast = _build(
+        EnergyBillForecastV1,
         source="rockymountain_power",
         billing_period_start=start,
         billing_period_end=end,
         as_of=retrieved_at,
-        projected_kwh=parse_kwh(fields.get("projected_kwh", "")),
-        projected_total_usd=parse_money(fields.get("projected_total", "")),
+        projected_kwh=_parsed(fields, "projected_kwh", parse_kwh),
+        projected_total_usd=_parsed(fields, "projected_total", parse_money),
         retrieved_at=retrieved_at,
     )
     return {"kind": ENERGY_BILL_FORECAST_KIND, **forecast.model_dump(mode="json", exclude={"source_file"})}

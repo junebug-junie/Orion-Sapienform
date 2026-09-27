@@ -13,16 +13,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import selectors
-from .fetch import PortalOutcome
+from .driver import prepare_profile_dir
 from .settings import get_portal_settings
-from .status import write_status
+from .status import write_reauth_status
 
 
 async def reauth(*, profile_dir: str, base_url: str, timeout_sec: float) -> None:
     from playwright.async_api import async_playwright
 
+    profile = prepare_profile_dir(profile_dir)
     async with async_playwright() as pw:
-        context = await pw.chromium.launch_persistent_context(profile_dir, headless=False)
+        context = await pw.chromium.launch_persistent_context(str(profile), headless=False)
         try:
             page = context.pages[0] if context.pages else await context.new_page()
             await page.goto(base_url.rstrip("/") + selectors.USAGE_PATH)
@@ -46,8 +47,8 @@ def main() -> None:
             timeout_sec=args.timeout,
         )
     )
-    write_status(Path(args.status), PortalOutcome("ok", "reauth_completed"), now=datetime.now(timezone.utc))
-    print("Session saved. The next scheduled fetch will use it.")
+    write_reauth_status(Path(args.status), now=datetime.now(timezone.utc))
+    print("Session saved. Run the `--once` fetch now, or the loop fetches after its interval.")
 
 
 if __name__ == "__main__":

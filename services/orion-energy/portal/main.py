@@ -8,17 +8,57 @@ import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Awaitable, Callable, Optional
+
+from orion.energy.importer_status import PortalStatus
 
 from .driver import open_playwright_driver
 from .fetch import PortalOutcome, run_once
 from .settings import PortalSettings, get_portal_settings
-from .status import write_status
+from .status import read_status, write_status
 
 logger = logging.getLogger("orion-energy-portal")
 
+MIN_DAYS, MAX_DAYS = 1, 730
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def resolve_days(arg: Optional[int], *, default: int) -> int:
+    if arg is None:
+        return default
+    return max(MIN_DAYS, min(MAX_DAYS, arg))
+
+
+def bills_seen_path(status_path: Path) -> Path:
+    return status_path.parent / "bills_seen.json"
+
+
+def seconds_until_due(previous: Optional[PortalStatus], *, now: datetime, interval_hours: float) -> float:
+    """Any recorded attempt (ok, error, or reauth_required) holds the next one for a full interval.
+
+    This is what stops a crash/restart or redeploy from hitting the portal again straight away.
+    """
+    interval = interval_hours * 3600.0
+    if previous is None:
+        return 0.0
+    elapsed = (now - previous.last_attempt_at).total_seconds()
+    return min(interval, max(0.0, interval - elapsed))
+
+
+def record_status(path: Path, outcome: PortalOutcome, *, now: datetime) -> Optional[PortalStatus]:
+    try:
+        return write_status(path, outcome, now=now)
+    except Exception as exc:  # noqa: BLE001 -- a status write must never crash the loop into a restart
+        logger.error("energy_portal_status_write_failed path=%s error=%s", path, type(exc).__name__)
+        return None
+
 
 async def attempt(settings: PortalSettings, *, days: int) -> PortalOutcome:
-    now = datetime.now(timezone.utc)
+    now = _utcnow()
+    status_path = Path(settings.ENERGY_PORTAL_STATUS_PATH)
     try:
         async with open_playwright_driver(
             profile_dir=settings.ENERGY_PORTAL_PROFILE_DIR,
@@ -30,6 +70,7 @@ async def attempt(settings: PortalSettings, *, days: int) -> PortalOutcome:
                     inbox_dir=Path(settings.ENERGY_INBOX_DIR),
                     bill_inbox_dir=Path(settings.ENERGY_BILL_INBOX_DIR),
                     raw_dir=Path(settings.ENERGY_PORTAL_RAW_DIR),
+                    seen_path=bills_seen_path(status_path),
                     backfill_days=days,
                     now=now,
                 ),
@@ -39,7 +80,7 @@ async def attempt(settings: PortalSettings, *, days: int) -> PortalOutcome:
         outcome = PortalOutcome("error", "timeout")
     except Exception as exc:  # noqa: BLE001
         outcome = PortalOutcome("error", f"browser_failed:{type(exc).__name__}")
-    write_status(Path(settings.ENERGY_PORTAL_STATUS_PATH), outcome, now=now)
+    record_status(status_path, outcome, now=now)
     logger.info(
         "energy_portal_fetch state=%s reason=%s xml=%s bills=%d",
         outcome.state,
@@ -50,10 +91,22 @@ async def attempt(settings: PortalSettings, *, days: int) -> PortalOutcome:
     return outcome
 
 
-async def loop(settings: PortalSettings) -> None:
+async def loop(
+    settings: PortalSettings,
+    *,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    clock: Callable[[], datetime] = _utcnow,
+) -> None:
+    interval = settings.ENERGY_PORTAL_INTERVAL_HOURS
+    wait = seconds_until_due(
+        read_status(Path(settings.ENERGY_PORTAL_STATUS_PATH)), now=clock(), interval_hours=interval,
+    )
+    if wait > 0:
+        logger.info("energy_portal_waiting seconds=%.0f reason=recent_attempt", wait)
+        await sleep(wait)
     while True:
         await attempt(settings, days=settings.ENERGY_PORTAL_BACKFILL_DAYS)
-        await asyncio.sleep(settings.ENERGY_PORTAL_INTERVAL_HOURS * 3600.0)
+        await sleep(interval * 3600.0)
 
 
 def main() -> None:
@@ -63,12 +116,13 @@ def main() -> None:
         format="[ORION_ENERGY_PORTAL] %(asctime)s %(levelname)s - %(message)s",
     )
     parser = argparse.ArgumentParser()
-    parser.add_argument("--once", action="store_true")
-    parser.add_argument("--days", type=int, default=None)
+    parser.add_argument("--once", action="store_true", help="fetch now, ignoring the interval")
+    parser.add_argument("--days", type=int, default=None, help=f"backfill window, clamped to {MIN_DAYS}..{MAX_DAYS}")
     args = parser.parse_args()
     settings = get_portal_settings()
     if args.once:
-        outcome = asyncio.run(attempt(settings, days=args.days or settings.ENERGY_PORTAL_BACKFILL_DAYS))
+        days = resolve_days(args.days, default=settings.ENERGY_PORTAL_BACKFILL_DAYS)
+        outcome = asyncio.run(attempt(settings, days=days))
         sys.exit(0 if outcome.state == "ok" else 1)
     asyncio.run(loop(settings))
 

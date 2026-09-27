@@ -106,9 +106,21 @@ Selectors are UNVERIFIED until the first live run (`portal/selectors.py`).
    ```
 3. Set `ENERGY_PORTAL_ENABLED=true` for `orion-energy` and restart it.
 
-When the session dies the importer reads `reauth_required`; repeat step 1. Failed
-downloads/scrapes keep the raw artifact in `${ENERGY_HOST_DATA_DIR}/portal/raw/` (may
-contain account details — local disk only).
+When the session dies the importer reads `reauth_required`; repeat step 1, then the
+`--once` fetch from step 2 (the loop otherwise waits a full `ENERGY_PORTAL_INTERVAL_HOURS`
+after any recorded attempt, including across container restarts). Reauth clears
+`reauth_required` but does not count as a successful fetch.
+
+The profile dir holds live session cookies and is forced to mode `0700`. UNVERIFIED:
+the container runs as root, so after it has used the profile, files in it may be
+root-owned and a host-user reauth can fail with permission errors. Fix ownership first:
+`sudo chown -R "$(id -u):$(id -g)" /mnt/storage-warm/orion-energy/portal/profile`.
+
+Failed downloads/scrapes keep the raw artifact in `${ENERGY_HOST_DATA_DIR}/portal/raw/`
+(dir `0700`, files `0600`). Inline `<script>` bodies and hidden-input values are
+stripped before writing, but visible page text may still contain account details —
+local disk only. Unchanged bills are not re-sent: `bills_seen.json` next to
+`status.json` remembers a content hash per billing period; delete it to force a resend.
 
 ## Run
 

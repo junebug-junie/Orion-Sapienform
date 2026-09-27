@@ -328,6 +328,6 @@ Leave `ORION_ENERGY_STAKES_ENABLED=false` until the §0A live-data check has bee
 
 ## PR link
 
-_placeholder — the controller opens the PR._
+https://github.com/junebug-junie/Orion-Sapienform/pull/2376
 
 Status: DONE_WITH_CONCERNS (live path UNVERIFIED pending Juniper-approved redeploy; portal selectors UNVERIFIED; final whole-branch review findings fixed; PR link pending).

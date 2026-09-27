@@ -120,6 +120,10 @@ The review ran in a subagent. It found no blockers and reported security, the ne
   - Fix: a "Read this URL again" button pre-fills the submit form, which creates a new read.
   - Evidence: browser smoke.
 
+- Finding (CI): the `reading` job failed 3 submit-route tests with `No module named 'aiohttp'`. The submit route imported all of Hub's `main` to find the bus, and CI installs only `requirements-reading.txt`.
+  - Fix: a `_bus()` helper (which `_redis()` now uses too) that the tests stub, the same way they stub `_pool` and `_source_ref`.
+  - Evidence: the CI selection under `uv run --with-requirements requirements-reading.txt` gives 738 passed, and the PR's `reading` check is green.
+
 ## Restart required
 
 ```bash

@@ -392,6 +392,25 @@ async def reading_status(
     return await _reading_status_row(conn, row)
 
 
+def derive_reading_status(s1: str, s2: str, landing_at: Any) -> str:
+    """One request-level status from the two stage columns (no alias lookup)."""
+    if s1 == "failed" or (s1 == "done" and s2 == "failed"):
+        return "failed"
+    if s1 == "skipped" or (s1 == "done" and s2 == "skipped"):
+        # Stage 2 skips a Stage 1 handoff with no read evidence; that request
+        # is finished, not waiting at "stage1_completed" forever.
+        return "skipped"
+    if landing_at:
+        return "completed"
+    if s1 == "done" and s2 == "done":
+        return "landing_pending"
+    if s1 == "done":
+        return "stage2_started" if s2 == "claimed" else "stage1_completed"
+    if s1 == "claimed":
+        return "started"
+    return "queued"
+
+
 async def _reading_status_row(conn: Any, row: Any) -> dict[str, Any]:
     request_id = row["request_id"]
     own = row
@@ -400,21 +419,7 @@ async def _reading_status_row(conn: Any, row: Any) -> dict[str, Any]:
         if row is None:
             raise RuntimeError("reading alias target missing")
     s1, s2 = row["status"], row["stage2_status"]
-    status = "queued"
-    if s1 == "failed" or (s1 == "done" and s2 == "failed"):
-        status = "failed"
-    elif s1 == "skipped" or (s1 == "done" and s2 == "skipped"):
-        # Stage 2 skips a Stage 1 handoff with no read evidence; that request
-        # is finished, not waiting at "stage1_completed" forever.
-        status = "skipped"
-    elif row["landing_at"]:
-        status = "completed"
-    elif s1 == "done" and s2 == "done":
-        status = "landing_pending"
-    elif s1 == "done":
-        status = "stage2_started" if s2 == "claimed" else "stage1_completed"
-    elif s1 == "claimed":
-        status = "started"
+    status = derive_reading_status(s1, s2, row["landing_at"])
     handoff = _json_object(row.get("handoff_json"))
     result = _json_object(row.get("stage2_result_json"))
     queue_position: int | None = None

@@ -918,7 +918,8 @@ class Settings(BaseSettings):
     )
     # Let curiosity hold a scheduled investigation when orion-energy's stakes snapshot
     # says the house bill is at/over RMP's forecast. Off = curiosity unchanged.
-    # A snapshot older than MAX_AGE_SEC never holds (scripts/energy_stakes_gate.py).
+    # A snapshot older than MAX_AGE_SEC never holds (scripts/energy_stakes_gate.py), and
+    # the Energy strip shows its numbers as unknown/"stale since" (scripts/energy_routes.py).
     ORION_ENERGY_STAKES_ENABLED: bool = Field(default=False, alias="ORION_ENERGY_STAKES_ENABLED")
     ORION_ENERGY_STAKES_MAX_AGE_SEC: float = Field(
         default=1800.0, gt=0.0, alias="ORION_ENERGY_STAKES_MAX_AGE_SEC"

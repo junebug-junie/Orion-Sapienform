@@ -7,8 +7,8 @@ Plan 1 (PR #2373, merged) gave Orion a price for every hour of house electricity
 - **Bills in, two ways, one format.** Orion reads RMP bills and forecasts from a drop folder, where you can hand-enter a JSON file. It can also read them from an optional headless browser that reuses a saved RMP login session. Both paths produce the same events; only the `source` label differs (`file_drop` vs `rockymountain_power`). (`services/orion-energy/app/bills.py`, `services/orion-energy/portal/`)
 - **Orion checks its own math against RMP.** For every bill or forecast, Orion computes its own number for the same period and publishes the dollar difference, the kWh difference, and a per-line breakdown. When Orion is missing usage data, the difference is left blank with a named gap, never a fake $0. (`orion/energy/reconcile.py`, `energy.reconcile.v1`)
 - **Importer health is visible.** A status tick says whether the importer is `healthy`, `stale`, `reauth_required` (the saved RMP login died), or `degraded`. A stale importer never invents usage. (`orion/energy/importer_status.py`, `energy.importer.status.v1`)
-- **A stakes snapshot, and an optional curiosity hold.** Orion compares its month-end projection to RMP's forecast (`normal` / `near_forecast` / `over_forecast` / `unknown`). With `ORION_ENERGY_STAKES_ENABLED=true`, Hub curiosity holds a scheduled run with `held_off:energy_stakes` when the projection is over forecast. The flag defaults to off. Unknown or stale data never causes a hold, and a run you start yourself is never held. (`orion/energy/stakes.py`, `services/orion-hub/scripts/energy_stakes_gate.py`)
-- **Hub Energy strip.** A strip under the cabinet cooling strip shows importer state, cycle-to-date cost, Orion's projection vs RMP's forecast, the price of the next kWh, stakes pressure with its reason, the newest reconcile lines, and 14 daily kWh bars. Anything missing reads `unknown`, never `$0.00`. (`services/orion-hub/static/js/energy-strip.js`, `scripts/energy_routes.py`)
+- **A stakes snapshot, and an optional curiosity hold.** Orion compares its month-end projection to RMP's forecast (`normal` / `near_forecast` / `over_forecast` / `unknown`). With `ORION_ENERGY_STAKES_ENABLED=true`, Hub curiosity holds a scheduled run with `held_off:energy_stakes` when the projection is near or over forecast, one attention row per hold episode (cycle + pressure), not per tick. The flag defaults to off. Unknown or stale data never causes a hold, and a run you start yourself is never held. (`orion/energy/stakes.py`, `services/orion-hub/scripts/energy_stakes_gate.py`)
+- **Hub Energy strip.** A strip under the cabinet cooling strip shows importer state, cycle-to-date cost, Orion's projection vs RMP's forecast, the price of the next kWh, stakes pressure with its reason, the newest reconcile lines, and 14 daily kWh bars. Anything missing reads `unknown`, never `$0.00`. A snapshot older than `ORION_ENERGY_STAKES_MAX_AGE_SEC`, or a failed fetch, blanks the tiles instead of leaving old numbers up; a stale snapshot says "stale since <as_of>", and cycle-to-date always says "through <time>". (`services/orion-hub/static/js/energy-strip.js`, `scripts/energy_routes.py`)
 - **Persistence.** sql-writer stores all five new event kinds in five new tables, which are created at boot. (`services/orion-sql-writer/app/models/energy.py`)
 
 ## Outcome moved
@@ -46,11 +46,12 @@ Before this patch, `orion-energy` read Green Button XML files from a drop folder
 - `services/orion-hub/scripts/{energy_stakes_gate.py,curiosity_investigation.py,main.py,energy_routes.py,api_routes.py}`, `app/settings.py`, `.env_example`: the gate and the routes.
 - `services/orion-hub/{templates/index.html,static/js/energy-strip.js,static/js/energy-strip.test.js,static/js/biometrics-view.js}`: the strip.
 - `services/orion-hub/tests/{test_energy_stakes_gate.py,test_energy_routes.py,test_energy_strip_panel.py,test_curiosity_investigation.py}`: hub tests.
-- `scripts/sync_local_env_from_example.py`, `tests/scripts/test_sync_local_env_from_example.py`: sync reaches the new keys.
+- `scripts/sync_local_env_from_example.py`, `tests/scripts/test_sync_local_env_from_example.py`: sync reaches the new keys; `ENERGY_USAGE_POINT_ID` is in `NEVER_SYNC_KEYS`.
+- `services/orion-hub/README.md`: Energy strip and energy stakes hold (`ORION_ENERGY_STAKES_ENABLED`, `ORION_ENERGY_STAKES_MAX_AGE_SEC`, `HUB_ENERGY_TIMEZONE`).
 - `tests/test_energy_bus_catalog.py`: catalog and registry coverage for the new channels and kinds.
 - `.github/workflows/orion-reading-tests.yml`: new hub tests added to the explicit list. `orion-energy-tests.yml` already covers `services/orion-energy/**`, including evals, so it is unchanged.
 - `config/metrics/metric_definitions.lock.json`: lock refresh for the new schema fields.
-- `docs/superpowers/specs/2026-09-26-orion-energy-watcher-design.md`: Status line.
+- `docs/superpowers/specs/2026-09-26-orion-energy-watcher-design.md`: Status line; Branch/Worktree header lists both plans.
 - `docs/superpowers/plans/2026-09-27-orion-energy-watcher-plan-2.md`: the plan.
 
 ## Schema / bus / API changes
@@ -63,7 +64,7 @@ Before this patch, `orion-energy` read Green Button XML files from a drop folder
   - `energy.importer.status.v1` on `orion:energy:importer:status`
 
   All five are registered, all five are catalogued, and sql-writer persists them to `energy_bill_actual`, `energy_bill_forecast`, `energy_reconcile`, `energy_stakes_snapshot`, and `energy_importer_status`.
-- **Added HTTP routes (Hub, read-only):** `GET /api/energy/latest` and `GET /api/energy/usage/daily?days=14`.
+- **Added HTTP routes (Hub, read-only):** `GET /api/energy/latest` (stakes, importer, reconcile, plus top-level `stale`, `as_of`, `covered_through`; `stale` is null when there is no snapshot) and `GET /api/energy/usage/daily?days=14`.
 - **Removed:** none.
 - **Renamed:** none.
 - **Behavior changed:** with `ORION_ENERGY_STAKES_ENABLED=true`, Hub curiosity can record a `held_off:energy_stakes` decision instead of spending. With the flag off (the default), curiosity behavior is unchanged, and the snapshot is never read.
@@ -87,8 +88,8 @@ Before this patch, `orion-energy` read Green Button XML files from a drop folder
   - Task 9 added them by hand, additively, and only those two lines changed. Backup: `/tmp/t9/sql-writer.env.bak`.
   - After the edit, `check_service()` from `scripts/check_env_template_parity.py`, run against this branch's templates, reports no blocking drift and no missing keys for orion-energy, orion-hub, or orion-sql-writer. Without this edit, `safe_docker_build.sh orion-sql-writer up` would have refused the deploy after merge.
 - **Skipped keys requiring operator action:**
-  - `ENERGY_USAGE_POINT_ID` (Plan 1) is a live pasted value. It is **not** yet in `NEVER_SYNC_KEYS`, so a `--force` sync would reset it to the example's empty value (see Risks).
-  - Unrelated keys reported as diverged and left alone: `HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED`, `COCREATION_SIGNALS_*`, `ORION_CURIOSITY_GRAPH_*`, `CURIOSITY_PEER_CURSOR_BUDGET_STATE`.
+  - `ENERGY_USAGE_POINT_ID` (Plan 1) is now in `NEVER_SYNC_KEYS`: the sync script never adds or overwrites it, even with `--force`. **The operator pastes the meter's usage point id into `services/orion-energy/.env` by hand** (empty = use the only usage point in the feed).
+  - Unrelated keys reported as diverged and left alone (Task 9 run, `/tmp/t9b/gates.log`): `DURABLE_RUNS_GRAPH_HOST`, `GPU_POOL_ACTUATE_ROLES`, `COCREATION_SIGNALS_GH_TOKEN`, `COCREATION_SIGNALS_AFFECTIVE_STATE_ENABLED`, `ORION_CURIOSITY_GRAPH_HOST`, `ORION_CURIOSITY_GRAPH_PORT`, `ORION_CURIOSITY_GRAPH_USER`, `CURIOSITY_PEER_CURSOR_BUDGET_STATE`. The final-review sync run additionally lists `HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED` (local `true`, example `false`), also unrelated.
 
 ### §0A metric gate note
 
@@ -164,7 +165,7 @@ PYTHONPATH=$PWD $PY -m pytest -q services/orion-hub/tests/test_energy_stakes_gat
                                                                         -> tests 214, pass 192, fail 0, skipped 22
 PYTHONPATH=. $PY -m pytest -q tests/scripts/test_sync_local_env_from_example.py scripts/tests/test_check_env_template_parity.py
                                                                         -> 36 passed
-git merge-tree --write-tree HEAD origin/main                            -> clean (origin/main has no commits past the merge base)
+git fetch origin main; git log HEAD..origin/main                        -> 0 commits (no drift, no conflicts)
 ```
 
 ## Evals run
@@ -229,7 +230,22 @@ docker run --rm --network none --entrypoint python orion-energy-orion-energy-por
 - **Finding (Task 9, found during env verification):** the live sql-writer `.env` was missing the 5 new channels and routes. Nothing reported it: the sync script can't see inside JSON values, and the parity gate compares against the primary checkout's (main's) template, not this branch's.
   - Fix: additive hand-edit of the two lines, with a backup at `/tmp/t9/sql-writer.env.bak`.
   - Evidence: `check_service()` against the branch templates reports blocking=[] and warnings=[] for all three services.
-- **Final whole-branch review:** _placeholder — the controller runs this after Task 9 and records its findings here._
+- **Final whole-branch review:**
+  - Finding (Important): the Hub Energy strip kept the last good dollar tiles on screen after a failed fetch, and showed an old snapshot's numbers as current.
+    - Fix: `/api/energy/latest` returns `stale` (snapshot `as_of` older than `ORION_ENERGY_STAKES_MAX_AGE_SEC`; unreadable `as_of` is stale), `as_of`, and `covered_through`. The JS uses `Promise.allSettled`; a failed/non-2xx/unparseable fetch renders every tile `unknown` and clears the bars, and each endpoint renders independently. Stale renders every tile `unknown` with "stale since <as_of>"; cycle-to-date always shows "through <covered_through>". `importerLabel({state:null})` and a null `billing_period_start` read "unknown".
+    - Evidence: node tests "a network failure turns every tile unknown and clears the bars", "bad JSON or an HTTP error counts as unreachable", "one endpoint failing does not block the other", "a stale snapshot never shows its numbers as current"; route tests `test_latest_old_snapshot_is_flagged_stale`, `test_latest_fresh_snapshot_is_not_stale_and_surfaces_coverage`, `test_latest_unreadable_as_of_is_stale_not_fresh` (RED, then GREEN).
+  - Finding (Important): `ENERGY_USAGE_POINT_ID` could be flattened by `sync_local_env_from_example.py --force`.
+    - Fix: added to `NEVER_SYNC_KEYS`.
+    - Evidence: `test_energy_usage_point_id_never_synced_even_with_force`.
+  - Finding (Minor): when two versions of a bill share `computed_at`, the reconcile row shown was arbitrary.
+    - Fix: `DISTINCT ON` ordering is now `billing_period_start DESC, computed_at DESC, utility_as_of DESC`.
+    - Evidence: `test_reconcile_newest_utility_version_wins_a_computed_at_tie`.
+  - Finding (Minor): the curiosity hold minted a new attention row every 5-minute tick (`entry_id` keyed on snapshot `as_of`), flooding `recent_attention_cue`; the correlation id was a per-tick uuid4 missing from the log.
+    - Fix: `entry_id = curiosity:held_off:energy_stakes:<cycle_start>:<pressure>` (snapshot UTC day if the cycle is unknown), so repeats collapse on the attention PK's ON CONFLICT no-op; `correlation_id = uuid5(NAMESPACE_URL, entry_id)`, logged on `curiosity_investigation_blocked`. Still behind `ORION_ENERGY_STAKES_ENABLED`.
+    - Evidence: `test_the_same_hold_episode_is_one_row_across_ticks`, `test_a_new_pressure_or_cycle_is_a_new_episode`, `test_unknown_cycle_falls_back_to_the_snapshot_day_not_one_row_forever`, `test_energy_hold_repeats_one_episode_with_a_deterministic_correlation`.
+  - Finding (docs): Hub and orion-energy READMEs didn't document the new keys; the portal section didn't say to stop the running portal before a headed reauth or `--once`.
+    - Fix: Hub README sections "House electricity (Energy strip)" and "4.2.4 Energy stakes hold"; orion-energy README key tables for `ENERGY_STALE_AFTER_HOURS`, `ENERGY_STAKES_NEAR_RATIO`, `ENERGY_STAKES_OVER_RATIO`, `ENERGY_PORTAL_TIMEOUT_SEC`, `ENERGY_PORTAL_RAW_DIR`, `ENERGY_PORTAL_BACKFILL_DAYS`, plus `scripts/safe_docker_build.sh orion-energy --profile portal stop orion-energy-portal` before reauth/`--once`, so two Chromium processes never share the profile.
+    - Evidence: `.superpowers/sdd/final-fix-report.md`.
 
 ## Restart required
 
@@ -262,7 +278,10 @@ Leave `ORION_ENERGY_STAKES_ENABLED=false` until the §0A live-data check has bee
 
 - **Severity: High.** **Concern:** RMP portal URLs and selectors are **UNVERIFIED**; nobody has run a live login yet. **Mitigation:** the file-drop path works without the portal. An empty download or empty bill table is an error state, not a silent success, and a dead session reads `reauth_required` with no retry storm.
 - **Severity: Medium.** **Concern:** the whole live path is **UNVERIFIED**: the status log line, reconcile and importer-status rows, the Hub strip on real data, and a live curiosity hold. The Plan 2 tables don't exist in live Postgres until sql-writer is redeployed. **Mitigation:** the restart commands and evidence queries are listed above. The Hub strip was proven against a scratch Postgres built from the real models in Task 8.
-- **Severity: Medium (fix before merge; cheap).** **Concern:** `ENERGY_USAGE_POINT_ID` is not in `NEVER_SYNC_KEYS` in `scripts/sync_local_env_from_example.py`, so a `--force` sync would wipe the live pasted meter id. **Mitigation:** add it to `NEVER_SYNC_KEYS`. Flagged for the controller's final review.
+- **Severity: Low (fixed).** **Concern:** `ENERGY_USAGE_POINT_ID` could be wiped by a `--force` sync. **Mitigation:** now in `NEVER_SYNC_KEYS`; the operator pastes it by hand.
+- **Severity: Low (follow-up).** **Concern:** no retention on `energy_stakes_snapshot` / `energy_importer_status`. One row each per `ENERGY_STATUS_INTERVAL_SEC` (300 s) is ~105k rows/yr per table. **Mitigation:** small rows and indexed `ORDER BY as_of DESC LIMIT 1` reads; add a bounded-retention pass in sql-writer (same shape as `substrate_attention_schema` retention) before year one.
+- **Severity: Low (follow-up).** **Concern:** past closed bills are not re-reconciled after a tariff config patch; reconcile only re-runs on bill arrival or late usage. **Mitigation:** re-drop the affected bill JSON to force a new reconcile row; a follow-up could re-reconcile closed bills when `tariff_version` changes.
+- **Severity: Low (deferred).** **Concern:** the spec's optional second hold condition (expensive seasonal block plus weak expected value) is not built; the gate holds only on near/over-forecast pressure. **Mitigation:** deliberate scope cut; needs a live expected-value signal that clears the §0A gate first.
 - **Severity: Medium.** **Concern:** the image tag `orion-energy-orion-energy` now points at this branch's build. The running container is untouched, but a plain `up -d` from the primary checkout before merge could recreate it on the Plan 2 image. **Mitigation:** deploy only via the restart commands above, or rebuild from main if a pre-merge restart is needed.
 - **Severity: Low.** **Concern:** the live sql-writer `.env` already lists the 5 new channels and routes, but the running sql-writer is still `main`'s code. If sql-writer restarts from `main` before this merges, it would subscribe to the new channels without the matching table models. **Mitigation:** routes are looked up per message, not at boot, and nothing publishes the new kinds until `orion-energy` is redeployed from this branch. Restore `/tmp/t9/sql-writer.env.bak` if this branch is abandoned.
 - **Severity: Low.** **Concern:** `check_env_template_parity.py` compares the live `.env` against the *primary checkout's* template, so a branch that adds JSON members passes the gate pre-merge and only blocks at the first post-merge deploy. **Mitigation:** fixed by hand for this branch. Worth a follow-up so the gate compares the template of the tree being deployed.
@@ -296,19 +315,19 @@ Leave `ORION_ENERGY_STAKES_ENABLED=false` until the §0A live-data check has bee
     - The scrub misses href/action token query strings and `data-*token*` attributes.
   - **T7:**
     - No-hold outcomes are silent when the flag is on.
-    - The correlation id is a per-tick uuid4 and is missing from the log line.
+    - ~~The correlation id is a per-tick uuid4 and is missing from the log line.~~ Fixed in the final review (uuid5 of the episode `entry_id`, logged).
     - Untested: a publish failure still holds, a reader timeout does not hold, and the envelope correlation id equals the payload's.
     - The spec's optional second hold condition (expensive seasonal block plus weak evidence) is not built.
   - **T8:**
-    - **Should fix:** the `energy-strip.js` catch leaves the last good dollar tiles on screen after a network failure.
-    - `Promise.all` couples the latest and daily fetch failures.
+    - ~~**Should fix:** the `energy-strip.js` catch leaves the last good dollar tiles on screen after a network failure.~~ Fixed in the final review.
+    - ~~`Promise.all` couples the latest and daily fetch failures.~~ Fixed (`Promise.allSettled`).
     - `json.loads(bucket_deltas)` and `float(kwh)` sit outside the try in `energy_routes`.
     - Route warnings drop `exc_info` and repeat every 60 s until the tables are deployed.
-    - Cosmetic nulls in the JS labels.
+    - ~~Cosmetic nulls in the JS labels.~~ Fixed in the final review.
     - Weak tests for the timezone default and the SQL substring.
 
 ## PR link
 
 _placeholder — the controller opens the PR._
 
-Status: DONE_WITH_CONCERNS (live path UNVERIFIED pending Juniper-approved redeploy; portal selectors UNVERIFIED; final whole-branch review pending).
+Status: DONE_WITH_CONCERNS (live path UNVERIFIED pending Juniper-approved redeploy; portal selectors UNVERIFIED; final whole-branch review findings fixed; PR link pending).

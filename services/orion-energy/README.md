@@ -67,6 +67,12 @@ Every `ENERGY_STATUS_INTERVAL_SEC` the service publishes `energy.importer.status
 (cycle-to-date cost, next-kWh price, projected total vs RMP forecast). Pressure is
 `unknown` whenever the importer isn't healthy or a forecast is missing.
 
+| Key | Default | What it does |
+|---|---|---|
+| `ENERGY_STALE_AFTER_HOURS` | `48` | Newest metered interval older than this makes the importer `stale` (usage is then unknown, never $0). RMP data normally lags ~24h. |
+| `ENERGY_STAKES_NEAR_RATIO` | `1.0` | Orion's projected cycle total / RMP's forecast total at or above this reads `near_forecast`. |
+| `ENERGY_STAKES_OVER_RATIO` | `1.10` | Same ratio at or above this reads `over_forecast`. Hub curiosity holds on either (only when `ORION_ENERGY_STAKES_ENABLED=true` on Hub). |
+
 ## Debug queries
 
 ```sql
@@ -92,21 +98,39 @@ FROM energy_stakes_snapshot ORDER BY as_of DESC LIMIT 3;
 scrape bills into the same drop directories. It stores **no** RMP password; MFA stays on.
 Selectors are UNVERIFIED until the first live run (`portal/selectors.py`).
 
-1. One-time login on a host with a display (same profile dir the container mounts):
+| Key | Default | What it does |
+|---|---|---|
+| `ENERGY_PORTAL_TIMEOUT_SEC` | `300` | Hard cap on one whole fetch attempt; hitting it records `error`/`timeout` in `status.json`. |
+| `ENERGY_PORTAL_RAW_DIR` | `/data/energy/portal/raw` | Where a failed download/scrape keeps its raw artifact (see below). |
+| `ENERGY_PORTAL_BACKFILL_DAYS` | `3` | Days of usage each daily fetch requests (1-730); `--days` overrides it for a one-off backfill. |
+
+**Stop the running portal service before a headed reauth or a `run --rm ... --once`.**
+Both use the same persistent Chromium profile, and two browsers on one profile can
+corrupt the saved session:
+
+```bash
+scripts/safe_docker_build.sh orion-energy --profile portal stop orion-energy-portal
+```
+
+Bring it back with the `up -d` line in step 2 once the reauth or one-off fetch is done.
+
+1. One-time login on a host with a display (same profile dir the container mounts;
+   stop `orion-energy-portal` first if it is running):
    ```bash
    pip install playwright==1.49.0 pydantic-settings==2.7.1 && python -m playwright install chromium
    cd services/orion-energy && PYTHONPATH=../..:. python -m portal.reauth \
      --profile /mnt/storage-warm/orion-energy/portal/profile \
      --status /mnt/storage-warm/orion-energy/portal/status.json
    ```
-2. Two-year backfill once, then the daily loop:
+2. Two-year backfill once (portal service stopped), then the daily loop:
    ```bash
    scripts/safe_docker_build.sh orion-energy --profile portal run --rm orion-energy-portal python -m portal.main --once --days 730
    scripts/safe_docker_build.sh orion-energy --profile portal up -d --build orion-energy-portal
    ```
 3. Set `ENERGY_PORTAL_ENABLED=true` for `orion-energy` and restart it.
 
-When the session dies the importer reads `reauth_required`; repeat step 1, then the
+When the session dies the importer reads `reauth_required`; stop the portal service,
+repeat step 1, then the
 `--once` fetch from step 2 (the loop otherwise waits a full `ENERGY_PORTAL_INTERVAL_HOURS`
 after any recorded attempt, including across container restarts). Reauth clears
 `reauth_required` but does not count as a successful fetch.

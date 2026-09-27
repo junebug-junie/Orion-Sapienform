@@ -645,6 +645,9 @@
     if (window.OrionCabinetSensors && typeof window.OrionCabinetSensors.deactivate === "function") {
       window.OrionCabinetSensors.deactivate();
     }
+    if (window.OrionEnergyStrip && typeof window.OrionEnergyStrip.deactivate === "function") {
+      window.OrionEnergyStrip.deactivate();
+    }
 
     if (name === "athena" && !loaded.athena) {
       loaded.athena = true;
@@ -660,6 +663,9 @@
     } else if (name === "cabinet") {
       if (window.OrionCabinetSensors && typeof window.OrionCabinetSensors.activate === "function") {
         window.OrionCabinetSensors.activate();
+      }
+      if (window.OrionEnergyStrip && typeof window.OrionEnergyStrip.activate === "function") {
+        window.OrionEnergyStrip.activate();
       }
     }
   }
@@ -687,6 +693,9 @@
     }
     if (window.OrionCabinetSensors && typeof window.OrionCabinetSensors.deactivate === "function") {
       window.OrionCabinetSensors.deactivate();
+    }
+    if (window.OrionEnergyStrip && typeof window.OrionEnergyStrip.deactivate === "function") {
+      window.OrionEnergyStrip.deactivate();
     }
   }
 

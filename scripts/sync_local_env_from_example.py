@@ -137,6 +137,8 @@ SYNC_PREFIXES = (
     "ENERGY_",
     # Hub's curiosity energy-stakes hold; no HUB_ prefix, so ENERGY_ above misses it.
     "ORION_ENERGY_STAKES_",
+    # Hub Energy strip (daily-bar timezone); no generic HUB_ prefix is synced.
+    "HUB_ENERGY_",
     # orion-whisper-tts, added 2026-08-29. None of this service's 26 keys
     # matched any prefix below, and the service itself was absent from
     # DEFAULT_SERVICES, so the default invocation considered ZERO of them

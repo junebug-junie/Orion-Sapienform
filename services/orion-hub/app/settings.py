@@ -482,6 +482,8 @@ class Settings(BaseSettings):
         default=10.0,
         alias="CABINET_SENSORS_STALE_AFTER_SEC",
     )
+    # Local day boundary for the Hub Energy strip's daily kWh bars (Postgres AT TIME ZONE name).
+    HUB_ENERGY_TIMEZONE: str = Field(default="America/Denver", alias="HUB_ENERGY_TIMEZONE")
     # Host ambient-audio snapshot plus biometrics-summary history for Cabinet.
     AMBIENT_AUDIO_PATH: str = Field(
         default="/run/orion-audio/latest.json",

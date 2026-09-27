@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.inbox import load_processed, scan_inbox
+from app.inbox import latest_processed_at, load_processed, scan_inbox
 
 REPO = Path(__file__).resolve().parents[3]
 FIXTURE = REPO / "orion/energy/tests/fixtures/espi_two_flows.xml"
@@ -76,3 +76,22 @@ def test_read_oserror_leaves_file_and_still_returns_other_rows(
     assert (inbox / "bad.xml").exists()
     assert not (processed / "bad.xml").exists()
     assert any("energy_inbox_io_failed" in r.getMessage() for r in caplog.records)
+
+
+def test_portal_named_file_is_labeled_rockymountain_power(tmp_path: Path) -> None:
+    inbox, processed = tmp_path / "inbox", tmp_path / "processed"
+    inbox.mkdir()
+    shutil.copy(FIXTURE, inbox / "rmp-portal-20260927T060000Z.xml")
+    shutil.copy(FIXTURE, inbox / "manual.xml")
+    now = datetime(2026, 9, 27, 6, tzinfo=timezone.utc)
+    rows = scan_inbox(inbox, processed, now=now)
+    sources = {r.source_file.split("__", 1)[1]: r.source for r in rows}
+    assert sources["rmp-portal-20260927T060000Z.xml"] == "rockymountain_power"
+    assert sources["manual.xml"] == "file_drop"
+    replayed = {r.source for r in load_processed(processed)}
+    assert replayed == {"rockymountain_power", "file_drop"}
+    assert latest_processed_at(processed, ".xml") == now
+
+
+def test_latest_processed_at_empty(tmp_path: Path) -> None:
+    assert latest_processed_at(tmp_path / "missing", ".xml") is None

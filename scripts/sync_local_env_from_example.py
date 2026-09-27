@@ -547,6 +547,30 @@ class SyncResult:
     diverged: list[str] = field(default_factory=list)
 
 
+# Matched against whole "_"-separated key segments so MAX_TOKENS stays visible.
+_SECRET_SEGMENTS = frozenset(
+    {"TOKEN", "SECRET", "PASSWORD", "PASSWD", "PASS", "PWD", "DSN", "CREDENTIAL", "CREDENTIALS"}
+)
+_SECRET_SEGMENT_PAIRS = frozenset(
+    {("API", "KEY"), ("ACCESS", "KEY"), ("ADMIN", "KEY"), ("PRIVATE", "KEY"), ("SECRET", "KEY")}
+)
+_URL_USERINFO_RE = re.compile(r"(?P<head>[a-zA-Z][\w+.-]*://[^:/@\s]*:)[^@\s]+(?P<at>@)")
+
+
+def is_secret_key(key: str) -> bool:
+    parts = key.upper().split("_")
+    return any(p in _SECRET_SEGMENTS for p in parts) or any(
+        pair in _SECRET_SEGMENT_PAIRS for pair in zip(parts, parts[1:])
+    )
+
+
+def display_value(key: str, value: str) -> str:
+    """Report-safe rendering: secret-named keys are masked, URL passwords are starred."""
+    if is_secret_key(key):
+        return f"<redacted len={len(value)}>" if value else "''"
+    return repr(_URL_USERINFO_RE.sub(r"\g<head>***\g<at>", value))
+
+
 def sync_file(
     env_path: Path,
     example_path: Path,
@@ -585,10 +609,15 @@ def sync_file(
         seen.add(key)
         if key in desired and desired[key] != old:
             if force:
-                updated.append(f"{name}: {key} {old!r} -> {desired[key]!r}")
+                updated.append(
+                    f"{name}: {key} {display_value(key, old)} -> {display_value(key, desired[key])}"
+                )
                 out_lines.append(f"{key}={desired[key]}\n")
             else:
-                diverged.append(f"{name}: {key} local={old!r} example={desired[key]!r}")
+                diverged.append(
+                    f"{name}: {key} local={display_value(key, old)} "
+                    f"example={display_value(key, desired[key])}"
+                )
                 out_lines.append(raw if raw.endswith("\n") else raw + "\n")
         else:
             out_lines.append(raw if raw.endswith("\n") else raw + "\n")
@@ -597,7 +626,7 @@ def sync_file(
     if missing:
         out_lines.append("\n# synced from .env_example\n")
         for key in missing:
-            updated.append(f"{name}: +{key}={desired[key]!r}")
+            updated.append(f"{name}: +{key}={display_value(key, desired[key])}")
             out_lines.append(f"{key}={desired[key]}\n")
 
     if updated and not dry_run:

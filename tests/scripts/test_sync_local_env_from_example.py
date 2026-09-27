@@ -275,3 +275,38 @@ def test_substrate_reconcile_keys_are_reached_by_the_default_sync() -> None:
         assert len(keys) == 4, (service, keys)
         for key in keys:
             assert should_sync_key(key, all_keys=False), key
+
+
+def test_secret_values_never_printed(tmp_path) -> None:
+    """A diverged/forced/added secret must be reported by key only, never by value."""
+    svc = tmp_path / "svc"
+    svc.mkdir()
+    live, example = "ghp_LIVEsecretVALUE123", "ghp_EXAMPLEsecretVALUE456"
+    (svc / ".env_example").write_text(
+        f"COCREATION_SIGNALS_GH_TOKEN={example}\nNEW_API_KEY=example-key-789\nPLAIN_LEVEL=info\n"
+    )
+    (svc / ".env").write_text(f"COCREATION_SIGNALS_GH_TOKEN={live}\nPLAIN_LEVEL=debug\n")
+
+    diverged = sync_file(svc / ".env", svc / ".env_example", dry_run=True, all_keys=True)
+    forced = sync_file(svc / ".env", svc / ".env_example", dry_run=True, all_keys=True, force=True)
+    report = "\n".join(diverged.diverged + diverged.updated + forced.updated)
+
+    for secret in (live, example, "example-key-789"):
+        assert secret not in report
+    assert "COCREATION_SIGNALS_GH_TOKEN" in report and "NEW_API_KEY" in report
+    assert "'debug'" in report and "'info'" in report
+
+    sync_file(svc / ".env", svc / ".env_example", dry_run=False, all_keys=True, force=True)
+    assert f"COCREATION_SIGNALS_GH_TOKEN={example}" in (svc / ".env").read_text()
+
+
+def test_display_value_masks_url_passwords_and_pass_keys_but_not_token_budgets() -> None:
+    from sync_local_env_from_example import display_value
+
+    shown = display_value("POSTGRES_URI", "postgresql://orion:hunter2pw@db:5432/orion")
+    assert "hunter2pw" not in shown and "orion:***@db:5432" in shown
+    assert "pw123" not in display_value("GRAPHDB_PASS", "pw123")
+    assert "AKIA" not in display_value("LIGHTDASH_S3_ACCESS_KEY", "AKIAxyz")
+    assert display_value("LLM_CHAT_GENERAL_MAX_TOKENS", "4096") == "'4096'"
+    assert display_value("ORION_STATE_KEY", "orion:state") == "'orion:state'"
+    assert display_value("ORION_BUS_URL", "redis://100.92.216.81:6379/0") == "'redis://100.92.216.81:6379/0'"

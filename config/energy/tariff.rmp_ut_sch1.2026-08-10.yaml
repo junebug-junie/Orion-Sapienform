@@ -1,0 +1,48 @@
+# Rocky Mountain Power, Utah Schedule 1 (Residential Service), standard non-TOU option.
+# Every number below is copied from the published sources; nothing is estimated.
+# Changing any number means a NEW file with a NEW tariff_version -- old accruals keep
+# the version they were priced with.
+tariff_version: rmp-ut-sch1-2026-08-10
+utility: rocky_mountain_power
+schedule: "Utah Schedule 1 - Residential Service (standard, non-TOU)"
+effective_from: "2026-08-10"
+sources:
+  - "https://www.rockymountainpower.net/content/dam/pcorp/documents/en/rockymountainpower/rates-regulation/utah/rates/001_Residential_Service.pdf"
+  - "https://www.rockymountainpower.net/content/dam/pcorp/documents/en/rockymountainpower/rates-regulation/utah/Utah_Price_Summary.pdf (In Effect as of August 10, 2026)"
+cost_basis: pre_tax
+
+seasons:
+  summer:
+    months: [6, 7, 8, 9]
+    blocks:
+      - {up_to_kwh: 400, cents_per_kwh: 9.8332}
+      - {up_to_kwh: null, cents_per_kwh: 12.5263}
+  winter:
+    months: [10, 11, 12, 1, 2, 3, 4, 5]
+    blocks:
+      - {up_to_kwh: 400, cents_per_kwh: 8.7020}
+      - {up_to_kwh: null, cents_per_kwh: 11.0852}
+
+# Percent riders on the energy charge, from the Price Summary's Schedule 1 rows.
+# Stage 1 multiplies the base energy charge. Stage 2 multiplies base + stage 1
+# (Price Summary footnote 2: "Applies to Base Rate and Schedules 94 and 98").
+energy_adjustments:
+  on_base_pct:
+    - {name: schedule_94_eba, pct: 7.63, column_verified: true}
+    - {name: schedule_98_rec, pct: -0.53, column_verified: true}
+  on_adjusted_pct:
+    # Values are as printed on the Schedule 1 energy rows; which rider column each
+    # belongs to is not legible in the extracted summary. The first real bill
+    # reconciliation (Plan 2) confirms or corrects them.
+    - {name: price_summary_rider_a, pct: 1.17, column_verified: false}
+    - {name: price_summary_rider_b, pct: 3.84, column_verified: false}
+    - {name: price_summary_rider_c, pct: 0.17, column_verified: false}
+
+fixed_monthly:
+  - {name: customer_charge_single_phase_single_family, usd: 12.00}
+  - {name: schedule_91_lifeline_surcharge, usd: 0.16}
+
+known_gaps:
+  - "Sales and municipal taxes are not modeled; all costs are pre-tax."
+  - "Percent riders on the customer charge are not modeled."
+  - "Season is assigned by each interval's local calendar month, not RMP's billing month."

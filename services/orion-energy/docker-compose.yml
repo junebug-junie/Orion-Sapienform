@@ -1,0 +1,17 @@
+services:
+  orion-energy:
+    container_name: ${PROJECT}-orion-energy
+    build:
+      context: ../..
+      dockerfile: services/orion-energy/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ${ENERGY_HOST_DATA_DIR:-/mnt/storage-warm/orion-energy}:/data/energy
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

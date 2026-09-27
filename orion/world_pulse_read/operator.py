@@ -41,7 +41,9 @@ SELECT s.seed_id, s.kind, s.url, s.title, s.status, s.stage2_status,
        s.request_json->>'why_now' AS why_now,
        s.handoff_json IS NOT NULL AS has_handoff,
        s.stage2_result_json IS NOT NULL AS has_stage2_result,
-       left(COALESCE(s.stage2_result_json->>'summary', s.handoff_json->>'what_i_learned', ''), 280) AS preview,
+       left(COALESCE(s.stage2_result_json->>'summary',
+                     CASE WHEN s.status = 'done' THEN s.handoff_json->>'what_i_learned' END,
+                     ''), 280) AS preview,
        GREATEST(s.created_at, s.claimed_at, s.completed_at, s.handoff_at,
                 s.stage2_claimed_at, s.stage2_completed_at, s.landing_at) AS updated_at,
        (SELECT d.run_id FROM reading_durable_turn d
@@ -77,6 +79,11 @@ _ACTIVE_BINDING_SQL = """
 SELECT run_id FROM reading_durable_turn
 WHERE seed_id = $1 AND stage = $2 AND consumed_at IS NULL
 ORDER BY attempt DESC LIMIT 1
+"""
+
+_OLDER_THAN_SQL = """
+SELECT created_at < now() - ($2 * interval '1 second')
+FROM world_pulse_read_seed WHERE seed_id = $1
 """
 
 
@@ -248,8 +255,15 @@ def _has_read_evidence(handoff: Any) -> bool:
     return isinstance(handoff, dict) and bool(handoff.get("read_evidence"))
 
 
-async def retry_read(conn: Any, seed_id: str, *, stage: int) -> dict[str, Any]:
-    """Return a terminal stage to ``pending`` with a fresh attempt budget."""
+async def retry_read(
+    conn: Any, seed_id: str, *, stage: int, digest_item_max_age_sec: float = 0.0,
+) -> dict[str, Any]:
+    """Return a terminal stage to ``pending`` with a fresh attempt budget.
+
+    ``digest_item_max_age_sec`` must match the Stage 1 worker's stale sweep
+    (``skip_stale_digest_items``): a digest item past it would be skipped again
+    on the next tick, so the retry is refused instead of reported as queued.
+    """
     if stage not in (1, 2):
         raise OperatorActionError("stage_must_be_1_or_2", 400)
     async with conn.transaction():
@@ -259,7 +273,10 @@ async def retry_read(conn: Any, seed_id: str, *, stage: int) -> dict[str, Any]:
         if stage == 1:
             if row["status"] not in ("failed", "skipped"):
                 raise OperatorActionError("stage1_not_terminal")
-            if row["last_error"] == STALE_DIGEST_ITEM_LAST_ERROR:
+            if row["last_error"] == STALE_DIGEST_ITEM_LAST_ERROR or (
+                row["kind"] == "digest_item" and digest_item_max_age_sec > 0
+                and await conn.fetchval(_OLDER_THAN_SQL, seed_id, float(digest_item_max_age_sec))
+            ):
                 raise OperatorActionError("stale_digest_item_would_be_reskipped")
             # Same lock the ingress takes, so a concurrent submit cannot race us.
             await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", row["url"])

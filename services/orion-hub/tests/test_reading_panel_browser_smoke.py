@@ -29,6 +29,9 @@ ITEMS = [
      "reading_status": "failed", "status": "failed", "stage2_status": "pending", "requested_by": "juniper",
      "invocation_context": "operator", "preview": "", "updated_at": "2026-09-27T04:00:00Z",
      "last_error": "no_read_evidence"},
+    {"seed_id": "reading:dup", "kind": "reading", "url": "https://example.org/paper", "title": "",
+     "reading_status": "skipped", "status": "skipped", "stage2_status": "pending", "requested_by": "orion",
+     "duplicate_of": DONE_ID, "preview": "", "updated_at": "2026-09-27T03:00:00Z"},
 ]
 DETAIL = {
     DONE_ID: {
@@ -80,7 +83,7 @@ def test_reading_panel_browser_smoke():
                 body = {"action": "requeued", "stage": 2}
             return route.fulfill(body=json.dumps(body), content_type="application/json")
         if "/api/reads?" in url:
-            return route.fulfill(body=json.dumps({"items": ITEMS, "total": 2, "phase": "all"}),
+            return route.fulfill(body=json.dumps({"items": ITEMS, "total": len(ITEMS), "phase": "all"}),
                                  content_type="application/json")
         if "/api/reads/" in url:
             seed = unquote(url.split("/api/reads/")[1])
@@ -99,6 +102,7 @@ def test_reading_panel_browser_smoke():
         assert "3 of 12 used today" in page.inner_text("#stats")
         assert "Juniper (Hub)" in page.inner_text("#reads")
         assert "Orion learned that X." in page.inner_text("#reads")
+        assert "merged into another read" in page.inner_text('#reads tr[data-seed="reading:dup"]')
 
         page.click(f'#reads tr[data-seed="{DONE_ID}"]')
         page.wait_for_selector("#retryStage2")
@@ -118,6 +122,10 @@ def test_reading_panel_browser_smoke():
         page.wait_for_function("document.getElementById('detail').textContent.includes('Rejected, not learned')")
         assert "curious" in page.inner_text("#detail")
         assert page.is_enabled("#retryStage1") and not page.is_enabled("#retryStage2")
+
+        page.click("#readAgain")                                          # prefills, never POSTs
+        assert page.input_value("#submitUrl") == "https://example.org/r"
+        assert posted[-1][0].endswith("/retry")
 
         page.fill("#submitUrl", "https://example.org/new")
         page.fill("#submitWhy", "because")

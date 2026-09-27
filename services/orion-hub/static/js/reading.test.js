@@ -26,6 +26,20 @@ test("statusLabel speaks plainly and flags unknown states", () => {
   assert.deepStrictEqual(rd.statusLabel("weird"), { text: "weird", tone: "warn" });
 });
 
+test("rowStatus shows a folded duplicate as merged, not skipped", () => {
+  assert.deepStrictEqual(rd.rowStatus({ reading_status: "skipped", duplicate_of: "reading:0" }),
+    { text: "merged into another read", tone: "warn" });
+  assert.deepStrictEqual(rd.rowStatus({ reading_status: "skipped" }), { text: "skipped", tone: "warn" });
+});
+
+test("actionResultText does not claim a cancel landed on a finished run", () => {
+  assert.match(rd.actionResultText("Cancel read", { action: "cancel_durable_run", durable_status: "completed",
+    run_already_finished: true }), /too late, the run had already completed/);
+  assert.strictEqual(rd.actionResultText("Cancel read", { action: "cancel_durable_run", durable_status: "cancelled",
+    run_already_finished: false }), "Cancel read: cancel_durable_run (run is now cancelled)");
+  assert.strictEqual(rd.actionResultText("Retry stage 1", { action: "requeued" }), "Retry stage 1: requeued");
+});
+
 test("allowedActions mirrors the server's cancel and retry rules", () => {
   assert.deepStrictEqual(rd.allowedActions(detail()), { cancel: false, retry1: false, retry2: true });
   assert.strictEqual(rd.allowedActions(detail({ handoff: { read_evidence: [] } })).retry2, false);

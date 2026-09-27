@@ -373,6 +373,9 @@ async def submit_read(
     return JSONResponse(content=receipt, headers=_NO_CACHE)
 
 
+_DURABLE_FINISHED = frozenset({"completed", "failed"})
+
+
 async def _cancel_durable_run(run_id: str) -> dict[str, Any]:
     base = str(getattr(_settings(), "HUB_READING_DURABLE_URL", "") or "http://127.0.0.1:8124")
     try:
@@ -404,6 +407,8 @@ async def cancel_read(
     if plan["action"] == "cancel_durable_run":
         state = await _cancel_durable_run(plan["run_id"])
         plan["durable_status"] = state.get("status")
+        # The runner answers a cancel on a finished run with that run's final status.
+        plan["run_already_finished"] = plan["durable_status"] in _DURABLE_FINISHED
     logger.info("reading_operator_cancel seed_id=%s action=%s stage=%s run_id=%s",
                 seed_id, plan["action"], plan["stage"], plan.get("run_id"))
     return JSONResponse(content=plan, headers=_NO_CACHE)
@@ -419,7 +424,12 @@ async def retry_read(
     pool = _require_pool()
     try:
         async with pool.acquire() as conn:
-            result = await reading_operator.retry_read(conn, seed_id, stage=body.stage)
+            result = await reading_operator.retry_read(
+                conn, seed_id, stage=body.stage,
+                digest_item_max_age_sec=float(
+                    getattr(_settings(), "HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS", 0) or 0
+                ) * 86400.0,
+            )
     except reading_operator.OperatorActionError as exc:
         raise _operator_error(exc) from exc
     logger.info("reading_operator_retry seed_id=%s stage=%s", seed_id, body.stage)

@@ -123,6 +123,10 @@ def test_detail_marks_rejected_handoff_and_joins_journal_aliases_bindings(local_
         assert [a["seed_id"] for a in detail["aliases"]] == [alias["seed_id"]]
         assert detail["durable_turns"][0]["stage"] == 1
         assert detail["request"]["invocation_context"] == "unified_chat"
+        listed = {i["seed_id"]: i for i in (await op.list_reads(conn))["items"]}
+        # A rejected write-up is never quoted in the list as if it were learned.
+        assert listed[seed.seed_id]["has_handoff"] is True
+        assert listed[seed.seed_id]["preview"] == ""
         with pytest.raises(op.OperatorActionError) as err:
             await op.read_detail(conn, "missing")
         assert err.value.http_status == 404
@@ -247,6 +251,38 @@ def test_retry_refuses_unconsumed_binding_and_stale_digest(local_pg):
         with pytest.raises(op.OperatorActionError) as err:
             await op.retry_read(conn, stale.seed_id, stage=1)
         assert err.value.code == "stale_digest_item_would_be_reskipped"
+        await conn.close()
+    _run(run())
+
+
+def test_retry_refuses_failed_digest_item_past_the_stale_sweep_age(local_pg):
+    """A failed (not swept) old digest item would be re-skipped by the next tick's sweep."""
+    max_age = 5 * 86400.0
+
+    async def run():
+        conn, _ = await _operator_db(local_pg)
+        old = WorldPulseReadSeedV1(seed_id="digest_item:old-failed", kind="digest_item", run_id="r",
+                                   url="https://example.org/old-failed")
+        young = WorldPulseReadSeedV1(seed_id="digest_item:young-failed", kind="digest_item", run_id="r",
+                                     url="https://example.org/young-failed")
+        await queue.enqueue_seeds(conn, [old, young])
+        await conn.execute(
+            "UPDATE world_pulse_read_seed SET created_at = now() - interval '6 days' WHERE seed_id=$1",
+            old.seed_id,
+        )
+        for sid in (old.seed_id, young.seed_id):
+            await queue.mark_seed_failed(conn, sid, error="fetch_failed")
+
+        with pytest.raises(op.OperatorActionError) as err:
+            await op.retry_read(conn, old.seed_id, stage=1, digest_item_max_age_sec=max_age)
+        assert err.value.code == "stale_digest_item_would_be_reskipped"
+        assert (await _row(conn, old.seed_id))["status"] == "failed"
+
+        assert await op.retry_read(conn, young.seed_id, stage=1, digest_item_max_age_sec=max_age) == {
+            "action": "requeued", "stage": 1,
+        }
+        assert await queue.skip_stale_digest_items(conn, max_age_sec=max_age) == 0
+        assert (await _row(conn, young.seed_id))["status"] == "pending"
         await conn.close()
     _run(run())
 

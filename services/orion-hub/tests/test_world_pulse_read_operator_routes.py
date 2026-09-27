@@ -35,7 +35,9 @@ def routes(monkeypatch):
     from scripts import world_pulse_read_routes as routes
 
     monkeypatch.setattr(routes, "_pool", lambda: _Pool())
-    monkeypatch.setattr(routes, "_settings", lambda: SimpleNamespace(HUB_READING_DURABLE_URL="http://durable.test"))
+    monkeypatch.setattr(routes, "_settings", lambda: SimpleNamespace(
+        HUB_READING_DURABLE_URL="http://durable.test", HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS=5.0,
+    ))
     monkeypatch.setattr(routes, "_source_ref", lambda: None)
     monkeypatch.delenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", raising=False)
     return routes
@@ -77,7 +79,10 @@ def test_controls_require_hub_page_headers(client, routes, monkeypatch, headers)
 def test_configured_operator_token_is_required_via_header_or_cookie(client, routes, monkeypatch):
     monkeypatch.setenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "sekrit")
 
-    async def retry(conn, seed_id, *, stage):
+    ages = []
+
+    async def retry(conn, seed_id, *, stage, digest_item_max_age_sec):
+        ages.append(digest_item_max_age_sec)
         return {"action": "requeued", "stage": stage}
 
     monkeypatch.setattr(routes.reading_operator, "retry_read", retry)
@@ -89,6 +94,8 @@ def test_configured_operator_token_is_required_via_header_or_cookie(client, rout
     assert client.post(url, headers=ok, json={"stage": 2}).json() == {"action": "requeued", "stage": 2}
     client.cookies.set("orion_operator_token", "sekrit")
     assert client.post(url, headers=HEADERS, json={"stage": 1}).status_code == 200
+    # Retry must refuse exactly what the Stage 1 stale sweep would re-skip.
+    assert ages == [5 * 86400.0, 5 * 86400.0]
 
 
 def test_retry_rejects_bad_stage_before_touching_queue(client):
@@ -153,15 +160,19 @@ def _durable(monkeypatch, routes, handler):
     return calls
 
 
-def test_cancel_bound_run_goes_through_durable_runner(client, routes, monkeypatch):
+@pytest.mark.parametrize("run_status,finished", [
+    ("cancelled", False), ("running", False), ("completed", True), ("failed", True),
+])
+def test_cancel_bound_run_goes_through_durable_runner(client, routes, monkeypatch, run_status, finished):
     async def cancel(conn, seed_id):
         return {"action": "cancel_durable_run", "stage": 1, "run_id": "reading-abc"}
 
     monkeypatch.setattr(routes.reading_operator, "cancel_read", cancel)
-    calls = _durable(monkeypatch, routes, lambda r: httpx.Response(200, json={"status": "cancelled"}))
+    calls = _durable(monkeypatch, routes, lambda r: httpx.Response(200, json={"status": run_status}))
     resp = client.post("/world-pulse-read/api/reads/reading:x/cancel", headers=HEADERS, content="{}")
     assert resp.status_code == 200
-    assert resp.json()["durable_status"] == "cancelled"
+    assert resp.json()["durable_status"] == run_status
+    assert resp.json()["run_already_finished"] is finished
     assert calls == ["http://durable.test/runs/reading-abc/cancel"]
 
 

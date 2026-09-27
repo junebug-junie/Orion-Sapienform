@@ -33,6 +33,20 @@
     return hit ? { text: hit[0], tone: hit[1] } : { text: String(status || "unknown"), tone: "warn" };
   }
 
+  // A duplicate request is folded into its target read; its own row is never read.
+  function rowStatus(item) {
+    if (item && item.duplicate_of) return { text: "merged into another read", tone: "warn" };
+    return statusLabel(item && item.reading_status);
+  }
+
+  function actionResultText(label, out) {
+    if (out && out.run_already_finished) {
+      return `${label}: too late, the run had already ${out.durable_status}; its result will be recorded.`;
+    }
+    const extra = out && out.durable_status ? ` (run is now ${out.durable_status})` : "";
+    return `${label}: ${(out && out.action) || "done"}${extra}`;
+  }
+
   function sourceLabel(item) {
     const by = (item && item.requested_by) || "world_pulse";
     const ctx = (item && (item.invocation_context || (item.request && item.request.invocation_context))) || "";
@@ -72,7 +86,7 @@
     stage1_not_done: "Stage 2 needs a finished Stage 1 first.",
     no_read_evidence: "Stage 1 never actually fetched the source, so Stage 2 has nothing to work from. Retry Stage 1.",
     url_already_active: "Another read of this same URL is already queued or running.",
-    stale_digest_item_would_be_reskipped: "Old digest items are skipped automatically; retrying would just skip it again.",
+    stale_digest_item_would_be_reskipped: "Old digest items are skipped automatically, so a retry would be skipped again. Use \"Read this URL again\" to queue it as a new read.",
     durable_run_not_found_retry_shortly: "The run hasn't reached the run service yet; try again shortly.",
     operator_guard_rejected: "Operator token missing or wrong. Reload Hub to refresh it.",
     reading_control_requires_hub_page: "Controls only work from the Hub page.",
@@ -105,7 +119,10 @@
     return `${used} of ${cap} used today${w.enabled ? "" : " (paused)"}`;
   }
 
-  const api = { statusLabel, sourceLabel, allowedActions, refusalText, listQuery, fmtAt, walletText, hasEvidence };
+  const api = {
+    statusLabel, rowStatus, actionResultText, sourceLabel, allowedActions, refusalText,
+    listQuery, fmtAt, walletText, hasEvidence,
+  };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.OrionReading = api;
   if (typeof document === "undefined") return;
@@ -130,8 +147,8 @@
     return node;
   }
 
-  function badge(status) {
-    const s = statusLabel(status);
+  function badge(item) {
+    const s = rowStatus(item);
     return el("span", { class: `badge tone-${s.tone}`, text: s.text });
   }
 
@@ -220,8 +237,7 @@
           item.preview ? el("div", { class: "preview", text: item.preview }) : null,
         ]),
         el("td", { text: sourceLabel(item) }),
-        el("td", {}, [badge(item.reading_status),
-                      item.duplicate_of ? el("div", { class: "muted", text: "duplicate request" }) : null,
+        el("td", {}, [badge(item),
                       (item.stage2_error || item.last_error) ? el("div", { class: "muted", text: item.stage2_error || item.last_error }) : null]),
         el("td", { class: "muted", text: fmtAt(item.updated_at) }),
       ])));
@@ -299,9 +315,7 @@
       if (!confirm(`${label}?`)) return;
       $("actionStatus").textContent = `${label}…`;
       try {
-        const out = await postJson(path, body);
-        const extra = out.durable_status ? ` (run is now ${out.durable_status})` : "";
-        $("actionStatus").textContent = `${label}: ${out.action}${extra}`;
+        $("actionStatus").textContent = actionResultText(label, await postJson(path, body));
       } catch (err) {
         $("actionStatus").textContent = `${label} refused: ${err.message}`;
       }
@@ -318,6 +332,15 @@
       el("button", { type: "button", disabled: !can.retry2, id: "retryStage2",
         title: "Queue the follow-up again. Uses a wallet B slot when it runs.",
         onclick: () => act("Retry stage 2", `${BASE}/reads/${id}/retry`, { stage: 2 }) }, "Retry stage 2"),
+      // Escape hatch when no retry applies (e.g. an old digest item): a fresh request.
+      can.cancel || d.duplicate_of ? null : el("button", { type: "button", id: "readAgain",
+        title: "Put this URL in the submit form above as a new read.",
+        onclick: () => {
+          $("submitUrl").value = d.url || "";
+          $("submitReadTitle").value = d.title || "";
+          $("submitUrl").focus();
+          $("submitStatus").textContent = "Add a reason if you like, then press Queue read.";
+        } }, "Read this URL again"),
     ]);
   }
 
@@ -336,7 +359,7 @@
       d.duplicate_of ? el("dd", {}, el("a", { href: "#", text: d.duplicate_of, onclick: (e) => { e.preventDefault(); select(d.duplicate_of); } })) : null,
     ]);
     $("detail").replaceChildren(
-      el("div", { class: "row" }, [badge(d.reading_status), el("strong", { text: d.title || "" })]),
+      el("div", { class: "row" }, [badge(d), el("strong", { text: d.title || "" })]),
       el("div", {}, safeLink(d.url)),
       meta,
       actionButtons(d),
@@ -350,7 +373,7 @@
       el("details", { style: "margin-top:12px" }, [
         el("summary", { text: "Runs, duplicates and raw data" }),
         el("h3", { text: "Runs" }),
-        list(d.durable_turns, (t) => `stage ${t.stage} attempt ${t.attempt}: ${t.run_id} · ${t.consumed_at ? `finished ${fmtAt(t.consumed_at)}` : "open"}`),
+        list(d.durable_turns, (t) => `stage ${t.stage} attempt ${t.attempt}: ${t.run_id} · ${t.consumed_at ? `collected ${fmtAt(t.consumed_at)}` : "not yet collected by the worker"}`),
         el("h3", { text: "Duplicate requests folded into this read" }),
         list(d.aliases, (a) => `${sourceLabel(a)} · ${fmtAt(a.created_at)}${a.why_now ? ` · ${a.why_now}` : ""}`),
         el("dl", { class: "meta" }, [

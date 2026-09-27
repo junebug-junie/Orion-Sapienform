@@ -1,7 +1,7 @@
 # Orion energy watcher — house electricity as a stake
 
 - **Date:** 2026-09-26
-- **Status:** Plan 1 (cost primitive) implemented on `feat/orion-energy-watcher` — awaiting merge. Plan 2 (portal, bill reconcile, stakes, Hub) not started.
+- **Status:** Plan 1 (cost primitive) merged (PR #2373). Plan 2 (portal, bill reconcile, stakes, Hub) implemented on `feat/orion-energy-watcher-plan-2`; portal selectors UNVERIFIED until first live reauth.
 - **Branch:** `feat/orion-energy-watcher`
 - **Worktree:** `/mnt/scripts/Orion-Sapienform-orion-energy-watcher`
 

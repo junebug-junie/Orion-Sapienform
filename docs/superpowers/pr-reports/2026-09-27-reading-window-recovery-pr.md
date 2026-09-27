@@ -46,6 +46,21 @@ unconsumed binding retained queue precedence over arXiv 2310.19279.
 ## Rollout
 
 Hub recreated from this worktree using safe_docker_build.sh, project orion-hub.
-Live Stage 2 environment now reports 0/0. Result-collection verification follows.
+Live Stage 2 environment reports 0/0 and both caps remain 12.
+An operator recovery tick collected the predecessor's completed result.
+The stored-artifact verifier now reports verified_complete=true, gaps=[] for
+https://www.youtube.com/watch?v=BgD62MIINo8.
+
+One subsequent operator tick used the existing force option to bypass only
+the newly set cooldown: preflight required enabled=true, count below cap,
+no retry backoff, and arXiv 2310.19279 next in the normal queue. No Redis
+counters, timestamps or queue priorities were manually rewritten.
+
+The arXiv Stage 2 binding is reading-08364abe-2492-59b9-bb5c-471e76aabebc.
+Its durable trace records run.started at 2026-09-27T06:01:33.477536Z, with a
+granted GPU0/chat lease and Qwen3.6-35B-A3B-UD-Q5_K_M.gguf. Work is started;
+paper completion is not yet verified. GPU0 lending needed no policy change.
+Initial PR CI: all three checks passed.
+
 Rollback: restore prior Hub image and Stage 2 window 8/22; durable state and
 queue history remain intact. Do not reset wallets or delete bindings.

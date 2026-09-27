@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -47,6 +47,15 @@ class Settings(BaseSettings):
 
     HEARTBEAT_INTERVAL_SEC: float = Field(default=30.0)
     ORION_HEALTH_CHANNEL: str = Field(default="orion:system:health")
+
+    @model_validator(mode="after")
+    def _stakes_ratios_ordered(self) -> "Settings":
+        if self.ENERGY_STAKES_NEAR_RATIO > self.ENERGY_STAKES_OVER_RATIO:
+            raise ValueError(
+                f"ENERGY_STAKES_NEAR_RATIO ({self.ENERGY_STAKES_NEAR_RATIO}) must be <= "
+                f"ENERGY_STAKES_OVER_RATIO ({self.ENERGY_STAKES_OVER_RATIO})"
+            )
+        return self
 
 
 @lru_cache

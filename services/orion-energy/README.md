@@ -50,6 +50,11 @@ does not show are simply omitted (unknown, not $0):
  "customer_charge": 12.00, "taxes": 4.10, "current_charges": 101.23}
 ```
 
+Only `*.json` files are scanned, so write the file as `name.json.part` and rename it to
+`name.json` once it is complete — a half-written file would otherwise be read, fail to
+parse, and land in `bills/inbox/failed/`. A file that fails to parse is kept there under a
+`<timestamp>__<name>` prefix, so repeated failures never overwrite each other.
+
 RMP's in-cycle estimate uses `"kind": "energy.bill.forecast.v1"` with `billing_period_start`,
 `as_of`, and `projected_total_usd` and/or `projected_kwh`. The period is
 `[billing_period_start, billing_period_end)` at local midnight. Each bill publishes a

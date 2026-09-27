@@ -310,3 +310,14 @@ def test_display_value_masks_url_passwords_and_pass_keys_but_not_token_budgets()
     assert display_value("LLM_CHAT_GENERAL_MAX_TOKENS", "4096") == "'4096'"
     assert display_value("ORION_STATE_KEY", "orion:state") == "'orion:state'"
     assert display_value("ORION_BUS_URL", "redis://100.92.216.81:6379/0") == "'redis://100.92.216.81:6379/0'"
+
+
+def test_energy_keys_are_reached_by_the_default_sync() -> None:
+    """orion-energy was absent from DEFAULT_SERVICES and no prefix matched ENERGY_: the default
+    run skipped all its keys while reporting other services, which read as a pass."""
+    assert "orion-energy" in sync_mod.DEFAULT_SERVICES
+    keys = [k for k in sync_mod.parse_kv(ROOT / "services" / "orion-energy" / ".env_example")
+            if k.startswith("ENERGY_")]
+    assert len(keys) >= 14, keys
+    for key in keys:
+        assert should_sync_key(key, all_keys=False), key

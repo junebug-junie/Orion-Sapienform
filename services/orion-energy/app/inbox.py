@@ -2,8 +2,9 @@
 
 A parsed file moves to processed/ with its retrieval time as a filename prefix, so
 a restart replays the exact same rows with the exact same retrieved_at. A file that
-fails to parse moves to <inbox>/failed/ and publishes nothing -- a broken export must
-never read as a quiet day. Files the portal fetcher wrote start with `rmp-portal`.
+fails to parse moves to <inbox>/failed/ (same stamp prefix, so a repeat failure never
+overwrites an earlier one) and publishes nothing -- a broken export must never read as
+a quiet day. Files the portal fetcher wrote start with `rmp-portal`.
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ def scan_dir(inbox_dir: Path, processed_dir: Path, *, now: datetime, suffix: str
             failed = inbox_dir / "failed"
             failed.mkdir(parents=True, exist_ok=True)
             try:
-                path.rename(failed / path.name)
+                path.rename(failed / target_name)
             except OSError as rename_exc:
                 logger.warning("energy_inbox_io_failed file=%s op=rename_to_failed error=%s", path.name, rename_exc)
                 continue

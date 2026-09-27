@@ -9,6 +9,7 @@ from orion.energy.importer_status import PortalStatus
 from orion.energy.testing import hourly, make_test_ledger
 from orion.schemas.energy import (
     ENERGY_BILL_ACTUAL_KIND,
+    ENERGY_BILL_FORECAST_KIND,
     ENERGY_IMPORTER_STATUS_KIND,
     ENERGY_RECONCILE_KIND,
     ENERGY_STAKES_KIND,
@@ -88,3 +89,21 @@ def test_status_tick_portal_reauth() -> None:
     out = p.status_tick(now=NOW, portal=portal, last_file_at=None)
     assert out[0].payload.state == "reauth_required"
     assert out[1].payload.pressure_reason == "importer_reauth_required"
+
+
+def _forecast(retrieved=NOW, total=80.0) -> EnergyBillForecastV1:
+    return EnergyBillForecastV1(
+        source="rockymountain_power", billing_period_start=date(2026, 9, 1), as_of=NOW,
+        projected_total_usd=total, retrieved_at=retrieved,
+    )
+
+
+def test_stale_forecast_redelivery_is_ignored() -> None:
+    p = _pipe()
+    first = p.ingest_bills([_forecast()], now=NOW)
+    assert [o.kind for o in first] == [ENERGY_BILL_FORECAST_KIND, ENERGY_RECONCILE_KIND]
+    # Same (billing_period_start, as_of) key, older retrieval: dropped, nothing republished.
+    assert p.ingest_bills([_forecast(retrieved=NOW - timedelta(days=1), total=1.0)], now=NOW) == []
+    # Newer retrieval of the same key wins and republishes.
+    newer = p.ingest_bills([_forecast(retrieved=NOW + timedelta(hours=1), total=90.0)], now=NOW)
+    assert newer[0].payload.projected_total_usd == 90.0

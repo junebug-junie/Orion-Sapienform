@@ -56,8 +56,12 @@ def test_bad_bills_go_to_failed_and_publish_nothing(tmp_path) -> None:
     _drop(inbox, "nokind.json", {k: v for k, v in ACTUAL.items() if k != "kind"})
     _drop(inbox, "empty_forecast.json", {"kind": "energy.bill.forecast.v1", "billing_period_start": "2026-09-11", "as_of": "2026-09-26T05:00:00Z"})
     _drop(inbox, "garbage.json", "{not json")
+    _drop(inbox, "listkind.json", {**ACTUAL, "kind": []})
+    _drop(inbox, "dictkind.json", {**ACTUAL, "kind": {"a": 1}})
     assert scan_bills(inbox, processed, now=NOW) == []
-    assert sorted(p.name for p in (inbox / "failed").iterdir()) == ["empty_forecast.json", "garbage.json", "nokind.json"]
+    assert sorted(p.name.split("__", 1)[1] for p in (inbox / "failed").iterdir()) == [
+        "dictkind.json", "empty_forecast.json", "garbage.json", "listkind.json", "nokind.json",
+    ]
 
 
 def test_portal_status_missing_or_invalid_reads_none(tmp_path) -> None:

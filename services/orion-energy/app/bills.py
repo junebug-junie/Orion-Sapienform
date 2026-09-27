@@ -29,7 +29,8 @@ def parse_bill(raw: bytes, *, retrieved_at: datetime, source_file: str) -> Bill:
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError("bill file must be a JSON object")
-    model = _MODELS.get(data.pop("kind", None))
+    kind = data.pop("kind", None)
+    model = _MODELS.get(kind) if isinstance(kind, str) else None
     if model is None:
         raise ValueError("bill file needs kind energy.bill.actual.v1 or energy.bill.forecast.v1")
     data.setdefault("source", "file_drop")

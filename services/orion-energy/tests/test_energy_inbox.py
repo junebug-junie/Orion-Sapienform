@@ -30,8 +30,20 @@ def test_unparseable_file_goes_to_failed_not_processed(tmp_path: Path) -> None:
     inbox.mkdir()
     (inbox / "junk.xml").write_bytes(b"<nope")
     assert scan_inbox(inbox, processed, now=NOW) == []
-    assert (inbox / "failed" / "junk.xml").exists()
+    assert (inbox / "failed" / "20260911T120005Z__junk.xml").exists()
     assert not processed.exists() or not any(processed.iterdir())
+
+
+def test_repeated_failures_with_same_name_both_survive(tmp_path: Path) -> None:
+    inbox, processed = tmp_path / "inbox", tmp_path / "processed"
+    inbox.mkdir()
+    (inbox / "junk.xml").write_bytes(b"<first")
+    scan_inbox(inbox, processed, now=NOW)
+    (inbox / "junk.xml").write_bytes(b"<second")
+    scan_inbox(inbox, processed, now=NOW.replace(minute=5))
+    failed = sorted((inbox / "failed").iterdir())
+    assert [p.name for p in failed] == ["20260911T120005Z__junk.xml", "20260911T120505Z__junk.xml"]
+    assert [p.read_bytes() for p in failed] == [b"<first", b"<second"]
 
 
 def test_non_xml_files_ignored(tmp_path: Path) -> None:

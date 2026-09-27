@@ -133,6 +133,8 @@ SYNC_PREFIXES = (
     "POLICY_RECONCILE_",
     "DISPATCH_RECONCILE_",
     "FEEDBACK_RECONCILE_",
+    # orion-energy (only service with ENERGY_ keys); DEFAULT_SERVICES entry below.
+    "ENERGY_",
     # orion-whisper-tts, added 2026-08-29. None of this service's 26 keys
     # matched any prefix below, and the service itself was absent from
     # DEFAULT_SERVICES, so the default invocation considered ZERO of them
@@ -490,6 +492,9 @@ DEFAULT_SERVICES = (
     # requirement as orion-cocreation-signals: DEFAULT_SERVICES visit +
     # CURIOSITY_PEER_ / ORION_CURIOSITY_GRAPH_ prefixes above.
     "orion-curiosity-peer",
+    # Energy watcher (2026-09-27). Same dual-half blind spot: absent here and no
+    # ENERGY_ prefix, so the default run added none of its 14 plan-2 keys.
+    "orion-energy",
 )
 
 

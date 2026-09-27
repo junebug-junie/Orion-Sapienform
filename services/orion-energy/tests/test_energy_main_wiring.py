@@ -11,9 +11,15 @@ import pytest
 from app import main as energy_main
 from app.settings import Settings
 from orion.energy.testing import hourly
-from orion.schemas.energy import ENERGY_IMPORTER_STATUS_KIND, ENERGY_RECONCILE_KIND, ENERGY_STAKES_KIND
+from orion.schemas.energy import (
+    ENERGY_IMPORTER_STATUS_KIND,
+    ENERGY_RECONCILE_KIND,
+    ENERGY_STAKES_KIND,
+    ENERGY_USAGE_KIND,
+)
 
 REPO = Path(__file__).resolve().parents[3]
+FIXTURE = REPO / "orion/energy/tests/fixtures/espi_two_flows.xml"
 TARIFF = REPO / "config/energy/tariff.rmp_ut_sch1.2026-08-10.yaml"
 DENVER = ZoneInfo("America/Denver")
 NOW = datetime(2026, 9, 27, 6, tzinfo=timezone.utc)
@@ -90,3 +96,54 @@ def test_status_loop_publishes_importer_then_stakes_on_configured_channels(
     assert importer["state"] == "reauth_required" and importer["reason"] == "session_expired"
     assert stakes["pressure"] == "unknown" and stakes["pressure_reason"] == "importer_reauth_required"
     assert ENERGY_RECONCILE_KIND not in {env.kind for _, env in bus.published}
+
+
+def _stop_after(monkeypatch: pytest.MonkeyPatch, calls: int) -> None:
+    seen = {"n": 0}
+
+    async def _sleep(_seconds: float) -> None:
+        seen["n"] += 1
+        if seen["n"] >= calls:
+            raise _Stop
+
+    monkeypatch.setattr(energy_main.asyncio, "sleep", _sleep)
+
+
+def test_status_loop_survives_a_tick_that_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    s = _settings(tmp_path)
+    pipeline = energy_main.build_pipeline(s)
+    real_tick = pipeline.status_tick
+    ticks = {"n": 0}
+
+    def _flaky_tick(**kw):
+        ticks["n"] += 1
+        if ticks["n"] == 1:
+            raise RuntimeError("boom")
+        return real_tick(**kw)
+
+    monkeypatch.setattr(pipeline, "status_tick", _flaky_tick)
+    _stop_after(monkeypatch, 2)
+    bus = _FakeBus()
+    with pytest.raises(_Stop):
+        asyncio.run(energy_main.status_loop(bus, s, pipeline, asyncio.Lock()))
+    assert ticks["n"] == 2
+    assert [env.kind for _, env in bus.published] == [ENERGY_IMPORTER_STATUS_KIND, ENERGY_STAKES_KIND]
+
+
+def test_poison_bill_cannot_block_usage_publish(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    s = _settings(tmp_path, ENERGY_INBOX_DIR=str(tmp_path / "inbox"))
+    inbox = Path(s.ENERGY_INBOX_DIR)
+    inbox.mkdir()
+    (inbox / "sept.xml").write_bytes(FIXTURE.read_bytes())
+    pipeline = energy_main.build_pipeline(s)
+
+    def _boom(*_a, **_kw):
+        raise TypeError("unexpected bill failure")
+
+    monkeypatch.setattr(energy_main, "scan_bills", _boom)
+    _stop_after(monkeypatch, 1)
+    bus = _FakeBus()
+    with pytest.raises(_Stop):
+        asyncio.run(energy_main.inbox_loop(bus, s, pipeline, asyncio.Lock()))
+    assert ENERGY_USAGE_KIND in {env.kind for _, env in bus.published}
+    assert not (inbox / "sept.xml").exists()

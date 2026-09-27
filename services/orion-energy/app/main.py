@@ -94,25 +94,31 @@ async def publish_all(bus: OrionBusAsync, settings: Settings, outbound: Iterable
 
 async def inbox_loop(bus: OrionBusAsync, settings: Settings, pipeline: EnergyPipeline, lock: asyncio.Lock) -> None:
     inbox, processed = Path(settings.ENERGY_INBOX_DIR), Path(settings.ENERGY_PROCESSED_DIR)
+    bill_inbox, bill_processed = Path(settings.ENERGY_BILL_INBOX_DIR), Path(settings.ENERGY_BILL_PROCESSED_DIR)
     while True:
+        # Usage and bills run in separate try blocks: scanning moves files to processed/,
+        # so a failure in one must not drop rows the other already moved.
         try:
-            scan_at = datetime.now(timezone.utc)
-            rows = await asyncio.to_thread(scan_inbox, inbox, processed, now=scan_at)
-            bills = await asyncio.to_thread(
-                scan_bills, Path(settings.ENERGY_BILL_INBOX_DIR), Path(settings.ENERGY_BILL_PROCESSED_DIR), now=scan_at
-            )
-            if rows or bills:
+            rows = await asyncio.to_thread(scan_inbox, inbox, processed, now=datetime.now(timezone.utc))
+            if rows:
                 async with lock:
-                    now = datetime.now(timezone.utc)
-                    outbound = pipeline.ingest_intervals(rows, now=now) if rows else []
-                    outbound += pipeline.ingest_bills(bills, now=now) if bills else []
+                    outbound = pipeline.ingest_intervals(rows, now=datetime.now(timezone.utc))
                 await publish_all(bus, settings, outbound)
                 logger.info(
-                    "energy_ingested intervals=%d bills=%d published=%d pending=%d",
-                    len(rows), len(bills), len(outbound), pipeline.pending_count(),
+                    "energy_ingested intervals=%d published=%d pending=%d",
+                    len(rows), len(outbound), pipeline.pending_count(),
                 )
         except Exception:
-            logger.exception("energy_inbox_cycle_failed")
+            logger.exception("energy_inbox_cycle_failed kind=usage")
+        try:
+            bills = await asyncio.to_thread(scan_bills, bill_inbox, bill_processed, now=datetime.now(timezone.utc))
+            if bills:
+                async with lock:
+                    outbound = pipeline.ingest_bills(bills, now=datetime.now(timezone.utc))
+                await publish_all(bus, settings, outbound)
+                logger.info("energy_ingested bills=%d published=%d", len(bills), len(outbound))
+        except Exception:
+            logger.exception("energy_inbox_cycle_failed kind=bills")
         await asyncio.sleep(settings.ENERGY_SCAN_INTERVAL_SEC)
 
 

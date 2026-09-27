@@ -3048,15 +3048,15 @@ not recovery of already-bound durable work. Both workers continue polling an
 unconsumed binding for their own stage while those gates are closed; disabled
 workers still stop. This also retries delivery of the same immutable request
 if its original acceptance was uncertain. It never creates a fresh binding
-under a closed gate. Stage 1 and Stage 2 have independent windows: operators
-wanting around-the-clock reading must set both pairs of window hours to 0/0,
-then recreate Hub. Existing once-per-run wallet settlement remains unchanged.
+under a closed gate. Both stages default to around-the-clock reading (window
+hours 0/0). Existing installations with explicit window overrides must set
+both pairs to 0/0 and recreate Hub. Once-per-run settlement remains unchanged.
 
 Reading defaults to 12 settled runs per local day for each independent wallet:
 `HUB_WORLD_PULSE_READ_DAILY_CAP` (Stage 1) and
 `HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP` (Stage 2). Existing daily counts are
-preserved. The default 08:00-22:00 window spaces submissions by 70 minutes;
-with the window disabled, the unchanged 30-minute minimum cooldown applies.
+preserved. There is no default time-of-day restriction; the unchanged
+30-minute minimum cooldown applies.
 Retry limits, backoff and GPU admission safeguards are unchanged. Set both
 keys in the local Hub `.env` and recreate Hub to apply; an ordinary container
 restart does not reload its environment. Roll back by restoring both caps to 6

@@ -25,8 +25,11 @@ unconsumed binding retained queue precedence over arXiv 2310.19279.
 - Disabled workers still stop; fresh work remains gated.
 - Recovery may retry delivery of an already-bound request whose original
   acceptance was uncertain. It is not restricted to completed results.
-- Local Stage 2 hours changed to 0/0, matching local Stage 1; operator
-  template remains 8/22. No counters, attempts or GPU policies reset.
+- Both stages default to 0/0 in settings and the operator template, as
+  requested. Local configuration matches. No counters, attempts or GPU
+  policies reset; execution timeouts and cooldowns remain unchanged.
+- Regression tests cover all 24 hours for both default windows and template
+  parity. Explicit operator window overrides remain supported.
 
 ## Verification
 
@@ -34,6 +37,8 @@ unconsumed binding retained queue precedence over arXiv 2310.19279.
 - Gate matrix covers both stages, all five gate reasons, active/absent/
   consumed/opposite-stage bindings.
 - Includes 11 handoff eval cases; isolated Hub Docker build passed.
+- Around-the-clock follow-up: 53 route/wallet tests and handoff eval cases
+  passed. Live Hub reports all four window values as 0; no restart needed.
 - Synced local env with the existing script, preserving intentional overrides.
 - No new metric definitions.
 

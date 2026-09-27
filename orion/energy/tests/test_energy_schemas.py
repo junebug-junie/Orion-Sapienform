@@ -184,6 +184,38 @@ def test_stakes_comparison_pressures_need_a_ratio() -> None:
     assert EnergyStakesSnapshotV1(**base, pressure="unknown").projected_to_forecast_ratio is None
 
 
+def test_stakes_compared_pressure_requires_healthy_importer() -> None:
+    with pytest.raises(ValueError):
+        EnergyStakesSnapshotV1(
+            as_of=_T,
+            importer_state="stale",
+            pressure="over_forecast",
+            pressure_reason="ratio=1.2",
+            projected_to_forecast_ratio=1.2,
+        )
+
+
+def test_stakes_rejects_non_finite_ratio() -> None:
+    base = dict(
+        as_of=_T,
+        importer_state="healthy",
+        pressure="over_forecast",
+        pressure_reason="ratio=nan",
+    )
+    with pytest.raises(ValidationError):
+        EnergyStakesSnapshotV1(**base, projected_to_forecast_ratio=float("nan"))
+
+
+def test_reconcile_rejects_non_finite_bucket_delta() -> None:
+    with pytest.raises(ValidationError):
+        EnergyReconcileV1(
+            **_rec(
+                orion_total_usd=99.0,
+                bucket_deltas={"energy": float("nan")},
+            )
+        )
+
+
 def test_importer_status_requires_a_reason() -> None:
     with pytest.raises(ValueError):
         EnergyImporterStatusV1(state="stale", reason="", source="file_drop", as_of=_T)

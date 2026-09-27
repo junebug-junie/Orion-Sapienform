@@ -12,6 +12,7 @@ mixes in every other load in the house.
 
 from __future__ import annotations
 
+import math
 from datetime import date, datetime, timezone
 from typing import Literal, Optional
 
@@ -232,19 +233,19 @@ class EnergyReconcileV1(BaseModel):
     billing_period_start: date
     billing_period_end: Optional[date] = None
     utility_as_of: datetime
-    utility_kwh: Optional[float] = Field(default=None, ge=0.0)
-    utility_total_usd: Optional[float] = None
+    utility_kwh: Optional[float] = Field(default=None, ge=0.0, allow_inf_nan=False)
+    utility_total_usd: Optional[float] = Field(default=None, allow_inf_nan=False)
     utility_basis: UtilityBasis
     orion_method: ReconcileMethod
     orion_covered_through: Optional[datetime] = None
-    orion_kwh: Optional[float] = Field(default=None, ge=0.0)
-    orion_energy_usd: Optional[float] = Field(default=None, ge=0.0)
-    orion_fixed_usd: Optional[float] = Field(default=None, ge=0.0)
-    orion_total_usd: Optional[float] = Field(default=None, ge=0.0)
+    orion_kwh: Optional[float] = Field(default=None, ge=0.0, allow_inf_nan=False)
+    orion_energy_usd: Optional[float] = Field(default=None, ge=0.0, allow_inf_nan=False)
+    orion_fixed_usd: Optional[float] = Field(default=None, ge=0.0, allow_inf_nan=False)
+    orion_total_usd: Optional[float] = Field(default=None, ge=0.0, allow_inf_nan=False)
     reconcile_gap: Optional[ReconcileGap] = None
-    delta_kwh: Optional[float] = None
-    delta_usd: Optional[float] = None
-    delta_pct: Optional[float] = None
+    delta_kwh: Optional[float] = Field(default=None, allow_inf_nan=False)
+    delta_usd: Optional[float] = Field(default=None, allow_inf_nan=False)
+    delta_pct: Optional[float] = Field(default=None, allow_inf_nan=False)
     bucket_deltas: dict[str, float] = Field(default_factory=dict)
     tariff_version: str = Field(min_length=1)
     cost_basis: CostBasis = "pre_tax"
@@ -254,6 +255,14 @@ class EnergyReconcileV1(BaseModel):
     @classmethod
     def _ensure_tz(cls, value: Optional[datetime]) -> Optional[datetime]:
         return None if value is None else _utc(value)
+
+    @field_validator("bucket_deltas")
+    @classmethod
+    def _finite_bucket_deltas(cls, value: dict[str, float]) -> dict[str, float]:
+        for key, amount in value.items():
+            if not math.isfinite(amount):
+                raise ValueError(f"bucket_deltas[{key!r}] must be finite")
+        return value
 
     @model_validator(mode="after")
     def _null_means_reason(self) -> "EnergyReconcileV1":
@@ -284,13 +293,13 @@ class EnergyStakesSnapshotV1(BaseModel):
     cycle_start: Optional[date] = None
     cycle_end: Optional[date] = None
     covered_through: Optional[datetime] = None
-    cycle_accumulated_kwh: Optional[float] = Field(default=None, ge=0.0)
-    cycle_to_date_total_usd: Optional[float] = Field(default=None, ge=0.0)
-    marginal_usd_per_kwh: Optional[float] = Field(default=None, ge=0.0)
-    orion_projected_total_usd: Optional[float] = Field(default=None, ge=0.0)
-    forecast_total_usd: Optional[float] = None
+    cycle_accumulated_kwh: Optional[float] = Field(default=None, ge=0.0, allow_inf_nan=False)
+    cycle_to_date_total_usd: Optional[float] = Field(default=None, ge=0.0, allow_inf_nan=False)
+    marginal_usd_per_kwh: Optional[float] = Field(default=None, ge=0.0, allow_inf_nan=False)
+    orion_projected_total_usd: Optional[float] = Field(default=None, ge=0.0, allow_inf_nan=False)
+    forecast_total_usd: Optional[float] = Field(default=None, allow_inf_nan=False)
     forecast_as_of: Optional[datetime] = None
-    projected_to_forecast_ratio: Optional[float] = None
+    projected_to_forecast_ratio: Optional[float] = Field(default=None, allow_inf_nan=False)
     importer_state: ImporterState
     pressure: StakesPressure
     pressure_reason: str = Field(min_length=1)
@@ -303,6 +312,8 @@ class EnergyStakesSnapshotV1(BaseModel):
 
     @model_validator(mode="after")
     def _compared_means_ratio(self) -> "EnergyStakesSnapshotV1":
+        if self.pressure != "unknown" and self.importer_state != "healthy":
+            raise ValueError("a compared pressure requires a healthy importer")
         if self.pressure != "unknown" and self.projected_to_forecast_ratio is None:
             raise ValueError("a compared pressure needs projected_to_forecast_ratio")
         return self

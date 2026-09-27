@@ -37,7 +37,7 @@ SELECT DISTINCT ON (reconcile_kind)
        utility_total_usd, utility_basis, orion_kwh, orion_total_usd, orion_method, reconcile_gap,
        delta_kwh, delta_usd, delta_pct, bucket_deltas, tariff_version, computed_at
 FROM energy_reconcile
-ORDER BY reconcile_kind, billing_period_start DESC, computed_at DESC
+ORDER BY reconcile_kind, billing_period_start DESC, computed_at DESC, utility_as_of DESC
 """
 # ESPI intervals may be 15 or 60 minutes, so "hours" is covered time, not a row count.
 # The window starts at local midnight (days - 1) days ago so the oldest bar is a whole day.

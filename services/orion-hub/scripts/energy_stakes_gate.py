@@ -10,8 +10,9 @@ Never reads house_share_cost_usd.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Mapping, Optional
+from uuid import NAMESPACE_URL, uuid5
 
 from orion.schemas.attention_schema import MAX_NARRATIVE_CHARS, AttentionSchemaV1, clip
 
@@ -21,7 +22,7 @@ HOLD_PRESSURES = frozenset({"near_forecast", "over_forecast"})
 _MAX_FUTURE_SKEW_SEC = 300.0
 
 _SNAPSHOT_SQL = """
-SELECT as_of, pressure, pressure_reason, projected_to_forecast_ratio,
+SELECT as_of, cycle_start, pressure, pressure_reason, projected_to_forecast_ratio,
        orion_projected_total_usd, forecast_total_usd, marginal_usd_per_kwh, importer_state
 FROM energy_stakes_snapshot
 ORDER BY as_of DESC
@@ -38,6 +39,7 @@ class EnergyHold:
     projected_total_usd: Optional[float]
     forecast_total_usd: Optional[float]
     marginal_usd_per_kwh: Optional[float]
+    cycle_start: Optional[date] = None
 
 
 def _aware(value: Any) -> Optional[datetime]:
@@ -49,6 +51,19 @@ def _aware(value: Any) -> Optional[datetime]:
     if not isinstance(value, datetime):
         return None
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _date(value: Any) -> Optional[date]:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
 
 
 def energy_stakes_hold(
@@ -73,6 +88,7 @@ def energy_stakes_hold(
         projected_total_usd=snapshot.get("orion_projected_total_usd"),
         forecast_total_usd=snapshot.get("forecast_total_usd"),
         marginal_usd_per_kwh=snapshot.get("marginal_usd_per_kwh"),
+        cycle_start=_date(snapshot.get("cycle_start")),
     )
 
 
@@ -93,10 +109,23 @@ def _usd(value: Optional[float]) -> str:
     return "unknown" if value is None else f"${value:.2f}"
 
 
+def hold_entry_id(hold: EnergyHold) -> str:
+    """One row per hold episode (billing cycle + pressure), not per 5-minute snapshot.
+
+    Repeats collapse on the attention table's ON CONFLICT no-op; a pressure change or
+    a new cycle is a new episode. No cycle on the row -> the snapshot's UTC day, so an
+    unknown cycle still can't pin one row forever.
+    """
+    period = (hold.cycle_start or hold.as_of.astimezone(timezone.utc).date()).isoformat()
+    return f"curiosity:{HOLD_REASON}:{period}:{hold.pressure}"
+
+
 def hold_attention_row(hold: EnergyHold, *, now: datetime) -> AttentionSchemaV1:
     rate = "unknown" if hold.marginal_usd_per_kwh is None else f"${hold.marginal_usd_per_kwh:.4f}/kWh"
+    entry_id = hold_entry_id(hold)
     return AttentionSchemaV1(
-        entry_id=f"curiosity:{HOLD_REASON}:{hold.as_of.isoformat()}",
+        entry_id=entry_id,
+        correlation_id=str(uuid5(NAMESPACE_URL, entry_id)),
         generated_at=now,
         process="curiosity",
         attended_id=None,

@@ -6,7 +6,8 @@ row (missing, stale, unknown, unhealthy importer, garbage) is "no hold".
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 
@@ -19,7 +20,7 @@ def _snap(pressure="over_forecast", age_sec=60.0, **over) -> dict:
     base = {
         "as_of": NOW - timedelta(seconds=age_sec), "pressure": pressure, "pressure_reason": "ratio=1.105",
         "projected_to_forecast_ratio": 1.105, "orion_projected_total_usd": 88.4, "forecast_total_usd": 80.0,
-        "marginal_usd_per_kwh": 0.12, "importer_state": "healthy",
+        "marginal_usd_per_kwh": 0.12, "importer_state": "healthy", "cycle_start": date(2026, 9, 11),
     }
     base.update(over)
     return base
@@ -64,7 +65,32 @@ def test_hold_row_is_a_curiosity_attention_row() -> None:
     assert row.attended_id is None
     assert row.narrative_kind == "computed"
     assert "$88.40" in row.reason_narrative and "$80.00" in row.reason_narrative
-    assert row.entry_id == f"curiosity:{HOLD_REASON}:{hold.as_of.isoformat()}"
+    assert row.entry_id == "curiosity:held_off:energy_stakes:2026-09-11:over_forecast"
+    assert row.correlation_id == str(uuid5(NAMESPACE_URL, row.entry_id))
+
+
+def _row(**over):
+    snap = _snap(**over)
+    return hold_attention_row(energy_stakes_hold(snap, now=NOW, max_age_sec=1800), now=NOW)
+
+
+def test_the_same_hold_episode_is_one_row_across_ticks() -> None:
+    """A 5-minute snapshot tick must not mint a new attention row per tick: the id is the
+    episode (cycle, pressure), so repeats collapse on the attention PK's ON CONFLICT no-op."""
+    first, later = _row(age_sec=600.0), _row(age_sec=60.0)
+    assert first.entry_id == later.entry_id
+    assert first.correlation_id == later.correlation_id
+
+
+def test_a_new_pressure_or_cycle_is_a_new_episode() -> None:
+    base = _row()
+    assert _row(pressure="near_forecast").entry_id != base.entry_id
+    assert _row(cycle_start=date(2026, 10, 11)).entry_id != base.entry_id
+
+
+def test_unknown_cycle_falls_back_to_the_snapshot_day_not_one_row_forever() -> None:
+    row = _row(cycle_start=None)
+    assert row.entry_id == f"curiosity:held_off:energy_stakes:{(NOW - timedelta(seconds=60)).date().isoformat()}:over_forecast"
 
 
 def test_unknown_numbers_render_as_unknown_not_zero() -> None:

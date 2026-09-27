@@ -3814,13 +3814,13 @@ class CuriosityInvestigation:
             return None
         if hold is None:
             return None
+        row, corr = bind_correlation(hold_attention_row(hold, now=now))
         logger.info(
-            "curiosity_investigation_blocked reason=%s pressure=%s ratio=%s snapshot_as_of=%s",
-            ENERGY_HOLD_REASON, hold.pressure, hold.ratio, hold.as_of.isoformat(),
+            "curiosity_investigation_blocked reason=%s pressure=%s ratio=%s snapshot_as_of=%s correlation_id=%s",
+            ENERGY_HOLD_REASON, hold.pressure, hold.ratio, hold.as_of.isoformat(), corr,
         )
         if self._bus is not None:
             try:
-                row, corr = bind_correlation(hold_attention_row(hold, now=now))
                 await self._bus.publish(
                     ATTENTION_SCHEMA_CHANNEL,
                     BaseEnvelope(

@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -2718,7 +2718,7 @@ def _energy_snapshot(pressure="over_forecast", age_sec=60.0) -> dict:
         "as_of": datetime.now(timezone.utc) - timedelta(seconds=age_sec), "pressure": pressure,
         "pressure_reason": "ratio=1.105", "projected_to_forecast_ratio": 1.105,
         "orion_projected_total_usd": 88.4, "forecast_total_usd": 80.0,
-        "marginal_usd_per_kwh": 0.12, "importer_state": "healthy",
+        "marginal_usd_per_kwh": 0.12, "importer_state": "healthy", "cycle_start": date(2026, 9, 11),
     }
 
 
@@ -2749,6 +2749,31 @@ def test_energy_over_forecast_holds_and_leaves_an_attention_row() -> None:
     assert len(rows) == 1
     assert rows[0]["attention_reason"] == "held_off:energy_stakes"
     assert rows[0]["process"] == "curiosity"
+
+
+def test_energy_hold_repeats_one_episode_with_a_deterministic_correlation(caplog) -> None:
+    from uuid import NAMESPACE_URL, uuid5
+
+    bus = _FakeBus()
+    snaps = iter([_energy_snapshot(age_sec=600.0), _energy_snapshot(age_sec=60.0)])
+
+    async def read():
+        return next(snaps)
+
+    loop = _loop(bus, energy_stakes_enabled=True, energy_stakes_reader=read)
+    with caplog.at_level("INFO"):
+        assert asyncio.run(loop.tick()) == "held_off:energy_stakes"
+        assert asyncio.run(loop.tick()) == "held_off:energy_stakes"
+    envs = [e for c, e in bus.published if c == ATTENTION_SCHEMA_CHANNEL]
+    assert len(envs) == 2
+    entry_id = "curiosity:held_off:energy_stakes:2026-09-11:over_forecast"
+    corr = str(uuid5(NAMESPACE_URL, entry_id))
+    for env in envs:
+        assert env.payload["entry_id"] == entry_id
+        assert env.payload["correlation_id"] == corr
+        assert str(env.correlation_id) == corr
+    blocked = [r.getMessage() for r in caplog.records if "reason=held_off:energy_stakes" in r.getMessage()]
+    assert blocked and all(f"correlation_id={corr}" in m for m in blocked)
 
 
 def test_energy_hold_never_blocks_a_forced_run() -> None:

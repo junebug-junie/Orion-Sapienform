@@ -135,6 +135,11 @@ def test_latest_unreadable_as_of_is_stale_not_fresh(client, monkeypatch) -> None
     assert client.get("/api/energy/latest").json()["stale"] is True
 
 
+def test_reconcile_newest_utility_version_wins_a_computed_at_tie() -> None:
+    sql = " ".join(energy_routes._RECONCILE_SQL.split())
+    assert "ORDER BY reconcile_kind, billing_period_start DESC, computed_at DESC, utility_as_of DESC" in sql
+
+
 def test_latest_db_failure_is_reported(client, monkeypatch) -> None:
     async def boom():
         raise RuntimeError("no db")

@@ -1,4 +1,4 @@
-"""Headless fetch loop. `--once --days 730` does the two-year backfill."""
+"""Headless fetch loop. `--once --days N [--through YYYY-MM-DD]` backfills older days in chunks."""
 
 from __future__ import annotations
 
@@ -6,12 +6,13 @@ import argparse
 import asyncio
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from orion.energy.importer_status import PortalStatus
 
+from .credentials import CredentialsFileTooOpen, CredentialsIncomplete, load_credentials
 from .driver import open_playwright_driver
 from .fetch import PortalOutcome, run_once
 from .settings import PortalSettings, get_portal_settings
@@ -20,6 +21,12 @@ from .status import read_status, write_attempt_started, write_status
 logger = logging.getLogger("orion-energy-portal")
 
 MIN_DAYS, MAX_DAYS = 1, 730
+# Each day is its own portal download (~5s live); the base timeout covers login and page load.
+PER_DAY_BUDGET_SEC = 45.0
+
+
+def attempt_timeout_sec(base_sec: float, *, days: int) -> float:
+    return base_sec + PER_DAY_BUDGET_SEC * days
 
 
 def _utcnow() -> datetime:
@@ -59,10 +66,28 @@ def record_status(path: Path, outcome: Optional[PortalOutcome], *, now: datetime
         return None
 
 
-async def attempt(settings: PortalSettings, *, days: int) -> PortalOutcome:
+def _credentials_error(status_path: Path, reason: str, *, now: datetime, hint: str = "") -> PortalOutcome:
+    """Refused before any browser starts; the reason is a fixed label, never file content."""
+    outcome = PortalOutcome("error", reason)
+    record_status(status_path, outcome, now=now)
+    logger.error("energy_portal_fetch state=error reason=%s hint=%s", reason, hint or "-")
+    return outcome
+
+
+async def attempt(settings: PortalSettings, *, days: int, through: Optional[date] = None) -> PortalOutcome:
     now = _utcnow()
     status_path = Path(settings.ENERGY_PORTAL_STATUS_PATH)
     record_status(status_path, None, now=now)
+    try:
+        credentials = load_credentials(Path(settings.ENERGY_PORTAL_CREDENTIALS_PATH))
+    except CredentialsFileTooOpen:
+        return _credentials_error(status_path, "credentials_file_too_open", now=now, hint="chmod_600")
+    except CredentialsIncomplete:
+        return _credentials_error(
+            status_path, "credentials_incomplete", now=now, hint="needs_RMP_USERNAME_and_RMP_PASSWORD"
+        )
+    except (OSError, ValueError) as exc:  # incl. UnicodeDecodeError; its message holds file bytes
+        return _credentials_error(status_path, f"credentials_unreadable:{type(exc).__name__}", now=now)
     try:
         async with open_playwright_driver(
             profile_dir=settings.ENERGY_PORTAL_PROFILE_DIR,
@@ -77,8 +102,11 @@ async def attempt(settings: PortalSettings, *, days: int) -> PortalOutcome:
                     seen_path=bills_seen_path(status_path),
                     backfill_days=days,
                     now=now,
+                    credentials=credentials,
+                    scrape_bills=settings.ENERGY_PORTAL_SCRAPE_BILLS,
+                    through=through,
                 ),
-                timeout=settings.ENERGY_PORTAL_TIMEOUT_SEC,
+                timeout=attempt_timeout_sec(settings.ENERGY_PORTAL_TIMEOUT_SEC, days=days),
             )
     except (TimeoutError, asyncio.TimeoutError):
         outcome = PortalOutcome("error", "timeout")
@@ -86,10 +114,10 @@ async def attempt(settings: PortalSettings, *, days: int) -> PortalOutcome:
         outcome = PortalOutcome("error", f"browser_failed:{type(exc).__name__}")
     record_status(status_path, outcome, now=now)
     logger.info(
-        "energy_portal_fetch state=%s reason=%s xml=%s bills=%d",
+        "energy_portal_fetch state=%s reason=%s xml_days=%d bills=%d",
         outcome.state,
         outcome.reason,
-        outcome.xml_file.name if outcome.xml_file else None,
+        len(outcome.xml_files),
         len(outcome.bill_files),
     )
     return outcome
@@ -122,11 +150,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true", help="fetch now, ignoring the interval")
     parser.add_argument("--days", type=int, default=None, help=f"backfill window, clamped to {MIN_DAYS}..{MAX_DAYS}")
+    parser.add_argument(
+        "--through", type=date.fromisoformat, default=None,
+        help="with --once: newest day to fetch (YYYY-MM-DD), for backfilling older days in small chunks",
+    )
     args = parser.parse_args()
     settings = get_portal_settings()
     if args.once:
         days = resolve_days(args.days, default=settings.ENERGY_PORTAL_BACKFILL_DAYS)
-        outcome = asyncio.run(attempt(settings, days=days))
+        outcome = asyncio.run(attempt(settings, days=days, through=args.through))
         sys.exit(0 if outcome.state == "ok" else 1)
     asyncio.run(loop(settings))
 

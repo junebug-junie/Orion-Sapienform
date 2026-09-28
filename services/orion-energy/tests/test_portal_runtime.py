@@ -10,7 +10,7 @@ import pytest
 
 from orion.energy.importer_status import PortalStatus
 from portal import main as portal_main
-from portal.driver import green_button_range, prepare_profile_dir
+from portal.driver import picker_date, prepare_profile_dir
 from portal.fetch import PortalOutcome
 from portal.settings import PortalSettings
 from portal.status import read_status, write_reauth_status, write_status
@@ -62,6 +62,113 @@ def test_attempt_survives_browser_and_status_failures(tmp_path, monkeypatch) -> 
     settings = PortalSettings(ENERGY_PORTAL_STATUS_PATH=str(blocker / "status.json"))
     outcome = asyncio.run(portal_main.attempt(settings, days=3))
     assert (outcome.state, outcome.reason) == ("error", "browser_failed:RuntimeError")
+
+
+def test_world_readable_credentials_stop_the_attempt_before_the_browser(tmp_path, monkeypatch) -> None:
+    launched: list = []
+
+    @asynccontextmanager
+    async def must_not_launch(**_kwargs):
+        launched.append(True)
+        raise AssertionError("browser launched with a leaked password file")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(portal_main, "open_playwright_driver", must_not_launch)
+    creds = tmp_path / "credentials.env"
+    creds.write_text("RMP_USERNAME=me\nRMP_PASSWORD=hunter2\n")
+    creds.chmod(0o644)
+    status_path = tmp_path / "status.json"
+    settings = PortalSettings(
+        ENERGY_PORTAL_STATUS_PATH=str(status_path), ENERGY_PORTAL_CREDENTIALS_PATH=str(creds),
+    )
+    outcome = asyncio.run(portal_main.attempt(settings, days=3))
+    assert (outcome.state, outcome.reason) == ("error", "credentials_file_too_open")
+    assert launched == []
+    saved = read_status(status_path)
+    assert saved is not None and saved.reason == "credentials_file_too_open"
+    assert "hunter2" not in status_path.read_text()
+
+
+@pytest.mark.parametrize(
+    "content,reason",
+    [
+        (b"RMP_USERNAME=me\n", "credentials_incomplete"),
+        (b"RMP_USERNAME=me\nRMP_PASSWORD=hunter2\xff\n", "credentials_unreadable:UnicodeDecodeError"),
+    ],
+)
+def test_bad_credentials_file_is_a_labelled_error_before_the_browser(tmp_path, monkeypatch, content, reason) -> None:
+    @asynccontextmanager
+    async def must_not_launch(**_kwargs):
+        raise AssertionError("browser launched without usable credentials")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(portal_main, "open_playwright_driver", must_not_launch)
+    creds = tmp_path / "credentials.env"
+    creds.write_bytes(content)
+    creds.chmod(0o600)
+    status_path = tmp_path / "status.json"
+    settings = PortalSettings(
+        ENERGY_PORTAL_STATUS_PATH=str(status_path), ENERGY_PORTAL_CREDENTIALS_PATH=str(creds),
+    )
+    outcome = asyncio.run(portal_main.attempt(settings, days=3))
+    assert (outcome.state, outcome.reason) == ("error", reason)
+    assert "hunter2" not in status_path.read_text()
+
+
+@pytest.mark.parametrize("form_breaks,reason", [(False, "login_failed"), (True, "login_form_failed:TimeoutError")])
+def test_failed_login_never_leaks_the_password(tmp_path, monkeypatch, caplog, form_breaks, reason) -> None:
+    creds = tmp_path / "credentials.env"
+    creds.write_text("RMP_USERNAME=me@example.com\nRMP_PASSWORD=hunter2\n")
+    creds.chmod(0o600)
+    login_url = "https://csapps.rockymountainpower.net/idm/login"
+
+    class StuckOnLogin:
+        async def open_usage(self):
+            return login_url
+
+        async def login(self, *, username, password):
+            if form_breaks:
+                raise TimeoutError(f"fill {username} {password}")
+            return login_url
+
+    @asynccontextmanager
+    async def fake_driver(**_kwargs):
+        yield StuckOnLogin()
+
+    monkeypatch.setattr(portal_main, "open_playwright_driver", fake_driver)
+    status_path = tmp_path / "status.json"
+    settings = PortalSettings(
+        ENERGY_PORTAL_STATUS_PATH=str(status_path), ENERGY_PORTAL_CREDENTIALS_PATH=str(creds),
+    )
+    caplog.set_level("DEBUG")
+    outcome = asyncio.run(portal_main.attempt(settings, days=3))
+    assert outcome.reason == reason
+    assert "hunter2" not in status_path.read_text() and "hunter2" not in caplog.text
+    assert "me@example.com" not in caplog.text
+
+
+def test_attempt_passes_credentials_and_bill_mode_to_the_fetch(tmp_path, monkeypatch) -> None:
+    creds = tmp_path / "credentials.env"
+    creds.write_text("RMP_USERNAME=me\nRMP_PASSWORD=hunter2\n")
+    creds.chmod(0o600)
+    seen: dict = {}
+
+    @asynccontextmanager
+    async def fake_driver(**_kwargs):
+        yield object()
+
+    async def fake_run_once(_driver, **kwargs):
+        seen.update(kwargs)
+        return PortalOutcome("ok", "fetched_usage_only")
+
+    monkeypatch.setattr(portal_main, "open_playwright_driver", fake_driver)
+    monkeypatch.setattr(portal_main, "run_once", fake_run_once)
+    settings = PortalSettings(
+        ENERGY_PORTAL_STATUS_PATH=str(tmp_path / "status.json"), ENERGY_PORTAL_CREDENTIALS_PATH=str(creds),
+    )
+    asyncio.run(portal_main.attempt(settings, days=3))
+    assert seen["credentials"].password == "hunter2"
+    assert seen["scrape_bills"] is False
 
 
 def test_attempt_start_is_stamped_before_browser_launch(tmp_path, monkeypatch) -> None:
@@ -151,8 +258,16 @@ def test_bills_seen_path_sits_next_to_status(tmp_path) -> None:
     assert portal_main.bills_seen_path(tmp_path / "p" / "status.json") == tmp_path / "p" / "bills_seen.json"
 
 
-def test_green_button_range_uses_passed_now() -> None:
-    assert green_button_range(NOW, days=3) == (date(2026, 9, 24), date(2026, 9, 27))
+def test_picker_date_takes_the_calendar_day_as_written() -> None:
+    assert picker_date("2026-09-26T00:00:00+00:00") == date(2026, 9, 26)
+    assert picker_date("2026-03-07T00:00:00Z") == date(2026, 3, 7)
+    with pytest.raises(ValueError):
+        picker_date(None)
+
+
+def test_attempt_timeout_grows_with_requested_days() -> None:
+    assert portal_main.attempt_timeout_sec(300, days=3) == 300 + 3 * portal_main.PER_DAY_BUDGET_SEC
+    assert portal_main.attempt_timeout_sec(300, days=60) > portal_main.attempt_timeout_sec(300, days=3)
 
 
 def test_profile_dir_is_created_private(tmp_path) -> None:

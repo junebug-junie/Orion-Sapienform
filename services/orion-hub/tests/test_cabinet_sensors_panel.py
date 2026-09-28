@@ -392,6 +392,10 @@ def test_cabinet_sensors_js_does_not_grow_unbounded_client_state() -> None:
 
 
 def test_cabinet_sensors_js_renders_sensor_stale_in_red() -> None:
-    assert "payload.sensor_stale" in CABINET_SENSORS_JS
-    assert '"AC reading STALE since "' in CABINET_SENSORS_JS
-    assert "text-red-400" in CABINET_SENSORS_JS
+    start = CABINET_SENSORS_JS.index("function renderCoolingLatest")
+    render = CABINET_SENSORS_JS[start : CABINET_SENSORS_JS.index("\n  function ", start + 1)]
+    branch_start = render.index("if (payload.sensor_stale)")
+    stale_branch = render[branch_start : render.index("return;", branch_start)]
+    assert '"AC reading STALE since "' in stale_branch
+    assert "text-red-400" in stale_branch
+    assert 'coolingWatts.textContent = "STALE"' in stale_branch

@@ -196,7 +196,8 @@ def _payload_freshness(row: Mapping[str, Any]) -> tuple[bool, Optional[float]]:
     state = payload_json.get("state") if isinstance(payload_json.get("state"), dict) else {}
     provenance = payload_json.get("provenance") if isinstance(payload_json.get("provenance"), dict) else {}
     age = provenance.get("sample_age_sec")
-    return state.get("stale") is True, float(age) if isinstance(age, (int, float)) else None
+    fresh_age = float(age) if isinstance(age, (int, float)) and not isinstance(age, bool) else None
+    return state.get("stale") is True, fresh_age
 
 
 def _load_latest(row: Optional[Mapping[str, Any]], *, stale_after_sec: float, now: datetime) -> dict[str, Any]:

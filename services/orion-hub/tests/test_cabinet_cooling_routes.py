@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -267,5 +268,28 @@ def test_latest_legacy_payload_without_freshness_is_not_sensor_stale(client, mon
     body = client.get("/api/cabinet/cooling/latest").json()
     assert body["ok"] is True
     assert body["sensor_stale"] is False
+    assert "sample_age_sec" not in body
+    assert "last_fresh_at" not in body
+
+
+def test_latest_pre_freshness_json_payload_is_not_sensor_stale(client, monkeypatch):
+    async def latest(*, node: str):
+        return _row(payload_json=json.dumps({"state": {"switch_on": True}, "provenance": {"sample_age_sec": None}}))
+
+    monkeypatch.setattr(cabinet_cooling_routes, "_latest_query", latest)
+    body = client.get("/api/cabinet/cooling/latest").json()
+    assert body["ok"] is True
+    assert body["sensor_stale"] is False
+    assert "sample_age_sec" not in body
+    assert "last_fresh_at" not in body
+
+
+def test_latest_bool_sample_age_is_not_treated_as_seconds(client, monkeypatch):
+    async def latest(*, node: str):
+        return _row(payload_json={"state": {"stale": True}, "provenance": {"zwave_node_id": 2, "sample_age_sec": True}})
+
+    monkeypatch.setattr(cabinet_cooling_routes, "_latest_query", latest)
+    body = client.get("/api/cabinet/cooling/latest").json()
+    assert body["sensor_stale"] is True
     assert "sample_age_sec" not in body
     assert "last_fresh_at" not in body

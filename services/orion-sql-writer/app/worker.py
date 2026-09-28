@@ -1619,7 +1619,11 @@ def _normalize_home_cooling_sample_payload(write_data: dict) -> dict:
     provenance = out.pop("provenance", None)
     if isinstance(provenance, dict) and provenance.get("zwave_node_id") is not None:
         out["zwave_node_id"] = int(provenance["zwave_node_id"])
-    if isinstance(provenance, dict) and isinstance(provenance.get("sample_age_sec"), (int, float)):
+    if (
+        isinstance(provenance, dict)
+        and isinstance(provenance.get("sample_age_sec"), (int, float))
+        and not isinstance(provenance["sample_age_sec"], bool)
+    ):
         out["sample_age_sec"] = float(provenance["sample_age_sec"])
 
     # Live path often hands us model_dump() without mode="json", so nested

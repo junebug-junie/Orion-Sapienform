@@ -92,4 +92,5 @@ hold_routes:   # durable-run holds on non-LLM roles; durable-runs reads these, t
   # reverie.visual's generate step (docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.md).
   # Advisory for the diffusion host itself: orion-thought validates the hold ref before generating,
   # and still takes the /capacity permit world-model shares gpu2 through until stage 5.
-  diffusion: {class: diffusion, priority: system}
+  # priority is informational: ResourceRequirementV1.priority (always background) wins for holds.
+  diffusion: {class: diffusion, priority: background}

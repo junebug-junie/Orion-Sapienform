@@ -114,11 +114,13 @@ class PostgresAdmissionStore:
         async with self.pool.connection() as conn:
             await conn.execute("UPDATE durable_admission_runs SET updated_at=clock_timestamp() WHERE run_id=%s", (run_id,))
 
-    async def finish_projection(self, run_id: str, status: str, detail: dict[str, Any]) -> str | None:
+    async def finish_projection(self, run_id: str, status: str, detail: dict[str, Any], *,
+                                cancelled_detail: dict[str, Any] | None = None) -> str | None:
         """Atomically publish the graph's terminal fact.
 
         The shared transaction lock linearizes an operator control against completion; a cancelled
-        run can never acquire a completed outbox event. The run's GPU pool hold is released by the
+        run can never acquire a completed outbox event (its detail becomes ``cancelled_detail``,
+        default empty, never the completed/failed detail). The run's GPU pool hold is released by the
         graph node that ends the run (or kept for Door-A outreach), never here: this store has no
         grant of its own to release since stage 4.5.
         """
@@ -131,7 +133,7 @@ class PostgresAdmissionStore:
             if row["control"] == "paused":
                 return None
             if row["control"] == "cancelled":
-                status, detail = "cancelled", {}
+                status, detail = "cancelled", dict(cancelled_detail or {})
             await self._event(conn, run_id, "run."+status, detail, event_id=f"{run_id}:terminal:{status}")
             await conn.execute("UPDATE durable_admission_runs SET terminal=%s,updated_at=%s WHERE run_id=%s", (status, await self.now(conn), run_id))
             return status

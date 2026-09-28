@@ -54,6 +54,65 @@ workflow. The last field comes from the existing persisted `run.started` event,
 not config or a guessed elapsed-time threshold. Failed/completed events carry
 the actual hold-fenced turn correlation. Queue cancellation is not completion.
 
+### Admitted visual reverie (`reverie.visual`, 2026-09-28)
+
+One image per run, checkpointed after every stage
+(`app/reverie_visual_graph.py`; spec
+`docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.md`).
+orion-thought does every stage's work over `orion:reverie:visual:step:request`
+(reply `orion:reverie:visual:step:reply:<correlation>`, one correlation per RPC,
+derived from run id + step + call count + restart fence so replies never cross):
+
+```text
+prepare -> resource_request -> resource_wait -> generate -> caption -> finish
+   ^            ^                                  |            |
+   |            +------ retry_wait <---------------+------------+
+   +-- retry_wait                                     (any node) -> failed
+```
+
+- **prepare** (no hold): thought claims the attempt, runs interpret, freezes the
+  prompt. `done` saves `attempt_id`; `terminal` (e.g. `already_satisfied`) goes
+  straight to `finish` without ever asking the pool for a hold.
+- **generate** runs under the run's pool hold: `resource = service.route.diffusion`
+  is placed by `config/gpu_pool.yaml` `hold_routes.diffusion` (class `diffusion`).
+  The hold is **released as soon as generate answers**, so caption (and interpret,
+  inside prepare) never carry it.
+- **caption** (no hold). `retry` with reason `needs_generate` (the image is gone from
+  disk) goes back through the hold to generate.
+- **Retries never spend the run's attempt budget.** A step `retry`, an RPC timeout or
+  a transport error releases any hold and waits `retry_after_sec` (thought's hint) or
+  `DURABLE_RUNS_RETRY_BASE_SEC * 2^n` capped at `DURABLE_RUNS_RETRY_MAX_SEC` (never
+  below 1 s), then resumes at the same stage. A recalled/lost hold re-queues.
+- **The run deadline is the only failure bound**: `admission.deadline_at` (submit +
+  baseline interval). Whichever node, wait or driver notices it ends the run `failed`
+  with `last_error = retry_window_expired`, and thought is sent `step = abandon`
+  (best effort, 30 s) so the attempt does not block the next claim. A cancel abandons too.
+- Restart: `generate` is the work node. A restart mid-generate fences it and replays it
+  under the same hold (thought's generate is idempotent: the recorded artifact, or a
+  `generate_in_flight` retry). A restart after generate resumes at caption, with no
+  hold and no second generate.
+- Stage RPC wait: `DURABLE_RUNS_REVERIE_VISUAL_STEP_TIMEOUT_SEC` (generate waits
+  `max(that, brief.timeout_sec)`; the held generate is also bounded by the brief's
+  budget and the deadline).
+
+`run.completed` detail: `dispatch_id`, `proposal_id`, `decision_id`, `attempt_id`,
+`chain_id`, `outcome`, `reason`, `artifact_sha256`, `execution_receipt`, `retries`,
+`generate_elapsed_sec`, `visual_elapsed_sec` (thought's real-work seconds summed over
+done steps -- dispatch's cost; never queue or hold-wait time), `started_at`,
+`finished_at`. `run.failed` / `run.cancelled` carry the same ids plus `retries`,
+`error` / `last_error` and the last stage `reason`. The status API adds a
+`reverie_visual` block (attempt, outcome, retries, retry_at, elapsed, deadline),
+`error` and `work_started`.
+
+### Every admitted terminal reaches `orion:durable:run:state` (2026-09-28)
+
+`completed`, `failed` and `cancelled` admitted runs are all published as a
+`DurableRunStateV1` (node `finish`, `failed`, `finish`) from the same outbox row as
+their `run.<status>` lifecycle event (`entry_id = <run>:terminal:<status>:state`,
+acked only after both publishes, deduped by sql-writer). Before this only
+`completed` was, so a waiter such as cortex-exec's self-study reflect never saw an
+admitted failure end the run.
+
 `DurableRunner` can drive more than one compiled graph, keyed by
 `DurableRunRequestV1.workflow`. Today only `"curiosity.investigate"` is registered --
 this is plumbing for a second and third workflow (self-sense-eval's own graph, reflect's

@@ -43,7 +43,12 @@ from app.pool_hold import (
 )
 from app.reflect_graph import finish_detail as reflect_finish_detail
 from app.reading_graph import build_reading_graph, finish_detail as reading_finish_detail
+from app.reverie_visual_graph import (
+    RETRY_WINDOW_EXPIRED, build_reverie_visual_graph, finish_detail as reverie_visual_finish_detail,
+    send_abandon, terminal_detail as reverie_visual_terminal_detail,
+)
 from orion.schemas.reading_turn import READING_WORKFLOW
+from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW
 from app.self_sense_graph import finish_detail as self_sense_finish_detail
 from orion.durable_admission.store import PostgresAdmissionStore
 from orion.gpu_pool.client import DURABLE_RUN_HOLDER_PREFIX, durable_run_holder
@@ -59,7 +64,12 @@ REFLECT_WORKFLOW = "self_study.reflect"
 # The node of each admitted workflow that does GPU work under the hold. A restarted driver that
 # finds one of these still pending fences the previous attempt and replays it under the same hold.
 WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORKFLOW: {"ask_questions"},
-              REFLECT_WORKFLOW: {"llm_call"}, READING_WORKFLOW: {"reading_turn"}}
+              REFLECT_WORKFLOW: {"llm_call"}, READING_WORKFLOW: {"reading_turn"},
+              # Only generate holds the diffusion hold; it releases it before its result is
+              # checkpointed, so a restart after generate resumes at caption with no lease.
+              REVERIE_VISUAL_WORKFLOW: {"generate"}}
+# The DurableRunStateV1.node each admitted terminal is published under (the graph node it ends at).
+TERMINAL_STATE_NODE = {"completed": "finish", "failed": "failed", "cancelled": "finish"}
 # Pool events (for a durable-run holder) after which a waiting run should look at its hold now.
 HINT_EVENTS = frozenset({"granted", "recalled", "aborted", "expired", "retried", "backlogged", "unavailable",
                          "dead_lettered", "released", "cancelled"})
@@ -107,6 +117,7 @@ class AdmissionRuntime:
                 runner._self_sense_deps(), admission_deps, runner._checkpointer),
             REFLECT_WORKFLOW: build_admitted_reflect_graph(runner._reflect_deps(), admission_deps, runner._checkpointer),
             READING_WORKFLOW: build_reading_graph(lambda request: runner._run_reading_turn(request), admission_deps, runner._checkpointer),
+            REVERIE_VISUAL_WORKFLOW: build_reverie_visual_graph(self._reverie_step, admission_deps, runner._checkpointer),
         }
         # Back-compat alias used by older tests that reach for `.graph`.
         self.graph = self.graphs[DEFAULT_WORKFLOW]
@@ -133,7 +144,31 @@ class AdmissionRuntime:
             return reflect_finish_detail(state)
         if workflow == READING_WORKFLOW:
             return reading_finish_detail(state)
+        if workflow == REVERIE_VISUAL_WORKFLOW:
+            return reverie_visual_finish_detail(state)
         return finish_detail(state)
+
+    def _reverie_step(self, request, budget_sec=None):
+        return self.runner._run_reverie_visual_step(request, budget_sec)
+
+    @staticmethod
+    def _deadline_error(workflow: str | None) -> str:
+        return RETRY_WINDOW_EXPIRED if workflow == REVERIE_VISUAL_WORKFLOW else "workflow_deadline"
+
+    @staticmethod
+    def _terminal_detail_for(workflow: str, status: str, state: dict) -> dict:
+        """failed/cancelled detail. Only what the graph recorded -- never re-derived here, since by
+        now the lease is cleared and a fresh derivation would name the run's lineage, not the turn
+        that actually failed."""
+        if workflow == REVERIE_VISUAL_WORKFLOW:
+            return reverie_visual_terminal_detail(state, status)
+        if status == "cancelled":
+            return {}
+        detail = {"error": state.get("last_error")}
+        corr = recorded_turn_correlation_id(state)
+        if corr:
+            detail["turn_correlation_id"] = corr
+        return detail
 
     @staticmethod
     def config(run_id):
@@ -323,6 +358,8 @@ class AdmissionRuntime:
             # Joinable to the pool's child leases (acceptance check 2: no un-attached agent lease
             # under a turn whose run holds a hold).
             detail["turn_correlation_id"] = turn_correlation_id(state)
+        elif state.get("workflow") == REVERIE_VISUAL_WORKFLOW and state.get("step_correlation_id"):
+            detail["step_correlation_id"] = state["step_correlation_id"]
         await self.event(state, "run.started", detail)
         work = asyncio.create_task(node(state))
         timeout = float(state["brief"]["timeout_sec"])
@@ -560,6 +597,10 @@ class AdmissionRuntime:
     async def _cancel_harness(self, state, reason):
         # Curiosity: hold-derived turn id. Self-sense: each question is a fresh uuid4 -- cancel
         # those from answers + any still in-flight.
+        if state.get("workflow") == REVERIE_VISUAL_WORKFLOW:
+            # No harness turn: generate runs in orion-thought, whose replay is idempotent (the
+            # recorded artifact, or a generate_in_flight retry).
+            return
         ids: list[str] = []
         try:
             ids.append(turn_correlation_id(state))
@@ -675,9 +716,10 @@ class AdmissionRuntime:
             deadline = state["admission"].get("deadline_at")
             if deadline and self.now() >= datetime.fromisoformat(deadline):
                 released = await self.release(state, "deadline")
-                await graph.aupdate_state(cfg, {**released, "status": "failed", "last_error": "workflow_deadline"},
+                error = self._deadline_error(workflow)
+                await graph.aupdate_state(cfg, {**released, "status": "failed", "last_error": error},
                                           as_node="failed")
-                await self._terminal(run_id, "failed", {**state, "last_error": "workflow_deadline"}, workflow=workflow)
+                await self._terminal(run_id, "failed", {**state, "last_error": error}, workflow=workflow)
                 return
             if not snap.next:
                 await self._terminal(run_id, state.get("status", "failed"), state, workflow=workflow)
@@ -711,9 +753,10 @@ class AdmissionRuntime:
                 return
             except WorkflowDeadline:
                 released = await self.release(state, "workflow_deadline")
-                await graph.aupdate_state(cfg, {**released, "status": "failed", "last_error": "workflow_deadline"},
+                error = self._deadline_error(workflow)
+                await graph.aupdate_state(cfg, {**released, "status": "failed", "last_error": error},
                                           as_node="failed")
-                await self._terminal(run_id, "failed", {**state, "last_error": "workflow_deadline"}, workflow=workflow)
+                await self._terminal(run_id, "failed", {**state, "last_error": error}, workflow=workflow)
             except Exception as exc:
                 # The checkpoint retains the failing node. Reconciliation is
                 # allowed to retry persistence/transport, never an empty result
@@ -749,14 +792,15 @@ class AdmissionRuntime:
         if status == "completed":
             detail = self._finish_detail_for(wf, state)
         else:
-            # Only what the graph recorded -- never re-derived here, since by
-            # now the lease is cleared and a fresh derivation would name the
-            # run's lineage, not the turn that actually failed.
-            detail = {"error": state.get("last_error")}
-            corr = recorded_turn_correlation_id(state)
-            if corr:
-                detail["turn_correlation_id"] = corr
-        actual = await self.store.finish_projection(run_id, status, detail)
+            detail = self._terminal_detail_for(wf, status, state)
+        if wf == REVERIE_VISUAL_WORKFLOW:
+            if status != "completed":
+                await self._abandon_reverie_attempt(run_id, state)
+            # A cancel that wins the race against this projection still says which dispatch it was.
+            actual = await self.store.finish_projection(
+                run_id, status, detail, cancelled_detail=self._terminal_detail_for(wf, "cancelled", state))
+        else:
+            actual = await self.store.finish_projection(run_id, status, detail)
         if actual is not None and actual != status:
             await self._graph_for(wf).aupdate_state(self.config(run_id), {"status": actual}, as_node="finish")
         if actual is not None and actual != "completed" and run_id in self.outreach:
@@ -768,6 +812,19 @@ class AdmissionRuntime:
             self._hints.discard(run_id)
             self._checked.pop(run_id, None)
         self._wake.set()
+
+    async def _abandon_reverie_attempt(self, run_id: str, state: dict) -> None:
+        """A reverie.visual run ending without its graph's ``failed`` node (run deadline noticed by
+        the driver, operator cancel, resume-failure bound): tell thought to close the attempt, before
+        the terminal projection, so a crash in between re-sends it (abandon is idempotent at thought).
+        Skipped while paused (the projection will not go terminal) or once it already completed."""
+        if not state.get("attempt_id") or state.get("abandon_sent"):
+            return
+        row = await self.store.get_run(run_id)
+        if row is None or row.get("terminal") == "completed" or row.get("control") == "paused":
+            return
+        await send_abandon(self._reverie_step, {**state, "run_id": run_id},
+                           reason=state.get("last_error") or "terminal")
 
     async def reconcile(self):
         try:
@@ -797,15 +854,23 @@ class AdmissionRuntime:
                 if not t.cancelled() and t.exception():
                     logger.error("durable_driver_failed run=%s error=%s", key, t.exception())
             task.add_done_callback(finished)
+        await self._publish_outbox()
+
+    async def _publish_outbox(self) -> None:
         for raw in await self.store.pending_outbox():
             event = ResourceEventV1.model_validate(raw)
-            if event.event == "run.completed" and event.entry_id == f"{event.run_id}:terminal:completed":
+            terminal = event.event.removeprefix("run.")
+            if terminal in TERMINAL_STATE_NODE and event.entry_id == f"{event.run_id}:terminal:{terminal}":
+                # Every admitted terminal (completed, failed, cancelled) is also a DurableRunStateV1:
+                # waiters (cortex-exec reflect, dispatch settlement) must see failures end the run.
+                # At-least-once: acked only after both publishes; sql-writer dedupes on entry_id.
                 row = await self.store.get_run(event.run_id)
                 workflow = ((row or {}).get("request") or {}).get("workflow") or DEFAULT_WORKFLOW
-                completion = DurableRunStateV1(entry_id=event.entry_id+":state", run_id=event.run_id,
-                    workflow=workflow, thread_id=event.thread_id, node="finish", status="completed",
-                    correlation_id=event.correlation_id, generated_at=event.generated_at, detail=event.detail)
-                if not await self.runner._publish(self.settings.state_channel, DURABLE_RUN_STATE_KIND, completion,
+                state_event = DurableRunStateV1(entry_id=event.entry_id+":state", run_id=event.run_id,
+                    workflow=workflow, thread_id=event.thread_id, node=TERMINAL_STATE_NODE[terminal],
+                    status=terminal, correlation_id=event.correlation_id, generated_at=event.generated_at,
+                    detail=event.detail)
+                if not await self.runner._publish(self.settings.state_channel, DURABLE_RUN_STATE_KIND, state_event,
                         self.runner._corr_for_admission(event.correlation_id)):
                     continue
             if await self.runner._publish(RESOURCE_EVENT_CHANNEL, RESOURCE_EVENT_KIND, event,
@@ -879,7 +944,19 @@ class AdmissionRuntime:
                 "queue_wait_seconds": max(0, (wait_end-row["created_at"]).total_seconds()),
                 **({"reading_result": values.get("result"), "error": values.get("last_error"),
                     "work_started": await self.store.first_event_at(run_id, "run.started") is not None}
-                   if workflow == READING_WORKFLOW else {})}
+                   if workflow == READING_WORKFLOW else {}),
+                **({"reverie_visual": {
+                    "attempt_id": values.get("attempt_id"), "chain_id": values.get("chain_id"),
+                    "outcome": values.get("outcome"), "reason": values.get("reason"),
+                    "retries": int(values.get("retries") or 0), "retry_at": values.get("retry_at"),
+                    "retry_node": values.get("retry_node"), "artifact_sha256": values.get("artifact_sha256"),
+                    "generate_elapsed_sec": values.get("generate_elapsed_sec"),
+                    "visual_elapsed_sec": values.get("visual_elapsed_sec"),
+                    "started_at": values.get("started_at"), "finished_at": values.get("finished_at"),
+                    "deadline_at": (row["request"]["admission"] or {}).get("deadline_at")},
+                    "error": values.get("last_error"),
+                    "work_started": await self.store.first_event_at(run_id, "run.started") is not None}
+                   if workflow == REVERIE_VISUAL_WORKFLOW else {})}
 
     async def close(self):
         tasks = list(self.active.values())

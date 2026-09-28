@@ -1613,10 +1613,14 @@ def _normalize_home_cooling_sample_payload(write_data: dict) -> dict:
     state = out.pop("state", None)
     if isinstance(state, dict) and "switch_on" in state:
         out["switch_on"] = state.get("switch_on")
+    if isinstance(state, dict) and state.get("stale") is not None:
+        out["stale"] = bool(state["stale"])
 
     provenance = out.pop("provenance", None)
     if isinstance(provenance, dict) and provenance.get("zwave_node_id") is not None:
         out["zwave_node_id"] = int(provenance["zwave_node_id"])
+    if isinstance(provenance, dict) and isinstance(provenance.get("sample_age_sec"), (int, float)):
+        out["sample_age_sec"] = float(provenance["sample_age_sec"])
 
     # Live path often hands us model_dump() without mode="json", so nested
     # datetime values (ts, etc.) would blow up JSON/JSONB binding. Sanitize.

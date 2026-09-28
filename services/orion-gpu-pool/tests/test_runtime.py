@@ -487,6 +487,9 @@ def test_urgent_preempted_hold_requeues_in_place_and_says_why():
         row = await rt.store.lease(bg.lease_id)
         assert row["status"] == "recalling" and row["reason"] == "urgent_preempt"
         assert rt._view(row).reason == "urgent_preempt"            # the scheduler's dedupe sees it
+        for reply in (await rt.heartbeat(bg.lease_id), await rt.status(bg.lease_id)):
+            # The holder can tell an urgent pause (wait for the in-place re-queue) from other recalls.
+            assert reply.status == "recall" and reply.reason == "urgent_preempt" and reply.recall_by
         clock.advance(CFG.defaults.urgent_preempt_grace_sec)
         await rt.tick()
         row = await rt.store.lease(bg.lease_id)

@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from test_admitted_graph import CFG, World, initial
 from app.admission_runtime import MAX_CONCURRENT_DRIVERS, AdmissionRuntime
-from app.admitted_graph import GRANTED, WAITING, AdmissionDeps, HoldLost, HoldPreempted
+from app.admitted_graph import GONE, GRANTED, WAITING, AdmissionDeps, HoldLost, HoldPreempted, HoldRecalled
 from app.pool_hold import URGENT_PREEMPT, PoolHolds
 from app.reading_graph import build_reading_graph
 from orion.schemas.gpu_pool import GpuLeaseGrantV1, GpuLeaseReplyV1
@@ -236,18 +236,20 @@ def test_a_preempted_self_sense_node_waits_for_its_hold_instead_of_failing_the_r
 
 # --- runtime: _beat / execute / release against scripted pool replies --------------------------------
 
-def _reply(status, *, generation=1, reason=None):
+def _reply(status, *, generation=1, reason=None, recall_in=5.0):
     grant = None
     if status in ("granted", "recall"):
         grant = GpuLeaseGrantV1(lease_id="hold-1", generation=generation, role="agent", cards=["gpu1"],
                                 url="http://agent", served_by="circe")
-    return GpuLeaseReplyV1(status=status, lease_id="hold-1", grant=grant, reason=reason)
+    recall_by = NOW + timedelta(seconds=recall_in) if status == "recall" else None
+    return GpuLeaseReplyV1(status=status, lease_id="hold-1", grant=grant, reason=reason, recall_by=recall_by)
 
 
 class Holds:
     def __init__(self, heartbeats=(), status=None):
         self.heartbeats = list(heartbeats)
-        self.status_reply = status
+        self.statuses = list(status) if isinstance(status, (list, tuple)) else [status]
+        self.status_calls = 0
         self.released: list[str] = []
         self.cfg = POOL_CFG
 
@@ -255,7 +257,8 @@ class Holds:
         return self.heartbeats.pop(0) if len(self.heartbeats) > 1 else self.heartbeats[0]
 
     async def status(self, lease_id):
-        return self.status_reply
+        self.status_calls += 1
+        return self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
 
     async def release(self, lease_id, *, outcome="ok", detail=None):
         self.released.append(detail)
@@ -323,7 +326,7 @@ def test_beat_on_a_hold_requeued_for_urgent_work_raises_preempted_and_a_plain_re
             await rt._beat(LEASE)
         assert not isinstance(lost.value, HoldPreempted)
         rt = bare_runtime(Holds([_reply("recall", reason=URGENT_PREEMPT)]))
-        assert await rt._beat(LEASE) == "recall"       # the 5 s grace: keep working
+        assert (await rt._beat(LEASE)).status == "recall"   # the 5 s grace: keep working
     asyncio.run(scenario())
 
 
@@ -381,6 +384,81 @@ def test_release_keeps_a_preempted_hold_and_records_the_preemption_not_an_expiry
     asyncio.run(scenario())
 
 
+# --- paused before the step started: wait for the in-place re-queue, never release ----------------
+
+@pytest.fixture
+def fast_poll(monkeypatch):
+    import app.admission_runtime as runtime_module
+    monkeypatch.setattr(runtime_module, "PREEMPT_POLL_SEC", 0.001)
+    return runtime_module
+
+
+def _never_runs(state):
+    raise AssertionError("the step must not start on a recalled hold")
+
+
+def test_an_urgent_recall_before_the_step_waits_for_the_requeue_and_keeps_the_hold(fast_poll):
+    async def scenario():
+        holds = Holds([_reply("recall", reason=URGENT_PREEMPT)],
+                      status=[_reply("recall", reason=URGENT_PREEMPT), _reply("recall", reason=URGENT_PREEMPT),
+                              _reply("queued", reason=URGENT_PREEMPT)])
+        rt = bare_runtime(holds)
+        with pytest.raises(HoldPreempted):
+            await asyncio.wait_for(rt.execute(_held_state(), _never_runs), 2)
+        assert holds.released == [] and holds.status_calls == 3
+        update = await rt.release(_held_state(), URGENT_PREEMPT, keep_requeued=True)
+        assert update["hold"] == {"request_id": "study-001:1", "lease_id": "hold-1"}   # same place, same id
+        assert holds.released == [] and "run.preempted" in rt.store.names()
+    asyncio.run(scenario())
+
+
+def test_any_other_recall_before_the_step_still_hands_the_hold_back_at_once(fast_poll):
+    async def scenario():
+        holds = Holds([_reply("recall", reason="owner_waiting")], status=_reply("queued", reason=URGENT_PREEMPT))
+        rt = bare_runtime(holds)
+        with pytest.raises(HoldRecalled):
+            await rt.execute(_held_state(), _never_runs)
+        assert holds.released == ["recalled_before_start"] and holds.status_calls == 0
+    asyncio.run(scenario())
+
+
+def test_an_urgent_recall_the_pool_never_aborts_falls_back_to_releasing_it(fast_poll, monkeypatch):
+    monkeypatch.setattr(fast_poll, "PREEMPT_REQUEUE_MARGIN_SEC", 0.05)
+
+    async def scenario():
+        recall = _reply("recall", reason=URGENT_PREEMPT, recall_in=-1)      # grace already over
+        holds = Holds([recall], status=recall)
+        rt = bare_runtime(holds)
+        with pytest.raises(HoldRecalled):
+            await asyncio.wait_for(rt.execute(_held_state(), _never_runs), 2)
+        assert holds.status_calls >= 1 and holds.released == ["recalled_before_start"]
+    asyncio.run(scenario())
+
+
+def test_the_requeue_wait_is_bounded_by_the_grace_even_if_recall_by_is_far_off(fast_poll):
+    rt = bare_runtime(Holds())
+    far = _reply("recall", reason=URGENT_PREEMPT, recall_in=600)
+    assert rt._requeue_wait_sec(far) == (POOL_CFG.defaults.urgent_preempt_grace_sec
+                                         + fast_poll.PREEMPT_REQUEUE_MARGIN_SEC)
+
+
+@pytest.mark.parametrize("reason", [URGENT_PREEMPT, "owner_waiting"])
+def test_a_granted_then_recalled_hold_seen_in_resource_wait(fast_poll, reason):
+    async def scenario():
+        holds = Holds(status=[_reply("recall", reason=reason), _reply("recall", reason=reason),
+                              _reply("queued", reason=URGENT_PREEMPT)])
+        rt = bare_runtime(holds)
+        state = {"run_id": "study-001", "admission": {}, "hold": {"request_id": "study-001:1", "lease_id": "hold-1"}}
+        outcome, update = await asyncio.wait_for(rt.lease(state), 2)
+        if reason == URGENT_PREEMPT:
+            assert outcome == WAITING and "hold" not in update       # checkpointed hold stays: same place
+            assert holds.released == [] and "run.preempted" in rt.store.names()
+        else:
+            assert outcome == GONE and update["hold"] is None
+            assert holds.released == ["recalled_before_start"]
+    asyncio.run(scenario())
+
+
 # --- the REAL pool: pause, keep the place, pick the same lease back up -------------------------------
 
 def test_preempted_hold_is_kept_through_release_and_regranted_under_the_same_lease_id():
@@ -400,7 +478,8 @@ def test_preempted_hold_is_kept_through_release_and_regranted_under_the_same_lea
         urgent = await holds.acquire("urgent-001", "urgent-001:1", {**admission, "priority": "urgent"},
                                      correlation_id="trace-u")
         assert urgent.status == "queued"
-        assert await rt._beat(lease) == "recall"                       # grace: the turn keeps going
+        beat = await rt._beat(lease)
+        assert beat.status == "recall" and beat.reason == URGENT_PREEMPT   # grace: the turn keeps going
         await pool.later(POOL_CFG.defaults.urgent_preempt_grace_sec, beat=[urgent.lease_id])
         with pytest.raises(HoldPreempted):
             await rt._beat(lease)
@@ -420,6 +499,37 @@ def test_preempted_hold_is_kept_through_release_and_regranted_under_the_same_lea
         outcome, update = await rt.lease(kept_state)
         assert outcome == GRANTED and update["lease"]["lease_id"] == first.lease_id
         assert update["lease"]["generation"] > lease["generation"]
+    asyncio.run(scenario())
+
+
+def test_a_hold_recalled_before_its_step_is_requeued_in_place_by_the_real_pool(fast_poll):
+    async def scenario():
+        pool = await InProcessPool().boot()
+        holds = PoolHolds(PoolBus(pool), source="durable-runs-test", cfg=POOL_CFG)
+        rt = bare_runtime(holds)
+        rt.now = pool.clock
+        admission = {"resource": "llm.route.agent", "preferred_lane": "agent", "priority": "background"}
+        first = await holds.acquire("study-001", "study-001:1", admission, correlation_id="trace-001")
+        state = {**_held_state(), "admission": admission,
+                 "hold": {"request_id": "study-001:1", "lease_id": first.lease_id}}
+        state["lease"] = (await rt.lease(state))[1]["lease"]
+        created_at = (await pool.lease(first.lease_id))["created_at"]
+        urgent = await holds.acquire("urgent-001", "urgent-001:1", {**admission, "priority": "urgent"},
+                                     correlation_id="trace-u")
+
+        async def pool_aborts_after_grace():
+            await asyncio.sleep(0.02)
+            await pool.later(POOL_CFG.defaults.urgent_preempt_grace_sec, beat=[urgent.lease_id])
+
+        aborting = asyncio.create_task(pool_aborts_after_grace())
+        with pytest.raises(HoldPreempted):
+            await asyncio.wait_for(rt.execute(state, _never_runs), 5)
+        await aborting
+        kept = await rt.release(state, URGENT_PREEMPT, keep_requeued=True)
+        assert kept["hold"]["lease_id"] == first.lease_id
+        row = await pool.lease(first.lease_id)
+        assert row["status"] == "queued" and row["created_at"] == created_at      # its original place
+        assert not [r for r in pool.requests if r.verb == "release" and r.lease_id == first.lease_id]
     asyncio.run(scenario())
 
 
@@ -491,3 +601,20 @@ def test_urgent_max_concurrent_zero_drives_urgent_like_background():
         gate.set()
         await asyncio.gather(*rt.active.values())
     asyncio.run(scenario())
+
+
+@pytest.mark.skipif(not __import__("os").getenv("ORION_ADMISSION_TEST_DSN"),
+                    reason="isolated ORION_ADMISSION_TEST_DSN required")
+def test_list_pending_pages_urgent_rows_first_so_a_long_backlog_cannot_hide_one():
+    from test_admission_runtime_postgres import request, with_database
+
+    async def scenario(pool, saver, store):
+        for i in range(3):
+            await store.submit(request(f"pending-bg-{i}").model_dump(mode="json"))
+        await store.submit(request("pending-u-1", resource="llm.route.agent", priority="urgent").model_dump(mode="json"))
+        legacy = request("pending-legacy-0").model_dump(mode="json")
+        legacy["admission"] = None                                   # no admission at all: sorts as background
+        await store.submit(legacy)
+        assert [r["run_id"] for r in await store.list_pending(limit=2)] == ["pending-u-1", "pending-bg-0"]
+        assert [r["run_id"] for r in await store.list_pending()] == ["pending-u-1", "pending-bg-0", "pending-bg-1", "pending-bg-2", "pending-legacy-0"]
+    asyncio.run(with_database(scenario))

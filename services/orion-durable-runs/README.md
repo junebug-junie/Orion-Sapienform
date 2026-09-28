@@ -359,7 +359,11 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
   on the next grant under the same lease_id -- never a failed attempt. A turn that fails on its
   own first (its next LLM call cannot attach to the aborted hold) is checked against the pool once:
   an exception in `execute`, a failed *result* in the reading / reflect / self-sense node
-  (`AdmissionDeps.preempted`). Proof trace: `run.preempted` (lease_id, generation, lane) instead
+  (`AdmissionDeps.preempted`). A hold recalled for urgent work *before* its step starts (execute's
+  first beat, or `resource_wait`) is not released -- that would forfeit its place: the driver polls
+  the pool (1 s) until the abort re-queues it, for at most grace + 3 s, then falls back to releasing
+  it. Other recall reasons are released at once as before. `list_pending()` pages urgent rows
+  first. Proof trace: `run.preempted` (lease_id, generation, lane) instead
   of `resource.lease_expired`. At a tail node boundary a preempted hold is simply ended (the tail
   needs no GPU). Reconcile drives urgent runs first and outside `MAX_CONCURRENT_DRIVERS` (4),
   capped at the pool's `defaults.urgent_max_concurrent`; `0` there drives urgent like background.

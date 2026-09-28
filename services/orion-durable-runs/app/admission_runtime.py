@@ -58,6 +58,7 @@ from orion.durable_admission.store import (
     PostgresAdmissionStore,
 )
 from orion.gpu_pool.client import DURABLE_RUN_HOLDER_PREFIX, durable_run_holder
+from orion.schemas.gpu_pool import GpuLeaseReplyV1
 from orion.schemas.durable_run import DurableRunRequestV1, DurableRunStateV1, DURABLE_RUN_STATE_KIND
 from orion.schemas.harness_finalize import HarnessRunCancelV1
 from orion.schemas.resource_admission import RESOURCE_EVENT_CHANNEL, RESOURCE_EVENT_KIND, ResourceEventV1
@@ -82,6 +83,11 @@ HINT_EVENTS = frozenset({"granted", "recalled", "aborted", "expired", "retried",
 # A request id already used for an ended hold is skipped (a checkpoint older than the pool's
 # record); bounded so a broken pool cannot spin a run forever.
 HOLD_SEQ_SKIP_MAX = 20
+# A hold recalled for urgent work before its step started is not released (that forfeits its place in
+# line): the driver polls the pool every PREEMPT_POLL_SEC until the pool's abort re-queues it in place,
+# for at most min(recall_by, urgent_preempt_grace_sec) + PREEMPT_REQUEUE_MARGIN_SEC.
+PREEMPT_POLL_SEC = 1.0
+PREEMPT_REQUEUE_MARGIN_SEC = 3.0
 # Background/system drivers at once. Urgent drivers are outside it, capped at urgent_max_concurrent.
 MAX_CONCURRENT_DRIVERS = 4
 # Which pool refusals fail the run is decided in one place: ``pool_hold.refusal_is_terminal``.
@@ -319,6 +325,11 @@ class AdmissionRuntime:
             self._checked[run_id] = time.monotonic()   # just read: the poll fallback starts from here
             return WAITING, waiting
         if reply.status == "recall":
+            if reply.reason == URGENT_PREEMPT and await self._await_requeue(hold["lease_id"], reply):
+                # Paused for an urgent run and back in line in its original place: wait for it again.
+                await self._record_preempted(state, hold["lease_id"], reply.grant.generation if reply.grant else None,
+                                             reply.grant.role if reply.grant else None, reply)
+                return WAITING, waiting
             # Recalled before the run started: give the seat back now and queue afresh.
             await self._end_hold(state, hold["lease_id"], None, "recalled_before_start")
             return GONE, {**waiting, "hold": None}
@@ -341,9 +352,10 @@ class AdmissionRuntime:
         error = "workflow_deadline" if reason == "deadline" else f"gpu_pool_unavailable:{reason}"
         return REFUSED, {"status": "failed", "last_error": error, "lease": None, "hold": None}
 
-    async def _beat(self, lease: dict) -> str | None:
-        """Heartbeat a granted hold; raise HoldLost when the pool no longer holds it at our
-        generation. A failed RPC is tolerated: the TTL is at least two beats."""
+    async def _beat(self, lease: dict) -> GpuLeaseReplyV1 | None:
+        """Heartbeat a granted hold: the pool's granted/recall reply (None when unanswered). Raise
+        HoldLost when the pool no longer holds it at our generation. A failed RPC is tolerated: the
+        TTL is at least two beats."""
         try:
             reply = await self.holds.heartbeat(lease["lease_id"])
         except Exception as exc:  # noqa: BLE001
@@ -357,8 +369,9 @@ class AdmissionRuntime:
             return None
         if reply.status in HELD and reply.grant is not None and reply.grant.generation == lease["generation"]:
             if reply.status == "recall":
-                logger.info("durable_hold_recalled lease=%s recall_by=%s", lease["lease_id"], reply.recall_by)
-            return reply.status
+                logger.info("durable_hold_recalled lease=%s recall_by=%s reason=%s", lease["lease_id"],
+                            reply.recall_by, reply.reason)
+            return reply
         if reply.status in POOL_WAITING and reply.reason == URGENT_PREEMPT:
             raise HoldPreempted(f"gpu_hold_preempted:{lease['lease_id']}")
         raise HoldLost(f"gpu_hold_lost:{reply.status}" + (f":{reply.reason}" if reply.reason else ""))
@@ -370,9 +383,12 @@ class AdmissionRuntime:
         row = await self.store.get_run(state["run_id"])
         if row.get("control"):
             raise RunControlPending(row["control"])
-        if await self._beat(lease) == "recall":
-            # Already being recalled: never start a long turn on it. Give it back now and queue
-            # afresh; this is not a failed attempt.
+        beat = await self._beat(lease)
+        if beat is not None and beat.status == "recall":
+            # Already being recalled: never start a long turn on it. Not a failed attempt either way.
+            if beat.reason == URGENT_PREEMPT and await self._await_requeue(lease["lease_id"], beat):
+                raise HoldPreempted(f"gpu_hold_preempted_before_start:{lease['lease_id']}")
+            # Any other recall (or a pool that never re-queued it): give it back now, queue afresh.
             await self._end_hold(state, lease["lease_id"], lease, "recalled_before_start")
             raise HoldRecalled("gpu_hold_recalled_before_start")
         detail = {"lease": lease, "lane": lease["role"]}
@@ -412,6 +428,41 @@ class AdmissionRuntime:
                 await self._cancel_harness(state, "durable_attempt_stopped")
                 work.cancel()
                 await asyncio.gather(work, return_exceptions=True)
+
+    def _requeue_wait_sec(self, recall: GpuLeaseReplyV1) -> float:
+        grace = float(self.holds.cfg.defaults.urgent_preempt_grace_sec)
+        left = grace if recall.recall_by is None else (recall.recall_by - self.now()).total_seconds()
+        return max(0.0, min(left, grace)) + PREEMPT_REQUEUE_MARGIN_SEC
+
+    async def _await_requeue(self, lease_id: str, recall: GpuLeaseReplyV1) -> bool:
+        """A hold recalled for urgent work before its step started: wait (bounded) for the pool's
+        abort to put it back in line in its original place. True once the pool says queued; False if
+        it said something else or the wait ran out -- the caller then releases it as before."""
+        end = time.monotonic() + self._requeue_wait_sec(recall)
+        while True:
+            try:
+                reply = await self.holds.status(lease_id)
+            except Exception as exc:  # noqa: BLE001 -- keep asking until the bound
+                logger.warning("durable_hold_status_failed lease=%s err=%s", lease_id, exc)
+                reply = None
+            if reply is not None and not is_pool_trouble(reply):
+                if reply.status in POOL_WAITING:
+                    return True
+                if reply.status != "recall":
+                    return False
+            left = end - time.monotonic()
+            if left <= 0:
+                logger.warning("durable_hold_urgent_requeue_timeout lease=%s", lease_id)
+                return False
+            await asyncio.sleep(min(PREEMPT_POLL_SEC, left))
+
+    async def _record_preempted(self, state, lease_id: str, generation: int | None, role: str | None,
+                                reply: GpuLeaseReplyV1) -> None:
+        """``run.preempted``: the pool paused this run's hold for an urgent run and kept its place."""
+        await self.store.record_event(state["run_id"], "run.preempted", {
+            "lease_id": lease_id, "generation": generation, "lane": role, "reason": URGENT_PREEMPT,
+            "pool_status": reply.status, "position": reply.position},
+            event_id=f"preempted:{lease_id}:{generation}")
 
     async def _settled(self, work: asyncio.Task, lease: dict):
         """The finished work's result. A work failure is checked against the pool once: the victim of
@@ -490,10 +541,7 @@ class AdmissionRuntime:
                 reply = None
             if reply is not None and reply.status in POOL_WAITING and not is_pool_trouble(reply):
                 if lease and reply.reason == URGENT_PREEMPT:
-                    await self.store.record_event(state["run_id"], "run.preempted", {
-                        "lease_id": lease_id, "generation": lease["generation"], "lane": lease.get("role"),
-                        "reason": URGENT_PREEMPT, "pool_status": reply.status, "position": reply.position},
-                        event_id=f"preempted:{lease_id}:{lease['generation']}")
+                    await self._record_preempted(state, lease_id, lease["generation"], lease.get("role"), reply)
                 elif lease:
                     await self._record_lost(state, lease, reply.status, reply.reason)
                 return {"lease": None, "hold": {**_without_backoff(hold), "lease_id": lease_id}}

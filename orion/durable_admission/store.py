@@ -112,8 +112,13 @@ class PostgresAdmissionStore:
             return await (await conn.execute("SELECT * FROM durable_admission_runs WHERE run_id=%s", (run_id,))).fetchone()
 
     async def list_pending(self, limit: int = 100) -> list[dict[str, Any]]:
+        # Urgent runs page first, so a long background backlog can never push one past the LIMIT.
+        # COALESCE: a row without admission/priority is background (NULL would sort first under DESC).
         async with self.pool.connection() as conn:
-            return await (await conn.execute("SELECT * FROM durable_admission_runs WHERE terminal IS NULL ORDER BY updated_at,run_id LIMIT %s", (limit,))).fetchall()
+            return await (await conn.execute(
+                "SELECT * FROM durable_admission_runs WHERE terminal IS NULL "
+                "ORDER BY COALESCE(request->'admission'->>'priority' = 'urgent', false) DESC, updated_at, run_id "
+                "LIMIT %s", (limit,))).fetchall()
 
     async def set_control(self, run_id: str, control: str | None) -> None:
         if control not in {None, "paused", "cancelled"}:

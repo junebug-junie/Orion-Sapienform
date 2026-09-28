@@ -3,8 +3,9 @@ attempts, the diffusion hold scoped to generate only, and the deadline as the on
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -234,13 +235,19 @@ def test_lost_hold_requeues_without_a_generate_call():
     asyncio.run(run())
 
 
-def test_caption_needs_generate_goes_back_through_the_hold():
+def test_caption_needs_generate_goes_back_through_the_hold_after_a_backoff():
     async def run():
         world, saver = World(), InMemorySaver()
         thought = Thought(world, caption=[("retry", {"reason": NEEDS_GENERATE}), ("done", {})])
         world.grant()
         g = graph(world, saver, thought)
         await g.ainvoke(initial(world), CFG)
+        snap = await g.aget_state(CFG)
+        assert snap.next == ("retry_wait",) and snap.values["retry_node"] == "resource_request"
+        assert snap.values["regenerations"] == 1 and snap.values["attempt"] == 0
+        assert snap.values["retry_at"] == (world.now + timedelta(seconds=30)).isoformat()
+        world.now += timedelta(seconds=31)
+        await g.ainvoke(Command(resume=True), CFG)
         assert (await g.aget_state(CFG)).next == ("resource_wait",)
         world.grant()
         result = await g.ainvoke(Command(resume=True), CFG)
@@ -251,7 +258,85 @@ def test_caption_needs_generate_goes_back_through_the_hold():
     asyncio.run(run())
 
 
-def test_deadline_fails_retry_window_expired_and_abandons_the_attempt():
+def test_repeated_needs_generate_backs_off_exponentially_on_the_regeneration_count():
+    """A storage fault that keeps eating the image must not re-render back to back."""
+    async def run():
+        world, saver = World(), InMemorySaver()
+        thought = Thought(world, caption=[("retry", {"reason": NEEDS_GENERATE})])
+        g = graph(world, saver, thought)
+        world.grant()
+        await g.ainvoke(initial(world), CFG)
+        delays = []
+        for _ in range(4):
+            snap = await g.aget_state(CFG)
+            assert snap.next == ("retry_wait",) and snap.values["retry_node"] == "resource_request"
+            retry_at = datetime.fromisoformat(snap.values["retry_at"])
+            delays.append((retry_at - world.now).total_seconds())
+            world.now = retry_at + timedelta(seconds=1)
+            await g.ainvoke(Command(resume=True), CFG)   # retry_wait -> resource_request -> wait
+            world.grant()
+            await g.ainvoke(Command(resume=True), CFG)   # granted -> generate -> caption (needs_generate)
+        assert delays == [30.0, 60.0, 120.0, 240.0]
+        snap = await g.aget_state(CFG)
+        assert snap.values["regenerations"] == 5 and snap.values["attempt"] == 0
+        assert (datetime.fromisoformat(snap.values["retry_at"]) - world.now).total_seconds() == 300.0   # capped
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("reason", ["not_prepared", "plan_not_frozen", "attempt_missing"])
+def test_generate_retry_without_a_prepared_attempt_releases_the_hold_and_reprepares(reason):
+    async def run():
+        world, saver = World(), InMemorySaver()
+        thought = Thought(world, generate=[("retry", {"reason": reason}), ("done", {})])
+        world.grant()
+        g = graph(world, saver, thought)
+        await g.ainvoke(initial(world), CFG)
+        snap = await g.aget_state(CFG)
+        assert snap.next == ("retry_wait",) and snap.values["retry_node"] == "prepare"
+        assert world.releases == ["step_retry"] and snap.values["hold"] is None
+        world.now += timedelta(seconds=31)
+        await g.ainvoke(Command(resume=True), CFG)
+        assert (await g.aget_state(CFG)).next == ("resource_wait",)
+        world.grant()
+        result = await g.ainvoke(Command(resume=True), CFG)
+        assert result["status"] == "completed"
+        assert thought.steps() == ["prepare", "generate", "prepare", "generate", "caption"]
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("reason", ["not_prepared", "plan_not_frozen", "attempt_missing"])
+def test_caption_retry_without_a_prepared_attempt_goes_back_to_prepare(reason):
+    async def run():
+        world, saver = World(), InMemorySaver()
+        thought = Thought(world, caption=[("retry", {"reason": reason}), ("done", {})])
+        world.grant()
+        g = graph(world, saver, thought)
+        await g.ainvoke(initial(world), CFG)
+        snap = await g.aget_state(CFG)
+        assert snap.next == ("retry_wait",) and snap.values["retry_node"] == "prepare"
+        assert world.releases == ["generated"]   # caption never held anything to release
+        world.now += timedelta(seconds=31)
+        await g.ainvoke(Command(resume=True), CFG)
+        assert (await g.aget_state(CFG)).next == ("resource_wait",)
+        assert thought.steps() == ["prepare", "generate", "caption", "prepare"]
+    asyncio.run(run())
+
+
+def test_generate_terminal_keeps_attempt_and_chain_ids_in_the_finish_detail():
+    async def run():
+        world, saver = World(), InMemorySaver()
+        thought = Thought(world, generate=[("terminal", {"outcome": "failed", "reason": "attempt_mismatch",
+                                                         "attempt_id": "att-1", "chain_id": "att-1"})])
+        world.grant()
+        result = await graph(world, saver, thought).ainvoke(initial(world), CFG)
+        assert result["status"] == "completed" and world.releases == ["terminal"]
+        detail = finish_detail(result)
+        assert detail["attempt_id"] == "att-1" and detail["chain_id"] == "att-1"
+        assert detail["outcome"] == "failed" and detail["reason"] == "attempt_mismatch"
+    asyncio.run(run())
+
+
+def test_deadline_fails_retry_window_expired_with_the_last_stage_reason():
     async def run():
         world, saver = World(), InMemorySaver()
         thought = Thought(world, generate=[("retry", {"reason": "thermal_refused"})])
@@ -262,9 +347,8 @@ def test_deadline_fails_retry_window_expired_and_abandons_the_attempt():
         world.now += timedelta(seconds=60)
         result = await g.ainvoke(Command(resume=True), CFG)
         assert result["status"] == "failed" and result["last_error"] == RETRY_WINDOW_EXPIRED
-        [(_, abandon)] = [c for c in thought.calls if c[0] == "abandon"]
-        assert abandon.attempt_id == "att-1" and result["abandon_sent"] is True
-        assert thought.steps("generate") == ["generate"]
+        # Abandon belongs to the runtime's terminal (durable + retried), never the graph node.
+        assert thought.steps("abandon") == [] and thought.steps("generate") == ["generate"]
         detail = terminal_detail(result, "failed")
         assert detail["dispatch_id"] == "dispatch-1" and detail["attempt_id"] == "att-1"
         assert detail["retries"] == 1 and detail["last_error"] == RETRY_WINDOW_EXPIRED
@@ -272,27 +356,18 @@ def test_deadline_fails_retry_window_expired_and_abandons_the_attempt():
     asyncio.run(run())
 
 
-def test_abandon_that_cannot_reach_thought_never_blocks_the_failure():
-    async def run():
-        world, saver = World(), InMemorySaver()
-        thought = Thought(world, abandon=[(ConnectionError("down"), {})])
-        result = await graph(world, saver, thought).ainvoke(initial(world, deadline=timedelta(seconds=-1)), CFG)
-        assert result["status"] == "failed" and result["last_error"] == RETRY_WINDOW_EXPIRED
-        # Deadline noticed before prepare: no attempt exists, nothing to abandon.
-        assert thought.steps() == [] and not result.get("abandon_sent")
-    asyncio.run(run())
-
-
 def test_terminal_from_prepare_finishes_without_ever_requesting_a_hold():
     async def run():
         world, saver = World(), InMemorySaver()
         thought = Thought(world, prepare=[("terminal", {"outcome": "already_satisfied",
-                                                        "reason": "baseline_satisfied"})])
+                                                        "reason": "baseline_satisfied",
+                                                        "attempt_id": "att-0", "chain_id": "att-0"})])
         result = await graph(world, saver, thought).ainvoke(initial(world), CFG)
         assert result["status"] == "completed"
         assert world.requests == [] and world.releases == [] and thought.steps() == ["prepare"]
         detail = finish_detail(result)
         assert detail["outcome"] == "already_satisfied" and detail["reason"] == "baseline_satisfied"
+        assert detail["attempt_id"] == "att-0" and detail["chain_id"] == "att-0"
         assert detail["visual_elapsed_sec"] == 0.0
     asyncio.run(run())
 
@@ -312,16 +387,42 @@ def test_legacy_resume_sweep_ignores_admitted_reverie_threads_silently(caplog):
     assert "durable_run_resume_unknown_workflow" not in caplog.text
 
 
+def test_reverie_visual_timeouts_nest_and_the_hold_heartbeat_fits_its_ttl():
+    """Each waiter outlasts the one inside it, so a reply always lands before its caller gives up:
+    durable-runs' stage RPC wait > the brief's generate budget > thought's own generate deadline."""
+    from app.settings import Settings
+    from orion.gpu_pool.config import load_pool_config
+
+    settings = Settings(_env_file=None, POSTGRES_URI="postgresql://unused")
+    brief_budget = ReverieVisualRunBriefV1.model_fields["timeout_sec"].default
+    # services/orion-thought/app/settings.py: visual_chain_step_generate_deadline_sec
+    # (ORION_VISUAL_CHAIN_STEP_GENERATE_DEADLINE_SEC), read from source: thought is another service.
+    thought_settings = Path(__file__).resolve().parents[3] / "services/orion-thought/app/settings.py"
+    match = re.search(r"visual_chain_step_generate_deadline_sec: float = Field\(\s*([0-9.]+)",
+                      thought_settings.read_text())
+    assert match, "thought's generate deadline setting moved; update this test"
+    thought_generate_deadline = float(match.group(1))
+    assert settings.reverie_visual_step_timeout_sec > brief_budget > thought_generate_deadline
+    # AdmissionRuntime refuses to start otherwise: two missed beats must land inside the TTL.
+    assert settings.lease_heartbeat_sec * 2 <= load_pool_config().defaults.hold_lease_ttl_sec
+
+
 # --- terminal projection: every admitted terminal reaches orion:durable:run:state ---------------
 
 class FakeStore:
+    """The admission store's run row, terminal outbox and run.abandon_* records (same semantics as
+    PostgresAdmissionStore: event ids are ON CONFLICT DO NOTHING; pending = terminal failed/cancelled
+    with a pending record and no acked one). Shared across runtimes to model a restart."""
+
     def __init__(self, workflow):
         self.workflow, self.events, self.acked, self.control = workflow, [], [], None
         self.cancelled_details = []
+        self.terminal = None
+        self.recorded = {}   # event_id -> (event, detail)
 
     async def get_run(self, run_id):
-        return {"run_id": run_id, "terminal": None, "control": self.control,
-                "request": {"workflow": self.workflow, "admission": {}}}
+        return {"run_id": run_id, "terminal": self.terminal, "control": self.control,
+                "request": {"workflow": self.workflow, "admission": {}, "brief": initial(World())["brief"]}}
 
     async def finish_projection(self, run_id, status, detail, *, cancelled_detail=None):
         self.cancelled_details.append(cancelled_detail)
@@ -331,7 +432,27 @@ class FakeStore:
                             "event": "run." + status, "run_id": run_id, "thread_id": run_id,
                             "correlation_id": "trace-001", "generated_at": "2026-09-28T00:00:00+00:00",
                             "detail": detail})
+        self.terminal = status
         return status
+
+    async def record_event(self, run_id, event, detail, event_id=None):
+        self.recorded.setdefault(event_id, (event, detail))
+
+    def recorded_events(self):
+        return [event for event, _ in self.recorded.values()]
+
+    async def abandons_pending(self, limit=100):
+        acked = "run.abandon_acked" in self.recorded_events()
+        if acked or self.terminal not in ("failed", "cancelled"):
+            return []
+        return [{"run_id": RUN, "detail": detail, "request": (await self.get_run(RUN))["request"]}
+                for event, detail in self.recorded.values() if event == "run.abandon_pending"]
+
+    async def list_pending(self, limit=100):
+        return []
+
+    async def outreach_holds_pending(self, max_age_seconds):
+        return []
 
     async def pending_outbox(self):
         return [e for e in self.events if e["entry_id"] not in self.acked]
@@ -340,9 +461,9 @@ class FakeStore:
         self.acked.append(entry_id)
 
 
-def runtime(workflow, thought=None):
+def runtime(workflow, thought=None, store=None):
     rt = object.__new__(AdmissionRuntime)
-    rt.store = FakeStore(workflow)
+    rt.store = store or FakeStore(workflow)
     published = []
 
     async def publish(channel, kind, model, corr):
@@ -351,16 +472,25 @@ def runtime(workflow, thought=None):
 
     rt.runner = SimpleNamespace(_publish=publish, _corr_for_admission=lambda c: c,
                                 _run_reverie_visual_step=thought)
-    rt.settings = SimpleNamespace(state_channel="orion:durable:run:state")
+    rt.settings = SimpleNamespace(state_channel="orion:durable:run:state", retry_base_sec=30.0,
+                                  retry_max_sec=300.0, hold_status_poll_sec=60.0, outreach_hold_max_sec=1800.0)
     rt._wake = asyncio.Event()
     rt.outreach, rt._hints, rt._checked = {}, set(), {}
+    rt._outreach_loaded_at, rt._pending_release, rt.active = None, {}, {}
+    rt._abandons, rt._abandons_loaded_at, rt._abandoning = {}, None, {}
     return rt, published
+
+
+async def settle(rt):
+    """Let every in-flight abandon try finish (they run off the reconcile loop)."""
+    while rt._abandoning:
+        await asyncio.gather(*list(rt._abandoning.values()))
 
 
 def _failed_state():
     world = World()
     return {**initial(world), "status": "failed", "last_error": RETRY_WINDOW_EXPIRED, "attempt_id": "att-1",
-            "retries": 3, "reason": "thermal_refused", "abandon_sent": True}
+            "retries": 3, "reason": "thermal_refused"}
 
 
 def test_failed_reverie_run_publishes_a_durable_run_state_with_the_dispatch_detail():
@@ -385,13 +515,85 @@ def test_driver_side_terminal_abandons_the_attempt_and_a_cancel_keeps_the_dispat
         thought = Thought(world)
         rt, published = runtime(REVERIE_VISUAL_WORKFLOW, thought)
         rt.store.control = "cancelled"
-        state = {**_failed_state(), "abandon_sent": False}
-        await rt._terminal(RUN, "cancelled", state, workflow=REVERIE_VISUAL_WORKFLOW)
-        assert thought.steps() == ["abandon"]
+        await rt._terminal(RUN, "cancelled", _failed_state(), workflow=REVERIE_VISUAL_WORKFLOW)
+        [(_, abandon)] = thought.calls
+        assert abandon.step == "abandon" and abandon.attempt_id == "att-1"
+        assert rt.store.recorded_events() == ["run.abandon_pending", "run.abandon_acked"]
+        assert await rt.store.abandons_pending() == [] and rt._abandons == {}
         await rt._publish_outbox()
         [event] = [m for ch, kind, m in published if kind == DURABLE_RUN_STATE_KIND]
         assert event.status == "cancelled" and event.detail["dispatch_id"] == "dispatch-1"
         assert event.detail["attempt_id"] == "att-1" and event.detail["last_error"] == "cancelled"
+    asyncio.run(run())
+
+
+def test_abandon_thought_misses_goes_terminal_anyway_and_reconcile_retries_until_acked():
+    """Thought down (then deferring) at terminal time: the run still goes terminal, the pending
+    record survives a durable-runs restart, and reconcile retries with backoff until thought answers."""
+    async def run():
+        world = World()
+        thought = Thought(world, abandon=[(ConnectionError("thought down"), {}),
+                                          ("retry", {"reason": "store_busy"}), ("done", {})])
+        rt, published = runtime(REVERIE_VISUAL_WORKFLOW, thought)
+        await rt._terminal(RUN, "failed", _failed_state(), workflow=REVERIE_VISUAL_WORKFLOW)
+        assert thought.steps() == ["abandon"]                     # attempted
+        assert rt.store.terminal == "failed"                      # terminal anyway
+        [pending] = await rt.store.abandons_pending()
+        assert pending["detail"]["attempt_id"] == "att-1"
+        # Backed off: a reconcile before the retry is due sends nothing.
+        assert rt._abandons[RUN]["failures"] == 1
+        await rt.reconcile()
+        await settle(rt)
+        assert thought.steps() == ["abandon"]
+
+        # durable-runs restarts: the new process has no memory, only the store.
+        rt2, _ = runtime(REVERIE_VISUAL_WORKFLOW, thought, store=rt.store)
+        await rt2.reconcile()
+        await settle(rt2)
+        assert thought.steps() == ["abandon", "abandon"]          # retried; thought deferred
+        assert len(await rt2.store.abandons_pending()) == 1 and rt2._abandons[RUN]["failures"] == 1
+        rt2._abandons[RUN]["due"] = 0.0                           # backoff elapsed
+        await rt2.reconcile()
+        await settle(rt2)
+        assert thought.steps() == ["abandon", "abandon", "abandon"]
+        assert await rt2.store.abandons_pending() == [] and rt2._abandons == {}
+        first, second, third = [req for _, req in thought.calls]
+        assert len({first.correlation_id, second.correlation_id, third.correlation_id}) == 3
+        assert {req.attempt_id for _, req in thought.calls} == {"att-1"}
+        await rt2.reconcile()
+        await settle(rt2)
+        assert len(thought.calls) == 3                            # cleared: never re-sent
+    asyncio.run(run())
+
+
+def test_run_that_never_learned_its_attempt_abandons_by_dispatch_id():
+    """Deadline before prepare answered (or prepare's reply lost): no attempt_id, but thought may
+    still have claimed one for the dispatch -- abandon names the dispatch."""
+    async def run():
+        world, saver = World(), InMemorySaver()
+        thought = Thought(world)
+        result = await graph(world, saver, thought).ainvoke(initial(world, deadline=timedelta(seconds=-1)), CFG)
+        assert result["status"] == "failed" and result["last_error"] == RETRY_WINDOW_EXPIRED
+        assert result.get("attempt_id") is None and thought.steps() == []
+        rt, _ = runtime(REVERIE_VISUAL_WORKFLOW, thought)
+        await rt._terminal(RUN, "failed", result, workflow=REVERIE_VISUAL_WORKFLOW)
+        [(_, abandon)] = thought.calls
+        assert abandon.step == "abandon" and abandon.attempt_id is None
+        assert abandon.visual_request.dispatch_id == "dispatch-1"
+        assert rt.store.recorded_events() == ["run.abandon_pending", "run.abandon_acked"]
+    asyncio.run(run())
+
+
+def test_completed_or_paused_reverie_run_never_abandons():
+    async def run():
+        thought = Thought(World())
+        rt, _ = runtime(REVERIE_VISUAL_WORKFLOW, thought)
+        await rt._terminal(RUN, "completed", {**_failed_state(), "status": "completed"},
+                           workflow=REVERIE_VISUAL_WORKFLOW)
+        rt2, _ = runtime(REVERIE_VISUAL_WORKFLOW, thought)
+        rt2.store.control = "paused"
+        await rt2._terminal(RUN, "failed", _failed_state(), workflow=REVERIE_VISUAL_WORKFLOW)
+        assert thought.calls == [] and rt.store.recorded == {} and rt2.store.recorded == {}
     asyncio.run(run())
 
 

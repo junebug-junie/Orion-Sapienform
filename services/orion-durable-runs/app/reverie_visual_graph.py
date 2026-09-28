@@ -10,9 +10,13 @@ Design: docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.md
 Only ``generate`` runs under the run's pool hold (``diffusion`` class); the hold is released as
 soon as generate's result is checkpointed, so interpret (inside prepare) and caption never carry
 it. A step ``retry`` (deferral, transient failure, transport error) never spends the run's attempt
-budget: the graph releases any hold, backs off, and resumes at the same stage. The only terminal
-failure is the run deadline (``admission.deadline_at``): ``failed`` with ``retry_window_expired``,
-and thought is told to ``abandon`` the attempt so it does not block the next claim.
+budget: the graph releases any hold, backs off, and resumes at the same stage -- except a
+generate/caption retry saying thought has no frozen plan or attempt (``REPREPARE_REASONS``), which
+goes back to prepare, and caption's ``needs_generate``, which goes back through the hold after an
+exponential backoff on the run's regeneration count. The only terminal failure is the run deadline
+(``admission.deadline_at``): ``failed`` with ``retry_window_expired``. Thought is then told to
+``abandon`` the attempt by the runtime (``AdmissionRuntime._terminal``), which keeps a durable
+pending record and retries it until thought answers.
 """
 from __future__ import annotations
 
@@ -20,11 +24,12 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, TypedDict
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from app.admitted_graph import (
     AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, resource_nodes,
 )
+from orion.schemas.reverie_visual import VisualRunRequestV1
 from orion.schemas.reverie_visual_run import (
     NEEDS_GENERATE,
     ReverieVisualRunBriefV1,
@@ -36,6 +41,10 @@ logger = logging.getLogger(__name__)
 
 RETRY_WINDOW_EXPIRED = "retry_window_expired"
 ABANDON_TIMEOUT_SEC = 30.0
+# Retry reasons thought's generate/caption return when the attempt has no frozen plan or no row
+# (services/orion-thought/app/visual_steps.py): retrying the same stage can never fix those, only
+# prepare (which claims/loads the attempt by dispatch_id and freezes the plan) can.
+REPREPARE_REASONS = frozenset({"not_prepared", "plan_not_frozen", "attempt_missing"})
 # Floor for any backoff, including a thought-supplied retry_after_sec of 0: a retry is never an
 # immediate loop.
 MIN_BACKOFF_SEC = 1.0
@@ -68,6 +77,8 @@ class ReverieVisualState(TypedDict, total=False):
     step_calls: dict
     retries: int
     retry_streak: int
+    # caption ``needs_generate`` round trips so far: the exponent of the regeneration backoff.
+    regenerations: int
     outcome: str | None
     reason: str | None
     chain_id: str | None
@@ -77,7 +88,6 @@ class ReverieVisualState(TypedDict, total=False):
     visual_elapsed_sec: float
     started_at: str | None
     finished_at: str | None
-    abandon_sent: bool
 
 
 def step_correlation_id(state: dict, step: str) -> str:
@@ -214,6 +224,7 @@ def build_reverie_visual_graph(run_step: RunStep, admission: AdmissionDeps, chec
         if result.status == "terminal":
             return {**started, **calls, "status": "running", "route": "finish", "outcome": result.outcome,
                     "reason": result.reason, "attempt_id": result.attempt_id or state.get("attempt_id"),
+                    "chain_id": result.chain_id or state.get("chain_id"),
                     "execution_receipt": result.execution_receipt, "last_error": None}
         return {**started, **calls, **done_update(state, result), "status": "running",
                 "route": "resource_request", "attempt_id": result.attempt_id, "hold": None, "lease": None}
@@ -257,11 +268,13 @@ def build_reverie_visual_graph(run_step: RunStep, admission: AdmissionDeps, chec
                     "generate_elapsed_sec": float(state.get("generate_elapsed_sec") or 0.0) + elapsed}
         if result.status == "retry":
             released = await admission.release(state, "step_retry")
-            return retry(state, "resource_request", result.reason or "retry", result.retry_after_sec,
-                         **released, **calls)
+            node = "prepare" if result.reason in REPREPARE_REASONS else "resource_request"
+            return retry(state, node, result.reason or "retry", result.retry_after_sec, **released, **calls)
         released = await admission.release(state, "terminal")
         return {**released, **calls, "status": "running", "route": "finish", "outcome": result.outcome,
-                "reason": result.reason, "execution_receipt": result.execution_receipt, "last_error": None}
+                "reason": result.reason, "attempt_id": result.attempt_id or state.get("attempt_id"),
+                "chain_id": result.chain_id or state.get("chain_id"),
+                "execution_receipt": result.execution_receipt, "last_error": None}
 
     async def caption(state):
         state = dict(state)
@@ -277,11 +290,16 @@ def build_reverie_visual_graph(run_step: RunStep, admission: AdmissionDeps, chec
             return retry(state, "caption", f"transport:{type(exc).__name__}: {exc}"[:500], **calls)
         if result.status == "retry":
             if result.reason == NEEDS_GENERATE:
-                # The recorded image is gone from disk: back through the hold to regenerate.
-                return {**calls, "status": "waiting_resource", "route": "resource_request",
-                        "reason": NEEDS_GENERATE, "last_error": NEEDS_GENERATE, "lease": None, "hold": None,
-                        "retries": int(state.get("retries") or 0) + 1}
-            return retry(state, "caption", result.reason or "retry", result.retry_after_sec, **calls)
+                # The recorded image is gone from disk: back through the hold to regenerate, after
+                # base * 2^(n-1) on the run's regeneration count -- a storage fault that keeps eating
+                # images must not re-render back to back until the deadline.
+                regenerations = int(state.get("regenerations") or 0) + 1
+                delay = min(admission.retry_max_seconds,
+                            admission.retry_base_seconds * 2 ** min(regenerations - 1, 30))
+                return retry(state, "resource_request", NEEDS_GENERATE, delay, **calls,
+                             regenerations=regenerations, lease=None, hold=None)
+            node = "prepare" if result.reason in REPREPARE_REASONS else "caption"
+            return retry(state, node, result.reason or "retry", result.retry_after_sec, **calls)
         update = {**calls, "status": "running", "route": "finish", "outcome": result.outcome,
                   "chain_id": result.chain_id or state.get("chain_id"),
                   "execution_receipt": result.execution_receipt, "reason": result.reason, "last_error": None}
@@ -310,9 +328,8 @@ def build_reverie_visual_graph(run_step: RunStep, admission: AdmissionDeps, chec
         error = state.get("last_error")
         if error == "workflow_deadline":
             error = RETRY_WINDOW_EXPIRED
-        sent = await send_abandon(run_step, state, reason=error or "failed")
-        return {**released, "status": "failed", "last_error": error,
-                "finished_at": admission.now().isoformat(), "abandon_sent": sent or bool(state.get("abandon_sent"))}
+        # Abandon is the runtime's (_terminal): durable, retried, and never ahead of the terminal.
+        return {**released, "status": "failed", "last_error": error, "finished_at": admission.now().isoformat()}
 
     graph = StateGraph(ReverieVisualState)
     for name, node in {
@@ -338,19 +355,33 @@ def build_reverie_visual_graph(run_step: RunStep, admission: AdmissionDeps, chec
     return graph.compile(checkpointer=checkpointer)
 
 
-async def send_abandon(run_step: RunStep | None, state: dict, *, reason: str) -> bool:
-    """Tell thought to close the attempt (best effort, bounded; never raises). An attempt left
-    ``active`` blocks every later claim for the dispatch. False when there is nothing to abandon
-    or thought could not be reached."""
-    if run_step is None or not state.get("attempt_id") or state.get("abandon_sent"):
+def abandon_request(run_id: str, visual_request: dict | VisualRunRequestV1,
+                    attempt_id: str | None) -> ReverieVisualStepRequestV1:
+    """One abandon RPC. ``attempt_id`` may be None (prepare's reply was lost, or the run never got
+    that far): thought resolves the attempt by ``visual_request.dispatch_id``. Every try gets its own
+    correlation id, so a late reply to an earlier try is never read as this one's."""
+    return ReverieVisualStepRequestV1(
+        run_id=run_id, correlation_id=str(uuid4()), step="abandon",
+        visual_request=VisualRunRequestV1.model_validate(visual_request), attempt_id=attempt_id)
+
+
+async def send_abandon(run_step: RunStep | None, req: ReverieVisualStepRequestV1, *, reason: str) -> bool:
+    """Tell thought to close the attempt (bounded; never raises). An attempt left ``active`` blocks
+    every later claim for the dispatch. True only when thought answered ``done`` or ``terminal``
+    for this request; a ``retry``, a timeout or a transport error is False (the caller retries)."""
+    if run_step is None:
         return False
     try:
-        req = ReverieVisualStepRequestV1(
-            run_id=state["run_id"], correlation_id=step_correlation_id(state, "abandon"), step="abandon",
-            visual_request=_visual_request(state), attempt_id=state["attempt_id"])
         result = await asyncio.wait_for(run_step(req, None), ABANDON_TIMEOUT_SEC)
-        return result.correlation_id == req.correlation_id and result.run_id == req.run_id
     except Exception as exc:  # noqa: BLE001
-        logger.warning("reverie_visual_abandon_failed run=%s attempt=%s reason=%s err=%s",
-                       state.get("run_id"), state.get("attempt_id"), reason, exc)
+        logger.warning("reverie_visual_abandon_failed run=%s attempt=%s dispatch=%s reason=%s err=%s",
+                       req.run_id, req.attempt_id, req.visual_request.dispatch_id, reason, exc)
         return False
+    if (result.run_id, result.correlation_id, result.step) != (req.run_id, req.correlation_id, "abandon"):
+        logger.warning("reverie_visual_abandon_identity_mismatch run=%s", req.run_id)
+        return False
+    if result.status == "retry":
+        logger.warning("reverie_visual_abandon_deferred run=%s dispatch=%s thought_reason=%s",
+                       req.run_id, req.visual_request.dispatch_id, result.reason)
+        return False
+    return True

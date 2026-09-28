@@ -78,15 +78,34 @@ prepare -> resource_request -> resource_wait -> generate -> caption -> finish
   The hold is **released as soon as generate answers**, so caption (and interpret,
   inside prepare) never carry it.
 - **caption** (no hold). `retry` with reason `needs_generate` (the image is gone from
-  disk) goes back through the hold to generate.
+  disk) goes back through the hold to generate, after a backoff of
+  `DURABLE_RUNS_RETRY_BASE_SEC * 2^(n-1)` (capped at `DURABLE_RUNS_RETRY_MAX_SEC`) on the
+  run's regeneration count `n` (state `regenerations`), so a storage fault that keeps
+  losing the image cannot re-render back to back. Still bounded only by the deadline.
 - **Retries never spend the run's attempt budget.** A step `retry`, an RPC timeout or
   a transport error releases any hold and waits `retry_after_sec` (thought's hint) or
   `DURABLE_RUNS_RETRY_BASE_SEC * 2^n` capped at `DURABLE_RUNS_RETRY_MAX_SEC` (never
-  below 1 s), then resumes at the same stage. A recalled/lost hold re-queues.
+  below 1 s), then resumes at the same stage. A recalled/lost hold re-queues. A generate
+  or caption `retry` whose reason says thought has no prepared attempt (`not_prepared`,
+  `plan_not_frozen`, `attempt_missing`) releases any hold and resumes at **prepare**
+  instead, since retrying the same stage could never fix it.
 - **The run deadline is the only failure bound**: `admission.deadline_at` (submit +
-  baseline interval). Whichever node, wait or driver notices it ends the run `failed`
-  with `last_error = retry_window_expired`, and thought is sent `step = abandon`
-  (best effort, 30 s) so the attempt does not block the next claim. A cancel abandons too.
+  baseline interval; a resubmit of the same run with a different `deadline_at` is the
+  same run -- the first submission's deadline wins). Whichever node, wait or driver
+  notices it ends the run `failed` with `last_error = retry_window_expired`.
+- **Abandon is reliable.** Whenever a run ends without `completed` (deadline, operator
+  cancel, resume-failure bound, any graph failure), the driver records
+  `run.abandon_pending` in the run's event log *before* the terminal projection, then
+  sends thought `step = abandon` once (30 s) *after* it -- the terminal never waits on
+  thought. `attempt_id` is sent when known; otherwise thought resolves the attempt by
+  `visual_request.dispatch_id` (a lost prepare reply cannot strand a claimed attempt).
+  Only a `done`/`terminal` answer counts: it is recorded as `run.abandon_acked` and
+  clears the pending record. A timeout, transport error or `retry` answer stays pending
+  and the reconcile loop re-sends it after `DURABLE_RUNS_RETRY_BASE_SEC * 2^(n-1)`
+  (capped at `DURABLE_RUNS_RETRY_MAX_SEC`) until thought answers. Pending records live
+  in `durable_resource_events` (no new table), are re-read every
+  `DURABLE_RUNS_HOLD_STATUS_POLL_SEC`, and so survive a durable-runs restart. Paused or
+  completed runs are never abandoned.
 - Restart: `generate` is the work node. A restart mid-generate fences it and replays it
   under the same hold (thought's generate is idempotent: the recorded artifact, or a
   `generate_in_flight` retry). A restart after generate resumes at caption, with no

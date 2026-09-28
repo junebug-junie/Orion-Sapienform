@@ -23,9 +23,18 @@ from psycopg.types.json import Jsonb
 from orion.schemas.resource_admission import ResourceEventV1
 
 ADMISSION_LOCK = 741853219
-# ResourceRequirementV1 fields only the deleted broker read (spec: accepted and ignored until
-# producers stop sending them in PR 4.6, because the model is extra="forbid").
-IGNORED_ADMISSION_FIELDS = frozenset({"allow_elastic_activation", "alternatives", "pinned_lane", "operator_override"})
+# ResourceRequirementV1 fields a resubmit may change without being a different request:
+# * the ones only the deleted broker read (spec: accepted and ignored until producers stop sending
+#   them in PR 4.6, because the model is extra="forbid");
+# * ``deadline_at``: producers compute it from their own clock on every submit (cortex-exec's
+#   reverie.visual dispatch: now + baseline interval), so a redelivered dispatch always carries a new
+#   one. The stored row is never rewritten: the first submission's deadline wins.
+IGNORED_ADMISSION_FIELDS = frozenset({"allow_elastic_activation", "alternatives", "pinned_lane", "operator_override",
+                                      "deadline_at"})
+# A run that ended without completing and must still tell its executor to close the attempt
+# (reverie.visual -> orion-thought ``abandon``): pending until the matching acked event exists.
+ABANDON_PENDING_EVENT = "run.abandon_pending"
+ABANDON_ACKED_EVENT = "run.abandon_acked"
 
 
 class SubmissionConflict(ValueError):
@@ -159,6 +168,20 @@ class PostgresAdmissionStore:
                 "AND x.event='resource.lease_released' "
                 "AND x.payload->'detail'->>'lease_id' = e.payload->'detail'->>'lease_id')",
                 (now - timedelta(seconds=max_age_seconds),))).fetchall()
+            return list(rows)
+
+    async def abandons_pending(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Runs that ended failed/cancelled whose ``run.abandon_pending`` has no ``run.abandon_acked``
+        yet: the executor has not confirmed it closed the attempt. Survives a restart (it is the
+        event log, not process memory); oldest first."""
+        async with self.pool.connection() as conn:
+            rows = await (await conn.execute(
+                "SELECT e.run_id, e.generated_at, e.payload->'detail' AS detail, r.request "
+                "FROM durable_resource_events e JOIN durable_admission_runs r USING(run_id) "
+                "WHERE e.event=%s AND r.terminal IN ('failed','cancelled') "
+                "AND NOT EXISTS (SELECT 1 FROM durable_resource_events x WHERE x.run_id=e.run_id AND x.event=%s) "
+                "ORDER BY e.generated_at, e.run_id LIMIT %s",
+                (ABANDON_PENDING_EVENT, ABANDON_ACKED_EVENT, limit))).fetchall()
             return list(rows)
 
     async def _expire(self, conn: Any, now: datetime) -> list[dict[str, Any]]:

@@ -16,12 +16,15 @@ from orion.world_pulse_read.urls import normalize_source_url
 RPC_TIMEOUT_SEC = 15.0
 
 READING_RESULTS_DESCRIPTION = (
-    "Look up what you actually learned from sources read through your reading pipeline. "
-    "Pass url or request_id for one reading, or neither for your most recent finished reads "
-    "(optional since=<ISO timestamp with timezone>, limit up to 5). Each item's text is the "
-    "learned summary; learned=false means no output exists yet, so report its reading_status "
-    "instead. Results are source-attributed candidates, not settled beliefs. items=[] means "
-    "nothing matched; a tool error means the answer is unknown, never that nothing happened."
+    "Search what you actually learned from sources read through your reading pipeline. "
+    "Pass query=<what you want to recall, in plain words> to find readings by meaning; each "
+    "item carries similarity (0-1) and only matches above a relevance floor come back. Or pass "
+    "url or request_id for one reading, or nothing for your most recent finished reads. "
+    "since=<ISO timestamp with timezone> narrows query or recent mode; limit up to 5. Each "
+    "item's text is the learned summary; learned=false means no output exists yet, so report "
+    "its reading_status instead. Results are source-attributed candidates, not settled beliefs. "
+    "items=[] means nothing matched; a tool error means the answer is unknown, never that "
+    "nothing happened."
 )
 
 
@@ -53,6 +56,7 @@ class IntrospectTools:
             operation="reading_result",
             request_id=args.request_id,
             url=normalize_source_url(args.url) if args.url is not None else None,
+            query=args.query,
             limit=args.limit,
             since=args.since,
         )

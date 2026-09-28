@@ -2,6 +2,7 @@
 """Live smoke: ask orion-hub for reading_results over the real bus.
 
     ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --limit 3
+    ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --query "graphics cards"
 
 Read-only. Exit 0 = coherent answer, 1 = degenerate answer (a verified read with
 no text, or an empty recent window), 2 = answer unknown.
@@ -22,6 +23,7 @@ from orion.schemas.introspect import IntrospectToolBindingV1
 async def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--url")
+    parser.add_argument("--query")
     parser.add_argument("--limit", type=int, default=3)
     args = parser.parse_args()
     bus_url = os.environ.get("ORION_BUS_URL")
@@ -32,7 +34,12 @@ async def main() -> int:
         invocation_context="unified_chat", parent_run_id="smoke-introspect",
         parent_trace_id="smoke-introspect", memory_allowed=False,
     )
-    arguments = {"url": args.url} if args.url else {"limit": args.limit}
+    if args.query:
+        arguments = {"query": args.query, "limit": args.limit}
+    elif args.url:
+        arguments = {"url": args.url}
+    else:
+        arguments = {"limit": args.limit}
     bus = OrionBusAsync(bus_url)
     await bus.connect()
     try:
@@ -47,7 +54,11 @@ async def main() -> int:
     if degenerate:
         print(f"DEGENERATE: source_read=true with empty text: {degenerate}", file=sys.stderr)
         return 1
-    if not args.url and result["total_available"] == 0:
+    unscored = [i["id"] for i in result["items"] if args.query and "similarity" not in i["extra"]]
+    if unscored:
+        print(f"DEGENERATE: query hits without similarity: {unscored}", file=sys.stderr)
+        return 1
+    if not args.url and not args.query and result["total_available"] == 0:
         print("DEGENERATE: recent window is empty; a responder that always answers [] passes nothing else",
               file=sys.stderr)
         return 1

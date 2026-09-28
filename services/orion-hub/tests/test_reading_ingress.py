@@ -358,3 +358,147 @@ def test_reading_result_failure_is_unknown_and_sanitized(monkeypatch, caplog):
         asyncio.run(_introspect_tools(bus).invoke("reading_results", {}))
     assert "hunter2" not in caplog.text
     assert "category=reading_result_failure phase=reading_result" in caplog.text
+
+
+def _search_cfg(**overrides):
+    from orion.world_pulse_read.search import ReadingSearchConfig
+
+    base = dict(chroma_url="http://chroma.test", embed_url="http://embed.test/embedding",
+                collection="orion_reading_results", min_similarity=0.6)
+    base.update(overrides)
+    return ReadingSearchConfig(**base)
+
+
+def test_query_ranks_before_taking_a_connection(monkeypatch, caplog):
+    import logging
+    from datetime import datetime, timezone
+
+    from orion.schemas.introspect import IntrospectResultV1
+
+    events = []
+    seen = {}
+
+    async def fake_rank(client, cfg, query):
+        events.append("rank")
+        seen["query"] = query
+        return [("seed-a", 0.8)]
+
+    async def fake_gate(conn, scored, **kwargs):
+        events.append("gate")
+        seen.update(kwargs, scored=scored)
+        return IntrospectResultV1(ok=True, operation="reading_result",
+                                  as_of=datetime.now(timezone.utc), total_available=0)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("query mode must not use exact lookup")
+
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "rank_readings", fake_rank)
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "gated_results", fake_gate)
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "reading_results", forbidden)
+    bus = RpcBus(_FakeConn())
+    conn = bus.conn
+
+    class RecordingPool:
+        def acquire(self):
+            events.append("acquire")
+            return conn
+
+    bus.listener.pool_provider = lambda: RecordingPool()
+    bus.listener.search = _search_cfg()
+    with caplog.at_level(logging.INFO):
+        out = asyncio.run(_introspect_tools(bus).invoke("reading_results", {"query": "graphics cards", "limit": 2}))
+    assert out["ok"] is True and out["items"] == []
+    assert events == ["rank", "acquire", "gate"]
+    assert seen["query"] == "graphics cards" and seen["limit"] == 2
+    assert seen["scored"] == [("seed-a", 0.8)]
+    assert "introspect op=reading_result" in caplog.text and "mode=query" in caplog.text
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_query_without_working_search_is_unknown(monkeypatch, configured):
+    from orion.introspect.tools import IntrospectUnknownError
+    from orion.world_pulse_read.search import SearchUnavailableError
+
+    async def down(client, cfg, query):
+        raise SearchUnavailableError("reading index not built yet")
+
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "rank_readings", down)
+    bus = RpcBus(_FakeConn())
+    bus.listener.search = _search_cfg() if configured else _search_cfg(chroma_url="")
+    with pytest.raises(IntrospectUnknownError, match="answer unknown"):
+        asyncio.run(_introspect_tools(bus).invoke("reading_results", {"query": "gpus"}))
+
+
+def test_index_once_uses_released_rows_and_logs(monkeypatch, caplog):
+    import logging
+
+    from orion.world_pulse_read.search import IndexPass
+
+    calls = {}
+
+    async def fake_rows(conn, *args, **kwargs):
+        return ["row"]
+
+    async def fake_index(rows, cfg, **kwargs):
+        calls["rows"] = rows
+        calls["source"] = kwargs["source"]
+        return IndexPass(indexed=1, pending=2)
+
+    monkeypatch.setitem(ReadingListener.index_once.__globals__, "verified_rows", fake_rows)
+    monkeypatch.setitem(ReadingListener.index_once.__globals__, "index_missing_readings", fake_index)
+    bus = RpcBus(_FakeConn())
+    bus.listener.search = _search_cfg()
+    with caplog.at_level(logging.INFO):
+        result = asyncio.run(bus.listener.index_once())
+    assert result == IndexPass(indexed=1, pending=2)
+    assert calls["rows"] == ["row"] and calls["source"].name == "orion-hub"
+    assert "reading_search_index indexed=1 pending=2" in caplog.text
+
+
+def test_index_loop_starts_only_when_search_enabled():
+    async def run(search):
+        listener = ReadingListener(lambda: None, ServiceRef(name="orion-hub"), search=search)
+
+        class Bus:
+            async def publish(self, *a):
+                pass
+
+        listener._run = lambda: asyncio.sleep(3600)
+        await listener.start(Bus())
+        started = listener.index_task is not None
+        await listener.stop()
+        return started
+
+    assert asyncio.run(run(_search_cfg())) is True
+    assert asyncio.run(run(_search_cfg(chroma_url=""))) is False
+    assert asyncio.run(run(None)) is False
+
+
+def test_index_once_without_pool_says_so(caplog):
+    import logging
+
+    listener = ReadingListener(lambda: None, ServiceRef(name="orion-hub"), search=_search_cfg())
+    with caplog.at_level(logging.INFO):
+        assert asyncio.run(listener.index_once()) is None
+    assert "reading_search_index skipped reason=no_pool" in caplog.text
+
+
+@pytest.mark.parametrize("pool_ready,expected", [(False, 15.0), (True, 300.0)])
+def test_index_loop_retries_soon_only_while_pool_is_missing(monkeypatch, pool_ready, expected):
+    from orion.world_pulse_read.search import IndexPass
+
+    delays = []
+
+    async def fake_sleep(delay):
+        delays.append(delay)
+        raise asyncio.CancelledError
+
+    async def fake_index_once(self):
+        return IndexPass(indexed=0, pending=0) if pool_ready else None
+
+    monkeypatch.setattr(ReadingListener, "index_once", fake_index_once)
+    monkeypatch.setattr(ReadingListener._index_loop.__globals__["asyncio"], "sleep", fake_sleep)
+    listener = ReadingListener(lambda: None, ServiceRef(name="orion-hub"), search=_search_cfg())
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(listener._index_loop())
+    assert delays == [expected]

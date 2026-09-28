@@ -123,3 +123,14 @@ def test_brief_present_only_when_server_attached(harness_env):
     assert "orion-introspect" not in _prefix()
     harness_env.setenv("HARNESS_FCC_INTROSPECT_ENABLED", "false")
     assert "orion-introspect" not in _prefix(reading_binding=READING)
+
+
+def test_brief_tells_orion_to_search_by_meaning():
+    from orion.introspect.brief import introspect_brief_lines
+
+    binding = IntrospectToolBindingV1(
+        invocation_context="unified_chat", parent_run_id="r", parent_trace_id="t", memory_allowed=True,
+    )
+    text = " ".join(introspect_brief_lines(binding))
+    assert "query=" in text and "similarity" in text
+    assert "answer is unknown" in text

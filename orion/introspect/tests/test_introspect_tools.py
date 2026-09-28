@@ -109,3 +109,20 @@ class CorruptDataBus:
 def test_corrupt_reply_bytes_are_unknown():
     with pytest.raises(IntrospectUnknownError, match="answer unknown"):
         _invoke(CorruptDataBus())
+
+
+def test_reading_results_forwards_query_without_url_normalization():
+    bus = ReplyBus(_ok_payload())
+    out = _invoke(bus, args={"query": "  graphics cards ", "limit": 2})
+    assert out["ok"] is True
+    [(_, envelope, _, _)] = bus.sent
+    assert envelope.payload["query"] == "graphics cards"
+    assert envelope.payload["limit"] == 2
+    assert "url" not in envelope.payload or envelope.payload["url"] is None
+
+
+def test_description_leads_with_semantic_query():
+    [spec] = IntrospectTools(ReplyBus(), BINDING).tool_specs()
+    assert spec.description.lower().startswith("search")
+    assert "query" in spec.description and "similarity" in spec.description
+    assert "query" in spec.arguments.model_json_schema()["properties"]

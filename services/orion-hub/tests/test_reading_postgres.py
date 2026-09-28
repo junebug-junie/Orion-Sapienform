@@ -227,10 +227,11 @@ def test_url_status_selects_latest_alias_and_preserves_earlier_failure(local_pg)
         async with conn.transaction(readonly=True):
             latest = await queue.reading_status(conn, url=url + "#abstract")
             assert latest["request_id"] == str(alias.request_id)
-            # Stage 1 already read it, so later asks fold onto that read (by design).
-            assert latest["duplicate_of"] == "reading:" + str(old.request_id)
-            assert latest["duplicate"] == queue.ALREADY_READ
-            assert latest["status"] == "failed"
+            # `old` was marked done without fetch evidence, so it is not a read.
+            assert latest["duplicate_of"] == "reading:" + str(current.request_id)
+            assert latest["duplicate"] == "already_queued"
+            assert latest["status"] == "queued"
+            assert latest["queue_position"] == 1
             assert latest["matched_request_count"] == 3
             assert latest["selection"] == "latest_request"
             assert (await queue.reading_status(conn, old.request_id))["status"] == "failed"
@@ -242,7 +243,7 @@ def test_url_status_selects_latest_alias_and_preserves_earlier_failure(local_pg)
     asyncio.run(run())
 
 
-def test_concurrent_submissions_alias_active_work_and_block_later_reread(local_pg):
+def test_concurrent_submissions_alias_active_work_and_allow_reread_without_evidence(local_pg):
     async def run():
         conn, schema = await db(local_pg)
         other = await asyncpg.connect(**local_pg)
@@ -256,9 +257,9 @@ def test_concurrent_submissions_alias_active_work_and_block_later_reread(local_p
         await queue.enqueue_reading(conn, a)
         assert await conn.fetchval("SELECT count(*) FROM world_pulse_read_seed") == 2
         await conn.execute("UPDATE world_pulse_read_seed SET status='done', stage2_status='done' WHERE duplicate_of IS NULL")
-        later = await queue.enqueue_reading(conn, request())
-        assert later["duplicate"] == queue.ALREADY_READ and later["status"] != "queued"
-        assert await conn.fetchval("SELECT count(*) FROM world_pulse_read_seed WHERE status='pending'") == 0
+        # Done without fetch evidence (pre-2026-09-25 rows) is not a read.
+        assert (await queue.enqueue_reading(conn, request()))["status"] == "queued"
+        assert await conn.fetchval("SELECT count(*) FROM world_pulse_read_seed WHERE status='pending'") == 1
         await other.close()
         await conn.close()
     asyncio.run(run())

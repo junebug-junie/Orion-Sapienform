@@ -144,6 +144,7 @@ class ReadingRecommendationOutcomeV1(BaseModel):
     acceptance: Literal["accepted", "unknown"]
     request_id: UUID | None = None
     status: ReadingStatus | None = None
+    duplicate: Literal["already_read", "already_queued"] | None = None
     source_read: bool = False
     failure_kind: Literal[
         "tool_error", "rpc_timeout", "malformed_receipt", "missing_result"

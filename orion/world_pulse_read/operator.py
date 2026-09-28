@@ -257,11 +257,11 @@ def _has_read_evidence(handoff: Any) -> bool:
     return isinstance(handoff, dict) and bool(handoff.get("read_evidence"))
 
 
-_FOLLOWED_UP_URL_SQL = """
-SELECT 1 FROM world_pulse_read_seed
+_OTHER_FOLLOW_UP_SQL = """
+SELECT stage2_status FROM world_pulse_read_seed
 WHERE url = $1 AND seed_id <> $2 AND duplicate_of IS NULL
-  AND status = 'done' AND stage2_status = 'done'
-LIMIT 1
+  AND status = 'done' AND stage2_status IN ('done', 'pending', 'claimed')
+ORDER BY stage2_status = 'done' DESC LIMIT 1
 """
 
 
@@ -311,8 +311,12 @@ async def retry_read(
                 raise OperatorActionError("stage2_not_terminal")
             if not _has_read_evidence(row["handoff_json"]):
                 raise OperatorActionError("no_read_evidence")
-            if await conn.fetchval(_FOLLOWED_UP_URL_SQL, row["url"], seed_id):
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", row["url"])
+            other = await conn.fetchval(_OTHER_FOLLOW_UP_SQL, row["url"], seed_id)
+            if other == "done":
                 raise OperatorActionError(ALREADY_READ)
+            if other is not None:
+                raise OperatorActionError("url_already_active")
             await conn.execute(
                 """UPDATE world_pulse_read_seed
                    SET stage2_status='pending', stage2_attempts=0, stage2_error=NULL,

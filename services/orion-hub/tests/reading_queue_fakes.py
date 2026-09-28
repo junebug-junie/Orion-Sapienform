@@ -119,10 +119,11 @@ class ReadingQueueFakeMixin:
         return await super().fetchrow(sql, *args)
 
     async def fetchval(self, sql, *args):
-        if "AND duplicate_of IS NULL AND status = 'done' AND seed_id <> $2" in sql:
+        if "r.url = $1 AND r.seed_id <> $2" in sql:
             return next((r["seed_id"] for r in self.rows.values() if r["url"] == args[0]
                          and r["seed_id"] != args[1] and not r.get("duplicate_of")
-                         and r["status"] == "done"), None)
+                         and r["status"] == "done"
+                         and ((r.get("handoff_json") or {}).get("read_evidence") or [])), None)
         return sum(1 for r in self.rows.values() if r.get("root_request_id") == args[0]
                    and r.get("request_id") != args[0] and not r.get("duplicate_of"))
 

@@ -97,7 +97,7 @@ def test_in_flight_and_fresh_urls_are_not_marked_already_read(local_pg):
 def test_sweep_passes_on_waiting_rows_for_an_already_read_url(local_pg):
     async def run():
         conn, _ = await db(local_pg)
-        await _read(conn)
+        first = await _read(conn)
         waiting = await _legacy_row(conn)
         bound = await _legacy_row(conn)
         await bind_turn(conn, ReadingRunBriefV1(
@@ -105,10 +105,24 @@ def test_sweep_passes_on_waiting_rows_for_an_already_read_url(local_pg):
         ), str(uuid4()))
         other = await queue.enqueue_reading(conn, request("https://example.org/different"))
 
+        joined = await queue.enqueue_reading(conn, request("https://example.org/joined"))
+        await conn.execute(
+            "UPDATE world_pulse_read_seed SET url=$2, status='skipped', stage2_status='skipped', "
+            "duplicate_of=$3 WHERE seed_id=$1", joined["seed_id"], URL, waiting,
+        )
+
         assert await queue.skip_already_read_stage1(conn) == 1
         row = await _row(conn, waiting)
-        assert (row["status"], row["last_error"], row["duplicate_of"]) == ("skipped", queue.ALREADY_READ, None)
+        assert (row["status"], row["stage2_status"], row["last_error"], row["duplicate_of"]) == (
+            "skipped", "skipped", queue.ALREADY_READ, first,
+        )
         assert row["completed_at"] is not None
+        # A request that had joined the passed-on row now follows the real read.
+        status = await queue.reading_status(conn, joined["request_id"])
+        assert (status["duplicate_of"], status["duplicate"]) == (first, queue.ALREADY_READ)
+        assert status["summary"] == "Rubin pairs a new GPU with a new CPU."
+        own = await queue.reading_status(conn, (await _row(conn, waiting))["request_id"])
+        assert own["duplicate"] == queue.ALREADY_READ
         # A row with an open run is left to it; other URLs are untouched.
         assert (await _row(conn, bound))["status"] == "pending"
         assert (await _row(conn, other["seed_id"]))["status"] == "pending"
@@ -152,5 +166,34 @@ def test_retry_refuses_to_read_an_already_read_url_again(local_pg):
         with pytest.raises(op.OperatorActionError) as err:
             await op.retry_read(conn, second, stage=2)
         assert err.value.code == queue.ALREADY_READ
+        await conn.close()
+    _run(run())
+
+
+def test_stage2_retry_refuses_while_another_follow_up_for_the_url_runs(local_pg):
+    async def run():
+        conn, _ = await db(local_pg)
+        first = await _read(conn)
+        second = await _legacy_row(conn, status="done", stage2_status="failed")
+        await conn.execute(
+            "UPDATE world_pulse_read_seed SET handoff_json=(SELECT handoff_json FROM world_pulse_read_seed "
+            "WHERE seed_id=$2) WHERE seed_id=$1", second, first,
+        )
+        with pytest.raises(op.OperatorActionError) as err:
+            await op.retry_read(conn, second, stage=2)
+        assert err.value.code == "url_already_active"
+        await conn.close()
+    _run(run())
+
+
+def test_done_without_fetch_evidence_does_not_block_a_new_read(local_pg):
+    async def run():
+        conn, _ = await db(local_pg)
+        old = await _legacy_row(conn, status="done", stage2_status="failed")
+        fresh = await queue.enqueue_reading(conn, request(URL))
+        assert fresh["duplicate"] is None and fresh["duplicate_of"] is None
+        assert fresh["status"] == "queued"
+        assert await queue.skip_already_read_stage1(conn) == 0
+        assert (await _row(conn, old))["status"] == "done"
         await conn.close()
     _run(run())

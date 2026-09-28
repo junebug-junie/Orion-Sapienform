@@ -276,6 +276,7 @@ class ReadingReceiptTracker:
                         acceptance="accepted",
                         request_id=recommendation.receipt.request_id,
                         status=recommendation.receipt.status,
+                        duplicate=recommendation.receipt.duplicate,
                         source_read=source_read,
                     )
                 )
@@ -291,6 +292,19 @@ class ReadingReceiptTracker:
                     )
                 )
         return outcomes
+
+
+def _receipt_line(item: ReadingRecommendationOutcomeV1) -> str:
+    if item.duplicate == "already_read":
+        return (
+            f"Not read again: `{item.url}` was already read, so this request was blocked "
+            f"as a duplicate by design (request_id `{item.request_id}`; earlier read "
+            f"status: `{item.status}`)."
+        )
+    return (
+        "Reading recommendation accepted with durable request_id "
+        f"`{item.request_id}`; current status: `{item.status}`."
+    )
 
 
 def _unread_caveat(url: str) -> str:
@@ -314,11 +328,7 @@ def enforce_reading_receipt_grounding(
         return text
     unknown = [item for item in outcomes if item.acceptance == "unknown"]
     receipts = [item for item in outcomes if item.acceptance == "accepted"]
-    receipt_lines = [
-        "Reading recommendation accepted with durable request_id "
-        f"`{item.request_id}`; current status: `{item.status}`."
-        for item in receipts
-    ]
+    receipt_lines = [_receipt_line(item) for item in receipts]
     if not unknown:
         footer_lines = [line for line in receipt_lines if line not in text]
         for item in receipts:

@@ -345,7 +345,7 @@
         title: "Queue the follow-up again.",
         onclick: () => act("Retry stage 2", `${BASE}/reads/${id}/retry`, { stage: 2 }) }, "Retry stage 2"),
       // Escape hatch when no retry applies (e.g. an old digest item): a fresh request.
-      can.cancel || d.duplicate_of || d.status === "done" ? null : el("button", { type: "button", id: "readAgain",
+      can.cancel || d.duplicate_of || d.status === "done" || d.last_error === "already_read" ? null : el("button", { type: "button", id: "readAgain",
         title: "Put this URL in the submit form above as a new read.",
         onclick: () => {
           $("submitUrl").value = d.url || "";

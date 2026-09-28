@@ -22,7 +22,8 @@ RECOMMEND_DESCRIPTION = (
     "candidates, not settled beliefs. Report request_id and status so reading_status can inspect it later. "
     "A URL Orion already read is never read again, even when the user asks: if the result has "
     "duplicate='already_read', tell the user it was blocked as a duplicate by design and share "
-    "the earlier read's summary instead. duplicate='already_queued' means it joined a read in progress."
+    "the earlier read's summary instead. duplicate='already_queued' means it joined a read that was "
+    "still in progress when you asked."
 )
 STATUS_DESCRIPTION = (
     "Read durable reading status by url or request_id (supply exactly one). Use the supplied "

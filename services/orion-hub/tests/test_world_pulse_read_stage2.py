@@ -1127,3 +1127,23 @@ def test_stage2_skips_unread_handoff_before_wallet_b_debit() -> None:
     # stage2_started (published at claim) is closed by a terminal event.
     stages = [e.payload.get("stage") for c, e in bus.published if c != JOURNAL_WRITE_CHANNEL]
     assert stages[-1] == "stage2_failed"
+
+
+def test_reentry_passes_on_an_already_read_url_even_when_wallet_a_is_backing_off() -> None:
+    bus = _FakeBus()
+    conn = _FakeConn()
+    bus.redis.store[wa.WALLET_A_RETRY_NOT_BEFORE_KEY] = (
+        datetime.now(timezone.utc) + timedelta(hours=1)
+    ).isoformat()
+    pipe = _pipeline(bus, conn)
+
+    async def _run():
+        await _ready_stage2(conn)
+        conn.rows["finding:r1:x"]["handoff_json"] = {
+            "read_evidence": [{"tool_name": "WebFetch", "url": "https://ex.com/a", "content_chars": 900}]
+        }
+        read_before = await pipe._reenter_stage1("https://ex.com/a", parent_seed=_seed())
+        fresh = await pipe._reenter_stage1("https://ex.com/new", parent_seed=_seed())
+        return read_before, fresh
+
+    assert asyncio.run(_run()) == ("already_read", "refund_backoff")

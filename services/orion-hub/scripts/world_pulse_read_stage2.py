@@ -32,6 +32,7 @@ from orion.schemas.world_pulse_read import (
 )
 from orion.world_pulse_read.queue import (
     ALREADY_READ,
+    READ_URL_SQL,
     RECLAIM_REASON_PROCESS_RESTART,
     RECLAIM_REASON_STALE_TIMEOUT,
     claim_next_stage2_seed,
@@ -616,6 +617,10 @@ class WorldPulseReadStage2Pipeline:
             url = await validate_source_url(url)
         except ValueError:
             return "bad_url"
+        # Before the Wallet A gate: a closed gate must not stop the loop on a
+        # URL that would be passed on anyway.
+        if await self._with_conn(lambda conn: conn.fetchval(READ_URL_SQL, url, "")):
+            return ALREADY_READ
         redis = self._redis()
         now = datetime.now(timezone.utc)
         retry_wait = None

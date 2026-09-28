@@ -88,7 +88,8 @@ def test_chat_ask_for_an_already_read_url_is_blocked_and_the_receipt_says_so():
     async def run():
         first = (await tools.invoke("recommend_reading", {"url": url, "why_now": "GPU roadmap"}))["result"]
         assert first["duplicate"] is None
-        conn.rows[first["seed_id"]].update(status="done", stage2_status="done")
+        conn.rows[first["seed_id"]].update(status="done", stage2_status="done", handoff_json={
+            "read_evidence": [{"tool_name": "WebFetch", "url": url, "content_chars": 900}]})
         again = (await tools.invoke("recommend_reading", {"url": url, "why_now": "Read it again"}))["result"]
         assert again["duplicate"] == "already_read"
         assert again["duplicate_of"] == first["seed_id"]

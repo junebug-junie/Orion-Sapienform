@@ -57,11 +57,12 @@ jobs:
             orion/fcc/tests/test_reading_mcp.py \
             orion/fcc/tests/test_mcp_config.py \
             orion/harness/tests/test_fcc_motor_mcp.py \
+            orion/harness/tests/test_reading_receipts.py \
             tests/test_world_pulse_read_*.py \
             tests/test_unified_turn_schemas.py \
             tests/test_unified_turn_bus_catalog.py
       - name: Offline source handoff behavior eval
-        run: python -m pytest services/orion-hub/evals/test_reading_handoff_eval.py -q
+        run: python -m pytest services/orion-hub/evals/test_reading_handoff_eval.py services/orion-hub/evals/test_reading_receipt_truth_eval.py -q
       - name: Checkpointed reading admission
         run: |
           python -m pip install langgraph==1.2.11

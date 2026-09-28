@@ -137,7 +137,7 @@ def test_relevance_joins_a_real_substrate_node():
     loops = build_open_loops(
         signals=merge_signals(signals, limit=15),
         ctx={}, inputs={}, belief_lineage=[],
-        direct_turn=False, generic_reversal=False, stale_thread_active=False,
+        direct_turn=False, stale_thread_active=False,
         max_open=5,
     )
     assert len(loops) == 2, "both nodes should clear the threshold"

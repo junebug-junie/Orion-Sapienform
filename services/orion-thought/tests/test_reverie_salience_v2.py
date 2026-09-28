@@ -70,8 +70,7 @@ def test_derive_salience_zero_can_be_a_real_outranked_loop_not_only_no_evidence(
     loops = build_open_loops(
         signals=signals,
         ctx={"user_message": "a faint concern a strong concern another strong concern"},
-        inputs={}, belief_lineage=[], direct_turn=False, generic_reversal=False,
-        stale_thread_active=False, max_open=5,
+        inputs={}, belief_lineage=[], direct_turn=False,        stale_thread_active=False, max_open=5,
     )
     weak_loop = next(l for l in loops if l.description == "a faint concern")
     assert weak_loop.salience == 0.0, "expected the weak loop to be strict last-place"

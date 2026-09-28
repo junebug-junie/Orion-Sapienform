@@ -40,7 +40,6 @@ def test_distinct_coalitions_get_distinct_salience():
         inputs={},
         belief_lineage=[],
         direct_turn=False,
-        generic_reversal=False,
         stale_thread_active=False,
         max_open=5,
     )

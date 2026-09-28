@@ -2637,6 +2637,7 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as exc:
             logger.warning("current_turn_llm_signals_populate_call_failed error=%s", exc)
             ctx["current_turn_llm_signals"] = []
+            ctx["current_turn_llm_read"] = {"ok": False, "wants_direct_answer": None}
         try:
             attention_frame = build_attention_frame(
                 ctx=ctx,

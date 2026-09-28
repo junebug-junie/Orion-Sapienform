@@ -480,7 +480,12 @@ class Settings(BaseSettings):
     # module's docstring for the full rationale.
     current_turn_signal_probe_route: str = Field("quick", alias="CURRENT_TURN_SIGNAL_PROBE_ROUTE")
     current_turn_signal_probe_timeout_sec: float = Field(3.0, alias="CURRENT_TURN_SIGNAL_PROBE_TIMEOUT_SEC")
-    current_turn_signal_probe_max_tokens: int = Field(80, alias="CURRENT_TURN_SIGNAL_PROBE_MAX_TOKENS")
+    # 256: the read carries a follow-up question per item (up to 3) plus
+    # wants_direct_answer; 80 truncated that shape mid-object.
+    current_turn_signal_probe_max_tokens: int = Field(256, alias="CURRENT_TURN_SIGNAL_PROBE_MAX_TOKENS")
+    # Pinned: at the backend default the same prompt and message flipped
+    # between [] and a real candidate run to run (1/10 on corr beab81a3's text).
+    current_turn_signal_probe_temperature: float = Field(0.0, alias="CURRENT_TURN_SIGNAL_PROBE_TEMPERATURE")
     enable_pre_turn_appraisal_handler: bool = Field(
         True,
         alias="ENABLE_PRE_TURN_APPRAISAL_HANDLER",

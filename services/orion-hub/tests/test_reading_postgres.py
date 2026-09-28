@@ -62,7 +62,7 @@ def request(url="https://example.org/article", **kwargs):
 
 
 @pytest.mark.parametrize("stage", [1, 2])
-@pytest.mark.parametrize("reason", ["outside_window", "daily_cap", "cooldown", "refund_backoff", "disabled"])
+@pytest.mark.parametrize("reason", ["outside_window", "refund_backoff", "disabled"])
 @pytest.mark.parametrize("active", [False, True, "consumed", "other_stage"])
 def test_admission_gates_only_allow_existing_bindings(local_pg, monkeypatch, stage, reason, active):
     from types import SimpleNamespace
@@ -98,8 +98,7 @@ def test_admission_gates_only_allow_existing_bindings(local_pg, monkeypatch, sta
         module = s1 if stage == 1 else s2
         cls = s1.WorldPulseReadPipeline if stage == 1 else s2.WorldPulseReadStage2Pipeline
         monkeypatch.setattr(module, f"wallet_{'a' if stage == 1 else 'b'}_block_reason", lambda _: reason)
-        pipe = cls(enabled=reason != "disabled", tick_interval_sec=60, min_cooldown_sec=0,
-            daily_cap=12, timeout_sec=900, session_id="reading",
+        pipe = cls(enabled=reason != "disabled", tick_interval_sec=60, timeout_sec=900, session_id="reading",
             pool_provider=lambda: None, source_ref=ServiceRef(name="orion-hub"))
         async def with_conn(callback):
             return await callback(conn)
@@ -193,8 +192,7 @@ def test_worker_wait_or_cancel_does_not_charge_or_spend_attempt(local_pg, cancel
         conn, _ = await db(local_pg)
         await queue.enqueue_reading(conn, request())
         redis = FakeRedis()
-        pipe = WorldPulseReadPipeline(enabled=True, tick_interval_sec=60, min_cooldown_sec=0,
-            daily_cap=6, timeout_sec=900, session_id="reading", pool_provider=lambda: None,
+        pipe = WorldPulseReadPipeline(enabled=True, tick_interval_sec=60, timeout_sec=900, session_id="reading", pool_provider=lambda: None,
             source_ref=ServiceRef(name="orion-hub"))
         async def with_conn(callback):
             return await callback(conn)
@@ -229,9 +227,10 @@ def test_url_status_selects_latest_alias_and_preserves_earlier_failure(local_pg)
         async with conn.transaction(readonly=True):
             latest = await queue.reading_status(conn, url=url + "#abstract")
             assert latest["request_id"] == str(alias.request_id)
-            assert latest["duplicate_of"] == "reading:" + str(current.request_id)
-            assert latest["status"] == "queued"
-            assert latest["queue_position"] == 1
+            # Stage 1 already read it, so later asks fold onto that read (by design).
+            assert latest["duplicate_of"] == "reading:" + str(old.request_id)
+            assert latest["duplicate"] == queue.ALREADY_READ
+            assert latest["status"] == "failed"
             assert latest["matched_request_count"] == 3
             assert latest["selection"] == "latest_request"
             assert (await queue.reading_status(conn, old.request_id))["status"] == "failed"
@@ -243,7 +242,7 @@ def test_url_status_selects_latest_alias_and_preserves_earlier_failure(local_pg)
     asyncio.run(run())
 
 
-def test_concurrent_submissions_alias_active_work_and_allow_later_reread(local_pg):
+def test_concurrent_submissions_alias_active_work_and_block_later_reread(local_pg):
     async def run():
         conn, schema = await db(local_pg)
         other = await asyncpg.connect(**local_pg)
@@ -257,8 +256,9 @@ def test_concurrent_submissions_alias_active_work_and_allow_later_reread(local_p
         await queue.enqueue_reading(conn, a)
         assert await conn.fetchval("SELECT count(*) FROM world_pulse_read_seed") == 2
         await conn.execute("UPDATE world_pulse_read_seed SET status='done', stage2_status='done' WHERE duplicate_of IS NULL")
-        assert (await queue.enqueue_reading(conn, request()))["status"] == "queued"
-        assert await conn.fetchval("SELECT count(*) FROM world_pulse_read_seed WHERE status='pending'") == 1
+        later = await queue.enqueue_reading(conn, request())
+        assert later["duplicate"] == queue.ALREADY_READ and later["status"] != "queued"
+        assert await conn.fetchval("SELECT count(*) FROM world_pulse_read_seed WHERE status='pending'") == 0
         await other.close()
         await conn.close()
     asyncio.run(run())

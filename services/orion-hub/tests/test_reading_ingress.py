@@ -76,6 +76,33 @@ def test_real_tool_and_listener_share_queue_and_emit_typed_acceptance(context, r
     asyncio.run(run())
 
 
+@pytest.mark.usefixtures("reading_dns")
+def test_chat_ask_for_an_already_read_url_is_blocked_and_the_receipt_says_so():
+    from orion.world_pulse_read.tools import RECOMMEND_DESCRIPTION, reading_brief_lines
+
+    conn = _FakeConn()
+    bus = RpcBus(conn)
+    tools = ReadingTools(bus, ReadingToolBindingV1(invocation_context="unified_chat", parent_run_id="r", parent_trace_id="t"))
+    url = "https://example.org/rubin"
+
+    async def run():
+        first = (await tools.invoke("recommend_reading", {"url": url, "why_now": "GPU roadmap"}))["result"]
+        assert first["duplicate"] is None
+        conn.rows[first["seed_id"]].update(status="done", stage2_status="done")
+        again = (await tools.invoke("recommend_reading", {"url": url, "why_now": "Read it again"}))["result"]
+        assert again["duplicate"] == "already_read"
+        assert again["duplicate_of"] == first["seed_id"]
+        assert again["request_id"] != first["request_id"]
+        # Nothing new waits to be read.
+        assert [r["seed_id"] for r in conn.rows.values() if r["status"] == "pending"] == []
+
+    asyncio.run(run())
+    # The model is told to report the block, not to quietly re-queue.
+    for text in (RECOMMEND_DESCRIPTION, " ".join(reading_brief_lines())):
+        assert "duplicate='already_read'" in text
+        assert "duplicate by design" in text
+
+
 @pytest.mark.parametrize("selectors", [{}, {"url": "https://example.org/a", "request_id": str(uuid4())}])
 def test_status_requires_exactly_one_selector(selectors):
     with pytest.raises(ValidationError):

@@ -29,6 +29,7 @@ from orion.world_pulse_read.queue import (
     RECLAIM_REASON_STALE_TIMEOUT,
     claim_next_seed,
     enqueue_from_recent_digests,
+    skip_already_read_stage1,
     skip_stale_digest_items,
     mark_seed_done,
     mark_seed_failed,
@@ -48,8 +49,6 @@ from orion.world_pulse_read.url_filters import url_looks_like_section_index
 from orion.world_pulse_read.wallet_a import (
     WalletAInputs,
     debit_wallet_a,
-    paced_cooldown_sec,
-    read_wallet_a_state,
     read_wallet_a_retry_wait,
     refund_wallet_a,
     settle_wallet_a,
@@ -62,12 +61,14 @@ logger = logging.getLogger("orion-hub.world_pulse_read_pipeline")
 JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 PIPELINE_TAG = "world_pulse_read"
 _AUTHOR = "orion"
-_FORCE_OVERRIDE = frozenset({"cooldown", "daily_cap", "outside_window", "refund_backoff"})
-# Refund backoff (a turn refused before reading) doubles from MIN_COOLDOWN_SEC per
-# consecutive refusal up to max(paced cooldown, this many x MIN_COOLDOWN_SEC). Live
-# 1800s floor -> 0.5h, 1h, 2h, 4h, 4h...: a full-day capacity outage costs ~8 stance
-# calls (and seed attempts), close to the old cap of 6, instead of one per tick.
+_FORCE_OVERRIDE = frozenset({"outside_window", "refund_backoff"})
+# Refund backoff (a turn refused before reading) doubles from this base per
+# consecutive refusal up to _REFUND_BACKOFF_CAP_MULTIPLIER x base: 0.5h, 1h, 2h,
+# 4h, 4h... so a full-day capacity outage costs ~8 stance calls instead of one
+# per tick. The only pacing left after daily caps and cooldowns were removed.
+_REFUND_BACKOFF_BASE_SEC = 1800.0
 _REFUND_BACKOFF_CAP_MULTIPLIER = 8
+_REFUND_BACKOFF_CAP_SEC = _REFUND_BACKOFF_CAP_MULTIPLIER * _REFUND_BACKOFF_BASE_SEC
 # Cap on how much of a raw exception message / non-final-frame error string
 # lands in `fail_reason` -- keep it grep-friendly (short label + a hint of
 # context), not a full stack trace stuffed into the `last_error` column.
@@ -179,8 +180,6 @@ class WorldPulseReadPipeline:
         *,
         enabled: bool,
         tick_interval_sec: float,
-        min_cooldown_sec: float,
-        daily_cap: int,
         window_start_hour: int = 0,
         window_end_hour: int = 0,
         timeout_sec: float,
@@ -198,8 +197,6 @@ class WorldPulseReadPipeline:
         self.enabled = enabled
         self.durable_url = durable_url
         self.tick_interval_sec = tick_interval_sec
-        self.min_cooldown_sec = min_cooldown_sec
-        self.daily_cap = daily_cap
         self.window_start_hour = int(window_start_hour)
         self.window_end_hour = int(window_end_hour)
         self.timeout_sec = timeout_sec
@@ -230,15 +227,6 @@ class WorldPulseReadPipeline:
         self._task: Optional[asyncio.Task] = None
         self._stop = asyncio.Event()
 
-    @property
-    def effective_cooldown_sec(self) -> float:
-        return paced_cooldown_sec(
-            min_cooldown_sec=self.min_cooldown_sec,
-            daily_cap=self.daily_cap,
-            start_hour=self.window_start_hour,
-            end_hour=self.window_end_hour,
-        )
-
     def _redis(self) -> Any:
         bus = self._bus
         if bus is None:
@@ -254,10 +242,8 @@ class WorldPulseReadPipeline:
         self._stop.clear()
         self._task = asyncio.create_task(self._run())
         logger.info(
-            "world_pulse_read_pipeline started tick=%ss cooldown=%ss cap=%s max_attempts=%s",
+            "world_pulse_read_pipeline started tick=%ss max_attempts=%s",
             self.tick_interval_sec,
-            round(self.effective_cooldown_sec),
-            self.daily_cap,
             self.max_attempts,
         )
 
@@ -296,15 +282,11 @@ class WorldPulseReadPipeline:
         await self._reclaim_stale_claimed()
         await self._maybe_enqueue_recent()
         await self._skip_stale_digest_items()
+        await self._skip_already_read()
 
         redis = self._redis()
         retry_wait = None
-        if redis is None:
-            since, done_today = None, 0
-        else:
-            since, done_today = await read_wallet_a_state(
-                redis, now=now, timezone_name=self.timezone_name
-            )
+        if redis is not None:
             retry_wait = await read_wallet_a_retry_wait(redis, now=now)
 
         local_hour = None
@@ -313,10 +295,6 @@ class WorldPulseReadPipeline:
         reason = wallet_a_block_reason(
             WalletAInputs(
                 enabled=self.enabled,
-                done_today=done_today,
-                daily_cap=self.daily_cap,
-                seconds_since_last=since,
-                min_cooldown_sec=self.effective_cooldown_sec,
                 now_hour=local_hour,
                 window_start_hour=self.window_start_hour,
                 window_end_hour=self.window_end_hour,
@@ -325,10 +303,7 @@ class WorldPulseReadPipeline:
         )
         if force and reason in _FORCE_OVERRIDE:
             logger.warning(
-                "world_pulse_read_forced overriding=%s done_today=%s cap=%s",
-                reason,
-                done_today,
-                self.daily_cap,
+                "world_pulse_read_forced overriding=%s", reason,
             )
             reason = None
         if reason == "disabled":
@@ -466,6 +441,15 @@ class WorldPulseReadPipeline:
         except Exception:  # noqa: BLE001
             logger.warning("world_pulse_read_enqueue_failed", exc_info=True)
 
+    async def _skip_already_read(self) -> None:
+        try:
+            skipped = await self._with_conn(skip_already_read_stage1)
+        except Exception:  # noqa: BLE001
+            logger.warning("world_pulse_read_skip_already_read_failed", exc_info=True)
+            return
+        if skipped:
+            logger.info("world_pulse_read_skipped_already_read n=%s", skipped)
+
     async def _skip_stale_digest_items(self) -> None:
         if self.digest_item_max_age_days <= 0:
             return
@@ -502,9 +486,8 @@ class WorldPulseReadPipeline:
                 await settle_durable_turn(redis, run_id=self._settlement_run_id,
                     now=datetime.now(timezone.utc), timezone_name=self.timezone_name,
                     refused=is_refused_before_work(reason),
-                    backoff_base_sec=self.min_cooldown_sec,
-                    backoff_cap_sec=max(self.effective_cooldown_sec,
-                        _REFUND_BACKOFF_CAP_MULTIPLIER * self.min_cooldown_sec))
+                    backoff_base_sec=_REFUND_BACKOFF_BASE_SEC,
+                    backoff_cap_sec=_REFUND_BACKOFF_CAP_SEC)
                 return
             if receipt is None:
                 receipt = await debit_wallet_a(
@@ -517,11 +500,8 @@ class WorldPulseReadPipeline:
                 redis,
                 receipt,
                 now=datetime.now(timezone.utc),
-                backoff_base_sec=self.min_cooldown_sec,
-                backoff_cap_sec=max(
-                    self.effective_cooldown_sec,
-                    _REFUND_BACKOFF_CAP_MULTIPLIER * self.min_cooldown_sec,
-                ),
+                backoff_base_sec=_REFUND_BACKOFF_BASE_SEC,
+                backoff_cap_sec=_REFUND_BACKOFF_CAP_SEC,
             )
         except Exception:  # noqa: BLE001
             logger.warning("world_pulse_read_wallet_settle_failed seed=%s", seed_id, exc_info=True)

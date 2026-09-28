@@ -19,7 +19,10 @@ RECOMMEND_DESCRIPTION = (
     "Acceptance exists only when the response has ok=true and result contains a request_id; "
     "errors or malformed results mean acceptance is unknown. Returns a durable queue receipt, "
     "not an article summary or a promise of future processing. Reading creates source-attributed "
-    "candidates, not settled beliefs. Report request_id and status so reading_status can inspect it later."
+    "candidates, not settled beliefs. Report request_id and status so reading_status can inspect it later. "
+    "A URL Orion already read is never read again, even when the user asks: if the result has "
+    "duplicate='already_read', tell the user it was blocked as a duplicate by design and share "
+    "the earlier read's summary instead. duplicate='already_queued' means it joined a read in progress."
 )
 STATUS_DESCRIPTION = (
     "Read durable reading status by url or request_id (supply exactly one). Use the supplied "
@@ -45,7 +48,10 @@ def reading_brief_lines() -> list[str]:
             "'queued' result includes queue_position/queue_depth (e.g. '13th of 121') -- use "
             "them, don't just report 'queued' with no sense of scale. Tool discovery is not "
             "a status check: report status only after a successful tool call. URL lookup "
-            "selects the latest request; queued does not establish that no earlier attempt ran."
+            "selects the latest request; queued does not establish that no earlier attempt ran. "
+            "An already-read URL is not read twice: a recommend_reading result with "
+            "duplicate='already_read' means it was blocked as a duplicate by design -- say so "
+            "plainly and give the earlier read's summary."
         ),
     ]
 

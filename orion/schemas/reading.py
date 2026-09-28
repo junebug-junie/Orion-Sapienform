@@ -106,6 +106,9 @@ class ReadingStatusReceiptV1(BaseModel):
     request_id: UUID | None
     status: ReadingStatus
     seed_id: str | None = Field(default=None, min_length=1)
+    # Set when this request was folded into another read of the same URL.
+    # already_read: that read already finished, so the URL is not read again.
+    duplicate: Literal["already_read", "already_queued"] | None = None
 
     @model_validator(mode="after")
     def found_request_id(self):

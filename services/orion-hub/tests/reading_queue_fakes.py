@@ -29,7 +29,7 @@ class ReadingQueueFakeMixin:
                        stage2_result_json=None, landing_at=None,
                        attempts=0, stage2_attempts=0)
             if args[11]:
-                row.update(status="skipped", stage2_status="skipped")
+                row.update(status="skipped", stage2_status="skipped", last_error=args[12])
         if "stage2_result_json = COALESCE" in sql and args[0] in self.rows:
             self.rows[args[0]]["stage2_result_json"] = json.loads(args[2]) if args[2] else None
         return result
@@ -119,6 +119,10 @@ class ReadingQueueFakeMixin:
         return await super().fetchrow(sql, *args)
 
     async def fetchval(self, sql, *args):
+        if "AND duplicate_of IS NULL AND status = 'done' AND seed_id <> $2" in sql:
+            return next((r["seed_id"] for r in self.rows.values() if r["url"] == args[0]
+                         and r["seed_id"] != args[1] and not r.get("duplicate_of")
+                         and r["status"] == "done"), None)
         return sum(1 for r in self.rows.values() if r.get("root_request_id") == args[0]
                    and r.get("request_id") != args[0] and not r.get("duplicate_of"))
 

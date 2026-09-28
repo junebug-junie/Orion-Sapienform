@@ -1,12 +1,13 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 680,
+  "metric_count": 682,
   "_last_change": {
-    "base": "merge base 817572349 (origin/main)",
-    "change_count": 0,
+    "base": "merge base 5b9cea6e4 (origin/main)",
+    "change_count": 2,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://bus_channel/orion-durable-runs/orion:reverie:visual:step:request",
+      "medium added metric://bus_channel/orion-thought/orion:reverie:visual:step:reply:*"
     ]
   },
   "definitions": {
@@ -1304,6 +1305,17 @@
       ],
       "declared_consumers": [
         "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-durable-runs/orion:reverie:visual:step:request": {
+      "schema_id": "ReverieVisualStepRequestV1",
+      "all_producers": [
+        "orion-durable-runs"
+      ],
+      "declared_consumers": [
+        "orion-thought"
       ],
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -3118,6 +3130,17 @@
         "*"
       ],
       "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-thought/orion:reverie:visual:step:reply:*": {
+      "schema_id": "ReverieVisualStepResultV1",
+      "all_producers": [
+        "orion-thought"
+      ],
+      "declared_consumers": [
+        "orion-durable-runs"
+      ],
+      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-thought/orion:thought:artifact": {

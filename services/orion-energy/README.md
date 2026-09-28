@@ -100,18 +100,30 @@ XML into the usage inbox, and (optionally) scrapes bills into the bill inbox.
 RMP keeps its login only for the life of the browser (checked live 2026-09-28: after
 closing the browser, the saved profile held only analytics cookies and reopened on the
 sign-in page). A saved session alone therefore dies every day, so the fetcher logs in
-itself from a **credentials file** on the host:
+itself from a **credentials file** on the host, kept in an owner-only dir outside
+`ENERGY_HOST_DATA_DIR` so the main `orion-energy` container never sees it:
 
 ```bash
-install -m 600 /dev/null /mnt/storage-warm/orion-energy/portal/credentials.env
-nano /mnt/storage-warm/orion-energy/portal/credentials.env   # RMP_USERNAME=... / RMP_PASSWORD=...
+install -d -m 700 ~/.orion/secrets
+install -m 600 /dev/null ~/.orion/secrets/rmp-credentials.env
+nano ~/.orion/secrets/rmp-credentials.env   # RMP_USERNAME=... / RMP_PASSWORD=...
 ```
 
+Only the portal service bind-mounts it, read-only, at `/run/secrets/rmp_credentials.env`
+(`ENERGY_PORTAL_CREDENTIALS_HOST_FILE` picks the host file; compose refuses to start the
+portal if it is missing rather than creating an empty dir). One `KEY=VALUE` per line; an
+optional leading `export ` and one pair of surrounding quotes are stripped, nothing else --
+a password with leading/trailing spaces must be quoted.
+
 - Read at every attempt, never from the environment, never logged. A file that group or
-  other can read is refused (`error`/`credentials_file_too_open`) before a browser starts.
+  other can read is refused (`error`/`credentials_file_too_open`) before a browser starts;
+  a file missing either key is `credentials_incomplete`, an unreadable one
+  `credentials_unreadable:<error>`.
 - One login submit per attempt, never a retry. If it does not get past the sign-in page
   (wrong password, MFA prompt, captcha) the status is `reauth_required`/`login_failed` and
   the loop waits a full interval, so a bad password cannot lock the account.
+- If the sign-in form itself breaks (fields not found), the status is
+  `error`/`login_form_failed:<error>` -- a selector problem, not a password problem.
 - No file: a login redirect is `reauth_required`/`session_expired` (manual reauth below).
 
 Usage comes one day at a time: RMP's Green Button download follows the usage page's
@@ -119,8 +131,11 @@ period dropdown, and only "One Day" is hourly (One Week/Month are daily, Two Yea
 Each attempt reads the date picker's allowed range and downloads the newest
 `ENERGY_PORTAL_BACKFILL_DAYS` days as `rmp-portal-<stamp>-<day>.xml`. A download that is not
 all one-hour readings is refused (`non_hourly_download`) -- a daily reading would overwrite
-that day's first hour in the ledger. The first failed day stops the run; earlier days stay
-delivered. RMP's day files run 02:00-02:00 local, not midnight-midnight (seen live, not
+that day's first hour in the ledger; a file whose readings belong to a different day is
+refused as `wrong_day_download`. A refused file is kept in the raw dir and the run moves on
+to the next day, ending `error`/`usage_days_bad:<bad>/<total>:<first bad day>`. A lost
+session or browser error stops the run (`usage_day_failed:<day>:...`); days already
+downloaded stay delivered. Each day gets one page reload and retry first. RMP's day files run 02:00-02:00 local, not midnight-midnight (seen live, not
 explained). Don't hand-drop One Week/One Month exports for the same reason.
 
 Login and the usage download are verified live (2026-09-28); billing selectors are still
@@ -129,7 +144,8 @@ UNVERIFIED (`portal/selectors.py`). Bill scraping is off by default
 
 | Key | Default | What it does |
 |---|---|---|
-| `ENERGY_PORTAL_CREDENTIALS_PATH` | `/data/energy/portal/credentials.env` | chmod-600 login file (see above); absent = manual reauth only. |
+| `ENERGY_PORTAL_CREDENTIALS_HOST_FILE` | `/home/athena/.orion/secrets/rmp-credentials.env` | Host path of the login file; compose-only, mounted into the portal container. |
+| `ENERGY_PORTAL_CREDENTIALS_PATH` | `/run/secrets/rmp_credentials.env` | Where the portal reads that file inside the container (see above); absent = manual reauth only. |
 | `ENERGY_PORTAL_SCRAPE_BILLS` | `false` | Also scrape billing history / forecast after the usage download. |
 | `ENERGY_PORTAL_TIMEOUT_SEC` | `300` | Base cap on one fetch attempt, plus 45s per requested day; hitting it records `error`/`timeout` in `status.json`. |
 | `ENERGY_PORTAL_RAW_DIR` | `/data/energy/portal/raw` | Where a failed download/scrape keeps its raw artifact (see below). |

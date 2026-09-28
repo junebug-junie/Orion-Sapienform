@@ -16,7 +16,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -30,6 +30,7 @@ logger = logging.getLogger("orion-energy-portal")
 
 _STAMP = "%Y%m%dT%H%M%SZ"
 _HOUR = timedelta(hours=1)
+_MAX_DAY_SPAN = timedelta(hours=25)  # a DST fall-back day
 _ATTRS = r"""(?:[^>"']|"[^"]*"|'[^']*')*"""
 _SCRIPT = re.compile(rf"(<script\b{_ATTRS}>).*?(</script\s*>|\Z)", re.IGNORECASE | re.DOTALL)
 _INPUT = re.compile(rf"<input\b{_ATTRS}>", re.IGNORECASE)
@@ -56,8 +57,14 @@ def usage_days(first: date, last: date, *, count: int) -> list[date]:
     return sorted(d for d in days if d >= first)
 
 
-def _day_xml_problem(xml: bytes, *, now: datetime) -> Optional[str]:
-    """None when the download is hourly ESPI; a daily reading would overwrite hour 0 in the ledger."""
+def _day_xml_problem(xml: bytes, *, day: date, now: datetime) -> Optional[str]:
+    """None when the download is hourly ESPI for `day`.
+
+    A daily reading would overwrite hour 0 in the ledger. A file for another day means the
+    date entry did not take (the page re-served its current day); filing it under `day`
+    would report a backfill that never happened. RMP day files start 02:00 local, which is
+    the same UTC calendar date for any US zone, so the first reading's UTC date must be `day`.
+    """
     if not xml:
         return "empty_download"
     try:
@@ -66,6 +73,10 @@ def _day_xml_problem(xml: bytes, *, now: datetime) -> Optional[str]:
         return f"espi_invalid:{exc}"[:120]
     if any(r.interval_end - r.interval_start != _HOUR for r in rows):
         return "non_hourly_download"
+    first = min(r.interval_start for r in rows)
+    last_end = max(r.interval_end for r in rows)
+    if first.astimezone(timezone.utc).date() != day or last_end - first > _MAX_DAY_SPAN:
+        return "wrong_day_download"
     return None
 
 
@@ -203,9 +214,13 @@ async def _download_day_with_reload(driver: PortalDriver, day: date) -> bytes:
         return await driver.download_usage_day(day)
 
 
-def _usage_failure(day: date, problem: str, delivered: list[Path], total: int) -> PortalOutcome:
-    """Stop at the first bad day: days already written stay delivered, the rest wait for next run."""
+def _usage_failure(
+    day: date, problem: str, delivered: list[Path], bad_days: list[str], total: int
+) -> PortalOutcome:
+    """The page itself failed: stop. Days already written stay delivered, the rest wait for next run."""
     reason = f"usage_day_failed:{day.isoformat()}:{problem}:delivered={len(delivered)}/{total}"
+    if bad_days:
+        reason += f":bad={len(bad_days)}"
     return PortalOutcome("error", reason[:200], xml_files=tuple(delivered))
 
 
@@ -227,7 +242,10 @@ async def run_once(
         if is_login_url(await driver.open_usage()):
             if credentials is None:
                 return PortalOutcome("reauth_required", "session_expired")
-            await driver.login(username=credentials.username, password=credentials.password)
+            try:
+                await driver.login(username=credentials.username, password=credentials.password)
+            except Exception as exc:  # noqa: BLE001 -- form missing/moved: selector drift, not a bad password
+                return PortalOutcome("error", f"login_form_failed:{type(exc).__name__}")
             if is_login_url(await driver.open_usage()):
                 return PortalOutcome("reauth_required", "login_failed")
         first, last = await driver.usage_day_range()
@@ -237,20 +255,26 @@ async def run_once(
         if not days:
             return PortalOutcome("error", "no_usage_days_available")
         delivered: list[Path] = []
+        bad_days: list[str] = []
         for day in days:
             try:
                 xml = await _download_day_with_reload(driver, day)
             except _SessionLost:
-                return _usage_failure(day, "session_lost", delivered, len(days))
+                return _usage_failure(day, "session_lost", delivered, bad_days, len(days))
             except Exception as exc:  # noqa: BLE001 -- two dead downloads in a row: stop for today
-                return _usage_failure(day, f"download_failed:{type(exc).__name__}", delivered, len(days))
-            problem = _day_xml_problem(xml, now=now)
+                return _usage_failure(day, f"download_failed:{type(exc).__name__}", delivered, bad_days, len(days))
+            problem = _day_xml_problem(xml, day=day, now=now)
             if problem is not None:
+                # The page still works; a bad file for one day must not block the newer days.
                 if xml:
                     _save_raw(raw_dir, now, f"green_button-{day.isoformat()}.xml", xml)
-                return _usage_failure(day, problem, delivered, len(days))
+                bad_days.append(f"{day.isoformat()}:{problem}")
+                continue
             delivered.append(_atomic_write(inbox_dir, f"rmp-portal-{stamp}-{day.isoformat()}.xml", xml))
         xml_files = tuple(delivered)
+        if bad_days:
+            reason = f"usage_days_bad:{len(bad_days)}/{len(days)}:{bad_days[0]}"
+            return PortalOutcome("error", reason[:200], xml_files=xml_files)
         if not scrape_bills:
             return PortalOutcome("ok", "fetched_usage_only", xml_files=xml_files)
 

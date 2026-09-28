@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import stat
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -23,11 +24,23 @@ CREDS = PortalCredentials(username="me@example.com", password="hunter2")
 
 
 FIRST_DAY, LAST_DAY = date(2026, 3, 7), date(2026, 9, 26)
+_FIXTURE_FIRST_START = 1789063200  # 2026-09-10T18:00Z
+
+
+def day_xml(day: date) -> bytes:
+    """The hourly fixture moved to start at 08:00Z on `day`, like an RMP One Day file (02:00 MDT)."""
+    target = int(datetime(day.year, day.month, day.day, 8, tzinfo=timezone.utc).timestamp())
+    shift = target - _FIXTURE_FIRST_START
+    return re.sub(
+        rb"<espi:start>(\d+)</espi:start>",
+        lambda m: b"<espi:start>%d</espi:start>" % (int(m.group(1)) + shift),
+        FIXTURE.read_bytes(),
+    )
 
 
 class FakeDriver:
     def __init__(
-        self, *, url=USAGE_URL, xml=b"", rows=None, forecast=None, raise_on=None, html=None, after_login=USAGE_URL,
+        self, *, url=USAGE_URL, xml=None, rows=None, forecast=None, raise_on=None, html=None, after_login=USAGE_URL,
         day_range=(FIRST_DAY, LAST_DAY), per_day=None,
     ):
         self.url, self.xml, self.rows, self.forecast, self.raise_on = url, xml, rows, forecast, raise_on
@@ -54,7 +67,7 @@ class FakeDriver:
 
     async def download_usage_day(self, day):
         self.requested.append(day)
-        got = self.per_day.get(day, self.xml)
+        got = self.per_day.get(day, day_xml(day) if self.xml is None else self.xml)
         if isinstance(got, list):
             got = got.pop(0) if len(got) > 1 else got[0]
         if isinstance(got, Exception):
@@ -99,15 +112,15 @@ def test_login_redirect_is_reauth_and_writes_nothing(tmp_path) -> None:
 
 
 def test_login_redirect_with_credentials_logs_in_once_then_fetches(tmp_path) -> None:
-    driver = FakeDriver(url=LOGIN_URL, xml=FIXTURE.read_bytes())
+    driver = FakeDriver(url=LOGIN_URL)
     out = _run(tmp_path, driver, credentials=CREDS, scrape_bills=False)
     assert driver.logins == [("me@example.com", "hunter2")]
     assert (out.state, out.reason) == ("ok", "fetched_usage_only")
-    assert len(out.xml_files) == 3 and all(p.read_bytes() == FIXTURE.read_bytes() for p in out.xml_files)
+    assert [p.read_bytes() for p in out.xml_files] == [day_xml(date(2026, 9, d)) for d in (24, 25, 26)]
 
 
 def test_rejected_login_is_reauth_after_exactly_one_submit(tmp_path) -> None:
-    driver = FakeDriver(url=LOGIN_URL, xml=FIXTURE.read_bytes(), after_login=LOGIN_URL)
+    driver = FakeDriver(url=LOGIN_URL, after_login=LOGIN_URL)
     out = _run(tmp_path, driver, credentials=CREDS)
     assert len(driver.logins) == 1
     assert (out.state, out.reason) == ("reauth_required", "login_failed")
@@ -116,27 +129,27 @@ def test_rejected_login_is_reauth_after_exactly_one_submit(tmp_path) -> None:
 
 
 def test_live_session_skips_login(tmp_path) -> None:
-    driver = FakeDriver(xml=FIXTURE.read_bytes())
+    driver = FakeDriver()
     out = _run(tmp_path, driver, credentials=CREDS, scrape_bills=False)
     assert driver.logins == [] and out.state == "ok"
 
 
 def test_usage_only_mode_never_touches_billing(tmp_path) -> None:
-    driver = FakeDriver(xml=FIXTURE.read_bytes(), rows=[])
+    driver = FakeDriver(rows=[])
     out = _run(tmp_path, driver, scrape_bills=False)
     assert (out.state, out.reason, out.bill_files) == ("ok", "fetched_usage_only", ())
     assert driver.billing_calls == 0 and not (tmp_path / "bills").exists()
 
 
 def test_good_fetch_delivers_xml_and_bills(tmp_path) -> None:
-    driver = FakeDriver(xml=FIXTURE.read_bytes(), rows=[ROW], forecast=FORECAST)
+    driver = FakeDriver(rows=[ROW], forecast=FORECAST)
     out = _run(tmp_path, driver)
     assert (out.state, out.reason) == ("ok", "fetched")
     assert driver.requested == [date(2026, 9, 24), date(2026, 9, 25), date(2026, 9, 26)]
     assert [p.name for p in out.xml_files] == [
         f"rmp-portal-20260927T060000Z-2026-09-{d}.xml" for d in (24, 25, 26)
     ]
-    assert out.xml_files[0].read_bytes() == FIXTURE.read_bytes()
+    assert out.xml_files[0].read_bytes() == day_xml(date(2026, 9, 24))
     assert len(out.bill_files) == 2
     kinds = [json.loads(p.read_text())["kind"] for p in out.bill_files]
     assert kinds == ["energy.bill.actual.v1", "energy.bill.forecast.v1"]
@@ -147,21 +160,49 @@ def test_good_fetch_delivers_xml_and_bills(tmp_path) -> None:
 
 def test_garbage_download_is_error_and_kept_for_debugging(tmp_path) -> None:
     out = _run(tmp_path, FakeDriver(xml=b"<html>not espi</html>", rows=[ROW]))
-    assert out.state == "error" and out.reason.startswith("usage_day_failed:2026-09-24:espi_invalid")
+    assert out.state == "error" and out.reason.startswith("usage_days_bad:3/3:2026-09-24:espi_invalid")
     assert not (tmp_path / "inbox").exists()
-    assert list((tmp_path / "raw").glob("*green_button-2026-09-24.xml"))
+    assert len(list((tmp_path / "raw").glob("*green_button-2026-09-2?.xml"))) == 3
 
 
 def test_daily_grain_download_is_refused(tmp_path) -> None:
     daily = FIXTURE.read_bytes().replace(b">3600<", b">86400<")
     assert daily != FIXTURE.read_bytes()
     out = _run(tmp_path, FakeDriver(xml=daily), scrape_bills=False)
-    assert out.state == "error" and "non_hourly_download" in out.reason
+    assert (out.state, out.reason) == ("error", "usage_days_bad:3/3:2026-09-24:non_hourly_download")
+    assert not (tmp_path / "inbox").exists()
+
+
+def test_file_for_another_day_is_refused_and_newer_days_still_delivered(tmp_path) -> None:
+    stale = day_xml(date(2026, 9, 24))  # the date entry did not take; page re-served the old day
+    driver = FakeDriver(per_day={date(2026, 9, 25): stale})
+    out = _run(tmp_path, driver, scrape_bills=False)
+    assert (out.state, out.reason) == ("error", "usage_days_bad:1/3:2026-09-25:wrong_day_download")
+    assert [p.name[-14:] for p in out.xml_files] == ["2026-09-24.xml", "2026-09-26.xml"]
+    assert list((tmp_path / "raw").glob("*green_button-2026-09-25.xml"))
+
+
+def test_file_spanning_more_than_a_day_is_refused(tmp_path) -> None:
+    two_days = day_xml(date(2026, 9, 25)).replace(
+        b"<espi:start>%d</espi:start>" % int(datetime(2026, 9, 25, 10, tzinfo=timezone.utc).timestamp()),
+        b"<espi:start>%d</espi:start>" % int(datetime(2026, 9, 26, 10, tzinfo=timezone.utc).timestamp()),
+    )
+    out = _run(tmp_path, FakeDriver(per_day={date(2026, 9, 25): two_days}), scrape_bills=False)
+    assert out.reason == "usage_days_bad:1/3:2026-09-25:wrong_day_download"
+
+
+def test_broken_login_form_is_error_not_reauth(tmp_path) -> None:
+    class NoForm(FakeDriver):
+        async def login(self, *, username, password):
+            raise TimeoutError("#signInName not found")
+
+    out = _run(tmp_path, NoForm(url=LOGIN_URL), credentials=CREDS)
+    assert (out.state, out.reason) == ("error", "login_form_failed:TimeoutError")
     assert not (tmp_path / "inbox").exists()
 
 
 def test_first_bad_day_stops_the_run_but_keeps_earlier_days(tmp_path) -> None:
-    driver = FakeDriver(xml=FIXTURE.read_bytes(), per_day={date(2026, 9, 25): TimeoutError("dead link")})
+    driver = FakeDriver(per_day={date(2026, 9, 25): TimeoutError("dead link")})
     out = _run(tmp_path, driver, scrape_bills=False)
     assert out.state == "error"
     assert out.reason == "usage_day_failed:2026-09-25:download_failed:TimeoutError:delivered=1/3"
@@ -170,8 +211,8 @@ def test_first_bad_day_stops_the_run_but_keeps_earlier_days(tmp_path) -> None:
 
 
 def test_one_dead_download_is_retried_once_after_a_reload(tmp_path) -> None:
-    flaky = [TimeoutError("dead link"), FIXTURE.read_bytes()]
-    driver = FakeDriver(xml=FIXTURE.read_bytes(), per_day={date(2026, 9, 25): flaky})
+    flaky = [TimeoutError("dead link"), day_xml(date(2026, 9, 25))]
+    driver = FakeDriver(per_day={date(2026, 9, 25): flaky})
     out = _run(tmp_path, driver, scrape_bills=False)
     assert (out.state, out.reason, len(out.xml_files)) == ("ok", "fetched_usage_only", 3)
     assert driver.requested.count(date(2026, 9, 25)) == 2
@@ -189,7 +230,7 @@ class ExpiringDriver(FakeDriver):
 
 
 def test_session_lost_mid_run_stops_without_logging_in_again(tmp_path) -> None:
-    driver = ExpiringDriver(xml=FIXTURE.read_bytes(), per_day={date(2026, 9, 25): TimeoutError("dead link")})
+    driver = ExpiringDriver(per_day={date(2026, 9, 25): TimeoutError("dead link")})
     out = _run(tmp_path, driver, credentials=CREDS, scrape_bills=False)
     assert out.state == "error" and out.reason.startswith("usage_day_failed:2026-09-25:session_lost")
     assert driver.logins == [] and len(out.xml_files) == 1
@@ -202,7 +243,7 @@ def test_days_never_leave_the_portal_range() -> None:
 
 
 def test_through_caps_the_newest_day_for_chunked_backfill(tmp_path) -> None:
-    driver = FakeDriver(xml=FIXTURE.read_bytes())
+    driver = FakeDriver()
     out = asyncio.run(
         run_once(
             driver, inbox_dir=tmp_path / "inbox", bill_inbox_dir=tmp_path / "bills", raw_dir=tmp_path / "raw",
@@ -211,7 +252,7 @@ def test_through_caps_the_newest_day_for_chunked_backfill(tmp_path) -> None:
     )
     assert out.state == "ok"
     assert driver.requested == [date(2026, 8, 19), date(2026, 8, 20)]
-    later = FakeDriver(xml=FIXTURE.read_bytes())
+    later = FakeDriver()
     asyncio.run(
         run_once(
             later, inbox_dir=tmp_path / "inbox", bill_inbox_dir=tmp_path / "bills", raw_dir=tmp_path / "raw",
@@ -222,40 +263,40 @@ def test_through_caps_the_newest_day_for_chunked_backfill(tmp_path) -> None:
 
 
 def test_empty_portal_range_is_error(tmp_path) -> None:
-    driver = FakeDriver(xml=FIXTURE.read_bytes(), day_range=(LAST_DAY, FIRST_DAY))
+    driver = FakeDriver(day_range=(LAST_DAY, FIRST_DAY))
     out = _run(tmp_path, driver)
     assert (out.state, out.reason) == ("error", "no_usage_days_available")
     assert driver.requested == []
 
 
 def test_empty_bill_table_is_error_but_usage_still_delivered(tmp_path) -> None:
-    out = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[]))
+    out = _run(tmp_path, FakeDriver(rows=[]))
     assert (out.state, out.reason) == ("error", "bill_rows_empty")
     assert out.xml_files and all(p.exists() for p in out.xml_files)
     assert list((tmp_path / "raw").glob("*billing.html"))
 
 
 def test_billing_scrape_exception_is_error(tmp_path) -> None:
-    out = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), raise_on="billing"))
+    out = _run(tmp_path, FakeDriver(raise_on="billing"))
     assert (out.state, out.reason) == ("error", "billing_scrape_failed:TimeoutError")
     assert out.xml_files and all(p.exists() for p in out.xml_files)
 
 
 def test_unparseable_bill_row_is_error(tmp_path) -> None:
-    out = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[{"billing_period": "soon"}]))
+    out = _run(tmp_path, FakeDriver(rows=[{"billing_period": "soon"}]))
     assert out.state == "error" and out.reason.startswith("bill_parse_failed")
     assert out.bill_files == ()
 
 
 def test_bill_parse_reason_names_field_not_raw_text(tmp_path) -> None:
     row = {**ROW, "current_charges": "pending acct SECRET"}
-    out = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[row]))
+    out = _run(tmp_path, FakeDriver(rows=[row]))
     assert (out.state, out.reason) == ("error", "bill_parse_failed:ValueError:current_charges")
     assert "SECRET" not in out.reason and "pending" not in out.reason
 
 
 def test_forecast_panel_without_parseable_fields_is_error_but_bills_delivered(tmp_path) -> None:
-    out = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[ROW], forecast={}))
+    out = _run(tmp_path, FakeDriver(rows=[ROW], forecast={}))
     assert out.state == "error" and out.reason.startswith("forecast_parse_failed")
     assert len(out.bill_files) == 1
     assert json.loads(out.bill_files[0].read_text())["kind"] == "energy.bill.actual.v1"
@@ -263,17 +304,17 @@ def test_forecast_panel_without_parseable_fields_is_error_but_bills_delivered(tm
 
 def test_zero_byte_download_is_error(tmp_path) -> None:
     out = _run(tmp_path, FakeDriver(xml=b"", rows=[ROW]))
-    assert (out.state, out.reason) == ("error", "usage_day_failed:2026-09-24:empty_download:delivered=0/3")
+    assert (out.state, out.reason) == ("error", "usage_days_bad:3/3:2026-09-24:empty_download")
     assert not (tmp_path / "inbox").exists()
 
 
 def test_raw_save_failure_keeps_original_reason(tmp_path) -> None:
     blocker = tmp_path / "not-a-dir"
     blocker.write_text("x")
-    out = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[]), raw_dir=blocker / "raw")
+    out = _run(tmp_path, FakeDriver(rows=[]), raw_dir=blocker / "raw")
     assert (out.state, out.reason) == ("error", "bill_rows_empty")
     out = _run(tmp_path, FakeDriver(xml=b"<html>not espi</html>"), raw_dir=blocker / "raw")
-    assert out.state == "error" and out.reason.startswith("usage_day_failed:2026-09-24:espi_invalid")
+    assert out.state == "error" and out.reason.startswith("usage_days_bad:3/3:2026-09-24:espi_invalid")
 
 
 def test_raw_html_is_scrubbed_and_private(tmp_path) -> None:
@@ -287,7 +328,7 @@ def test_raw_html_is_scrubbed_and_private(tmp_path) -> None:
         "<input type='text' name='q' value='keep-me'>"
         "<INPUT value=\"tok-67890\" TYPE=HIDDEN name=csrf></form></body></html>"
     )
-    out = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[], html=html))
+    out = _run(tmp_path, FakeDriver(rows=[], html=html))
     assert out.reason == "bill_rows_empty"
     [saved] = list((tmp_path / "raw").glob("*billing.html"))
     text = saved.read_text()
@@ -300,10 +341,10 @@ def test_raw_html_is_scrubbed_and_private(tmp_path) -> None:
 
 
 def test_unchanged_bill_history_is_written_once(tmp_path) -> None:
-    first = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[ROW], forecast=FORECAST))
+    first = _run(tmp_path, FakeDriver(rows=[ROW], forecast=FORECAST))
     assert len(first.bill_files) == 2
     second = _run(
-        tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[ROW], forecast=FORECAST),
+        tmp_path, FakeDriver(rows=[ROW], forecast=FORECAST),
         now=NOW + timedelta(days=1),
     )
     assert (second.state, second.reason, second.bill_files) == ("ok", "fetched", ())
@@ -313,9 +354,9 @@ def test_unchanged_bill_history_is_written_once(tmp_path) -> None:
 
 
 def test_corrected_bill_is_written_again(tmp_path) -> None:
-    _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[ROW]))
+    _run(tmp_path, FakeDriver(rows=[ROW]))
     corrected = {**ROW, "current_charges": "$99.87"}
-    out = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[corrected]), now=NOW + timedelta(days=1))
+    out = _run(tmp_path, FakeDriver(rows=[corrected]), now=NOW + timedelta(days=1))
     assert len(out.bill_files) == 1
     assert json.loads(out.bill_files[0].read_text())["current_charges"] == 99.87
 
@@ -338,18 +379,18 @@ def test_status_file_keeps_last_success_across_failures(tmp_path) -> None:
 def test_same_period_rows_collapse_to_first_and_stay_quiet(tmp_path) -> None:
     rebill = {**ROW, "current_charges": "$99.87"}
     rows = [rebill, ROW]
-    first = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=rows))
+    first = _run(tmp_path, FakeDriver(rows=rows))
     assert (first.state, len(first.bill_files)) == ("ok", 1)
     assert json.loads(first.bill_files[0].read_text())["current_charges"] == 99.87
-    second = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=rows), now=NOW + timedelta(days=1))
+    second = _run(tmp_path, FakeDriver(rows=rows), now=NOW + timedelta(days=1))
     assert (second.state, second.bill_files) == ("ok", ())
 
 
 def test_changed_forecast_total_is_written_again(tmp_path) -> None:
-    _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[ROW], forecast=FORECAST))
+    _run(tmp_path, FakeDriver(rows=[ROW], forecast=FORECAST))
     moved = {**FORECAST, "projected_total": "$120.00"}
     out = _run(
-        tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[ROW], forecast=moved), now=NOW + timedelta(days=1),
+        tmp_path, FakeDriver(rows=[ROW], forecast=moved), now=NOW + timedelta(days=1),
     )
     assert len(out.bill_files) == 1
     written = json.loads(out.bill_files[0].read_text())
@@ -359,7 +400,7 @@ def test_changed_forecast_total_is_written_again(tmp_path) -> None:
 def test_bill_write_failure_keeps_delivered_xml(tmp_path) -> None:
     blocker = tmp_path / "not-a-dir"
     blocker.write_text("x")
-    out = _run(tmp_path, FakeDriver(xml=FIXTURE.read_bytes(), rows=[ROW]), bill_dir=blocker / "bills")
+    out = _run(tmp_path, FakeDriver(rows=[ROW]), bill_dir=blocker / "bills")
     assert (out.state, out.reason) == ("error", "bill_write_failed:NotADirectoryError")
     assert out.xml_files and all(p.exists() for p in out.xml_files)
 

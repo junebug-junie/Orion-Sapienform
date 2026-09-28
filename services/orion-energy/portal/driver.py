@@ -75,6 +75,8 @@ class PlaywrightDriver:
         return picker_date(await picker.get_attribute("min")), picker_date(await picker.get_attribute("max"))
 
     async def _ensure_one_day_view(self) -> None:
+        """Not re-checked here: a view that did not switch yields daily readings, which
+        fetch refuses as non_hourly_download."""
         if self._one_day_view:
             return
         page = self._page

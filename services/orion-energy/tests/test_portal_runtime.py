@@ -89,6 +89,61 @@ def test_world_readable_credentials_stop_the_attempt_before_the_browser(tmp_path
     assert "hunter2" not in status_path.read_text()
 
 
+@pytest.mark.parametrize(
+    "content,reason",
+    [
+        (b"RMP_USERNAME=me\n", "credentials_incomplete"),
+        (b"RMP_USERNAME=me\nRMP_PASSWORD=hunter2\xff\n", "credentials_unreadable:UnicodeDecodeError"),
+    ],
+)
+def test_bad_credentials_file_is_a_labelled_error_before_the_browser(tmp_path, monkeypatch, content, reason) -> None:
+    @asynccontextmanager
+    async def must_not_launch(**_kwargs):
+        raise AssertionError("browser launched without usable credentials")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(portal_main, "open_playwright_driver", must_not_launch)
+    creds = tmp_path / "credentials.env"
+    creds.write_bytes(content)
+    creds.chmod(0o600)
+    status_path = tmp_path / "status.json"
+    settings = PortalSettings(
+        ENERGY_PORTAL_STATUS_PATH=str(status_path), ENERGY_PORTAL_CREDENTIALS_PATH=str(creds),
+    )
+    outcome = asyncio.run(portal_main.attempt(settings, days=3))
+    assert (outcome.state, outcome.reason) == ("error", reason)
+    assert "hunter2" not in status_path.read_text()
+
+
+def test_rejected_login_never_leaks_the_password(tmp_path, monkeypatch, caplog) -> None:
+    creds = tmp_path / "credentials.env"
+    creds.write_text("RMP_USERNAME=me@example.com\nRMP_PASSWORD=hunter2\n")
+    creds.chmod(0o600)
+    login_url = "https://csapps.rockymountainpower.net/idm/login"
+
+    class StuckOnLogin:
+        async def open_usage(self):
+            return login_url
+
+        async def login(self, *, username, password):
+            return login_url
+
+    @asynccontextmanager
+    async def fake_driver(**_kwargs):
+        yield StuckOnLogin()
+
+    monkeypatch.setattr(portal_main, "open_playwright_driver", fake_driver)
+    status_path = tmp_path / "status.json"
+    settings = PortalSettings(
+        ENERGY_PORTAL_STATUS_PATH=str(status_path), ENERGY_PORTAL_CREDENTIALS_PATH=str(creds),
+    )
+    caplog.set_level("DEBUG")
+    outcome = asyncio.run(portal_main.attempt(settings, days=3))
+    assert (outcome.state, outcome.reason) == ("reauth_required", "login_failed")
+    assert "hunter2" not in status_path.read_text() and "hunter2" not in caplog.text
+    assert "me@example.com" not in caplog.text
+
+
 def test_attempt_passes_credentials_and_bill_mode_to_the_fetch(tmp_path, monkeypatch) -> None:
     creds = tmp_path / "credentials.env"
     creds.write_text("RMP_USERNAME=me\nRMP_PASSWORD=hunter2\n")

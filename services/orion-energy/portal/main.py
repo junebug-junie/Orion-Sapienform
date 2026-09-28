@@ -1,4 +1,4 @@
-"""Headless fetch loop. `--once --days 730` does the two-year backfill."""
+"""Headless fetch loop. `--once --days N [--through YYYY-MM-DD]` backfills older days in chunks."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Awaitable, Callable, Optional
 
 from orion.energy.importer_status import PortalStatus
 
-from .credentials import CredentialsFileTooOpen, load_credentials
+from .credentials import CredentialsFileTooOpen, CredentialsIncomplete, load_credentials
 from .driver import open_playwright_driver
 from .fetch import PortalOutcome, run_once
 from .settings import PortalSettings, get_portal_settings
@@ -66,6 +66,14 @@ def record_status(path: Path, outcome: Optional[PortalOutcome], *, now: datetime
         return None
 
 
+def _credentials_error(status_path: Path, reason: str, *, now: datetime) -> PortalOutcome:
+    """Refused before any browser starts; the reason is a fixed label, never file content."""
+    outcome = PortalOutcome("error", reason)
+    record_status(status_path, outcome, now=now)
+    logger.error("energy_portal_fetch state=error reason=%s", reason)
+    return outcome
+
+
 async def attempt(settings: PortalSettings, *, days: int, through: Optional[date] = None) -> PortalOutcome:
     now = _utcnow()
     status_path = Path(settings.ENERGY_PORTAL_STATUS_PATH)
@@ -73,15 +81,11 @@ async def attempt(settings: PortalSettings, *, days: int, through: Optional[date
     try:
         credentials = load_credentials(Path(settings.ENERGY_PORTAL_CREDENTIALS_PATH))
     except CredentialsFileTooOpen:
-        outcome = PortalOutcome("error", "credentials_file_too_open")
-        record_status(status_path, outcome, now=now)
-        logger.error("energy_portal_fetch state=error reason=credentials_file_too_open (chmod 600 it)")
-        return outcome
-    except OSError as exc:
-        outcome = PortalOutcome("error", f"credentials_unreadable:{type(exc).__name__}")
-        record_status(status_path, outcome, now=now)
-        logger.error("energy_portal_fetch state=error reason=%s", outcome.reason)
-        return outcome
+        return _credentials_error(status_path, "credentials_file_too_open", now=now)
+    except CredentialsIncomplete:
+        return _credentials_error(status_path, "credentials_incomplete", now=now)
+    except (OSError, ValueError) as exc:  # incl. UnicodeDecodeError; its message holds file bytes
+        return _credentials_error(status_path, f"credentials_unreadable:{type(exc).__name__}", now=now)
     try:
         async with open_playwright_driver(
             profile_dir=settings.ENERGY_PORTAL_PROFILE_DIR,

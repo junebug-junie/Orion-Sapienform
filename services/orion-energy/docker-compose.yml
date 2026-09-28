@@ -25,6 +25,14 @@ services:
     shm_size: "1gb"
     volumes:
       - ${ENERGY_HOST_DATA_DIR:-/mnt/storage-warm/orion-energy}:/data/energy
+      # RMP login: portal only, read-only, outside the data dir orion-energy also mounts.
+      # create_host_path=false: a missing file fails the start instead of becoming an empty dir.
+      - type: bind
+        source: ${ENERGY_PORTAL_CREDENTIALS_HOST_FILE:-/home/athena/.orion/secrets/rmp-credentials.env}
+        target: /run/secrets/rmp_credentials.env
+        read_only: true
+        bind:
+          create_host_path: false
     networks:
       - app-net
 

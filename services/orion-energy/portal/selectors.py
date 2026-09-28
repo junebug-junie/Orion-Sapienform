@@ -1,9 +1,10 @@
 """Every RMP portal URL and DOM selector in one place.
 
-UNVERIFIED: written from the PacifiCorp portal shape (nburns/pacificpower-import) and
-not yet checked against a live rockymountainpower.net session. The first live spike
-edits only this file. A selector that stops matching surfaces as an error status
-(empty download / bill_rows_empty), never as a quiet success.
+Login and usage-download selectors below are verified against the live portal
+(2026-09-28). Billing / forecast selectors are still UNVERIFIED guesses from the
+PacifiCorp portal shape (nburns/pacificpower-import). A selector that stops matching
+surfaces as an error status (login_form_failed / download_failed / wrong_day_download /
+bill_rows_empty), never as a quiet success.
 """
 
 USAGE_PATH = "/secure/my-account/energy-usage"

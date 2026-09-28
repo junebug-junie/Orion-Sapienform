@@ -62,6 +62,10 @@ class UsageLedger:
         day = min(self._cycle_start_day, calendar.monthrange(year, month)[1])
         return datetime(year, month, day, tzinfo=self._tz)
 
+    def period_days(self, start: datetime, end: datetime) -> int:
+        """Calendar days in [start, end) as the bill counts them (local dates, DST-proof)."""
+        return (end.astimezone(self._tz).date() - start.astimezone(self._tz).date()).days
+
     def cycle_bounds(self, ts: datetime) -> tuple[datetime, datetime]:
         local = ts.astimezone(self._tz)
         this = self._start_on(local.year, local.month)
@@ -127,6 +131,7 @@ class UsageLedger:
         start, end = self.cycle_bounds(cycle_start)
         prefix = self._contiguous_from_cycle_start(self._in_cycle(usage_point_id, start, end), start)
         cycle_key = self._cycle_key(usage_point_id, start)
+        days = self.period_days(start, end)
         self._dirty_cycles.discard(cycle_key)
         cycle_cache: dict[datetime, EnergyCostAccruedV1] = {}
         cycle_kwh = 0.0
@@ -134,7 +139,9 @@ class UsageLedger:
         out: list[EnergyCostAccruedV1] = []
         for iv in prefix:
             month = iv.interval_start.astimezone(self._tz).month
-            cost = self._tariff.energy_cost_usd(iv.energy_kwh, cycle_kwh_before=cycle_kwh, month=month)
+            cost = self._tariff.energy_cost_usd(
+                iv.energy_kwh, cycle_kwh_before=cycle_kwh, month=month, period_days=days
+            )
             cycle_kwh += iv.energy_kwh
             cycle_cost += cost
             accrued = EnergyCostAccruedV1(
@@ -143,11 +150,13 @@ class UsageLedger:
                 interval_end=iv.interval_end,
                 energy_kwh=iv.energy_kwh,
                 interval_cost_usd=cost,
-                marginal_usd_per_kwh=self._tariff.marginal_usd_per_kwh(cycle_kwh=cycle_kwh, month=month),
+                marginal_usd_per_kwh=self._tariff.marginal_usd_per_kwh(
+                    cycle_kwh=cycle_kwh, month=month, period_days=days
+                ),
                 cycle_start=start.date(),
                 cycle_accumulated_kwh=cycle_kwh,
                 cycle_energy_cost_usd=cycle_cost,
-                cycle_to_date_total_usd=cycle_cost + self._tariff.fixed_monthly_usd,
+                cycle_to_date_total_usd=cycle_cost + self._tariff.fixed_usd(days),
                 tariff_version=self._tariff.version,
                 cost_basis=self._tariff.cost_basis,
                 computed_at=computed_at,

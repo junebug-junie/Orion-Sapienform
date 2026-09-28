@@ -61,12 +61,13 @@ def build_stakes_snapshot(
 
     prefix, covered = ledger.window_prefix(usage_point_id, start, end)
     if prefix and covered is not None:
-        kwh, energy = price_intervals(tariff, prefix, tz=tz)
+        days = ledger.period_days(start, end)
+        kwh, energy = price_intervals(tariff, prefix, tz=tz, period_days=days)
         month = (covered - timedelta(seconds=1)).astimezone(tz).month
         snap.update(
             covered_through=covered, cycle_accumulated_kwh=kwh,
-            cycle_to_date_total_usd=energy + tariff.fixed_monthly_usd,
-            marginal_usd_per_kwh=tariff.marginal_usd_per_kwh(cycle_kwh=kwh, month=month),
+            cycle_to_date_total_usd=energy + tariff.fixed_usd(days),
+            marginal_usd_per_kwh=tariff.marginal_usd_per_kwh(cycle_kwh=kwh, month=month, period_days=days),
         )
     projection, gap, _ = project_period(ledger, usage_point_id, start, end)
     if projection is not None:

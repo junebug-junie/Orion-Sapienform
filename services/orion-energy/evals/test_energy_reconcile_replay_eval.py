@@ -30,7 +30,8 @@ START = datetime(2026, 9, 1, tzinfo=DENVER).astimezone(timezone.utc)
 RETRIEVED = datetime(2026, 10, 2, tzinfo=timezone.utc)
 
 MULT = (1 + (7.63 - 0.53) / 100) * (1 + (1.17 + 3.84 + 0.17) / 100)
-ORACLE_ENERGY = (400 * 0.098332 + 320 * 0.125263) * MULT
+ORACLE_BASE_ENERGY = 400 * 0.098332 + 320 * 0.125263
+ORACLE_ENERGY = ORACLE_BASE_ENERGY * MULT
 ORACLE_TOTAL = ORACLE_ENERGY + 12.00 + 0.16
 
 
@@ -56,15 +57,16 @@ def test_matching_bill_reconciles_to_zero() -> None:
     p.ingest_intervals(_hours(720), now=RETRIEVED)
     bill = EnergyBillActualV1(
         source="file_drop", billing_period_start=date(2026, 9, 1), billing_period_end=date(2026, 10, 1),
-        kwh_billed=720.0, energy_charge=ORACLE_ENERGY, taxes=5.0, current_charges=ORACLE_TOTAL + 5.0,
-        retrieved_at=RETRIEVED,
-    )
+        kwh_billed=720.0, energy_charge=ORACLE_BASE_ENERGY, adjustments=ORACLE_ENERGY - ORACLE_BASE_ENERGY,
+        taxes=5.0, current_charges=ORACLE_TOTAL + 5.0, retrieved_at=RETRIEVED,
+    )  # the real bill prints block charges and riders on separate lines
     rec = [o.payload for o in p.ingest_bills([bill], now=RETRIEVED) if o.kind == ENERGY_RECONCILE_KIND][0]
     assert rec.utility_basis == "pre_tax"
     assert rec.orion_total_usd == pytest.approx(ORACLE_TOTAL, rel=1e-9)
     assert rec.delta_usd == pytest.approx(0.0, abs=1e-6)
     assert rec.delta_kwh == pytest.approx(0.0)
     assert rec.bucket_deltas["energy_charge"] == pytest.approx(0.0, abs=1e-6)
+    assert rec.bucket_deltas["energy_charge_plus_adjustments"] == pytest.approx(0.0, abs=1e-6)
 
 
 def test_ten_flat_days_project_to_the_full_month_oracle() -> None:

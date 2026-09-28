@@ -51,13 +51,17 @@ def period_bounds(start_day: date, end_day: Optional[date], ledger: UsageLedger)
 
 
 def price_intervals(
-    tariff: Tariff, intervals: Iterable[EnergyUsageIntervalV1], *, tz: ZoneInfo
+    tariff: Tariff,
+    intervals: Iterable[EnergyUsageIntervalV1],
+    *,
+    tz: ZoneInfo,
+    period_days: Optional[float] = None,
 ) -> tuple[float, float]:
     kwh = 0.0
     cost = 0.0
     for iv in intervals:
         month = iv.interval_start.astimezone(tz).month
-        cost += tariff.energy_cost_usd(iv.energy_kwh, cycle_kwh_before=kwh, month=month)
+        cost += tariff.energy_cost_usd(iv.energy_kwh, cycle_kwh_before=kwh, month=month, period_days=period_days)
         kwh += iv.energy_kwh
     return kwh, cost
 
@@ -86,19 +90,22 @@ def project_period(
     if covered_sec < MIN_RUN_RATE_HOURS * 3600.0:
         return None, "usage_incomplete", covered
     tariff, tz = ledger.tariff, ledger.tz
-    kwh, energy = price_intervals(tariff, prefix, tz=tz)
+    days = ledger.period_days(start, end)
+    kwh, energy = price_intervals(tariff, prefix, tz=tz, period_days=days)
     period_sec = _duration_seconds(start, end)
     projected_kwh = kwh if covered >= end else kwh * period_sec / covered_sec
     last_month = (end - timedelta(seconds=1)).astimezone(tz).month
     remaining = max(0.0, projected_kwh - kwh)
-    projected_energy = energy + tariff.energy_cost_usd(remaining, cycle_kwh_before=kwh, month=last_month)
+    projected_energy = energy + tariff.energy_cost_usd(
+        remaining, cycle_kwh_before=kwh, month=last_month, period_days=days
+    )
     return (
         PeriodProjection(
             observed_kwh=kwh,
             observed_energy_usd=energy,
             projected_kwh=projected_kwh,
             projected_energy_usd=projected_energy,
-            fixed_usd=tariff.fixed_monthly_usd,
+            fixed_usd=tariff.fixed_usd(days),
             covered_through=covered,
         ),
         None,
@@ -144,16 +151,23 @@ def reconcile_actual(
         return EnergyReconcileV1(**common, reconcile_gap=_empty_prefix_gap(ledger, usage_point_id, start, end))
     if covered < end:
         return EnergyReconcileV1(**common, reconcile_gap="usage_incomplete")
-    kwh, energy = price_intervals(tariff, prefix, tz=tz)
-    fixed = tariff.fixed_monthly_usd
+    days = (bill.billing_period_end - bill.billing_period_start).days
+    kwh, energy = price_intervals(tariff, prefix, tz=tz, period_days=days)
+    fixed = tariff.fixed_usd(days)
     total = energy + fixed
+    base_energy = energy / tariff.energy_multiplier
+    customer = tariff.customer_charge_usd(days)
+    # Riders on the customer charge print among the bill's adjustments, not in its customer line.
+    customer_riders = customer * (tariff.customer_multiplier - 1.0)
     buckets: dict[str, float] = {}
     if bill.energy_charge is not None:
-        buckets["energy_charge"] = energy - bill.energy_charge
+        buckets["energy_charge"] = base_energy - bill.energy_charge
         if bill.adjustments is not None:
-            buckets["energy_charge_plus_adjustments"] = energy - (bill.energy_charge + bill.adjustments)
+            buckets["energy_charge_plus_adjustments"] = (energy + customer_riders) - (
+                bill.energy_charge + bill.adjustments
+            )
     if bill.customer_charge is not None:
-        buckets["customer_charge"] = fixed - bill.customer_charge
+        buckets["customer_charge"] = (customer if tariff.customer_charge_monthly_usd else fixed) - bill.customer_charge
     delta_usd = total - utility_total
     return EnergyReconcileV1(
         **common,

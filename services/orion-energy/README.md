@@ -27,6 +27,25 @@ number autonomy may read) and `house_share_cost_usd` (share of the whole-house
 interval; context only). A null cost always has a `*_gap` reason. Null is
 unknown, not free. All costs are pre-tax (`cost_basis: pre_tax`).
 
+## Tariff
+
+`ENERGY_TARIFF_PATH` defaults to `config/energy/tariff.rmp_ut_sch1.2026-08-10.r2.yaml`,
+which reproduces the first real bill (billing date 2026-09-21, 37 days, 3,772 kWh,
+$554.99) line for line. What that bill showed, and the old file got wrong:
+
+- The 400 kWh first block and the monthly charges prorate by days / 30 (493 kWh,
+  $14.80 and $0.20 for 37 days). Every price uses the length of its own period: the
+  bill's dates for reconcile, the `ENERGY_BILLING_CYCLE_START_DAY` cycle for accrual.
+- Each rider has its own base: Schedule 92 is on energy + customer charge; efficiency and
+  EV riders are on energy + EBA + renewable adjustment.
+- Utah sales tax (4.40%) skips the lifeline charge. Tax is only in `Tariff.itemize`, a
+  bill-shaped estimate; accruals, stakes, and reconcile stay pre-tax.
+
+The old file's total missed that bill by only ~$0.67 because a ~$2.50 energy overcharge
+and a $2.64 fixed-charge undercharge (flat $12.16) cancel; its per-bucket deltas show both.
+Evidence: `orion/energy/tests/test_energy_tariff.py` (line-exact) and
+`evals/test_energy_real_bill_eval.py` (hour-by-hour ledger + reconcile, within cents).
+
 ## Feeding it (Plan 1: file drop)
 
 1. On rockymountainpower.net: *Energy usage → Green Button → Download my data* (XML).

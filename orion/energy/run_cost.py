@@ -59,8 +59,12 @@ def _run_cost_fields(
         return {"run_cost_gap": "no_cycle_usage"}
     cycle_kwh, as_of = before
     month = settled.window_start.astimezone(ledger.tz).month
-    cost = ledger.tariff.energy_cost_usd(kwh, cycle_kwh_before=cycle_kwh, month=month)
-    marginal = cost / kwh if kwh > 0 else ledger.tariff.marginal_usd_per_kwh(cycle_kwh=cycle_kwh, month=month)
+    days = ledger.period_days(*ledger.cycle_bounds(settled.window_start))
+    cost = ledger.tariff.energy_cost_usd(kwh, cycle_kwh_before=cycle_kwh, month=month, period_days=days)
+    marginal = (
+        cost / kwh if kwh > 0
+        else ledger.tariff.marginal_usd_per_kwh(cycle_kwh=cycle_kwh, month=month, period_days=days)
+    )
     return {
         "estimated_run_cost_usd": cost,
         "marginal_usd_per_kwh": marginal,

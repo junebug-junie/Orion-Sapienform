@@ -147,7 +147,7 @@ def _report_section(*, seed: CuriosityUrgentSeedV1, own_graph: str, run_id: str)
     return [
         f"WRITE YOUR VERDICT AS ONE :{LABEL_INCIDENT_REPORT} in your own graph, "
         "as soon as you have one -- before you polish the prose. Hub reads it back "
-        "and sends it to Juniper; if the clock runs out first, she gets no verdict.",
+        "and sends it to Juniper; if the clock runs out first, Juniper gets no verdict.",
         "",
         f'    redis-cli -u "{GRAPH_URI}" \\',
         f"      GRAPH.QUERY {own_graph} '",

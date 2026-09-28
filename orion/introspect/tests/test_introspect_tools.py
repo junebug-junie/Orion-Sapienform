@@ -93,3 +93,19 @@ def test_model_cannot_supply_binding_fields():
     with pytest.raises(ValidationError):
         _invoke(bus, args={"memory_allowed": True})
     assert bus.sent == []
+
+
+class CorruptDataBus:
+    codec = OrionCodec()
+
+    def __init__(self):
+        self.sent = []
+
+    async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec):
+        self.sent.append((channel, envelope, reply_channel, timeout_sec))
+        return {"data": b"\xff\xfe\x00not-valid-json"}
+
+
+def test_corrupt_reply_bytes_are_unknown():
+    with pytest.raises(IntrospectUnknownError, match="answer unknown"):
+        _invoke(CorruptDataBus())

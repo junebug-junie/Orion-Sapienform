@@ -369,30 +369,48 @@ def _search_cfg(**overrides):
     return ReadingSearchConfig(**base)
 
 
-def test_query_routes_to_semantic_search(monkeypatch, caplog):
+def test_query_ranks_before_taking_a_connection(monkeypatch, caplog):
     import logging
     from datetime import datetime, timezone
 
     from orion.schemas.introspect import IntrospectResultV1
 
+    events = []
     seen = {}
 
-    async def fake_search(conn, cfg, **kwargs):
-        seen.update(kwargs)
+    async def fake_rank(client, cfg, query):
+        events.append("rank")
+        seen["query"] = query
+        return [("seed-a", 0.8)]
+
+    async def fake_gate(conn, scored, **kwargs):
+        events.append("gate")
+        seen.update(kwargs, scored=scored)
         return IntrospectResultV1(ok=True, operation="reading_result",
                                   as_of=datetime.now(timezone.utc), total_available=0)
 
     def forbidden(*args, **kwargs):
         raise AssertionError("query mode must not use exact lookup")
 
-    monkeypatch.setitem(ReadingListener.handle.__globals__, "search_readings", fake_search)
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "rank_readings", fake_rank)
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "gated_results", fake_gate)
     monkeypatch.setitem(ReadingListener.handle.__globals__, "reading_results", forbidden)
     bus = RpcBus(_FakeConn())
+    conn = bus.conn
+
+    class RecordingPool:
+        def acquire(self):
+            events.append("acquire")
+            return conn
+
+    bus.listener.pool_provider = lambda: RecordingPool()
     bus.listener.search = _search_cfg()
     with caplog.at_level(logging.INFO):
         out = asyncio.run(_introspect_tools(bus).invoke("reading_results", {"query": "graphics cards", "limit": 2}))
     assert out["ok"] is True and out["items"] == []
+    assert events == ["rank", "acquire", "gate"]
     assert seen["query"] == "graphics cards" and seen["limit"] == 2
+    assert seen["scored"] == [("seed-a", 0.8)]
     assert "introspect op=reading_result" in caplog.text and "mode=query" in caplog.text
 
 
@@ -401,10 +419,10 @@ def test_query_without_working_search_is_unknown(monkeypatch, configured):
     from orion.introspect.tools import IntrospectUnknownError
     from orion.world_pulse_read.search import SearchUnavailableError
 
-    async def down(conn, cfg, **kwargs):
+    async def down(client, cfg, query):
         raise SearchUnavailableError("reading index not built yet")
 
-    monkeypatch.setitem(ReadingListener.handle.__globals__, "search_readings", down)
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "rank_readings", down)
     bus = RpcBus(_FakeConn())
     bus.listener.search = _search_cfg() if configured else _search_cfg(chroma_url="")
     with pytest.raises(IntrospectUnknownError, match="answer unknown"):

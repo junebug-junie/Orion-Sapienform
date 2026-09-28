@@ -152,24 +152,33 @@ async def nearest(
         ids, distances = body["ids"][0], body["distances"][0]
         if len(ids) != len(distances) or any(not isinstance(i, str) for i in ids):
             raise ValueError("ids/distances mismatch")
+        if not ids:
+            # Chroma clamps n_results to the index size, so an existing collection
+            # answering nothing holds no vectors: unbuilt, not "no match".
+            raise ValueError("reading index is empty")
         scored = [(i, similarity(float(d), coll.space)) for i, d in zip(ids, distances)]
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise SearchUnavailableError("malformed chroma query reply") from exc
     return sorted(scored, key=lambda s: -s[1])
 
 
-async def search_readings(
+async def rank_readings(
+    client: httpx.AsyncClient, cfg: ReadingSearchConfig, query: str,
+) -> list[tuple[str, float]]:
+    """Embed the query once; (seed_id, similarity) hits at or above the floor, best first."""
+    vector, _ = await embed(client, cfg, query)
+    return [s for s in await nearest(client, cfg, vector) if s[1] >= cfg.min_similarity]
+
+
+async def gated_results(
     conn: Any,
-    cfg: ReadingSearchConfig,
+    scored: list[tuple[str, float]],
     *,
-    client: httpx.AsyncClient,
-    query: str,
     limit: int,
     since: datetime | None = None,
 ) -> IntrospectResultV1:
+    """Re-read ranked hits from Postgres; only verified readings survive."""
     as_of = datetime.now(timezone.utc)
-    vector, _ = await embed(client, cfg, query)
-    scored = [s for s in await nearest(client, cfg, vector) if s[1] >= cfg.min_similarity]
     if not scored:
         return IntrospectResultV1(ok=True, operation="reading_result", as_of=as_of, total_available=0)
     rows = {str(r["seed_id"]): r for r in await conn.fetch(_ROWS_BY_ID_SQL, [sid for sid, _ in scored], since)}
@@ -184,6 +193,18 @@ async def search_readings(
     return IntrospectResultV1(
         ok=True, operation="reading_result", as_of=as_of, total_available=len(hits), items=items,
     )
+
+
+async def search_readings(
+    conn: Any,
+    cfg: ReadingSearchConfig,
+    *,
+    client: httpx.AsyncClient,
+    query: str,
+    limit: int,
+    since: datetime | None = None,
+) -> IntrospectResultV1:
+    return await gated_results(conn, await rank_readings(client, cfg, query), limit=limit, since=since)
 
 
 async def verified_rows(conn: Any, scan_limit: int = INDEX_SCAN_LIMIT) -> list[Any]:

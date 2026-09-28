@@ -90,6 +90,12 @@ query is embedded at ask time.
   `HUB_READING_SEARCH_COLLECTION`, `HUB_READING_SEARCH_MIN_SIMILARITY`,
   `HUB_READING_SEARCH_INDEX_INTERVAL_SEC`, `HUB_READING_SEARCH_INDEX_BATCH`.
 
+Known limit: `since` filters the 20 nearest hits after ranking, not the corpus
+before it. With 13 verified readings the 20 nearest are the whole corpus; past
+that, a narrow `since` window can come back empty while an in-window reading
+exists further down. Pass `since` into Chroma's `where` (using `occurred_at`
+metadata stored as epoch seconds) when the corpus grows past a few hundred.
+
 ## Non-goals
 
 Full-text or hybrid (BM25) fusion; LLM reranking; other introspect domains;

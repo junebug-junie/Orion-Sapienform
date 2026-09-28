@@ -23,8 +23,9 @@ from orion.world_pulse_read.search import (
     HTTP_TIMEOUT_SEC,
     ReadingSearchConfig,
     SearchUnavailableError,
+    gated_results,
     index_missing_readings,
-    search_readings,
+    rank_readings,
     verified_rows,
 )
 from orion.world_pulse_read.urls import normalize_source_url
@@ -107,6 +108,14 @@ class ReadingListener:
                 response = ReadingToolResultV1(ok=False, error=_SAFE_ERROR)
                 await self._publish_response(reply, envelope, response)
                 return
+            scored = None
+            if command.operation == "reading_result" and command.query is not None:
+                # Rank before taking a connection: embed + Chroma can take seconds.
+                phase = "reading_search"
+                if self.search is None or not self.search.enabled:
+                    raise SearchUnavailableError("semantic reading search is not configured")
+                async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC) as client:
+                    scored = await rank_readings(client, self.search, command.query)
             phase = "pool_acquire"
             async with pool.acquire() as conn:
                 if command.operation == "recommend_reading":
@@ -134,16 +143,12 @@ class ReadingListener:
                         if result.get("lookup_url") != normalize_source_url(command.url):
                             raise RuntimeError("status returned a mismatched URL")
                 else:
-                    if command.query is not None:
+                    if scored is not None:
                         phase = "reading_search"
                         mode = "query"
-                        if self.search is None or not self.search.enabled:
-                            raise SearchUnavailableError("semantic reading search is not configured")
-                        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC) as client:
-                            introspection = await search_readings(
-                                conn, self.search, client=client, query=command.query,
-                                limit=command.limit or DEFAULT_LIMIT, since=command.since,
-                            )
+                        introspection = await gated_results(
+                            conn, scored, limit=command.limit or DEFAULT_LIMIT, since=command.since,
+                        )
                     else:
                         phase = "reading_result"
                         mode = "lookup" if (command.request_id or command.url) else "recent"

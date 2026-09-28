@@ -233,6 +233,8 @@ _COLL = ("/api/v1/collections/orion_reading_results", (200, {"id": "cid", "metad
         {"ids": [["a", "b"]], "distances": [[0.1]]},
         {"ids": [[None]], "distances": [[0.1]]},
         {"ids": [], "distances": []},
+        # Chroma 0.4.24's real reply for a collection with no vectors yet.
+        {"ids": [[]], "distances": [[]]},
     ],
 )
 def test_malformed_query_reply_is_unknown_not_empty(reply):

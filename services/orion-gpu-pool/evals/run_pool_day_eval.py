@@ -25,6 +25,14 @@ Hard targets (exit 1 if missed; spec acceptance check 4 + stage 4 checks 2/3):
     waits at most for the one higher-priority call that used its gap)
   - interleaved grants: > 0  (a system agent call used a run's tool gap)
 
+Urgent scenario (separate short replay, same real scheduler + lease table): background holds on
+agent and the loaded agent-gpu2 seat, chat traffic on chat, then an urgent hold. Hard targets:
+  - the urgent hold is granted within urgent_preempt_grace_sec + one tick
+  - exactly one hold is paused, and it is the most recently granted background hold
+  - the paused hold is re-granted before a background hold created after it, with no attempt spent
+  - no chat/interactive lease is ever recalled
+  - with urgent_max_concurrent: 0 (rollback) nothing is paused
+
 Also measured: lease-graph checkpoint throughput through the real PoolRuntime + MemorySaver.
 That number is an in-memory ceiling; Postgres checkpoint throughput is UNVERIFIED until live.
 
@@ -84,6 +92,21 @@ GAP_SEC = (20, 60)      # a tool phase between calls (~40% of the run)
 # The actuator: the first gpu2 load fails with the residents restored, every later one succeeds.
 FAILED_LOADS = 1
 LOST_WINDOW_SEC = 900 + max(CFG.swap_after_wait_sec(r) for r in CFG.roles if CFG.roles[r].swap)
+
+
+def _views(leases: dict[str, dict]) -> list[LeaseView]:
+    """Lease rows as the scheduler sees them (as app/runtime.py _view builds them)."""
+    def ts(st: dict, key: str) -> datetime | None:
+        return datetime.fromisoformat(st[key]) if st.get(key) else None
+    return [LeaseView(
+        lease_id=lid, work_class=st["request"]["work_class"], priority=st["request"]["priority"],
+        status=st["status"], created_at=datetime.fromisoformat(st["created_at"]), role=st.get("role"),
+        deadline_at=ts(st, "deadline_at"), recall_by=ts(st, "recall_by"), not_before=ts(st, "not_before"),
+        queued_since=ts(st, "queued_since"), granted_at=ts(st, "granted_at"), expires_at=ts(st, "expires_at"),
+        retryable=bool(st["request"].get("retryable")),
+        kind=st["request"].get("kind", "request"), hold_lease_id=st["request"].get("hold_lease_id"),
+        reason=st.get("reason"),
+    ) for lid, st in leases.items() if st["status"] not in ("released", "unavailable", "dead_letter")]
 
 
 def simulate(seed: int = 7) -> dict:
@@ -232,18 +255,7 @@ def simulate(seed: int = 7) -> dict:
                     if fail:
                         work_left[lid] = rng.uniform(1, 5)
 
-        views = [LeaseView(
-            lease_id=lid, work_class=st["request"]["work_class"], priority=st["request"]["priority"],
-            status=st["status"], created_at=datetime.fromisoformat(st["created_at"]), role=st.get("role"),
-            deadline_at=datetime.fromisoformat(st["deadline_at"]) if st.get("deadline_at") else None,
-            recall_by=datetime.fromisoformat(st["recall_by"]) if st.get("recall_by") else None,
-            not_before=datetime.fromisoformat(st["not_before"]) if st.get("not_before") else None,
-            queued_since=datetime.fromisoformat(st["queued_since"]) if st.get("queued_since") else None,
-            granted_at=datetime.fromisoformat(st["granted_at"]) if st.get("granted_at") else None,
-            expires_at=datetime.fromisoformat(st["expires_at"]) if st.get("expires_at") else None,
-            retryable=bool(st["request"].get("retryable")),
-            kind=st["request"].get("kind", "request"), hold_lease_id=st["request"].get("hold_lease_id"),
-        ) for lid, st in leases.items() if st["status"] not in ("released", "unavailable", "dead_letter")]
+        views = _views(leases)
 
         # owner starvation: owner queued past the borrower's bound while a borrower holds that role.
         # A single-call borrower's bound is clawback_grace_sec. A durable-run hold's is ONE of its
@@ -315,6 +327,137 @@ def simulate(seed: int = 7) -> dict:
             "run_blocked_behind_itself_sec": self_block, "run_call_waits_over_one_inference": over_one_inference}
 
 
+# Urgent scenario (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md
+# Part 1): name -> (arrives at s, background/urgent hold, released at s or after N s granted).
+URGENT_SEC = 400
+URGENT_HOLDS = {
+    "bg_a": (0, "background"),    # granted on agent
+    "bg_b": (2, "background"),    # granted on agent-gpu2 (seat loaded): the most recent grant
+    "urgent": (20, "urgent"),     # no free slot -> pauses bg_b
+    "bg_c": (25, "background"),   # a background hold created after bg_b
+}
+URGENT_RUN_SEC = 120              # the urgent hold gives its slot back this long after its grant
+BG_A_ENDS_SEC = 300               # then bg_a finishes, so bg_c gets a slot and the order shows
+CHAT_EVERY_SEC, CHAT_WORK_SEC = 30, 25   # interactive chat keeps arriving on the chat role
+
+
+def urgent_scenario(cfg=CFG) -> dict:
+    """Two background durable-run holds (agent + the loaded agent-gpu2 seat), then an urgent hold,
+    through the real scheduler and lease transition table. A paused hold is mid-node: it never
+    gives the slot back itself, so the pool's grace runs out and the abort re-queues it (U2)."""
+    leases: dict[str, dict] = {}
+    work_left: dict[str, float] = {}
+    names: dict[str, str] = {}
+    cards = {c: CardLive(c) for c in cfg.cards}
+    cards["gpu2"].swapped_in.add("agent-gpu2")
+    cards["gpu2"].loaded_at = cards["gpu2"].last_active_at = T0
+    grants: dict[str, list[int]] = defaultdict(list)
+    recalls: list[dict] = []
+    granted_at_urgent_arrival: dict[str, str] = {}
+
+    def add(lid: str, req: dict, now: datetime) -> None:
+        deadline = req.pop("_deadline", None)
+        st = dict(initial_state(lid, {"request_id": lid, **req}, now))
+        st["deadline_at"] = deadline
+        leases[lid] = st
+
+    def apply(st: dict, ev: dict) -> None:
+        st.update(transition(st, ev, cfg), history=[])
+
+    for sec in range(URGENT_SEC):
+        now = T0 + timedelta(seconds=sec)
+        at = now.isoformat()
+        for name, (start, prio) in URGENT_HOLDS.items():
+            if sec == start:
+                if prio == "urgent":
+                    granted_at_urgent_arrival.update(
+                        {names[l]: st["granted_at"] for l, st in leases.items()
+                         if st["request"]["kind"] == "hold" and st["status"] == "granted"})
+                lid = f"H-{name}"
+                names[lid] = name
+                add(lid, {"work_class": "agent", "kind": "hold", "priority": prio, "retryable": True,
+                          "holder": f"durable-runs:{name}"}, now)
+        if sec % CHAT_EVERY_SEC == 5:
+            lid = f"C{sec}"
+            names[lid] = lid
+            add(lid, {"work_class": "chat", "kind": "request", "priority": "interactive",
+                      "_deadline": (now + timedelta(seconds=120)).isoformat()}, now)
+            work_left[lid] = CHAT_WORK_SEC
+
+        for lid, st in leases.items():
+            if st["status"] not in ("granted", "recalling"):
+                continue
+            ends = (lid == "H-urgent" and sec >= grants[lid][-1] + URGENT_RUN_SEC) \
+                or (lid == "H-bg_a" and sec >= BG_A_ENDS_SEC)
+            if lid in work_left:
+                work_left[lid] -= 1
+                ends = work_left[lid] <= 0
+            if ends:
+                apply(st, {"type": "release_ok", "at": at})
+                continue
+            apply(st, {"type": "heartbeat", "at": at})
+            if st["role"] and cfg.roles[st["role"]].swap:
+                for c in cfg.roles[st["role"]].cards:
+                    cards[c].last_active_at = now
+
+        for d in schedule(cfg, LIVE, cards, _views(leases), now,
+                          guards={"thermal": None, "visual_baseline": None}):
+            if isinstance(d, (SwapLoad, SwapUnload, SwapBlocked)):
+                continue                  # the seat is already loaded; no swap is part of this story
+            st = leases[d.lease_id]
+            ev = {"type": _EV[type(d)], "at": at, "reason": getattr(d, "reason", None)}
+            if isinstance(d, Grant):
+                ev["role"] = d.role
+                grants[d.lease_id].append(sec)
+            if isinstance(d, Recall):
+                ev["recall_by"] = d.recall_by.isoformat()
+                recalls.append({"lease": names[d.lease_id], "reason": d.reason, "role": st["role"],
+                                "priority": st["request"]["priority"], "kind": st["request"]["kind"]})
+            apply(st, ev)
+
+    def first_grant_after(lid: str, sec: int) -> int | None:
+        return next((g for g in grants[lid] if g > sec), None)
+
+    urgent_start = URGENT_HOLDS["urgent"][0]
+    paused = [r["lease"] for r in recalls if r["reason"] == "urgent_preempt"]
+    expected = max(granted_at_urgent_arrival, key=granted_at_urgent_arrival.get) \
+        if granted_at_urgent_arrival else None
+    victim = f"H-{paused[0]}" if paused else None
+    urgent_grant = first_grant_after("H-urgent", urgent_start - 1)
+    victim_regrant = first_grant_after(victim, urgent_start) if victim else None
+    later_grant = first_grant_after("H-bg_c", URGENT_HOLDS["bg_c"][0] - 1)
+    return {
+        "urgent_grant_wait_sec": None if urgent_grant is None else urgent_grant - urgent_start,
+        "urgent_grant_wait_limit_sec": cfg.defaults.urgent_preempt_grace_sec + 1,
+        "paused": paused,
+        "expected_victim": expected,
+        "victim_regranted_at_sec": victim_regrant,
+        "later_background_granted_at_sec": later_grant,
+        "victim_attempts_spent": (leases[victim]["attempt"] - 1) if victim else None,
+        "chat_or_interactive_recalls": sum(1 for r in recalls if r["priority"] == "interactive"
+                                           or r["role"] == "chat"),
+        "recalls": recalls,
+    }
+
+
+def urgent_failures(u: dict, rollback: dict) -> list[str]:
+    out = []
+    if u["urgent_grant_wait_sec"] is None or u["urgent_grant_wait_sec"] > u["urgent_grant_wait_limit_sec"]:
+        out.append("urgent_grant_wait")
+    if u["paused"] != [u["expected_victim"]]:
+        out.append("urgent_victim")      # exactly one pause, of the most recently granted background hold
+    if u["victim_regranted_at_sec"] is None or u["later_background_granted_at_sec"] is None \
+            or u["victim_regranted_at_sec"] >= u["later_background_granted_at_sec"]:
+        out.append("urgent_victim_not_resumed_first")
+    if u["victim_attempts_spent"]:
+        out.append("urgent_victim_attempt_spent")
+    if u["chat_or_interactive_recalls"]:
+        out.append("urgent_recalled_chat")
+    if rollback["paused"]:
+        out.append("urgent_rollback_still_pauses")
+    return out
+
+
 async def checkpoint_throughput(n: int = 300) -> float:
     from langgraph.checkpoint.memory import MemorySaver
 
@@ -339,12 +482,17 @@ async def checkpoint_throughput(n: int = 300) -> float:
 
 def main() -> int:
     report = simulate()
+    report["urgent_scenario"] = urgent_scenario()
+    rollback_cfg = CFG.model_copy(update={"defaults": CFG.defaults.model_copy(update={"urgent_max_concurrent": 0})})
+    rollback = urgent_scenario(rollback_cfg)
+    report["urgent_rollback_paused"] = rollback["paused"]
     report["leases_per_sec_inmemory"] = round(asyncio.run(checkpoint_throughput()), 1)
     import json
 
     print(json.dumps(report, indent=2))
     failures = [k for k in ("owner_starvation_sec", "leases_lost", "small_role_violations",
                             "run_blocked_behind_itself_sec", "run_call_waits_over_one_inference") if report[k]]
+    failures += urgent_failures(report["urgent_scenario"], rollback)
     if not report["interleaved_grants"]:
         failures.append("interleaved_grants")
     if not report["counts"].get("swap_failed_restored"):

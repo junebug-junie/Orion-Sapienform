@@ -1,7 +1,8 @@
 # Urgent curiosity runs + hardware watch — design
 
 **Date:** 2026-09-28
-**Status:** Design approved by Juniper in chat (2026-09-28). Not implemented.
+**Status:** Design approved by Juniper in chat (2026-09-28). Part 1 implemented (Plan 2, branch
+`feat/gpu-pool-urgent-class`); Parts 2–5 not implemented.
 **Branch:** `docs/urgent-curiosity-hardware-watch`
 
 ## Arsonist summary
@@ -138,34 +139,63 @@ an absolute 85 °C ceiling fires meanwhile. Re-run the gate on real data before 
 
 ## Design
 
-### Part 1 — `urgent` priority in the GPU pool
+### Part 1 — `urgent` priority in the GPU pool (as shipped, Plan 2)
 
-- `priorities: [urgent, interactive, system, background]`; `Priority` Literal gains `urgent`;
-  new route `curiosity_urgent: {class: agent, priority: urgent}`.
-- Chat protection needs no special case: urgent is `agent` class, a borrower on `chat` (gpu0),
-  only when lent, and owners win their role. Covered by a test.
-- **Rule U1 (pause):** when a queued `urgent` lease finds no free slot on any placeable role in its
-  class, pick one victim on a role the urgent lease could use: lowest priority first (`background`
-  then `system`), most recently granted first; never `interactive`, never `urgent`, never a lease
-  on a role urgent does not own unless that role is lent. Emit
-  `Recall(victim, now + urgent_preempt_grace_sec, "urgent_preempt")`. One victim per waiting urgent
-  lease, counting victims already `recalling` for `urgent_preempt` (same de-dup as owner recall).
-- **Rule U2 (resume in place):** an aborted `urgent_preempt` victim is re-queued keeping
-  `created_at` (holds already do this via `keep_requeued`). Requests: see gateway below.
-- **Rule U3 (stacking):** urgent holds are exempt from H1's one-hold-per-role, bounded by slots and
-  `urgent_max_concurrent: 3`. Urgent skips a swap seat's `after_wait_sec` but still obeys its guards
-  (thermal guard stays).
-- **Rule U4 (shed):** when the pool's `cooling_incident` guard is set (Part 4), no new grants to
-  `background` or `system` leases; running ones finish (no recall). `interactive` and `urgent`
-  unaffected.
-- **Gateway replay** (`services/orion-llm-gateway/app/pool_placement.py`): a non-streaming call
-  aborted with `urgent_preempt` re-requests a lease (same route, original `created_at` passed as
-  `queued_since`) and re-sends the request, up to `retry.max_attempts`. A stream that already emitted
-  tokens fails with `gpu_pool_preempted` (new error code; background routes do not stream).
-- **Durable runs:** an `urgent_preempt` abort mid-node must replay the node (new turn generation),
-  not count as a failed attempt. **Verify** current `HoldLost` handling in `admission_runtime.py`
-  during implementation; add a test either way.
+Plan: `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-2-pool-urgent.md`. Rules live in the
+`schedule()` docstring (`orion/gpu_pool/scheduler.py`, U1–U3).
+
+**Changed from the first draft of this part:**
+
+- **Only durable-run holds are paused.** One-shot requests (a single inference) are never recalled
+  for urgent work: they finish in seconds and urgent is first in line for the freed slot. A request
+  can only be killed and replayed, not paused, so the gateway replay and the `gpu_pool_preempted`
+  error code were dropped.
+- **No `curiosity_urgent` route.** A hold's priority comes from `ResourceRequirementV1.priority`,
+  not from the route table, so the route would be an unused label.
+- **Rule U4 (load shedding) moved to Plan 5**, with the hardware watcher that turns it on. Shipping
+  it now would leave a guard with nothing setting it.
+- **Added:** durable-runs drives urgent runs first and outside its 4-driver cap (below).
+
+**What shipped:**
+
+- `priorities: [urgent, interactive, system, background]`; the pool `Priority` Literal and
+  `ResourceRequirementV1.priority` both accept `urgent`.
+- **U1 (pause):** an urgent lease that gets no slot pauses one granted `background` (then `system`)
+  durable-run hold on a role it could use: `Recall(victim, now + 5 s, "urgent_preempt")`. Most
+  recently granted first. Never paused: interactive, urgent, operator, request or child leases, or
+  the owner of a role the urgent lease only borrows (re-queued, that owner would win the role back).
+  One pause per waiting urgent lease; a pause already under way on a slot it could take counts.
+- **Urgent owner reclaiming a borrowed role:** when an urgent lease owns a role (e.g. `agent`) and a
+  background/system hold is borrowing it, the owner reclaim of that hold *is* the pause: reason
+  `urgent_preempt`, 5 s grace, re-queued in place. It is the hold's one pause, not an extra one.
+- **Chat stays untouched.** Urgent is `agent` class, so it reaches the `chat` role only while gpu0 is
+  lent. No chat or interactive lease is ever recalled by urgent. If an urgent hold borrows `chat`,
+  chat's own requests may use that hold's gaps (between its calls), same as any owner.
+- **U2 (resume in place):** the pool aborts a paused hold after the grace and puts it back in line
+  as `queued` with the same `lease_id` and `created_at`, reason `urgent_preempt`, no attempt spent
+  (`lease_graph.transition`). A caller that would not use a re-grant (`retryable=false`) ends as
+  before.
+- **U3 (stacking):** urgent holds are exempt from H1's one-hold-per-role, bounded by slots and
+  `urgent_max_concurrent`. Urgent skips a swap seat's `after_wait_sec` when no pause can serve it;
+  seat guards (thermal) still apply.
+- **The pool says why.** Its `queued` and `recall` replies carry `reason` (the field already existed
+  on `GpuLeaseReplyV1`; now filled in).
+- **Durable runs:**
+  - A turn preempted mid-node records `run.preempted`, spends no attempt, keeps its hold (same
+    lease, same place in line) and replays the node when the hold is granted again.
+  - A hold recalled for urgent work *before* its step starts is not released. Durable-runs waits
+    for the pool to re-queue it in place: local clock, at most grace 5 s + 3 s margin, and each
+    status call is time-bounded. Any other recall reason (or no re-queue in time) keeps the old
+    path: release as `recalled_before_start`.
+  - Reconcile drives urgent runs first, outside `MAX_CONCURRENT_DRIVERS` (4), capped at
+    `urgent_max_concurrent` (3). `list_pending()` puts urgent rows first.
 - Config: `defaults.urgent_preempt_grace_sec: 5`, `defaults.urgent_max_concurrent: 3`.
+- **Rollback:** `urgent_max_concurrent: 0`. The scheduler then treats urgent as background (no
+  pause, no stacking) and durable-runs drives urgent runs inside the normal cap. `list_pending()`'s
+  SQL still sorts urgent rows first; harmless, it only changes which rows are read first.
+- **Live status:** unit tests + the pool eval's urgent scenario cover the pause/resume path. A live
+  preemption smoke is **UNVERIFIED**: it pauses a real background run, so it waits for Juniper's
+  approval.
 
 ### Part 2 — seeded urgent curiosity runs
 
@@ -181,9 +211,9 @@ an absolute 85 °C ceiling fires meanwhile. Re-run the gate on real data before 
 - `CuriosityRunBriefV1` gains optional `urgent: CuriosityUrgentSeedV1` (incident_id, question,
   trigger, subject, evidence). The kickoff prompt uses the seed question + evidence instead of the
   self-authored subject.
-- `ResourceRequirementV1.priority` Literal gains `urgent`; durable-runs admits urgent runs outside
-  the 4-driver fair rotation (own allowance of `urgent_max_concurrent`); hold placement uses route
-  `curiosity_urgent`.
+- Already shipped in Part 1: `ResourceRequirementV1.priority` accepts `urgent` (that is what makes
+  the hold urgent; there is no route for it), and durable-runs drives urgent runs outside the
+  4-driver cap. Part 2 only has to set `priority: urgent` on the run's admission.
 - Grant `orion_readonly` `SELECT` on `orion_biometrics_summary` (includes the cabinet Nano's
   `measurements->>'cabinet_temp_c'`) and `home_cooling_sample` (new
   `scripts/sql/2026-09-28_grant_orion_readonly_hardware.sql`).
@@ -252,7 +282,9 @@ prose fallback; evidence bundle instead of SSH to circe; no-LLM report instead o
 - **Shedding:** hardware-watch evaluates open `cabinet_ac` incident AND rising cabinet
   temperature (`orion_biometrics_summary.measurements->>'cabinet_temp_c'` on athena up ≥ 1 °C over
   15 min, or ≥ `thermal_gate`'s elevated 29.5 °C) and publishes the result on the incident event;
-  the pool consumes it as guard `cooling_incident` → U4.
+  the pool consumes it as guard `cooling_incident` → U4 (built here, in Plan 5): while set, no new
+  grants to `background` or `system` leases; running ones finish (no recall); `interactive` and
+  `urgent` unaffected.
   Cleared when the incident resolves or Juniper cancels it (`POST /incidents/{id}/resolve`).
 - GPU temp collection: add `temperature.gpu` to `gpu_host_stats.sh`; carry through
   `biometrics_pipeline.py` to `measurements.gpu_temp_c_max` (+ per-GPU in sample payload).
@@ -289,16 +321,19 @@ prose fallback; evidence bundle instead of SSH to circe; no-LLM report instead o
 - **Dangerous failure:** runaway urgent runs starving Orion (bounded by cap 3 + one incident per
   subject); false AC alarm shedding work (bounded by resolve + manual clear); silent alarm (the
   whole point of Part 5 + report-on-failure).
-- **Rollback:** `HARDWARE_WATCH_ENABLED=false`; remove `curiosity_urgent` route; pool ignores
-  `urgent` priority when `urgent_max_concurrent: 0`; shed guard off with
+- **Rollback:** `HARDWARE_WATCH_ENABLED=false`; pool treats `urgent` as background when
+  `urgent_max_concurrent: 0`; shed guard off with
   `HARDWARE_WATCH_SHED_ENABLED=false`.
 
 ## Proposed schema / API changes
 
-- Added: `urgent` in pool `Priority` and `ResourceRequirementV1.priority`; `Recall.reason`
-  `urgent_preempt`; gateway error `gpu_pool_preempted`; `CuriosityUrgentRequestV1`,
-  `CuriosityUrgentSeedV1`, `CuriosityRunBriefV1.urgent`; `HardwareWatchIncidentV1`;
-  `CoolingObservedStateV1.stale`; `measurements.gpu_temp_c_max`.
+- Shipped (Part 1): `urgent` in pool `Priority` and `ResourceRequirementV1.priority`; recall /
+  abort reason `urgent_preempt`; `GpuLeaseReplyV1.reason` now filled on `queued` and `recall`
+  replies (existing field); durable-run event `run.preempted`; `defaults.urgent_preempt_grace_sec`,
+  `defaults.urgent_max_concurrent`.
+- Dropped: gateway error `gpu_pool_preempted` and route `curiosity_urgent` (see Part 1).
+- Still to add: `CuriosityUrgentRequestV1`, `CuriosityUrgentSeedV1`, `CuriosityRunBriefV1.urgent`;
+  `HardwareWatchIncidentV1`; `CoolingObservedStateV1.stale`; `measurements.gpu_temp_c_max`.
 - Channels: `orion:curiosity:urgent:request`, `orion:hardware:watch:incident`.
 - HTTP: Hub `POST /curiosity/api/urgent`; hardware-watch `GET /incidents`,
   `POST /incidents/{id}/resolve`, `GET /health`.
@@ -308,9 +343,11 @@ prose fallback; evidence bundle instead of SSH to circe; no-LLM report instead o
 
 - `config/gpu_pool.yaml`, `orion/gpu_pool/{scheduler,config}.py`, `orion/schemas/gpu_pool.py`,
   `orion/gpu_pool/tests/`, `services/orion-gpu-pool/{app/guards.py,evals/run_pool_day_eval.py}`
-- `services/orion-llm-gateway/app/{pool_placement.py,passthrough_proxy.py}`
+- `services/orion-gpu-pool/app/runtime.py`, `orion/gpu_pool/lease_graph.py` (Part 1; the gateway is
+  not touched)
 - `orion/schemas/{resource_admission,durable_run,curiosity_urgent}.py`,
-  `services/orion-durable-runs/app/{admission_runtime,pool_hold}.py`
+  `services/orion-durable-runs/app/{admission_runtime,admitted_graph,pool_hold}.py`,
+  `orion/durable_admission/store.py`
 - `services/orion-hub/scripts/{curiosity_investigation,curiosity_routes}.py`,
   `orion/curiosity/urgent_prompt.py` (new), Hub `turn_orchestrator.py` (stance bypass),
   `services/orion-durable-runs/app/runner.py` (`read_turn_result` reads `:IncidentReport`),
@@ -327,15 +364,18 @@ prose fallback; evidence bundle instead of SSH to circe; no-LLM report instead o
 - No change to chat scheduling or chat priority.
 - No new generic alerting framework; the watcher owns three rules.
 - No self-escalation of ordinary curiosity runs to urgent by Orion (only the watcher + Juniper).
-- No streaming-call replay.
+- No pausing or replaying one-shot request leases (streaming or not); only holds are paused.
 
 ## Acceptance checks
 
 1. Scheduler unit tests: urgent pauses background before system; never pauses chat/interactive/
-   urgent; victim resumes ahead of newer same-priority leases; ≤ 3 urgent; shed guard blocks
-   background/system grants only.
-2. Gateway test: a non-streaming call aborted `urgent_preempt` returns a normal reply after replay.
-3. Durable-runs test: `urgent_preempt` mid-node replays the node without a failed attempt.
+   urgent/request leases; victim resumes ahead of newer same-priority leases; ≤ 3 urgent; rollback
+   at `urgent_max_concurrent: 0`. The pool eval (`run_pool_day_eval.py`) replays the same story
+   through the real scheduler and lease table. (Shed guard: Plan 5.)
+2. ~~Gateway test~~ **Dropped:** request leases are never paused, so there is no gateway replay to
+   test (Part 1).
+3. Durable-runs test: `urgent_preempt` mid-node replays the node without a failed attempt; a hold
+   paused before its step starts keeps its place.
 4. Rules replay eval over the real 7-day history reproduces the gate counts (CPU p95 ≈ 1/week
    athena, ≈ 9/week circe) and fires the AC rule on the real 33.1 W stretch.
 5. zwave test: failed poll never yields a fresh-looking sample; stale ⇒ no watts + `stale=true`.

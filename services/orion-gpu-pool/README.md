@@ -96,6 +96,37 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
   `stale_hold_generation:<n>`) name the hold only in `reason`, never in `lease_id` -- the client
   cancels a failed reply's `lease_id`.
 
+## Urgent priority
+
+Spec: `docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md` Part 1.
+Rules U1–U3 in the `schedule()` docstring.
+
+An `urgent` lease goes ahead of every queue. If no slot is free, the pool **pauses** one running
+background (then system) durable-run hold on a role urgent could use, most recently granted first:
+recall with reason `urgent_preempt`, then abort after the grace. The paused hold goes back in line
+in its **original place** (same `lease_id`, same `created_at`, no retry attempt spent), and
+durable-runs replays the interrupted node when it is granted again.
+
+- Never paused: chat/interactive, other urgent, operator, one-shot request and child leases.
+  Urgent reaches the `chat` role only while gpu0 is lent, and chat's own requests may still use an
+  urgent hold's gaps there.
+- An urgent owner taking back a role a background/system hold is borrowing uses the same pause
+  (5 s grace, re-queued in place); that counts as the one pause.
+- Urgent holds may stack past "one hold per role" (bounded by slots and the cap below).
+- `queued` and `recall` replies carry `reason`, so a caller can tell a pause from any other recall.
+
+Defaults (`config/gpu_pool.yaml`):
+
+- `urgent_preempt_grace_sec: 5` -- how long a paused hold gets before it is aborted and re-queued.
+- `urgent_max_concurrent: 3` -- urgent leases active at once; a 4th waits and pauses nothing.
+
+**Rollback:** set `urgent_max_concurrent: 0` and redeploy the pool (the yaml is baked into the
+image). Urgent then behaves exactly like background: no pauses, no stacking. The eval's urgent
+scenario checks this too.
+
+Nothing sends urgent work yet (Plan 3 adds the trigger). A live pause smoke is **UNVERIFIED**: it
+would pause a real background run, so it waits for Juniper's approval.
+
 ## Swap actuation (stage 4.3, OFF by default)
 
 `GPU_POOL_ACTUATE_ROLES` (comma list of swap seats) arms it; empty = every swap decision stays a
@@ -162,7 +193,7 @@ circe's llama.cpp workers start announcing after they are recreated with the new
 python scripts/check_gpu_pool_config.py
 python -m pytest orion/gpu_pool/tests -q
 cd services/orion-gpu-pool && python -m pytest tests -q        # + GPU_POOL_TEST_POSTGRES_URI for the Postgres tests
-python services/orion-gpu-pool/evals/run_pool_day_eval.py      # exits 1 on owner starvation, lost leases, spill-down
+python services/orion-gpu-pool/evals/run_pool_day_eval.py      # exits 1 on owner starvation, lost leases, spill-down, or an urgent pause/resume miss
 ```
 
 ## When lease RPCs are slow

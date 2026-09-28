@@ -676,10 +676,13 @@ Design: `docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.m
 Code: `app/visual_steps.py`. `run-once` is unchanged and remains the rollback path;
 both paths write identical chain rows through the same `visual_chain.py` pieces.
 
-- **prepare** claims the attempt for the dispatch (same eligibility checks as
-  `run-once`, only before a new claim) and freezes the prompt plan into
-  `reverie_visual_attempt.stage_json`. A replay returns the frozen plan: rotation
-  does not advance and the context is not re-interpreted. No GPU.
+- **prepare** claims the attempt for the dispatch and freezes the prompt plan into
+  `reverie_visual_attempt.stage_json`. Before a new claim only, a baseline request is
+  checked structurally (validated at its own `observed_at`, so a run that waited out
+  retries is never ended as stale); the claim's `already_satisfied` check is the real
+  double-image guard. The legacy worker being on is a retry
+  (`legacy_visual_worker_enabled`), not an ending. A replay returns the frozen plan:
+  rotation does not advance and the context is not re-interpreted. No GPU.
 - **generate** is the only GPU stage. It validates the run's diffusion hold
   (`holder == durable-runs:<run_id>`), then thermal gate, single-flight lock, GPU2
   permit and diffusion under its own deadline (`ORION_VISUAL_CHAIN_STEP_GENERATE_DEADLINE_SEC`,
@@ -688,22 +691,36 @@ both paths write identical chain rows through the same `visual_chain.py` pieces.
   diffusion call. A generate that started less than 2x the deadline ago blocks another
   (`generate_in_flight`): an abandoned diffusion thread may still be on the card.
   Refusals and failures are retries recorded in `stage_json.deferrals`, never chain
-  rows (a row keyed by the attempt would make the production row a no-op).
+  rows (a row keyed by the attempt would make the production row a no-op). Recording
+  a finished render is retried; if the stage store still refuses, the step is a
+  `stage_store_unavailable` retry carrying the image's `artifact_sha256`, and the next
+  generate in the same process adopts the verified file instead of re-rendering.
 - **caption** reloads the image by sha (missing/corrupt -> `needs_generate`),
   re-observes it (cached, so a retry never recaptions), writes the production chain
   row with `chain_id == attempt_id`, acknowledges it, persists the execution receipt,
   and finishes the attempt `produced`.
-- **abandon** closes the attempt. Result outcome is `unknown`; the row becomes
-  `abandoned`, which does not block later claims. If a generate started inside the
-  in-flight window the row stays `unknown` (the existing no-expiry rule) until that
-  generate records its exit. A generate past its step deadline is not cancelled: it
-  keeps the lock and GPU2 permit until diffusion returns (hard ceiling: the in-flight
-  window, then `generate_wedged`) and records its own exit. If the process died
-  instead, the next durable prepare's claim releases the row once the window passed.
+- **abandon** closes the attempt. It may omit `attempt_id` (prepare's reply was
+  lost): the attempt is resolved by `dispatch_id`, and no row means nothing to close.
+  Result outcome is `unknown`; the row becomes `abandoned`, which does not block later
+  claims. If a generate started inside the in-flight window the row stays `unknown`
+  until that generate records its exit. A generate past its step deadline is not
+  cancelled: it keeps the lock and GPU2 permit until diffusion returns (hard ceiling:
+  the in-flight window, then `generate_wedged`) and records its own exit. If the
+  process died instead, the next claim (durable prepare or legacy run-once) releases
+  the row once the window passed.
+
+Backstop for an attempt nothing ever closed (lost abandon, crash mid-run): every
+claim, durable or legacy, releases an `active`/`unknown` attempt claimed longer ago
+than `ORION_VISUAL_CHAIN_ATTEMPT_MAX_AGE_SEC` (default 7200, above the durable 5400s
+retry window) as `abandoned` with result reason `attempt_expired` -- unless a
+production receipt reconciles it to `produced`, or a generate is recorded inside the
+in-flight window.
 
 Every result carries `elapsed_sec` (generate: permit wait + diffusion + disk write).
 Unexpected errors are retries (`step_exception:<Type>`); a missing stage table or
-column is `stage_store_unavailable`, never a recompute.
+column is `stage_store_unavailable`, never a recompute. A step request that fails
+schema validation is a retry (`invalid_step_request`), so schema skew during a
+rolling deploy never ends an in-flight run.
 
 Before routing runs here: apply `manual_migration_reverie_visual_attempt_stage.sql`
 (after `manual_migration_reverie_visual_attempt.sql`). DB tests:

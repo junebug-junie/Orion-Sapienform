@@ -491,6 +491,9 @@ def _message_channel(raw_msg: dict[str, Any]) -> str:
     return channel.decode() if isinstance(channel, bytes) else str(channel or "")
 
 
+_INVALID_STEP_RETRY_AFTER_SEC = 60.0
+
+
 async def handle_visual_step_request(bus: OrionBusAsync, env: BaseEnvelope, *, reply_to: str) -> None:
     """One `reverie.visual` stage from orion-durable-runs; replies on `reply_to` under the
     request envelope's own correlation id (durable-runs fences replies by it)."""
@@ -500,13 +503,15 @@ async def handle_visual_step_request(bus: OrionBusAsync, env: BaseEnvelope, *, r
     except ValidationError as exc:
         logger.error("reverie visual step request invalid corr=%s err=%s", env.correlation_id, exc)
         try:
-            # A malformed request never becomes valid by retrying it. durable-runs fences
-            # replies by the envelope correlation, so fill what the payload lacks.
+            # A retry, never terminal: during a rolling deploy the sender and this worker
+            # can disagree on the schema, and that skew must not kill in-flight runs.
+            # durable-runs fences replies by the envelope correlation, so fill what the
+            # payload lacks.
             result = ReverieVisualStepResultV1(
                 run_id=str(payload.get("run_id") or "unknown"),
                 correlation_id=str(payload.get("correlation_id") or env.correlation_id),
-                step=payload.get("step"), status="terminal", outcome="failed",
-                reason="invalid_step_request",
+                step=payload.get("step"), status="retry", reason="invalid_step_request",
+                retry_after_sec=_INVALID_STEP_RETRY_AFTER_SEC,
             )
         except (ValidationError, AttributeError):
             logger.error("reverie visual step request unanswerable (no valid step) corr=%s reply_to=%s",

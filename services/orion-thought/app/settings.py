@@ -398,6 +398,16 @@ class ThoughtSettings(BaseSettings):
     visual_chain_step_generate_deadline_sec: float = Field(
         330.0, alias="ORION_VISUAL_CHAIN_STEP_GENERATE_DEADLINE_SEC"
     )
+    # Backstop for an `active`/`unknown` reverie_visual_attempt nothing ever closed
+    # (lost abandon, process death mid-run): every claim -- durable prepare and legacy
+    # run-once alike -- releases one whose claim started longer ago than this
+    # (result reason `attempt_expired`), unless a production receipt reconciles it to
+    # produced. Must stay above the durable run's 5400s retry window plus margin; a
+    # legacy run-once attempt lives minutes. A generate still inside its in-flight
+    # window is never released by this.
+    visual_chain_attempt_max_age_sec: float = Field(
+        7200.0, alias="ORION_VISUAL_CHAIN_ATTEMPT_MAX_AGE_SEC", gt=0
+    )
     # Watchdog for the failure mode visual_chain_run_deadline_sec above cannot
     # catch: the worker's own asyncio task wedged before ever reaching the
     # single-flight lock (confirmed live 2026-09-04, 24+ hours silent, zero

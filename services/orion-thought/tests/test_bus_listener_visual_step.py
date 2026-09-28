@@ -90,7 +90,8 @@ async def test_step_kind_routes_even_without_channel_metadata():
 
 
 @pytest.mark.asyncio
-async def test_invalid_step_request_gets_a_terminal_reply():
+async def test_invalid_step_request_is_a_retry_never_terminal():
+    # Schema skew during a rolling deploy must not kill an in-flight run.
     from app import bus_listener
 
     envelope = _step_envelope({"run_id": "run-1", "correlation_id": "c", "step": "generate",
@@ -100,8 +101,9 @@ async def test_invalid_step_request_gets_a_terminal_reply():
         await bus_listener._handle_bus_message(bus, {"data": b"ignored"})
     reply = bus.publish.await_args.args[1]
     assert reply.correlation_id == envelope.correlation_id
-    assert (reply.payload["status"], reply.payload["outcome"], reply.payload["reason"]) == (
-        "terminal", "failed", "invalid_step_request")
+    parsed = ReverieVisualStepResultV1.model_validate(reply.payload)
+    assert (parsed.status, parsed.outcome, parsed.reason) == ("retry", None, "invalid_step_request")
+    assert parsed.retry_after_sec and parsed.retry_after_sec > 0
 
 
 @pytest.mark.asyncio

@@ -72,8 +72,10 @@ class FakeAttemptStore:
             row["outcome"] = "abandoned"
         return copy.deepcopy(row)
 
-    def claim_visual_attempt(self, request, *, retry_sec, now, abandoned_in_flight_window_sec=None):
+    def claim_visual_attempt(self, request, *, retry_sec, now, abandoned_in_flight_window_sec=None,
+                             attempt_max_age_sec=None):
         assert abandoned_in_flight_window_sec and abandoned_in_flight_window_sec > 0
+        assert attempt_max_age_sec and attempt_max_age_sec > 5400
         if self.claim_replay is not None:
             return None, self.claim_replay
         attempt_id = f"attempt-{len(self.claims) + 1}"
@@ -103,6 +105,7 @@ def env(monkeypatch, tmp_path):
                  "claim_visual_attempt", "finish_visual_attempt", "persist_visual_execution_receipt",
                  "load_visual_retry_after_sec"):
         monkeypatch.setattr(store, name, getattr(fake, name))
+    monkeypatch.setattr(visual_steps, "_unrecorded_renders", {})
     monkeypatch.setattr(visual_chain.settings, "thermal_gate_enabled", False)
     monkeypatch.setattr(visual_chain.settings, "visual_chain_gpu2_capacity_enabled", False)
     monkeypatch.setattr(visual_chain.settings, "visual_chain_enabled", False)
@@ -223,20 +226,72 @@ async def test_prepare_dispatch_request_mismatch_is_terminal(env):
     assert (result.status, result.outcome, result.reason) == ("terminal", "failed", "dispatch_request_mismatch")
 
 
-@pytest.mark.asyncio
-async def test_prepare_refused_while_legacy_worker_enabled(env, monkeypatch):
-    from orion.reverie.baseline import load_baseline_policy
+def _baseline_request(monkeypatch, env, *, observed_at, due_at):
+    from orion.reverie.baseline import VisualBaselinePolicy
     from orion.schemas.reverie_visual import VisualBaselineEligibilityV1
 
-    policy = load_baseline_policy()
-    need = VisualBaselineEligibilityV1(need_id="need-1", observed_at=datetime.now(timezone.utc),
-                                       due_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+    policy = VisualBaselinePolicy(enabled=True)
+    monkeypatch.setattr(env.steps, "load_baseline_policy", lambda: policy)
+    need = VisualBaselineEligibilityV1(need_id="need-1", observed_at=observed_at, due_at=due_at,
                                        policy_id=policy.policy_id)
+    return REQUEST.model_copy(update={"visual_baseline": need})
+
+
+@pytest.mark.asyncio
+async def test_prepare_waits_while_legacy_worker_enabled(env, monkeypatch):
+    request = _baseline_request(monkeypatch, env, observed_at=NOW, due_at=NOW - timedelta(seconds=1))
     monkeypatch.setattr(env.vc.settings, "visual_chain_enabled", True)
-    result = await _run(env, _req("prepare", request=REQUEST.model_copy(update={"visual_baseline": need})))
-    assert (result.status, result.outcome) == ("terminal", "failed")
-    assert result.reason in {"legacy_visual_worker_enabled", "visual_baseline_disabled"}
+    result = await _run(env, _req("prepare", request=request))
+    assert (result.status, result.reason) == ("retry", "legacy_visual_worker_enabled")
+    assert result.retry_after_sec == 300.0
     assert env.store.claims == []
+
+
+@pytest.mark.asyncio
+async def test_prepare_retried_long_after_the_baseline_was_observed_still_claims(env, monkeypatch):
+    # The run waited out retries for hours: the request is still the same request.
+    observed = NOW - timedelta(hours=2)
+    request = _baseline_request(monkeypatch, env, observed_at=observed, due_at=observed - timedelta(seconds=1))
+    result = await _run(env, _req("prepare", request=request))
+    assert result.status == "done", result
+    assert env.store.claims == [result.attempt_id]
+
+
+@pytest.mark.asyncio
+async def test_prepare_structurally_ineligible_baseline_is_terminal(env, monkeypatch):
+    request = _baseline_request(monkeypatch, env, observed_at=NOW, due_at=NOW + timedelta(minutes=5))
+    result = await _run(env, _req("prepare", request=request))
+    assert (result.status, result.outcome, result.reason) == ("terminal", "failed", "visual_baseline_not_due")
+    assert env.store.claims == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_run_once_claim_applies_the_same_release_rules(env, monkeypatch):
+    import json
+
+    from app import main, store
+    from orion.reverie import baseline
+
+    monkeypatch.setattr(baseline, "load_baseline_policy", lambda: baseline.VisualBaselinePolicy(enabled=True))
+    seen = {}
+
+    def claim(request, **kw):
+        seen.update(kw)
+        return None, {"ok": True, "ran": False, "outcome": "deferred_busy", "reason": "attempt_unresolved"}
+
+    monkeypatch.setattr(store, "claim_visual_attempt", claim)
+    body = json.loads((await main.visual_chain_run_once(VisualRunRequestV1())).body)
+    assert body["reason"] == "attempt_unresolved"
+    assert seen["abandoned_in_flight_window_sec"] == env.steps._in_flight_window_sec()
+    assert seen["attempt_max_age_sec"] == env.vc.settings.visual_chain_attempt_max_age_sec
+
+
+def test_attempt_max_age_default_outlasts_the_durable_retry_window():
+    from app.settings import ThoughtSettings
+    from orion.execution_dispatch.visual_settlement import DEFAULT_RETRY_WINDOW_SEC
+
+    default = ThoughtSettings.model_fields["visual_chain_attempt_max_age_sec"].default
+    assert default == 7200.0 and default > DEFAULT_RETRY_WINDOW_SEC
 
 
 @pytest.mark.asyncio
@@ -482,6 +537,68 @@ async def test_generate_does_not_rerender_when_another_generate_finished_first(e
     assert env.store.rows[attempt_id]["stage_json"]["artifact"] == {"sha256": "a" * 64}
 
 
+def _failing_generated_writes(env, monkeypatch, failures):
+    """Make the stage write that records a finished render raise `failures[0]` times."""
+    real = env.store.update_visual_stage
+
+    def flaky(attempt_id, mutate, *, release_abandoned=False):
+        row = env.store.rows.get(attempt_id)
+        probe = mutate(copy.deepcopy(row["stage_json"]), copy.deepcopy(row)) if row else None
+        if probe is not None and probe.get("stage") == "generated" and failures[0] > 0:
+            failures[0] -= 1
+            raise RuntimeError("db blip")
+        return real(attempt_id, mutate, release_abandoned=release_abandoned)
+
+    monkeypatch.setattr(env.steps.store, "update_visual_stage", flaky)
+    monkeypatch.setattr(env.steps, "_STAGE_WRITE_BACKOFF_SEC", 0.0)
+
+
+@pytest.mark.asyncio
+async def test_generate_retries_a_transient_stage_write_instead_of_losing_the_render(env, monkeypatch):
+    attempt_id = await _prepared(env)
+    failures = [env.steps._STAGE_WRITE_ATTEMPTS - 1]
+    _failing_generated_writes(env, monkeypatch, failures)
+    result = await _run(env, _req("generate", attempt_id=attempt_id))
+    assert result.status == "done", result
+    assert failures == [0]
+    assert env.store.rows[attempt_id]["stage_json"]["artifact"]["sha256"] == result.artifact_sha256
+    assert len(env.generate_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_unrecorded_render_is_adopted_by_the_next_generate_not_rerendered(env, monkeypatch):
+    attempt_id = await _prepared(env)
+    failures = [env.steps._STAGE_WRITE_ATTEMPTS]
+    _failing_generated_writes(env, monkeypatch, failures)
+    first = await _run(env, _req("generate", attempt_id=attempt_id))
+    assert (first.status, first.reason) == ("retry", "stage_store_unavailable")
+    assert first.artifact_sha256 and first.attempt_id == attempt_id
+    assert Path(env.steps._unrecorded_renders[attempt_id]["artifact"]["path"]).exists()
+    assert env.store.rows[attempt_id]["stage_json"]["stage"] == "generating"
+
+    # Still inside the in-flight window, yet the verified file is adopted, not re-rendered.
+    again = await _run(env, _req("generate", attempt_id=attempt_id, correlation_id="corr-2"))
+    assert again.status == "done", again
+    assert again.artifact_sha256 == first.artifact_sha256
+    assert len(env.generate_calls) == 1
+    stage = env.store.rows[attempt_id]["stage_json"]
+    assert (stage["stage"], stage["artifact"]["sha256"]) == ("generated", first.artifact_sha256)
+    assert attempt_id not in env.steps._unrecorded_renders
+
+
+@pytest.mark.asyncio
+async def test_unrecorded_render_whose_file_is_gone_is_not_adopted(env, monkeypatch):
+    attempt_id = await _prepared(env)
+    _failing_generated_writes(env, monkeypatch, [env.steps._STAGE_WRITE_ATTEMPTS])
+    first = await _run(env, _req("generate", attempt_id=attempt_id))
+    Path(env.steps._unrecorded_renders[attempt_id]["artifact"]["path"]).unlink()
+    again = await _run(env, _req("generate", attempt_id=attempt_id, correlation_id="corr-2"))
+    # Falls through to the in-flight guard: never reports an image it cannot verify.
+    assert (again.status, again.reason) == ("retry", "generate_in_flight")
+    assert attempt_id not in env.steps._unrecorded_renders
+    assert first.artifact_sha256 and len(env.generate_calls) == 1
+
+
 @pytest.mark.asyncio
 async def test_run_once_judges_a_generate_lock_holder_by_its_own_deadline(env, caplog):
     import logging
@@ -609,7 +726,7 @@ async def test_abandon_closes_the_attempt(env, monkeypatch):
 
     calls = []
 
-    def abandon(attempt_id, *, dispatch_id, reason, now, in_flight_window_sec):
+    def abandon(attempt_id, *, dispatch_id, reason, now, in_flight_window_sec, request_json=None):
         calls.append((attempt_id, dispatch_id, reason))
         row = env.store.rows[attempt_id]
         row["outcome"] = "abandoned"
@@ -625,6 +742,32 @@ async def test_abandon_closes_the_attempt(env, monkeypatch):
     later = await _run(env, _req("generate", attempt_id=attempt_id))
     assert (later.status, later.outcome) == ("terminal", "unknown")
     assert env.generate_calls == []
+
+
+@pytest.mark.asyncio
+async def test_abandon_without_attempt_id_resolves_the_attempt_by_dispatch(env, monkeypatch):
+    from app import store
+
+    calls = []
+
+    def abandon(attempt_id, *, dispatch_id, reason, now, in_flight_window_sec, request_json=None):
+        calls.append((attempt_id, dispatch_id, request_json))
+        [row] = [r for r in env.store.rows.values() if r["dispatch_id"] == dispatch_id] or [None]
+        if row is None:
+            return None
+        row["outcome"] = "abandoned"
+        row["result_json"] = {"outcome": "unknown", "reason": reason}
+        return copy.deepcopy(row)
+
+    monkeypatch.setattr(store, "abandon_visual_attempt", abandon)
+    # prepare's reply was lost: the run never learned the attempt id.
+    missing = await _run(env, _req("abandon"))
+    assert (missing.status, missing.reason, missing.attempt_id) == ("done", "attempt_missing", None)
+    attempt_id = await _prepared(env)
+    result = await _run(env, _req("abandon"))
+    assert (result.status, result.outcome, result.attempt_id) == ("done", "unknown", attempt_id)
+    assert calls[-1] == (None, "dispatch-1", REQUEST.model_dump(mode="json"))
+    assert env.store.rows[attempt_id]["outcome"] == "abandoned"
 
 
 @pytest.mark.asyncio

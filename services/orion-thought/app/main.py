@@ -204,9 +204,14 @@ async def visual_chain_run_once(request: VisualRunRequestV1 | None = Body(defaul
             return JSONResponse({"ok": False, "ran": False, "outcome": "failed",
                                  "reason": reason or "legacy_visual_worker_enabled"})
     if policy.enabled:
+        from .visual_steps import _in_flight_window_sec
         try:
+            # Same release rules as the durable prepare claim, so a rollback to this
+            # path is never blocked by attempts a durable run left behind.
             attempt_id, replay = await asyncio.to_thread(
-                claim_visual_attempt, request, retry_sec=policy.retry_sec, now=datetime.now(timezone.utc)
+                claim_visual_attempt, request, retry_sec=policy.retry_sec, now=datetime.now(timezone.utc),
+                abandoned_in_flight_window_sec=_in_flight_window_sec(),
+                attempt_max_age_sec=settings.visual_chain_attempt_max_age_sec,
             )
         except Exception:
             logger.exception("visual execution claim unavailable")

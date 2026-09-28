@@ -254,13 +254,114 @@ async def test_abandoned_in_flight_attempt_whose_process_died_is_released_after_
     window = 2 * db.steps.visual_step_generate_deadline_sec()
     inside = await _step(db, "prepare", dispatch_id="dispatch-2", at=NOW + timedelta(seconds=window - 5))
     assert (inside.status, inside.reason) == ("retry", "attempt_unresolved")
-    # Legacy claims never apply the rule (and never need stage_json).
-    legacy_id, legacy_replay = db.store.claim_visual_attempt(
-        VisualRunRequestV1(dispatch_id="legacy"), retry_sec=600, now=NOW + timedelta(hours=1))
-    assert legacy_id is None and legacy_replay["reason"] == "attempt_unresolved"
     after = await _step(db, "prepare", dispatch_id="dispatch-2", at=NOW + timedelta(hours=1))
     assert after.status == "done"
     assert _attempt(db.engine, attempt_id)["outcome"] == "abandoned"
+
+
+@pytest.mark.asyncio
+async def test_legacy_claim_is_not_blocked_by_a_dead_durable_leftover(db):
+    # Rollback to run-once: the same release rule applies on the legacy claim.
+    prepared = await _step(db, "prepare")
+
+    def died_mid_generate(stage, _row):
+        stage.update(stage="generating", generating_started_at=NOW.isoformat())
+        return stage
+
+    db.store.update_visual_stage(prepared.attempt_id, died_mid_generate)
+    await _step(db, "abandon", attempt_id=prepared.attempt_id, at=NOW + timedelta(seconds=10))
+    window = 2 * db.steps.visual_step_generate_deadline_sec()
+    legacy_id, legacy_replay = db.store.claim_visual_attempt(
+        VisualRunRequestV1(dispatch_id="legacy"), retry_sec=600, now=NOW + timedelta(hours=1),
+        abandoned_in_flight_window_sec=window, attempt_max_age_sec=7200.0)
+    assert legacy_replay is None and legacy_id
+    assert _attempt(db.engine, prepared.attempt_id)["outcome"] == "abandoned"
+
+
+@pytest.mark.asyncio
+async def test_abandon_without_attempt_id_resolves_by_dispatch(db):
+    nothing = await _step(db, "abandon")
+    assert (nothing.status, nothing.reason) == ("done", "attempt_missing")
+    prepared = await _step(db, "prepare")
+    # prepare's reply was lost: abandon names only the dispatch.
+    abandoned = await _step(db, "abandon", at=NOW + timedelta(seconds=5))
+    assert (abandoned.status, abandoned.outcome, abandoned.attempt_id) == ("done", "unknown", prepared.attempt_id)
+    assert _attempt(db.engine, prepared.attempt_id)["outcome"] == "abandoned"
+    later = await _step(db, "prepare", dispatch_id="dispatch-2", at=NOW + timedelta(hours=1))
+    assert later.status == "done"
+
+
+@pytest.mark.asyncio
+async def test_abandon_by_dispatch_refuses_a_different_request_under_that_dispatch(db):
+    prepared = await _step(db, "prepare")
+    other = ReverieVisualStepRequestV1(
+        run_id=RUN_ID, correlation_id="abandon-corr", step="abandon",
+        visual_request=VisualRunRequestV1(dispatch_id="dispatch-1", proposal_id="another-proposal"))
+    result = await db.steps.run_visual_step(None, other, now_fn=lambda: NOW)
+    assert (result.status, result.reason) == ("terminal", "attempt_mismatch")
+    assert _attempt(db.engine, prepared.attempt_id)["outcome"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_stuck_active_attempt_expires_after_max_age(db):
+    prepared = await _step(db, "prepare")  # abandon never arrives
+    max_age = db.vc.settings.visual_chain_attempt_max_age_sec
+    inside = await _step(db, "prepare", dispatch_id="dispatch-2", at=NOW + timedelta(seconds=max_age - 60))
+    assert (inside.status, inside.reason) == ("retry", "attempt_unresolved")
+    after = await _step(db, "prepare", dispatch_id="dispatch-2", at=NOW + timedelta(seconds=max_age + 1))
+    assert after.status == "done" and after.attempt_id != prepared.attempt_id
+    expired = _attempt(db.engine, prepared.attempt_id)
+    assert expired["outcome"] == "abandoned"
+    assert (expired["result_json"]["outcome"], expired["result_json"]["reason"]) == ("unknown", "attempt_expired")
+    # The expired run itself ends instead of doing more work.
+    late = await _step(db, "generate", attempt_id=prepared.attempt_id, at=NOW + timedelta(seconds=max_age + 2))
+    assert (late.status, late.outcome, late.reason) == ("terminal", "unknown", "attempt_expired")
+
+
+@pytest.mark.asyncio
+async def test_expiry_never_releases_a_generate_still_in_flight(db):
+    prepared = await _step(db, "prepare")
+    max_age = db.vc.settings.visual_chain_attempt_max_age_sec
+    at = NOW + timedelta(seconds=max_age + 1)
+
+    def generating_now(stage, _row):
+        stage.update(stage="generating", generating_started_at=(at - timedelta(seconds=30)).isoformat())
+        return stage
+
+    db.store.update_visual_stage(prepared.attempt_id, generating_now)
+    blocked = await _step(db, "prepare", dispatch_id="dispatch-2", at=at)
+    assert (blocked.status, blocked.reason) == ("retry", "attempt_unresolved")
+    assert _attempt(db.engine, prepared.attempt_id)["outcome"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_expiry_reconciles_a_produced_attempt_instead_of_releasing_it(db):
+    attempt_id, _ = await _produce(db)
+    with db.engine.begin() as conn:  # the finish write was lost after production
+        conn.execute(text("UPDATE reverie_visual_attempt SET outcome='active' WHERE attempt_id=:id"),
+                     {"id": attempt_id})
+    later = await _step(db, "prepare", dispatch_id="dispatch-2", at=NOW + timedelta(days=1))
+    assert later.status == "done"
+    produced = _attempt(db.engine, attempt_id)
+    assert produced["outcome"] == "produced"
+    assert produced["result_json"]["reason"] == "production_reconciled"
+
+
+def test_legacy_claim_expiry_without_the_stage_column(monkeypatch):
+    store, engine = _schema_engine(monkeypatch, _MIGRATIONS[:2])
+    first, _ = store.claim_visual_attempt(VisualRunRequestV1(dispatch_id="legacy-1"), retry_sec=600, now=NOW,
+                                          abandoned_in_flight_window_sec=660.0, attempt_max_age_sec=7200.0)
+    assert first
+    blocked = store.claim_visual_attempt(VisualRunRequestV1(dispatch_id="legacy-2"), retry_sec=600,
+                                         now=NOW + timedelta(hours=1), abandoned_in_flight_window_sec=660.0,
+                                         attempt_max_age_sec=7200.0)
+    assert blocked[1]["reason"] == "attempt_unresolved"
+    second, replay = store.claim_visual_attempt(VisualRunRequestV1(dispatch_id="legacy-2"), retry_sec=600,
+                                                now=NOW + timedelta(days=2), abandoned_in_flight_window_sec=660.0,
+                                                attempt_max_age_sec=7200.0)
+    assert replay is None and second
+    assert store.replay_visual_attempt(VisualRunRequestV1(dispatch_id="legacy-1"))["reason"] == "attempt_expired"
+    engine.dispose()
 
 
 @pytest.mark.asyncio

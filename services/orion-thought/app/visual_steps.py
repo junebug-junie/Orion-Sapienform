@@ -58,7 +58,12 @@ _DEFERRAL_HISTORY = 20
 _THERMAL_RETRY_AFTER_SEC = 300.0
 # The single-flight lock is held by a run-once call or another generate (~1-2 min).
 _BUSY_RETRY_AFTER_SEC = 30.0
+# The legacy visual worker is switched off by an operator, not by a retry.
+_LEGACY_WORKER_RETRY_AFTER_SEC = 300.0
 _REASON_DETAIL_CHARS = 200
+# Recording a finished render: a transient DB error must not cost the image.
+_STAGE_WRITE_ATTEMPTS = 3
+_STAGE_WRITE_BACKOFF_SEC = 0.5
 
 
 def _now() -> datetime:
@@ -201,17 +206,25 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
     request = req.visual_request
     row = await asyncio.to_thread(store.load_visual_attempt_for_dispatch, request)
     if row is None:
-        # Same authority checks as /visual-chain/run-once, before a NEW claim only:
-        # replaying an existing claim never needs fresh authorization.
+        # Before a NEW claim only; replaying an existing claim needs no authorization.
+        # Structural eligibility only: validated at the baseline's own observed_at, so
+        # a run that waited out retries is never ended as stale. Freshness is enforced
+        # by the claim instead -- `already_satisfied` when another success landed.
         policy = load_baseline_policy()
-        if request.visual_baseline:
-            reason = validate_eligibility(request.visual_baseline, policy=policy)
-            if reason or settings.visual_chain_enabled:
-                return step.terminal("failed", reason or "legacy_visual_worker_enabled")
+        baseline = request.visual_baseline
+        if baseline:
+            if settings.visual_chain_enabled:
+                # Operator state, not a property of the request: wait it out.
+                return step.retry("legacy_visual_worker_enabled",
+                                  retry_after_sec=_LEGACY_WORKER_RETRY_AFTER_SEC)
+            reason = validate_eligibility(baseline, policy=policy, now=baseline.observed_at)
+            if reason:
+                return step.terminal("failed", reason)
         now = now_fn()
         attempt_id, replay = await asyncio.to_thread(
             store.claim_visual_attempt, request, retry_sec=policy.retry_sec, now=now,
             abandoned_in_flight_window_sec=_in_flight_window_sec(),
+            attempt_max_age_sec=settings.visual_chain_attempt_max_age_sec,
         )
         if replay is not None:
             # A concurrent prepare for this same dispatch may have claimed first.
@@ -333,24 +346,82 @@ async def _generate_work(attempt_id: str, plan: vc.VisualPlan, observed: dict,
                                    stage_name="prepared", release_abandoned=True)
             return "retry", reason, work_elapsed
 
-    generated_at = now_fn()
-
-    def mark_generated(current: dict, _row: dict) -> dict:
-        current["stage"] = "generated"
-        current["artifact"] = {
-            "sha256": stored.sha256, "path": stored.path, "mime": stored.mime,
-            "bytes": stored.bytes, "width": stored.width, "height": stored.height,
-            "generated_at": generated_at.isoformat(), "thermal_gate": thermal_gate,
-            "elapsed_sec": round(work_elapsed, 3),
-        }
-        current.pop("caption", None)
-        return current
-
-    await asyncio.to_thread(store.update_visual_stage, attempt_id, mark_generated,
-                            release_abandoned=True)
+    record = {
+        "sha256": stored.sha256, "path": stored.path, "mime": stored.mime,
+        "bytes": stored.bytes, "width": stored.width, "height": stored.height,
+        "generated_at": now_fn().isoformat(), "thermal_gate": thermal_gate,
+        "elapsed_sec": round(work_elapsed, 3),
+    }
+    if not await _record_generated(attempt_id, record):
+        _unrecorded_renders[attempt_id] = {"started_at": started_at.isoformat(), "artifact": record}
+        return "unrecorded", stored, work_elapsed
+    _unrecorded_renders.pop(attempt_id, None)
     logger.info("visual step generated attempt=%s sha=%s elapsed=%.1fs",
                 attempt_id, stored.sha256[:12], work_elapsed)
     return "generated", stored, work_elapsed
+
+
+# Renders on disk whose stage_json write failed even after bounded retries, keyed by
+# attempt_id: {"started_at", "artifact"}. The next generate for that attempt, still
+# `generating` from the same start, adopts the verified file instead of re-rendering.
+# In-process only: the step request carries no prior results and the stage row is the
+# very thing that could not be written. After a restart the attempt waits out the
+# in-flight window and re-renders; the orphan file stays content-addressed on disk.
+_unrecorded_renders: dict[str, dict] = {}
+
+
+def _mark_generated(record: dict, *, expect_started_at: str | None = None):
+    def mutate(current: dict, row: dict) -> dict | None:
+        if expect_started_at is not None and (
+                row["outcome"] not in _OPEN_OUTCOMES or current.get("stage") != "generating"
+                or current.get("generating_started_at") != expect_started_at):
+            return None
+        current["stage"] = "generated"
+        current["artifact"] = dict(record)
+        current.pop("caption", None)
+        return current
+
+    return mutate
+
+
+async def _record_generated(attempt_id: str, record: dict) -> bool:
+    for attempt in range(_STAGE_WRITE_ATTEMPTS):
+        try:
+            await asyncio.to_thread(store.update_visual_stage, attempt_id, _mark_generated(record),
+                                    release_abandoned=True)
+            return True
+        except Exception as exc:
+            logger.warning("visual step: recording image failed attempt=%s sha=%s try=%d/%d err=%s",
+                           attempt_id, record["sha256"][:12], attempt + 1, _STAGE_WRITE_ATTEMPTS, exc)
+            if attempt + 1 < _STAGE_WRITE_ATTEMPTS:
+                await asyncio.sleep(_STAGE_WRITE_BACKOFF_SEC * (attempt + 1))
+    logger.error("visual step: image %s on disk but unrecorded attempt=%s",
+                 record["sha256"][:12], attempt_id)
+    return False
+
+
+async def _adopt_unrecorded(attempt_id: str, stage: dict) -> str | None:
+    """sha of the unrecorded render now recorded for this attempt, or None."""
+    pending = _unrecorded_renders.get(attempt_id)
+    if pending is None:
+        return None
+    if (stage.get("stage") != "generating" or stage.get("generating_started_at") != pending["started_at"]
+            or await asyncio.to_thread(_recorded_artifact, pending["artifact"]) is None):
+        _unrecorded_renders.pop(attempt_id, None)
+        return None
+    row = await asyncio.to_thread(
+        store.update_visual_stage, attempt_id,
+        _mark_generated(pending["artifact"], expect_started_at=pending["started_at"]),
+        release_abandoned=True,
+    )
+    _unrecorded_renders.pop(attempt_id, None)
+    artifact = (row or {}).get("stage_json", {}).get("artifact") or {}
+    if (row or {}).get("stage_json", {}).get("stage") != "generated" \
+            or artifact.get("sha256") != pending["artifact"]["sha256"]:
+        return None
+    logger.info("visual step adopted unrecorded image attempt=%s sha=%s",
+                attempt_id, artifact["sha256"][:12])
+    return artifact["sha256"]
 
 
 async def generate_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _now):
@@ -380,6 +451,10 @@ async def generate_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _
             return step.result("done", artifact_sha256=recorded[0].sha256,
                                elapsed_sec=float(stage["artifact"].get("elapsed_sec") or 0.0))
         logger.warning("visual step: recorded image missing attempt=%s; regenerating", attempt_id)
+
+    adopted = await _adopt_unrecorded(attempt_id, stage)
+    if adopted is not None:
+        return step.result("done", artifact_sha256=adopted)
 
     window = _in_flight_window_sec()
     if stage.get("stage") == "generating" and stage.get("generating_started_at"):
@@ -411,6 +486,10 @@ async def generate_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _
     kind, value, work_elapsed = task.result()
     if kind == "generated":
         return step.result("done", artifact_sha256=value.sha256, elapsed_sec=work_elapsed)
+    if kind == "unrecorded":
+        # The image is on disk; the next generate adopts it (see _unrecorded_renders).
+        return step.retry("stage_store_unavailable", artifact_sha256=value.sha256,
+                          elapsed_sec=work_elapsed)
     retry_after = _BUSY_RETRY_AFTER_SEC if value == "deferred_busy" else None
     return step.retry(value, retry_after_sec=retry_after, elapsed_sec=work_elapsed)
 
@@ -525,26 +604,31 @@ async def caption_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _n
 
 
 async def abandon_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _now):
-    """Close the attempt so it stops blocking later claims. Idempotent."""
+    """Close the attempt so it stops blocking later claims. Idempotent.
+
+    Without attempt_id (prepare's reply was lost) the attempt is the one claimed for
+    this dispatch; no such row means prepare never claimed, so nothing to close."""
     step = _Step(req)
     row = await asyncio.to_thread(
         store.abandon_visual_attempt, req.attempt_id,
         dispatch_id=req.visual_request.dispatch_id, reason="run_abandoned",
         now=now_fn(), in_flight_window_sec=_in_flight_window_sec(),
+        request_json=req.visual_request.model_dump(mode="json"),
     )
     if row is None:
         return step.result("done", reason="attempt_missing")
     if row.get("dispatch_mismatch"):
         return step.terminal("failed", "attempt_mismatch")
+    attempt_id = row["attempt_id"]
     if row["outcome"] == "produced":
         result = row.get("result_json") or {}
         return step.result("done", outcome="produced", reason="attempt_already_produced",
-                           chain_id=result.get("chain_id") or row["attempt_id"])
+                           attempt_id=attempt_id, chain_id=result.get("chain_id") or attempt_id)
     if row["outcome"] == "unknown":
         # A generate may still be on the card: held until it records its own exit.
-        return step.result("done", outcome="unknown", reason="generate_in_flight")
-    return step.result("done", outcome="unknown", reason=(row.get("result_json") or {}).get("reason")
-                       or "run_abandoned")
+        return step.result("done", outcome="unknown", reason="generate_in_flight", attempt_id=attempt_id)
+    return step.result("done", outcome="unknown", attempt_id=attempt_id,
+                       reason=(row.get("result_json") or {}).get("reason") or "run_abandoned")
 
 
 async def run_visual_step(bus, req: ReverieVisualStepRequestV1, *,

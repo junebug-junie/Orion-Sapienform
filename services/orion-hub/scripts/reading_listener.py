@@ -6,6 +6,8 @@ import logging
 import re
 from contextlib import suppress
 
+import httpx
+
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.introspect import DEFAULT_LIMIT
 from orion.schemas.reading import (
@@ -17,11 +19,20 @@ from orion.schemas.reading import (
 from orion.world_pulse_read.events import TOOL_CHANNEL, TOOL_RESULT_PREFIX
 from orion.world_pulse_read.introspect import reading_results
 from orion.world_pulse_read.queue import enqueue_reading, reading_status
+from orion.world_pulse_read.search import (
+    HTTP_TIMEOUT_SEC,
+    ReadingSearchConfig,
+    SearchUnavailableError,
+    index_missing_readings,
+    search_readings,
+    verified_rows,
+)
 from orion.world_pulse_read.urls import normalize_source_url
 
 logger = logging.getLogger(__name__)
 
 _SAFE_ERROR = "reading_queue_unavailable; acceptance unknown, retry the same request"
+_SEARCH_UNAVAILABLE = "reading_search_unavailable; answer unknown"
 _SCHEMA_SQLSTATES = {"42P01", "42703"}
 _CONNECTION_SQLSTATE_PREFIX = "08"
 
@@ -39,6 +50,8 @@ def _failure_category(exc: Exception, *, phase: str) -> str:
         return "connection_failure"
     if phase == "enqueue":
         return "enqueue_failure"
+    if phase == "reading_search":
+        return "reading_search_failure"
     if phase == "reading_result":
         return "reading_result_failure"
     return "status_failure"
@@ -62,10 +75,12 @@ def _safe_exception_detail(exc: Exception) -> str:
 
 
 class ReadingListener:
-    def __init__(self, pool_provider, source_ref):
+    def __init__(self, pool_provider, source_ref, search: ReadingSearchConfig | None = None):
         self.pool_provider = pool_provider
         self.source_ref = source_ref
+        self.search = search
         self.task = None
+        self.index_task = None
         self.bus = None
 
     async def handle(self, envelope):
@@ -119,20 +134,33 @@ class ReadingListener:
                         if result.get("lookup_url") != normalize_source_url(command.url):
                             raise RuntimeError("status returned a mismatched URL")
                 else:
-                    phase = "reading_result"
-                    introspection = await reading_results(
-                        conn,
-                        request_id=command.request_id,
-                        url=command.url,
-                        limit=command.limit or DEFAULT_LIMIT,
-                        since=command.since,
-                    )
+                    if command.query is not None:
+                        phase = "reading_search"
+                        mode = "query"
+                        if self.search is None or not self.search.enabled:
+                            raise SearchUnavailableError("semantic reading search is not configured")
+                        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC) as client:
+                            introspection = await search_readings(
+                                conn, self.search, client=client, query=command.query,
+                                limit=command.limit or DEFAULT_LIMIT, since=command.since,
+                            )
+                    else:
+                        phase = "reading_result"
+                        mode = "lookup" if (command.request_id or command.url) else "recent"
+                        introspection = await reading_results(
+                            conn,
+                            request_id=command.request_id,
+                            url=command.url,
+                            limit=command.limit or DEFAULT_LIMIT,
+                            since=command.since,
+                        )
                     result = introspection.model_dump(mode="json")
                     logger.info(
-                        "introspect op=reading_result corr=%s items=%d total=%s",
+                        "introspect op=reading_result corr=%s items=%d total=%s mode=%s",
                         envelope.correlation_id,
                         len(introspection.items),
                         introspection.total_available,
+                        mode,
                     )
             response = ReadingToolResultV1(ok=True, result=result)
         except Exception as exc:
@@ -147,7 +175,8 @@ class ReadingListener:
                 _safe_exception_detail(exc),
             )
             # Do not leak DSNs, SQL or arbitrary exception text into model context.
-            response = ReadingToolResultV1(ok=False, error=_SAFE_ERROR)
+            error = _SEARCH_UNAVAILABLE if isinstance(exc, SearchUnavailableError) else _SAFE_ERROR
+            response = ReadingToolResultV1(ok=False, error=error)
         await self._publish_response(reply, envelope, response)
 
     async def _publish_response(self, reply, envelope, response):
@@ -159,13 +188,44 @@ class ReadingListener:
     async def start(self, bus):
         self.bus = bus
         self.task = asyncio.create_task(self._run(), name="hub-reading-tools")
+        if self.search is not None and self.search.enabled:
+            self.index_task = asyncio.create_task(self._index_loop(), name="hub-reading-search-index")
 
     async def stop(self):
-        if self.task:
-            self.task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self.task
-            self.task = None
+        for attr in ("task", "index_task"):
+            task = getattr(self, attr)
+            if task:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+                setattr(self, attr, None)
+
+    async def index_once(self):
+        pool = self.pool_provider()
+        if pool is None:
+            return None
+        # Release the connection before embedding; a pass can take seconds.
+        async with pool.acquire() as conn:
+            rows = await verified_rows(conn)
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC) as client:
+            result = await index_missing_readings(
+                rows, self.search, client=client, bus=self.bus, source=self.source_ref,
+            )
+        logger.info("reading_search_index indexed=%d pending=%d", result.indexed, result.pending)
+        return result
+
+    async def _index_loop(self):
+        while True:
+            try:
+                await self.index_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "reading_search_index_failed exc_type=%s detail=%s",
+                    type(exc).__name__, _safe_exception_detail(exc),
+                )
+            await asyncio.sleep(self.search.index_interval_sec)
 
     async def _run(self):
         while True:

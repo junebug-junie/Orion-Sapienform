@@ -748,6 +748,22 @@ class Settings(BaseSettings):
     HUB_READING_DURABLE_URL: str = Field(
         default="http://127.0.0.1:8124", alias="HUB_READING_DURABLE_URL"
     )
+    # Semantic search over verified readings (reading_results query=...). Empty
+    # CHROMA or EMBED URL = search off; query calls then answer "unknown".
+    HUB_READING_SEARCH_CHROMA_URL: str = Field(default="", alias="HUB_READING_SEARCH_CHROMA_URL")
+    HUB_READING_SEARCH_EMBED_URL: str = Field(default="", alias="HUB_READING_SEARCH_EMBED_URL")
+    HUB_READING_SEARCH_COLLECTION: str = Field(
+        default="orion_reading_results", alias="HUB_READING_SEARCH_COLLECTION"
+    )
+    HUB_READING_SEARCH_MIN_SIMILARITY: float = Field(
+        default=0.60, ge=0.0, le=1.0, alias="HUB_READING_SEARCH_MIN_SIMILARITY"
+    )
+    HUB_READING_SEARCH_INDEX_INTERVAL_SEC: float = Field(
+        default=300.0, gt=0, alias="HUB_READING_SEARCH_INDEX_INTERVAL_SEC"
+    )
+    HUB_READING_SEARCH_INDEX_BATCH: int = Field(
+        default=10, ge=1, le=50, alias="HUB_READING_SEARCH_INDEX_BATCH"
+    )
     # Sibling of curiosity: same tick / Wallet / unified-turn lifecycle, a
     # different Redis prefix (Wallet A). Default True once the seed-queue
     # migration is applied (operator can still set false to pause).

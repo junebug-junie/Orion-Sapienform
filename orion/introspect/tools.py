@@ -53,6 +53,7 @@ class IntrospectTools:
             operation="reading_result",
             request_id=args.request_id,
             url=normalize_source_url(args.url) if args.url is not None else None,
+            query=args.query,
             limit=args.limit,
             since=args.since,
         )

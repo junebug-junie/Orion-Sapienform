@@ -358,3 +358,99 @@ def test_reading_result_failure_is_unknown_and_sanitized(monkeypatch, caplog):
         asyncio.run(_introspect_tools(bus).invoke("reading_results", {}))
     assert "hunter2" not in caplog.text
     assert "category=reading_result_failure phase=reading_result" in caplog.text
+
+
+def _search_cfg(**overrides):
+    from orion.world_pulse_read.search import ReadingSearchConfig
+
+    base = dict(chroma_url="http://chroma.test", embed_url="http://embed.test/embedding",
+                collection="orion_reading_results", min_similarity=0.6)
+    base.update(overrides)
+    return ReadingSearchConfig(**base)
+
+
+def test_query_routes_to_semantic_search(monkeypatch, caplog):
+    import logging
+    from datetime import datetime, timezone
+
+    from orion.schemas.introspect import IntrospectResultV1
+
+    seen = {}
+
+    async def fake_search(conn, cfg, **kwargs):
+        seen.update(kwargs)
+        return IntrospectResultV1(ok=True, operation="reading_result",
+                                  as_of=datetime.now(timezone.utc), total_available=0)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("query mode must not use exact lookup")
+
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "search_readings", fake_search)
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "reading_results", forbidden)
+    bus = RpcBus(_FakeConn())
+    bus.listener.search = _search_cfg()
+    with caplog.at_level(logging.INFO):
+        out = asyncio.run(_introspect_tools(bus).invoke("reading_results", {"query": "graphics cards", "limit": 2}))
+    assert out["ok"] is True and out["items"] == []
+    assert seen["query"] == "graphics cards" and seen["limit"] == 2
+    assert "introspect op=reading_result" in caplog.text and "mode=query" in caplog.text
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_query_without_working_search_is_unknown(monkeypatch, configured):
+    from orion.introspect.tools import IntrospectUnknownError
+    from orion.world_pulse_read.search import SearchUnavailableError
+
+    async def down(conn, cfg, **kwargs):
+        raise SearchUnavailableError("reading index not built yet")
+
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "search_readings", down)
+    bus = RpcBus(_FakeConn())
+    bus.listener.search = _search_cfg() if configured else _search_cfg(chroma_url="")
+    with pytest.raises(IntrospectUnknownError, match="answer unknown"):
+        asyncio.run(_introspect_tools(bus).invoke("reading_results", {"query": "gpus"}))
+
+
+def test_index_once_uses_released_rows_and_logs(monkeypatch, caplog):
+    import logging
+
+    from orion.world_pulse_read.search import IndexPass
+
+    calls = {}
+
+    async def fake_rows(conn, *args, **kwargs):
+        return ["row"]
+
+    async def fake_index(rows, cfg, **kwargs):
+        calls["rows"] = rows
+        calls["source"] = kwargs["source"]
+        return IndexPass(indexed=1, pending=2)
+
+    monkeypatch.setitem(ReadingListener.index_once.__globals__, "verified_rows", fake_rows)
+    monkeypatch.setitem(ReadingListener.index_once.__globals__, "index_missing_readings", fake_index)
+    bus = RpcBus(_FakeConn())
+    bus.listener.search = _search_cfg()
+    with caplog.at_level(logging.INFO):
+        result = asyncio.run(bus.listener.index_once())
+    assert result == IndexPass(indexed=1, pending=2)
+    assert calls["rows"] == ["row"] and calls["source"].name == "orion-hub"
+    assert "reading_search_index indexed=1 pending=2" in caplog.text
+
+
+def test_index_loop_starts_only_when_search_enabled():
+    async def run(search):
+        listener = ReadingListener(lambda: None, ServiceRef(name="orion-hub"), search=search)
+
+        class Bus:
+            async def publish(self, *a):
+                pass
+
+        listener._run = lambda: asyncio.sleep(3600)
+        await listener.start(Bus())
+        started = listener.index_task is not None
+        await listener.stop()
+        return started
+
+    assert asyncio.run(run(_search_cfg())) is True
+    assert asyncio.run(run(_search_cfg(chroma_url=""))) is False
+    assert asyncio.run(run(None)) is False

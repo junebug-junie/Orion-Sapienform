@@ -49,10 +49,10 @@ from datetime import datetime, timedelta
 from typing import Iterable, Union
 
 from orion.gpu_pool.config import PoolConfig
+from orion.schemas.gpu_pool import URGENT_PREEMPT as PREEMPT
 
 ACTIVE = ("granted", "recalling")
 URGENT = "urgent"
-PREEMPT = "urgent_preempt"
 PREEMPTIBLE = ("background", "system")
 
 

@@ -410,6 +410,69 @@ def test_a_preempt_seen_by_the_heartbeat_stops_the_turn_and_cancels_it_in_hub():
     asyncio.run(scenario())
 
 
+def test_the_pool_and_durable_runs_share_one_preempt_reason():
+    from orion.schemas.gpu_pool import URGENT_PREEMPT as SCHEMA_PREEMPT
+    assert URGENT_PREEMPT is SCHEMA_PREEMPT
+
+
+def test_after_an_urgent_recall_the_heartbeat_polls_fast_so_the_requeue_frees_the_slot_within_a_second(
+        monkeypatch):
+    """The paused run's in-flight call keeps the slot the urgent run is waiting for until the
+    harness is cancelled: past the grace the next beat must come within PREEMPT_POLL_SEC, not a
+    whole heartbeat interval later."""
+    import app.admission_runtime as runtime_module
+    monkeypatch.setattr(runtime_module, "PREEMPT_POLL_SEC", 0.01)
+
+    async def scenario():
+        holds = Holds([_reply("granted"), _reply("recall", reason=URGENT_PREEMPT),
+                       _reply("queued", reason=URGENT_PREEMPT)])
+        rt = bare_runtime(holds)
+        rt.settings.lease_heartbeat_sec = 0.5
+        cancelled = []
+
+        async def node(state):
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        with pytest.raises(HoldPreempted):
+            await asyncio.wait_for(rt.execute(_held_state("curiosity.investigate"), node), 5)
+        elapsed = loop.time() - started
+        assert cancelled == [True]
+        assert elapsed < 0.5 + 0.3, elapsed          # one heartbeat, then a fast poll -- not two heartbeats
+    asyncio.run(scenario())
+
+
+def test_an_other_recall_keeps_the_normal_heartbeat(monkeypatch):
+    import app.admission_runtime as runtime_module
+    monkeypatch.setattr(runtime_module, "PREEMPT_POLL_SEC", 0.001)
+
+    async def scenario():
+        holds = Holds([_reply("granted"), _reply("recall", reason="owner_waiting")])
+        rt = bare_runtime(holds)
+        rt.settings.lease_heartbeat_sec = 0.05
+        beats = []
+        real_beat = rt._beat
+
+        async def counted(lease):
+            beats.append(1)
+            return await real_beat(lease)
+
+        rt._beat = counted
+
+        async def node(state):
+            await asyncio.sleep(0.3)
+            return "done"
+
+        assert await asyncio.wait_for(rt.execute(_held_state("curiosity.investigate"), node), 5) == "done"
+        assert len(beats) <= 1 + 0.3 / 0.05 + 1, len(beats)
+    asyncio.run(scenario())
+
+
 def test_release_keeps_a_preempted_hold_and_records_the_preemption_not_an_expiry():
     async def scenario():
         holds = Holds(status=_reply("queued", reason=URGENT_PREEMPT))

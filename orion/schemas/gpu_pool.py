@@ -38,6 +38,9 @@ LLM_WORKER_ANNOUNCE_KIND = "llm.worker.announce.v1"
 
 Priority = Literal["urgent", "interactive", "system", "background"]
 LeaseKind = Literal["request", "hold"]
+# Recall/abort/queued reason for a hold paused for urgent work: aborted after
+# urgent_preempt_grace_sec and re-queued in place (orion/gpu_pool/scheduler.py U1/U2).
+URGENT_PREEMPT = "urgent_preempt"
 LeaseStatus = Literal[
     "queued", "backlogged", "granted", "recalling", "retry_wait",
     "released", "unavailable", "aborted", "expired", "dead_letter",

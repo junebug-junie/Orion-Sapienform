@@ -27,6 +27,7 @@ from orion.gpu_pool.client import (
 )
 from orion.gpu_pool.config import PoolConfig, load_pool_config
 from orion.schemas.gpu_pool import GpuLeaseRefV1, GpuLeaseReplyV1
+from orion.schemas.gpu_pool import URGENT_PREEMPT as URGENT_PREEMPT  # re-exported for the graphs
 
 # What a checkpointed ``state["lease"]`` holds once the pool granted the run: the GpuLeaseRefV1
 # fields. A pre-cutover checkpoint may still carry a legacy ResourceLeaseV1 dict (lane,
@@ -37,9 +38,8 @@ HOLD_REF_KEYS = ("lease_id", "generation", "role", "holder")
 HELD = frozenset({"granted", "recall"})
 # Still in line (or re-queued after a lost heartbeat): the same lease_id will be granted later.
 WAITING = frozenset({"queued", "backlogged"})
-# The reason on a queued reply for a hold the pool paused for an urgent run: it went back in line in
-# its original place (orion/gpu_pool/scheduler.py U1/U2). The node replays; not a failed attempt.
-URGENT_PREEMPT = "urgent_preempt"
+# URGENT_PREEMPT (imported above): the reason on a queued reply for a hold the pool paused for an
+# urgent run. It went back in line in its original place; the node replays, not a failed attempt.
 
 
 # --- Which pool refusals end a run, and which only mean "the pool cannot answer right now" ------

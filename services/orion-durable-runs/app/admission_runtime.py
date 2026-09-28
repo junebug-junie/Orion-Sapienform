@@ -407,15 +407,22 @@ class AdmissionRuntime:
         try:
             # Timeout starts only after the hold is confirmed. Each heartbeat re-reads the operator
             # control row and asks the pool whether the hold is still ours at this generation.
+            # Paused for urgent work: this run's in-flight call keeps the slot the urgent run waits for
+            # until the harness is cancelled, so beat every PREEMPT_POLL_SEC to see the re-queue soon.
+            wait = self.settings.lease_heartbeat_sec
             async with asyncio.timeout(timeout):
                 while True:
-                    done, _ = await asyncio.wait({work}, timeout=self.settings.lease_heartbeat_sec)
+                    done, _ = await asyncio.wait({work}, timeout=wait)
                     if done:
                         break
                     row = await self.store.get_run(state["run_id"])
                     if row.get("control"):
                         raise RuntimeError(f"run_control:{row['control']}")
-                    await self._beat(lease)
+                    beat = await self._beat(lease)
+                    if beat is not None:
+                        wait = min(PREEMPT_POLL_SEC, self.settings.lease_heartbeat_sec) \
+                            if beat.status == "recall" and beat.reason == URGENT_PREEMPT \
+                            else self.settings.lease_heartbeat_sec
         except TimeoutError as exc:
             if deadline and self.now() >= datetime.fromisoformat(deadline):
                 raise WorkflowDeadline("workflow_deadline") from exc

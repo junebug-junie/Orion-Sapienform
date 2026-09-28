@@ -43,6 +43,12 @@ def test_defaults_are_what_the_plan_says():
     assert LeaseView("x", "agent", "system", "queued", T0).reason is None
 
 
+def test_one_preempt_reason_constant():
+    from orion.gpu_pool import lease_graph, scheduler
+    from orion.schemas.gpu_pool import URGENT_PREEMPT
+    assert scheduler.PREEMPT is URGENT_PREEMPT and lease_graph.URGENT_PREEMPT is URGENT_PREEMPT
+
+
 # --- U1: pause one background (then system) hold per waiting urgent lease -------------------
 def test_urgent_behind_a_background_hold_pauses_it_with_the_short_grace():
     v = hold("granted", "agent", lease_id="v", granted_at=T0 - timedelta(seconds=30))

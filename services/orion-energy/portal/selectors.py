@@ -12,6 +12,14 @@ BILLING_PATH = "/secure/my-account/billing-payment-history"
 LOGIN_URL_MARKERS = ("b2clogin.com", "b2c_1a_pac_signin", "/signin", "/login")
 LOGGED_IN_MARKER = "text=Sign Out"
 
+# Verified 2026-09-28 against the live /idm/login page: the sign-in form is an Azure B2C
+# page embedded in this iframe.
+LOGIN_FRAME = "iframe#loginframe"
+LOGIN_USERNAME = "#signInName"
+LOGIN_PASSWORD = "#password"
+LOGIN_SUBMIT = "button#next"
+LOGIN_WAIT_SEC = 60.0
+
 GREEN_BUTTON_OPEN = "text=Green Button"
 GREEN_BUTTON_FROM = "input[name='startDate']"
 GREEN_BUTTON_TO = "input[name='endDate']"

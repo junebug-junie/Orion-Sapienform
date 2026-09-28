@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.bills import parse_bill
+from portal.credentials import PortalCredentials
 from portal.fetch import PortalOutcome, run_once
 from portal.status import read_status, write_status
 
@@ -17,16 +18,30 @@ ROW = {"billing_period": "Aug 12, 2026 - Sep 11, 2026", "kwh": "712 kWh", "curre
 FORECAST = {"billing_period": "Sep 11, 2026 - Oct 12, 2026", "projected_total": "$96.00"}
 
 
+LOGIN_URL = "https://csapps.rockymountainpower.net/idm/login"
+CREDS = PortalCredentials(username="me@example.com", password="hunter2")
+
+
 class FakeDriver:
-    def __init__(self, *, url=USAGE_URL, xml=b"", rows=None, forecast=None, raise_on=None, html=None):
+    def __init__(
+        self, *, url=USAGE_URL, xml=b"", rows=None, forecast=None, raise_on=None, html=None, after_login=USAGE_URL,
+    ):
         self.url, self.xml, self.rows, self.forecast, self.raise_on = url, xml, rows, forecast, raise_on
         self.html = html or "<html>snapshot</html>"
+        self.after_login = after_login
         self.days = None
         self.now = None
+        self.logins: list[tuple[str, str]] = []
+        self.billing_calls = 0
 
     async def open_usage(self):
         if self.raise_on == "open":
             raise RuntimeError("boom")
+        return self.url
+
+    async def login(self, *, username, password):
+        self.logins.append((username, password))
+        self.url = self.after_login
         return self.url
 
     async def download_green_button(self, *, days, now):
@@ -34,6 +49,7 @@ class FakeDriver:
         return self.xml
 
     async def billing_rows(self):
+        self.billing_calls += 1
         if self.raise_on == "billing":
             raise TimeoutError("selector")
         return list(self.rows or [])
@@ -45,7 +61,9 @@ class FakeDriver:
         return self.html
 
 
-def _run(tmp_path, driver, *, now=NOW, raw_dir=None, bill_dir=None) -> PortalOutcome:
+def _run(
+    tmp_path, driver, *, now=NOW, raw_dir=None, bill_dir=None, credentials=None, scrape_bills=True,
+) -> PortalOutcome:
     return asyncio.run(
         run_once(
             driver,
@@ -55,6 +73,8 @@ def _run(tmp_path, driver, *, now=NOW, raw_dir=None, bill_dir=None) -> PortalOut
             seen_path=tmp_path / "portal" / "bills_seen.json",
             backfill_days=3,
             now=now,
+            credentials=credentials,
+            scrape_bills=scrape_bills,
         )
     )
 
@@ -63,6 +83,36 @@ def test_login_redirect_is_reauth_and_writes_nothing(tmp_path) -> None:
     out = _run(tmp_path, FakeDriver(url="https://pacificorpb2c.b2clogin.com/B2C_1A_PAC_SIGNIN"))
     assert (out.state, out.reason) == ("reauth_required", "session_expired")
     assert not (tmp_path / "inbox").exists() and not (tmp_path / "bills").exists()
+
+
+def test_login_redirect_with_credentials_logs_in_once_then_fetches(tmp_path) -> None:
+    driver = FakeDriver(url=LOGIN_URL, xml=FIXTURE.read_bytes())
+    out = _run(tmp_path, driver, credentials=CREDS, scrape_bills=False)
+    assert driver.logins == [("me@example.com", "hunter2")]
+    assert (out.state, out.reason) == ("ok", "fetched_usage_only")
+    assert out.xml_file is not None and out.xml_file.read_bytes() == FIXTURE.read_bytes()
+
+
+def test_rejected_login_is_reauth_after_exactly_one_submit(tmp_path) -> None:
+    driver = FakeDriver(url=LOGIN_URL, xml=FIXTURE.read_bytes(), after_login=LOGIN_URL)
+    out = _run(tmp_path, driver, credentials=CREDS)
+    assert len(driver.logins) == 1
+    assert (out.state, out.reason) == ("reauth_required", "login_failed")
+    assert "hunter2" not in out.reason
+    assert not (tmp_path / "inbox").exists() and not (tmp_path / "bills").exists()
+
+
+def test_live_session_skips_login(tmp_path) -> None:
+    driver = FakeDriver(xml=FIXTURE.read_bytes())
+    out = _run(tmp_path, driver, credentials=CREDS, scrape_bills=False)
+    assert driver.logins == [] and out.state == "ok"
+
+
+def test_usage_only_mode_never_touches_billing(tmp_path) -> None:
+    driver = FakeDriver(xml=FIXTURE.read_bytes(), rows=[])
+    out = _run(tmp_path, driver, scrape_bills=False)
+    assert (out.state, out.reason, out.bill_files) == ("ok", "fetched_usage_only", ())
+    assert driver.billing_calls == 0 and not (tmp_path / "bills").exists()
 
 
 def test_good_fetch_delivers_xml_and_bills(tmp_path) -> None:

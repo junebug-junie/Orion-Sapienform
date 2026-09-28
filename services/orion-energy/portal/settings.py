@@ -17,6 +17,10 @@ class PortalSettings(BaseSettings):
     # Rolling re-fetch window; late AMI intervals arrive for ~3 days.
     ENERGY_PORTAL_BACKFILL_DAYS: int = Field(default=3, ge=1, le=730)
     ENERGY_PORTAL_TIMEOUT_SEC: float = Field(default=300.0, gt=0)
+    # chmod 600 file with RMP_USERNAME= / RMP_PASSWORD=; absent means manual reauth only.
+    ENERGY_PORTAL_CREDENTIALS_PATH: str = Field(default="/data/energy/portal/credentials.env")
+    # Billing-history selectors are unverified against the live portal; off = usage XML only.
+    ENERGY_PORTAL_SCRAPE_BILLS: bool = Field(default=False)
 
 
 @lru_cache

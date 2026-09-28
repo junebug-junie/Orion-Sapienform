@@ -1,8 +1,11 @@
 """One fetch attempt: usage XML + bills into the drop directories.
 
-No credentials anywhere: a login redirect means the saved session died, and the
-answer is `reauth_required` -- a human logs in once (MFA stays on), never a retry.
-Anything empty or unparseable is an error with the raw artifact kept for debugging.
+RMP keeps its login only for the life of the browser, so a login redirect is the normal
+start of every attempt. With a credentials file the fetcher submits the login form once;
+without one, or if that single submit does not land past the login page (wrong password,
+MFA prompt, captcha), the answer is `reauth_required` -- never a retry, so a bad password
+cannot lock the account. Anything empty or unparseable is an error with the raw artifact
+kept for debugging.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from typing import Any, Literal, Optional
 
 from orion.energy.espi import EspiError, parse_espi
 
+from .credentials import PortalCredentials
 from .driver import PortalDriver
 from .parse import PortalFieldError, bill_payload_from_fields, forecast_payload_from_fields, is_login_url
 
@@ -170,11 +174,17 @@ async def run_once(
     backfill_days: int,
     now: datetime,
     seen_path: Optional[Path] = None,
+    credentials: Optional[PortalCredentials] = None,
+    scrape_bills: bool = True,
 ) -> PortalOutcome:
     stamp = now.strftime(_STAMP)
     try:
         if is_login_url(await driver.open_usage()):
-            return PortalOutcome("reauth_required", "session_expired")
+            if credentials is None:
+                return PortalOutcome("reauth_required", "session_expired")
+            await driver.login(username=credentials.username, password=credentials.password)
+            if is_login_url(await driver.open_usage()):
+                return PortalOutcome("reauth_required", "login_failed")
         xml = await driver.download_green_button(days=backfill_days, now=now)
         if not xml:
             return PortalOutcome("error", "empty_download")
@@ -184,6 +194,8 @@ async def run_once(
             _save_raw(raw_dir, now, "green_button.xml", xml)
             return PortalOutcome("error", f"espi_invalid:{exc}"[:200])
         xml_file = _atomic_write(inbox_dir, f"rmp-portal-{stamp}.xml", xml)
+        if not scrape_bills:
+            return PortalOutcome("ok", "fetched_usage_only", xml_file=xml_file)
 
         try:
             rows = await driver.billing_rows()

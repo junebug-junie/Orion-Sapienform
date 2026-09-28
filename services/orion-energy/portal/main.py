@@ -12,6 +12,7 @@ from typing import Awaitable, Callable, Optional
 
 from orion.energy.importer_status import PortalStatus
 
+from .credentials import CredentialsFileTooOpen, load_credentials
 from .driver import open_playwright_driver
 from .fetch import PortalOutcome, run_once
 from .settings import PortalSettings, get_portal_settings
@@ -64,6 +65,18 @@ async def attempt(settings: PortalSettings, *, days: int) -> PortalOutcome:
     status_path = Path(settings.ENERGY_PORTAL_STATUS_PATH)
     record_status(status_path, None, now=now)
     try:
+        credentials = load_credentials(Path(settings.ENERGY_PORTAL_CREDENTIALS_PATH))
+    except CredentialsFileTooOpen:
+        outcome = PortalOutcome("error", "credentials_file_too_open")
+        record_status(status_path, outcome, now=now)
+        logger.error("energy_portal_fetch state=error reason=credentials_file_too_open (chmod 600 it)")
+        return outcome
+    except OSError as exc:
+        outcome = PortalOutcome("error", f"credentials_unreadable:{type(exc).__name__}")
+        record_status(status_path, outcome, now=now)
+        logger.error("energy_portal_fetch state=error reason=%s", outcome.reason)
+        return outcome
+    try:
         async with open_playwright_driver(
             profile_dir=settings.ENERGY_PORTAL_PROFILE_DIR,
             base_url=settings.ENERGY_PORTAL_BASE_URL,
@@ -77,6 +90,8 @@ async def attempt(settings: PortalSettings, *, days: int) -> PortalOutcome:
                     seen_path=bills_seen_path(status_path),
                     backfill_days=days,
                     now=now,
+                    credentials=credentials,
+                    scrape_bills=settings.ENERGY_PORTAL_SCRAPE_BILLS,
                 ),
                 timeout=settings.ENERGY_PORTAL_TIMEOUT_SEC,
             )

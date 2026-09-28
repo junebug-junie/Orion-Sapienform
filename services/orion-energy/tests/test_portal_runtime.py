@@ -64,6 +64,55 @@ def test_attempt_survives_browser_and_status_failures(tmp_path, monkeypatch) -> 
     assert (outcome.state, outcome.reason) == ("error", "browser_failed:RuntimeError")
 
 
+def test_world_readable_credentials_stop_the_attempt_before_the_browser(tmp_path, monkeypatch) -> None:
+    launched: list = []
+
+    @asynccontextmanager
+    async def must_not_launch(**_kwargs):
+        launched.append(True)
+        raise AssertionError("browser launched with a leaked password file")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(portal_main, "open_playwright_driver", must_not_launch)
+    creds = tmp_path / "credentials.env"
+    creds.write_text("RMP_USERNAME=me\nRMP_PASSWORD=hunter2\n")
+    creds.chmod(0o644)
+    status_path = tmp_path / "status.json"
+    settings = PortalSettings(
+        ENERGY_PORTAL_STATUS_PATH=str(status_path), ENERGY_PORTAL_CREDENTIALS_PATH=str(creds),
+    )
+    outcome = asyncio.run(portal_main.attempt(settings, days=3))
+    assert (outcome.state, outcome.reason) == ("error", "credentials_file_too_open")
+    assert launched == []
+    saved = read_status(status_path)
+    assert saved is not None and saved.reason == "credentials_file_too_open"
+    assert "hunter2" not in status_path.read_text()
+
+
+def test_attempt_passes_credentials_and_bill_mode_to_the_fetch(tmp_path, monkeypatch) -> None:
+    creds = tmp_path / "credentials.env"
+    creds.write_text("RMP_USERNAME=me\nRMP_PASSWORD=hunter2\n")
+    creds.chmod(0o600)
+    seen: dict = {}
+
+    @asynccontextmanager
+    async def fake_driver(**_kwargs):
+        yield object()
+
+    async def fake_run_once(_driver, **kwargs):
+        seen.update(kwargs)
+        return PortalOutcome("ok", "fetched_usage_only")
+
+    monkeypatch.setattr(portal_main, "open_playwright_driver", fake_driver)
+    monkeypatch.setattr(portal_main, "run_once", fake_run_once)
+    settings = PortalSettings(
+        ENERGY_PORTAL_STATUS_PATH=str(tmp_path / "status.json"), ENERGY_PORTAL_CREDENTIALS_PATH=str(creds),
+    )
+    asyncio.run(portal_main.attempt(settings, days=3))
+    assert seen["credentials"].password == "hunter2"
+    assert seen["scrape_bills"] is False
+
+
 def test_attempt_start_is_stamped_before_browser_launch(tmp_path, monkeypatch) -> None:
     status_path = tmp_path / "status.json"
     earlier = NOW - timedelta(days=2)

@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Optional, Protocol
 
 from . import selectors
+from .parse import is_login_url
 
 
 class PortalDriver(Protocol):
     async def open_usage(self) -> str: ...
+    async def login(self, *, username: str, password: str) -> str: ...
     async def download_green_button(self, *, days: int, now: datetime) -> bytes: ...
     async def billing_rows(self) -> list[dict[str, str]]: ...
     async def forecast_fields(self) -> Optional[dict[str, str]]: ...
@@ -38,6 +40,22 @@ class PlaywrightDriver:
 
     async def open_usage(self) -> str:
         await self._page.goto(self._base + selectors.USAGE_PATH, wait_until="networkidle")
+        return self._page.url
+
+    async def login(self, *, username: str, password: str) -> str:
+        """One submit, no retry: returns the URL the page settled on, login page or not."""
+        from playwright.async_api import TimeoutError as PlaywrightTimeout
+
+        frame = self._page.frame_locator(selectors.LOGIN_FRAME)
+        await frame.locator(selectors.LOGIN_USERNAME).fill(username)
+        await frame.locator(selectors.LOGIN_PASSWORD).fill(password)
+        await frame.locator(selectors.LOGIN_SUBMIT).click()
+        try:
+            await self._page.wait_for_url(
+                lambda url: not is_login_url(url), timeout=selectors.LOGIN_WAIT_SEC * 1000
+            )
+        except PlaywrightTimeout:
+            pass
         return self._page.url
 
     async def download_green_button(self, *, days: int, now: datetime) -> bytes:

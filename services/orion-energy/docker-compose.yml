@@ -14,7 +14,7 @@ services:
 
   orion-energy-portal:
     container_name: ${PROJECT}-orion-energy-portal
-    # Not started by a plain `up`: needs a one-time headed reauth first (README "Portal").
+    # Not started by a plain `up`: needs the chmod-600 credentials file first (README "Portal").
     profiles: ["portal"]
     build:
       context: ../..

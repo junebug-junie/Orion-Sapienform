@@ -94,12 +94,34 @@ FROM energy_stakes_snapshot ORDER BY as_of DESC LIMIT 3;
 
 ## Portal (optional, compose profile `portal`)
 
-`orion-energy-portal` reuses a saved browser session to download Green Button XML and
-scrape bills into the same drop directories. It stores **no** RMP password; MFA stays on.
-Selectors are UNVERIFIED until the first live run (`portal/selectors.py`).
+`orion-energy-portal` logs into rockymountainpower.net once a day, downloads Green Button
+XML into the usage inbox, and (optionally) scrapes bills into the bill inbox.
+
+RMP keeps its login only for the life of the browser (checked live 2026-09-28: after
+closing the browser, the saved profile held only analytics cookies and reopened on the
+sign-in page). A saved session alone therefore dies every day, so the fetcher logs in
+itself from a **credentials file** on the host:
+
+```bash
+install -m 600 /dev/null /mnt/storage-warm/orion-energy/portal/credentials.env
+nano /mnt/storage-warm/orion-energy/portal/credentials.env   # RMP_USERNAME=... / RMP_PASSWORD=...
+```
+
+- Read at every attempt, never from the environment, never logged. A file that group or
+  other can read is refused (`error`/`credentials_file_too_open`) before a browser starts.
+- One login submit per attempt, never a retry. If it does not get past the sign-in page
+  (wrong password, MFA prompt, captcha) the status is `reauth_required`/`login_failed` and
+  the loop waits a full interval, so a bad password cannot lock the account.
+- No file: a login redirect is `reauth_required`/`session_expired` (manual reauth below).
+
+The sign-in form selectors are verified against the live page; the Green Button download
+and billing selectors are still UNVERIFIED (`portal/selectors.py`). Bill scraping is off
+by default (`ENERGY_PORTAL_SCRAPE_BILLS=false`), so a good run reads `ok`/`fetched_usage_only`.
 
 | Key | Default | What it does |
 |---|---|---|
+| `ENERGY_PORTAL_CREDENTIALS_PATH` | `/data/energy/portal/credentials.env` | chmod-600 login file (see above); absent = manual reauth only. |
+| `ENERGY_PORTAL_SCRAPE_BILLS` | `false` | Also scrape billing history / forecast after the usage download. |
 | `ENERGY_PORTAL_TIMEOUT_SEC` | `300` | Hard cap on one whole fetch attempt; hitting it records `error`/`timeout` in `status.json`. |
 | `ENERGY_PORTAL_RAW_DIR` | `/data/energy/portal/raw` | Where a failed download/scrape keeps its raw artifact (see below). |
 | `ENERGY_PORTAL_BACKFILL_DAYS` | `3` | Days of usage each daily fetch requests (1-730); `--days` overrides it for a one-off backfill. |
@@ -114,8 +136,9 @@ scripts/safe_docker_build.sh orion-energy --profile portal stop orion-energy-por
 
 Bring it back with the `up -d` line in step 2 once the reauth or one-off fetch is done.
 
-1. One-time login on a host with a display (same profile dir the container mounts;
-   stop `orion-energy-portal` first if it is running):
+1. Create the credentials file above. (Without one: a one-time login on a host with a
+   display, same profile dir the container mounts, portal service stopped. This only
+   helps while RMP keeps that session alive.)
    ```bash
    pip install playwright==1.49.0 pydantic-settings==2.7.1 && python -m playwright install chromium
    cd services/orion-energy && PYTHONPATH=../..:. python -m portal.reauth \
@@ -129,8 +152,10 @@ Bring it back with the `up -d` line in step 2 once the reauth or one-off fetch i
    ```
 3. Set `ENERGY_PORTAL_ENABLED=true` for `orion-energy` and restart it.
 
-When the session dies the importer reads `reauth_required`; stop the portal service,
-repeat step 1, then the
+When the importer reads `reauth_required`: with a credentials file, `login_failed` means
+the password or RMP's sign-in flow changed -- fix the file (or the login selectors), then
+run the `--once` fetch. Without one, stop the portal service, repeat the headed login in
+step 1, then the
 `--once` fetch from step 2 (the loop otherwise waits a full `ENERGY_PORTAL_INTERVAL_HOURS`
 after any recorded attempt, including across container restarts). Reauth clears
 `reauth_required` but does not count as a successful fetch.

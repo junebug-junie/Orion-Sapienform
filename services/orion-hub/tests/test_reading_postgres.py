@@ -638,3 +638,102 @@ def test_stale_sweep_keeps_a_digest_item_a_request_is_aliased_to(local_pg):
         assert got == {"digest_item:shared": "pending", "digest_item:alone": "skipped"}
         await conn.close()
     asyncio.run(run())
+
+
+def test_reading_results_introspection_is_read_only_and_distinguishes_states(local_pg):
+    from orion.schemas.introspect import DEFAULT_TEXT_CAP, URL_CAP
+    from orion.world_pulse_read.introspect import reading_results
+
+    async def run():
+        conn, _ = await db(local_pg)
+        # Production journal_entries (sql-writer) has these columns; the shared
+        # helper's minimal table does not.
+        await conn.execute(
+            "ALTER TABLE journal_entries ADD COLUMN created_at timestamptz NOT NULL DEFAULT now(), "
+            "ADD COLUMN title text"
+        )
+        done = request("https://example.org/done")
+        hollow = request("https://example.org/hollow")
+        queued = request("https://example.org/queued")
+        failed = request("https://example.org/failed")
+        for r in (done, hollow, queued, failed):
+            await queue.enqueue_reading(conn, r)
+        mark_done = """UPDATE world_pulse_read_seed
+               SET status='done', stage2_status='done',
+                   handoff_json=$2::jsonb, stage2_result_json=$3::jsonb,
+                   handoff_at=now(), stage2_completed_at=now(), landing_at=now(),
+                   trace_id='t1', stage2_trace_id='t2'
+               WHERE request_id=$1"""
+        await conn.execute(
+            mark_done,
+            done.request_id,
+            json.dumps({"what_i_learned": "stage one note", "read_evidence": [
+                {"tool_name": "WebFetch", "url": "https://example.org/done", "content_chars": 500},
+            ]}),
+            json.dumps({"summary": "S" * (DEFAULT_TEXT_CAP + 300)}),
+        )
+        # Pre-2026-09-25 shape: marked done with no tool-trace read of the source.
+        await conn.execute(
+            mark_done,
+            hollow.request_id,
+            json.dumps({"what_i_learned": "metadata-only guess"}),
+            json.dumps({"summary": "built on an unread handoff"}),
+        )
+        await conn.execute(
+            "INSERT INTO journal_entries (entry_id, source_ref, body) "
+            "VALUES ('j1', 'world_pulse_read_stage2:t2', 'Journal body about the source')"
+        )
+        await conn.execute(
+            "UPDATE world_pulse_read_seed SET status='failed', last_error='boom', handoff_json=$2::jsonb "
+            "WHERE request_id=$1",
+            failed.request_id, json.dumps({"what_i_learned": "rejected handoff"}),
+        )
+        long_url = "https://example.org/" + "p" * 700
+        await queue.enqueue_reading(conn, request(long_url))
+        before = await conn.fetch("SELECT * FROM world_pulse_read_seed ORDER BY seed_id")
+
+        recent = await reading_results(conn)
+        assert recent.ok and recent.total_available == 1
+        [item] = recent.items
+        assert item.kind == "reading_result" and item.epistemic_status == "unsettled"
+        assert item.extra["url"] == "https://example.org/done"
+        assert item.extra["learned"] is True
+        assert item.extra["source_read"] is True
+        assert item.truncated and len(item.text) == DEFAULT_TEXT_CAP
+        assert "journal_excerpt" not in item.extra
+        assert "url_truncated" not in item.extra
+
+        unread = await reading_results(conn, url="https://example.org/hollow")
+        assert unread.items[0].extra["reading_status"] == "completed"
+        assert unread.items[0].extra["source_read"] is False
+        assert unread.items[0].extra["learned"] is False
+        assert unread.items[0].text == ""
+
+        by_url = await reading_results(conn, url="https://EXAMPLE.org/done#x")
+        assert by_url.total_available == 1
+        assert by_url.items[0].extra["journal_excerpt"] == "Journal body about the source"
+        assert by_url.items[0].extra["request_id"] == str(done.request_id)
+
+        clipped = (await reading_results(conn, url=long_url)).items[0].extra
+        assert len(clipped["url"]) == URL_CAP and clipped["url_truncated"] is True
+
+        pending = await reading_results(conn, request_id=queued.request_id)
+        assert pending.items[0].text == ""
+        assert pending.items[0].extra["learned"] is False
+        assert pending.items[0].extra["reading_status"] == "queued"
+
+        rejected = await reading_results(conn, request_id=failed.request_id)
+        assert rejected.items[0].extra["reading_status"] == "failed"
+        assert rejected.items[0].extra["learned"] is False
+        assert rejected.items[0].text == ""
+
+        missing = await reading_results(conn, url="https://example.org/never")
+        assert missing.ok and missing.items == [] and missing.total_available == 0
+
+        future = await reading_results(conn, since=datetime(2999, 1, 1, tzinfo=timezone.utc))
+        assert future.ok and future.items == [] and future.total_available == 0
+
+        assert await conn.fetch("SELECT * FROM world_pulse_read_seed ORDER BY seed_id") == before
+        await conn.close()
+
+    asyncio.run(run())

@@ -3577,7 +3577,7 @@ channels:
     consumer_services: ["orion-hub"]
     stability: "experimental"
     since: "2026-09-10"
-    description: "Ephemeral internal tool RPC; no acceptance until a durable queue receipt arrives. Status accepts exactly one request_id or url; URL selects the newest matching request without enqueueing."
+    description: "Ephemeral internal tool RPC; no acceptance until a durable queue receipt arrives. Status accepts exactly one request_id or url; URL selects the newest matching request without enqueueing. reading_result (orion-introspect) is read-only: one read by request_id or url, or recent finished reads (limit, since)."
 
   - name: "orion:reading:tool:result:*"
     kind: "result"
@@ -3587,7 +3587,7 @@ channels:
     consumer_services: ["orion-harness-governor"]
     stability: "experimental"
     since: "2026-09-10"
-    description: "Durable queue receipt or durable status. A timeout means acceptance is unknown."
+    description: "Durable queue receipt, durable status, or an IntrospectResultV1 for reading_result. A timeout means acceptance (or the introspection answer) is unknown."
 
   - name: "orion:reading:requested"
     kind: "event"

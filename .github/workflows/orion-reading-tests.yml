@@ -7,6 +7,7 @@ on:
       - "orion/schemas/**"
       - "orion/bus/channels.yaml"
       - "orion/fcc/**"
+      - "orion/introspect/**"
       - "orion/harness/**"
       - "orion/hub/**"
       - "orion/cognition/prompts/stance_react.j2"
@@ -56,6 +57,7 @@ jobs:
             orion/thought/tests \
             orion/fcc/tests/test_reading_mcp.py \
             orion/fcc/tests/test_mcp_config.py \
+            orion/introspect/tests \
             orion/harness/tests/test_fcc_motor_mcp.py \
             orion/harness/tests/test_reading_receipts.py \
             tests/test_world_pulse_read_*.py \

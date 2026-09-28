@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_serializer, model_validator
+
+from orion.schemas.introspect import MAX_ITEMS
 
 ReadingContext = Literal["unified_chat", "curiosity", "world_pulse", "operator"]
 ReadingStatus = Literal[
@@ -77,19 +79,44 @@ class ReadingStatusArguments(BaseModel):
 class ReadingToolRequestV1(BaseModel):
     """Internal ephemeral RPC. Only its post-commit reply proves acceptance."""
     model_config = ConfigDict(extra="forbid")
-    operation: Literal["recommend_reading", "reading_status"]
+    operation: Literal["recommend_reading", "reading_status", "reading_result"]
     request: ReadingRequestedV1 | None = None
     request_id: UUID | None = None
     url: str | None = Field(default=None, min_length=1, max_length=8192)
+    limit: int | None = Field(default=None, ge=1, le=MAX_ITEMS)
+    since: datetime | None = None
 
     @model_validator(mode="after")
     def operation_arguments(self):
         if self.operation == "recommend_reading":
             if self.request is None or self.request_id is not None or self.url is not None:
                 raise ValueError("recommend_reading requires only request")
-        elif self.request is not None or (self.request_id is None) == (self.url is None):
-            raise ValueError("reading_status requires exactly one of request_id or url")
+        elif self.operation == "reading_status":
+            if self.request is not None or (self.request_id is None) == (self.url is None):
+                raise ValueError("reading_status requires exactly one of request_id or url")
+        else:
+            if self.request is not None:
+                raise ValueError("reading_result never carries a reading request")
+            if self.request_id is not None and self.url is not None:
+                raise ValueError("reading_result takes at most one of request_id or url")
+            if self.since is not None:
+                if self.since.tzinfo is None:
+                    raise ValueError("since must include a timezone")
+                if self.request_id is not None or self.url is not None:
+                    raise ValueError("since applies only to recent reads")
+        if self.operation != "reading_result" and (self.limit is not None or self.since is not None):
+            raise ValueError(f"{self.operation} takes no limit or since")
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_result_selectors(self, handler):
+        # A Hub predating reading_result forbids unknown keys, even null ones;
+        # keep recommend/status payloads byte-compatible with it.
+        data = handler(self)
+        for key in ("limit", "since"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
 
 class ReadingToolResultV1(BaseModel):

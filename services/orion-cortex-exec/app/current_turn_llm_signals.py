@@ -34,8 +34,9 @@ Call-pattern precedent: mirrors
 (RPC via `bus.rpc_request(settings.channel_llm_intake, ...)`,
 `ChatRequestPayload`, tight timeout, decode+fail-open) and
 `services/orion-memory-consolidation/app/classify.py::_llm_classify` (same
-bus RPC glue, `route`-driven, small `max_tokens` for a quick-lane
-classification call rather than a generation call). Does NOT hook into
+bus RPC glue, `route`-driven, small `max_tokens` for a short
+classification call rather than a generation call; route is `chat`, see
+settings.current_turn_signal_probe_route for the eval that moved it off `quick`). Does NOT hook into
 `orion-memory-consolidation`'s post-hoc turn-classification pipeline
 (`orion:memory:turn:persisted` -> `classify.py`): that pipeline's trigger
 event is produced by `orion-sql-writer` only AFTER the turn is already
@@ -133,7 +134,7 @@ def _source() -> ServiceRef:
 
 
 def build_current_turn_llm_prompt(user_text: str) -> str:
-    """Short-output quick-lane read of one user turn: what they shared that a
+    """Short-output read of one user turn: what they shared that a
     friend would naturally follow up on, and whether they are asking for work or
     an answer.
 
@@ -162,10 +163,11 @@ def build_current_turn_llm_prompt(user_text: str) -> str:
         "\"ok\"), or acknowledgments. If nothing qualifies, items is an empty "
         "array.\n\n"
         "Respond with ONLY one JSON object, no prose, no markdown fences:\n"
-        '{"wants_direct_answer": true or false, "items": [{"phrase": short '
-        'string naming the thing they shared, "type": one of person, place, '
-        'plan, belief, concept, activity, other, "question": the friend\'s '
-        "follow-up question}]}\n"
+        '{"wants_direct_answer": true or false, "items": [{"phrase": "<short '
+        'string naming the thing they shared>", "type": "<one of person, place, '
+        'plan, belief, concept, activity, other>", "question": "<the friend\'s '
+        'follow-up question>"}]}\n'
+        "Every string value is in double quotes.\n"
         "At most 3 items.\n\n"
         f"User message: {user_text}\n\n"
         "JSON object:"

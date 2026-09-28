@@ -478,7 +478,12 @@ class Settings(BaseSettings):
     # deleted LegacyRegexSignalDetector's "any capitalized word" regex.
     # Quick-lane classification call, not a generation call -- see that
     # module's docstring for the full rationale.
-    current_turn_signal_probe_route: str = Field("quick", alias="CURRENT_TURN_SIGNAL_PROBE_ROUTE")
+    # "chat" (35B), not "quick" (8B): on evals/run_current_turn_disclosure_live_eval.py
+    # the 8B read work commands as shared news ("restart cortex-exec please" ->
+    # "Why do you need to restart cortex-exec?", 4/9 controls) and judged
+    # wants_direct_answer at 0.37; the 35B scored 13/13 recall, 0/9 false alarms,
+    # 19/19 direct, p95 ~2s. A lane outage times out and fails closed (no ask).
+    current_turn_signal_probe_route: str = Field("chat", alias="CURRENT_TURN_SIGNAL_PROBE_ROUTE")
     current_turn_signal_probe_timeout_sec: float = Field(3.0, alias="CURRENT_TURN_SIGNAL_PROBE_TIMEOUT_SEC")
     # 256: the read carries a follow-up question per item (up to 3) plus
     # wants_direct_answer; 80 truncated that shape mid-object.

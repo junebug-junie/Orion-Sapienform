@@ -99,9 +99,12 @@ happening.
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `CURRENT_TURN_SIGNAL_PROBE_ROUTE` | `quick` | LLM Gateway route for the current-turn signal probe. |
-| `CURRENT_TURN_SIGNAL_PROBE_TIMEOUT_SEC` | `3.0` | Bus RPC wait bound; a slow/dead gateway fails open to zero candidates. |
-| `CURRENT_TURN_SIGNAL_PROBE_MAX_TOKENS` | `80` | Completion budget — a few short phrase+type JSON pairs, not a generation call. |
+| `CURRENT_TURN_SIGNAL_PROBE_ROUTE` | `chat` | LLM Gateway route for the current-turn read. `quick` (8B) failed `evals/run_current_turn_disclosure_live_eval.py` (work commands read as shared news). |
+| `CURRENT_TURN_SIGNAL_PROBE_TIMEOUT_SEC` | `3.0` | Bus RPC wait bound; a slow/dead gateway yields zero candidates and an unavailable read, which suppresses background curiosity for the turn. |
+| `CURRENT_TURN_SIGNAL_PROBE_MAX_TOKENS` | `256` | Completion budget — `wants_direct_answer` plus up to 3 items, each with a follow-up question. |
+| `CURRENT_TURN_SIGNAL_PROBE_TEMPERATURE` | `0.0` | Pinned so the same message gets the same read. |
+
+The read replaces the curiosity policy's old verb-prefix / trailing-`?` regexes: `wants_direct_answer` decides whether Orion's background threads may become a question this turn, and each item's `question` becomes the attention frame's ask (`selected_action.question_text`), which `stance_react.j2` treats as Orion's own curiosity. Live eval: `python services/orion-cortex-exec/evals/run_current_turn_disclosure_live_eval.py --url http://<llm-node>:8011/v1/chat/completions`.
 
 **Tests**
 

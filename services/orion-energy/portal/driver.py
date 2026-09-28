@@ -51,6 +51,7 @@ class PlaywrightDriver:
 
     async def open_usage(self) -> str:
         await self._page.goto(self._base + selectors.USAGE_PATH, wait_until="networkidle")
+        self._one_day_view = False
         return self._page.url
 
     async def login(self, *, username: str, password: str) -> str:

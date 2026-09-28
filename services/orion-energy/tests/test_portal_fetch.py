@@ -55,6 +55,8 @@ class FakeDriver:
     async def download_usage_day(self, day):
         self.requested.append(day)
         got = self.per_day.get(day, self.xml)
+        if isinstance(got, list):
+            got = got.pop(0) if len(got) > 1 else got[0]
         if isinstance(got, Exception):
             raise got
         return got
@@ -163,8 +165,34 @@ def test_first_bad_day_stops_the_run_but_keeps_earlier_days(tmp_path) -> None:
     out = _run(tmp_path, driver, scrape_bills=False)
     assert out.state == "error"
     assert out.reason == "usage_day_failed:2026-09-25:download_failed:TimeoutError:delivered=1/3"
-    assert driver.requested == [date(2026, 9, 24), date(2026, 9, 25)]
+    assert driver.requested == [date(2026, 9, 24), date(2026, 9, 25), date(2026, 9, 25)]
     assert [p.name[-14:] for p in out.xml_files] == ["2026-09-24.xml"]
+
+
+def test_one_dead_download_is_retried_once_after_a_reload(tmp_path) -> None:
+    flaky = [TimeoutError("dead link"), FIXTURE.read_bytes()]
+    driver = FakeDriver(xml=FIXTURE.read_bytes(), per_day={date(2026, 9, 25): flaky})
+    out = _run(tmp_path, driver, scrape_bills=False)
+    assert (out.state, out.reason, len(out.xml_files)) == ("ok", "fetched_usage_only", 3)
+    assert driver.requested.count(date(2026, 9, 25)) == 2
+    assert driver.logins == []
+
+
+class ExpiringDriver(FakeDriver):
+    """Session is live for the first page load, then every reload lands on the login page."""
+
+    opens = 0
+
+    async def open_usage(self):
+        self.opens += 1
+        return USAGE_URL if self.opens == 1 else LOGIN_URL
+
+
+def test_session_lost_mid_run_stops_without_logging_in_again(tmp_path) -> None:
+    driver = ExpiringDriver(xml=FIXTURE.read_bytes(), per_day={date(2026, 9, 25): TimeoutError("dead link")})
+    out = _run(tmp_path, driver, credentials=CREDS, scrape_bills=False)
+    assert out.state == "error" and out.reason.startswith("usage_day_failed:2026-09-25:session_lost")
+    assert driver.logins == [] and len(out.xml_files) == 1
 
 
 def test_days_never_leave_the_portal_range() -> None:

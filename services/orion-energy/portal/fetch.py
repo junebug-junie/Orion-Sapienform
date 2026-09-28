@@ -185,6 +185,24 @@ def _write_new_bills(
     return tuple(written)
 
 
+class _SessionLost(RuntimeError):
+    pass
+
+
+async def _download_day_with_reload(driver: PortalDriver, day: date) -> bytes:
+    """The download link goes dead mid-run now and then (live: day 10 of 60, fine alone).
+
+    One reload of the usage page and one more try; never touches the login form.
+    """
+    try:
+        return await driver.download_usage_day(day)
+    except Exception as first:  # noqa: BLE001
+        logger.warning("energy_portal_day_retry day=%s error=%s", day.isoformat(), type(first).__name__)
+        if is_login_url(await driver.open_usage()):
+            raise _SessionLost() from first
+        return await driver.download_usage_day(day)
+
+
 def _usage_failure(day: date, problem: str, delivered: list[Path], total: int) -> PortalOutcome:
     """Stop at the first bad day: days already written stay delivered, the rest wait for next run."""
     reason = f"usage_day_failed:{day.isoformat()}:{problem}:delivered={len(delivered)}/{total}"
@@ -218,8 +236,10 @@ async def run_once(
         delivered: list[Path] = []
         for day in days:
             try:
-                xml = await driver.download_usage_day(day)
-            except Exception as exc:  # noqa: BLE001 -- the page is unreliable after a failed download
+                xml = await _download_day_with_reload(driver, day)
+            except _SessionLost:
+                return _usage_failure(day, "session_lost", delivered, len(days))
+            except Exception as exc:  # noqa: BLE001 -- two dead downloads in a row: stop for today
                 return _usage_failure(day, f"download_failed:{type(exc).__name__}", delivered, len(days))
             problem = _day_xml_problem(xml, now=now)
             if problem is not None:

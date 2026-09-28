@@ -965,11 +965,11 @@ def _about_for(
         if isinstance(raw_qs, list) and raw_qs:
             for item in raw_qs:
                 if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    detail.append(_text(item[1], 400))
+                    detail.append(_text(item[1]))
                 elif isinstance(item, dict):
-                    detail.append(_text(item.get("question"), 400))
+                    detail.append(_text(item.get("question")))
                 elif isinstance(item, str):
-                    detail.append(_text(item, 400))
+                    detail.append(_text(item))
             detail = [d for d in detail if d]
         if not detail:
             detail = [text for _, text in SELF_SENSE_QUESTIONS]
@@ -981,7 +981,7 @@ def _about_for(
         }
 
     for h in sorted(slot.get("help_requests") or [], key=lambda r: _ms(r.get("written_at")) or 0):
-        question = _text(h.get("question"), 500)
+        question = _text(h.get("question"))
         if question:
             return {
                 "text": question,
@@ -990,7 +990,7 @@ def _about_for(
                 "prior_id": _text(h.get("prior_id"), 200) or None,
             }
 
-    claim = _text((starting_prior or {}).get("claim"), 500)
+    claim = _text((starting_prior or {}).get("claim"))
     if claim:
         return {
             "text": claim,
@@ -999,7 +999,7 @@ def _about_for(
             "prior_id": _text((starting_prior or {}).get("prior_id"), 200) or None,
         }
 
-    prompt = _text(brief.get("prompt"), 600)
+    prompt = _text(brief.get("prompt"))
     if prompt and prompt.strip().lower() not in _PLACEHOLDER_PROMPTS:
         return {
             "text": prompt,
@@ -1016,7 +1016,7 @@ def _about_for(
             "prior_id": None,
         }
 
-    lived = _text((self_written or {}).get("text"), 500)
+    lived = _text((self_written or {}).get("text"))
     if lived:
         return {
             "text": lived,
@@ -1316,7 +1316,7 @@ def build_stories(rows: RunStoryRows) -> dict[str, RunStory]:
 
         wrote = (len(slot["hops"]) + len(slot["findings"]) + len(revisions)
                  + len(sense_rows) + len(self_writes))
-        finding_text = _text(detail.get("finding_text"), 600)
+        finding_text = _text(detail.get("finding_text"))
         about = _about_for(
             line=line,
             slot=slot,

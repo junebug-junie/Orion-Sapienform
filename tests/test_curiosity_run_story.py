@@ -879,6 +879,30 @@ def test_about_uses_prior_claim_when_no_help_question() -> None:
     assert "who matters" in about["text"]
 
 
+def test_a_long_about_is_not_cut_mid_sentence() -> None:
+    """Reading briefs put the article title after ~550 chars of instructions;
+    the old 600-char cap cut every one of them mid-title."""
+    tail = "title=WHO statement on notification of withdrawal of the United States"
+    brief_prompt = "Fetch the url below with WebFetch. " * 20 + tail
+    claim = "who matters is a singleton, not a crowd; " * 16 + "the end of the claim"
+    brief_id, prior_id = "about-long-brief", "about-long-prior"
+    rows = RunStoryRows(
+        lifecycle=[_completed(brief_id, 10), _completed(prior_id, 10)],
+        admission=[{
+            "run_id": brief_id,
+            "request": json.dumps({"workflow": "curiosity.investigate",
+                                   "brief": {"line": "investigate", "prompt": brief_prompt}}),
+            "created_at": _at(0), "control": None, "terminal": "completed", "updated_at": _at(10),
+        }],
+        help_requests=[{"run_id": prior_id, "help_id": "h1", "prior_id": "p1", "question": "",
+                        "prior_claim": claim, "written_at": _ms(1)}],
+        priors=[{"prior_id": "p1", "claim": claim, "status": "open", "line": "self_inquiry"}],
+    )
+    stories = build_stories(rows)
+    assert len(brief_prompt) > 600 and stories[brief_id].about["text"].endswith(tail)
+    assert len(claim) > 500 and stories[prior_id].about["text"].endswith("the end of the claim")
+
+
 def test_about_for_self_sense_lists_the_four_fixed_questions() -> None:
     run_id = "20260922T211540Z-ff890d"
     rows = _admission_run(run_id, workflow="self_sense_eval", line="self_sense_eval", bridge=False)

@@ -124,10 +124,13 @@ an absolute 85 °C ceiling fires meanwhile. Re-run the gate on real data before 
 1. **Provenance:** `services/orion-zwave/app/main.py:170-191` polls `Electric_W` each 5 s cycle.
 2. **Independence:** independent device from compute temps; cabinet Nano temperature is the
    independent corroboration for load shedding.
-3. **Theory:** the AC compressor draws 700–950 W when cooling; fan-only draws ~33 W; off draws ~0.
+3. **Theory:** the AC compressor draws 700–950 W when cooling; fan-only draw is unmeasured; off draws ~0.
    A cooling-capable reading below 150 W for minutes means the room is not being cooled.
 4. **Live data (2026-09-26 → 09-28, 36,524 rows):** 0 nulls, 0 offline, 0 switch-off. Normal band
-   700–950 W. One anomaly: the first 1 h 38 m after pairing read **exactly 33.1 W for 1,171 samples**.
+   700–950 W. One anomaly: the first 1 h 38 m after pairing read **exactly 33.1 W for 1,171 samples** — the
+   since-fixed bug that read the kWh energy counter (propertyKey 65537) as watts
+   (`zwave_client.py` comment on `METER_W_PROPERTY_KEY`). It is a real example of a lying reading
+   (the frozen and low-power rules both catch it), not evidence that fan-only draws ~33 W.
    Only 3–9 distinct values per hour ⇒ most samples are republished cache. `sample_age_sec` is
    always null. **Degenerate-in-a-dangerous-way:** freshness is unknowable today (see Part 5).
 5. **Existing mechanism:** none alerting.
@@ -263,7 +266,15 @@ prose fallback; evidence bundle instead of SSH to circe; no-LLM report instead o
   publish `provenance.sample_age_sec`.
 - If `sample_age_sec > COOLING_STALE_AFTER_SEC` (120): omit `cooling_watts/volts/amps`, set new
   optional `CoolingObservedStateV1.stale: bool = True`. Never republish stale as live.
-- Poll failures: warning log + counter; `SystemHealthV1` reports `degraded` while stale.
+- Poll failures: warning log + counter. Heartbeat `details` carry `cooling_sensor`
+  (`fresh|stale|unknown|error`), `cooling_sample_age_sec`, `zwave_connected`,
+  `consecutive_poll_failures` (the chassis status field stays `ok` = process alive).
+- A dead websocket is reconnected by the poll loop; stale samples keep publishing meanwhile, so
+  an outage is visible as `stale=true` rows rather than silence.
+- Live check 2026-09-28: `node.poll_value` Electric_W succeeded 3/3 in 0.04–0.44 s (885.7 W), so
+  "fresh = successful poll" will not false-alarm.
+- sql-writer also persists `sample_age_sec`; Hub `/api/cabinet/cooling/latest` adds
+  `sensor_stale`, `sample_age_sec`, `last_fresh_at` (read from `payload_json`).
 - Hub Cabinet panel: red "AC reading STALE since HH:MM" instead of a wattage.
 - sql-writer: persist `stale` (new nullable column) so history distinguishes stale from live.
 

@@ -104,6 +104,34 @@ def test_non_retryable_failure_ends_instead_of_regranting_a_ghost():
     assert s["status"] == "released"
 
 
+def _recalling_hold(retryable=True):
+    return step(fresh("hold", retryable=retryable), ev("grant", role="agent"),
+                ev("recall", 1, recall_by=(T0 + timedelta(seconds=6)).isoformat(), reason="urgent_preempt"))
+
+
+def test_urgent_preempt_requeues_a_retryable_hold_in_place_without_spending_an_attempt():
+    s = step(_recalling_hold(), ev("abort", 6, reason="urgent_preempt"))
+    assert s["status"] == "queued" and s["attempt"] == 1 and s["role"] is None
+    assert s["created_at"] == T0.isoformat() and s["queued_since"] == (T0 + timedelta(seconds=6)).isoformat()
+    assert s["not_before"] is None and s["recall_by"] is None and s["expires_at"] is None
+    assert s["reason"] == "urgent_preempt"
+    assert s["history"][-1] == {"event": "abort", "from": "recalling", "status": "queued",
+                                "at": (T0 + timedelta(seconds=6)).isoformat(), "role": "agent",
+                                "reason": "urgent_preempt", "attempt": 1}
+    s = step(s, ev("grant", 20, role="agent"))                 # back in line, re-granted normally
+    assert s["status"] == "granted" and s["generation"] == 2 and s["attempt"] == 1
+
+
+def test_plain_abort_still_spends_an_attempt():
+    s = step(_recalling_hold(), ev("abort", 6))
+    assert s["status"] == "retry_wait" and s["attempt"] == 2 and s["not_before"] is not None
+
+
+def test_non_retryable_urgent_preempt_ends_like_any_abort():
+    s = step(_recalling_hold(retryable=False), ev("abort", 6, reason="urgent_preempt"))
+    assert s["status"] == "released" and s["reason"] == "abort:urgent_preempt"
+
+
 def test_caller_can_finish_a_lease_from_any_waiting_state():
     for pre in ([], [ev("backlog")], [ev("grant", role="m"), ev("release_failed", 1)]):
         s = step(fresh(), *pre, ev("release_ok", 5))

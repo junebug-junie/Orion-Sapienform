@@ -33,9 +33,13 @@ Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-de
      durable-run hold on a role it could use: recall urgent_preempt with urgent_preempt_grace_sec;
      most recently granted first; never interactive, urgent, operator or request leases, and never
      the owner of a role the urgent lease only borrows (re-queued, the owner would win it back).
-     A pause under way (recalling urgent_preempt) on a slot the lease could take serves it first.
-     An urgent owner reclaiming its role from a pausable borrowing hold is that pause
-     (urgent_preempt, short grace), not owner_waiting with the hold grace
+     A pause under way (recalling urgent_preempt, or re-queued urgent_preempt with its last call
+     still on the slot) on a slot the lease could take serves it first. Only urgent leases the
+     cap has room for are owed a pause or count as waiting owners.
+     An urgent owner reclaiming its own role pauses that role's pausable borrowing hold whatever
+     its priority (system as well as background, even if a background hold elsewhere could be
+     paused instead): that is its pause (urgent_preempt, short grace), not owner_waiting with the
+     hold grace
   U2 the paused hold's abort re-queues it in place without spending an attempt (lease_graph)
   U3 urgent holds are exempt from H1 (bounded by slots and urgent_max_concurrent) and skip a
      swap seat's after_wait_sec when no pause serves them (guards still apply). On a role it

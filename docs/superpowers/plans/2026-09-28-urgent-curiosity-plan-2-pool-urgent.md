@@ -37,7 +37,10 @@ next freed slot. At most 3 urgent leases are active at once.
 - One victim per waiting urgent lease, counting holds already `recalling` with reason
   `urgent_preempt` (so a 5 s grace doesn't recall a new victim every tick).
 - `urgent_max_concurrent: 0` is the rollback switch: urgent then behaves exactly like background
-  (no pause, no stacking).
+  (no pause, no stacking). It takes a redeploy of both `orion-gpu-pool` and `orion-durable-runs`.
+- Known limitation: a Door-A outreach hold (a finished run's hold kept for Hub outreach compose) is
+  a background hold and can be paused; durable-runs then ends it, so a compose in progress loses
+  its GPU hold.
 - The preempted hold's abort must not consume a pool retry attempt and must not count as a failed
   durable-run attempt.
 - Never commit `.env`. Never `--no-verify`. Commit per task. Work only in the worktree.
@@ -103,7 +106,9 @@ Commit: `feat(gpu-pool): urgent priority contract and defaults`.
    Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md):
      U1 a waiting urgent lease that got no slot pauses one granted background (then system)
         durable-run hold on a role it could use: recall urgent_preempt with urgent_preempt_grace_sec;
-        most recently granted first; never interactive, urgent, operator or request leases
+        most recently granted first; never interactive, urgent, operator or request leases.
+        An urgent owner reclaiming its own role pauses that role's borrower whatever its priority
+        (background or system)
      U2 the paused hold's abort re-queues it in place without spending an attempt (lease_graph)
      U3 urgent holds are exempt from H1 (bounded by slots and urgent_max_concurrent) and skip a
         swap seat's after_wait_sec (guards still apply)
@@ -311,9 +316,17 @@ Commit: `docs+eval(gpu-pool): urgent pause/resume scenario; spec matches shipped
 3. Push and open the PR (AGENTS §18 template), then watch CI.
 4. Deploy after merge, from a worktree on up-to-date main. Order: `orion-gpu-pool` first (knows
    `urgent`), then `orion-llm-gateway`, `orion-durable-runs`, `orion-sql-writer`, `orion-hub` (event /
-   state consumers). The circe services (`orion-gpu-lane-controller`, `orion-llamacpp-host`) load the
-   yaml for placement only. Check whether they validate `GpuPoolEventV1` / `GpuPoolStateV1`; if so,
-   print their redeploy commands for Juniper rather than doing it.
+   state consumers).
+   - **circe `orion-gpu-lane-controller` goes with the pool, in one step with pulling circe's
+     checkout.** It re-reads `/repo/config/gpu_pool.yaml` live from circe's checkout mount, but
+     parses it with the `orion` code baked into its image, whose `Defaults` forbid unknown keys. A
+     pulled checkout with the old image makes every actuation fail `config_unloadable`. Print the
+     pull + rebuild commands for Juniper as one step.
+   - `orion-llamacpp-host` needs nothing.
+   - `orion-sql-writer` must be redeployed before Plan 3 sends urgent work: it validates
+     `GpuPoolEventV1.priority` against the priority list, so an old image drops urgent events.
+   - Rollback (`urgent_max_concurrent: 0`) needs a redeploy of **both** `orion-gpu-pool` and
+     `orion-durable-runs`: each bakes its own yaml copy.
 5. Live proof (no urgent trigger exists until Plan 3):
    - Pool health and `gpu_pool.state` show the new config digest.
    - No regression: a normal curiosity run is granted and completes.

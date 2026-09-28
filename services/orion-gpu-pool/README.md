@@ -110,8 +110,14 @@ durable-runs replays the interrupted node when it is granted again.
 - Never paused: chat/interactive, other urgent, operator, one-shot request and child leases.
   Urgent reaches the `chat` role only while gpu0 is lent, and chat's own requests may still use an
   urgent hold's gaps there.
-- An urgent owner taking back a role a background/system hold is borrowing uses the same pause
-  (5 s grace, re-queued in place); that counts as the one pause.
+- An urgent owner taking back its own role pauses the hold borrowing it whatever that hold's
+  priority -- system as well as background, even when a background hold elsewhere could be paused
+  instead. Same pause (5 s grace, re-queued in place); it counts as the one pause.
+- A paused run's last call may still be running on the slot after the abort. That call is still
+  the pause: urgent waits for it (durable-runs cancels it within about a second) instead of pausing
+  a second run.
+- Urgent only pauses holds on roles its own class may use, and only urgent leases the cap has room
+  for are owed a pause or count as a waiting owner.
 - Urgent holds may stack past "one hold per role" (bounded by slots and the cap below).
 - `queued` and `recall` replies carry `reason`, so a caller can tell a pause from any other recall.
 
@@ -120,9 +126,23 @@ Defaults (`config/gpu_pool.yaml`):
 - `urgent_preempt_grace_sec: 5` -- how long a paused hold gets before it is aborted and re-queued.
 - `urgent_max_concurrent: 3` -- urgent leases active at once; a 4th waits and pauses nothing.
 
-**Rollback:** set `urgent_max_concurrent: 0` and redeploy the pool (the yaml is baked into the
-image). Urgent then behaves exactly like background: no pauses, no stacking. The eval's urgent
-scenario checks this too.
+**Rollback:** set `urgent_max_concurrent: 0` and redeploy **both** `orion-gpu-pool` and
+`orion-durable-runs`. Each bakes its own copy of the yaml into its image; durable-runs reads
+`urgent_max_concurrent` to decide whether urgent runs skip its driver cap. Urgent then behaves
+exactly like background: no pauses, no stacking. The eval's urgent scenario checks this too.
+
+**Known limitation:** a finished run's hold kept for Hub outreach compose (Door-A) is an ordinary
+background hold, so urgent work can pause it. Durable-runs then ends that hold (a re-queued hold
+is never re-granted to a finished run), so an outreach compose still in progress loses its GPU
+hold.
+
+**Deploy order:** `orion-gpu-pool` and the circe `orion-gpu-lane-controller` change together. The
+lane-controller re-reads `config/gpu_pool.yaml` live from circe's checkout (mounted at `/repo`), but
+parses it with the `orion` code baked into its image, whose config models refuse unknown keys. Pull
+circe's checkout without rebuilding the lane-controller and every actuation fails
+`config_unloadable`. So pulling circe's checkout and rebuilding the lane-controller is one step.
+`orion-llamacpp-host` needs nothing. `orion-sql-writer` must be redeployed before Plan 3 sends
+urgent work: it validates pool events against the priority list.
 
 Nothing sends urgent work yet (Plan 3 adds the trigger). A live pause smoke is **UNVERIFIED**: it
 would pause a real background run, so it waits for Juniper's approval.

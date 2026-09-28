@@ -165,9 +165,16 @@ Plan: `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-2-pool-urgent.md`
   recently granted first. Never paused: interactive, urgent, operator, request or child leases, or
   the owner of a role the urgent lease only borrows (re-queued, that owner would win the role back).
   One pause per waiting urgent lease; a pause already under way on a slot it could take counts.
+  That includes a paused hold already re-queued whose last call (child lease) is still on the slot:
+  the call is still the pause, so urgent waits for it instead of pausing a second run, and
+  durable-runs polls every second after an urgent recall so it cancels that call quickly. Only a
+  role in the urgent lease's own class counts, and only urgent leases the cap still has room for
+  are owed a pause or count as waiting owners.
 - **Urgent owner reclaiming a borrowed role:** when an urgent lease owns a role (e.g. `agent`) and a
   background/system hold is borrowing it, the owner reclaim of that hold *is* the pause: reason
   `urgent_preempt`, 5 s grace, re-queued in place. It is the hold's one pause, not an extra one.
+  The borrower is paused whatever its priority: a system borrower is paused even when a
+  background hold elsewhere could have been paused instead.
 - **Chat stays untouched.** Urgent is `agent` class, so it reaches the `chat` role only while gpu0 is
   lent. No chat or interactive lease is ever recalled by urgent. If an urgent hold borrows `chat`,
   chat's own requests may use that hold's gaps (between its calls), same as any owner.
@@ -182,7 +189,8 @@ Plan: `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-2-pool-urgent.md`
   on `GpuLeaseReplyV1`; now filled in).
 - **Durable runs:**
   - A turn preempted mid-node records `run.preempted`, spends no attempt, keeps its hold (same
-    lease, same place in line) and replays the node when the hold is granted again.
+    lease, same place in line) and replays the node when the hold is granted again. The Hub's run
+    story shows it as "paused for urgent work", not as a failure.
   - A hold recalled for urgent work *before* its step starts is not released. Durable-runs waits
     for the pool to re-queue it in place: local clock, at most grace 5 s + 3 s margin, and each
     status call is time-bounded. Any other recall reason (or no re-queue in time) keeps the old
@@ -190,9 +198,23 @@ Plan: `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-2-pool-urgent.md`
   - Reconcile drives urgent runs first, outside `MAX_CONCURRENT_DRIVERS` (4), capped at
     `urgent_max_concurrent` (3). `list_pending()` puts urgent rows first.
 - Config: `defaults.urgent_preempt_grace_sec: 5`, `defaults.urgent_max_concurrent: 3`.
-- **Rollback:** `urgent_max_concurrent: 0`. The scheduler then treats urgent as background (no
-  pause, no stacking) and durable-runs drives urgent runs inside the normal cap. `list_pending()`'s
-  SQL still sorts urgent rows first; harmless, it only changes which rows are read first.
+- **Rollback:** `urgent_max_concurrent: 0`, then redeploy **both** `orion-gpu-pool` and
+  `orion-durable-runs` (each bakes its own copy of the yaml; durable-runs reads
+  `urgent_max_concurrent` for its driver-cap bypass). The scheduler then treats urgent as
+  background (no pause, no stacking) and durable-runs drives urgent runs inside the normal cap.
+  `list_pending()`'s SQL still sorts urgent rows first; harmless, it only changes which rows are
+  read first.
+- **Rollout order:** `orion-gpu-pool` and circe's `orion-gpu-lane-controller` go together. The
+  lane-controller re-reads `/repo/config/gpu_pool.yaml` live from circe's checkout, but parses it
+  with the `orion` code baked into its image, whose `Defaults` refuse unknown keys: pulling circe's
+  checkout without rebuilding the lane-controller makes every actuation fail `config_unloadable`.
+  Pulling circe's checkout and rebuilding the lane-controller is one step. `orion-llamacpp-host`
+  needs nothing. `orion-sql-writer` must be redeployed before Plan 3 sends urgent work (it validates
+  `GpuPoolEventV1.priority` against the priority list).
+- **Known limitation:** a finished run's hold kept for Hub outreach compose (Door-A) is an ordinary
+  background hold, so urgent work can pause it. Durable-runs then ends that hold (a re-queued hold
+  is never re-granted to a finished run), so an outreach compose still in progress loses its GPU
+  hold. No code change in Plan 2.
 - **Live status:** unit tests + the pool eval's urgent scenario cover the pause/resume path. A live
   preemption smoke is **UNVERIFIED**: it pauses a real background run, so it waits for Juniper's
   approval.

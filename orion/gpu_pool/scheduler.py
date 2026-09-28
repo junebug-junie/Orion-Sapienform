@@ -31,8 +31,9 @@ Stage 4.3 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-ac
 Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md):
   U1 a waiting urgent lease that got no slot pauses one granted background (then system)
      durable-run hold on a role it could use: recall urgent_preempt with urgent_preempt_grace_sec;
-     most recently granted first; never interactive, urgent, operator or request leases. A pause
-     already under way (recalling, reason urgent_preempt) counts, so the grace is not re-spent
+     most recently granted first; never interactive, urgent, operator or request leases, and never
+     the owner of a role the urgent lease only borrows (re-queued, the owner would win it back).
+     A pause under way (recalling urgent_preempt) on a slot the lease could take serves it first
   U2 the paused hold's abort re-queues it in place without spending an attempt (lease_graph)
   U3 urgent holds are exempt from H1 (bounded by slots and urgent_max_concurrent) and skip a
      swap seat's after_wait_sec when no pause serves them (guards still apply). On a role it
@@ -469,7 +470,7 @@ def schedule(
                 break
 
     def owners_waiting(role: str) -> list[LeaseView]:
-        return [q for q in order if q.lease_id not in granted
+        return [q for q in order if q.lease_id not in granted and not capped(q)
                 and cfg.owns(q.work_class, role) and ctx.placeable(q, role)]
 
     for lease in order:
@@ -550,32 +551,32 @@ def schedule(
             recall(lease, "max_hold")
 
     # U1: each waiting urgent lease (up to the cap) pauses one preemptible hold it could replace.
-    # Pauses already under way count first, so the short grace is not re-spent every tick.
+    # A pause already under way that the lease could replace serves it first, so the short grace
+    # is not re-spent every tick (including the tick its grace runs out and it is aborted).
     room = max(0, d.urgent_max_concurrent - urgent_n[0])
     waiting_urgent = [q for q in order if q.priority == URGENT and q.lease_id not in granted
                       and q.hold_lease_id is None][:room]
-    pausing = sum(1 for l in leases if l.status == "recalling" and l.reason == PREEMPT)
+    pausing = [l for l in leases if l.status == "recalling" and l.reason == PREEMPT and l.role
+               and l.hold_lease_id is None]
     victims = sorted(
         (l for l in active if l.kind == "hold" and not l.operator and l.priority in PREEMPTIBLE
          and not (l.expires_at is not None and l.expires_at <= now)),
         key=lambda l: (-rank(l.priority), -(l.granted_at or l.created_at).timestamp(), l.lease_id))
 
     def could_take(u: LeaseView, v: LeaseView) -> bool:
-        """Would ``u`` get ``v``'s slot once it is free (placement + rule 5 on borrowed roles)?"""
-        role = v.role
-        if not ctx.placeable(u, role):
-            return False
-        if cfg.owns(u.work_class, role):
-            return True
-        if owners_waiting(role):
-            return False
-        return u.kind != "hold" or not any(
-            l.lease_id != v.lease_id and l.hold_lease_id is None and cfg.owns(l.work_class, role)
-            and (granted_role.get(l.lease_id) or (l.role if l.status in ACTIVE else None)) == role
-            for l in leases)
+        """Would ``u`` get ``v``'s slot once ``v`` is aborted and re-queued in place? Not when ``u``
+        only borrows a role ``v`` owns: owners are granted first, so ``v`` would win it back and be
+        paused again every grace. (A non-owner hold on a role with owner demand is already
+        recalled above, so it never reaches here.)"""
+        return ctx.placeable(u, v.role) and (cfg.owns(u.work_class, v.role) or not cfg.owns(v.work_class, v.role))
 
+    # Greedy, in queue order: at most urgent_max_concurrent leases against a handful of holds.
     unserved_urgent: set[str] = set()
-    for u in waiting_urgent[pausing:]:
+    for u in waiting_urgent:
+        serving = next((p for p in pausing if could_take(u, p)), None)
+        if serving is not None:
+            pausing.remove(serving)
+            continue
         victim = next((v for v in victims if v.lease_id not in recalled and could_take(u, v)), None)
         if victim is None:
             unserved_urgent.add(u.lease_id)

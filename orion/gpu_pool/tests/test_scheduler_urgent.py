@@ -2,12 +2,13 @@
 Spec: docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md Part 1."""
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
 
 from orion.gpu_pool.scheduler import (
-    Abort, CardLive, LeaseView, Recall, RoleLive, SwapBlocked, SwapLoad, schedule,
+    Abort, CardLive, Grant, LeaseView, Recall, RoleLive, SwapBlocked, SwapLoad, schedule,
 )
 from orion.gpu_pool.tests.test_scheduler import CFG, T0, cards, grants, lease, live, of, run
 
@@ -68,13 +69,15 @@ def test_most_recently_granted_background_hold_is_picked():
 
 @pytest.mark.parametrize("occupant", [
     lambda: lease("agent", "granted", "agent", priority="interactive", lease_id="occ"),
+    lambda: hold("granted", "agent", priority="interactive", lease_id="occ"),
     lambda: urgent(status="granted", role="agent", lease_id="occ"),
     lambda: hold("granted", "agent", operator=True, lease_id="occ"),
     lambda: lease("agent", "granted", "agent", priority="system", lease_id="occ"),   # agent-burst request
     lambda: lease("agent", "granted", "agent", priority="background", lease_id="occ"),
     lambda: lease("agent", "granted", "agent", priority="background", hold_lease_id="elsewhere",
                   lease_id="occ"),                                                    # a child
-], ids=["interactive", "urgent_hold", "operator_hold", "system_request", "background_request", "child"])
+], ids=["interactive", "interactive_hold", "urgent_hold", "operator_hold", "system_request",
+        "background_request", "child"])
 def test_never_paused(occupant):
     decisions = run([occupant(), urgent(lease_id="u")])
     assert grants(decisions) == {} and of(Recall, decisions) == []
@@ -98,6 +101,27 @@ def test_two_waiting_urgent_leases_pause_two_holds():
     # one already pausing covers the first; the second urgent lease pauses one more
     pausing = hold("recalling", "agent", lease_id="b", reason="urgent_preempt", recall_by=T0 + timedelta(seconds=3))
     assert preempts(run([a, pausing, u1, u2], roles=agent_slots(2))) == ["a"]
+
+
+def test_grace_expiry_tick_aborts_the_victim_without_pausing_another():
+    p = hold("recalling", "agent", lease_id="p", reason="urgent_preempt", recall_by=T0)
+    other = hold("granted", "agent", lease_id="o", granted_at=T0 - timedelta(seconds=10))
+    decisions = run([p, other, urgent(lease_id="u")], roles=agent_slots(2))
+    assert of(Abort, decisions) == [Abort("p", "urgent_preempt")]
+    assert of(Recall, decisions) == []
+
+
+def test_a_pause_serves_only_an_urgent_lease_that_could_use_that_role():
+    # a pause under way on diffusion frees nothing a metacog urgent lease can use
+    p = lease("diffusion", "recalling", "diffusion", priority="background", kind="hold", retryable=True,
+              lease_id="p", reason="urgent_preempt", recall_by=T0 + timedelta(seconds=3))
+    fast_v = lease("fast", "granted", "agent", priority="background", kind="hold", retryable=True,
+                   lease_id="fv", granted_at=T0 - timedelta(seconds=10))
+    assert preempts(run(_gpu3_full() + [p, fast_v, _metacog_urgent()])) == ["fv"]
+    # a pause under way on agent (by a borrower it could replace) does count
+    p_agent = replace(fast_v, lease_id="p2", status="recalling", reason="urgent_preempt",
+                      recall_by=T0 + timedelta(seconds=3))
+    assert preempts(run(_gpu3_full() + [p_agent, _metacog_urgent()])) == []
 
 
 def test_expired_pause_aborts_with_urgent_preempt_other_recalls_keep_their_reason():
@@ -128,16 +152,60 @@ def test_expiring_hold_is_not_paused():
     assert preempts(decisions) == [] and grants(decisions) == {"u": "agent"}
 
 
-def test_borrowing_urgent_hold_does_not_pause_where_the_owner_would_still_block_it():
-    gpu3_full = [lease("metacog", "granted", "metacog") for _ in range(4)] + \
-                [lease("fast", "granted", "fast") for _ in range(4)]
+def _gpu3_full():
+    return [lease("metacog", "granted", "metacog") for _ in range(4)] + \
+           [lease("fast", "granted", "fast") for _ in range(4)]
+
+
+def _metacog_urgent():
+    return lease("metacog", priority="urgent", kind="hold", retryable=True, lease_id="u")
+
+
+def test_borrowing_urgent_hold_never_pauses_the_roles_owner():
     v = hold("granted", "agent", lease_id="v")                                  # agent-owned background run
-    u = lease("metacog", priority="urgent", kind="hold", retryable=True, lease_id="u")
-    # another agent-owned call on agent: the metacog hold could not borrow agent even once v left
     owner_busy = lease("agent", "granted", "agent", priority="system")
-    assert preempts(run(gpu3_full + [v, owner_busy, u], roles=agent_slots(2))) == []
-    # v is the only owner there: pausing it frees agent for the urgent borrower
-    assert preempts(run(gpu3_full + [v, u])) == ["v"]
+    assert preempts(run(_gpu3_full() + [v, owner_busy, _metacog_urgent()], roles=agent_slots(2))) == []
+    # even as the only owner there: re-queued in place, v would win its own role back (owners first)
+    assert preempts(run(_gpu3_full() + [v, _metacog_urgent()])) == []
+
+
+def _simulate(leases, ticks=5, roles=None):
+    """Tick the scheduler, applying its decisions the way the runtime does: a preempt Abort
+    re-queues the hold in place (same lease_id and created_at; Task 3's resume-in-place)."""
+    state = {l.lease_id: l for l in leases}
+    now, paused, got = T0, [], {}
+    for _ in range(ticks):
+        for x in schedule(CFG, roles or live(), cards(), list(state.values()), now):
+            if isinstance(x, Grant):
+                state[x.lease_id] = replace(state[x.lease_id], status="granted", role=x.role, granted_at=now)
+                got[x.lease_id] = x.role
+            elif isinstance(x, Recall):
+                paused += [x.lease_id] if x.reason == "urgent_preempt" else []
+                state[x.lease_id] = replace(state[x.lease_id], status="recalling", recall_by=x.recall_by,
+                                            reason=x.reason)
+            elif isinstance(x, Abort):
+                state[x.lease_id] = replace(state[x.lease_id], status="queued", role=None, recall_by=None,
+                                            granted_at=None, reason=x.reason)
+        now += GRACE
+    return paused, got
+
+
+def test_no_pause_loop_when_the_victim_owns_the_role_the_urgent_lease_borrows():
+    v = hold("granted", "agent", lease_id="v", age=100, granted_at=T0 - timedelta(seconds=50))
+    paused, got = _simulate(_gpu3_full() + [v, _metacog_urgent()])
+    assert paused == [] and "u" not in got
+
+
+def test_pause_abort_requeue_gives_the_slot_to_urgent_exactly_once():
+    # same owner: urgent is first in line for the freed slot, ahead of the re-queued victim
+    v = hold("granted", "agent", lease_id="v", age=100, granted_at=T0 - timedelta(seconds=50))
+    paused, got = _simulate([v, urgent(lease_id="u")])
+    assert paused == ["v"] and got == {"u": "agent"}
+    # both borrow agent: the urgent borrower is still ahead of the re-queued one
+    fast_v = lease("fast", "granted", "agent", priority="background", kind="hold", retryable=True,
+                   lease_id="v", age=100, granted_at=T0 - timedelta(seconds=50))
+    paused, got = _simulate(_gpu3_full() + [fast_v, _metacog_urgent()])
+    assert paused == ["v"] and got == {"u": "agent"}
 
 
 # --- U3: stacking past H1, cap -----------------------------------------------------------
@@ -166,6 +234,16 @@ def test_cap_blocks_grant_and_pause_for_a_fourth_urgent_lease():
     assert grants(run(active + [u4], roles=agent_slots(5))) == {}          # free slot, still capped
     # under the cap, the same shape pauses the background hold
     assert preempts(run(active[:2] + [bg, u4], roles=agent_slots(3))) == ["bg"]
+
+
+def test_capped_urgent_is_not_a_waiting_owner():
+    active = [urgent(status="granted", role="agent", lease_id=f"a{i}") for i in range(3)]
+    borrower = lease("fast", "granted", "agent", lease_id="b")
+    queued_borrower = lease("fast", lease_id="qb")
+    u4 = urgent(lease_id="u4")
+    decisions = run(_gpu3_full() + active + [borrower, queued_borrower, u4], roles=agent_slots(5))
+    assert of(Recall, decisions) == []                       # no owner_waiting recall for u4
+    assert grants(decisions) == {"qb": "agent"}              # and u4 does not block borrowers
 
 
 def test_cap_counts_grants_made_this_tick():

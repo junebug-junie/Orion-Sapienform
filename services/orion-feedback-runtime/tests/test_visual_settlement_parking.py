@@ -76,6 +76,14 @@ class TestTheStoreScoresTheLatestSettledRow:
         assert evidence[0]["visual_outcome"] == "produced"
         assert evidence[0]["latency_ms"] == 61_000.0
 
+    def test_an_older_settled_row_beats_a_newer_unconfirmed_kickoff(self, monkeypatch) -> None:
+        evidence = _evidence(
+            monkeypatch,
+            [_row("r:new", "not_submitted", status="empty"),
+             _row("r:old", "settled", outcome="produced", latency=61_000.0)],
+        )
+        assert [e["result_id"] for e in evidence] == ["r:old"]
+
     def test_the_newest_settled_row_wins(self, monkeypatch) -> None:
         evidence = _evidence(
             monkeypatch,
@@ -327,6 +335,20 @@ class TestTheParkIsBounded:
         w._tick()
         assert list(w._visual_parked_frames()) == ["f-a"]
         assert store.saved == []
+
+    def test_an_unconfirmed_kickoff_parks_too_so_a_late_image_still_counts(self, built) -> None:
+        unconfirmed = {"dispatch_id": "d-render", "status": "empty", "visual_outcome": "unknown",
+                       "settlement_state": "not_submitted"}
+        store = _Store([_Dispatch("f-render", age_sec=60.0)], {"f-render": [unconfirmed]})
+        w = _worker(store)
+        assert w._tick() is None
+        assert store.saved == [] and "f-render" in w._visual_parked_frames()
+
+    def test_unsettled_states_match_dispatch(self) -> None:
+        from app.store import UNSETTLED_RENDER_STATES
+        from orion.execution_dispatch.visual_settlement import SETTLEABLE_STATES
+
+        assert UNSETTLED_RENDER_STATES == frozenset(SETTLEABLE_STATES)
 
     def test_a_direct_path_render_is_not_parked(self, built) -> None:
         store = _Store(

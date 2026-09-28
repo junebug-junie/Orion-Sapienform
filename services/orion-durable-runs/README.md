@@ -96,15 +96,19 @@ prepare -> resource_request -> resource_wait -> generate -> caption -> finish
 - **Abandon is reliable.** Whenever a run ends without `completed` (deadline, operator
   cancel, resume-failure bound, any graph failure), the driver records
   `run.abandon_pending` in the run's event log *before* the terminal projection, then
-  sends thought `step = abandon` once (30 s) *after* it -- the terminal never waits on
-  thought. `attempt_id` is sent when known; otherwise thought resolves the attempt by
-  `visual_request.dispatch_id` (a lost prepare reply cannot strand a claimed attempt).
-  Only a `done`/`terminal` answer counts: it is recorded as `run.abandon_acked` and
-  clears the pending record. A timeout, transport error or `retry` answer stays pending
-  and the reconcile loop re-sends it after `DURABLE_RUNS_RETRY_BASE_SEC * 2^(n-1)`
-  (capped at `DURABLE_RUNS_RETRY_MAX_SEC`) until thought answers. Pending records live
-  in `durable_resource_events` (no new table), are re-read every
-  `DURABLE_RUNS_HOLD_STATUS_POLL_SEC`, and so survive a durable-runs restart. Paused or
+  sends thought `step = abandon` in the background (30 s bound) *after* it -- the
+  terminal never waits on thought. `attempt_id` is sent when known; otherwise thought
+  resolves the attempt by `visual_request.dispatch_id` (a lost prepare reply cannot
+  strand a claimed attempt). Only `done`, or `terminal` with reason `attempt_mismatch`
+  (nothing of ours to close), counts: it is recorded as `run.abandon_acked` and clears
+  the pending record. A timeout, transport error, `retry`, or any other `terminal`
+  (e.g. an older thought rejecting the request) stays pending and the reconcile loop
+  re-sends it after `DURABLE_RUNS_RETRY_BASE_SEC * 2^(n-1)` (capped at
+  `DURABLE_RUNS_RETRY_MAX_SEC`). Pending records live in `durable_resource_events` (no
+  new table; optional index `manual_migration_durable_resource_abandon_pending_v1.sql`),
+  are re-read newest-first every `DURABLE_RUNS_HOLD_STATUS_POLL_SEC`, and so survive a
+  durable-runs restart. After `ABANDON_GIVE_UP_SEC` (3 h, `orion/durable_admission/store.py`)
+  retries stop: thought's own max-age sweep has released the attempt by then. Paused or
   completed runs are never abandoned.
 - Restart: `generate` is the work node. A restart mid-generate fences it and replays it
   under the same hold (thought's generate is idempotent: the recorded artifact, or a

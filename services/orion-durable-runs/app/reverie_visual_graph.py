@@ -41,10 +41,14 @@ logger = logging.getLogger(__name__)
 
 RETRY_WINDOW_EXPIRED = "retry_window_expired"
 ABANDON_TIMEOUT_SEC = 30.0
-# Retry reasons thought's generate/caption return when the attempt has no frozen plan or no row
+# Retry reasons thought's generate/caption return when the attempt has no frozen plan
 # (services/orion-thought/app/visual_steps.py): retrying the same stage can never fix those, only
-# prepare (which claims/loads the attempt by dispatch_id and freezes the plan) can.
-REPREPARE_REASONS = frozenset({"not_prepared", "plan_not_frozen", "attempt_missing"})
+# prepare (which loads the attempt by dispatch_id and re-freezes the plan) can.
+REPREPARE_REASONS = frozenset({"not_prepared", "plan_not_frozen"})
+# The only thought ``terminal`` abandon answer that means "nothing left to close": the dispatch is
+# claimed by a different request. Any other terminal (e.g. an older thought rejecting an abandon
+# without attempt_id as invalid) closed nothing, so it stays pending.
+ABANDON_TERMINAL_ACKS = frozenset({"attempt_mismatch"})
 # Floor for any backoff, including a thought-supplied retry_after_sec of 0: a retry is never an
 # immediate loop.
 MIN_BACKOFF_SEC = 1.0
@@ -367,8 +371,9 @@ def abandon_request(run_id: str, visual_request: dict | VisualRunRequestV1,
 
 async def send_abandon(run_step: RunStep | None, req: ReverieVisualStepRequestV1, *, reason: str) -> bool:
     """Tell thought to close the attempt (bounded; never raises). An attempt left ``active`` blocks
-    every later claim for the dispatch. True only when thought answered ``done`` or ``terminal``
-    for this request; a ``retry``, a timeout or a transport error is False (the caller retries)."""
+    every later claim for the dispatch. True only when thought answered ``done``, or ``terminal``
+    with a reason in ABANDON_TERMINAL_ACKS, for this request; anything else is False (the caller
+    retries)."""
     if run_step is None:
         return False
     try:
@@ -380,8 +385,8 @@ async def send_abandon(run_step: RunStep | None, req: ReverieVisualStepRequestV1
     if (result.run_id, result.correlation_id, result.step) != (req.run_id, req.correlation_id, "abandon"):
         logger.warning("reverie_visual_abandon_identity_mismatch run=%s", req.run_id)
         return False
-    if result.status == "retry":
-        logger.warning("reverie_visual_abandon_deferred run=%s dispatch=%s thought_reason=%s",
-                       req.run_id, req.visual_request.dispatch_id, result.reason)
-        return False
-    return True
+    if result.status == "done" or (result.status == "terminal" and result.reason in ABANDON_TERMINAL_ACKS):
+        return True
+    logger.warning("reverie_visual_abandon_deferred run=%s dispatch=%s status=%s thought_reason=%s",
+                   req.run_id, req.visual_request.dispatch_id, result.status, result.reason)
+    return False

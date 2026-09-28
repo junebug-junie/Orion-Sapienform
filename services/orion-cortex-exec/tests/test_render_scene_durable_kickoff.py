@@ -125,6 +125,16 @@ def test_retry_window_setting_overrides_baseline(monkeypatch, _no_direct_call):
     assert delta == timedelta(seconds=1200)
 
 
+def test_retry_window_never_outlives_thoughts_attempt_max_age(monkeypatch, _no_direct_call):
+    from orion.schemas.reverie_visual_run import REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC
+
+    monkeypatch.setattr(verb_adapters.settings, "render_scene_retry_window_sec", 86400.0)
+    _, result = _run(_FakeBus(), {"dispatch_id": "dispatch-abc"})
+    settlement = result["settlement"]
+    delta = datetime.fromisoformat(settlement["deadline_at"]) - datetime.fromisoformat(settlement["submitted_at"])
+    assert delta == timedelta(seconds=REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC)
+
+
 @pytest.mark.parametrize(
     ("mode", "reason_prefix"),
     [

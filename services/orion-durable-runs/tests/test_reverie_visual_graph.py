@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -283,7 +284,7 @@ def test_repeated_needs_generate_backs_off_exponentially_on_the_regeneration_cou
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("reason", ["not_prepared", "plan_not_frozen", "attempt_missing"])
+@pytest.mark.parametrize("reason", ["not_prepared", "plan_not_frozen"])
 def test_generate_retry_without_a_prepared_attempt_releases_the_hold_and_reprepares(reason):
     async def run():
         world, saver = World(), InMemorySaver()
@@ -304,7 +305,7 @@ def test_generate_retry_without_a_prepared_attempt_releases_the_hold_and_reprepa
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("reason", ["not_prepared", "plan_not_frozen", "attempt_missing"])
+@pytest.mark.parametrize("reason", ["not_prepared", "plan_not_frozen"])
 def test_caption_retry_without_a_prepared_attempt_goes_back_to_prepare(reason):
     async def run():
         world, saver = World(), InMemorySaver()
@@ -497,6 +498,7 @@ def test_failed_reverie_run_publishes_a_durable_run_state_with_the_dispatch_deta
     async def run():
         rt, published = runtime(REVERIE_VISUAL_WORKFLOW)
         await rt._terminal(RUN, "failed", _failed_state(), workflow=REVERIE_VISUAL_WORKFLOW)
+        await settle(rt)
         await rt._publish_outbox()
         [state] = [m for ch, kind, m in published if kind == DURABLE_RUN_STATE_KIND]
         assert isinstance(state, DurableRunStateV1)
@@ -516,6 +518,7 @@ def test_driver_side_terminal_abandons_the_attempt_and_a_cancel_keeps_the_dispat
         rt, published = runtime(REVERIE_VISUAL_WORKFLOW, thought)
         rt.store.control = "cancelled"
         await rt._terminal(RUN, "cancelled", _failed_state(), workflow=REVERIE_VISUAL_WORKFLOW)
+        await settle(rt)
         [(_, abandon)] = thought.calls
         assert abandon.step == "abandon" and abandon.attempt_id == "att-1"
         assert rt.store.recorded_events() == ["run.abandon_pending", "run.abandon_acked"]
@@ -536,6 +539,7 @@ def test_abandon_thought_misses_goes_terminal_anyway_and_reconcile_retries_until
                                           ("retry", {"reason": "store_busy"}), ("done", {})])
         rt, published = runtime(REVERIE_VISUAL_WORKFLOW, thought)
         await rt._terminal(RUN, "failed", _failed_state(), workflow=REVERIE_VISUAL_WORKFLOW)
+        await settle(rt)
         assert thought.steps() == ["abandon"]                     # attempted
         assert rt.store.terminal == "failed"                      # terminal anyway
         [pending] = await rt.store.abandons_pending()
@@ -577,10 +581,50 @@ def test_run_that_never_learned_its_attempt_abandons_by_dispatch_id():
         assert result.get("attempt_id") is None and thought.steps() == []
         rt, _ = runtime(REVERIE_VISUAL_WORKFLOW, thought)
         await rt._terminal(RUN, "failed", result, workflow=REVERIE_VISUAL_WORKFLOW)
+        await settle(rt)
         [(_, abandon)] = thought.calls
         assert abandon.step == "abandon" and abandon.attempt_id is None
         assert abandon.visual_request.dispatch_id == "dispatch-1"
         assert rt.store.recorded_events() == ["run.abandon_pending", "run.abandon_acked"]
+    asyncio.run(run())
+
+
+def test_terminal_abandon_answer_that_closed_nothing_stays_pending():
+    """An older thought rejects an abandon without attempt_id as invalid (terminal): nothing was
+    closed, so it is not an ack. attempt_mismatch (dispatch claimed by another request) is."""
+    async def run():
+        world = World()
+        thought = Thought(world, abandon=[("terminal", {"outcome": "failed", "reason": "invalid_step_request"}),
+                                          ("terminal", {"outcome": "failed", "reason": "attempt_mismatch"})])
+        rt, _ = runtime(REVERIE_VISUAL_WORKFLOW, thought)
+        await rt._terminal(RUN, "failed", _failed_state(), workflow=REVERIE_VISUAL_WORKFLOW)
+        await settle(rt)
+        assert rt.store.recorded_events() == ["run.abandon_pending"] and rt._abandons[RUN]["failures"] == 1
+        rt._abandons[RUN]["due"] = 0.0
+        await rt.reconcile()
+        await settle(rt)
+        assert rt.store.recorded_events() == ["run.abandon_pending", "run.abandon_acked"]
+        assert rt._abandons == {}
+    asyncio.run(run())
+
+
+def test_unconfirmed_abandon_is_given_up_after_thoughts_own_sweep_would_have_released_it():
+    from orion.durable_admission.store import ABANDON_GIVE_UP_SEC
+
+    async def run():
+        world = World()
+        thought = Thought(world, abandon=[(ConnectionError("thought down"), {})] * 3)
+        rt, _ = runtime(REVERIE_VISUAL_WORKFLOW, thought)
+        await rt._terminal(RUN, "failed", _failed_state(), workflow=REVERIE_VISUAL_WORKFLOW)
+        await settle(rt)
+        assert rt._abandons[RUN]["failures"] == 1
+        rt._abandons[RUN].update(due=0.0, pending_since=time.time() - ABANDON_GIVE_UP_SEC - 1)
+        await rt.reconcile()
+        await settle(rt)
+        assert rt._abandons == {} and len(thought.calls) == 2
+        await rt.reconcile()
+        await settle(rt)
+        assert len(thought.calls) == 2                            # never re-sent
     asyncio.run(run())
 
 
@@ -593,6 +637,7 @@ def test_completed_or_paused_reverie_run_never_abandons():
         rt2, _ = runtime(REVERIE_VISUAL_WORKFLOW, thought)
         rt2.store.control = "paused"
         await rt2._terminal(RUN, "failed", _failed_state(), workflow=REVERIE_VISUAL_WORKFLOW)
+        await settle(rt2)
         assert thought.calls == [] and rt.store.recorded == {} and rt2.store.recorded == {}
     asyncio.run(run())
 

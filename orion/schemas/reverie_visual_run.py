@@ -43,6 +43,11 @@ REVERIE_VISUAL_STEP_REPLY_PREFIX = "orion:reverie:visual:step:reply"
 REVERIE_VISUAL_STEP_REQUEST_KIND = "reverie.visual.step.request.v1"
 REVERIE_VISUAL_STEP_RESULT_KIND = "reverie.visual.step.result.v1"
 
+# Longest retry window a run may be given. orion-thought releases attempts older than its
+# ORION_VISUAL_CHAIN_ATTEMPT_MAX_AGE_SEC (default 7200, asserted larger than this), so a live
+# run must never outlast it: its attempt would be released under it.
+REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC = 6600.0
+
 REVERIE_VISUAL_NODES: tuple[str, ...] = ("prepare", "generate", "caption", "finish")
 
 ReverieVisualStep = Literal["prepare", "generate", "caption", "abandon"]

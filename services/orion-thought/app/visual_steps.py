@@ -207,9 +207,11 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
     row = await asyncio.to_thread(store.load_visual_attempt_for_dispatch, request)
     if row is None:
         # Before a NEW claim only; replaying an existing claim needs no authorization.
-        # Structural eligibility only: validated at the baseline's own observed_at, so
-        # a run that waited out retries is never ended as stale. Freshness is enforced
-        # by the claim instead -- `already_satisfied` when another success landed.
+        # Structural eligibility only: validated at the later of the baseline's own
+        # observed_at and due_at (the scheduler admits a need once due_at <= its clock,
+        # which may be after thought observed activity -- always so on first activation),
+        # so a run that waited out retries is never ended as stale or not-due. Freshness
+        # is enforced by the claim instead -- `already_satisfied` when another success landed.
         policy = load_baseline_policy()
         baseline = request.visual_baseline
         if baseline:
@@ -217,10 +219,16 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
                 # Operator state, not a property of the request: wait it out.
                 return step.retry("legacy_visual_worker_enabled",
                                   retry_after_sec=_LEGACY_WORKER_RETRY_AFTER_SEC)
-            reason = validate_eligibility(baseline, policy=policy, now=baseline.observed_at)
+            reason = validate_eligibility(baseline, policy=policy,
+                                          now=max(baseline.observed_at, baseline.due_at))
             if reason:
                 return step.terminal("failed", reason)
         now = now_fn()
+        if baseline and baseline.due_at > now:
+            # Due-ness only ever becomes true, so it is checked against the real clock;
+            # early (e.g. clock skew with proposal-runtime) waits rather than failing.
+            return step.retry("visual_baseline_not_due",
+                              retry_after_sec=(baseline.due_at - now).total_seconds())
         attempt_id, replay = await asyncio.to_thread(
             store.claim_visual_attempt, request, retry_sec=policy.retry_sec, now=now,
             abandoned_in_flight_window_sec=_in_flight_window_sec(),
@@ -252,8 +260,11 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
     def freeze(current: dict, current_row: dict) -> dict | None:
         if current_row["outcome"] not in _OPEN_OUTCOMES or _frozen_plan(current) is not None:
             return None
-        current.update(plan=plan.to_json(), stage="prepared", prepared_at=now.isoformat(),
+        current.update(plan=plan.to_json(), prepared_at=now.isoformat(),
                        prepare_elapsed_sec=round(elapsed, 3))
+        # Re-freezing an unreadable plan must not rewind a generating/generated attempt:
+        # that would skip the in-flight guard or discard a recorded image.
+        current.setdefault("stage", "prepared")
         return current
 
     frozen = await asyncio.to_thread(store.update_visual_stage, attempt_id, freeze)
@@ -400,8 +411,8 @@ async def _record_generated(attempt_id: str, record: dict) -> bool:
     return False
 
 
-async def _adopt_unrecorded(attempt_id: str, stage: dict) -> str | None:
-    """sha of the unrecorded render now recorded for this attempt, or None."""
+async def _adopt_unrecorded(attempt_id: str, stage: dict) -> dict | None:
+    """Artifact record of the unrecorded render now recorded for this attempt, or None."""
     pending = _unrecorded_renders.get(attempt_id)
     if pending is None:
         return None
@@ -421,7 +432,7 @@ async def _adopt_unrecorded(attempt_id: str, stage: dict) -> str | None:
         return None
     logger.info("visual step adopted unrecorded image attempt=%s sha=%s",
                 attempt_id, artifact["sha256"][:12])
-    return artifact["sha256"]
+    return artifact
 
 
 async def generate_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _now):
@@ -454,7 +465,9 @@ async def generate_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _
 
     adopted = await _adopt_unrecorded(attempt_id, stage)
     if adopted is not None:
-        return step.result("done", artifact_sha256=adopted)
+        # The GPU time was spent by the earlier try; report it, not this step's wall time.
+        return step.result("done", artifact_sha256=adopted["sha256"],
+                           elapsed_sec=float(adopted.get("elapsed_sec") or 0.0))
 
     window = _in_flight_window_sec()
     if stage.get("stage") == "generating" and stage.get("generating_started_at"):

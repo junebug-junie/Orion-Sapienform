@@ -258,10 +258,38 @@ async def test_prepare_retried_long_after_the_baseline_was_observed_still_claims
 
 
 @pytest.mark.asyncio
-async def test_prepare_structurally_ineligible_baseline_is_terminal(env, monkeypatch):
-    request = _baseline_request(monkeypatch, env, observed_at=NOW, due_at=NOW + timedelta(minutes=5))
+async def test_prepare_claims_when_due_after_thought_observed_activity(env, monkeypatch):
+    # First activation: the scheduler sets due_at = its own now, later than thought's
+    # observed_at. That need is due, not "not due".
+    observed = NOW - timedelta(seconds=40)
+    request = _baseline_request(monkeypatch, env, observed_at=observed,
+                                due_at=observed + timedelta(milliseconds=40))
     result = await _run(env, _req("prepare", request=request))
-    assert (result.status, result.outcome, result.reason) == ("terminal", "failed", "visual_baseline_not_due")
+    assert result.status == "done", result
+    assert env.store.claims == [result.attempt_id]
+
+
+@pytest.mark.asyncio
+async def test_prepare_before_due_waits_until_due(env, monkeypatch):
+    # A few seconds of clock skew with proposal-runtime: wait, do not fail.
+    request = _baseline_request(monkeypatch, env, observed_at=NOW, due_at=NOW + timedelta(seconds=5))
+    result = await _run(env, _req("prepare", request=request))
+    assert (result.status, result.reason) == ("retry", "visual_baseline_not_due")
+    assert result.retry_after_sec == 5.0
+    assert env.store.claims == []
+
+
+@pytest.mark.asyncio
+async def test_prepare_structurally_ineligible_baseline_is_terminal(env, monkeypatch):
+    from orion.schemas.reverie_visual import VisualBaselineEligibilityV1
+
+    request = _baseline_request(monkeypatch, env, observed_at=NOW, due_at=NOW - timedelta(seconds=1))
+    wrong_policy = VisualBaselineEligibilityV1.model_validate(
+        {**request.visual_baseline.model_dump(), "policy_id": "some-other-policy"})
+    request = request.model_copy(update={"visual_baseline": wrong_policy})
+    result = await _run(env, _req("prepare", request=request))
+    assert (result.status, result.outcome, result.reason) == (
+        "terminal", "failed", "visual_baseline_policy_mismatch")
     assert env.store.claims == []
 
 
@@ -289,9 +317,12 @@ async def test_legacy_run_once_claim_applies_the_same_release_rules(env, monkeyp
 def test_attempt_max_age_default_outlasts_the_durable_retry_window():
     from app.settings import ThoughtSettings
     from orion.execution_dispatch.visual_settlement import DEFAULT_RETRY_WINDOW_SEC
+    from orion.schemas.reverie_visual_run import REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC
 
     default = ThoughtSettings.model_fields["visual_chain_attempt_max_age_sec"].default
     assert default == 7200.0 and default > DEFAULT_RETRY_WINDOW_SEC
+    # cortex-exec clamps every run's retry window to this cap.
+    assert default > REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC >= DEFAULT_RETRY_WINDOW_SEC
 
 
 @pytest.mark.asyncio
@@ -575,15 +606,34 @@ async def test_unrecorded_render_is_adopted_by_the_next_generate_not_rerendered(
     assert first.artifact_sha256 and first.attempt_id == attempt_id
     assert Path(env.steps._unrecorded_renders[attempt_id]["artifact"]["path"]).exists()
     assert env.store.rows[attempt_id]["stage_json"]["stage"] == "generating"
+    env.steps._unrecorded_renders[attempt_id]["artifact"]["elapsed_sec"] = 42.5
 
     # Still inside the in-flight window, yet the verified file is adopted, not re-rendered.
     again = await _run(env, _req("generate", attempt_id=attempt_id, correlation_id="corr-2"))
     assert again.status == "done", again
     assert again.artifact_sha256 == first.artifact_sha256
     assert len(env.generate_calls) == 1
+    # The earlier try's GPU time, not the adopting step's near-zero wall time.
+    assert again.elapsed_sec == 42.5
     stage = env.store.rows[attempt_id]["stage_json"]
     assert (stage["stage"], stage["artifact"]["sha256"]) == ("generated", first.artifact_sha256)
     assert attempt_id not in env.steps._unrecorded_renders
+
+
+@pytest.mark.asyncio
+async def test_reprepare_of_unreadable_plan_never_rewinds_a_generated_attempt(env):
+    attempt_id, first = await _generated(env)
+    env.store.rows[attempt_id]["stage_json"]["plan"] = "unreadable-after-a-schema-change"
+    generate = await _run(env, _req("generate", attempt_id=attempt_id, correlation_id="corr-2"))
+    assert (generate.status, generate.reason) == ("retry", "not_prepared")
+
+    prepare = await _run(env, _req("prepare", correlation_id="corr-3"))
+    assert prepare.status == "done", prepare
+    assert env.store.rows[attempt_id]["stage_json"]["stage"] == "generated"
+    again = await _run(env, _req("generate", attempt_id=attempt_id, correlation_id="corr-4"))
+    assert again.status == "done", again
+    assert again.artifact_sha256 == first.artifact_sha256
+    assert len(env.generate_calls) == 1  # the recorded image is replayed, never re-rendered
 
 
 @pytest.mark.asyncio

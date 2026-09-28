@@ -1338,12 +1338,14 @@ RENDER_SCENE_SKILL = "skills.imagination.render_scene.v1"
 
 
 def _render_scene_retry_window_sec() -> float:
-    configured = float(settings.render_scene_retry_window_sec or 0.0)
-    if configured > 0:
-        return configured
-    from orion.reverie.baseline import load_baseline_policy
+    from orion.schemas.reverie_visual_run import REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC
 
-    return float(load_baseline_policy().interval_sec)
+    configured = float(settings.render_scene_retry_window_sec or 0.0)
+    if configured <= 0:
+        from orion.reverie.baseline import load_baseline_policy
+
+        configured = float(load_baseline_policy().interval_sec)
+    return min(configured, REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC)
 
 
 async def _submit_render_scene_durable(ctx: VerbContext, request: Any) -> SkillVerbOutput:

@@ -51,7 +51,12 @@ from app.reverie_visual_graph import (
 from orion.schemas.reading_turn import READING_WORKFLOW
 from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW
 from app.self_sense_graph import finish_detail as self_sense_finish_detail
-from orion.durable_admission.store import ABANDON_ACKED_EVENT, ABANDON_PENDING_EVENT, PostgresAdmissionStore
+from orion.durable_admission.store import (
+    ABANDON_ACKED_EVENT,
+    ABANDON_GIVE_UP_SEC,
+    ABANDON_PENDING_EVENT,
+    PostgresAdmissionStore,
+)
 from orion.gpu_pool.client import DURABLE_RUN_HOLDER_PREFIX, durable_run_holder
 from orion.schemas.durable_run import DurableRunRequestV1, DurableRunStateV1, DURABLE_RUN_STATE_KIND
 from orion.schemas.harness_finalize import HarnessRunCancelV1
@@ -823,9 +828,10 @@ class AdmissionRuntime:
         self._wake.set()
         if abandon is not None and actual in ("failed", "cancelled"):
             # Last, after every terminal fact: the run is terminal whether or not thought answers.
-            # One try now; a failed one stays pending and reconcile retries it (_retry_abandons).
-            self._abandons[run_id] = {**abandon, "failures": 0, "due": 0.0}
-            await asyncio.shield(self._spawn_abandon(run_id))
+            # One try now, in the background (never holds this run's claim or driver slot); a
+            # failed one stays pending and reconcile retries it (_retry_abandons).
+            self._abandons[run_id] = {**abandon, "failures": 0, "due": 0.0, "pending_since": time.time()}
+            self._spawn_abandon(run_id)
 
     async def _record_reverie_abandon(self, run_id: str, state: dict) -> dict | None:
         """A reverie.visual run is about to end without completing (graph ``failed``, run deadline
@@ -882,6 +888,12 @@ class AdmissionRuntime:
             self._abandons.pop(run_id, None)
             return True
         failures = int(entry["failures"]) + 1
+        if time.time() - float(entry.get("pending_since") or time.time()) > ABANDON_GIVE_UP_SEC:
+            # Thought's max-age sweep has released the attempt by now; stop asking.
+            self._abandons.pop(run_id, None)
+            logger.error("reverie_visual_abandon_given_up run=%s dispatch=%s failures=%s", run_id,
+                         req.visual_request.dispatch_id if req else None, failures)
+            return False
         delay = min(self.settings.retry_max_sec, self.settings.retry_base_sec * 2 ** min(failures - 1, 30))
         entry.update(failures=failures, due=time.monotonic() + delay)
         logger.warning("reverie_visual_abandon_pending run=%s dispatch=%s failures=%s retry_in=%.1fs", run_id,
@@ -896,9 +908,11 @@ class AdmissionRuntime:
             for row in await self.store.abandons_pending():
                 detail = row.get("detail") or {}
                 brief = (row.get("request") or {}).get("brief") or {}
+                generated_at = row.get("generated_at")
                 self._abandons.setdefault(row["run_id"], {
                     "attempt_id": detail.get("attempt_id"), "reason": detail.get("reason") or "terminal",
-                    "visual_request": brief.get("visual_request"), "failures": 0, "due": 0.0})
+                    "visual_request": brief.get("visual_request"), "failures": 0, "due": 0.0,
+                    "pending_since": generated_at.timestamp() if isinstance(generated_at, datetime) else time.time()})
             self._abandons_loaded_at = time.monotonic()
         now = time.monotonic()
         for run_id, entry in list(self._abandons.items()):

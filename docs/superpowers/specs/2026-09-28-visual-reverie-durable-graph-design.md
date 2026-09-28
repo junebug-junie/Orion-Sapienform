@@ -133,7 +133,26 @@ observation `unknown` (never blocks the queue indefinitely).
 - **Dangerous failure mode:** a run that loops forever holding gpu2. Bounded by the
   run deadline, the pool's `max_hold_sec`/TTL, and releasing the hold after generate.
 - **Disable / roll back:** `CORTEX_EXEC_RENDER_SCENE_DURABLE_ENABLED=false` returns
-  `RenderSceneVerb` to the direct `/visual-chain/run-once` call (kept intact).
+  `RenderSceneVerb` to the direct `/visual-chain/run-once` call (kept intact). The legacy
+  claim releases attempts a dead durable run left behind (abandoned-in-flight window and
+  `ORION_VISUAL_CHAIN_ATTEMPT_MAX_AGE_SEC`), so rollback is never blocked by leftovers.
+- **Stranded-attempt bounds:** abandon by `dispatch_id` (no `attempt_id` needed), retried
+  from the durable-runs outbox until acked (given up after 3 h); thought's claim expires
+  `active`/`unknown` attempts older than `ORION_VISUAL_CHAIN_ATTEMPT_MAX_AGE_SEC` (7200 s),
+  and cortex-exec clamps the run window to `REVERIE_VISUAL_MAX_RETRY_WINDOW_SEC` (6600 s)
+  so no live run outlives that.
+
+## Deploy order
+
+1. `services/orion-sql-db/manual_migration_reverie_visual_attempt_stage.sql` (after
+   `manual_migration_reverie_visual_attempt.sql`); optional
+   `manual_migration_durable_resource_abandon_pending_v1.sql`.
+2. orion-sql-writer, then orion-gpu-pool / LLM gateway images carrying the new
+   `config/gpu_pool.yaml` `hold_routes`, then orion-durable-runs.
+3. orion-thought (step channel consumer).
+4. orion-execution-dispatch-runtime, orion-feedback-runtime.
+5. orion-hub, orion-cortex-orch (widened `DurableWorkflowV1`), then orion-cortex-exec last
+   (it starts submitting runs).
 
 ## Non-goals
 

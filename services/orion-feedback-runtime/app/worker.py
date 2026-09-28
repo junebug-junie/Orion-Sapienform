@@ -18,7 +18,7 @@ from orion.feedback.policy import load_feedback_policy
 from orion.schemas.feedback_frame import FeedbackFrameV1
 
 from app.settings import get_settings
-from app.store import FeedbackRuntimeStore
+from app.store import UNSETTLED_RENDER_STATES, FeedbackRuntimeStore
 
 logger = logging.getLogger("orion.feedback.runtime")
 
@@ -380,7 +380,7 @@ def _pending_render_dispatch_ids(cortex_results: list[dict[str, object]] | None)
     return {
         str(raw.get("dispatch_id") or "")
         for raw in cortex_results or []
-        if raw.get("settlement_state") == "pending"
+        if raw.get("settlement_state") in UNSETTLED_RENDER_STATES
     }
 
 

@@ -34,6 +34,11 @@ _PENDING_MARKER_SPEC = PendingMarkerSpec(
 
 logger = logging.getLogger("orion.feedback_runtime.store")
 
+# Render settlement states whose real outcome may still arrive (a pending durable run, or an
+# unconfirmed kickoff whose run may yet turn up). Mirrors
+# orion.execution_dispatch.visual_settlement.SETTLEABLE_STATES (pinned by a test).
+UNSETTLED_RENDER_STATES = frozenset({"pending", "not_submitted"})
+
 
 def _field_from_json(payload) -> FieldStateV1 | None:
     if isinstance(payload, str):
@@ -552,7 +557,7 @@ class FeedbackRuntimeStore:
         for row in rows:
             dispatch_id = row["dispatch_id"]
             previous = chosen.get(dispatch_id)
-            if previous is not None and previous.get("settlement_state") != "pending":
+            if previous is not None and previous.get("settlement_state") not in UNSETTLED_RENDER_STATES:
                 # Most-recent-first ordering means the first occurrence per
                 # dispatch_id is the latest result; later duplicates are stale.
                 continue
@@ -566,8 +571,8 @@ class FeedbackRuntimeStore:
                     if isinstance(settlement, dict) and settlement.get("state")
                     else None
                 )
-                if previous is not None and settlement_state == "pending":
-                    # Newest row is a durable render still pending; only an older
+                if previous is not None and settlement_state in UNSETTLED_RENDER_STATES:
+                    # Newest row is a durable render still unsettled; only an older
                     # SETTLED row for the same dispatch may replace it.
                     continue
                 evidence_refs = list(payload.get("evidence_refs") or []) if isinstance(payload, dict) else []
@@ -601,7 +606,7 @@ class FeedbackRuntimeStore:
                 if latency is not None:
                     entry["latency_ms"] = float(latency)
                 if settlement_state is not None:
-                    # worker._tick parks the frame while any render is "pending".
+                    # worker._tick parks the frame while any render is unsettled.
                     entry["settlement_state"] = settlement_state
                     if settlement.get("finished_at"):
                         # When the durable run really ended (queue + hold + GPU);

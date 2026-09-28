@@ -471,8 +471,18 @@ def schedule(
                 grant(lease, role)
                 break
 
+    def admitted_urgent() -> list[LeaseView]:
+        """The waiting urgent leases the cap still has room for, in queue order. Only these are owed
+        a slot: one past the cap is not a waiting owner and pauses nothing."""
+        room = max(0, d.urgent_max_concurrent - urgent_n[0])
+        return [q for q in order if q.priority == URGENT and q.lease_id not in granted
+                and q.hold_lease_id is None][:room]
+
+    admitted = {q.lease_id for q in admitted_urgent()}
+
     def owners_waiting(role: str) -> list[LeaseView]:
-        return [q for q in order if q.lease_id not in granted and not capped(q)
+        return [q for q in order if q.lease_id not in granted
+                and (q.priority != URGENT or q.lease_id in admitted)
                 and cfg.owns(q.work_class, role) and ctx.placeable(q, role)]
 
     for lease in order:
@@ -508,9 +518,9 @@ def schedule(
     # pause. A pause already under way (recalling urgent_preempt) on a slot it could take pays
     # that debt first, so the short grace is not re-spent every tick (including the tick it runs
     # out and the hold is aborted). Greedy in queue order: <= urgent_max_concurrent leases.
-    room = max(0, d.urgent_max_concurrent - urgent_n[0])
-    waiting_urgent = [q for q in order if q.priority == URGENT and q.lease_id not in granted
-                      and q.hold_lease_id is None][:room]
+    # Recounted after this tick's grants, which took cap room.
+    waiting_urgent = admitted_urgent()
+    admitted = {q.lease_id for q in waiting_urgent}
     pausing = [l for l in leases if l.status == "recalling" and l.reason == PREEMPT and l.role
                and l.hold_lease_id is None]
     # Past the abort, a paused hold's call still in flight keeps the slot until it ends (durable-runs

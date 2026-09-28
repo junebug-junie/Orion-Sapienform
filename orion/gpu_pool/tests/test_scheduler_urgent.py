@@ -355,6 +355,24 @@ def test_capped_urgent_is_not_a_waiting_owner():
     assert grants(decisions) == {"qb": "agent"}              # and u4 does not block borrowers
 
 
+def test_only_urgent_owners_within_the_cap_room_count_as_waiting_owners():
+    active = [urgent(status="granted", role="agent", lease_id=f"a{i}") for i in range(2)]
+    borrowers = [lease("fast", "granted", "agent", lease_id=f"b{i}", granted_at=T0 - timedelta(seconds=i))
+                 for i in range(3)]
+    waiting = [urgent(lease_id=f"u{i}", age=10 - i) for i in range(3)]
+    decisions = run(_gpu3_full() + active + borrowers + waiting, roles=agent_slots(5))
+    assert [(r.lease_id, r.reason) for r in of(Recall, decisions)] == [("b0", "owner_waiting")]
+
+
+def test_cap_room_is_recounted_after_this_ticks_urgent_grants():
+    # one urgent lease takes the free slot this tick and fills the cap: the others wait on nothing
+    active = [urgent(status="granted", role="agent", lease_id=f"a{i}") for i in range(2)]
+    borrower = lease("fast", "granted", "agent", lease_id="b")
+    waiting = [urgent(lease_id=f"u{i}", age=10 - i) for i in range(2)]
+    decisions = run(_gpu3_full() + active + [borrower] + waiting, roles=agent_slots(4))
+    assert grants(decisions) == {"u0": "agent"} and of(Recall, decisions) == []
+
+
 def test_cap_counts_grants_made_this_tick():
     us = [urgent(lease_id=f"u{i}", age=10 - i) for i in range(4)]
     got = grants(run(us, roles=agent_slots(4)))

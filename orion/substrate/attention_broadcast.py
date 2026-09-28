@@ -190,7 +190,6 @@ def build_substrate_attention_frame(
         inputs={},
         belief_lineage=lineage,
         direct_turn=False,
-        generic_reversal=False,
         stale_thread_active=False,
         max_open=max_open,
         # Substrate broadcast is rung-3's continuous re-broadcast, the exact
@@ -215,7 +214,6 @@ def build_substrate_attention_frame(
         suppressions=[],
         min_ask=0.65,
         max_asks=0,
-        generic_reversal=False,
         stale_thread_active=False,
     )
     frame = AttentionFrameV1(

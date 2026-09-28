@@ -1247,6 +1247,8 @@ def compile_speech_contract(
         parts = ["Answer directly."]
         if brief.task_mode == "triage":
             parts.append("Lead with the operational blocker.")
+        elif "situated_curiosity" in list(brief.response_priorities or []):
+            parts.append("Then ask one short, specific question about what they shared — not a generic reversal.")
         regime_text = " ".join(parts)
 
     overlay = _compile_repair_speech_overlay(repair_contract)
@@ -2637,6 +2639,7 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as exc:
             logger.warning("current_turn_llm_signals_populate_call_failed error=%s", exc)
             ctx["current_turn_llm_signals"] = []
+            ctx["current_turn_llm_read"] = {"ok": False, "wants_direct_answer": None}
         try:
             attention_frame = build_attention_frame(
                 ctx=ctx,

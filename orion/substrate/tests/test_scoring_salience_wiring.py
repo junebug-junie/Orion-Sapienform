@@ -23,8 +23,7 @@ def _ctx_signals():
 def test_build_open_loops_populates_salience_features():
     loops = build_open_loops(
         signals=_ctx_signals(), ctx={"user_message": "the reactor plan"}, inputs={},
-        belief_lineage=[], direct_turn=False, generic_reversal=False,
-        stale_thread_active=False, max_open=5,
+        belief_lineage=[], direct_turn=False,        stale_thread_active=False, max_open=5,
     )
     assert loops, "expected at least one loop"
     loop = loops[0]
@@ -38,8 +37,7 @@ def test_build_open_loops_populates_salience_features():
 def test_score_loop_returns_precomputed_coalition_salience():
     loops = build_open_loops(
         signals=_ctx_signals(), ctx={"user_message": "the reactor plan"}, inputs={},
-        belief_lineage=[], direct_turn=False, generic_reversal=False,
-        stale_thread_active=False, max_open=5,
+        belief_lineage=[], direct_turn=False,        stale_thread_active=False, max_open=5,
     )
     loop = loops[0]
     assert score_loop(loop) == pytest.approx(loop.salience)
@@ -51,8 +49,7 @@ def test_score_loop_ignores_stale_salience_v2_env(monkeypatch):
     constant-ladder fallback that flag used to gate was deleted 2026-07-31)."""
     loops = build_open_loops(
         signals=_ctx_signals(), ctx={"user_message": "the reactor plan"}, inputs={},
-        belief_lineage=[], direct_turn=False, generic_reversal=False,
-        stale_thread_active=False, max_open=5,
+        belief_lineage=[], direct_turn=False,        stale_thread_active=False, max_open=5,
     )
     loop = loops[0]
     monkeypatch.delenv("ORION_ATTENTION_SALIENCE_V2_ENABLED", raising=False)
@@ -83,8 +80,7 @@ def test_build_open_loops_rank_aggregates_across_the_real_competing_set():
     loops = build_open_loops(
         signals=signals,
         ctx={"user_message": "a strong reactor concern a faint side note"},
-        inputs={}, belief_lineage=[], direct_turn=False, generic_reversal=False,
-        stale_thread_active=False, max_open=5,
+        inputs={}, belief_lineage=[], direct_turn=False,        stale_thread_active=False, max_open=5,
     )
     assert len(loops) == 2
     by_desc = {loop.description: loop for loop in loops}

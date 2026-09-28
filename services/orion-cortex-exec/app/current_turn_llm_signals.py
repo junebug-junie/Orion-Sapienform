@@ -34,8 +34,9 @@ Call-pattern precedent: mirrors
 (RPC via `bus.rpc_request(settings.channel_llm_intake, ...)`,
 `ChatRequestPayload`, tight timeout, decode+fail-open) and
 `services/orion-memory-consolidation/app/classify.py::_llm_classify` (same
-bus RPC glue, `route`-driven, small `max_tokens` for a quick-lane
-classification call rather than a generation call). Does NOT hook into
+bus RPC glue, `route`-driven, small `max_tokens` for a short
+classification call rather than a generation call; route is `chat`, see
+settings.current_turn_signal_probe_route for the eval that moved it off `quick`). Does NOT hook into
 `orion-memory-consolidation`'s post-hoc turn-classification pipeline
 (`orion:memory:turn:persisted` -> `classify.py`): that pipeline's trigger
 event is produced by `orion-sql-writer` only AFTER the turn is already
@@ -65,11 +66,13 @@ logger = logging.getLogger("orion.cortex.current_turn_llm_signals")
 
 _MAX_USER_TEXT = 600
 _MAX_PHRASE_LEN = 80
+_MAX_QUESTION_LEN = 160
 _MAX_CANDIDATES = 8
 _ALLOWED_TYPES = {"person", "place", "plan", "belief", "concept", "activity", "other"}
 
-def _balanced_json_array_spans(text: str) -> list[str]:
-    r"""Find every *balanced* top-level `[...]` span in `text`, in order.
+def _balanced_json_spans(text: str, open_ch: str, close_ch: str) -> list[str]:
+    r"""Find every *balanced* top-level `open_ch...close_ch` span in `text`, in
+    order (`[...]` for the candidate array, `{...}` for the read object).
 
     A naive greedy regex (`r"\[.*\]"`) spans from the FIRST `[` to the LAST
     `]` anywhere in the response -- any stray bracket before or after the
@@ -88,7 +91,7 @@ def _balanced_json_array_spans(text: str) -> list[str]:
     i = 0
     n = len(text)
     while i < n:
-        if text[i] != "[":
+        if text[i] != open_ch:
             i += 1
             continue
         start = i
@@ -108,9 +111,9 @@ def _balanced_json_array_spans(text: str) -> list[str]:
                 continue
             if ch == '"':
                 in_string = True
-            elif ch == "[":
+            elif ch == open_ch:
                 depth += 1
-            elif ch == "]":
+            elif ch == close_ch:
                 depth -= 1
                 if depth == 0:
                     end = j
@@ -131,29 +134,90 @@ def _source() -> ServiceRef:
 
 
 def build_current_turn_llm_prompt(user_text: str) -> str:
-    """Strict, short-output prompt -- a quick-lane classification call, not
-    a generation call. Explicitly excludes filler/interjections so the
-    model does the filtering the old regex could not."""
+    """Short-output read of one user turn: what they shared that a
+    friend would naturally follow up on, and whether they are asking for work or
+    an answer.
+
+    The previous contract ("a real person's name, a real place, a concrete plan,
+    or a specific belief/claim") was entity-shaped: vague life news carried no
+    name or specifics, so it was dropped -- confirmed live on corr beab81a3
+    ("busy the next few days with work travel" -> []), and measured at 1/10 on
+    the quick lane. Vagueness is the reason to ask, not a reason to skip. No
+    topical vocabulary here on purpose: the eval
+    (evals/run_current_turn_disclosure_live_eval.py) checks unrelated kinds of
+    life news and task/status controls so this cannot degrade into a topic list.
+    """
     return (
-        "From the single user message below, list genuinely new, trackable "
-        "things worth following up on later in conversation: a real "
-        "person's name, a real place, a concrete plan, or a specific "
-        "belief/claim. Do NOT include filler words, interjections, "
-        "exclamations (for example \"heck\", \"yeah\", \"yep\", \"wow\", "
-        "\"lol\", \"ok\"), greetings, or generic chat filler. If nothing "
-        "qualifies, return an empty array.\n\n"
-        "Respond with ONLY a JSON array, no prose, no markdown fences, no "
-        "explanation. Each item must be an object with exactly two keys: "
-        "\"phrase\" (short string, the exact trackable thing) and \"type\" "
-        "(one of: person, place, plan, belief, concept, activity, other). "
-        "Return at most 4 items.\n\n"
+        "The user below is someone you know well. Read their single message and "
+        "answer two things.\n\n"
+        "1. wants_direct_answer: true if they are asking you to do something or "
+        "to answer a question; false if they are sharing, reacting, or chatting.\n"
+        "2. items: things they shared about their own life, plans, people, "
+        "feelings, or experiences that a friend who cares about them would "
+        "naturally want to hear more about. A thing counts even if it is vague -- "
+        "vagueness is what makes it worth asking about. For each, write the "
+        "casual, specific question a friend would ask them next, addressed to "
+        "them. Do NOT include the task or question they asked you, anything "
+        "about software or system status, filler, greetings, interjections, "
+        "exclamations (for example \"heck\", \"yeah\", \"wow\", \"lol\", "
+        "\"ok\"), or acknowledgments. If nothing qualifies, items is an empty "
+        "array.\n\n"
+        "Respond with ONLY one JSON object, no prose, no markdown fences:\n"
+        '{"wants_direct_answer": true or false, "items": [{"phrase": "<short '
+        'string naming the thing they shared>", "type": "<one of person, place, '
+        'plan, belief, concept, activity, other>", "question": "<the friend\'s '
+        'follow-up question>"}]}\n'
+        "Every string value is in double quotes.\n"
+        "At most 3 items.\n\n"
         f"User message: {user_text}\n\n"
-        "JSON array:"
+        "JSON object:"
     )
 
 
+def _read_object(text: str) -> dict[str, Any] | None:
+    """First balanced top-level `{...}` span that is the read object (has an
+    `items` list). A bare-array response's first object span is one of its
+    items, which has no `items` key, so it is skipped rather than mistaken
+    for the read."""
+    for span in _balanced_json_spans(text, "{", "}"):
+        try:
+            candidate = json.loads(span)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            continue
+        if isinstance(candidate, dict) and isinstance(candidate.get("items"), list):
+            return candidate
+    return None
+
+
+def parse_current_turn_llm_read(raw_text: str) -> dict[str, Any] | None:
+    """Parse the probe's response into `{"wants_direct_answer", "signals"}`.
+
+    `wants_direct_answer` is True/False only when the model returned a real
+    boolean; anything else (including the legacy bare-array shape) is None --
+    unknown, which the attention policy treats as fail-closed. `signals` is the
+    same floor-filtered list `parse_current_turn_llm_signals` returns, with an
+    optional bounded `natural_question` per item. Returns None when the text is
+    not either shape at all.
+    """
+    text = (raw_text or "").strip()
+    if not text:
+        return None
+    obj = _read_object(text)
+    if obj is not None:
+        wants = obj.get("wants_direct_answer")
+        return {
+            "wants_direct_answer": wants if isinstance(wants, bool) else None,
+            "signals": _filter_candidates(obj["items"]),
+        }
+    data = _candidate_array(text)
+    if data is None:
+        return None
+    return {"wants_direct_answer": None, "signals": _filter_candidates(data)}
+
+
 def parse_current_turn_llm_signals(raw_text: str) -> list[dict[str, str]] | None:
-    """Parse the LLM's response into a list of `{"phrase", "type"}` dicts.
+    """Parse the LLM's response into a list of `{"phrase", "type"}` dicts
+    (plus `natural_question` when the model supplied one).
 
     Returns `[]` for a genuinely empty result (LLM found nothing -- a clean,
     expected outcome, not a failure). Returns `None` when the text could not
@@ -161,12 +225,13 @@ def parse_current_turn_llm_signals(raw_text: str) -> list[dict[str, str]] | None
     distinctly from a genuine empty result, per CLAUDE.md's fail-open
     logging convention for this call shape.
     """
-    text = (raw_text or "").strip()
-    if not text:
-        return None
+    read = parse_current_turn_llm_read(raw_text)
+    return None if read is None else read["signals"]
 
+
+def _candidate_array(text: str) -> list | None:
     data: list | None = None
-    for span in _balanced_json_array_spans(text):
+    for span in _balanced_json_spans(text, "[", "]"):
         try:
             candidate = json.loads(span)
         except (json.JSONDecodeError, ValueError, TypeError):
@@ -180,9 +245,10 @@ def parse_current_turn_llm_signals(raw_text: str) -> list[dict[str, str]] | None
         if not candidate or any(isinstance(item, dict) for item in candidate):
             data = candidate
             break
-    if data is None:
-        return None
+    return data
 
+
+def _filter_candidates(data: list) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     for item in data[:_MAX_CANDIDATES]:
         if not isinstance(item, dict):
@@ -259,7 +325,14 @@ def parse_current_turn_llm_signals(raw_text: str) -> list[dict[str, str]] | None
                 "current_turn_llm_signal_bare_word_name_accepted phrase=%r type=%s",
                 phrase, type_hint,
             )
-        out.append({"phrase": phrase[:_MAX_PHRASE_LEN], "type": type_hint})
+        entry = {"phrase": phrase[:_MAX_PHRASE_LEN], "type": type_hint}
+        raw_question = item.get("question")
+        question = (
+            " ".join(raw_question.split())[:_MAX_QUESTION_LEN].strip() if isinstance(raw_question, str) else ""
+        )
+        if question:
+            entry["natural_question"] = question
+        out.append(entry)
     return out
 
 
@@ -284,6 +357,7 @@ async def _llm_call(bus: OrionBusAsync, *, prompt: str) -> str:
         route=settings.current_turn_signal_probe_route,
         options={
             "max_tokens": settings.current_turn_signal_probe_max_tokens,
+            "temperature": settings.current_turn_signal_probe_temperature,
             "purpose": "current_turn_signal_probe",
             "skip_spark_candidate_publish": True,
             "chat_template_kwargs": {"enable_thinking": False},
@@ -319,8 +393,13 @@ async def populate_current_turn_llm_signals(ctx: dict[str, Any]) -> None:
     """Best-effort, bounded, fail-open. Always leaves
     `ctx["current_turn_llm_signals"]` set to a list (possibly empty) -- never
     raises, never delays a chat turn beyond its own bounded RPC timeout.
+
+    Also leaves `ctx["current_turn_llm_read"] = {"ok", "wants_direct_answer"}`,
+    which `orion.substrate.attention.policy.direct_answer_cause` reads: ok=False
+    on every failure path, so the policy can fail closed instead of guessing.
     """
     ctx["current_turn_llm_signals"] = []
+    ctx["current_turn_llm_read"] = {"ok": False, "wants_direct_answer": None}
     user_text = str(ctx.get("user_message") or ctx.get("raw_user_text") or "").strip()[:_MAX_USER_TEXT]
     if not user_text:
         return
@@ -341,12 +420,20 @@ async def populate_current_turn_llm_signals(ctx: dict[str, Any]) -> None:
         )
         return
 
-    signals = parse_current_turn_llm_signals(raw_text)
-    if signals is None:
+    read = parse_current_turn_llm_read(raw_text)
+    if read is None:
         logger.warning(
             "current_turn_llm_signals_malformed_output raw_preview=%s",
             raw_text[:120],
         )
         return
 
-    ctx["current_turn_llm_signals"] = signals
+    ctx["current_turn_llm_signals"] = read["signals"]
+    ctx["current_turn_llm_read"] = {"ok": True, "wants_direct_answer": read["wants_direct_answer"]}
+    logger.info(
+        "current_turn_llm_read corr=%s wants_direct_answer=%s items=%d with_question=%d",
+        ctx.get("correlation_id") or ctx.get("trace_id"),
+        read["wants_direct_answer"],
+        len(read["signals"]),
+        sum(1 for s in read["signals"] if s.get("natural_question")),
+    )

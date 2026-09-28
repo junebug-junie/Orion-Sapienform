@@ -1,0 +1,73 @@
+# Rocky Mountain Power, Utah Schedule 1 (Residential Service), standard non-TOU option.
+# Same published rates as tariff.rmp_ut_sch1.2026-08-10.yaml. What r2 adds was read off
+# the first real bill (billing date 2026-09-21, service Aug 12 - Sep 18, 37 days, 3,772 kWh,
+# $554.99), which this file reproduces to the cent (orion/energy/tests/test_energy_tariff.py):
+#   - blocks and monthly charges prorate by days / 30, block size rounded to whole kWh
+#     (400 kWh -> 493 kWh, $12.00 -> $14.80, $0.16 -> $0.20 for 37 days)
+#   - each rider's base, found by dividing the printed charge by its printed rate
+#   - Utah sales tax, which does not apply to the lifeline charge
+# Changing any number means a NEW file with a NEW tariff_version -- old accruals keep
+# the version they were priced with.
+tariff_version: rmp-ut-sch1-2026-08-10-r2
+utility: rocky_mountain_power
+schedule: "Utah Schedule 1 - Residential Service (standard, non-TOU)"
+effective_from: "2026-08-10"
+sources:
+  - "https://www.rockymountainpower.net/content/dam/pcorp/documents/en/rockymountainpower/rates-regulation/utah/rates/001_Residential_Service.pdf"
+  - "https://www.rockymountainpower.net/content/dam/pcorp/documents/en/rockymountainpower/rates-regulation/utah/Utah_Price_Summary.pdf (In Effect as of August 10, 2026)"
+  - "RMP bill, billing date 2026-09-21 (line items and printed rates)"
+cost_basis: pre_tax
+
+proration:
+  base_days: 30
+  round_block_kwh: true
+
+seasons:
+  summer:
+    months: [6, 7, 8, 9]
+    blocks:
+      - {up_to_kwh: 400, cents_per_kwh: 9.8332}
+      - {up_to_kwh: null, cents_per_kwh: 12.5263}
+  winter:
+    months: [10, 11, 12, 1, 2, 3, 4, 5]
+    blocks:
+      - {up_to_kwh: 400, cents_per_kwh: 8.7020}
+      - {up_to_kwh: null, cents_per_kwh: 11.0852}
+
+# In bill order. applies_to names base_energy (the block charges), customer_charge, or an
+# earlier rider. Bases checked on the 2026-09-21 bill (printed charge / printed rate):
+#   -2.43 / -0.53% = 458   base energy 459.22
+#   35.04 / 7.63%  = 459   base energy
+#    5.55 / 1.17%  = 474   base energy + customer charge (459.22 + 14.80)
+#   18.89 / 3.84%  = 492   base energy + EBA + renewable (459.22 + 35.04 - 2.43 = 491.83)
+#    0.84 / 0.17%  = 494   same base as efficiency (491.83 -> 0.836)
+riders:
+  - {name: schedule_98_renewable_energy_adjustment, pct: -0.53, applies_to: [base_energy]}
+  - {name: schedule_94_energy_balancing_account, pct: 7.63, applies_to: [base_energy]}
+  - {name: schedule_92_deferral, pct: 1.17, applies_to: [base_energy, customer_charge]}
+  - name: customer_efficiency_services
+    pct: 3.84
+    applies_to: [base_energy, schedule_94_energy_balancing_account, schedule_98_renewable_energy_adjustment]
+  - name: electric_vehicle_infrastructure
+    pct: 0.17
+    applies_to: [base_energy, schedule_94_energy_balancing_account, schedule_98_renewable_energy_adjustment]
+
+fixed_monthly:
+  - {name: customer_charge_single_phase, usd: 12.00, component: customer_charge}
+  # Printed as "Home Electric Lifeline Program". Tax-exempt: only that reading of the bill
+  # makes 4.40% land on the printed $23.38 (531.41 x 4.4%); taxing it gives $23.39.
+  - {name: schedule_91_home_electric_lifeline_program, usd: 0.16, tax_exempt: true}
+
+# Account-level, not part of Schedule 1: this account is on paperless billing.
+per_bill:
+  - {name: paperless_bill_credit, usd: -0.50}
+
+# Used only by Tariff.itemize (a bill-shaped estimate). Ledger accruals stay pre-tax.
+sales_tax:
+  pct: 4.40
+
+known_gaps:
+  - "A bill spanning the Sep/Oct season change: RMP's split is not modeled; each hour is priced by its own month."
+  - "Lifeline tax exemption and whole-kWh block rounding are fitted to one bill; confirm on the next."
+  - "Accrual and run cost size blocks by the ENERGY_BILLING_CYCLE_START_DAY cycle (28-31 days), not the meter-read period (29-37); a long bill's extra first-block kWh price at the second-block rate until reconcile, which uses the bill's own dates."
+  - "Negative half-cent lines round away from zero (-2.435 -> -2.44); RMP's rule for that case is not seen yet."

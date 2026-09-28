@@ -54,3 +54,32 @@ def test_vram_overflow_detected():
     assert check_vram(cfg, {"world": 1, "diffusion": 24}) == []
     assert check_vram(cfg, {"world": 10, "diffusion": 24})
     assert check_vram(cfg, {"world": 1, "diffusion": 24, "agent-gpu2": 32})
+
+
+def test_urgent_is_the_highest_priority_with_its_defaults():
+    cfg = load_pool_config()
+    assert cfg.priorities[0] == "urgent"
+    assert cfg.priority_rank("urgent") < cfg.priority_rank("interactive")
+    assert cfg.defaults.urgent_preempt_grace_sec == 5
+    assert cfg.defaults.urgent_max_concurrent == 3
+
+
+def test_priorities_must_include_urgent():
+    bad(lambda d: d.update(priorities=["interactive", "system", "background"]))
+
+
+def test_urgent_route_priority_parses():
+    data = copy.deepcopy(RAW)
+    data.setdefault("routes", {})["probe"] = {"class": next(iter(data["classes"])), "priority": "urgent"}
+    assert PoolConfig.model_validate(data).routes["probe"].priority == "urgent"
+
+
+def test_resource_requirement_accepts_urgent_only_besides_background():
+    from pydantic import ValidationError
+
+    from orion.schemas.resource_admission import ResourceRequirementV1
+
+    assert ResourceRequirementV1(priority="urgent").priority == "urgent"
+    assert ResourceRequirementV1().priority == "background"
+    with pytest.raises(ValidationError):
+        ResourceRequirementV1(priority="interactive")

@@ -321,7 +321,7 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
   (`orion.gpu_pool.client.acquire_hold`, `kind=hold`, holder `durable-runs:<run_id>`,
   request id `<run_id>:<seq>` -- idempotent, re-asked with the same id until that hold ends).
   Class comes from the run's route in `config/gpu_pool.yaml` `routes`; priority is the
-  requirement's (`background`); `requirements.minimum_context_tokens` rides as `min_ctx_tokens`.
+  requirement's (`background`, or `urgent`); `requirements.minimum_context_tokens` rides as `min_ctx_tokens`.
   An unknown route fails the run with `gpu_pool_unknown_route:<route>` instead of waiting.
 - **`resource_wait`** interrupts until the pool grants. A waiting run is woken by the pool's
   `granted` event for its holder on `orion:gpu_pool:event`; the missed-event fallback is one

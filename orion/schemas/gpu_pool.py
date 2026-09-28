@@ -36,7 +36,7 @@ GPU_ACTUATE_RESULT_KIND = "gpu_pool.actuate.result.v1"
 GPU_LEASE_REF_KIND = "gpu_pool.lease.ref.v1"
 LLM_WORKER_ANNOUNCE_KIND = "llm.worker.announce.v1"
 
-Priority = Literal["interactive", "system", "background"]
+Priority = Literal["urgent", "interactive", "system", "background"]
 LeaseKind = Literal["request", "hold"]
 LeaseStatus = Literal[
     "queued", "backlogged", "granted", "recalling", "retry_wait",

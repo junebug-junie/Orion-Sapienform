@@ -124,7 +124,7 @@ def ref_dict(reply: GpuLeaseReplyV1, holder: str) -> dict[str, Any]:
 def hold_placement(cfg: PoolConfig, admission: dict[str, Any]) -> tuple[str, str, int]:
     """(work_class, priority, min_ctx_tokens) for a run's hold. The class comes from the run's
     route in gpu_pool.yaml ``routes``; ResourceRequirementV1.priority overrides the route's
-    (spec Decision 1 rule 1) -- it is always ``background`` today."""
+    (spec Decision 1 rule 1) -- ``background`` or ``urgent``."""
     route = str(admission.get("preferred_lane") or "agent")
     resource = str(admission.get("resource") or "")
     spec = cfg.hold_routes.get(route) if resource.startswith("service.route.") else cfg.routes.get(route)

@@ -19,7 +19,7 @@ class ResourceRequirementV1(BaseModel):
     resource: str = "llm.route.agent"
     mode: Literal["exclusive"] = "exclusive"
     lease_scope: Literal["run"] = "run"
-    priority: Literal["background"] = "background"
+    priority: Literal["background", "urgent"] = "background"
     preferred_lane: str = "agent"
     allow_elastic_activation: bool = False
     alternatives: list[str] = Field(default_factory=list)

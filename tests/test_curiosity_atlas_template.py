@@ -291,6 +291,20 @@ def test_the_story_prints_a_relative_clock_the_lane_wait_and_the_reach_out_decis
     assert "Journal entry" in s and "the journal prose" in s
 
 
+def test_a_pause_for_urgent_work_reads_as_a_pause_not_a_failure(tmp_path) -> None:
+    run = _run()
+    story = {
+        "available": True, "found": True, "run": run, "readings_available": False, "harness": None,
+        "timeline": [
+            {"at": run["admitted_at"], "offset_sec": 1600.0, "kind": "lifecycle", "attempt": None,
+             "status": "preempted", "node": "", "lane": "agent"},
+        ],
+    }
+    s = _render({"story": story}, tmp_path)["story"]
+    assert "paused for urgent work" in s and "agent lane" in s
+    assert "k-failed" not in s and "preempted" not in s
+
+
 def test_a_sent_reach_out_with_a_reply_reads_as_such(tmp_path) -> None:
     run = _run(outcome_kind="reached_out_sent",
                reach_out={"wanted": True, "why": "w", "decision": "sent", "gate": None, "decided_at": NOW_MS,

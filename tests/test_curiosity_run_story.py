@@ -554,6 +554,38 @@ def test_an_admission_path_run_reads_its_lifecycle_from_the_events() -> None:
     assert kinds.index("role_choice") > kinds.index("lifecycle")
 
 
+def test_a_pause_for_urgent_work_is_on_the_timeline_and_the_wait_after_it_shows() -> None:
+    rows = _admission_run(bridge=False)
+    run_id = "446ddd7165d5"
+    rows.resource_events[12:12] = [
+        _event(run_id, "run.preempted", 27000, {"lease_id": "L1", "generation": 1, "lane": "agent",
+                                                "reason": "urgent_preempt", "pool_status": "queued"}),
+        _event(run_id, "run.waiting_resource", 27000.1, {"node": "resource_request"}),
+        _event(run_id, "run.lane_assigned", 27300, {"lease": {"lane": "agent", "lease_id": "L1"}}),
+    ]
+    story = build_stories(rows)[run_id]
+    statuses = [it.data.get("status") for it in story.timeline if it.kind == "lifecycle"]
+    at = statuses.index("preempted")
+    assert statuses[at + 1] == "waiting", statuses
+    paused = next(it for it in story.timeline if it.data.get("status") == "preempted")
+    assert paused.data["lane"] == "agent"
+    assert story.run.retries == 0 and story.run.status == STATUS_COMPLETED   # a pause is not a failure
+
+
+def test_every_event_the_story_reads_is_fetched_by_the_hub() -> None:
+    """The Hub fetches events row by row only when listed in RENDERED_EVENTS; one the story reads
+    but the Hub never fetches silently never appears."""
+    from pathlib import Path
+
+    import orion.curiosity.run_story as run_story
+    path = Path(__file__).resolve().parents[1] / "services" / "orion-hub" / "scripts" / "curiosity_run_store.py"
+    source = path.read_text(encoding="utf-8")
+    rendered = source.split("RENDERED_EVENTS = (", 1)[1].split(")", 1)[0]
+    story_events = {v for k, v in vars(run_story).items() if k.startswith("EVENT_") and isinstance(v, str)}
+    missing = {e for e in story_events - set(run_story.ANOMALY_EVENTS) if f'"{e}"' not in rendered}
+    assert not missing, missing
+
+
 def test_the_bridge_row_is_ignored_when_the_admission_path_has_the_run() -> None:
     """The bridge copies the terminal event and mislabels it. With both
     present the story must not show two completions or two starts."""

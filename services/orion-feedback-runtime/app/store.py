@@ -34,6 +34,11 @@ _PENDING_MARKER_SPEC = PendingMarkerSpec(
 
 logger = logging.getLogger("orion.feedback_runtime.store")
 
+# Render settlement states whose real outcome may still arrive (a pending durable run, or an
+# unconfirmed kickoff whose run may yet turn up). Mirrors
+# orion.execution_dispatch.visual_settlement.SETTLEABLE_STATES (pinned by a test).
+UNSETTLED_RENDER_STATES = frozenset({"pending", "not_submitted"})
+
 
 def _field_from_json(payload) -> FieldStateV1 | None:
     if isinstance(payload, str):
@@ -97,9 +102,27 @@ class FeedbackRuntimeStore:
         LIMIT 1
     """)
 
-    def load_latest_dispatch_frame_without_feedback(self) -> ExecutionDispatchFrameV1 | None:
+    # Same lookup, minus frames the worker has parked while a durable render settles
+    # (worker._tick). A separate statement so the common path keeps the plain index scan.
+    _PENDING_EXCLUDING_SQL = text("""
+        SELECT d.dispatch_frame_json, d.generated_at
+        FROM substrate_execution_dispatch_frames d
+        WHERE d.feedback_pending
+          AND d.frame_id NOT IN :excluded
+        ORDER BY d.generated_at ASC
+        LIMIT 1
+    """).bindparams(bindparam("excluded", expanding=True))
+
+    def load_latest_dispatch_frame_without_feedback(
+        self, *, exclude_frame_ids: list[str] | None = None
+    ) -> ExecutionDispatchFrameV1 | None:
         with self._engine.connect() as conn:
-            row = conn.execute(self._PENDING_SQL).mappings().first()
+            if exclude_frame_ids:
+                row = conn.execute(
+                    self._PENDING_EXCLUDING_SQL, {"excluded": list(exclude_frame_ids)}
+                ).mappings().first()
+            else:
+                row = conn.execute(self._PENDING_SQL).mappings().first()
         if not row:
             return None
         payload = row["dispatch_frame_json"]
@@ -529,11 +552,12 @@ class FeedbackRuntimeStore:
         if not rows:
             return []
 
-        evidence: list[dict[str, object]] = []
-        seen_dispatch_ids: set[str] = set()
+        # dispatch_id -> entry, in first-seen (newest-first) order.
+        chosen: dict[str, dict[str, object]] = {}
         for row in rows:
             dispatch_id = row["dispatch_id"]
-            if dispatch_id in seen_dispatch_ids:
+            previous = chosen.get(dispatch_id)
+            if previous is not None and previous.get("settlement_state") not in UNSETTLED_RENDER_STATES:
                 # Most-recent-first ordering means the first occurrence per
                 # dispatch_id is the latest result; later duplicates are stale.
                 continue
@@ -541,6 +565,16 @@ class FeedbackRuntimeStore:
                 payload = row["result_json"]
                 if isinstance(payload, str):
                     payload = json.loads(payload)
+                settlement = payload.get("settlement") if isinstance(payload, dict) else None
+                settlement_state = (
+                    str(settlement["state"])
+                    if isinstance(settlement, dict) and settlement.get("state")
+                    else None
+                )
+                if previous is not None and settlement_state in UNSETTLED_RENDER_STATES:
+                    # Newest row is a durable render still unsettled; only an older
+                    # SETTLED row for the same dispatch may replace it.
+                    continue
                 evidence_refs = list(payload.get("evidence_refs") or []) if isinstance(payload, dict) else []
                 entry: dict[str, object] = {
                     "result_id": row["result_id"],
@@ -571,8 +605,15 @@ class FeedbackRuntimeStore:
                 latency = row.get("latency_ms")
                 if latency is not None:
                     entry["latency_ms"] = float(latency)
-                evidence.append(entry)
-                seen_dispatch_ids.add(dispatch_id)
+                if settlement_state is not None:
+                    # worker._tick parks the frame while any render is unsettled.
+                    entry["settlement_state"] = settlement_state
+                    if settlement.get("finished_at"):
+                        # When the durable run really ended (queue + hold + GPU);
+                        # latency_ms is GPU seconds only, so the scoring window
+                        # must reach this instead.
+                        entry["settled_finished_at"] = str(settlement["finished_at"])
+                chosen[dispatch_id] = entry
             except (TypeError, ValueError, json.JSONDecodeError):
                 # Malformed result_json on one row shouldn't sink the whole
                 # query -- skip this row and keep the rest, mirroring this
@@ -581,7 +622,7 @@ class FeedbackRuntimeStore:
                     "dispatch_result_incompatible_payload dispatch_id=%s", dispatch_id, exc_info=True
                 )
                 continue
-        return evidence
+        return list(chosen.values())
 
     def load_effect_posteriors(self) -> dict[TreatedCellKey, EffectPosterior]:
         """Current belief about what each action does to each signal.

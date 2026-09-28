@@ -103,6 +103,10 @@ from orion.schemas.reading_turn import (
     READING_TURN_CHANNEL, READING_TURN_REPLY_PREFIX, READING_TURN_REQUEST_KIND,
     READING_TURN_RESULT_KIND, ReadingTurnRequestV1, ReadingTurnResultV1,
 )
+from orion.schemas.reverie_visual_run import (
+    REVERIE_VISUAL_STEP_CHANNEL, REVERIE_VISUAL_STEP_REPLY_PREFIX, REVERIE_VISUAL_STEP_REQUEST_KIND,
+    REVERIE_VISUAL_STEP_RESULT_KIND, ReverieVisualStepRequestV1, ReverieVisualStepResultV1,
+)
 
 logger = logging.getLogger("orion-durable-runs.runner")
 
@@ -383,6 +387,36 @@ class DurableRunner:
         result = ReadingTurnResultV1.model_validate(decoded.envelope.payload)
         if result.run_id != request.run_id or result.correlation_id != request.correlation_id:
             raise ValueError("reading turn result identity mismatch")
+        return result
+
+    async def _run_reverie_visual_step(
+        self, request: ReverieVisualStepRequestV1, budget_sec: float | None = None,
+    ) -> ReverieVisualStepResultV1:
+        """One reverie.visual stage, executed by orion-thought. Raises on transport or identity
+        trouble; the graph treats that as a retry, never a failed attempt. ``budget_sec`` is the
+        run's brief.timeout_sec, passed for the held generate step (permit wait + diffusion)."""
+        if self._bus is None:
+            raise RuntimeError("no_bus")
+        reply = f"{REVERIE_VISUAL_STEP_REPLY_PREFIX}:{request.correlation_id}"
+        envelope = BaseEnvelope(kind=REVERIE_VISUAL_STEP_REQUEST_KIND, source=self._source(),
+            correlation_id=_corr_uuid(request.correlation_id), reply_to=reply,
+            payload=request.model_dump(mode="json"))
+        timeout = self._settings.reverie_visual_step_timeout_sec
+        if request.step == "generate" and budget_sec:
+            timeout = max(timeout, float(budget_sec))
+        elif request.step == "abandon":
+            timeout = min(timeout, 30.0)
+        raw = await self._bus.rpc_request(REVERIE_VISUAL_STEP_CHANNEL, envelope, reply_channel=reply, timeout_sec=timeout)
+        decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
+        if not decoded.ok or decoded.envelope is None:
+            raise ValueError("invalid reverie visual step reply envelope")
+        if (decoded.envelope.kind != REVERIE_VISUAL_STEP_RESULT_KIND
+                or decoded.envelope.correlation_id != envelope.correlation_id):
+            raise ValueError("reverie visual step reply identity mismatch")
+        result = ReverieVisualStepResultV1.model_validate(decoded.envelope.payload)
+        if (result.run_id != request.run_id or result.correlation_id != request.correlation_id
+                or result.step != request.step):
+            raise ValueError("reverie visual step result identity mismatch")
         return result
 
     async def _read_turn_result(self, run_id: str) -> dict[str, Any]:
@@ -685,11 +719,18 @@ class DurableRunner:
                 except ValueError:
                     ts = None
             values = checkpoint.get("channel_values") or {}
+            if values.get("admission"):
+                # The admission runtime owns admitted threads (including workflows this runner
+                # never registers, e.g. reading.turn / reverie.visual): not even a skip warning.
+                newest[thread_id] = (None, "")
+                continue
             workflow_raw = values.get("workflow")
             workflow = str(workflow_raw) if isinstance(workflow_raw, str) and workflow_raw else DEFAULT_WORKFLOW
             newest[thread_id] = (ts, workflow)
         out: list[tuple[str, str, datetime | None, str]] = []
         for thread_id, (ts, workflow) in newest.items():
+            if not workflow:
+                continue
             spec = self._spec_for(workflow)
             if spec is None:
                 logger.warning("durable_run_resume_unknown_workflow thread=%s workflow=%s -- skipped", thread_id, workflow)

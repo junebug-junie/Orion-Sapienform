@@ -23,9 +23,21 @@ from psycopg.types.json import Jsonb
 from orion.schemas.resource_admission import ResourceEventV1
 
 ADMISSION_LOCK = 741853219
-# ResourceRequirementV1 fields only the deleted broker read (spec: accepted and ignored until
-# producers stop sending them in PR 4.6, because the model is extra="forbid").
-IGNORED_ADMISSION_FIELDS = frozenset({"allow_elastic_activation", "alternatives", "pinned_lane", "operator_override"})
+# ResourceRequirementV1 fields a resubmit may change without being a different request:
+# * the ones only the deleted broker read (spec: accepted and ignored until producers stop sending
+#   them in PR 4.6, because the model is extra="forbid");
+# * ``deadline_at``: producers compute it from their own clock on every submit (cortex-exec's
+#   reverie.visual dispatch: now + baseline interval), so a redelivered dispatch always carries a new
+#   one. The stored row is never rewritten: the first submission's deadline wins.
+IGNORED_ADMISSION_FIELDS = frozenset({"allow_elastic_activation", "alternatives", "pinned_lane", "operator_override",
+                                      "deadline_at"})
+# A run that ended without completing and must still tell its executor to close the attempt
+# (reverie.visual -> orion-thought ``abandon``): pending until the matching acked event exists.
+ABANDON_PENDING_EVENT = "run.abandon_pending"
+ABANDON_ACKED_EVENT = "run.abandon_acked"
+# Past this, thought's own max-age sweep (ORION_VISUAL_CHAIN_ATTEMPT_MAX_AGE_SEC, default 7200)
+# has already released the attempt, so an unconfirmed abandon stops being retried.
+ABANDON_GIVE_UP_SEC = 3 * 3600
 
 
 class SubmissionConflict(ValueError):
@@ -41,7 +53,7 @@ class PostgresAdmissionStore:
         directory = Path(__file__).resolve().parents[2] / "services/orion-sql-db"
         async with self.pool.connection() as conn:
             async with conn.transaction():
-                for name in ("manual_migration_durable_resource_admission_v1.sql", "manual_migration_gateway_capacity_v1.sql", "manual_migration_gpu2_elastic_v1.sql"):
+                for name in ("manual_migration_durable_resource_admission_v1.sql", "manual_migration_gateway_capacity_v1.sql", "manual_migration_gpu2_elastic_v1.sql", "manual_migration_durable_resource_abandon_pending_v1.sql"):
                     await conn.execute((directory / name).read_text(), prepare=False)
 
     async def now(self, conn: Any) -> datetime:
@@ -114,11 +126,13 @@ class PostgresAdmissionStore:
         async with self.pool.connection() as conn:
             await conn.execute("UPDATE durable_admission_runs SET updated_at=clock_timestamp() WHERE run_id=%s", (run_id,))
 
-    async def finish_projection(self, run_id: str, status: str, detail: dict[str, Any]) -> str | None:
+    async def finish_projection(self, run_id: str, status: str, detail: dict[str, Any], *,
+                                cancelled_detail: dict[str, Any] | None = None) -> str | None:
         """Atomically publish the graph's terminal fact.
 
         The shared transaction lock linearizes an operator control against completion; a cancelled
-        run can never acquire a completed outbox event. The run's GPU pool hold is released by the
+        run can never acquire a completed outbox event (its detail becomes ``cancelled_detail``,
+        default empty, never the completed/failed detail). The run's GPU pool hold is released by the
         graph node that ends the run (or kept for Door-A outreach), never here: this store has no
         grant of its own to release since stage 4.5.
         """
@@ -131,7 +145,7 @@ class PostgresAdmissionStore:
             if row["control"] == "paused":
                 return None
             if row["control"] == "cancelled":
-                status, detail = "cancelled", {}
+                status, detail = "cancelled", dict(cancelled_detail or {})
             await self._event(conn, run_id, "run."+status, detail, event_id=f"{run_id}:terminal:{status}")
             await conn.execute("UPDATE durable_admission_runs SET terminal=%s,updated_at=%s WHERE run_id=%s", (status, await self.now(conn), run_id))
             return status
@@ -157,6 +171,24 @@ class PostgresAdmissionStore:
                 "AND x.event='resource.lease_released' "
                 "AND x.payload->'detail'->>'lease_id' = e.payload->'detail'->>'lease_id')",
                 (now - timedelta(seconds=max_age_seconds),))).fetchall()
+            return list(rows)
+
+    async def abandons_pending(self, limit: int = 100, *,
+                               max_age_seconds: float = ABANDON_GIVE_UP_SEC) -> list[dict[str, Any]]:
+        """Runs that ended failed/cancelled whose ``run.abandon_pending`` has no ``run.abandon_acked``
+        yet: the executor has not confirmed it closed the attempt. Survives a restart (it is the
+        event log, not process memory); newest first, so unconfirmable old rows cannot starve new
+        ones, and only within ``max_age_seconds`` (older ones were given up)."""
+        async with self.pool.connection() as conn:
+            now = await self.now(conn)
+            rows = await (await conn.execute(
+                "SELECT e.run_id, e.generated_at, e.payload->'detail' AS detail, r.request "
+                "FROM durable_resource_events e JOIN durable_admission_runs r USING(run_id) "
+                "WHERE e.event=%s AND e.generated_at > %s AND r.terminal IN ('failed','cancelled') "
+                "AND NOT EXISTS (SELECT 1 FROM durable_resource_events x WHERE x.run_id=e.run_id AND x.event=%s) "
+                "ORDER BY e.generated_at DESC, e.run_id LIMIT %s",
+                (ABANDON_PENDING_EVENT, now - timedelta(seconds=max_age_seconds), ABANDON_ACKED_EVENT,
+                 limit))).fetchall()
             return list(rows)
 
     async def _expire(self, conn: Any, now: datetime) -> list[dict[str, Any]]:

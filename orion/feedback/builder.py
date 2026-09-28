@@ -303,13 +303,15 @@ def build_feedback_frame(
         if visual_outcome is None and candidate is not None and is_visual_candidate(candidate):
             visual_outcome = candidate.visual_outcome or "unknown"
         if visual_outcome is not None:
+            # A render that yields no image (a crashed graph, a busy GPU, a
+            # durable run that timed out) is never scored as Orion failing:
+            # "failed" maps to unknown, like every other non-produced outcome.
             outcome = {
                 "produced": "completed",
                 "deferred_thermal": "deferred",
                 "deferred_busy": "deferred",
                 "deferred_resource": "deferred",
                 "already_satisfied": "not_attempted",
-                "failed": "failed",
             }.get(str(visual_outcome), "unknown")
         else:
             outcome = _cortex_status_to_outcome(status)

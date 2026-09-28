@@ -588,11 +588,16 @@ class ExecutionDispatchRuntimeStore:
         backwards for a ceiling.
         """
         with self._engine.connect() as conn:
+            # A render result carrying a `settlement` block is uncosted ON PURPOSE:
+            # pending (the run has not finished) or settled without an image (no
+            # GPU work to charge). Only a produced settlement writes latency_ms.
             row = conn.execute(
                 text(
                     """
                     SELECT coalesce(sum(latency_ms), 0) / 1000.0 AS motor_sec,
-                           count(*) FILTER (WHERE latency_ms IS NULL) AS uncosted
+                           count(*) FILTER (
+                               WHERE latency_ms IS NULL AND NOT (result_json ? 'settlement')
+                           ) AS uncosted
                       FROM substrate_dispatch_results
                      WHERE created_at >= :day_start AND created_at < :day_end
                     """
@@ -607,6 +612,88 @@ class ExecutionDispatchRuntimeStore:
                 row[1],
             )
         return float(row[0] or 0.0)
+
+    # Pending render results are recent by construction (retry window + orphan
+    # margin is ~2h); the bound keeps this on idx_substrate_dispatch_results_
+    # created_at instead of a jsonb scan of the whole table.
+    _PENDING_VISUAL_SQL = text(
+        """
+        SELECT r.result_id, r.dispatch_id, r.frame_id, r.status, r.result_json,
+               r.dispatch_kind, r.target_id, r.created_at,
+               s.status AS run_status, s.detail AS run_detail
+          FROM substrate_dispatch_results r
+          LEFT JOIN LATERAL (
+              SELECT status, detail
+                FROM substrate_durable_run_state
+               WHERE run_id = r.result_json->'settlement'->>'durable_run_id'
+                 AND workflow = :workflow
+                 AND status IN ('completed', 'failed', 'cancelled', 'abandoned')
+               ORDER BY generated_at DESC
+               LIMIT 1
+          ) s ON true
+         WHERE r.created_at > now() - make_interval(secs => :lookback_sec)
+           AND r.latency_ms IS NULL
+           AND (
+                r.result_json->'settlement'->>'state' = 'pending'
+                -- unconfirmed kickoff: only once its run is known to have ended
+                OR (r.result_json->'settlement'->>'state' = 'not_submitted' AND s.status IS NOT NULL)
+           )
+         -- finished runs first, so in-flight rows cannot crowd them out of the batch
+         ORDER BY (s.status IS NULL), r.created_at ASC
+         LIMIT :limit
+        """
+    )
+
+    def load_pending_visual_settlements(
+        self, *, limit: int, workflow: str, lookback_sec: float = 7 * 86400.0
+    ) -> list[dict]:
+        """Pending render results (plus unconfirmed kickoffs whose run did end), each
+        joined to its run's latest TERMINAL state (run_status/run_detail None while
+        the run is still in flight)."""
+        with self._engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    self._PENDING_VISUAL_SQL,
+                    {"workflow": workflow, "lookback_sec": float(lookback_sec), "limit": int(limit)},
+                )
+                .mappings()
+                .all()
+            )
+        out: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            for key in ("result_json", "run_detail"):
+                if isinstance(item.get(key), str):
+                    item[key] = json.loads(item[key])
+            out.append(item)
+        return out
+
+    def settle_dispatch_result(
+        self, *, result_id: str, status: str, result_json: dict, latency_ms: float | None
+    ) -> bool:
+        """Overwrite a pending (or unconfirmed-kickoff) result row in place. Same result_id, so frame_id and
+        created_at (the motor-budget day bucket) are untouched. The pending guard
+        makes a repeat settle a no-op; returns whether this call settled it."""
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    UPDATE substrate_dispatch_results
+                       SET status = :status,
+                           result_json = :result_json,
+                           latency_ms = :latency_ms
+                     WHERE result_id = :result_id
+                       AND result_json->'settlement'->>'state' IN ('pending', 'not_submitted')
+                    """
+                ),
+                {
+                    "result_id": result_id,
+                    "status": status,
+                    "result_json": Json(result_json),
+                    "latency_ms": latency_ms,
+                },
+            )
+        return bool(getattr(result, "rowcount", 0))
 
     def load_dispatch_result_by_dispatch_id(self, dispatch_id: str) -> dict | None:
         with self._engine.connect() as conn:

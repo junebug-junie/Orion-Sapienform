@@ -98,6 +98,10 @@ class Settings(BaseSettings):
     # only how long the runner itself waits on the verb-dispatch RPC before
     # giving up and failing the node (resumable, same as harness_turn).
     reflect_llm_call_timeout_sec: float = Field(1500.0, gt=0.0, alias="DURABLE_RUNS_REFLECT_LLM_CALL_TIMEOUT_SEC")
+    # reverie.visual: how long the runner waits on one orion-thought stage RPC (prepare runs
+    # interpret, caption runs the vision caption). generate waits max(this, brief.timeout_sec).
+    # A timeout is a retry (backoff, no attempt spent), bounded only by the run's deadline.
+    reverie_visual_step_timeout_sec: float = Field(600.0, gt=0.0, alias="DURABLE_RUNS_REVERIE_VISUAL_STEP_TIMEOUT_SEC")
 
     @model_validator(mode="after")
     def valid_lease_heartbeat(self):

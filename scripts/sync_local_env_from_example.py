@@ -137,6 +137,10 @@ SYNC_PREFIXES = (
     "POLICY_RECONCILE_",
     "DISPATCH_RECONCILE_",
     "FEEDBACK_RECONCILE_",
+    # Durable visual reverie (2026-09-28): cortex-exec's render_scene kickoff, and the feedback
+    # runtime's park-until-settled bound.
+    "CORTEX_EXEC_RENDER_SCENE_",
+    "FEEDBACK_VISUAL_SETTLE_",
     # orion-energy (only service with ENERGY_ keys); DEFAULT_SERVICES entry below.
     "ENERGY_",
     # Hub's curiosity energy-stakes hold; no HUB_ prefix, so ENERGY_ above misses it.

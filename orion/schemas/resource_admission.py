@@ -30,7 +30,8 @@ class ResourceRequirementV1(BaseModel):
 
     @model_validator(mode="after")
     def logical_resource(self):
-        if self.resource != f"llm.route.{self.preferred_lane}":
+        # service.route.<lane>: a hold on a non-LLM pool role (gpu_pool.yaml hold_routes).
+        if self.resource not in (f"llm.route.{self.preferred_lane}", f"service.route.{self.preferred_lane}"):
             raise ValueError("resource must name the requested preferred logical lane")
         if self.deadline_at is not None and self.deadline_at.tzinfo is None:
             raise ValueError("deadline_at must include a timezone")

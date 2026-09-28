@@ -126,7 +126,8 @@ def hold_placement(cfg: PoolConfig, admission: dict[str, Any]) -> tuple[str, str
     route in gpu_pool.yaml ``routes``; ResourceRequirementV1.priority overrides the route's
     (spec Decision 1 rule 1) -- it is always ``background`` today."""
     route = str(admission.get("preferred_lane") or "agent")
-    spec = cfg.routes.get(route)
+    resource = str(admission.get("resource") or "")
+    spec = cfg.hold_routes.get(route) if resource.startswith("service.route.") else cfg.routes.get(route)
     if spec is None:
         raise UnknownRoute(f"unknown_route:{route}")
     priority = str(admission.get("priority") or spec.priority)

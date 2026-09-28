@@ -155,3 +155,41 @@ def test_existing_reading_operations_keep_their_pre_introspect_wire_keys():
 def test_new_models_are_registered():
     for name in ("IntrospectToolBindingV1", "IntrospectItemV1", "IntrospectResultV1", "ReadingResultArguments"):
         assert resolve(name) is not None
+
+
+def test_reading_result_arguments_accept_query_and_strip_it():
+    args = ReadingResultArguments(query="  graphics cards  ", since=NOW)
+    assert args.query == "graphics cards"
+    assert args.since == NOW
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"query": "   "},
+        {"query": "x" * 501},
+        {"query": "gpus", "url": "https://example.org/a"},
+        {"query": "gpus", "request_id": "00000000-0000-0000-0000-000000000001"},
+    ],
+)
+def test_reading_result_arguments_reject_bad_query(fields):
+    with pytest.raises(ValidationError):
+        ReadingResultArguments(**fields)
+
+
+def test_reading_tool_request_carries_query_only_for_reading_result():
+    wire = ReadingToolRequestV1(operation="reading_result", query="gpus", limit=2).model_dump(mode="json")
+    assert wire["query"] == "gpus"
+    assert ReadingToolRequestV1.model_validate(wire).query == "gpus"
+    with pytest.raises(ValidationError):
+        ReadingToolRequestV1(operation="reading_status", url="https://example.org/a", query="gpus")
+    with pytest.raises(ValidationError):
+        ReadingToolRequestV1(operation="reading_result", url="https://example.org/a", query="gpus")
+
+
+def test_null_query_never_reaches_the_wire():
+    # A pre-1b Hub forbids unknown keys, even null ones.
+    recent = ReadingToolRequestV1(operation="reading_result", limit=3).model_dump(mode="json")
+    assert "query" not in recent
+    status = ReadingToolRequestV1(operation="reading_status", url="https://example.org/a")
+    assert set(status.model_dump(mode="json")) == {"operation", "request", "request_id", "url"}

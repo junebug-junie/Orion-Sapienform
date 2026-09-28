@@ -10,13 +10,14 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # MAX_ITEMS full-size items stay under ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS
 # (12000), the budget the harness proxy enforces on wrapped servers (it cuts
 # the JSON mid-item). orion-introspect is not wrapped today; the bound is kept
 # so wrapping it later cannot corrupt a result.
 MAX_ITEMS = 5
+QUERY_CAP = 500
 DEFAULT_LIMIT = 5
 DEFAULT_TEXT_CAP = 900
 SHORT_FIELD_CAP = 200
@@ -92,16 +93,29 @@ class ReadingResultArguments(BaseModel):
     """Model-supplied arguments for the ``reading_results`` tool."""
 
     model_config = ConfigDict(extra="forbid")
+    query: str | None = Field(default=None, min_length=1, max_length=QUERY_CAP)
     request_id: UUID | None = None
     url: str | None = Field(default=None, min_length=1, max_length=8192)
     limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_ITEMS)
     since: datetime | None = None
 
+    @field_validator("query")
+    @classmethod
+    def _strip_query(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("query must not be blank")
+        return value
+
     @model_validator(mode="after")
     def _selectors(self):
         if self.request_id is not None and self.url is not None:
             raise ValueError("reading_results takes at most one of request_id or url")
+        if self.query is not None and (self.request_id is not None or self.url is not None):
+            raise ValueError("query searches all readings; it cannot be combined with request_id or url")
         _require_tz(self.since, "since")
         if self.since is not None and (self.request_id is not None or self.url is not None):
-            raise ValueError("since applies only to recent reads (no request_id or url)")
+            raise ValueError("since applies only to query or recent reads (no request_id or url)")
         return self

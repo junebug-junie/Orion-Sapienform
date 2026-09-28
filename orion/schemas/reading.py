@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_serializer, model_validator
 
-from orion.schemas.introspect import MAX_ITEMS
+from orion.schemas.introspect import MAX_ITEMS, QUERY_CAP
 
 ReadingContext = Literal["unified_chat", "curiosity", "world_pulse", "operator"]
 ReadingStatus = Literal[
@@ -83,6 +83,7 @@ class ReadingToolRequestV1(BaseModel):
     request: ReadingRequestedV1 | None = None
     request_id: UUID | None = None
     url: str | None = Field(default=None, min_length=1, max_length=8192)
+    query: str | None = Field(default=None, min_length=1, max_length=QUERY_CAP)
     limit: int | None = Field(default=None, ge=1, le=MAX_ITEMS)
     since: datetime | None = None
 
@@ -99,13 +100,17 @@ class ReadingToolRequestV1(BaseModel):
                 raise ValueError("reading_result never carries a reading request")
             if self.request_id is not None and self.url is not None:
                 raise ValueError("reading_result takes at most one of request_id or url")
+            if self.query is not None and (self.request_id is not None or self.url is not None):
+                raise ValueError("reading_result query cannot be combined with request_id or url")
             if self.since is not None:
                 if self.since.tzinfo is None:
                     raise ValueError("since must include a timezone")
                 if self.request_id is not None or self.url is not None:
                     raise ValueError("since applies only to recent reads")
-        if self.operation != "reading_result" and (self.limit is not None or self.since is not None):
-            raise ValueError(f"{self.operation} takes no limit or since")
+        if self.operation != "reading_result" and (
+            self.limit is not None or self.since is not None or self.query is not None
+        ):
+            raise ValueError(f"{self.operation} takes no limit, since, or query")
         return self
 
     @model_serializer(mode="wrap")
@@ -113,7 +118,7 @@ class ReadingToolRequestV1(BaseModel):
         # A Hub predating reading_result forbids unknown keys, even null ones;
         # keep recommend/status payloads byte-compatible with it.
         data = handler(self)
-        for key in ("limit", "since"):
+        for key in ("limit", "since", "query"):
             if data.get(key) is None:
                 data.pop(key, None)
         return data

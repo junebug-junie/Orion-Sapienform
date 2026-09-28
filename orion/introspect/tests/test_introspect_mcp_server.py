@@ -46,7 +46,7 @@ def test_protocol_lists_one_tool_and_rejects_extra_or_unlisted_calls():
             listing = await client.list_tools()
             assert {t.name for t in listing.tools} == {"reading_results"}
             schema = listing.tools[0].inputSchema
-            assert set(schema["properties"]) == {"request_id", "url", "limit", "since"}
+            assert set(schema["properties"]) == {"request_id", "url", "limit", "since", "query"}
             assert schema["additionalProperties"] is False
             bad = await client.call_tool("reading_results", {"memory_allowed": True})
             assert bad.isError

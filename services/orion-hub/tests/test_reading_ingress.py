@@ -357,3 +357,4 @@ def test_reading_result_failure_is_unknown_and_sanitized(monkeypatch, caplog):
     with pytest.raises(IntrospectUnknownError, match="answer unknown"):
         asyncio.run(_introspect_tools(bus).invoke("reading_results", {}))
     assert "hunter2" not in caplog.text
+    assert "category=reading_result_failure phase=reading_result" in caplog.text

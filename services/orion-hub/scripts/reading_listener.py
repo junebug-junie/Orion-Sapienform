@@ -37,7 +37,11 @@ def _failure_category(exc: Exception, *, phase: str) -> str:
         or isinstance(exc, (ConnectionError, TimeoutError, OSError))
     ):
         return "connection_failure"
-    return "enqueue_failure" if phase == "enqueue" else "status_failure"
+    if phase == "enqueue":
+        return "enqueue_failure"
+    if phase == "reading_result":
+        return "reading_result_failure"
+    return "status_failure"
 
 
 def _safe_exception_detail(exc: Exception) -> str:

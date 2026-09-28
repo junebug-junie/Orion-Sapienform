@@ -234,6 +234,45 @@ def test_a_preempted_self_sense_node_waits_for_its_hold_instead_of_failing_the_r
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("preempted", [True, False])
+def test_a_self_sense_question_that_came_back_empty(preempted):
+    """ask_questions records a failed question as an empty answer (a result, not an exception)."""
+    from app.admitted_self_sense_graph import build_admitted_self_sense_graph
+    from app.self_sense_graph import Deps as SelfSenseDeps
+    from orion.schemas.durable_run import CuriosityTurnResultV1
+    from test_admitted_self_sense_graph import _brief
+
+    async def scenario():
+        admission = HeldAdmission(preempted=preempted)
+        asked, published = [], []
+
+        async def turn(req):
+            asked.append(req.prompt)
+            text = "" if len(asked) == 2 else "an answer"                  # the second question fails
+            return CuriosityTurnResultV1(run_id=req.run_id, correlation_id=req.correlation_id, text=text,
+                                         ok=bool(text))
+
+        async def publish_rows(rows):
+            published.extend(rows)
+            return len(rows), 0
+
+        graph = build_admitted_self_sense_graph(SelfSenseDeps(run_turn=turn, publish_rows=publish_rows),
+                                                admission.deps(), InMemorySaver())
+        snap = await _stop_at_wait(graph, {"run_id": "r-1", "correlation_id": "c", "workflow": "self_sense_eval",
+                                           "attempt": 0, "admission": {}, "brief": _brief()}, "r-1")
+        if preempted:
+            # The node replays under the kept hold; nothing from the failed pass is kept or published.
+            assert snap.next == ("resource_wait",) and snap.values["status"] == "waiting_resource"
+            assert snap.values["hold"]["lease_id"] == "hold-1" and not snap.values.get("answers")
+            assert admission.release_calls == [(URGENT_PREEMPT, True)] and published == []
+        else:
+            # A real empty answer: published as before, the run completes.
+            assert snap.next == () and snap.values["status"] == "completed"
+            assert len(published) == len(asked) == 4
+            assert admission.release_calls == [("completed", False)]
+    asyncio.run(scenario())
+
+
 # --- runtime: _beat / execute / release against scripted pool replies --------------------------------
 
 def _reply(status, *, generation=1, reason=None, recall_in=5.0):
@@ -426,7 +465,7 @@ def test_an_urgent_recall_the_pool_never_aborts_falls_back_to_releasing_it(fast_
     monkeypatch.setattr(fast_poll, "PREEMPT_REQUEUE_MARGIN_SEC", 0.05)
 
     async def scenario():
-        recall = _reply("recall", reason=URGENT_PREEMPT, recall_in=-1)      # grace already over
+        recall = _reply("recall", reason=URGENT_PREEMPT, recall_in=0.02)    # grace nearly over
         holds = Holds([recall], status=recall)
         rt = bare_runtime(holds)
         with pytest.raises(HoldRecalled):
@@ -435,11 +474,67 @@ def test_an_urgent_recall_the_pool_never_aborts_falls_back_to_releasing_it(fast_
     asyncio.run(scenario())
 
 
-def test_the_requeue_wait_is_bounded_by_the_grace_even_if_recall_by_is_far_off(fast_poll):
+@pytest.mark.parametrize("recall_in,expected", [(600, "grace"), (-30, "grace"), (2.0, 2.0)])
+def test_the_requeue_wait_trusts_the_pools_recall_by_only_to_shorten_it(fast_poll, recall_in, expected):
+    """recall_by is the pool's clock: far off or already past (clock skew) means the local grace;
+    only a sane, sooner recall_by shortens the wait."""
     rt = bare_runtime(Holds())
-    far = _reply("recall", reason=URGENT_PREEMPT, recall_in=600)
-    assert rt._requeue_wait_sec(far) == (POOL_CFG.defaults.urgent_preempt_grace_sec
-                                         + fast_poll.PREEMPT_REQUEUE_MARGIN_SEC)
+    grace = POOL_CFG.defaults.urgent_preempt_grace_sec
+    wait = rt._requeue_wait_sec(_reply("recall", reason=URGENT_PREEMPT, recall_in=recall_in))
+    assert wait == (grace if expected == "grace" else expected) + fast_poll.PREEMPT_REQUEUE_MARGIN_SEC
+
+
+def test_a_requeue_for_another_reason_is_not_an_urgent_pause(fast_poll):
+    async def scenario():
+        holds = Holds([_reply("recall", reason=URGENT_PREEMPT)],
+                      status=[_reply("recall", reason=URGENT_PREEMPT), _reply("queued", reason="expired")])
+        rt = bare_runtime(holds)
+        with pytest.raises(HoldRecalled):
+            await asyncio.wait_for(rt.execute(_held_state(), _never_runs), 2)
+        assert holds.released == ["recalled_before_start"] and "run.preempted" not in rt.store.names()
+    asyncio.run(scenario())
+
+
+def test_a_hanging_status_call_cannot_stretch_the_requeue_wait(fast_poll, monkeypatch):
+    monkeypatch.setattr(fast_poll, "PREEMPT_REQUEUE_MARGIN_SEC", 0.2)
+
+    class HangingHolds(Holds):
+        async def status(self, lease_id):
+            self.status_calls += 1
+            await asyncio.sleep(60)
+
+    async def scenario():
+        holds = HangingHolds([_reply("recall", reason=URGENT_PREEMPT, recall_in=0.05)])
+        rt = bare_runtime(holds)
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(HoldRecalled):
+            await asyncio.wait_for(rt.execute(_held_state(), _never_runs), 5)
+        elapsed = asyncio.get_running_loop().time() - started
+        assert elapsed < 0.05 + 0.2 + 0.1 + 0.2              # bound + one min status slice + slack
+        assert holds.status_calls >= 1 and holds.released == ["recalled_before_start"]
+    asyncio.run(scenario())
+
+
+def test_a_real_work_error_near_the_budget_end_is_not_replaced_by_a_timeout():
+    """The preempt check after a work failure reads the pool outside the turn's time budget: a slow
+    read must not turn the turn's own error into a TimeoutError."""
+    class SlowStatus(Holds):
+        async def status(self, lease_id):
+            await asyncio.sleep(0.3)
+            return _reply("granted")
+
+    async def scenario():
+        rt = bare_runtime(SlowStatus([_reply("granted")]))
+
+        async def node(state):
+            await asyncio.sleep(0.1)
+            raise RuntimeError("real_turn_error")
+
+        state = {**_held_state(), "brief": {"timeout_sec": 0.2}}
+        with pytest.raises(RuntimeError) as raised:
+            await asyncio.wait_for(rt.execute(state, node), 3)
+        assert type(raised.value) is RuntimeError and "real_turn_error" in str(raised.value)
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("reason", [URGENT_PREEMPT, "owner_waiting"])

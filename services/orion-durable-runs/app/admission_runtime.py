@@ -85,7 +85,7 @@ HINT_EVENTS = frozenset({"granted", "recalled", "aborted", "expired", "retried",
 HOLD_SEQ_SKIP_MAX = 20
 # A hold recalled for urgent work before its step started is not released (that forfeits its place in
 # line): the driver polls the pool every PREEMPT_POLL_SEC until the pool's abort re-queues it in place,
-# for at most min(recall_by, urgent_preempt_grace_sec) + PREEMPT_REQUEUE_MARGIN_SEC.
+# for at most urgent_preempt_grace_sec + PREEMPT_REQUEUE_MARGIN_SEC from first sight (local clock).
 PREEMPT_POLL_SEC = 1.0
 PREEMPT_REQUEUE_MARGIN_SEC = 3.0
 # Background/system drivers at once. Urgent drivers are outside it, capped at urgent_max_concurrent.
@@ -411,7 +411,7 @@ class AdmissionRuntime:
                 while True:
                     done, _ = await asyncio.wait({work}, timeout=self.settings.lease_heartbeat_sec)
                     if done:
-                        return await self._settled(work, lease)
+                        break
                     row = await self.store.get_run(state["run_id"])
                     if row.get("control"):
                         raise RuntimeError(f"run_control:{row['control']}")
@@ -428,26 +428,40 @@ class AdmissionRuntime:
                 await self._cancel_harness(state, "durable_attempt_stopped")
                 work.cancel()
                 await asyncio.gather(work, return_exceptions=True)
+        # Outside the turn's time budget: a slow preempt check must not replace the work's own error.
+        try:
+            return await self._settled(work, lease)
+        except TimeoutError as exc:
+            if deadline and self.now() >= datetime.fromisoformat(deadline):
+                raise WorkflowDeadline("workflow_deadline") from exc
+            raise
 
     def _requeue_wait_sec(self, recall: GpuLeaseReplyV1) -> float:
+        """How long to wait for the re-queue, from first sight. recall_by is the pool's clock: it
+        only shortens the local grace when it is sane (in the future, sooner than the grace)."""
         grace = float(self.holds.cfg.defaults.urgent_preempt_grace_sec)
-        left = grace if recall.recall_by is None else (recall.recall_by - self.now()).total_seconds()
-        return max(0.0, min(left, grace)) + PREEMPT_REQUEUE_MARGIN_SEC
+        wait = grace
+        if recall.recall_by is not None:
+            left = (recall.recall_by - self.now()).total_seconds()
+            if 0 < left < grace:
+                wait = left
+        return wait + PREEMPT_REQUEUE_MARGIN_SEC
 
     async def _await_requeue(self, lease_id: str, recall: GpuLeaseReplyV1) -> bool:
         """A hold recalled for urgent work before its step started: wait (bounded) for the pool's
         abort to put it back in line in its original place. True once the pool says queued; False if
-        it said something else or the wait ran out -- the caller then releases it as before."""
+        it said something else (a re-queue for another reason included) or the wait ran out -- the
+        caller then releases it as before."""
         end = time.monotonic() + self._requeue_wait_sec(recall)
         while True:
             try:
-                reply = await self.holds.status(lease_id)
-            except Exception as exc:  # noqa: BLE001 -- keep asking until the bound
+                reply = await asyncio.wait_for(self.holds.status(lease_id), max(0.1, end - time.monotonic()))
+            except Exception as exc:  # noqa: BLE001 -- timeout / RPC failure: not re-queued yet
                 logger.warning("durable_hold_status_failed lease=%s err=%s", lease_id, exc)
                 reply = None
             if reply is not None and not is_pool_trouble(reply):
                 if reply.status in POOL_WAITING:
-                    return True
+                    return reply.reason == URGENT_PREEMPT
                 if reply.status != "recall":
                     return False
             left = end - time.monotonic()

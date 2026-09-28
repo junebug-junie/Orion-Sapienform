@@ -115,7 +115,8 @@ def test_bad_credentials_file_is_a_labelled_error_before_the_browser(tmp_path, m
     assert "hunter2" not in status_path.read_text()
 
 
-def test_rejected_login_never_leaks_the_password(tmp_path, monkeypatch, caplog) -> None:
+@pytest.mark.parametrize("form_breaks,reason", [(False, "login_failed"), (True, "login_form_failed:TimeoutError")])
+def test_failed_login_never_leaks_the_password(tmp_path, monkeypatch, caplog, form_breaks, reason) -> None:
     creds = tmp_path / "credentials.env"
     creds.write_text("RMP_USERNAME=me@example.com\nRMP_PASSWORD=hunter2\n")
     creds.chmod(0o600)
@@ -126,6 +127,8 @@ def test_rejected_login_never_leaks_the_password(tmp_path, monkeypatch, caplog) 
             return login_url
 
         async def login(self, *, username, password):
+            if form_breaks:
+                raise TimeoutError(f"fill {username} {password}")
             return login_url
 
     @asynccontextmanager
@@ -139,7 +142,7 @@ def test_rejected_login_never_leaks_the_password(tmp_path, monkeypatch, caplog) 
     )
     caplog.set_level("DEBUG")
     outcome = asyncio.run(portal_main.attempt(settings, days=3))
-    assert (outcome.state, outcome.reason) == ("reauth_required", "login_failed")
+    assert outcome.reason == reason
     assert "hunter2" not in status_path.read_text() and "hunter2" not in caplog.text
     assert "me@example.com" not in caplog.text
 

@@ -26,10 +26,12 @@ services:
     volumes:
       - ${ENERGY_HOST_DATA_DIR:-/mnt/storage-warm/orion-energy}:/data/energy
       # RMP login: portal only, read-only, outside the data dir orion-energy also mounts.
-      # create_host_path=false: a missing file fails the start instead of becoming an empty dir.
+      # A directory, not the file: an editor that replaces the file is seen at the next attempt,
+      # and a missing file inside it means manual-reauth mode. create_host_path=false: a missing
+      # dir fails the start instead of docker creating a root-owned one.
       - type: bind
-        source: ${ENERGY_PORTAL_CREDENTIALS_HOST_FILE:-/home/athena/.orion/secrets/rmp-credentials.env}
-        target: /run/secrets/rmp_credentials.env
+        source: ${ENERGY_PORTAL_CREDENTIALS_HOST_DIR:-/home/athena/.orion/secrets/rmp}
+        target: /run/secrets/rmp
         read_only: true
         bind:
           create_host_path: false

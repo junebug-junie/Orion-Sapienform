@@ -104,14 +104,16 @@ itself from a **credentials file** on the host, kept in an owner-only dir outsid
 `ENERGY_HOST_DATA_DIR` so the main `orion-energy` container never sees it:
 
 ```bash
-install -d -m 700 ~/.orion/secrets
-install -m 600 /dev/null ~/.orion/secrets/rmp-credentials.env
-nano ~/.orion/secrets/rmp-credentials.env   # RMP_USERNAME=... / RMP_PASSWORD=...
+install -d -m 700 ~/.orion/secrets ~/.orion/secrets/rmp
+install -m 600 /dev/null ~/.orion/secrets/rmp/credentials.env
+nano ~/.orion/secrets/rmp/credentials.env   # RMP_USERNAME=... / RMP_PASSWORD=...
 ```
 
-Only the portal service bind-mounts it, read-only, at `/run/secrets/rmp_credentials.env`
-(`ENERGY_PORTAL_CREDENTIALS_HOST_FILE` picks the host file; compose refuses to start the
-portal if it is missing rather than creating an empty dir). One `KEY=VALUE` per line; an
+Only the portal service bind-mounts that dir, read-only, at `/run/secrets/rmp`
+(`ENERGY_PORTAL_CREDENTIALS_HOST_DIR` picks it). The dir must exist or compose refuses to
+start the portal; the file inside it is optional (no file = manual reauth mode below).
+Mounting the dir rather than the file means an edit is picked up at the next attempt
+even when the editor replaces the file, with no restart. One `KEY=VALUE` per line; an
 optional leading `export ` and one pair of surrounding quotes are stripped, nothing else --
 a password with leading/trailing spaces must be quoted.
 
@@ -133,7 +135,9 @@ Each attempt reads the date picker's allowed range and downloads the newest
 all one-hour readings is refused (`non_hourly_download`) -- a daily reading would overwrite
 that day's first hour in the ledger; a file whose readings belong to a different day is
 refused as `wrong_day_download`. A refused file is kept in the raw dir and the run moves on
-to the next day, ending `error`/`usage_days_bad:<bad>/<total>:<first bad day>`. A lost
+to the next day, ending `error`/`usage_days_bad:<bad>/<total>:<first bad day>`. Three bad
+days in a row mean the page itself is broken, so the run stops there
+(`usage_days_bad:<bad>/<total>:stopped:...`) instead of spending a long backfill on it. A lost
 session or browser error stops the run (`usage_day_failed:<day>:...`); days already
 downloaded stay delivered. Each day gets one page reload and retry first. RMP's day files run 02:00-02:00 local, not midnight-midnight (seen live, not
 explained). Don't hand-drop One Week/One Month exports for the same reason.
@@ -144,8 +148,8 @@ UNVERIFIED (`portal/selectors.py`). Bill scraping is off by default
 
 | Key | Default | What it does |
 |---|---|---|
-| `ENERGY_PORTAL_CREDENTIALS_HOST_FILE` | `/home/athena/.orion/secrets/rmp-credentials.env` | Host path of the login file; compose-only, mounted into the portal container. |
-| `ENERGY_PORTAL_CREDENTIALS_PATH` | `/run/secrets/rmp_credentials.env` | Where the portal reads that file inside the container (see above); absent = manual reauth only. |
+| `ENERGY_PORTAL_CREDENTIALS_HOST_DIR` | `/home/athena/.orion/secrets/rmp` | Host dir holding the login file; compose-only, mounted read-only into the portal container. |
+| `ENERGY_PORTAL_CREDENTIALS_PATH` | `/run/secrets/rmp/credentials.env` | Where the portal reads that file inside the container (see above); absent = manual reauth only. |
 | `ENERGY_PORTAL_SCRAPE_BILLS` | `false` | Also scrape billing history / forecast after the usage download. |
 | `ENERGY_PORTAL_TIMEOUT_SEC` | `300` | Base cap on one fetch attempt, plus 45s per requested day; hitting it records `error`/`timeout` in `status.json`. |
 | `ENERGY_PORTAL_RAW_DIR` | `/data/energy/portal/raw` | Where a failed download/scrape keeps its raw artifact (see below). |

@@ -31,6 +31,9 @@ logger = logging.getLogger("orion-energy-portal")
 _STAMP = "%Y%m%dT%H%M%SZ"
 _HOUR = timedelta(hours=1)
 _MAX_DAY_SPAN = timedelta(hours=25)  # a DST fall-back day
+# Bad files in a row mean the page itself is broken (date entry dead, button moved), not one
+# day's data; stop rather than burn a long backfill against a portal that throttles (~8 downloads).
+MAX_CONSECUTIVE_BAD_DAYS = 3
 _ATTRS = r"""(?:[^>"']|"[^"]*"|'[^']*')*"""
 _SCRIPT = re.compile(rf"(<script\b{_ATTRS}>).*?(</script\s*>|\Z)", re.IGNORECASE | re.DOTALL)
 _INPUT = re.compile(rf"<input\b{_ATTRS}>", re.IGNORECASE)
@@ -256,6 +259,8 @@ async def run_once(
             return PortalOutcome("error", "no_usage_days_available")
         delivered: list[Path] = []
         bad_days: list[str] = []
+        bad_run = 0
+        stopped = False
         for day in days:
             try:
                 xml = await _download_day_with_reload(driver, day)
@@ -265,15 +270,21 @@ async def run_once(
                 return _usage_failure(day, f"download_failed:{type(exc).__name__}", delivered, bad_days, len(days))
             problem = _day_xml_problem(xml, day=day, now=now)
             if problem is not None:
-                # The page still works; a bad file for one day must not block the newer days.
+                # A bad file for one day must not block the newer days (until the cap above).
                 if xml:
                     _save_raw(raw_dir, now, f"green_button-{day.isoformat()}.xml", xml)
                 bad_days.append(f"{day.isoformat()}:{problem}")
+                bad_run += 1
+                if bad_run >= MAX_CONSECUTIVE_BAD_DAYS:
+                    stopped = True
+                    break
                 continue
+            bad_run = 0
             delivered.append(_atomic_write(inbox_dir, f"rmp-portal-{stamp}-{day.isoformat()}.xml", xml))
         xml_files = tuple(delivered)
         if bad_days:
-            reason = f"usage_days_bad:{len(bad_days)}/{len(days)}:{bad_days[0]}"
+            tag = ":stopped" if stopped else ""
+            reason = f"usage_days_bad:{len(bad_days)}/{len(days)}{tag}:{bad_days[0]}"
             return PortalOutcome("error", reason[:200], xml_files=xml_files)
         if not scrape_bills:
             return PortalOutcome("ok", "fetched_usage_only", xml_files=xml_files)

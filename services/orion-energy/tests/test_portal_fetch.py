@@ -7,9 +7,11 @@ import stat
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from app.bills import parse_bill
 from portal.credentials import PortalCredentials
-from portal.fetch import PortalOutcome, run_once, usage_days
+from portal.fetch import PortalOutcome, _day_xml_problem, run_once, usage_days
 from portal.status import read_status, write_status
 
 NOW = datetime(2026, 9, 27, 6, tzinfo=timezone.utc)
@@ -160,7 +162,7 @@ def test_good_fetch_delivers_xml_and_bills(tmp_path) -> None:
 
 def test_garbage_download_is_error_and_kept_for_debugging(tmp_path) -> None:
     out = _run(tmp_path, FakeDriver(xml=b"<html>not espi</html>", rows=[ROW]))
-    assert out.state == "error" and out.reason.startswith("usage_days_bad:3/3:2026-09-24:espi_invalid")
+    assert out.state == "error" and out.reason.startswith("usage_days_bad:3/3:stopped:2026-09-24:espi_invalid")
     assert not (tmp_path / "inbox").exists()
     assert len(list((tmp_path / "raw").glob("*green_button-2026-09-2?.xml"))) == 3
 
@@ -169,7 +171,7 @@ def test_daily_grain_download_is_refused(tmp_path) -> None:
     daily = FIXTURE.read_bytes().replace(b">3600<", b">86400<")
     assert daily != FIXTURE.read_bytes()
     out = _run(tmp_path, FakeDriver(xml=daily), scrape_bills=False)
-    assert (out.state, out.reason) == ("error", "usage_days_bad:3/3:2026-09-24:non_hourly_download")
+    assert (out.state, out.reason) == ("error", "usage_days_bad:3/3:stopped:2026-09-24:non_hourly_download")
     assert not (tmp_path / "inbox").exists()
 
 
@@ -180,6 +182,69 @@ def test_file_for_another_day_is_refused_and_newer_days_still_delivered(tmp_path
     assert (out.state, out.reason) == ("error", "usage_days_bad:1/3:2026-09-25:wrong_day_download")
     assert [p.name[-14:] for p in out.xml_files] == ["2026-09-24.xml", "2026-09-26.xml"]
     assert list((tmp_path / "raw").glob("*green_button-2026-09-25.xml"))
+
+
+def test_broken_page_stops_after_three_bad_days_in_a_row(tmp_path) -> None:
+    stale = day_xml(date(2026, 1, 1))  # date entry dead: every request re-serves the same old day
+    driver = FakeDriver(xml=stale)
+    out = asyncio.run(
+        run_once(
+            driver, inbox_dir=tmp_path / "inbox", bill_inbox_dir=tmp_path / "bills", raw_dir=tmp_path / "raw",
+            backfill_days=60, now=NOW, scrape_bills=False,
+        )
+    )
+    assert out.reason == "usage_days_bad:3/60:stopped:2026-07-29:wrong_day_download"
+    assert len(driver.requested) == 3 and out.xml_files == ()
+
+
+def test_a_good_day_resets_the_bad_day_count(tmp_path) -> None:
+    junk = b"<html>not espi</html>"
+    bad = {date(2026, 9, d): junk for d in (20, 21, 23, 24)}
+    driver = FakeDriver(per_day=bad)
+    out = asyncio.run(
+        run_once(
+            driver, inbox_dir=tmp_path / "inbox", bill_inbox_dir=tmp_path / "bills", raw_dir=tmp_path / "raw",
+            backfill_days=7, now=NOW, scrape_bills=False,
+        )
+    )
+    assert out.reason.startswith("usage_days_bad:4/7:2026-09-20:espi_invalid")
+    assert len(driver.requested) == 7 and len(out.xml_files) == 3
+
+
+def _hourly_espi(start: datetime, hours: int) -> bytes:
+    """One flow of `hours` one-hour readings from `start`, the shape of an RMP One Day file."""
+    readings = "".join(
+        f"<espi:IntervalReading><espi:timePeriod><espi:duration>3600</espi:duration>"
+        f"<espi:start>{int((start + timedelta(hours=h)).timestamp())}</espi:start></espi:timePeriod>"
+        f"<espi:value>{100 + h}</espi:value></espi:IntervalReading>"
+        for h in range(hours)
+    )
+    body = FIXTURE.read_text()
+    head = body[: body.index("<espi:IntervalReading>")]
+    tail = body[body.rindex("</espi:IntervalReading>") + len("</espi:IntervalReading>"):]
+    return (head + readings + tail).encode()
+
+
+@pytest.mark.parametrize(
+    "day,start_hour_utc,hours",
+    [
+        (date(2026, 3, 8), 9, 23),   # spring forward, Mountain: 02:00 MST = 09:00Z, 23 hours
+        (date(2026, 10, 31), 8, 25),  # fall back, Mountain: 02:00 MDT Oct 31 -> 02:00 MST Nov 1, 25 hours
+        (date(2026, 1, 15), 9, 24),  # winter, Mountain
+        (date(2026, 7, 4), 9, 24),   # summer, Pacific: 02:00 PDT = 09:00Z
+        (date(2026, 1, 15), 10, 24),  # winter, Pacific
+    ],
+)
+def test_real_day_shapes_across_dst_and_zones_are_accepted(day, start_hour_utc, hours) -> None:
+    start = datetime(day.year, day.month, day.day, start_hour_utc, tzinfo=timezone.utc)
+    xml = _hourly_espi(start, hours)
+    assert _day_xml_problem(xml, day=day, now=NOW) is None
+    assert _day_xml_problem(xml, day=day + timedelta(days=1), now=NOW) == "wrong_day_download"
+
+
+def test_more_than_25_hours_is_refused() -> None:
+    start = datetime(2026, 10, 31, 8, tzinfo=timezone.utc)
+    assert _day_xml_problem(_hourly_espi(start, 26), day=date(2026, 10, 31), now=NOW) == "wrong_day_download"
 
 
 def test_file_spanning_more_than_a_day_is_refused(tmp_path) -> None:
@@ -194,10 +259,11 @@ def test_file_spanning_more_than_a_day_is_refused(tmp_path) -> None:
 def test_broken_login_form_is_error_not_reauth(tmp_path) -> None:
     class NoForm(FakeDriver):
         async def login(self, *, username, password):
-            raise TimeoutError("#signInName not found")
+            raise TimeoutError(f"fill {password} {username}")
 
     out = _run(tmp_path, NoForm(url=LOGIN_URL), credentials=CREDS)
     assert (out.state, out.reason) == ("error", "login_form_failed:TimeoutError")
+    assert "hunter2" not in out.reason and "me@example.com" not in out.reason
     assert not (tmp_path / "inbox").exists()
 
 
@@ -304,7 +370,7 @@ def test_forecast_panel_without_parseable_fields_is_error_but_bills_delivered(tm
 
 def test_zero_byte_download_is_error(tmp_path) -> None:
     out = _run(tmp_path, FakeDriver(xml=b"", rows=[ROW]))
-    assert (out.state, out.reason) == ("error", "usage_days_bad:3/3:2026-09-24:empty_download")
+    assert (out.state, out.reason) == ("error", "usage_days_bad:3/3:stopped:2026-09-24:empty_download")
     assert not (tmp_path / "inbox").exists()
 
 
@@ -314,7 +380,7 @@ def test_raw_save_failure_keeps_original_reason(tmp_path) -> None:
     out = _run(tmp_path, FakeDriver(rows=[]), raw_dir=blocker / "raw")
     assert (out.state, out.reason) == ("error", "bill_rows_empty")
     out = _run(tmp_path, FakeDriver(xml=b"<html>not espi</html>"), raw_dir=blocker / "raw")
-    assert out.state == "error" and out.reason.startswith("usage_days_bad:3/3:2026-09-24:espi_invalid")
+    assert out.state == "error" and out.reason.startswith("usage_days_bad:3/3:stopped:2026-09-24:espi_invalid")
 
 
 def test_raw_html_is_scrubbed_and_private(tmp_path) -> None:

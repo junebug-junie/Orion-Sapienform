@@ -171,8 +171,13 @@ def test_direct_request_still_allows_follow_up_on_what_they_shared() -> None:
     )
     assert frame.selected_action.action_type == "ask"
     assert frame.selected_action.question_text == "Where's the trip taking you?"
-    background = [a for a in frame.candidate_actions if a.question_text is None and a.action_type != "ask"]
-    assert background, "background loop must not be promoted to an ask on a direct-request turn"
+    background_loop = next(loop for loop in frame.open_loops if "Biometrics" in loop.description)
+    assert background_loop.askability <= 0.25, "direct turn must make Orion's background thread unaskable"
+    background_action = next(a for a in frame.candidate_actions if a.open_loop_id == background_loop.id)
+    assert background_action.action_type != "ask"
+    assert "at most one selected ask" not in background_action.rationale, (
+        "background loop must be held back by the direct turn, not merely out-competed for the one ask slot"
+    )
 
 
 def test_question_mark_alone_no_longer_suppresses_curiosity() -> None:

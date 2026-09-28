@@ -400,6 +400,21 @@ async def test_three_failure_modes_use_distinct_log_messages(monkeypatch, caplog
     assert set(unbound_msgs) != set(rpc_failed_msgs) != set(malformed_msgs)
 
 
+def test_non_string_question_is_not_a_natural_question() -> None:
+    raw = json.dumps(
+        {
+            "wants_direct_answer": False,
+            "items": [
+                {"phrase": "work travel", "type": "plan", "question": True},
+                {"phrase": "pottery class", "type": "activity", "question": ["What kind?"]},
+            ],
+        }
+    )
+    read = parse_current_turn_llm_read(raw)
+    assert read is not None
+    assert all("natural_question" not in s for s in read["signals"])
+
+
 @pytest.mark.asyncio
 async def test_populate_records_a_successful_turn_read(monkeypatch) -> None:
     async def _fake_llm_call(bus, *, prompt):

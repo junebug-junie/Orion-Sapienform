@@ -476,7 +476,7 @@ class Settings(BaseSettings):
     # Same-turn LLM novelty/salience judgment for the chat-scoped attention/
     # curiosity pipeline (app/current_turn_llm_signals.py), replacing the
     # deleted LegacyRegexSignalDetector's "any capitalized word" regex.
-    # Quick-lane classification call, not a generation call -- see that
+    # Short classification call, not a generation call -- see that
     # module's docstring for the full rationale.
     # "chat" (35B), not "quick" (8B): on evals/run_current_turn_disclosure_live_eval.py
     # the 8B read work commands as shared news ("restart cortex-exec please" ->

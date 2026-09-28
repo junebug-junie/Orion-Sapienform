@@ -67,7 +67,8 @@ ATTENTION FRAME (Oríon's own curiosity this turn — inspectable policy, not a 
   hazard guards against. This holds even when connection_seek is low.
 - Otherwise (watch, defer, remember, suppress, none) do not fabricate a question — proceed on the
   actual task.
-- Suppressions are already applied to selected_action; they explain why no ask was chosen.
+- Suppressions are already applied to selected_action; they explain which threads were held
+  back and never cancel a selected ask.
 - It does not add output keys — still emit only valid ThoughtEventV1.
 - selected_action: {{ chat_attention_frame.selected_action }}
 - suppressions: {{ chat_attention_frame.suppressions }}

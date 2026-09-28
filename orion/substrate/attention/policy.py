@@ -8,6 +8,10 @@ from orion.substrate.attention.scoring import score_loop
 
 DirectAnswerCause = Literal["judged", "unavailable"]
 TURN_READ_UNAVAILABLE_REF = "turn_read_unavailable"
+# Targets Orion's own threads, not the turn: a follow-up on something the user
+# shared can still be the selected ask on a direct turn, and prompts read a
+# suppression aimed at the turn itself as "don't ask".
+BACKGROUND_THREADS_REF = "background_threads"
 
 
 def direct_answer_cause(ctx: dict[str, Any], user_text: str) -> DirectAnswerCause | None:
@@ -37,7 +41,7 @@ def direct_answer_cause(ctx: dict[str, Any], user_text: str) -> DirectAnswerCaus
 def base_suppressions(*, direct_cause: DirectAnswerCause | None, stale_thread_active: bool) -> list[CuriositySuppressionV1]:
     suppressions: list[CuriositySuppressionV1] = []
     if direct_cause == "judged":
-        suppressions.append(CuriositySuppressionV1(reason="user_needs_direct_answer", target_ref="current_turn", rationale="turn read judged the user wants work or a direct answer; answer first and keep Orion's own background threads out of it", confidence=0.78))
+        suppressions.append(CuriositySuppressionV1(reason="user_needs_direct_answer", target_ref=BACKGROUND_THREADS_REF, rationale="turn read judged the user wants work or a direct answer; answer first and keep Orion's own background threads out of it", confidence=0.78))
     elif direct_cause == "unavailable":
         suppressions.append(CuriositySuppressionV1(reason="user_needs_direct_answer", target_ref=TURN_READ_UNAVAILABLE_REF, rationale="no same-turn read available; fail closed on Orion's own background threads", confidence=0.6))
     if stale_thread_active:

@@ -326,7 +326,10 @@ def _filter_candidates(data: list) -> list[dict[str, str]]:
                 phrase, type_hint,
             )
         entry = {"phrase": phrase[:_MAX_PHRASE_LEN], "type": type_hint}
-        question = " ".join(str(item.get("question") or "").split())[:_MAX_QUESTION_LEN].strip()
+        raw_question = item.get("question")
+        question = (
+            " ".join(raw_question.split())[:_MAX_QUESTION_LEN].strip() if isinstance(raw_question, str) else ""
+        )
         if question:
             entry["natural_question"] = question
         out.append(entry)

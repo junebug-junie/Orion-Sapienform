@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_serializer, model_validator
 
 from orion.schemas.introspect import MAX_ITEMS
 
@@ -107,6 +107,16 @@ class ReadingToolRequestV1(BaseModel):
         if self.operation != "reading_result" and (self.limit is not None or self.since is not None):
             raise ValueError(f"{self.operation} takes no limit or since")
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_result_selectors(self, handler):
+        # A Hub predating reading_result forbids unknown keys, even null ones;
+        # keep recommend/status payloads byte-compatible with it.
+        data = handler(self)
+        for key in ("limit", "since"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
 
 class ReadingToolResultV1(BaseModel):

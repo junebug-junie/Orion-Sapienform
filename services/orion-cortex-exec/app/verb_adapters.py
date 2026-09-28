@@ -1271,6 +1271,11 @@ class RenderSceneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
     `refused` says what happened. Reporting a thermal refusal as an error would
     make Orion's own restraint look like a broken service, and would poison the
     action's measured effect posterior with failures that never ran.
+
+    Dispatched runs (a `dispatch_id` is present) go through the admitted
+    `reverie.visual` durable workflow when CORTEX_EXEC_RENDER_SCENE_DURABLE_ENABLED
+    is on: this verb only submits, and execution-dispatch settles the real
+    outcome from the run's terminal state. Manual runs keep the direct call.
     """
 
     input_model = PlanExecutionRequest
@@ -1285,6 +1290,8 @@ class RenderSceneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
             **{key: skill_args[key] for key in ("dispatch_id", "proposal_id", "decision_id", "visual_baseline") if key in skill_args},
             "correlation_id": str(ctx.meta.get("correlation_id") or payload.args.request_id or "unknown"),
         })
+        if settings.render_scene_durable_enabled and request.dispatch_id:
+            return await _submit_render_scene_durable(ctx, request), []
         try:
             raw = await asyncio.to_thread(
                 _http_json_post,
@@ -1325,6 +1332,105 @@ class RenderSceneVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
             result=result,
             status="refused" if result["refused"] else "ok",
         ), []
+
+
+RENDER_SCENE_SKILL = "skills.imagination.render_scene.v1"
+
+
+def _render_scene_retry_window_sec() -> float:
+    configured = float(settings.render_scene_retry_window_sec or 0.0)
+    if configured > 0:
+        return configured
+    from orion.reverie.baseline import load_baseline_policy
+
+    return float(load_baseline_policy().interval_sec)
+
+
+async def _submit_render_scene_durable(ctx: VerbContext, request: Any) -> SkillVerbOutput:
+    """Submit one `reverie.visual` run and return as soon as the receipt proves it
+    exists. The result is `outcome="unknown"` plus a pending settlement: the verb
+    has not made an image yet, and saying anything else would be a guess.
+
+    No fallback to the direct call on a failed submit. The run id is deterministic
+    per dispatch, so an accepted-but-unconfirmed submit may still be running; a
+    direct call on top of it could render the same dispatch twice.
+    """
+    from orion.schemas.durable_run import DurableRunRequestV1
+    from orion.schemas.resource_admission import ResourceRequirementV1
+    from orion.schemas.reverie_visual_run import (
+        REVERIE_VISUAL_HOLD_LANE,
+        REVERIE_VISUAL_WORKFLOW,
+        ReverieVisualRunBriefV1,
+        reverie_visual_run_id,
+    )
+
+    from .durable_kickoff import receipt_mismatch, submit_durable_run
+
+    dispatch_id = str(request.dispatch_id)
+    run_id = reverie_visual_run_id(dispatch_id)
+    correlation_id = str(request.correlation_id or ctx.meta.get("correlation_id") or dispatch_id)
+    submitted_at = datetime.now(timezone.utc)
+    deadline_at = submitted_at + timedelta(seconds=_render_scene_retry_window_sec())
+    base = {"outcome": "unknown", "ran": False, "refused": False, "durable_run_id": run_id}
+
+    def _not_submitted(reason: str) -> SkillVerbOutput:
+        logger.warning("render_scene_durable_not_submitted dispatch=%s run=%s reason=%s", dispatch_id, run_id, reason)
+        return _skill_result_output(
+            skill_name=RENDER_SCENE_SKILL,
+            result={**base, "reason": reason, "settlement": {"state": "not_submitted", "durable_run_id": run_id, "reason": reason}},
+            ok=False,
+            status="unavailable",
+            error={"message": reason},
+        )
+
+    bus = ctx.meta.get("bus")
+    if bus is None:
+        return _not_submitted("missing_bus")
+    try:
+        durable_request = DurableRunRequestV1(
+            run_id=run_id,
+            workflow=REVERIE_VISUAL_WORKFLOW,
+            correlation_id=correlation_id,
+            requested_at=submitted_at,
+            brief=ReverieVisualRunBriefV1(visual_request=request),
+            admission=ResourceRequirementV1(
+                resource=f"service.route.{REVERIE_VISUAL_HOLD_LANE}",
+                preferred_lane=REVERIE_VISUAL_HOLD_LANE,
+                deadline_at=deadline_at,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _not_submitted(f"invalid_request:{exc}")
+
+    reply = await submit_durable_run(
+        bus=bus,
+        source=_actions_source(ctx.meta.get("source")),
+        request=durable_request,
+        request_channel=self_study_module.CORTEX_ORCH_REQUEST_CHANNEL,
+        reply_channel=f"orion:cortex:result:reverie-visual-kickoff:{run_id}:{uuid4().hex[:8]}",
+        envelope_correlation_id=self_study_module._as_envelope_correlation_id(correlation_id),
+        session_id="reverie-visual",
+        user_message=REVERIE_VISUAL_WORKFLOW,
+    )
+    mismatch = receipt_mismatch(reply, durable_request)
+    if mismatch is not None:
+        return _not_submitted(mismatch)
+    logger.info("render_scene_durable_submitted dispatch=%s run=%s deadline_at=%s", dispatch_id, run_id, deadline_at.isoformat())
+    return _skill_result_output(
+        skill_name=RENDER_SCENE_SKILL,
+        result={
+            **base,
+            "reason": "durable_run_pending",
+            "settlement": {
+                "state": "pending",
+                "durable_run_id": run_id,
+                "workflow": REVERIE_VISUAL_WORKFLOW,
+                "submitted_at": submitted_at.isoformat(),
+                "deadline_at": deadline_at.isoformat(),
+            },
+        },
+        status="ok",
+    )
 
 
 @verb("skills.perception.ask_camera.v1")

@@ -39,6 +39,14 @@ from orion.execution_dispatch.builder import (
 )
 from orion.execution_dispatch.cortex_client import ExecutionDispatchCortexClient
 from orion.execution_dispatch.policy import load_execution_dispatch_policy
+from orion.execution_dispatch.visual_settlement import (
+    RENDER_SCENE_VERB,
+    is_pending as _is_pending_settlement,
+    normalize_visual_outcome,
+    settle_visual_result,
+    settlement_of,
+)
+from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW
 from orion.execution_dispatch.result_extraction import (
     RESULT_KIND_EMPTY,
     RESULT_KIND_STRUCTURED,
@@ -62,6 +70,14 @@ logger = logging.getLogger("orion.execution_dispatch.runtime")
 # that bus's rpc_request() outcomes (orion:cortex:exec:request:background) were thrown
 # away with it. app.main's RpcHealthPublisher drains this sink into its long-lived bus.
 RPC_HEALTH_SINK = SharedRpcHealthSink()
+
+# Durable render settlement (docs/superpowers/specs/2026-09-28-visual-reverie-
+# durable-graph-design.md). A render verb that only SUBMITTED a reverie.visual
+# run is recorded with this status: the motor answered, but nothing has been
+# produced yet, so it is not a "success" to the theater tripwire either.
+DISPATCH_STATUS_PENDING = "pending"
+VISUAL_SETTLEMENT_RECONCILE_INTERVAL_SEC = 30.0
+VISUAL_SETTLEMENT_BATCH = 20
 
 THEATER_TRIPWIRE_WINDOW = 10
 # Renamed from THEATER_TRIPWIRE_EMPTY_THRESHOLD 2026-08-13: the predicate it
@@ -321,6 +337,8 @@ class ExecutionDispatchRuntimeWorker:
         # mid-process), just a tripwire whose restart-to-re-arm contract
         # actually holds now.
         self._recent_dispatch_statuses: deque[str] = deque(maxlen=THEATER_TRIPWIRE_WINDOW)
+        # Monotonic time of the next durable-render settlement pass.
+        self._visual_settlement_next_at: float | None = None
 
     async def start(self) -> None:
         asyncio.create_task(self._poll_loop(), name="execution-dispatch-runtime-poll")
@@ -334,6 +352,10 @@ class ExecutionDispatchRuntimeWorker:
                 await asyncio.to_thread(self._tick)
             except Exception:
                 logger.exception("execution_dispatch_runtime_tick_failed")
+            try:
+                await self._reconcile_visual_settlements()
+            except Exception:
+                logger.exception("execution_dispatch_visual_settlement_failed")
             try:
                 await asyncio.wait_for(
                     self._stop.wait(),
@@ -1778,7 +1800,9 @@ class ExecutionDispatchRuntimeWorker:
         existing = self._store.load_dispatch_result_by_dispatch_id(candidate.dispatch_id)
         if existing is not None:
             if candidate.visual_outcome is not None:
-                candidate = candidate.model_copy(update={"visual_outcome": existing["result_json"].get("visual_outcome") or "unknown"})
+                candidate = candidate.model_copy(
+                    update={"visual_outcome": normalize_visual_outcome(existing["result_json"].get("visual_outcome"))}
+                )
             logger.info(
                 "execution_dispatch_result_replayed dispatch_id=%s status=%s",
                 candidate.dispatch_id,
@@ -1796,6 +1820,16 @@ class ExecutionDispatchRuntimeWorker:
             # save_dispatch_result and save_dispatch_frame) but real, and a
             # probe is precisely the tick where being wrong matters most.
             self._record_dispatch_status(existing["status"], live=False)
+            if _is_pending_settlement(existing["result_json"]):
+                # The durable render is still in flight: its outcome is emitted
+                # once, at settlement (_reconcile_visual_settlements), never here.
+                return candidate.model_copy(
+                    update={
+                        "dispatch_status": "dispatched",
+                        "dispatched_at": now,
+                        "result_ref": existing["result_id"],
+                    }
+                )
             # Re-emit on replay too: action_outcomes.action_id is the SQL
             # primary key and sql-writer's route upserts by merge(), so a
             # repeat emit for the same dispatch_id idempotently overwrites
@@ -1946,6 +1980,29 @@ class ExecutionDispatchRuntimeWorker:
                 plan_status,
                 reason,
             )
+            structured_result = parse_structured_observation(extract_final_text(payload))["structured_result"]
+            failed_json = {
+                "visual_outcome": candidate.visual_outcome,
+                "error": reason[:2000],
+                "plan_status": plan_status,
+                # The verb's own payload is still preserved -- a failed
+                # prune's disk/cache measurements are real observations of
+                # the host and must not be discarded just because the
+                # action did not complete.
+                "structured_result": structured_result,
+                "evidence_refs": [result_id],
+                "latency_ms": latency_ms,
+            }
+            failed_settlement = (
+                settlement_of(structured_result) if candidate.cortex_verb == RENDER_SCENE_VERB else None
+            )
+            if failed_settlement is not None:
+                # A durable render that could not be submitted made no image:
+                # uncosted on purpose (no motor seconds, no cost sample).
+                failed_json.update(
+                    settlement=failed_settlement, submit_latency_ms=latency_ms, latency_ms=None
+                )
+                latency_ms = None
             self._store.save_dispatch_result(
                 result_id=result_id,
                 dispatch_id=candidate.dispatch_id,
@@ -1956,20 +2013,7 @@ class ExecutionDispatchRuntimeWorker:
                 # "unknown", which would silently drop these from scoring
                 # entirely.
                 status="failed",
-                result_json={
-                    "visual_outcome": candidate.visual_outcome,
-                    "error": reason[:2000],
-                    "plan_status": plan_status,
-                    # The verb's own payload is still preserved -- a failed
-                    # prune's disk/cache measurements are real observations of
-                    # the host and must not be discarded just because the
-                    # action did not complete.
-                    "structured_result": parse_structured_observation(
-                        extract_final_text(payload)
-                    )["structured_result"],
-                    "evidence_refs": [result_id],
-                    "latency_ms": latency_ms,
-                },
+                result_json=failed_json,
                 raw_len=0,
                 latency_ms=latency_ms,
                 dispatch_kind=candidate.dispatch_kind,
@@ -1998,14 +2042,23 @@ class ExecutionDispatchRuntimeWorker:
         latency_ms = (perf_counter() - send_started) * 1000.0
         final_text = extract_final_text(payload)
         observation_data = parse_structured_observation(final_text)
-        if candidate.cortex_verb == "skills.imagination.render_scene.v1":
+        pending_settlement: dict | None = None
+        if candidate.cortex_verb == RENDER_SCENE_VERB:
             structured = observation_data.get("structured_result") or {}
             visual = structured.get("result", structured)
-            outcome = visual.get("outcome", "unknown") if isinstance(visual, dict) else "unknown"
-            if outcome not in {"produced", "deferred_thermal", "deferred_busy", "already_satisfied", "failed", "unknown"}:
-                outcome = "unknown"
+            # The allowlist IS the schema's VisualRunOutcome; a hand-copied set
+            # here once dropped deferred_resource to "unknown".
+            outcome = normalize_visual_outcome(visual.get("outcome") if isinstance(visual, dict) else None)
             candidate = candidate.model_copy(update={"visual_outcome": outcome})
             observation_data["visual_outcome"] = outcome
+            if _is_pending_settlement(visual):
+                pending_settlement = dict(settlement_of(visual) or {})
+        if pending_settlement is not None:
+            return await self._record_pending_render(
+                bus, frame=frame, candidate=candidate, result_id=result_id,
+                observation_data=observation_data, settlement=pending_settlement,
+                submit_latency_ms=latency_ms, now=now,
+            )
         raw_len = len(observation_data["observation"])
         # Success is decided by `result_kind`, NOT by `len(observation)`.
         #
@@ -2072,6 +2125,132 @@ class ExecutionDispatchRuntimeWorker:
             }
         )
 
+    async def _record_pending_render(
+        self,
+        bus: OrionBusAsync,
+        *,
+        frame: ExecutionDispatchFrameV1,
+        candidate: ExecutionDispatchCandidateV1,
+        result_id: str,
+        observation_data: dict,
+        settlement: dict,
+        submit_latency_ms: float,
+        now: datetime,
+    ) -> ExecutionDispatchCandidateV1:
+        """A render that only submitted its durable run. Nothing has been made
+        yet, so: no latency (motor seconds and cost samples come from the run's
+        own GPU time at settlement, and only for a produced image), no action
+        outcome (emitted once, at settlement), and status "pending" -- the motor
+        answered, but a submit is not a product, so the theater tripwire must
+        not read it as productive success."""
+        self._store.save_dispatch_result(
+            result_id=result_id,
+            dispatch_id=candidate.dispatch_id,
+            frame_id=frame.frame_id,
+            status=DISPATCH_STATUS_PENDING,
+            result_json={
+                "visual_outcome": candidate.visual_outcome,
+                **observation_data,
+                "settlement": settlement,
+                "submit_latency_ms": submit_latency_ms,
+                "evidence_refs": [result_id],
+                "latency_ms": None,
+            },
+            raw_len=len(observation_data.get("observation") or ""),
+            latency_ms=None,
+            dispatch_kind=candidate.dispatch_kind,
+            target_id=candidate.target_id,
+        )
+        self._record_dispatch_status(DISPATCH_STATUS_PENDING)
+        logger.info(
+            "execution_dispatch_render_pending dispatch_id=%s durable_run_id=%s deadline_at=%s submit_ms=%.0f",
+            candidate.dispatch_id,
+            settlement.get("durable_run_id"),
+            settlement.get("deadline_at"),
+            submit_latency_ms,
+        )
+        return candidate.model_copy(
+            update={
+                "dispatch_status": "dispatched",
+                "dispatched_at": now,
+                "result_ref": result_id,
+            }
+        )
+
+    async def _reconcile_visual_settlements(self, *, now: datetime | None = None) -> int:
+        """Settle pending render results whose reverie.visual run reached a
+        terminal state (or orphaned past its deadline). Bounded batch, rate
+        limited, idempotent: the outcome is published BEFORE the conditional
+        row update, so a crash in between re-publishes next pass (sql-writer
+        upserts action_outcomes by action_id) instead of losing it, and a row
+        already settled is never selected again. Returns rows settled."""
+        if not self._settings.enable_execution_dispatch_runtime:
+            return 0
+        mono = self._monotonic()
+        next_at = getattr(self, "_visual_settlement_next_at", None)
+        if next_at is not None and mono < next_at:
+            return 0
+        self._visual_settlement_next_at = mono + VISUAL_SETTLEMENT_RECONCILE_INTERVAL_SEC
+        rows = await asyncio.to_thread(
+            self._store.load_pending_visual_settlements,
+            limit=VISUAL_SETTLEMENT_BATCH,
+            workflow=REVERIE_VISUAL_WORKFLOW,
+        )
+        now = now or datetime.now(timezone.utc)
+        decided = []
+        for row in rows:
+            settled = settle_visual_result(
+                result_json=row.get("result_json") or {},
+                run_status=row.get("run_status"),
+                run_detail=row.get("run_detail"),
+                created_at=row.get("created_at"),
+                now=now,
+                dispatch_kind=row.get("dispatch_kind"),
+                target_id=row.get("target_id"),
+            )
+            if settled is not None:
+                decided.append((row, settled))
+        if not decided:
+            return 0
+
+        bus = OrionBusAsync(url=self._settings.orion_bus_url, enabled=self._settings.orion_bus_enabled)
+        await bus.connect()
+        settled_count = 0
+        try:
+            for row, settled in decided:
+                published = await self._publish_action_outcome(
+                    bus,
+                    action_id=str(row["dispatch_id"]),
+                    kind=str(row.get("dispatch_kind") or "express"),
+                    summary=settled.summary,
+                    success=settled.success,
+                    visual_outcome=settled.visual_outcome,
+                    observed_at=now,
+                )
+                if not published:
+                    continue
+                if not await asyncio.to_thread(
+                    self._store.settle_dispatch_result,
+                    result_id=str(row["result_id"]),
+                    status=settled.status,
+                    result_json=settled.result_json,
+                    latency_ms=settled.latency_ms,
+                ):
+                    continue
+                settled_count += 1
+                logger.info(
+                    "execution_dispatch_render_settled dispatch_id=%s visual_outcome=%s durable_status=%s "
+                    "reason=%s latency_ms=%s",
+                    row["dispatch_id"],
+                    settled.visual_outcome,
+                    settled.result_json["settlement"].get("durable_status"),
+                    settled.result_json["settlement"].get("reason"),
+                    settled.latency_ms,
+                )
+        finally:
+            await bus.close()
+        return settled_count
+
     async def _emit_action_outcome(
         self,
         bus: OrionBusAsync,
@@ -2100,23 +2279,46 @@ class ExecutionDispatchRuntimeWorker:
         upgrade, not a new hard dependency; a fetch failure here must not
         block emitting the outcome itself.
         """
+        await self._publish_action_outcome(
+            bus,
+            action_id=candidate.dispatch_id,
+            kind=candidate.dispatch_kind,
+            summary=summary,
+            success=success if candidate.visual_outcome is None else candidate.visual_outcome == "produced",
+            visual_outcome=candidate.visual_outcome,
+            observed_at=observed_at,
+        )
+
+    async def _publish_action_outcome(
+        self,
+        bus: OrionBusAsync,
+        *,
+        action_id: str,
+        kind: str,
+        summary: str,
+        success: bool,
+        visual_outcome: str | None,
+        observed_at: datetime,
+    ) -> bool:
+        """The one ActionOutcomeEmitV1 publish. True only when the publish went
+        out; never raises."""
         try:
             surprise = self._store.latest_bus_synaptic_prediction_error()
         except Exception:
             logger.warning(
                 "execution_dispatch_bus_synaptic_surprise_fetch_failed dispatch_id=%s",
-                candidate.dispatch_id,
+                action_id,
                 exc_info=True,
             )
             surprise = None
         try:
             emit = ActionOutcomeEmitV1(
                 subject=ACTION_OUTCOME_SUBJECT,
-                action_id=candidate.dispatch_id,
-                kind=candidate.dispatch_kind,
+                action_id=action_id,
+                kind=kind,
                 summary=summary[:ACTION_OUTCOME_SUMMARY_MAX_CHARS],
-                success=success if candidate.visual_outcome is None else candidate.visual_outcome == "produced",
-                visual_outcome=candidate.visual_outcome,
+                success=success,
+                visual_outcome=visual_outcome,
                 surprise=surprise if surprise is not None else 0.0,
                 observed_at=observed_at,
             )
@@ -2130,9 +2332,11 @@ class ExecutionDispatchRuntimeWorker:
         except Exception:
             logger.warning(
                 "execution_dispatch_action_outcome_emit_failed dispatch_id=%s",
-                candidate.dispatch_id,
+                action_id,
                 exc_info=True,
             )
+            return False
+        return True
 
     def _notify_tripwire(self, empty_count: int, window: int) -> None:
         try:

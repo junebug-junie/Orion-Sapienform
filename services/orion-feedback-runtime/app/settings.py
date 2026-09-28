@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     action_settle_max_sec: float = Field(
         180.0, alias="ORION_ACTION_SETTLE_MAX_SEC", ge=0.0
     )
+    # A durable render_scene result stays `settlement.state="pending"` until
+    # execution-dispatch settles it from the reverie.visual run. The frame is
+    # parked (not scored, not blocking the FIFO) until nothing in it is pending
+    # or it is this old (seconds, from dispatch generated_at); then the visual is
+    # scored as-is (unknown). 0 scores immediately.
+    feedback_visual_settle_max_sec: float = Field(
+        900.0, alias="FEEDBACK_VISUAL_SETTLE_MAX_SEC", ge=0.0
+    )
     # ROADMAP D2. How often to re-queue rows whose `*_pending` marker was cleared without the
     # downstream frame actually existing. The marker is cleared transactionally so this should
     # find nothing -- but the failure it guards is SILENT WORK LOSS, and it can only add work

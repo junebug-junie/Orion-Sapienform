@@ -389,6 +389,18 @@ class Settings(BaseSettings):
         "http://orion-athena-thought:7155", alias="ORION_THOUGHT_SERVICE_URL"
     )
     thought_http_timeout_sec: float = Field(150.0, alias="ORION_THOUGHT_HTTP_TIMEOUT_SEC")
+    # render_scene as an admitted `reverie.visual` durable run (docs/superpowers/
+    # specs/2026-09-28-visual-reverie-durable-graph-design.md). The verb submits
+    # through cortex-orch's durable ingress and returns once the receipt confirms;
+    # execution-dispatch settles the real outcome from the run's terminal state.
+    # false = the direct blocking /visual-chain/run-once call above (rollback).
+    render_scene_durable_enabled: bool = Field(True, alias="CORTEX_EXEC_RENDER_SCENE_DURABLE_ENABLED")
+    # The run's retry window (admission.deadline_at = submit + this). 0 = the visual
+    # baseline interval (orion/reverie/baseline.py, 5400s): a run that cannot make
+    # its image before the next scheduled need gives way to it.
+    render_scene_retry_window_sec: float = Field(
+        0.0, ge=0.0, alias="CORTEX_EXEC_RENDER_SCENE_RETRY_WINDOW_SEC"
+    )
     # skills.perception.ask_camera.v1 -- the "direct vision-host RPC" the
     # comment above named as out of scope for look_at_camera's first cut.
     # Posts task_type=vqa straight to vision-host's own HTTP endpoint,

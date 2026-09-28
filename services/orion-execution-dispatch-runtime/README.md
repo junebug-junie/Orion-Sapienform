@@ -528,6 +528,35 @@ exist -- it can only add work, never remove it. Shared implementation:
 Before this, the sweep was an unbounded anti-join UPDATE every 15 min and was one of the three
 top I/O statements on athena's Postgres while never finding anything.
 
+## Durable render settlement (2026-09-28)
+
+With `CORTEX_EXEC_RENDER_SCENE_DURABLE_ENABLED=true` (cortex-exec), a dispatched `render_scene`
+no longer waits for the image. cortex-exec submits a `reverie.visual` durable run and replies at
+once with `settlement.state="pending"`. This service then:
+
+- stores that `result:{dispatch_id}` row with `status="pending"`, `latency_ms=NULL` (a submit is
+  not motor time, and `sum_motor_seconds_for_day` does not count settlement rows as "uncosted"),
+  `submit_latency_ms` for the kickoff RPC, and **no** `ActionOutcomeEmitV1` yet. The theater
+  tripwire sees `pending`, so a submit never counts as productive success;
+- every 30s (from the poll loop, not the tick) reads up to 20 pending rows joined to their latest
+  terminal `substrate_durable_run_state` row (`workflow=reverie.visual`) and settles the SAME row in
+  place (`created_at`/`frame_id` untouched, UPDATE guarded on `state='pending'`, so it is idempotent):
+  - `completed` → `visual_outcome` from `detail.outcome`, receipt from `detail.execution_receipt`,
+    `latency_ms = detail.visual_elapsed_sec*1000` only when `produced`;
+  - `failed`/`cancelled`/`abandoned` → `unknown` with the run's error, latency NULL;
+  - no terminal run past `deadline_at` + 1800s → `unknown`, reason `settlement_timeout`;
+  - an unconfirmed kickoff (`settlement.state="not_submitted"`, stored `failed`) is settled the same
+    way if its run later reaches a terminal state (`settled_from="not_submitted"`), never by timeout;
+  - a produced run with no recorded GPU time (`visual_elapsed_sec` 0/absent) keeps `latency_ms` NULL
+    and is flagged `latency_missing`, not charged as free; the block also carries the run's
+    `finished_at` so feedback can wait for the image itself, not just its GPU seconds;
+- emits the one `ActionOutcomeEmitV1` (same `action_id`, `success = produced`) **before** the UPDATE,
+  so a crash between the two re-emits (sql-writer upserts by `action_id`) instead of losing it.
+
+A settled non-image run gets `status="empty"` (or `success` for a legitimate defer), never `failed`:
+a busy GPU or a timed-out graph is not Orion failing. Pure decision logic:
+`orion/execution_dispatch/visual_settlement.py`.
+
 ## Prerequisites
 
 1. `substrate_policy_decision_frames` populated (`orion-policy-runtime`, port 8120)

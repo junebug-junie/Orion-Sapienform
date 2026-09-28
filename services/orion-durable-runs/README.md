@@ -352,6 +352,17 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
   held calls name the `agent` route.
 - **Recall** (the pool wants the seat back) is honoured at the next node boundary, inside
   `hold_clawback_grace_sec`; the tail nodes need no GPU and continue without it.
+- **Urgent preemption** (Plan 2, `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-2-pool-urgent.md`).
+  The pool pauses a background/system hold for a waiting urgent run: recall, 5 s grace, then it
+  puts the hold back in line in its original place (`queued`, reason `urgent_preempt`). The work
+  node stops (`HoldPreempted`, a `HoldLost`: harness cancel), keeps the re-queued hold and replays
+  on the next grant under the same lease_id -- never a failed attempt. A turn that fails on its
+  own first (its next LLM call cannot attach to the aborted hold) is checked against the pool once:
+  an exception in `execute`, a failed *result* in the reading / reflect / self-sense node
+  (`AdmissionDeps.preempted`). Proof trace: `run.preempted` (lease_id, generation, lane) instead
+  of `resource.lease_expired`. At a tail node boundary a preempted hold is simply ended (the tail
+  needs no GPU). Reconcile drives urgent runs first and outside `MAX_CONCURRENT_DRIVERS` (4),
+  capped at the pool's `defaults.urgent_max_concurrent`; `0` there drives urgent like background.
 - **Restart**: the hold's ids live in the checkpoint. A restarted driver fences a turn still
   running under the same generation (harness cancel + `turn_fence` for a new turn identity) and
   replays it under the same hold; an expired hold is waited for by its lease_id.
@@ -360,7 +371,8 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
   `DURABLE_RUNS_OUTREACH_HOLD_MAX_SEC` passes; a restarted process adopts it from the outbox.
 - Lifecycle events are unchanged for Hub's run views: `run.waiting_resource`,
   `run.resource_granted` + `run.lane_assigned` (detail `lane` = the hold's role),
-  `run.started`, `resource.lease_released`, `resource.lease_expired`, `run.outreach_pending`.
+  `run.started`, `resource.lease_released`, `resource.lease_expired`, `run.outreach_pending`
+  (plus `run.preempted`, not yet rendered by Hub).
   `run.lane_swap_suppressed`, `run.resource_eligibility_expanded` and `resource.elastic_*` are
   no longer emitted.
 

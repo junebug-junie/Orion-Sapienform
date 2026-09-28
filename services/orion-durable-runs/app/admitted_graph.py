@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 from app.graph import CuriosityRunState, Deps, failed_turn_meta, make_nodes
+from app.pool_hold import URGENT_PREEMPT
 from orion.schemas.durable_run import CURIOSITY_NODES
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,15 @@ class HoldRecalled(RuntimeError):
 
 class HoldLost(RuntimeError):
     """The pool no longer holds this run's hold at its generation."""
+
+
+class HoldPreempted(HoldLost):
+    """An urgent run took this run's slot mid-node; the pool re-queued the hold in its original
+    place. The node replays when it is granted again. Not a failed attempt.
+
+    A HoldLost, so a graph that already keeps a re-queued hold on HoldLost without spending an
+    attempt (reading, reverie.visual, Door-A upkeep) handles it unchanged; graphs that spend an
+    attempt on HoldLost catch this first."""
 
 
 # ``AdmissionDeps.lease`` outcomes (resource_wait's decision).
@@ -67,6 +77,18 @@ class AdmissionDeps:
     guard: Callable[[dict], Awaitable[dict | None]] | None = None
     # Door-A: keep heartbeating the run's hold after ``finish`` until Hub releases it.
     keep_for_outreach: Callable[[dict], Awaitable[None]] | None = None
+    # One pool read: did an urgent run take this run's hold (queued, urgent_preempt)? For a node whose
+    # failed turn comes back as a result rather than an exception (execute converts exceptions).
+    preempted: Callable[[dict], Awaitable[bool]] | None = None
+
+
+async def replay_if_preempted(admission: AdmissionDeps, state: dict) -> dict | None:
+    """A node's turn came back failed: if the pool says an urgent run took the hold meanwhile, the
+    failure is the preemption's (its calls could not attach to the aborted hold). Keep the re-queued
+    hold and return the release update so the node replays; None when it was a real failure."""
+    if admission.preempted is None or not await admission.preempted(state):
+        return None
+    return await admission.release(state, URGENT_PREEMPT, keep_requeued=True)
 
 
 def resource_nodes(admission: AdmissionDeps):
@@ -119,6 +141,11 @@ def build_admitted_graph(deps: Deps, admission: AdmissionDeps, checkpointer: Any
         except HoldRecalled:
             # Released by the runtime before the turn started: straight back to resource_request.
             return {"status": "retrying", "lease": None, "hold": None, "retry_node": None,
+                    "retry_at": admission.now().isoformat()}
+        except HoldPreempted:
+            # The pool kept the hold's place in line: wait for it again now, attempt untouched.
+            released = await admission.release(dict(state), URGENT_PREEMPT, keep_requeued=True)
+            return {**released, "status": "retrying", "retry_node": None,
                     "retry_at": admission.now().isoformat()}
         except Exception as exc:
             # GraphBubbleUp/interrupt is a BaseException and is not caught here.

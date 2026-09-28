@@ -37,6 +37,9 @@ HOLD_REF_KEYS = ("lease_id", "generation", "role", "holder")
 HELD = frozenset({"granted", "recall"})
 # Still in line (or re-queued after a lost heartbeat): the same lease_id will be granted later.
 WAITING = frozenset({"queued", "backlogged"})
+# The reason on a queued reply for a hold the pool paused for an urgent run: it went back in line in
+# its original place (orion/gpu_pool/scheduler.py U1/U2). The node replays; not a failed attempt.
+URGENT_PREEMPT = "urgent_preempt"
 
 
 # --- Which pool refusals end a run, and which only mean "the pool cannot answer right now" ------

@@ -14,7 +14,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.admitted_graph import AdmissionDeps, HoldRecalled, RunControlPending, WorkflowDeadline, resource_nodes
+from app.admitted_graph import (
+    AdmissionDeps, HoldPreempted, HoldRecalled, RunControlPending, WorkflowDeadline, replay_if_preempted,
+    resource_nodes,
+)
+from app.pool_hold import URGENT_PREEMPT
 from app.reflect_graph import Deps, ReflectRunState, make_nodes
 
 
@@ -27,6 +31,11 @@ def build_admitted_reflect_graph(deps: Deps, admission: AdmissionDeps, checkpoin
     async def llm_call(state: ReflectRunState) -> dict:
         try:
             result = await admission.execute(dict(state), original["llm_call"])
+            if result.get("llm_call_ok") is False:
+                # No findings may be the preemption's (the call could not attach): replay, don't finish empty.
+                released = await replay_if_preempted(admission, dict(state))
+                if released is not None:
+                    return {**released, "status": "waiting_resource"}
             return {**result, "status": "running", "last_error": None}
         except WorkflowDeadline:
             released = await admission.release(dict(state), "workflow_deadline")
@@ -35,6 +44,9 @@ def build_admitted_reflect_graph(deps: Deps, admission: AdmissionDeps, checkpoin
             raise
         except HoldRecalled:
             return {"status": "waiting_resource", "lease": None, "hold": None}
+        except HoldPreempted:
+            released = await admission.release(dict(state), URGENT_PREEMPT, keep_requeued=True)
+            return {**released, "status": "waiting_resource"}
         except Exception as exc:  # noqa: BLE001 -- transport failure / lost hold: bounded re-try
             attempt = int(state.get("attempt") or 0) + 1
             error = f"{type(exc).__name__}: {exc}"[:500]

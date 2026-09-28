@@ -31,15 +31,15 @@ from langgraph.graph import START
 from langgraph.types import Command
 
 from app.admitted_graph import (
-    GONE, GRANTED, REFUSED, WAITING, AdmissionDeps, HoldRecalled, RunControlPending, WorkflowDeadline,
-    build_admitted_graph,
+    GONE, GRANTED, REFUSED, WAITING, AdmissionDeps, HoldPreempted, HoldRecalled, RunControlPending,
+    WorkflowDeadline, build_admitted_graph,
 )
 from app.admitted_reflect_graph import build_admitted_reflect_graph
 from app.admitted_self_sense_graph import build_admitted_self_sense_graph
 from app.graph import failed_turn_meta, finish_detail, recorded_turn_correlation_id, turn_correlation_id
 from app.pool_hold import (
-    HELD, WAITING as POOL_WAITING, PoolHolds, UnknownRoute, is_hold_ref, is_pool_trouble, ref_dict,
-    refusal_is_terminal,
+    HELD, URGENT_PREEMPT, WAITING as POOL_WAITING, PoolHolds, UnknownRoute, is_hold_ref, is_pool_trouble,
+    ref_dict, refusal_is_terminal,
 )
 from app.reflect_graph import finish_detail as reflect_finish_detail
 from app.reading_graph import build_reading_graph, finish_detail as reading_finish_detail
@@ -82,12 +82,18 @@ HINT_EVENTS = frozenset({"granted", "recalled", "aborted", "expired", "retried",
 # A request id already used for an ended hold is skipped (a checkpoint older than the pool's
 # record); bounded so a broken pool cannot spin a run forever.
 HOLD_SEQ_SKIP_MAX = 20
+# Background/system drivers at once. Urgent drivers are outside it, capped at urgent_max_concurrent.
 MAX_CONCURRENT_DRIVERS = 4
 # Which pool refusals fail the run is decided in one place: ``pool_hold.refusal_is_terminal``.
 # Any other unavailable (dead-lettered after expiries during a durable-runs outage, an abort) is
 # the hold's own history, not the run's: end it and ask again under a new request id. A refusal
 # that says the POOL is in trouble (version skew, config roll, unreachable) keeps the run waiting
 # and retries with bounded backoff (``_pool_refused``).
+
+
+def _priority(row: dict) -> str | None:
+    """A pending run's admitted priority (ResourceRequirementV1.priority on the stored request)."""
+    return (((row.get("request") or {}).get("admission")) or {}).get("priority")
 
 
 def _without_backoff(hold: dict) -> dict:
@@ -113,7 +119,7 @@ class AdmissionRuntime:
             self.register, self.lease, self.execute, self.release, self.event,
             now=self.now, max_attempts=settings.retry_max_attempts,
             retry_base_seconds=settings.retry_base_sec, retry_max_seconds=settings.retry_max_sec,
-            guard=self.guard, keep_for_outreach=self.keep_for_outreach)
+            guard=self.guard, keep_for_outreach=self.keep_for_outreach, preempted=self.preempted)
         self.deps = admission_deps
         # One compiled graph per workflow. Before 2026-09-22 every admitted run shared the
         # curiosity graph; before 4.5 an admitted reflect run still did.
@@ -128,6 +134,7 @@ class AdmissionRuntime:
         # Back-compat alias used by older tests that reach for `.graph`.
         self.graph = self.graphs[DEFAULT_WORKFLOW]
         self.active: dict[str, asyncio.Task] = {}
+        self._urgent_drivers: set[str] = set()   # the runs in ``active`` driven as urgent
         self._wake = asyncio.Event()
         self._hints: set[str] = set()           # runs a pool event said something changed for
         self._checked: dict[str, float] = {}    # run -> monotonic time of its last waiting-hold read
@@ -352,6 +359,8 @@ class AdmissionRuntime:
             if reply.status == "recall":
                 logger.info("durable_hold_recalled lease=%s recall_by=%s", lease["lease_id"], reply.recall_by)
             return reply.status
+        if reply.status in POOL_WAITING and reply.reason == URGENT_PREEMPT:
+            raise HoldPreempted(f"gpu_hold_preempted:{lease['lease_id']}")
         raise HoldLost(f"gpu_hold_lost:{reply.status}" + (f":{reply.reason}" if reply.reason else ""))
 
     async def execute(self, state, node):
@@ -386,7 +395,7 @@ class AdmissionRuntime:
                 while True:
                     done, _ = await asyncio.wait({work}, timeout=self.settings.lease_heartbeat_sec)
                     if done:
-                        return await work
+                        return await self._settled(work, lease)
                     row = await self.store.get_run(state["run_id"])
                     if row.get("control"):
                         raise RuntimeError(f"run_control:{row['control']}")
@@ -403,6 +412,32 @@ class AdmissionRuntime:
                 await self._cancel_harness(state, "durable_attempt_stopped")
                 work.cancel()
                 await asyncio.gather(work, return_exceptions=True)
+
+    async def _settled(self, work: asyncio.Task, lease: dict):
+        """The finished work's result. A work failure is checked against the pool once: the victim of
+        an urgent preemption often fails on its own before the next heartbeat sees the re-queue (its
+        next LLM call cannot attach to the aborted hold) -- that is the preemption, not an attempt."""
+        try:
+            return work.result()
+        except (HoldPreempted, RunControlPending, WorkflowDeadline):
+            raise
+        except Exception as exc:
+            if await self._hold_preempted(lease):
+                raise HoldPreempted(f"gpu_hold_preempted:{lease['lease_id']}") from exc
+            raise
+
+    async def _hold_preempted(self, lease: dict) -> bool:
+        try:
+            reply = await self.holds.status(lease["lease_id"])
+        except Exception as exc:  # noqa: BLE001 -- cannot tell: the failure stands as it is
+            logger.warning("durable_hold_status_failed lease=%s err=%s", lease["lease_id"], exc)
+            return False
+        return reply.status in POOL_WAITING and reply.reason == URGENT_PREEMPT
+
+    async def preempted(self, state) -> bool:
+        """AdmissionDeps.preempted: for a node whose failed turn is a returned result."""
+        lease = state.get("lease")
+        return is_hold_ref(lease) and await self._hold_preempted(lease)
 
     async def guard(self, state):
         """Node boundary: deadline and operator control, then the hold. Returns the lease while
@@ -431,6 +466,8 @@ class AdmissionRuntime:
         if reply.status == "recall" and same:
             await self._end_hold(state, lease["lease_id"], lease, "recalled")
             return None
+        # Also a hold re-queued for urgent work (queued, urgent_preempt): the tail needs no GPU, and a
+        # kept re-queued hold would be granted to a run that no longer uses it.
         await self._record_lost(state, lease, reply.status, reply.reason)
         await self._end_hold(state, lease["lease_id"], lease, "lost")
         return None
@@ -452,7 +489,12 @@ class AdmissionRuntime:
             except Exception:  # noqa: BLE001 -- unknown: hand it back rather than strand a slot
                 reply = None
             if reply is not None and reply.status in POOL_WAITING and not is_pool_trouble(reply):
-                if lease:
+                if lease and reply.reason == URGENT_PREEMPT:
+                    await self.store.record_event(state["run_id"], "run.preempted", {
+                        "lease_id": lease_id, "generation": lease["generation"], "lane": lease.get("role"),
+                        "reason": URGENT_PREEMPT, "pool_status": reply.status, "position": reply.position},
+                        event_id=f"preempted:{lease_id}:{lease['generation']}")
+                elif lease:
                     await self._record_lost(state, lease, reply.status, reply.reason)
                 return {"lease": None, "hold": {**_without_backoff(hold), "lease_id": lease_id}}
         await self._end_hold(state, lease_id, lease, reason)
@@ -932,7 +974,15 @@ class AdmissionRuntime:
             await self._beat_outreach()
         except Exception:  # noqa: BLE001 -- Door-A upkeep must not stop the run loop
             logger.exception("durable_outreach_hold_upkeep_failed")
-        for row in await self.store.list_pending():
+        rows = await self.store.list_pending()
+        urgent = {row["run_id"] for row in rows if _priority(row) == "urgent"}
+        urgent_cap = int(self.holds.cfg.defaults.urgent_max_concurrent) if urgent else 0
+        if urgent_cap <= 0:
+            urgent = set()   # rollback switch: the pool treats urgent as background, and so do we
+        # Urgent first (stable otherwise): an urgent run must not wait behind long background turns
+        # before it even asks the pool, so it is exempt from MAX_CONCURRENT_DRIVERS, capped instead
+        # at the pool's own urgent_max_concurrent.
+        for row in sorted(rows, key=lambda r: r["run_id"] not in urgent):
             run_id = row["run_id"]
             if run_id in self.active:
                 if row.get("control"):
@@ -942,12 +992,18 @@ class AdmissionRuntime:
                 # The pausing replica released the hold (control()); re-driving a paused run every
                 # tick would only repeat pool RPCs. Resume clears control and it is driven again.
                 continue
-            if len(self.active) >= MAX_CONCURRENT_DRIVERS:
+            if run_id in urgent:
+                if len(self._urgent_drivers & self.active.keys()) >= urgent_cap:
+                    continue
+            elif len(self.active.keys() - self._urgent_drivers) >= MAX_CONCURRENT_DRIVERS:
                 break
             task = asyncio.create_task(self._drive(row), name=f"admitted-{run_id}")
             self.active[run_id] = task
+            if run_id in urgent:
+                self._urgent_drivers.add(run_id)
             def finished(t, key=run_id):
                 self.active.pop(key, None)
+                self._urgent_drivers.discard(key)
                 if not t.cancelled() and t.exception():
                     logger.error("durable_driver_failed run=%s error=%s", key, t.exception())
             task.add_done_callback(finished)

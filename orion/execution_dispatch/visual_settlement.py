@@ -52,6 +52,22 @@ def is_pending(result: Any) -> bool:
     return bool(settlement) and settlement.get("state") == SETTLEMENT_PENDING
 
 
+def is_unsettled(result: Any) -> bool:
+    """Pending, or an unconfirmed kickoff: no outcome may be emitted for it
+    except by settlement."""
+    settlement = settlement_of(result)
+    return bool(settlement) and settlement.get("state") in SETTLEABLE_STATES
+
+
+def verb_settlement(structured: Any) -> dict[str, Any] | None:
+    """The settlement block of a parsed render_scene verb result, whether the
+    verb's dict sits at the top level or under `result`."""
+    if not isinstance(structured, dict):
+        return None
+    inner = structured.get("result") if isinstance(structured.get("result"), dict) else structured
+    return settlement_of(inner)
+
+
 def normalize_visual_outcome(value: Any) -> str:
     return value if isinstance(value, str) and value in VISUAL_OUTCOMES else "unknown"
 

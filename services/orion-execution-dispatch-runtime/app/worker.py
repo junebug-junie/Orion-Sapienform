@@ -41,12 +41,15 @@ from orion.execution_dispatch.cortex_client import ExecutionDispatchCortexClient
 from orion.execution_dispatch.policy import load_execution_dispatch_policy
 from orion.execution_dispatch.visual_settlement import (
     RENDER_SCENE_VERB,
+    SETTLEMENT_NOT_SUBMITTED,
     is_pending as _is_pending_settlement,
+    is_unsettled as _is_unsettled_settlement,
     normalize_visual_outcome,
     settle_visual_result,
     settlement_of,
+    verb_settlement,
 )
-from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW
+from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW, reverie_visual_run_id
 from orion.execution_dispatch.result_extraction import (
     RESULT_KIND_EMPTY,
     RESULT_KIND_STRUCTURED,
@@ -76,6 +79,9 @@ RPC_HEALTH_SINK = SharedRpcHealthSink()
 # run is recorded with this status: the motor answered, but nothing has been
 # produced yet, so it is not a "success" to the theater tripwire either.
 DISPATCH_STATUS_PENDING = "pending"
+# A render whose kickoff was never confirmed made no image: stored with the
+# same non-failure status settlement gives a run that ended without one.
+DISPATCH_STATUS_NOT_PRODUCED = "empty"
 VISUAL_SETTLEMENT_RECONCILE_INTERVAL_SEC = 30.0
 VISUAL_SETTLEMENT_BATCH = 20
 
@@ -1820,9 +1826,10 @@ class ExecutionDispatchRuntimeWorker:
             # save_dispatch_result and save_dispatch_frame) but real, and a
             # probe is precisely the tick where being wrong matters most.
             self._record_dispatch_status(existing["status"], live=False)
-            if _is_pending_settlement(existing["result_json"]):
-                # The durable render is still in flight: its outcome is emitted
-                # once, at settlement (_reconcile_visual_settlements), never here.
+            if _is_unsettled_settlement(existing["result_json"]):
+                # The durable render is still in flight (or its kickoff was never
+                # confirmed): its outcome is emitted once, at settlement
+                # (_reconcile_visual_settlements), never here.
                 return candidate.model_copy(
                     update={
                         "dispatch_status": "dispatched",
@@ -1929,6 +1936,21 @@ class ExecutionDispatchRuntimeWorker:
             logger.warning(
                 "execution_dispatch_send_failed dispatch_id=%s error=%s", candidate.dispatch_id, exc
             )
+            if candidate.cortex_verb == RENDER_SCENE_VERB:
+                # cortex-exec may still have submitted the run (its id is
+                # deterministic per dispatch), so it settles if that run ends.
+                reason = f"send_error:{exc.__class__.__name__}: {exc}"[:2000]
+                return await self._record_unsubmitted_render(
+                    frame=frame, candidate=candidate, result_id=result_id,
+                    observation_data={},
+                    settlement={
+                        "state": SETTLEMENT_NOT_SUBMITTED,
+                        "durable_run_id": reverie_visual_run_id(candidate.dispatch_id),
+                        "workflow": REVERIE_VISUAL_WORKFLOW,
+                        "reason": reason,
+                    },
+                    submit_latency_ms=latency_ms, now=now,
+                )
             self._store.save_dispatch_result(
                 result_id=result_id,
                 dispatch_id=candidate.dispatch_id,
@@ -1971,6 +1993,19 @@ class ExecutionDispatchRuntimeWorker:
         # grades a failure as a success, with a stored summary reading
         # "failed: Command 'docker builder prune' timed out after 600 seconds".
         plan_status, plan_reason = plan_execution_status(payload)
+        if candidate.cortex_verb == RENDER_SCENE_VERB:
+            # Before the plan verdict: a kickoff cortex-exec could not confirm is
+            # reported ok=False by the verb (honest about the submit), but it
+            # made no image, so it must not be scored or charged as a failure.
+            observation_data = parse_structured_observation(extract_final_text(payload))
+            settlement = verb_settlement(observation_data.get("structured_result"))
+            if settlement is not None and settlement.get("state") == SETTLEMENT_NOT_SUBMITTED:
+                return await self._record_unsubmitted_render(
+                    frame=frame, candidate=candidate, result_id=result_id,
+                    observation_data={**observation_data, "plan_status": plan_status},
+                    settlement=dict(settlement),
+                    submit_latency_ms=(perf_counter() - send_started) * 1000.0, now=now,
+                )
         if is_failed_plan_status(plan_status):
             latency_ms = (perf_counter() - send_started) * 1000.0
             reason = plan_reason or f"plan status={plan_status}"
@@ -1993,16 +2028,6 @@ class ExecutionDispatchRuntimeWorker:
                 "evidence_refs": [result_id],
                 "latency_ms": latency_ms,
             }
-            failed_settlement = (
-                settlement_of(structured_result) if candidate.cortex_verb == RENDER_SCENE_VERB else None
-            )
-            if failed_settlement is not None:
-                # A durable render that could not be submitted made no image:
-                # uncosted on purpose (no motor seconds, no cost sample).
-                failed_json.update(
-                    settlement=failed_settlement, submit_latency_ms=latency_ms, latency_ms=None
-                )
-                latency_ms = None
             self._store.save_dispatch_result(
                 result_id=result_id,
                 dispatch_id=candidate.dispatch_id,
@@ -2167,6 +2192,58 @@ class ExecutionDispatchRuntimeWorker:
             candidate.dispatch_id,
             settlement.get("durable_run_id"),
             settlement.get("deadline_at"),
+            submit_latency_ms,
+        )
+        return candidate.model_copy(
+            update={
+                "dispatch_status": "dispatched",
+                "dispatched_at": now,
+                "result_ref": result_id,
+            }
+        )
+
+    async def _record_unsubmitted_render(
+        self,
+        *,
+        frame: ExecutionDispatchFrameV1,
+        candidate: ExecutionDispatchCandidateV1,
+        result_id: str,
+        observation_data: dict,
+        settlement: dict,
+        submit_latency_ms: float,
+        now: datetime,
+    ) -> ExecutionDispatchCandidateV1:
+        """A render whose kickoff was never confirmed (the verb could not prove
+        the submit, or the RPC to cortex-exec itself failed). No image was made,
+        so it is not Orion failing: visual outcome unknown, a non-failure status,
+        no latency (no motor seconds, no cost sample) and no action outcome. The
+        run may still have been admitted, so the row keeps its not_submitted
+        settlement and settles -- emitting its one outcome -- if that run ends."""
+        candidate = candidate.model_copy(update={"visual_outcome": "unknown"})
+        self._store.save_dispatch_result(
+            result_id=result_id,
+            dispatch_id=candidate.dispatch_id,
+            frame_id=frame.frame_id,
+            status=DISPATCH_STATUS_NOT_PRODUCED,
+            result_json={
+                **observation_data,
+                "visual_outcome": "unknown",
+                "settlement": settlement,
+                "submit_latency_ms": submit_latency_ms,
+                "evidence_refs": [result_id],
+                "latency_ms": None,
+            },
+            raw_len=len(observation_data.get("observation") or ""),
+            latency_ms=None,
+            dispatch_kind=candidate.dispatch_kind,
+            target_id=candidate.target_id,
+        )
+        self._record_dispatch_status(DISPATCH_STATUS_NOT_PRODUCED)
+        logger.warning(
+            "execution_dispatch_render_not_submitted dispatch_id=%s durable_run_id=%s reason=%s submit_ms=%.0f",
+            candidate.dispatch_id,
+            settlement.get("durable_run_id"),
+            settlement.get("reason"),
             submit_latency_ms,
         )
         return candidate.model_copy(

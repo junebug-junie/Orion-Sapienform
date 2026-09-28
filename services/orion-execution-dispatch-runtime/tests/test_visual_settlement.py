@@ -196,7 +196,7 @@ def test_nested_verb_result_no_longer_claims_pending():
 
 def _not_submitted_row(run):
     result_json = _pending_json(state="not_submitted", reason="rpc_error:timeout")
-    return _row(run, status="failed", result_json=result_json)
+    return _row(run, status="empty", result_json=result_json)
 
 
 def test_unconfirmed_kickoff_settles_once_its_run_ends():
@@ -219,56 +219,12 @@ def test_unconfirmed_kickoff_without_a_run_is_never_orphaned():
     assert _settle(no_run_id) is None
 
 
-def test_zero_gpu_seconds_is_missing_not_free():
-    """durable-runs writes 0.0 when it recorded nothing; charging 0 motor
-    seconds for a produced image would read as a free render."""
-    settled = _settle(_row(_terminal("completed", {"outcome": "produced", "visual_elapsed_sec": 0.0})))
-    assert settled.visual_outcome == "produced"
+def test_unconfirmed_kickoff_whose_run_made_no_image_is_not_a_failure():
+    settled = _settle(_not_submitted_row(_terminal("failed", {"error": "retry_window_expired", "visual_elapsed_sec": 9.0})))
+    assert settled.visual_outcome == "unknown" and settled.success is False
     assert settled.latency_ms is None
-    assert settled.result_json["settlement"]["latency_missing"] is True
-
-
-def test_settled_block_carries_when_the_run_really_ended():
-    finished = CREATED + timedelta(minutes=9)
-    run = _terminal("completed", {"outcome": "produced", "visual_elapsed_sec": 60.0,
-                                  "finished_at": finished.isoformat()})
-    block = _settle(_row(run)).result_json["settlement"]
-    assert block["finished_at"] == finished.isoformat()
-    # No run row, no end time: an orphan never claims one.
-    deadline = CREATED + timedelta(seconds=5400 + SETTLEMENT_ORPHAN_MARGIN_SEC + 1)
-    assert "finished_at" not in _settle(_row(None), now=deadline).result_json["settlement"]
-
-
-def test_nested_verb_result_no_longer_claims_pending():
-    run = _terminal("completed", {"outcome": "produced", "visual_elapsed_sec": 60.0})
-    nested = _settle(_row(run)).result_json["structured_result"]
-    assert nested["settlement"]["state"] == "settled"
-    assert nested["outcome"] == "produced"
-
-
-def _not_submitted_row(run):
-    result_json = _pending_json(state="not_submitted", reason="rpc_error:timeout")
-    return _row(run, status="failed", result_json=result_json)
-
-
-def test_unconfirmed_kickoff_settles_once_its_run_ends():
-    """The receipt RPC can time out after orch admitted the run; if that run
-    produces an image, the row must not stay failed and uncharged forever."""
-    run = _terminal("completed", {"outcome": "produced", "visual_elapsed_sec": 42.0})
-    settled = _settle(_not_submitted_row(run))
-    assert settled.visual_outcome == "produced" and settled.success is True
-    assert settled.latency_ms == pytest.approx(42000.0)
-    block = settled.result_json["settlement"]
-    assert block["state"] == "settled" and block["settled_from"] == "not_submitted"
-    assert "reason" not in block
-
-
-def test_unconfirmed_kickoff_without_a_run_is_never_orphaned():
-    far_future = NOW + timedelta(days=30)
-    assert _settle(_not_submitted_row(None), now=far_future) is None
-    no_run_id = _row(None, result_json=_pending_json(state="not_submitted", durable_run_id=None))
-    no_run_id["run_status"] = "completed"
-    assert _settle(no_run_id) is None
+    assert settled.status == "empty"
+    assert settled.result_json["settlement"]["settled_from"] == "not_submitted"
 
 
 # --- the worker ---------------------------------------------------------------
@@ -475,23 +431,133 @@ def test_deferred_resource_is_an_allowed_visual_outcome(monkeypatch):
     assert env.payload["success"] is False
 
 
-def test_unsubmitted_durable_render_is_failed_but_uncosted(monkeypatch):
+def _not_submitted_verb_result() -> dict:
+    return {"outcome": "unknown", "ran": False, "refused": False, "durable_run_id": RUN_ID,
+            "reason": "TimeoutError: x",
+            "settlement": {"state": "not_submitted", "durable_run_id": RUN_ID, "reason": "TimeoutError: x"}}
+
+
+@pytest.mark.parametrize("plan_status", ["fail", "unavailable"])
+def test_unsubmitted_durable_render_is_not_a_failure_and_costs_nothing(monkeypatch, plan_status):
+    """cortex-exec could not confirm the kickoff (ok=False, status unavailable):
+    no image was made, so no failed row, no failure outcome, no motor seconds."""
     worker = _worker(monkeypatch)
     bus = MagicMock()
     bus.publish = AsyncMock()
-    result = {"outcome": "unknown", "ran": False, "refused": False,
-              "settlement": {"state": "not_submitted", "durable_run_id": RUN_ID, "reason": "TimeoutError: x"}}
-    client = _Client(_verb_payload(result, status="fail"))
+    client = _Client(_verb_payload(_not_submitted_verb_result(), status=plan_status))
 
+    out = asyncio.run(worker._send_one_inner(client, bus, _frame(), _render_candidate()))
+
+    kwargs = worker._store.save_dispatch_result.call_args.kwargs
+    assert kwargs["status"] == "empty"
+    assert kwargs["latency_ms"] is None
+    assert kwargs["result_json"]["latency_ms"] is None
+    assert kwargs["result_json"]["visual_outcome"] == "unknown"
+    assert kwargs["result_json"]["settlement"]["state"] == "not_submitted"
+    assert kwargs["result_json"]["settlement"]["durable_run_id"] == RUN_ID
+    assert kwargs["result_json"]["submit_latency_ms"] >= 0
+    bus.publish.assert_not_called()
+    assert list(worker._recent_dispatch_statuses) == ["empty"]
+    assert out.visual_outcome == "unknown"
+    assert out.result_ref == f"result:{DISPATCH_ID}" and out.dispatch_error is None
+
+
+def test_unsubmitted_row_settles_through_reconcile_once_its_run_ends(monkeypatch):
+    """The row the send path stores is the row reconcile picks up: an admitted
+    run that produced an image settles it charged and emits its one outcome."""
+    worker = _worker(monkeypatch)
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    client = _Client(_verb_payload(_not_submitted_verb_result(), status="fail"))
     asyncio.run(worker._send_one_inner(client, bus, _frame(), _render_candidate()))
+    stored = worker._store.save_dispatch_result.call_args.kwargs
+
+    reconcile_bus = _fake_bus(monkeypatch)
+    run = _terminal("completed", {"outcome": "produced", "visual_elapsed_sec": 30.0})
+    worker._store.load_pending_visual_settlements.return_value = [
+        _row(run, status=stored["status"], result_json=json.loads(json.dumps(stored["result_json"])))
+    ]
+    worker._store.settle_dispatch_result.return_value = True
+
+    assert asyncio.run(worker._reconcile_visual_settlements(now=NOW)) == 1
+    kwargs = worker._store.settle_dispatch_result.call_args.kwargs
+    assert kwargs["status"] == "success"
+    assert kwargs["latency_ms"] == pytest.approx(30000.0)
+    assert kwargs["result_json"]["settlement"]["settled_from"] == "not_submitted"
+    _, env = reconcile_bus.publish.await_args.args
+    assert env.payload["success"] is True and env.payload["visual_outcome"] == "produced"
+
+
+def test_unsubmitted_row_without_a_terminal_run_is_not_settled(monkeypatch):
+    worker = _worker(monkeypatch)
+    ctor = MagicMock()
+    monkeypatch.setattr(worker_mod, "OrionBusAsync", ctor)
+    worker._store.load_pending_visual_settlements.return_value = [_not_submitted_row(None)]
+
+    assert asyncio.run(worker._reconcile_visual_settlements(now=NOW + timedelta(days=30))) == 0
+    worker._store.settle_dispatch_result.assert_not_called()
+    ctor.assert_not_called()
+
+
+class _RaisingClient:
+    async def dispatch(self, **_kwargs):
+        raise TimeoutError("rpc timed out")
+
+
+def test_render_send_exception_is_uncharged_and_not_scored(monkeypatch):
+    """The RPC to cortex-exec threw: the whole timeout is not charged as motor
+    time for a render that made no image, and nothing scores it as failing.
+    cortex-exec may still have submitted, so the row stays settleable."""
+    worker = _worker(monkeypatch)
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+
+    out = asyncio.run(worker._send_one_inner(_RaisingClient(), bus, _frame(), _render_candidate()))
+
+    kwargs = worker._store.save_dispatch_result.call_args.kwargs
+    assert kwargs["status"] == "empty"
+    assert kwargs["latency_ms"] is None
+    assert kwargs["result_json"]["latency_ms"] is None
+    assert kwargs["result_json"]["visual_outcome"] == "unknown"
+    settlement = kwargs["result_json"]["settlement"]
+    assert settlement["state"] == "not_submitted"
+    assert settlement["durable_run_id"] == RUN_ID
+    assert settlement["reason"].startswith("send_error:TimeoutError")
+    bus.publish.assert_not_called()
+    assert out.visual_outcome == "unknown"
+    assert out.result_ref == f"result:{DISPATCH_ID}"
+
+
+def test_non_render_send_exception_is_still_charged_and_failed(monkeypatch):
+    worker = _worker(monkeypatch)
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    candidate = _render_candidate().model_copy(update={"cortex_verb": "skills.gpu.nvidia_smi_snapshot.v1", "dispatch_kind": "inspect"})
+
+    asyncio.run(worker._send_one_inner(_RaisingClient(), bus, _frame(), candidate))
 
     kwargs = worker._store.save_dispatch_result.call_args.kwargs
     assert kwargs["status"] == "failed"
-    assert kwargs["latency_ms"] is None
-    assert kwargs["result_json"]["settlement"]["state"] == "not_submitted"
-    assert kwargs["result_json"]["submit_latency_ms"] >= 0
+    assert kwargs["latency_ms"] is not None
     _, env = bus.publish.await_args.args
-    assert env.payload["success"] is False and env.payload["visual_outcome"] == "unknown"
+    assert env.payload["success"] is False
+
+
+@pytest.mark.parametrize("status", ["empty", "failed"])
+def test_replay_of_an_unsubmitted_result_emits_nothing(monkeypatch, status):
+    """`failed` covers rows stored before unconfirmed kickoffs were non-failures."""
+    worker = _worker(monkeypatch)
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    worker._store.load_dispatch_result_by_dispatch_id.return_value = {
+        "result_id": f"result:{DISPATCH_ID}", "status": status,
+        "result_json": _pending_json(state="not_submitted", reason="TimeoutError: x"), "raw_len": 0,
+    }
+
+    asyncio.run(worker._send_one_inner(MagicMock(), bus, _frame(), _render_candidate()))
+
+    bus.publish.assert_not_called()
+    worker._store.save_dispatch_result.assert_not_called()
 
 
 def test_direct_path_render_is_unchanged(monkeypatch):
@@ -561,13 +627,6 @@ def test_pending_loader_joins_only_terminal_reverie_visual_states():
     assert "substrate_durable_run_state" in sql
     assert "'completed', 'failed', 'cancelled', 'abandoned'" in sql
     assert params == {"workflow": "reverie.visual", "lookback_sec": 7 * 86400.0, "limit": 5}
-    flat = " ".join(sql.split())
-    assert "state' = 'not_submitted' AND s.status IS NOT NULL" in flat, (
-        "an unconfirmed kickoff is only picked up once its run has ended"
-    )
-    assert "ORDER BY (s.status IS NULL), r.created_at ASC" in flat, (
-        "in-flight rows must not crowd finished runs out of the batch"
-    )
     flat = " ".join(sql.split())
     assert "state' = 'not_submitted' AND s.status IS NOT NULL" in flat, (
         "an unconfirmed kickoff is only picked up once its run has ended"

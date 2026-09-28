@@ -3,10 +3,11 @@
   "metric_count": 682,
   "_last_change": {
     "base": "merge base 38190125c (origin/main)",
-    "change_count": 0,
-    "high_severity_count": 0,
+    "change_count": 2,
+    "high_severity_count": 1,
     "changes": [
-      "no definition changes relative to the merge base"
+      "high   removed metric://bus_channel/orion-vector-host/orion:vector:semantic:upsert",
+      "medium added metric://bus_channel/orion-hub/orion:vector:semantic:upsert"
     ]
   },
   "definitions": {
@@ -2237,6 +2238,18 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-hub/orion:vector:semantic:upsert": {
+      "schema_id": "VectorUpsertV1",
+      "all_producers": [
+        "orion-hub",
+        "orion-vector-host"
+      ],
+      "declared_consumers": [
+        "orion-vector-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-juniper-affective-state/orion:affectgpt:assessment": {
       "schema_id": "JuniperMultimodalAffectV1",
       "all_producers": [
@@ -3206,17 +3219,6 @@
         "*"
       ],
       "notes": "kind=result stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-vector-host/orion:vector:semantic:upsert": {
-      "schema_id": "VectorUpsertV1",
-      "all_producers": [
-        "orion-vector-host"
-      ],
-      "declared_consumers": [
-        "orion-vector-writer"
-      ],
-      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-vision-council/orion:exec:request:VisionScribeService": {

@@ -147,6 +147,8 @@ def render_mcp_config(
     reading_binding: Any = None,
     reading_only: bool = False,
     reading_bus_url: Optional[str] = None,
+    introspect_binding: Any = None,
+    introspect_bus_url: Optional[str] = None,
 ) -> Path:
     if reading_only:
         # Deliberate source readers need only built-in WebFetch/WebSearch.
@@ -182,6 +184,24 @@ def render_mcp_config(
             "env": {"ORION_BUS_URL": reading_bus_url,
                     "PYTHONPATH": str(_TEMPLATE_PATH.parents[2]),
                     "ORION_READING_BINDING": binding.model_dump_json()},
+        }
+
+    if introspect_binding is not None:
+        from orion.schemas.introspect import IntrospectToolBindingV1
+        ib = IntrospectToolBindingV1.model_validate(introspect_binding)
+        if not introspect_bus_url:
+            raise McpPreflightError("fcc_introspect_bus_missing", "ORION_BUS_URL required for introspect tools")
+        if include_aitown and ib.memory_allowed:
+            raise McpPreflightError(
+                "fcc_introspect_outward_memory",
+                "introspect memory access must be off when an outward-facing MCP (AI Town) is attached",
+            )
+        rendered["mcpServers"]["orion-introspect"] = {
+            "type": "stdio", "command": "python3",
+            "args": ["-P", "-m", "orion.introspect.mcp_server"],
+            "env": {"ORION_BUS_URL": introspect_bus_url,
+                    "PYTHONPATH": str(_TEMPLATE_PATH.parents[2]),
+                    "ORION_INTROSPECT_BINDING": ib.model_dump_json()},
         }
 
     if include_aitown:

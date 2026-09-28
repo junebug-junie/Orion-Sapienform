@@ -50,6 +50,7 @@ from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
 from orion.core.bus.bus_schemas import ServiceRef
 from scripts.curiosity_investigation import CuriosityInvestigation
 from scripts.energy_stakes_gate import read_latest_energy_stakes
+from orion.world_pulse_read.search import ReadingSearchConfig
 from scripts.reading_listener import ReadingListener
 from scripts.reading_turn_listener import ReadingTurnListener
 from scripts.world_pulse_read_pipeline import WorldPulseReadPipeline
@@ -712,6 +713,14 @@ async def startup_event():
             reading_listener = ReadingListener(
                 pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
                 source_ref=world_pulse_read_pipeline._source_ref,
+                search=ReadingSearchConfig(
+                    chroma_url=settings.HUB_READING_SEARCH_CHROMA_URL,
+                    embed_url=settings.HUB_READING_SEARCH_EMBED_URL,
+                    collection=settings.HUB_READING_SEARCH_COLLECTION,
+                    min_similarity=settings.HUB_READING_SEARCH_MIN_SIMILARITY,
+                    index_interval_sec=settings.HUB_READING_SEARCH_INDEX_INTERVAL_SEC,
+                    index_batch=settings.HUB_READING_SEARCH_INDEX_BATCH,
+                ),
             )
             await reading_listener.start(bus)
 

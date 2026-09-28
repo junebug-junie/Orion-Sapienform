@@ -19,6 +19,8 @@ from orion.schemas.thought import (
     StanceHarnessSliceV1,
     ThoughtEventV1,
 )
+from orion.introspect.binding import introspect_binding_for_turn
+from orion.introspect.brief import append_introspect_harness_brief
 from orion.world_pulse_read.tools import append_reading_mcp_harness_brief
 
 
@@ -156,7 +158,7 @@ def compile_harness_prefix(
     motor prompt, in render order: the unified operator brief, grounding self
     block, backend self-context, situation context, Thought imperative and
     stance slice, autonomy slice, prior tool-fetch line, recent-turn history,
-    user message, repair overlay, enabled MCP tool briefs, and (when a
+    user message, repair overlay, enabled MCP tool briefs (including orion-introspect), and (when a
     situation fragment was rendered) the canonical Situation-block explainer
     (orion/harness/situation_brief.py). The full `claude -p` prompt is this
     prefix plus the harness_motor_instruction that build_harness_prompt
@@ -244,6 +246,9 @@ def compile_harness_prefix(
     append_self_index_harness_brief(parts)
     append_reading_mcp_harness_brief(
         parts, reading_binding=reading_binding, reading_only=reading_only
+    )
+    append_introspect_harness_brief(
+        parts, binding=introspect_binding_for_turn(reading_binding, reading_only=reading_only)
     )
     append_situation_block_harness_brief(
         parts,

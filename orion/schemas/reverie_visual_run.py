@@ -18,6 +18,12 @@ A step result's ``status`` tells the graph what to do next:
 * ``terminal`` -- the request can never produce an image in this run (baseline already
                   satisfied elsewhere, dispatch replay mismatch, ineligible). Finish now;
                   ``outcome`` says why.
+
+``reason == "needs_generate"`` on a caption retry means the recorded image is gone from
+disk: the graph goes back through the hold to generate instead of retrying caption.
+
+``abandon`` is sent by the graph's ``failed`` node (run deadline, operator cancel) so
+thought closes the attempt; an attempt left ``active`` blocks every later claim.
 """
 
 from __future__ import annotations
@@ -38,7 +44,8 @@ REVERIE_VISUAL_STEP_RESULT_KIND = "reverie.visual.step.result.v1"
 
 REVERIE_VISUAL_NODES: tuple[str, ...] = ("prepare", "generate", "caption", "finish")
 
-ReverieVisualStep = Literal["prepare", "generate", "caption"]
+ReverieVisualStep = Literal["prepare", "generate", "caption", "abandon"]
+NEEDS_GENERATE = "needs_generate"
 ReverieVisualStepStatus = Literal["done", "retry", "terminal"]
 
 

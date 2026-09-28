@@ -163,8 +163,10 @@ reading.
 
 ### Truth rules (all tools)
 
-- **Bounded:** max 10 items, per-item text cap (default 1,200 chars),
-  `truncated` flag set when cut.
+- **Bounded:** max 10 items, per-item text cap (default 900 chars),
+  `truncated` flag set when cut. 10 × 900 plus per-item fields must stay under
+  `ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS` (12,000), above which the harness
+  truncates the tool result mid-JSON; a test pins the worst case.
 - **Scaled:** `as_of` and `total_available` always present on success.
 - **Empty ≠ unknown:** an empty window returns `ok=True, items=[],
   total_available=0`. Timeout, malformed reply, or owner error raises an MCP

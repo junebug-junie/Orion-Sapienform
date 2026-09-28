@@ -329,10 +329,11 @@ def _extract_tool_result_errors(step: Dict[str, Any]) -> List[str]:
 # tool-name match, NOT a taxonomy service. Any tool name not listed here is
 # uncounted (neither bucket), rather than guessed into one. MCP prefixes are
 # limited to servers this codebase has confirmed are read-only-by-construction
-# (gitnexus: graph queries only; firecrawl: search/scrape only) -- an unlisted MCP
-# server defaults to uncounted since there's no way to verify it can't mutate state.
+# (gitnexus: graph queries only; firecrawl: search/scrape only; orion-introspect:
+# SELECT-only lookups) -- an unlisted MCP server defaults to uncounted since there's
+# no way to verify it can't mutate state.
 _CONTEXT_GATHERING_TOOLS = frozenset({"Read", "Grep", "Glob", "WebSearch", "WebFetch", "ToolSearch"})
-_CONTEXT_GATHERING_MCP_PREFIXES = ("mcp__gitnexus__", "mcp__firecrawl__")
+_CONTEXT_GATHERING_MCP_PREFIXES = ("mcp__gitnexus__", "mcp__firecrawl__", "mcp__orion-introspect__")
 _EXECUTION_TOOLS = frozenset({"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit"})
 
 
@@ -653,6 +654,7 @@ def _harness_aitown_env(fcc_env: Dict[str, str]) -> Dict[str, str]:
 
 def _maybe_render_mcp_config(*, correlation_id: str, reading_binding=None, reading_only=False) -> Optional[Path]:
     from orion.fcc.mcp_config import render_mcp_config
+    from orion.introspect.binding import introspect_binding_for_turn
 
     if reading_only:
         return render_mcp_config(correlation_id=correlation_id, fcc_env={}, reading_only=True)
@@ -679,6 +681,8 @@ def _maybe_render_mcp_config(*, correlation_id: str, reading_binding=None, readi
         reading_binding=reading_binding,
         reading_only=reading_only,
         reading_bus_url=os.environ.get("ORION_BUS_URL"),
+        introspect_binding=introspect_binding_for_turn(reading_binding, reading_only=reading_only),
+        introspect_bus_url=os.environ.get("ORION_BUS_URL"),
         include_aitown=include_aitown,
         aitown_env=_harness_aitown_env(env) if include_aitown else None,
         include_gitnexus=_env_truthy("HARNESS_FCC_GITNEXUS_ENABLED"),

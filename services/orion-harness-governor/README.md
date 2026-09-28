@@ -98,6 +98,8 @@ docker compose \
 
 When `HARNESS_FCC_MCP_ENABLED=true`, harness turns spawn ephemeral MCP config (GitHub + Firecrawl; optional AI Town when `HARNESS_AITOWN_ENABLED=true`; optional GitNexus/Context Mode, below). The container image includes `docker`, Node 22, `npx`, the orion-aitown MCP package, and pinned `gitnexus@1.6.9` + `context-mode@1.0.169`.
 
+`HARNESS_FCC_INTROSPECT_ENABLED=true` adds `orion-introspect`, a read-only MCP that lets Orion look up their own recorded activity over the bus. Slice 1 exposes `reading_results` (what was learned from a reading; answered by orion-hub on `orion:reading:tool:request`). It is attached only on turns with a reading binding, never on `reading_only` turns. Design: `docs/superpowers/specs/2026-09-28-orion-introspect-mcp-design.md`.
+
 ### Semantic self-indexing (GitNexus + Context Mode)
 
 Both are default-off, fail-open, and need no secrets:

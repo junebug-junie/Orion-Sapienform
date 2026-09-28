@@ -165,8 +165,15 @@ reading.
 
 - **Bounded:** max 5 items, per-item text cap (default 900 chars), URL
   cap 500, `truncated` flag set when cut. 5 full items must stay under
-  `ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS` (12,000), above which the harness
-  truncates the tool result mid-JSON; a test pins the worst case.
+  `ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS` (12,000), the budget
+  `orion/fcc/mcp_stdio_proxy.py` enforces (mid-JSON cut) on servers it
+  wraps. Introspect servers are not wrapped today; the bound keeps output
+  small and makes wrapping them later safe. A test pins the worst case.
+- **Read, not guessed:** a reading counts as learned only when its Stage 1
+  handoff carries tool-trace evidence that the source was fetched
+  (`source_read_evidence`); prose from an unread handoff, or a Stage 2
+  summary built on one, is reported `source_read=false, learned=false`
+  and excluded from the recent window.
 - **Scaled:** `as_of` and `total_available` always present on success.
 - **Empty ≠ unknown:** an empty window returns `ok=True, items=[],
   total_available=0`. Timeout, malformed reply, or owner error raises an MCP

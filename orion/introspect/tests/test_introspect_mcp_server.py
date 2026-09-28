@@ -75,6 +75,7 @@ def _unicode_worst_case_result_dict():
             "title": accent * SHORT_FIELD_CAP,
             "why_now": accent * SHORT_FIELD_CAP,
             "reading_status": "landing_pending",
+            "source_read": True,
             "learned": True,
             "request_id": str(uuid4()),
         },

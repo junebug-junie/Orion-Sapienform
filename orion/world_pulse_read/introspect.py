@@ -20,6 +20,7 @@ from orion.schemas.introspect import (
 )
 from orion.world_pulse_read.operator import _journal_entries
 from orion.world_pulse_read.queue import derive_reading_status, reading_status
+from orion.world_pulse_read.read_evidence import parse_source_fetches, source_read_evidence
 
 JOURNAL_EXCERPT_CHARS = 600
 
@@ -34,12 +35,17 @@ _OCCURRED = "COALESCE(s.landing_at, s.stage2_completed_at, s.handoff_at, s.creat
 _ROW_SQL = f"SELECT {_COLUMNS} FROM world_pulse_read_seed s WHERE s.seed_id = $1"
 
 # count(*) OVER () is evaluated before LIMIT, so ``total`` is the full match count.
+# Rows whose Stage 1 handoff carries no tool-trace fetch are not readings (see
+# read_evidence.py); a Stage 2 summary built on one is no better. CASE, not AND,
+# because SQL does not guarantee short-circuit evaluation.
 _RECENT_SQL = f"""
 SELECT {_COLUMNS}, count(*) OVER () AS total
 FROM world_pulse_read_seed s
 WHERE s.duplicate_of IS NULL
   AND s.status = 'done'
-  AND (s.stage2_result_json IS NOT NULL OR s.handoff_json IS NOT NULL)
+  AND CASE WHEN jsonb_typeof(s.handoff_json->'read_evidence') = 'array'
+           THEN jsonb_array_length(s.handoff_json->'read_evidence') > 0
+           ELSE false END
   AND ($2::timestamptz IS NULL OR {_OCCURRED} >= $2)
 ORDER BY {_OCCURRED} DESC, s.seed_id DESC
 LIMIT $1
@@ -50,24 +56,37 @@ def _obj(raw: Any) -> dict[str, Any]:
     return json.loads(raw) if isinstance(raw, str) else (raw or {})
 
 
-def _learned(row: Any) -> str:
+def _source_read(row: Any) -> bool:
+    fetches = parse_source_fetches(_obj(row["handoff_json"]).get("read_evidence")) or []
+    return bool(source_read_evidence(row["url"], fetches))
+
+
+def _learned(row: Any, source_read: bool) -> str:
+    # A handoff on a row that did not finish Stage 1 was rejected, and one with
+    # no read of its source is model prose -- neither is "learned".
+    if row["status"] != "done" or not source_read:
+        return ""
     result = _obj(row["stage2_result_json"])
-    # A handoff on a row that did not finish Stage 1 was rejected -- never "learned".
-    handoff = _obj(row["handoff_json"]) if row["status"] == "done" else {}
-    return str(result.get("summary") or handoff.get("what_i_learned") or "")
+    return str(result.get("summary") or _obj(row["handoff_json"]).get("what_i_learned") or "")
 
 
 def _item(row: Any, *, request_id: str | None, journal_excerpt: str | None = None) -> IntrospectItemV1:
-    learned = _learned(row)
-    text, truncated = clip_text(learned)
+    source_read = _source_read(row)
+    text, truncated = clip_text(_learned(row, source_read))
+    url, url_truncated = clip_text(row["url"], URL_CAP)
     extra: dict[str, Any] = {
-        "url": clip_text(row["url"], URL_CAP)[0],
+        "url": url,
         "title": clip_text(row["title"], SHORT_FIELD_CAP)[0],
         "why_now": clip_text(row["why_now"], SHORT_FIELD_CAP)[0],
         "reading_status": derive_reading_status(row["status"], row["stage2_status"], row["landing_at"]),
+        "source_read": source_read,
         "learned": bool(text),
         "request_id": request_id,
     }
+    if url_truncated:
+        # A clipped URL matches nothing on lookup; say so rather than let a
+        # re-query read as "never read".
+        extra["url_truncated"] = True
     if journal_excerpt:
         extra["journal_excerpt"] = journal_excerpt
     return IntrospectItemV1(

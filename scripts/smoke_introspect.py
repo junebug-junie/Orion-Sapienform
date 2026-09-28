@@ -3,7 +3,8 @@
 
     ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --limit 3
 
-Read-only. Exit 0 = coherent answer, 1 = degenerate answer, 2 = answer unknown.
+Read-only. Exit 0 = coherent answer, 1 = degenerate answer (a verified read with
+no text, or an empty recent window), 2 = answer unknown.
 """
 from __future__ import annotations
 
@@ -42,9 +43,13 @@ async def main() -> int:
     finally:
         await bus.close()
     print(json.dumps(result, indent=2, ensure_ascii=False))
-    degenerate = [i["id"] for i in result["items"] if i["extra"].get("learned") and not i["text"]]
+    degenerate = [i["id"] for i in result["items"] if i["extra"].get("source_read") and not i["text"]]
     if degenerate:
-        print(f"DEGENERATE: learned=true with empty text: {degenerate}", file=sys.stderr)
+        print(f"DEGENERATE: source_read=true with empty text: {degenerate}", file=sys.stderr)
+        return 1
+    if not args.url and result["total_available"] == 0:
+        print("DEGENERATE: recent window is empty; a responder that always answers [] passes nothing else",
+              file=sys.stderr)
         return 1
     print(f"OK items={len(result['items'])} total_available={result['total_available']} as_of={result['as_of']}",
           file=sys.stderr)

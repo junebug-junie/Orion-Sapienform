@@ -93,6 +93,7 @@ def test_worst_case_result_fits_the_mcp_tool_result_cap():
             "title": "t" * SHORT_FIELD_CAP,
             "why_now": "w" * SHORT_FIELD_CAP,
             "reading_status": "landing_pending",
+            "source_read": True,
             "learned": True,
             "request_id": str(uuid4()),
         },
@@ -139,6 +140,16 @@ def test_reading_tool_request_accepts_reading_result_selectors():
 def test_reading_tool_request_rejects_mixed_operation_arguments(fields):
     with pytest.raises(ValidationError):
         ReadingToolRequestV1(**fields)
+
+
+def test_existing_reading_operations_keep_their_pre_introspect_wire_keys():
+    # A Hub older than this contract forbids unknown keys, even null ones.
+    status = ReadingToolRequestV1(operation="reading_status", url="https://example.org/a")
+    assert set(status.model_dump(mode="json")) == {"operation", "request", "request_id", "url"}
+    recent = ReadingToolRequestV1(operation="reading_result", limit=3, since=NOW)
+    wire = recent.model_dump(mode="json")
+    assert wire["limit"] == 3 and wire["since"].startswith("2026-")
+    assert ReadingToolRequestV1.model_validate(wire) == recent
 
 
 def test_new_models_are_registered():

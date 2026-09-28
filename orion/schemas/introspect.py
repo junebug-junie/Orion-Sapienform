@@ -12,8 +12,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-# MAX_ITEMS full-size items must fit under ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS
-# (12000) or the harness truncates the JSON mid-item.
+# MAX_ITEMS full-size items stay under ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS
+# (12000), the budget the harness proxy enforces on wrapped servers (it cuts
+# the JSON mid-item). orion-introspect is not wrapped today; the bound is kept
+# so wrapping it later cannot corrupt a result.
 MAX_ITEMS = 5
 DEFAULT_LIMIT = 5
 DEFAULT_TEXT_CAP = 900

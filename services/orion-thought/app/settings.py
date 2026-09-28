@@ -388,6 +388,16 @@ class ThoughtSettings(BaseSettings):
     visual_chain_run_deadline_sec: float = Field(
         300.0, alias="ORION_VISUAL_CHAIN_RUN_DEADLINE_SEC"
     )
+    # Deadline for ONE durable `reverie.visual` generate step (visual_steps.py):
+    # GPU2 capacity permit wait + diffusion + disk write. Per step, not the whole-run
+    # deadline above. Never effectively below capacity budget + diffusion timeout +
+    # 10s (visual_step_generate_deadline_sec() floors it), and should stay under the
+    # run brief's per-step RPC budget (ReverieVisualRunBriefV1.timeout_sec, 360s) so
+    # the reply lands before durable-runs gives up waiting. A generate still
+    # recorded "generating" within 2x this window blocks a second diffusion call.
+    visual_chain_step_generate_deadline_sec: float = Field(
+        330.0, alias="ORION_VISUAL_CHAIN_STEP_GENERATE_DEADLINE_SEC"
+    )
     # Watchdog for the failure mode visual_chain_run_deadline_sec above cannot
     # catch: the worker's own asyncio task wedged before ever reaching the
     # single-flight lock (confirmed live 2026-09-04, 24+ hours silent, zero

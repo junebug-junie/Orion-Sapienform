@@ -526,6 +526,14 @@ def load_latest_visual_chain_continuity_state(*, with_identity: bool = False):
     lookup failure degrades to "no continuity yet, nothing to cap, start
     rotation at slot 0" (the same prompt a first-ever run uses) rather than
     breaking the tick.
+
+    Only rows that recorded continuity state count (`chain_json ?
+    'continuity_streak'`). Rows that never reached a prompt plan -- thermal
+    refusals, resource deferrals, deadline abandonments -- carry no continuity
+    keys and are skipped, so a deferral no longer resets the streak, the slot
+    rotation and `prior_description` to a cold start. Skipping (rather than
+    copying the prior state onto those rows) also keeps a deadline row from
+    shadowing a production row its abandoned body committed just before it.
     """
     try:
         from sqlalchemy import text
@@ -536,6 +544,7 @@ def load_latest_visual_chain_continuity_state(*, with_identity: bool = False):
                 conn.execute(
                     text(
                         "SELECT chain_id, prior_description, chain_json FROM reverie_visual_chain "
+                        "WHERE chain_json ? 'continuity_streak' "
                         "ORDER BY created_at DESC LIMIT 1"
                     )
                 )
@@ -1575,13 +1584,21 @@ def replay_visual_attempt(request):
         return _visual_dispatch_replay(conn, request)
 
 
-def claim_visual_attempt(request, *, retry_sec: float, now: datetime):
+def claim_visual_attempt(request, *, retry_sec: float, now: datetime,
+                         abandoned_in_flight_window_sec: float | None = None):
     """Serialize claims across replicas and reread activity under the same lock.
 
     Returns (attempt_id, replay_result). Unknown/active work has NO expiry:
     cancelling an asyncio waiter cannot prove a diffusion thread has stopped.
     Only a durable production receipt or explicit operator reconciliation can
     release an ambiguous attempt. Baseline remains disabled pending rail smoke.
+
+    `abandoned_in_flight_window_sec` (durable step callers only; needs `stage_json`):
+    an attempt a durable run abandoned while its generate was in flight is held
+    `unknown` until that generate records its exit. If the process died first, the
+    exit is never written; once the generate started longer ago than this window
+    (2x the generate deadline, past the diffusion timeout) it is released as
+    `abandoned`.
     """
     from datetime import timedelta
     from uuid import uuid4
@@ -1594,6 +1611,17 @@ def claim_visual_attempt(request, *, retry_sec: float, now: datetime):
         replay = _visual_dispatch_replay(conn, request)
         if replay is not None:
             return None, replay
+        if abandoned_in_flight_window_sec is not None:
+            conn.execute(text("""
+                UPDATE reverie_visual_attempt SET outcome = :abandoned
+                WHERE outcome = 'unknown' AND stage_json ? 'abandoned_at'
+                  AND NOT (stage_json->>'stage' = 'generating'
+                           AND COALESCE(CASE WHEN stage_json->>'generating_started_at'
+                                                  ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+                                             THEN (stage_json->>'generating_started_at')::timestamptz
+                                        END > :cutoff, true))
+            """), {"abandoned": VISUAL_ATTEMPT_ABANDONED,
+                   "cutoff": now - timedelta(seconds=abandoned_in_flight_window_sec)})
         # Reconcile only positive production evidence. Silence is never proof
         # that a timed-out blocking diffusion operation has stopped.
         active = conn.execute(text("SELECT * FROM reverie_visual_attempt WHERE outcome IN ('active','unknown') ORDER BY started_at LIMIT 1 FOR UPDATE")).mappings().first()
@@ -1626,6 +1654,176 @@ def finish_visual_attempt(attempt_id: str, result: dict) -> None:
     with _get_engine().begin() as conn:
         conn.execute(text("UPDATE reverie_visual_attempt SET outcome=:outcome, result_json=CAST(:result AS jsonb) WHERE attempt_id=:id"),
                      {"id": attempt_id, "outcome": result["outcome"], "result": json.dumps(result)})
+
+
+class VisualStageStoreUnavailable(RuntimeError):
+    """`reverie_visual_attempt` or its `stage_json` column is not installed.
+
+    The durable step path checkpoints every stage there; without it a replayed
+    prepare would recompute (advancing rotation, re-interpreting) and a replayed
+    generate would re-render. Steps refuse instead of falling back.
+    """
+
+
+# Durable steps release an attempt with this outcome when no GPU work can still be
+# running for it. Not in ('active','unknown'), so it never blocks a later claim; its
+# result_json reports `unknown`, so a replay never scores it as Orion failing.
+VISUAL_ATTEMPT_ABANDONED = "abandoned"
+_ATTEMPT_COLUMNS = ("dispatch_id, need_id, attempt_id, started_at, retry_after, outcome, "
+                    "request_json, result_json, stage_json")
+
+
+def _require_visual_stage_store(conn) -> None:
+    from sqlalchemy import text
+
+    if not conn.execute(text("SELECT to_regclass('reverie_visual_attempt')")).scalar():
+        raise VisualStageStoreUnavailable("reverie_visual_attempt missing")
+    has_column = conn.execute(text(
+        "SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('reverie_visual_attempt') "
+        "AND attname = 'stage_json' AND NOT attisdropped"
+    )).scalar()
+    if not has_column:
+        raise VisualStageStoreUnavailable(
+            "reverie_visual_attempt.stage_json missing: apply "
+            "services/orion-sql-db/manual_migration_reverie_visual_attempt_stage.sql"
+        )
+
+
+def _attempt_row(row) -> dict:
+    out = dict(row)
+    out["stage_json"] = dict(out.get("stage_json") or {})
+    return out
+
+
+def load_visual_attempt_for_dispatch(request):
+    """The attempt row already claimed for `request.dispatch_id`, reconciled, or None.
+
+    `request_mismatch=True` marks a dispatch id reused for a different request (a
+    dispatch id is one immutable request, never reusable permission).
+    """
+    from sqlalchemy import text
+
+    if not request.dispatch_id:
+        return None
+    with _get_engine().begin() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(719031340)"))
+        _require_visual_stage_store(conn)
+        row = conn.execute(text(f"SELECT {_ATTEMPT_COLUMNS} FROM reverie_visual_attempt "
+                                "WHERE dispatch_id=:id FOR UPDATE"),
+                           {"id": request.dispatch_id}).mappings().first()
+        if row is None:
+            return None
+        row = _attempt_row(row)
+        if row["request_json"] != request.model_dump(mode="json"):
+            return {**row, "request_mismatch": True}
+        return _attempt_row(_reconcile_visual_attempt(conn, row))
+
+
+def load_visual_attempt(attempt_id: str):
+    """One attempt row by attempt_id (== chain_id), reconciled, or None."""
+    from sqlalchemy import text
+
+    with _get_engine().begin() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(719031340)"))
+        _require_visual_stage_store(conn)
+        row = conn.execute(text(f"SELECT {_ATTEMPT_COLUMNS} FROM reverie_visual_attempt "
+                                "WHERE attempt_id=:id FOR UPDATE"),
+                           {"id": attempt_id}).mappings().first()
+        if row is None:
+            return None
+        return _attempt_row(_reconcile_visual_attempt(conn, _attempt_row(row)))
+
+
+def update_visual_stage(attempt_id: str, mutate, *, release_abandoned: bool = False):
+    """Read-modify-write one attempt's `stage_json` under the claim advisory lock.
+
+    `mutate(stage, row)` returns the new stage dict, or None to leave it unchanged.
+    `release_abandoned=True` is positive evidence that this attempt's generate work has
+    stopped: an attempt the run already abandoned while that work was in flight (held
+    `unknown` because a diffusion thread might still be running) becomes `abandoned`
+    and stops blocking later claims. Returns the row as stored, or None if missing.
+    """
+    from sqlalchemy import text
+
+    with _get_engine().begin() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(719031340)"))
+        _require_visual_stage_store(conn)
+        row = conn.execute(text(f"SELECT {_ATTEMPT_COLUMNS} FROM reverie_visual_attempt "
+                                "WHERE attempt_id=:id FOR UPDATE"),
+                           {"id": attempt_id}).mappings().first()
+        if row is None:
+            return None
+        row = _attempt_row(row)
+        new_stage = mutate(dict(row["stage_json"]), row)
+        outcome = row["outcome"]
+        stage = row["stage_json"] if new_stage is None else new_stage
+        if release_abandoned and outcome == "unknown" and stage.get("abandoned_at"):
+            outcome = VISUAL_ATTEMPT_ABANDONED
+        if new_stage is None and outcome == row["outcome"]:
+            return row
+        conn.execute(text("UPDATE reverie_visual_attempt SET stage_json=CAST(:stage AS jsonb), "
+                          "outcome=:outcome WHERE attempt_id=:id"),
+                     {"id": attempt_id, "stage": json.dumps(stage), "outcome": outcome})
+        return {**row, "stage_json": stage, "outcome": outcome}
+
+
+def abandon_visual_attempt(attempt_id: str, *, dispatch_id: str | None, reason: str, now: datetime,
+                           in_flight_window_sec: float):
+    """Close an attempt the durable run gave up on. Idempotent; never touches a closed one,
+    nor one claimed for a different dispatch (returned with `dispatch_mismatch=True`).
+
+    A production receipt found here reconciles to `produced` first. Otherwise the
+    attempt becomes `abandoned` (non-blocking), unless a generate started within
+    `in_flight_window_sec` may still be running: then it stays `unknown` -- the
+    existing no-expiry rule for ambiguous GPU work -- until that generate records its
+    own exit (`update_visual_stage(release_abandoned=True)`) or an operator reconciles.
+    """
+    from sqlalchemy import text
+
+    with _get_engine().begin() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(719031340)"))
+        _require_visual_stage_store(conn)
+        row = conn.execute(text(f"SELECT {_ATTEMPT_COLUMNS} FROM reverie_visual_attempt "
+                                "WHERE attempt_id=:id FOR UPDATE"),
+                           {"id": attempt_id}).mappings().first()
+        if row is None:
+            return None
+        if row["dispatch_id"] != dispatch_id:
+            return {**_attempt_row(row), "dispatch_mismatch": True}
+        row = _attempt_row(_reconcile_visual_attempt(conn, _attempt_row(row)))
+        if row["outcome"] not in {"active", "unknown"}:
+            return row
+        stage = dict(row["stage_json"])
+        in_flight = False
+        if stage.get("stage") == "generating" and stage.get("generating_started_at"):
+            try:
+                started = datetime.fromisoformat(stage["generating_started_at"])
+                in_flight = (now - started).total_seconds() < in_flight_window_sec
+            except (TypeError, ValueError):
+                in_flight = True
+        stage.setdefault("abandoned_at", now.isoformat())
+        stage["abandon_reason"] = reason
+        outcome = "unknown" if in_flight else VISUAL_ATTEMPT_ABANDONED
+        result = {"ok": False, "ran": False, "outcome": "unknown", "reason": reason,
+                  "attempt_id": attempt_id, "generate_in_flight": in_flight}
+        conn.execute(text("UPDATE reverie_visual_attempt SET outcome=:outcome, "
+                          "result_json=CAST(:result AS jsonb), stage_json=CAST(:stage AS jsonb) "
+                          "WHERE attempt_id=:id"),
+                     {"id": attempt_id, "outcome": outcome, "result": json.dumps(result),
+                      "stage": json.dumps(stage)})
+        return {**row, "outcome": outcome, "result_json": result, "stage_json": stage}
+
+
+def load_visual_retry_after_sec(now: datetime) -> float | None:
+    """Seconds until the shared retry gap `claim_visual_attempt` enforces opens, or None."""
+    from sqlalchemy import text
+
+    with _get_engine().connect() as conn:
+        latest = conn.execute(text("SELECT retry_after FROM reverie_visual_attempt "
+                                   "ORDER BY started_at DESC LIMIT 1")).scalar()
+    if latest is None:
+        return None
+    return max(0.0, (latest - now).total_seconds())
 
 
 def persist_visual_execution_receipt(chain_id, receipt):

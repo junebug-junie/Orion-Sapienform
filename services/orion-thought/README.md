@@ -14,6 +14,7 @@ Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` 
 | `CHANNEL_THOUGHT_ARTIFACT` | `orion:thought:artifact` | Audit publish after each thought |
 | `CHANNEL_CORTEX_EXEC_REQUEST` | `orion:cortex:exec:request` | Cortex exec plan RPC |
 | `CHANNEL_CORTEX_EXEC_RESULT_PREFIX` | `orion:exec:result` | Cortex exec reply prefix |
+| (contract constant) | `orion:reverie:visual:step:request` | Durable `reverie.visual` stage intake from orion-durable-runs |
 
 ## Flow
 
@@ -658,6 +659,55 @@ changes are needed. See the implementation PR report for evidence and rollout or
 Database integration tests use a disposable PostgreSQL URL:
 `ORION_VISUAL_TEST_DATABASE_URL=... python -m pytest services/orion-thought/tests/test_visual_activity.py -q`.
 They create isolated schemas and never run by default against the operator database.
+
+Continuity (2026-09-28 fix): the next run's `prior_description`, `continuity_streak`
+and `context_slot_rotation` come from the latest chain row that recorded continuity
+state. Thermal refusals, resource deferrals and deadline rows carry none and are
+skipped; before this, one deferral reset all three to a cold start.
+
+## Durable `reverie.visual` steps (orion-durable-runs)
+
+orion-durable-runs can drive a visual reverie as a graph of stages instead of one
+`run-once` call: `prepare -> generate -> caption`, plus `abandon` when the run gives
+up. It sends `ReverieVisualStepRequestV1` on `orion:reverie:visual:step:request`
+(`REVERIE_VISUAL_STEP_CHANNEL`); this worker replies on the request's `reply_to` with
+kind `reverie.visual.step.result.v1` under the request envelope's correlation id.
+Design: `docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.md`.
+Code: `app/visual_steps.py`. `run-once` is unchanged and remains the rollback path;
+both paths write identical chain rows through the same `visual_chain.py` pieces.
+
+- **prepare** claims the attempt for the dispatch (same eligibility checks as
+  `run-once`, only before a new claim) and freezes the prompt plan into
+  `reverie_visual_attempt.stage_json`. A replay returns the frozen plan: rotation
+  does not advance and the context is not re-interpreted. No GPU.
+- **generate** is the only GPU stage. It validates the run's diffusion hold
+  (`holder == durable-runs:<run_id>`), then thermal gate, single-flight lock, GPU2
+  permit and diffusion under its own deadline (`ORION_VISUAL_CHAIN_STEP_GENERATE_DEADLINE_SEC`,
+  default 330, never below permit budget + diffusion timeout + 10). The image is
+  stored on disk and recorded in `stage_json`; a replay with a recorded image makes no
+  diffusion call. A generate that started less than 2x the deadline ago blocks another
+  (`generate_in_flight`): an abandoned diffusion thread may still be on the card.
+  Refusals and failures are retries recorded in `stage_json.deferrals`, never chain
+  rows (a row keyed by the attempt would make the production row a no-op).
+- **caption** reloads the image by sha (missing/corrupt -> `needs_generate`),
+  re-observes it (cached, so a retry never recaptions), writes the production chain
+  row with `chain_id == attempt_id`, acknowledges it, persists the execution receipt,
+  and finishes the attempt `produced`.
+- **abandon** closes the attempt. Result outcome is `unknown`; the row becomes
+  `abandoned`, which does not block later claims. If a generate started inside the
+  in-flight window the row stays `unknown` (the existing no-expiry rule) until that
+  generate records its exit. A generate past its step deadline is not cancelled: it
+  keeps the lock and GPU2 permit until diffusion returns (hard ceiling: the in-flight
+  window, then `generate_wedged`) and records its own exit. If the process died
+  instead, the next durable prepare's claim releases the row once the window passed.
+
+Every result carries `elapsed_sec` (generate: permit wait + diffusion + disk write).
+Unexpected errors are retries (`step_exception:<Type>`); a missing stage table or
+column is `stage_store_unavailable`, never a recompute.
+
+Before routing runs here: apply `manual_migration_reverie_visual_attempt_stage.sql`
+(after `manual_migration_reverie_visual_attempt.sql`). DB tests:
+`ORION_VISUAL_TEST_DATABASE_URL=... python -m pytest services/orion-thought/tests/test_visual_steps_db.py -q`.
 
 
 ## Optional GPU2 elastic admission

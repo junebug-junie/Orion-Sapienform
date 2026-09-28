@@ -389,3 +389,9 @@ def test_cabinet_sensors_js_guards_polling_on_real_visibility() -> None:
 def test_cabinet_sensors_js_does_not_grow_unbounded_client_state() -> None:
     assert "state.lastPayload =" in CABINET_SENSORS_JS
     assert ".push(" not in CABINET_SENSORS_JS
+
+
+def test_cabinet_sensors_js_renders_sensor_stale_in_red() -> None:
+    assert "payload.sensor_stale" in CABINET_SENSORS_JS
+    assert '"AC reading STALE since "' in CABINET_SENSORS_JS
+    assert "text-red-400" in CABINET_SENSORS_JS

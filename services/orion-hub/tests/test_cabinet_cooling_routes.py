@@ -204,3 +204,68 @@ def test_history_db_failure_returns_ok_false(client, monkeypatch):
     assert body["ok"] is False
     assert body["points"] == []
     assert body["error"] == "cooling_history_unavailable"
+
+
+def test_latest_sensor_stale_row_is_not_ok_and_reports_last_fresh(client, monkeypatch):
+    async def latest(*, node: str):
+        return _row(
+            cooling_watts=None,
+            cooling_volts=None,
+            switch_on=None,
+            payload_json={
+                "device": {"product": "Shelly Wave Plug", "online": True},
+                "state": {"stale": True},
+                "provenance": {"zwave_node_id": 2, "sample_age_sec": 600.0},
+            },
+        )
+
+    monkeypatch.setattr(cabinet_cooling_routes, "_latest_query", latest)
+    body = client.get("/api/cabinet/cooling/latest").json()
+    assert body["ok"] is False
+    assert body["sensor_stale"] is True
+    assert body["sample_age_sec"] == 600.0
+    assert body["last_fresh_at"] == "2026-09-25T14:50:00Z"
+    assert "cooling_watts" not in body["sample"]
+
+
+def test_latest_fresh_row_reports_not_sensor_stale(client, monkeypatch):
+    async def latest(*, node: str):
+        return _row(payload_json={"state": {"stale": False}, "provenance": {"zwave_node_id": 2, "sample_age_sec": 3.0}})
+
+    monkeypatch.setattr(cabinet_cooling_routes, "_latest_query", latest)
+    body = client.get("/api/cabinet/cooling/latest").json()
+    assert body["ok"] is True
+    assert body["sensor_stale"] is False
+    assert body["sample_age_sec"] == 3.0
+
+
+def test_latest_reads_freshness_from_json_text_payload(client, monkeypatch):
+    # home_cooling_sample.payload_json is a Postgres `json` column; asyncpg returns
+    # it as text unless a codec is registered, so the verdict must survive a str.
+    async def latest(*, node: str):
+        return _row(
+            cooling_watts=None,
+            payload_json=(
+                '{"device": {"product": "Shelly Wave Plug"}, "state": {"stale": true},'
+                ' "provenance": {"zwave_node_id": 2, "sample_age_sec": 600.0}}'
+            ),
+        )
+
+    monkeypatch.setattr(cabinet_cooling_routes, "_latest_query", latest)
+    body = client.get("/api/cabinet/cooling/latest").json()
+    assert body["ok"] is False
+    assert body["sensor_stale"] is True
+    assert body["last_fresh_at"] == "2026-09-25T14:50:00Z"
+    assert body["sample"]["product"] == "Shelly Wave Plug"
+
+
+def test_latest_legacy_payload_without_freshness_is_not_sensor_stale(client, monkeypatch):
+    async def latest(*, node: str):
+        return _row(payload_json="not json")
+
+    monkeypatch.setattr(cabinet_cooling_routes, "_latest_query", latest)
+    body = client.get("/api/cabinet/cooling/latest").json()
+    assert body["ok"] is True
+    assert body["sensor_stale"] is False
+    assert "sample_age_sec" not in body
+    assert "last_fresh_at" not in body

@@ -112,3 +112,53 @@ def test_payload_json_sanitizes_datetime_from_plain_model_dump() -> None:
     assert isinstance(blob, dict)
     assert isinstance(blob["ts"], str)
     json.dumps(blob)  # must not raise
+
+
+def test_stale_and_age_columns_exist_and_are_mapped() -> None:
+    cols = _columns()
+    assert "stale" in cols and "sample_age_sec" in cols
+    now = datetime(2026, 9, 28, 8, 0, tzinfo=timezone.utc)
+    payload = HomeCoolingSampleV1(
+        ts=now,
+        controller={"ready": True},
+        device={"id": "node-2", "name": "Cabinet AC", "online": True},
+        measurements={},
+        state={"stale": True},
+        provenance={"zwave_node_id": 2, "sample_age_sec": 301.5},
+    ).model_dump(mode="json")
+    mapped = _normalize_home_cooling_sample_payload(payload)
+    assert mapped["stale"] is True
+    assert mapped["sample_age_sec"] == 301.5
+    assert "cooling_watts" not in mapped or mapped["cooling_watts"] is None
+
+
+def test_fresh_flag_maps_to_false_and_missing_age_is_omitted() -> None:
+    payload = HomeCoolingSampleV1(
+        ts=datetime(2026, 9, 28, 8, 0, tzinfo=timezone.utc),
+        controller={"ready": True},
+        device={"id": "node-2", "name": "Cabinet AC", "online": True},
+        measurements={"cooling_watts": 885.7},
+        state={"switch_on": True, "stale": False},
+        provenance={"zwave_node_id": 2},
+    ).model_dump(mode="json")
+    mapped = _normalize_home_cooling_sample_payload(payload)
+    assert mapped["stale"] is False
+    assert mapped.get("sample_age_sec") is None
+
+
+def test_bool_sample_age_is_not_persisted_as_a_number() -> None:
+    mapped = _normalize_home_cooling_sample_payload({
+        "ts": "2026-09-28T08:00:00Z",
+        "state": {"stale": True},
+        "provenance": {"zwave_node_id": 2, "sample_age_sec": True},
+    })
+    assert mapped.get("sample_age_sec") is None
+
+
+def test_boot_ddl_adds_the_new_columns() -> None:
+    src = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text()
+    assert "ALTER TABLE IF EXISTS home_cooling_sample ADD COLUMN IF NOT EXISTS stale BOOLEAN" in src
+    assert (
+        "ALTER TABLE IF EXISTS home_cooling_sample ADD COLUMN IF NOT EXISTS sample_age_sec DOUBLE PRECISION"
+        in src
+    )

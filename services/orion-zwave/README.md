@@ -100,6 +100,7 @@ python scripts/sync_local_env_from_example.py orion-zwave
 | `ZWAVE_DEVICE_NAME` | `portable_ac` | Human label (`portable_ac`) |
 | `COOLING_SAMPLE_CHANNEL` | `orion:home:cooling:sample` | Bus channel |
 | `COOLING_POLL_INTERVAL_SEC` | `5` | Sample cadence |
+| `COOLING_STALE_AFTER_SEC` | `120` | No fresh plug reading (successful poll or pushed Electric_W) for this long ⇒ sample omits all readings and sets `state.stale=true`; heartbeat details report `cooling_sensor=stale` |
 | `HEARTBEAT_INTERVAL_SEC` | `10` | Health heartbeat cadence |
 | `ORION_HEALTH_CHANNEL` | `orion:system:health` | Health channel |
 

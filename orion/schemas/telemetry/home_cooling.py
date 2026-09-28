@@ -35,11 +35,16 @@ class CoolingMeasurementsV1(BaseModel):
 
 
 class CoolingObservedStateV1(BaseModel):
-    """Observational only — not an actuator affordance."""
+    """Observational only — not an actuator affordance.
+
+    ``stale=True`` means no fresh reading from the plug within the producer's
+    stale window: every cached reading is omitted from the sample.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     switch_on: Optional[bool] = None
+    stale: Optional[bool] = None
 
 
 class CoolingProvenanceV1(BaseModel):

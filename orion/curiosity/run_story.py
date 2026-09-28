@@ -166,6 +166,7 @@ OUTCOME_FINISHED = "finished"
 
 _TEXT_LIMIT = 4000
 _NOTE_LIMIT = 2000
+_LIST_PROSE_LIMIT = 300
 
 
 def outreach_key(run_id: str) -> str:
@@ -211,6 +212,10 @@ def _iso(ms: Optional[int]) -> Optional[str]:
 
 def _text(value: Any, limit: int = _TEXT_LIMIT) -> str:
     return str(value or "").strip()[:limit]
+
+
+def _ellipsize(value: str, limit: int) -> str:
+    return value if len(value) <= limit else value[: limit - 1] + "…"
 
 
 def _obj(value: Any) -> dict[str, Any]:
@@ -877,8 +882,8 @@ def _prior_outcome_block(
         peer = {
             "status": _text(latest.get("status"), 60),
             "peer": _text(latest.get("peer"), 80),
-            "summary": _text(latest.get("summary"), 1200),
-            "refusal_reason": _text(latest.get("refusal_reason"), 240) or None,
+            "summary": _text(latest.get("summary")),
+            "refusal_reason": _text(latest.get("refusal_reason")) or None,
             "help_id": _text(latest.get("help_id"), 200) or None,
         }
         if not outcome_text and peer["summary"]:
@@ -1447,7 +1452,15 @@ def _reach_payload(r: ReachOut) -> dict[str, Any]:
     }
 
 
-def run_to_payload(r: RunSummary) -> dict[str, Any]:
+def run_to_payload(r: RunSummary, *, list_view: bool = False) -> dict[str, Any]:
+    """`list_view` shortens the prose the runs list only uses for a hover line;
+    the story endpoint always carries it whole."""
+    about = r.about
+    finding_text = r.finding_text
+    if list_view:
+        finding_text = _ellipsize(finding_text, _LIST_PROSE_LIMIT)
+        if about and about.get("text"):
+            about = {**about, "text": _ellipsize(about["text"], _LIST_PROSE_LIMIT)}
     return {
         "run_id": r.run_id,
         "line": r.line,
@@ -1475,12 +1488,12 @@ def run_to_payload(r: RunSummary) -> dict[str, Any]:
         "prior_touched": r.prior_touched,
         "reach_out": _reach_payload(r.reach_out),
         "journal_entry_id": r.journal_entry_id,
-        "finding_text": r.finding_text,
+        "finding_text": finding_text,
         "self_written": r.self_written,
         "self_sense": r.self_sense,
         "harness": r.harness,
         "outcome_kind": r.outcome_kind,
-        "about": r.about,
+        "about": about,
     }
 
 

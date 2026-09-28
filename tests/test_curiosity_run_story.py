@@ -903,6 +903,47 @@ def test_a_long_about_is_not_cut_mid_sentence() -> None:
     assert len(claim) > 500 and stories[prior_id].about["text"].endswith("the end of the claim")
 
 
+def test_the_runs_list_shortens_prose_but_the_story_carries_it_whole() -> None:
+    """The runs list only shows `about` in a hover line and never reads
+    `finding_text`; shipping both whole for ~300 runs every poll is waste."""
+    run_id = "about-list"
+    prompt = "Fetch the url below with WebFetch. " * 30 + "title=the real subject"
+    finding = "what the sitting found, at length. " * 30 + "END"
+    rows = RunStoryRows(
+        lifecycle=[_completed(run_id, 10, finding_text=finding)],
+        admission=[{
+            "run_id": run_id,
+            "request": json.dumps({"workflow": "curiosity.investigate",
+                                   "brief": {"line": "investigate", "prompt": prompt}}),
+            "created_at": _at(0), "control": None, "terminal": "completed", "updated_at": _at(10),
+        }],
+    )
+    story = build_stories(rows)[run_id]
+    listed = run_to_payload(story.run, list_view=True)
+    assert len(listed["about"]["text"]) == 300 and listed["about"]["text"].endswith("…")
+    assert len(listed["finding_text"]) == 300 and listed["finding_text"].endswith("…")
+    assert story.run.about["text"].endswith("title=the real subject"), "list view must not mutate the run"
+
+    payload = story_to_payload(story)
+    assert payload["about"]["text"].endswith("title=the real subject")
+    assert payload["run"]["finding_text"].endswith("END")
+
+
+def test_a_long_peer_summary_is_the_whole_what_it_found() -> None:
+    run_id = "peer-long"
+    summary = "the peer walked the whole question. " * 50 + "END"
+    rows = RunStoryRows(
+        lifecycle=[_completed(run_id, 10)],
+        help_requests=[{"run_id": run_id, "help_id": "h", "prior_id": "p", "prior_claim": "claim",
+                        "prior_status": "open", "written_at": _ms(1)}],
+        priors=[{"prior_id": "p", "claim": "claim", "status": "open", "line": ""}],
+        peer_briefs=[{"run_id": run_id, "brief_id": "b", "help_id": "h", "peer": "cursor",
+                      "status": "ok", "summary": summary, "written_at": _ms(8)}],
+    )
+    po = build_stories(rows)[run_id].prior_outcome
+    assert len(summary) > 1200 and po["outcome_text"].endswith("END")
+
+
 def test_about_for_self_sense_lists_the_four_fixed_questions() -> None:
     run_id = "20260922T211540Z-ff890d"
     rows = _admission_run(run_id, workflow="self_sense_eval", line="self_sense_eval", bridge=False)

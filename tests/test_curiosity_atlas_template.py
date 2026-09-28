@@ -63,7 +63,9 @@ if (fx.runs) {
 }
 if (fx.atlas) { applyAtlas(fx.atlas); if (fx.show_closed) { state.showClosed = true; renderPriors(fx.atlas); }
   if (fx.filter) { state.filter = fx.filter; renderPriors(fx.atlas); }
-  if (fx.open_priors) { for (const id of fx.open_priors) state.openPriors.add(id); renderPriors(fx.atlas); } }
+  if (fx.toggles) { out.toggled = [];
+    for (const id of fx.toggles) { togglePriorClaim(id); out.toggled.push(ELS.priors.innerHTML); }
+    if (fx.atlas_changed) { applyAtlas(fx.atlas_changed); out.toggled.push(ELS.priors.innerHTML); } } }
 if (fx.story) renderStory(fx.story);
 for (const k of Object.keys(ELS)) out[k] = ELS[k].innerHTML || ELS[k].textContent;
 console.log(JSON.stringify(out));
@@ -517,12 +519,19 @@ def test_a_long_prior_claim_is_all_there_and_opens_on_click(tmp_path) -> None:
     assert closed.count("claim-toggle") == 1, "a short claim gets no toggle"
     assert "is-open" not in closed
 
-    opened = _render({"atlas": atlas, "open_priors": ["long"]}, tmp_path)["priors"]
-    assert "is-open" in opened and "show less" in opened
+    # A poll that brings a changed payload re-renders the cards; the open one stays open.
+    polled = _atlas(priors=[_prior(), _prior(prior_id="long", claim=long_claim, times_tested=3)])
+    opened, reclosed, reopened, after_poll = _render(
+        {"atlas": atlas, "toggles": ["long", "long", "long"], "atlas_changed": polled}, tmp_path
+    )["toggled"]
+    assert opened.count("is-open") == 1 and "show less" in opened and 'aria-expanded="true"' in opened
+    assert "is-open" not in reclosed and "read it all" in reclosed
+    assert "is-open" in reopened
+    assert "tested 3×" in after_poll and after_poll.count("is-open") == 1
 
     page = TEMPLATE.read_text(encoding="utf-8")
     assert ".prior .claim.is-open" in page and "-webkit-line-clamp: unset" in page
-    assert 'closest("[data-prior-claim]")' in page, "the click is wired"
+    assert 'closest("[data-prior-claim]")' in page and "togglePriorClaim(claim.getAttribute" in page
 
 
 def test_orion_prose_in_the_story_is_escaped(tmp_path) -> None:

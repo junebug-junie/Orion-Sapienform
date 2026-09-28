@@ -333,7 +333,6 @@ details.journal summary:hover { color: var(--ink); }
 .prior { padding: 14px 15px 12px; display: flex; flex-direction: column; gap: 8px; }
 .prior.closed { opacity: 0.75; }
 .prior .claim { font-size: 13px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
-.prior .claim.is-long { cursor: pointer; }
 .prior .claim.is-open { display: block; -webkit-line-clamp: unset; overflow: visible; white-space: pre-wrap; }
 .prior .claim-toggle { align-self: flex-start; font: inherit; font-size: 11.5px; color: var(--ink-2); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; }
 .prior .sub { font-size: 11.5px; color: var(--ink-muted); font-variant-numeric: tabular-nums; display: flex; gap: 8px; flex-wrap: wrap; }
@@ -1116,8 +1115,8 @@ function renderPriors(d) {
     const long = (p.claim || "").length > PRIOR_CLAMP_CHARS;
     const open = long && state.openPriors.has(p.prior_id);
     return `<div class="card prior${p.is_closed ? " closed" : ""}">
-      <div class="claim${long ? " is-long" : ""}${open ? " is-open" : ""}"${long ? ` data-prior-claim="${esc(p.prior_id)}"` : ""}>${esc(p.claim)}</div>
-      ${long ? `<button class="claim-toggle" type="button" data-prior-claim="${esc(p.prior_id)}">${open ? "show less" : "read it all"}</button>` : ""}
+      <div class="claim${open ? " is-open" : ""}" title="${esc(p.claim)}">${esc(p.claim)}</div>
+      ${long ? `<button class="claim-toggle" type="button" data-prior-claim="${esc(p.prior_id)}" aria-expanded="${open}">${open ? "show less" : "read it all"}</button>` : ""}
       <div class="sub">
         <span class="status${p.is_closed ? " closed" : ""}">${esc(p.status)}</span>
         <span>${conf(p.confidence)}</span>
@@ -1128,6 +1127,11 @@ function renderPriors(d) {
       ${rec >= 1 && traj.length >= 2 ? sparkline(traj) : `<div class="none">no revision recorded yet — the line starts at the first recorded move</div>`}
     </div>`;
   }).join("") : `<p class="dim">${all.length ? "Nothing matches." : "Orion has not written a prior yet."}</p>`;
+}
+
+function togglePriorClaim(id) {
+  if (state.openPriors.has(id)) state.openPriors.delete(id); else state.openPriors.add(id);
+  renderPriors(state.atlas);
 }
 
 /* ---- contractor briefs -------------------------------------------------- */
@@ -1337,12 +1341,7 @@ function wire() {
     const lineBtn = e.target.closest && e.target.closest("[data-line]");
     if (lineBtn) { e.preventDefault(); setLine(lineBtn.getAttribute("data-line")); return; }
     const claim = e.target.closest && e.target.closest("[data-prior-claim]");
-    if (claim) {
-      const id = claim.getAttribute("data-prior-claim");
-      if (state.openPriors.has(id)) state.openPriors.delete(id); else state.openPriors.add(id);
-      renderPriors(state.atlas);
-      return;
-    }
+    if (claim) { togglePriorClaim(claim.getAttribute("data-prior-claim")); return; }
     const t = e.target.closest && e.target.closest("[data-run]");
     if (t) { e.preventDefault(); openRun(t.getAttribute("data-run")); }
     const replyBtn = e.target.closest && e.target.closest("[data-reply-send]");

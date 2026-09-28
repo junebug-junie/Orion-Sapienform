@@ -154,10 +154,11 @@ Bring it back with the `up -d` line in step 2 once the reauth or one-off fetch i
      --profile /mnt/storage-warm/orion-energy/portal/profile \
      --status /mnt/storage-warm/orion-energy/portal/status.json
    ```
-2. Backfill once (portal service stopped; one download per day, ~5s each, capped at the
-   picker's first day), then the daily loop:
+2. Backfill in small chunks (portal service stopped), then the daily loop. Live 2026-09-28,
+   RMP ended the session after ~8 day-downloads (and sooner after many logins in one
+   half hour), so fetch older days a few at a time with `--through`, hours apart:
    ```bash
-   scripts/safe_docker_build.sh orion-energy --profile portal run --rm orion-energy-portal python -m portal.main --once --days 60
+   scripts/safe_docker_build.sh orion-energy --profile portal run --rm orion-energy-portal python -m portal.main --once --days 6 --through 2026-09-23
    scripts/safe_docker_build.sh orion-energy --profile portal up -d --build orion-energy-portal
    ```
 3. Set `ENERGY_PORTAL_ENABLED=true` for `orion-energy` and restart it.

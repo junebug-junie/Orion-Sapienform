@@ -6,7 +6,7 @@ import argparse
 import asyncio
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -66,7 +66,7 @@ def record_status(path: Path, outcome: Optional[PortalOutcome], *, now: datetime
         return None
 
 
-async def attempt(settings: PortalSettings, *, days: int) -> PortalOutcome:
+async def attempt(settings: PortalSettings, *, days: int, through: Optional[date] = None) -> PortalOutcome:
     now = _utcnow()
     status_path = Path(settings.ENERGY_PORTAL_STATUS_PATH)
     record_status(status_path, None, now=now)
@@ -98,6 +98,7 @@ async def attempt(settings: PortalSettings, *, days: int) -> PortalOutcome:
                     now=now,
                     credentials=credentials,
                     scrape_bills=settings.ENERGY_PORTAL_SCRAPE_BILLS,
+                    through=through,
                 ),
                 timeout=attempt_timeout_sec(settings.ENERGY_PORTAL_TIMEOUT_SEC, days=days),
             )
@@ -143,11 +144,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--once", action="store_true", help="fetch now, ignoring the interval")
     parser.add_argument("--days", type=int, default=None, help=f"backfill window, clamped to {MIN_DAYS}..{MAX_DAYS}")
+    parser.add_argument(
+        "--through", type=date.fromisoformat, default=None,
+        help="with --once: newest day to fetch (YYYY-MM-DD), for backfilling older days in small chunks",
+    )
     args = parser.parse_args()
     settings = get_portal_settings()
     if args.once:
         days = resolve_days(args.days, default=settings.ENERGY_PORTAL_BACKFILL_DAYS)
-        outcome = asyncio.run(attempt(settings, days=days))
+        outcome = asyncio.run(attempt(settings, days=days, through=args.through))
         sys.exit(0 if outcome.state == "ok" else 1)
     asyncio.run(loop(settings))
 

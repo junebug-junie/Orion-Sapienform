@@ -220,6 +220,7 @@ async def run_once(
     seen_path: Optional[Path] = None,
     credentials: Optional[PortalCredentials] = None,
     scrape_bills: bool = True,
+    through: Optional[date] = None,
 ) -> PortalOutcome:
     stamp = now.strftime(_STAMP)
     try:
@@ -230,6 +231,8 @@ async def run_once(
             if is_login_url(await driver.open_usage()):
                 return PortalOutcome("reauth_required", "login_failed")
         first, last = await driver.usage_day_range()
+        if through is not None:
+            last = min(last, through)
         days = usage_days(first, last, count=backfill_days)
         if not days:
             return PortalOutcome("error", "no_usage_days_available")

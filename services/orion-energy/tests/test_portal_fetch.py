@@ -201,6 +201,26 @@ def test_days_never_leave_the_portal_range() -> None:
     assert usage_days(FIRST_DAY, LAST_DAY, count=0) == []
 
 
+def test_through_caps_the_newest_day_for_chunked_backfill(tmp_path) -> None:
+    driver = FakeDriver(xml=FIXTURE.read_bytes())
+    out = asyncio.run(
+        run_once(
+            driver, inbox_dir=tmp_path / "inbox", bill_inbox_dir=tmp_path / "bills", raw_dir=tmp_path / "raw",
+            backfill_days=2, now=NOW, scrape_bills=False, through=date(2026, 8, 20),
+        )
+    )
+    assert out.state == "ok"
+    assert driver.requested == [date(2026, 8, 19), date(2026, 8, 20)]
+    later = FakeDriver(xml=FIXTURE.read_bytes())
+    asyncio.run(
+        run_once(
+            later, inbox_dir=tmp_path / "inbox", bill_inbox_dir=tmp_path / "bills", raw_dir=tmp_path / "raw",
+            backfill_days=2, now=NOW, scrape_bills=False, through=date(2027, 1, 1),
+        )
+    )
+    assert later.requested == [date(2026, 9, 25), date(2026, 9, 26)]
+
+
 def test_empty_portal_range_is_error(tmp_path) -> None:
     driver = FakeDriver(xml=FIXTURE.read_bytes(), day_range=(LAST_DAY, FIRST_DAY))
     out = _run(tmp_path, driver)

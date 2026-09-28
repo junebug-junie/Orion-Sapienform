@@ -1,0 +1,95 @@
+"""IntrospectTools over a fake bus: correct transport, and failures are 'unknown', never empty."""
+import asyncio
+from datetime import datetime, timezone
+from uuid import uuid4
+
+import pytest
+from pydantic import ValidationError
+
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.codec import OrionCodec
+from orion.introspect.tools import RPC_TIMEOUT_SEC, IntrospectTools, IntrospectUnknownError
+from orion.schemas.introspect import IntrospectResultV1, IntrospectToolBindingV1
+from orion.schemas.reading import ReadingToolResultV1
+from orion.world_pulse_read.events import TOOL_CHANNEL, TOOL_RESULT_PREFIX
+
+BINDING = IntrospectToolBindingV1(
+    invocation_context="unified_chat", parent_run_id="run-1", parent_trace_id="trace-1", memory_allowed=True,
+)
+NOW = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+
+
+def _ok_payload():
+    result = IntrospectResultV1(ok=True, operation="reading_result", as_of=NOW, total_available=0)
+    return ReadingToolResultV1(ok=True, result=result.model_dump(mode="json")).model_dump(mode="json")
+
+
+class ReplyBus:
+    codec = OrionCodec()
+
+    def __init__(self, payload=None, *, raise_exc=None, wrong_correlation=False):
+        self.payload = payload
+        self.raise_exc = raise_exc
+        self.wrong_correlation = wrong_correlation
+        self.sent = []
+
+    async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec):
+        self.sent.append((channel, envelope, reply_channel, timeout_sec))
+        if self.raise_exc is not None:
+            raise self.raise_exc
+        reply = BaseEnvelope(
+            kind="reading.tool.result.v1",
+            correlation_id=uuid4() if self.wrong_correlation else envelope.correlation_id,
+            source=ServiceRef(name="orion-hub"),
+            payload=self.payload,
+        )
+        return {"data": self.codec.encode(reply)}
+
+
+def _invoke(bus, name="reading_results", args=None):
+    return asyncio.run(IntrospectTools(bus, BINDING).invoke(name, args or {}))
+
+
+def test_tool_specs_list_only_reading_results():
+    assert [s.name for s in IntrospectTools(ReplyBus(), BINDING).tool_specs()] == ["reading_results"]
+
+
+def test_reading_results_uses_reading_channel_with_normalized_url():
+    bus = ReplyBus(_ok_payload())
+    out = _invoke(bus, args={"url": "https://EXAMPLE.org/a#frag", "limit": 3})
+    assert out["ok"] is True and out["items"] == [] and out["total_available"] == 0
+    [(channel, envelope, reply_channel, timeout)] = bus.sent
+    assert channel == TOOL_CHANNEL
+    assert envelope.kind == "reading.tool.request.v1"
+    assert envelope.reply_to == reply_channel == f"{TOOL_RESULT_PREFIX}{envelope.correlation_id}"
+    assert envelope.source.name == "orion-harness-governor"
+    assert timeout == RPC_TIMEOUT_SEC
+    assert envelope.payload["operation"] == "reading_result"
+    assert envelope.payload["url"] == "https://example.org/a"
+    assert envelope.payload["limit"] == 3
+
+
+@pytest.mark.parametrize("bus", [
+    ReplyBus(raise_exc=TimeoutError("no reply")),
+    ReplyBus(ReadingToolResultV1(ok=False, error="reading_queue_unavailable").model_dump(mode="json")),
+    ReplyBus(_ok_payload(), wrong_correlation=True),
+    ReplyBus(ReadingToolResultV1(ok=True, result={"garbage": 1}).model_dump(mode="json")),
+    ReplyBus({"not": "a reading tool result"}),
+])
+def test_every_failure_is_unknown_never_empty(bus):
+    with pytest.raises(IntrospectUnknownError, match="answer unknown"):
+        _invoke(bus)
+
+
+def test_unknown_tool_is_rejected_without_sending():
+    bus = ReplyBus(_ok_payload())
+    with pytest.raises(ValueError, match="unknown introspect tool"):
+        _invoke(bus, name="memories")
+    assert bus.sent == []
+
+
+def test_model_cannot_supply_binding_fields():
+    bus = ReplyBus(_ok_payload())
+    with pytest.raises(ValidationError):
+        _invoke(bus, args={"memory_allowed": True})
+    assert bus.sent == []

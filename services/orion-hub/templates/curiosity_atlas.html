@@ -797,6 +797,7 @@ function timelineRow(it, run) {
           break;
         case "lease_released": what = `<span class="dim">released the ${esc(it.lane || "agent")} lane${it.reason ? ` (${esc(it.reason)})` : ""}</span>`; break;
         case "lease_expired": cls += " k-failed"; what = `<span class="flag">lane lease expired</span>`; break;
+        case "preempted": what = `<span class="dim">paused for urgent work, kept its place for the ${esc(it.lane || "agent")} lane</span>`; break;
         case "failed": cls += " k-failed"; what = `<span class="flag">died</span> at ${esc(it.node)}${it.error ? `: <span class="txt">${esc(it.error)}</span>` : ""}`; break;
         case "cancelled": cls += " k-failed"; what = `<span class="flag">cancelled</span>`; break;
         case "completed": what = `<span class="lbl">done</span>${run.attempts > 1 ? ` after ${run.attempts} attempts` : ""}`; break;

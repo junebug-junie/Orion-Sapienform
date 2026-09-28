@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from typing import Annotated, Any, TypedDict
 
 from orion.gpu_pool.config import PoolConfig
+from orion.schemas.gpu_pool import URGENT_PREEMPT
 
 FINAL = frozenset({"released"})
 
@@ -95,6 +96,12 @@ def transition(state: LeaseState, event: dict[str, Any], cfg: PoolConfig) -> dic
     nxt = _TABLE.get((status, kind))
     if nxt is None:
         raise InvalidTransition(f"{status} -/-> {kind}")
+    # U2: a hold paused for urgent work goes back in line in its original place (created_at kept);
+    # that is not a failed attempt. A caller that would not use a re-grant ends like any abort.
+    preempted = kind == "abort" and event.get("reason") == URGENT_PREEMPT \
+        and bool(state["request"].get("retryable"))
+    if preempted:
+        nxt = "queued"
 
     upd: dict[str, Any] = {"status": nxt, "reason": event.get("reason")}
     ttl = cfg.defaults.hold_lease_ttl_sec if state["request"].get("kind") == "hold" \
@@ -114,6 +121,9 @@ def transition(state: LeaseState, event: dict[str, Any], cfg: PoolConfig) -> dic
         upd.update(queued_since=now.isoformat(), not_before=None, role=None)
         if kind == "replay":
             upd.update(attempt=1, replays=int(state.get("replays") or 0) + 1)
+    elif preempted:
+        upd.update(queued_since=now.isoformat(), not_before=None, role=None, recall_by=None,
+                   expires_at=None)
 
     if nxt == "retry_wait" and kind in _FAILURES:
         attempt = int(state.get("attempt") or 1)

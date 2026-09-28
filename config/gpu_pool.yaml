@@ -23,13 +23,16 @@ defaults:
   hold_clawback_grace_sec: 600  # a recalled hold (durable run) finishes its current graph node within this, then is aborted + re-queued
   swap_min_residency_sec: 600   # after a seat unloads, its evicted residents stay this long (swap_requested reason=min_residency)
   actuate_ack_sec: 10           # the actuator must answer "accepted" within this, else swap_failed reason=actuator_unreachable
+  # Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md)
+  urgent_preempt_grace_sec: 5   # a hold paused for urgent work gets this long, then is aborted + re-queued in place
+  urgent_max_concurrent: 3      # active urgent leases at once; 0 = urgent behaves like background (rollback)
 
 # Host actuators the pool sends GpuActuateV1 to, by name (stage 4). circe's is
 # orion-gpu-lane-controller; it acts only on the `launch` blocks below that name it.
 actuators:
   circe: {host: circe}
 
-priorities: [interactive, system, background]   # highest first
+priorities: [urgent, interactive, system, background]   # highest first
 
 cards:
   gpu0: {vram_gb: 32, lendable: true}   # chat's card; others only while Juniper has it lent

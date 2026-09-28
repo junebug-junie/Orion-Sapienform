@@ -96,6 +96,58 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
   `stale_hold_generation:<n>`) name the hold only in `reason`, never in `lease_id` -- the client
   cancels a failed reply's `lease_id`.
 
+## Urgent priority
+
+Spec: `docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md` Part 1.
+Rules U1–U3 in the `schedule()` docstring.
+
+An `urgent` lease goes ahead of every queue. If no slot is free, the pool **pauses** one running
+background (then system) durable-run hold on a role urgent could use, most recently granted first:
+recall with reason `urgent_preempt`, then abort after the grace. The paused hold goes back in line
+in its **original place** (same `lease_id`, same `created_at`, no retry attempt spent), and
+durable-runs replays the interrupted node when it is granted again.
+
+- Never paused: chat/interactive, other urgent, operator, one-shot request and child leases.
+  Urgent reaches the `chat` role only while gpu0 is lent, and chat's own requests may still use an
+  urgent hold's gaps there.
+- An urgent owner taking back its own role pauses the hold borrowing it whatever that hold's
+  priority -- system as well as background, even when a background hold elsewhere could be paused
+  instead. Same pause (5 s grace, re-queued in place); it counts as the one pause.
+- A paused run's last call may still be running on the slot after the abort. That call is still
+  the pause: urgent waits for it instead of pausing a second run. While urgent is enabled,
+  durable-runs heartbeats a held run at least every `urgent_preempt_grace_sec`, so it sees the
+  recall before the abort and cancels the call about a second after it.
+- Urgent only pauses holds on roles its own class may use, and only urgent leases the cap has room
+  for are owed a pause or count as a waiting owner.
+- Urgent holds may stack past "one hold per role" (bounded by slots and the cap below).
+- `queued` and `recall` replies carry `reason`, so a caller can tell a pause from any other recall.
+
+Defaults (`config/gpu_pool.yaml`):
+
+- `urgent_preempt_grace_sec: 5` -- how long a paused hold gets before it is aborted and re-queued.
+- `urgent_max_concurrent: 3` -- urgent leases active at once; a 4th waits and pauses nothing.
+
+**Rollback:** set `urgent_max_concurrent: 0` and redeploy **both** `orion-gpu-pool` and
+`orion-durable-runs`. Each bakes its own copy of the yaml into its image; durable-runs reads
+`urgent_max_concurrent` to decide whether urgent runs skip its driver cap. Urgent then behaves
+exactly like background: no pauses, no stacking. The eval's urgent scenario checks this too.
+
+**Known limitation:** a finished run's hold kept for Hub outreach compose (Door-A) is an ordinary
+background hold, so urgent work can pause it. Durable-runs then ends that hold at its next
+outreach heartbeat (the pool may briefly re-grant it first), so an outreach compose still in progress loses its GPU
+hold.
+
+**Deploy order:** `orion-gpu-pool` and the circe `orion-gpu-lane-controller` change together. The
+lane-controller re-reads `config/gpu_pool.yaml` live from circe's checkout (mounted at `/repo`), but
+parses it with the `orion` code baked into its image, whose config models refuse unknown keys. Pull
+circe's checkout without rebuilding the lane-controller and every actuation fails
+`config_unloadable`. So pulling circe's checkout and rebuilding the lane-controller is one step.
+`orion-llamacpp-host` needs nothing. `orion-sql-writer` must be redeployed before Plan 3 sends
+urgent work: it validates pool events against the priority list.
+
+Nothing sends urgent work yet (Plan 3 adds the trigger). A live pause smoke is **UNVERIFIED**: it
+would pause a real background run, so it waits for Juniper's approval.
+
 ## Swap actuation (stage 4.3, OFF by default)
 
 `GPU_POOL_ACTUATE_ROLES` (comma list of swap seats) arms it; empty = every swap decision stays a
@@ -162,7 +214,7 @@ circe's llama.cpp workers start announcing after they are recreated with the new
 python scripts/check_gpu_pool_config.py
 python -m pytest orion/gpu_pool/tests -q
 cd services/orion-gpu-pool && python -m pytest tests -q        # + GPU_POOL_TEST_POSTGRES_URI for the Postgres tests
-python services/orion-gpu-pool/evals/run_pool_day_eval.py      # exits 1 on owner starvation, lost leases, spill-down
+python services/orion-gpu-pool/evals/run_pool_day_eval.py      # exits 1 on owner starvation, lost leases, spill-down, or an urgent pause/resume miss
 ```
 
 ## When lease RPCs are slow

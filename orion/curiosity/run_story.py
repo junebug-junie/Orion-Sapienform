@@ -148,6 +148,8 @@ EVENT_FAILED = "run.failed"
 EVENT_CANCELLED = "run.cancelled"
 EVENT_LEASE_RELEASED = "resource.lease_released"
 EVENT_LEASE_EXPIRED = "resource.lease_expired"
+# The GPU pool paused the run's hold for an urgent run; it kept its place in line (not a failure).
+EVENT_PREEMPTED = "run.preempted"
 EVENT_CHECKPOINT_RESUME_FAILED = "run.checkpoint_resume_failed"
 ANOMALY_EVENTS = (EVENT_CHECKPOINT_RESUME_FAILED,)
 WORKFLOW_REFLECT = "self_study.reflect"
@@ -562,6 +564,9 @@ def _lifecycle_from_events(slot: dict[str, Any]) -> _Lifecycle:
         elif kind == EVENT_LEASE_EXPIRED:
             out.items.append(TimelineItem(at=at, kind="lifecycle", data={
                 "node": "", "status": "lease_expired", "lane": _event_lane(detail), "next_node": "", "resumed_from": "", "error": ""}))
+        elif kind == EVENT_PREEMPTED:
+            out.items.append(TimelineItem(at=at, kind="lifecycle", data={
+                "node": "", "status": "preempted", "lane": _event_lane(detail), "next_node": "", "resumed_from": "", "error": ""}))
         elif kind in (EVENT_COMPLETED, EVENT_FAILED, EVENT_CANCELLED):
             status = {EVENT_COMPLETED: STATUS_COMPLETED, EVENT_FAILED: STATUS_FAILED, EVENT_CANCELLED: STATUS_CANCELLED}[kind]
             out.status, out.finished_at = status, at

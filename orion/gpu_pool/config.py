@@ -16,7 +16,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "gpu_pool.yaml"
-PRIORITIES = ("interactive", "system", "background")
+PRIORITIES = ("urgent", "interactive", "system", "background")
 # Pool-side swap preconditions (stage 4 spec, "Guards"). A guard named here must be one the
 # scheduler evaluates; the scheduler side lands with the actuation engine (stage 4.3).
 SwapGuard = Literal["thermal", "visual_baseline"]
@@ -48,6 +48,9 @@ class Defaults(BaseModel):
     hold_clawback_grace_sec: float = Field(600, ge=0)   # a recalled hold finishes its current node within this
     swap_min_residency_sec: float = Field(600, ge=0)    # after a seat unloads, evicted residents stay this long
     actuate_ack_sec: float = Field(10, gt=0)            # no "accepted" within this -> actuator_unreachable
+    # Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md).
+    urgent_preempt_grace_sec: float = Field(5, ge=0)    # a hold paused for urgent work gets this long, then is aborted + re-queued in place
+    urgent_max_concurrent: int = Field(3, ge=0)         # active urgent leases at once; 0 = urgent behaves like background (rollback)
 
 
 class HostSpec(BaseModel):
@@ -172,7 +175,7 @@ class ClassSpec(BaseModel):
 class RouteSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     work_class: str = Field(alias="class")
-    priority: Literal["interactive", "system", "background"] = "system"
+    priority: Literal["urgent", "interactive", "system", "background"] = "system"
 
 
 class PoolConfig(BaseModel):

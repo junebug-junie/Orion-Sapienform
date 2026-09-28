@@ -131,7 +131,7 @@ ADMISSION_RUN_SQL = f"SELECT {_ADMISSION_COLS} FROM durable_admission_runs WHERE
 RENDERED_EVENTS = (
     "run.accepted", "run.waiting_resource", "run.admitted", "run.lane_assigned", "run.started",
     "run.running", "run.resumed", "run.retrying", "run.completed", "run.failed", "run.cancelled",
-    "resource.lease_released", "resource.lease_expired",
+    "resource.lease_released", "resource.lease_expired", "run.preempted",
 )
 COUNTED_EVENTS = ("run.checkpoint_resume_failed",)
 EVENTS_SQL = (

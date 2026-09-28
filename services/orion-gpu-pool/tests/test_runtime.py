@@ -473,6 +473,42 @@ def test_a_briefly_down_role_keeps_its_context_so_big_prompts_wait_for_it():
     run(go())
 
 
+def test_urgent_preempted_hold_requeues_in_place_and_says_why():
+    """U2: a background durable-run hold paused for urgent work goes back in line in its original
+    place (same created_at), without spending an attempt, and its heartbeat says why it is queued."""
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        bg = await rt.acquire(acq_r("agent", kind="hold", priority="background"))
+        assert bg.status == "granted" and bg.grant.role == "agent"
+        before = await rt.store.lease(bg.lease_id)
+        u = await rt.acquire(acq_r("agent", kind="hold", priority="urgent"))
+        assert u.status == "queued"
+        row = await rt.store.lease(bg.lease_id)
+        assert row["status"] == "recalling" and row["reason"] == "urgent_preempt"
+        assert rt._view(row).reason == "urgent_preempt"            # the scheduler's dedupe sees it
+        for reply in (await rt.heartbeat(bg.lease_id), await rt.status(bg.lease_id)):
+            # The holder can tell an urgent pause (wait for the in-place re-queue) from other recalls.
+            assert reply.status == "recall" and reply.reason == "urgent_preempt" and reply.recall_by
+        clock.advance(CFG.defaults.urgent_preempt_grace_sec)
+        await rt.tick()
+        row = await rt.store.lease(bg.lease_id)
+        assert row["status"] == "queued" and row["reason"] == "urgent_preempt"
+        assert row["attempt"] == before["attempt"] and row["created_at"] == before["created_at"]
+        assert row["role"] is None and row["not_before"] is None
+        [ab] = [e for e in rt.bus.events("aborted") if e["lease_id"] == bg.lease_id]
+        assert ab["reason"] == "urgent_preempt" and ab["attempt"] == before["attempt"]
+        assert not [e for e in rt.bus.events("retried") if e["lease_id"] == bg.lease_id]
+        await later(rt, clock, 1)                                   # the next pass seats the urgent hold
+        assert (await rt.store.lease(u.lease_id))["status"] == "granted"
+        assert (await rt.store.lease(bg.lease_id))["status"] == "queued"
+        hb = await rt.heartbeat(bg.lease_id)
+        assert hb.status == "queued" and hb.reason == "urgent_preempt" and hb.lease_id == bg.lease_id
+        st = await rt.status(bg.lease_id)
+        assert st.status == "queued" and st.reason == "urgent_preempt"
+    run(go())
+
+
 def test_a_slow_lock_holder_is_named_and_counted(caplog):
     """Every verb and the tick share one lock; a slow holder must show up as evidence (the log
     line names the op and its phases, /v1/lock-stats counts it) instead of as unexplained RPC lag."""

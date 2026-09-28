@@ -27,16 +27,37 @@ Stage 4.3 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-ac
      unload, cooldown after a failed load, or a failing guard (thermal, visual_baseline)
   S2 a card in "fault" grants nothing on any of its roles; a card mid-swap grants nothing on the
      seat or the roles it evicts
+
+Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md):
+  U1 a waiting urgent lease that got no slot pauses one granted background (then system)
+     durable-run hold on a role it could use: recall urgent_preempt with urgent_preempt_grace_sec;
+     most recently granted first; never interactive, urgent, operator or request leases, and never
+     the owner of a role the urgent lease only borrows (re-queued, the owner would win it back).
+     A pause under way (recalling urgent_preempt, or re-queued urgent_preempt with its last call
+     still on the slot) on a slot the lease could take serves it first. Only urgent leases the
+     cap has room for are owed a pause or count as waiting owners.
+     An urgent owner reclaiming its own role pauses that role's pausable borrowing hold whatever
+     its priority (system as well as background, even if a background hold elsewhere could be
+     paused instead): that is its pause (urgent_preempt, short grace), not owner_waiting with the
+     hold grace
+  U2 the paused hold's abort re-queues it in place without spending an attempt (lease_graph)
+  U3 urgent holds are exempt from H1 (bounded by slots and urgent_max_concurrent) and skip a
+     swap seat's after_wait_sec when no pause serves them (guards still apply). On a role it
+     borrows, an urgent hold's gaps stay open to that role's owners (rule 5)
+  urgent_max_concurrent caps active urgent leases; 0 is the rollback: urgent is background
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Iterable, Union
 
 from orion.gpu_pool.config import PoolConfig
+from orion.schemas.gpu_pool import URGENT_PREEMPT as PREEMPT
 
 ACTIVE = ("granted", "recalling")
+URGENT = "urgent"
+PREEMPTIBLE = ("background", "system")
 
 
 @dataclass(frozen=True)
@@ -86,6 +107,7 @@ class LeaseView:
     retryable: bool = False   # someone will use a re-grant; otherwise "backlog" behaves like "wait"
     kind: str = "request"     # request | hold
     hold_lease_id: str | None = None   # set on a child: the hold whose slot it runs in
+    reason: str | None = None          # the row's last transition reason (the recall reason while recalling)
 
 
 @dataclass(frozen=True)
@@ -216,17 +238,21 @@ class _Ctx:
 
     def free_for(self, lease: LeaseView, role: str) -> int:
         """H1-H3: free slots on ``role`` as ``lease`` sees them."""
-        if lease.kind == "hold" and self.holds.get(role):
-            return 0  # at most one hold per role
+        if lease.kind == "hold" and self.holds.get(role) and lease.priority != URGENT:
+            return 0  # at most one hold per role (U3: urgent holds stack, bounded by slots)
         live = self.roles.get(role)
         n = (live.slots if live else 0) - self.used.get(role, 0)
         rank = self.cfg.priority_rank
+        owns = self.cfg.owns
         for hold in self.idle_holds(role):
             if lease.hold_lease_id == hold.lease_id:
                 continue  # a child runs in its own hold's slot
-            if lease.kind != "hold" and lease.hold_lease_id is None \
-                    and rank(lease.priority) < rank(hold.priority):
-                continue  # strictly higher priority may use the gap between the run's calls
+            if lease.kind != "hold" and lease.hold_lease_id is None:
+                if rank(lease.priority) < rank(hold.priority):
+                    continue  # strictly higher priority may use the gap between the run's calls
+                if hold.priority == URGENT and owns(lease.work_class, role) \
+                        and not owns(hold.work_class, role):
+                    continue  # rule 5: an urgent borrower never outranks the role's owners
             n -= 1
         return n
 
@@ -307,6 +333,9 @@ def schedule(
     ``None`` means the caller evaluates no guards at all (pure tests, the replay eval)."""
     d = cfg.defaults
     out: list[Decision] = []
+    if d.urgent_max_concurrent <= 0:
+        # Rollback switch: urgent behaves exactly like background (no pause, no stacking).
+        leases = [replace(l, priority="background") if l.priority == URGENT else l for l in leases]
 
     active_now = [l for l in leases if l.status in ACTIVE and l.role
                   and not (l.expires_at is not None and l.expires_at <= now)]
@@ -364,7 +393,7 @@ def schedule(
             else:
                 backlogged.append(lease)
         elif lease.status == "recalling" and lease.recall_by is not None and lease.recall_by <= now:
-            out.append(Abort(lease.lease_id))
+            out.append(Abort(lease.lease_id, PREEMPT) if lease.reason == PREEMPT else Abort(lease.lease_id))
         elif lease.status in ACTIVE and lease.expires_at is not None and lease.expires_at <= now:
             out.append(Expire(lease.lease_id))
 
@@ -404,11 +433,17 @@ def schedule(
     order = _order(cfg, queued)
     granted: set[str] = set()
     granted_role: dict[str, str] = {}
+    urgent_n = [sum(1 for l in active_now if l.hold_lease_id is None and l.priority == URGENT)]
+
+    def capped(lease: LeaseView) -> bool:
+        return lease.priority == URGENT and urgent_n[0] >= d.urgent_max_concurrent
 
     def grant(lease: LeaseView, role: str) -> None:
         out.append(Grant(lease.lease_id, role))
         granted.add(lease.lease_id)
         granted_role[lease.lease_id] = role
+        if lease.priority == URGENT and lease.hold_lease_id is None:
+            urgent_n[0] += 1
         if lease.kind == "hold":
             holds.setdefault(role, []).append(lease)
             hold_by_id[lease.lease_id] = lease
@@ -433,17 +468,29 @@ def schedule(
     owner_active = {l.role for l in active_now if l.hold_lease_id is None and cfg.owns(l.work_class, l.role)}
 
     for lease in order:
+        if capped(lease):
+            continue
         for role in cfg.classes[lease.work_class].roles:
             if cfg.owns(lease.work_class, role) and ctx.placeable(lease, role) and ctx.free_for(lease, role) > 0:
                 grant(lease, role)
                 break
 
+    def admitted_urgent() -> list[LeaseView]:
+        """The waiting urgent leases the cap still has room for, in queue order. Only these are owed
+        a slot: one past the cap is not a waiting owner and pauses nothing."""
+        room = max(0, d.urgent_max_concurrent - urgent_n[0])
+        return [q for q in order if q.priority == URGENT and q.lease_id not in granted
+                and q.hold_lease_id is None][:room]
+
+    admitted = {q.lease_id for q in admitted_urgent()}
+
     def owners_waiting(role: str) -> list[LeaseView]:
         return [q for q in order if q.lease_id not in granted
+                and (q.priority != URGENT or q.lease_id in admitted)
                 and cfg.owns(q.work_class, role) and ctx.placeable(q, role)]
 
     for lease in order:
-        if lease.lease_id in granted:
+        if lease.lease_id in granted or capped(lease):
             continue
         for role in cfg.classes[lease.work_class].roles:
             if not ctx.placeable(lease, role) or ctx.free_for(lease, role) <= 0:
@@ -465,8 +512,61 @@ def schedule(
     def recall(lease: LeaseView, reason: str) -> None:
         if lease.lease_id not in recalled:
             recalled.add(lease.lease_id)
-            grace = d.hold_clawback_grace_sec if lease.kind == "hold" else d.clawback_grace_sec
+            if reason == PREEMPT:
+                grace = d.urgent_preempt_grace_sec
+            else:
+                grace = d.hold_clawback_grace_sec if lease.kind == "hold" else d.clawback_grace_sec
             out.append(Recall(lease.lease_id, now + timedelta(seconds=grace), reason))
+
+    # U1 bookkeeping, before any recall: each waiting urgent lease (up to the cap) is owed one
+    # pause. A pause already under way (recalling urgent_preempt) on a slot it could take pays
+    # that debt first, so the short grace is not re-spent every tick (including the tick it runs
+    # out and the hold is aborted). Greedy in queue order: <= urgent_max_concurrent leases.
+    # Recounted after this tick's grants, which took cap room.
+    waiting_urgent = admitted_urgent()
+    admitted = {q.lease_id for q in waiting_urgent}
+    pausing = [l for l in leases if l.status == "recalling" and l.reason == PREEMPT and l.role
+               and l.hold_lease_id is None]
+    # Past the abort, a paused hold's call still in flight keeps the slot until it ends (durable-runs
+    # beats within the grace, then cancels it ~1 s after the abort). That call is still the pause: without this the urgent lease, not yet
+    # granted, would pause another hold every tick until it did. Matched on the call's role.
+    requeued = {l.lease_id: l for l in leases if l.status == "queued" and l.reason == PREEMPT
+                and l.kind == "hold" and l.hold_lease_id is None}
+    pausing += [replace(requeued[c.hold_lease_id], role=c.role) for c in active_now
+                if c.hold_lease_id in requeued and c.hold_lease_id not in hold_by_id]
+
+    def preemptible(l: LeaseView) -> bool:
+        return l.kind == "hold" and not l.operator and l.priority in PREEMPTIBLE \
+            and not (l.expires_at is not None and l.expires_at <= now)
+
+    def could_take(u: LeaseView, v: LeaseView) -> bool:
+        """Would ``u`` get ``v``'s slot once ``v`` is aborted and re-queued in place? Only on a role
+        ``u``'s class may use, and not when ``u`` only borrows a role ``v`` owns: owners are granted
+        first, so ``v`` would win it back and be paused again every grace. (A non-owner hold on a
+        role with owner demand is recalled by the owner rules below, so U1 never sees it.)"""
+        return v.role in cfg.classes[u.work_class].roles and ctx.placeable(u, v.role) \
+            and (cfg.owns(u.work_class, v.role) or not cfg.owns(v.work_class, v.role))
+
+    owed: list[LeaseView] = []
+    for u in waiting_urgent:
+        serving = next((p for p in pausing if could_take(u, p)), None)
+        if serving is not None:
+            pausing.remove(serving)
+        else:
+            owed.append(u)
+
+    def reclaim(lease: LeaseView) -> None:
+        """Owner demand takes a borrower back. When a waiting urgent owner is owed a pause and the
+        borrower is pausable, this IS that pause: the short grace, re-queued in place (U2)."""
+        if lease.lease_id in recalled:
+            return
+        u = next((u for u in owed if cfg.owns(u.work_class, lease.role) and could_take(u, lease)), None) \
+            if preemptible(lease) else None
+        if u is None:
+            recall(lease, "owner_waiting")
+        else:
+            owed.remove(u)
+            recall(lease, PREEMPT)
 
     for role in cfg.roles:
         starving = owners_waiting(role)
@@ -484,7 +584,7 @@ def schedule(
             key=lambda l: (l.granted_at or l.created_at), reverse=True,
         )
         for lease in borrowers[:needed]:
-            recall(lease, "owner_waiting")
+            reclaim(lease)
 
     # A hold borrowing someone else's role gives it back once the owner has ANY demand there --
     # also when that demand is being served through the hold's gaps right now (H3), which would
@@ -501,7 +601,7 @@ def schedule(
             owner_demand.add(role)
     for lease in active:
         if lease.kind == "hold" and lease.role in owner_demand and not cfg.owns(lease.work_class, lease.role):
-            recall(lease, "owner_waiting")
+            reclaim(lease)
 
     for lease in active:
         if not cfg.owns(lease.work_class, lease.role):
@@ -515,6 +615,18 @@ def schedule(
         if lease.kind == "hold" and not lease.operator and spec.swap is None and spec.max_hold_sec \
                 and lease.granted_at and (now - lease.granted_at).total_seconds() >= spec.max_hold_sec:
             recall(lease, "max_hold")
+
+    # U1: each urgent lease still owed a pause pauses one preemptible hold it could replace:
+    # background before system, most recently granted first.
+    victims = sorted((l for l in active if preemptible(l)),
+                     key=lambda l: (-rank(l.priority), -(l.granted_at or l.created_at).timestamp(), l.lease_id))
+    unserved_urgent: set[str] = set()
+    for u in owed:
+        victim = next((v for v in victims if v.lease_id not in recalled and could_take(u, v)), None)
+        if victim is None:
+            unserved_urgent.add(u.lease_id)
+        else:
+            recall(victim, PREEMPT)
 
     # --- 5. nothing can serve it: wait / backlog / fail ------------------------------
     def reclaimable(role: str) -> bool:
@@ -576,8 +688,10 @@ def schedule(
             if wanting and all(ctx.occupancy(r) == 0 for r in evicted):
                 out.append(SwapLoad(seat, "operator"))
             continue
+        # U3: urgent work no pause can serve justifies a load at once; guards below still apply.
         waited = [q for q in waiting if seat in cfg.classes[q.work_class].roles
-                  and (now - (q.queued_since or q.created_at)).total_seconds() >= cfg.swap_after_wait_sec(seat)]
+                  and (q.lease_id in unserved_urgent
+                       or (now - (q.queued_since or q.created_at)).total_seconds() >= cfg.swap_after_wait_sec(seat))]
         fit = {q.lease_id: ctx.fits_for_load(q, seat, seen_ctx or {}) for q in waited}
         wanting = [q for q in waited if fit[q.lease_id]]
         unknown = [q for q in waited if fit[q.lease_id] is None]

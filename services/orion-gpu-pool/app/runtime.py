@@ -1023,6 +1023,7 @@ class PoolRuntime:
             granted_at=row.get("granted_at"), expires_at=row.get("expires_at"),
             operator=bool(row.get("operator")), retryable=bool(row.get("retryable")),
             kind=row.get("kind") or "request", hold_lease_id=row.get("hold_lease_id"),
+            reason=row.get("reason"),
         )
 
     # --- replies ------------------------------------------------------------------------
@@ -1043,10 +1044,13 @@ class PoolRuntime:
             return GpuLeaseReplyV1(status="granted", lease_id=row["lease_id"],
                                    grant=self.grant_for(row["role"], row["lease_id"], row["generation"]))
         if status == "recalling":
+            # reason = why it is recalled; a durable run waits out an urgent_preempt (re-queued in place).
             return GpuLeaseReplyV1(status="recall", lease_id=row["lease_id"], recall_by=row["recall_by"],
+                                   reason=row.get("reason"),
                                    grant=self.grant_for(row["role"], row["lease_id"], row["generation"]))
         if status in ("queued", "retry_wait"):
-            return GpuLeaseReplyV1(status="queued", lease_id=row["lease_id"], position=await self._position(row))
+            return GpuLeaseReplyV1(status="queued", lease_id=row["lease_id"], position=await self._position(row),
+                                   reason=row.get("reason"))
         if status == "backlogged":
             return GpuLeaseReplyV1(status="backlogged", lease_id=row["lease_id"], reason=row.get("reason"))
         if status == "released":

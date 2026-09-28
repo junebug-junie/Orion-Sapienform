@@ -447,6 +447,36 @@ def test_after_an_urgent_recall_the_heartbeat_polls_fast_so_the_requeue_frees_th
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("cap, expected", [(3, 0.05), (0, 0.2)])
+def test_a_held_run_beats_within_the_urgent_grace_so_a_pause_is_seen_before_the_abort(cap, expected):
+    """A heartbeat longer than the grace would usually first see the pause after the abort, leaving
+    the paused call on the slot for up to a whole heartbeat. Rollback (cap 0) keeps the heartbeat."""
+    async def scenario():
+        holds = Holds([_reply("granted")])
+        holds.cfg = POOL_CFG.model_copy(update={"defaults": POOL_CFG.defaults.model_copy(
+            update={"urgent_preempt_grace_sec": 0.05, "urgent_max_concurrent": cap})})
+        rt = bare_runtime(holds)
+        rt.settings.lease_heartbeat_sec = 0.2
+        loop = asyncio.get_running_loop()
+        beats = []
+        real_beat = rt._beat
+
+        async def timed(lease):
+            beats.append(loop.time())
+            return await real_beat(lease)
+
+        rt._beat = timed
+
+        async def node(state):
+            await asyncio.sleep(0.3)
+            return "done"
+
+        assert await asyncio.wait_for(rt.execute(_held_state("curiosity.investigate"), node), 5) == "done"
+        gap = beats[1] - beats[0]                  # beats[0] is the pre-step check
+        assert abs(gap - expected) < 0.04, (gap, expected)
+    asyncio.run(scenario())
+
+
 def test_an_other_recall_keeps_the_normal_heartbeat(monkeypatch):
     import app.admission_runtime as runtime_module
     monkeypatch.setattr(runtime_module, "PREEMPT_POLL_SEC", 0.001)

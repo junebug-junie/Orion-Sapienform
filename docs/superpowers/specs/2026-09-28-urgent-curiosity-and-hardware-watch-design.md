@@ -212,8 +212,8 @@ Plan: `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-2-pool-urgent.md`
   needs nothing. `orion-sql-writer` must be redeployed before Plan 3 sends urgent work (it validates
   `GpuPoolEventV1.priority` against the priority list).
 - **Known limitation:** a finished run's hold kept for Hub outreach compose (Door-A) is an ordinary
-  background hold, so urgent work can pause it. Durable-runs then ends that hold (a re-queued hold
-  is never re-granted to a finished run), so an outreach compose still in progress loses its GPU
+  background hold, so urgent work can pause it. Durable-runs then ends that hold at its next
+  outreach heartbeat (the pool may briefly re-grant it first), so an outreach compose still in progress loses its GPU
   hold. No code change in Plan 2.
 - **Live status:** unit tests + the pool eval's urgent scenario cover the pause/resume path. A live
   preemption smoke is **UNVERIFIED**: it pauses a real background run, so it waits for Juniper's

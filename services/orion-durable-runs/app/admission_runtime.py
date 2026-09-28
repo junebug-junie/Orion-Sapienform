@@ -409,7 +409,12 @@ class AdmissionRuntime:
             # control row and asks the pool whether the hold is still ours at this generation.
             # Paused for urgent work: this run's in-flight call keeps the slot the urgent run waits for
             # until the harness is cancelled, so beat every PREEMPT_POLL_SEC to see the re-queue soon.
-            wait = self.settings.lease_heartbeat_sec
+            # While urgent is enabled, beat within the grace so the recall is seen before the abort.
+            steady = self.settings.lease_heartbeat_sec
+            defaults = self.holds.cfg.defaults
+            if int(defaults.urgent_max_concurrent) > 0:
+                steady = min(steady, float(defaults.urgent_preempt_grace_sec))
+            wait = steady
             async with asyncio.timeout(timeout):
                 while True:
                     done, _ = await asyncio.wait({work}, timeout=wait)
@@ -420,9 +425,9 @@ class AdmissionRuntime:
                         raise RuntimeError(f"run_control:{row['control']}")
                     beat = await self._beat(lease)
                     if beat is not None:
-                        wait = min(PREEMPT_POLL_SEC, self.settings.lease_heartbeat_sec) \
+                        wait = min(PREEMPT_POLL_SEC, steady) \
                             if beat.status == "recall" and beat.reason == URGENT_PREEMPT \
-                            else self.settings.lease_heartbeat_sec
+                            else steady
         except TimeoutError as exc:
             if deadline and self.now() >= datetime.fromisoformat(deadline):
                 raise WorkflowDeadline("workflow_deadline") from exc

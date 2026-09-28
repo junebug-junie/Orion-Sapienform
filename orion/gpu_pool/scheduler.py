@@ -528,7 +528,7 @@ def schedule(
     pausing = [l for l in leases if l.status == "recalling" and l.reason == PREEMPT and l.role
                and l.hold_lease_id is None]
     # Past the abort, a paused hold's call still in flight keeps the slot until it ends (durable-runs
-    # cancels it within ~1 s). That call is still the pause: without this the urgent lease, not yet
+    # beats within the grace, then cancels it ~1 s after the abort). That call is still the pause: without this the urgent lease, not yet
     # granted, would pause another hold every tick until it did. Matched on the call's role.
     requeued = {l.lease_id: l for l in leases if l.status == "queued" and l.reason == PREEMPT
                 and l.kind == "hold" and l.hold_lease_id is None}

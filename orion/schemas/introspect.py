@@ -89,6 +89,16 @@ class IntrospectResultV1(BaseModel):
         return self
 
 
+def normalize_query(value: Any) -> Any:
+    """Strip before length checks; a blank query is an error, not "recent"."""
+    if not isinstance(value, str):
+        return value
+    value = value.strip()
+    if not value:
+        raise ValueError("query must not be blank")
+    return value
+
+
 class ReadingResultArguments(BaseModel):
     """Model-supplied arguments for the ``reading_results`` tool."""
 
@@ -99,15 +109,10 @@ class ReadingResultArguments(BaseModel):
     limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_ITEMS)
     since: datetime | None = None
 
-    @field_validator("query")
+    @field_validator("query", mode="before")
     @classmethod
-    def _strip_query(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        value = value.strip()
-        if not value:
-            raise ValueError("query must not be blank")
-        return value
+    def _strip_query(cls, value: Any) -> Any:
+        return normalize_query(value)
 
     @model_validator(mode="after")
     def _selectors(self):

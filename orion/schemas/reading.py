@@ -5,9 +5,9 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_serializer, model_validator
 
-from orion.schemas.introspect import MAX_ITEMS, QUERY_CAP
+from orion.schemas.introspect import MAX_ITEMS, QUERY_CAP, normalize_query
 
 ReadingContext = Literal["unified_chat", "curiosity", "world_pulse", "operator"]
 ReadingStatus = Literal[
@@ -86,6 +86,11 @@ class ReadingToolRequestV1(BaseModel):
     query: str | None = Field(default=None, min_length=1, max_length=QUERY_CAP)
     limit: int | None = Field(default=None, ge=1, le=MAX_ITEMS)
     since: datetime | None = None
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def _strip_query(cls, value: Any) -> Any:
+        return normalize_query(value)
 
     @model_validator(mode="after")
     def operation_arguments(self):

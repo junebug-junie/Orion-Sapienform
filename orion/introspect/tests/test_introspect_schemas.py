@@ -10,6 +10,7 @@ from orion.schemas.introspect import (
     DEFAULT_TEXT_CAP,
     MAX_ITEMS,
     SHORT_FIELD_CAP,
+    QUERY_CAP,
     URL_CAP,
     IntrospectItemV1,
     IntrospectResultV1,
@@ -193,3 +194,12 @@ def test_null_query_never_reaches_the_wire():
     assert "query" not in recent
     status = ReadingToolRequestV1(operation="reading_status", url="https://example.org/a")
     assert set(status.model_dump(mode="json")) == {"operation", "request", "request_id", "url"}
+
+
+def test_query_length_is_checked_after_stripping_on_both_contracts():
+    padded = " " + "x" * QUERY_CAP + " "
+    assert ReadingResultArguments(query=padded).query == "x" * QUERY_CAP
+    wire = ReadingToolRequestV1(operation="reading_result", query="  gpus  ")
+    assert wire.query == "gpus"
+    with pytest.raises(ValidationError):
+        ReadingToolRequestV1(operation="reading_result", query="   ")

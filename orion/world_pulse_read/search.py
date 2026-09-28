@@ -129,7 +129,8 @@ async def _collection(client: httpx.AsyncClient, cfg: ReadingSearchConfig) -> _C
         space = str((body.get("metadata") or {}).get("hnsw:space") or "l2")
         return _Collection(id=str(body["id"]), space=space)
     # Chroma 0.4.24 answers a missing collection with HTTP 500 + ValueError text.
-    if isinstance(body, dict) and "does not exist" in str(body.get("error") or ""):
+    error = str(body.get("error") or "") if isinstance(body, dict) else ""
+    if status == 500 and f"Collection {cfg.collection} does not exist" in error:
         return None
     raise SearchUnavailableError(f"chroma collection lookup failed: HTTP {status}")
 
@@ -148,8 +149,10 @@ async def nearest(
     if status != 200:
         raise SearchUnavailableError(f"chroma query failed: HTTP {status}")
     try:
-        pairs = zip(body["ids"][0], body["distances"][0])
-        scored = [(str(i), similarity(float(d), coll.space)) for i, d in pairs]
+        ids, distances = body["ids"][0], body["distances"][0]
+        if len(ids) != len(distances) or any(not isinstance(i, str) for i in ids):
+            raise ValueError("ids/distances mismatch")
+        scored = [(i, similarity(float(d), coll.space)) for i, d in zip(ids, distances)]
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise SearchUnavailableError("malformed chroma query reply") from exc
     return sorted(scored, key=lambda s: -s[1])
@@ -194,12 +197,11 @@ async def _stored_hashes(client: httpx.AsyncClient, cfg: ReadingSearchConfig, id
     status, body = await _json(
         client, "POST", f"{_base(cfg)}/{coll.id}/get", json={"ids": ids, "include": ["metadatas"]},
     )
-    if status != 200 or not isinstance(body, dict):
+    ids = body.get("ids") if isinstance(body, dict) else None
+    metas = body.get("metadatas") if isinstance(body, dict) else None
+    if status != 200 or not isinstance(ids, list) or not isinstance(metas, list) or len(ids) != len(metas):
         raise SearchUnavailableError(f"chroma get failed: HTTP {status}")
-    return {
-        str(i): str((m or {}).get("content_hash") or "")
-        for i, m in zip(body.get("ids") or [], body.get("metadatas") or [])
-    }
+    return {str(i): str((m or {}).get("content_hash") or "") for i, m in zip(ids, metas)}
 
 
 async def index_missing_readings(

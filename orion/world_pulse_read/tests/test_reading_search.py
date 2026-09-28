@@ -212,3 +212,43 @@ def test_index_embed_failure_is_unknown():
 def test_config_is_off_without_urls():
     assert CFG.enabled
     assert not ReadingSearchConfig(chroma_url="", embed_url="x", collection="c", min_similarity=0.6).enabled
+
+
+def _raw_chroma(routes):
+    """Embedder always answers; Chroma answers from {path: (status, json)}."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "embed.test":
+            return httpx.Response(200, json={"doc_id": "q", "embedding": [1.0, 0.0]})
+        status, body = routes.get(request.url.path, (404, {}))
+        return httpx.Response(status, json=body)
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+_COLL = ("/api/v1/collections/orion_reading_results", (200, {"id": "cid", "metadata": None}))
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        {"ids": [["a", "b"]], "distances": [[0.1]]},
+        {"ids": [[None]], "distances": [[0.1]]},
+        {"ids": [], "distances": []},
+    ],
+)
+def test_malformed_query_reply_is_unknown_not_empty(reply):
+    client = _raw_chroma(dict([_COLL, ("/api/v1/collections/cid/query", (200, reply))]))
+    with pytest.raises(SearchUnavailableError):
+        _search(FakeConn([]), client)
+
+
+def test_malformed_get_reply_is_unknown_not_everything_missing():
+    client = _raw_chroma(dict([_COLL, ("/api/v1/collections/cid/get", (200, {"ids": ["a"]}))]))
+    with pytest.raises(SearchUnavailableError):
+        _index([_row("a", "https://x.org/a", "gpu")], client)
+
+
+def test_unrelated_does_not_exist_error_is_unknown_not_missing_collection():
+    body = {"error": "ValueError('Tenant default does not exist.')"}
+    client = _raw_chroma({"/api/v1/collections/orion_reading_results": (500, body)})
+    with pytest.raises(SearchUnavailableError):
+        _index([_row("a", "https://x.org/a", "gpu")], client)

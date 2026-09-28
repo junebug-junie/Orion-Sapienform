@@ -12,12 +12,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-MAX_ITEMS = 10
+# MAX_ITEMS full-size items must fit under ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS
+# (12000) or the harness truncates the JSON mid-item.
+MAX_ITEMS = 5
 DEFAULT_LIMIT = 5
-# 10 items must fit under ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS (12000) or the
-# harness truncates the JSON mid-item.
 DEFAULT_TEXT_CAP = 900
 SHORT_FIELD_CAP = 200
+URL_CAP = 500
 
 IntrospectOperation = Literal["reading_result"]
 

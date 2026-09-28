@@ -10,6 +10,7 @@ from orion.schemas.introspect import (
     DEFAULT_TEXT_CAP,
     MAX_ITEMS,
     SHORT_FIELD_CAP,
+    URL_CAP,
     IntrospectItemV1,
     IntrospectResultV1,
     IntrospectToolBindingV1,
@@ -88,7 +89,7 @@ def test_worst_case_result_fits_the_mcp_tool_result_cap():
     item = _item(
         text="x" * DEFAULT_TEXT_CAP, truncated=True,
         extra={
-            "url": "https://example.org/" + "p" * 180,
+            "url": "https://example.org/" + "p" * (URL_CAP - 20),
             "title": "t" * SHORT_FIELD_CAP,
             "why_now": "w" * SHORT_FIELD_CAP,
             "reading_status": "landing_pending",
@@ -125,7 +126,7 @@ def test_reading_tool_request_accepts_reading_result_selectors():
     ReadingToolRequestV1(operation="reading_result")
     ReadingToolRequestV1(operation="reading_result", url="https://example.org/a", limit=3)
     ReadingToolRequestV1(operation="reading_result", request_id=uuid4())
-    ReadingToolRequestV1(operation="reading_result", since=NOW, limit=10)
+    ReadingToolRequestV1(operation="reading_result", since=NOW, limit=MAX_ITEMS)
 
 
 @pytest.mark.parametrize("fields", [

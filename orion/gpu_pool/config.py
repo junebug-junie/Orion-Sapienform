@@ -186,10 +186,13 @@ class PoolConfig(BaseModel):
     roles: dict[str, RoleSpec]
     classes: dict[str, ClassSpec]
     routes: dict[str, RouteSpec] = Field(default_factory=dict)
+    # Durable-run holds on non-LLM roles (diffusion). Read by durable-runs' hold placement
+    # only; the gateway serves ``routes`` and never lists these as models.
+    hold_routes: dict[str, RouteSpec] = Field(default_factory=dict)
     digest: str = ""
     source_text: str = Field("", exclude=True, repr=False)
 
-    @field_validator("routes", mode="before")
+    @field_validator("routes", "hold_routes", mode="before")
     @classmethod
     def _route_shorthand(cls, value: Any) -> Any:
         if not isinstance(value, dict):
@@ -249,6 +252,11 @@ class PoolConfig(BaseModel):
         for name, route in self.routes.items():
             if route.work_class not in self.classes:
                 errors.append(f"route {name}: unknown class {route.work_class}")
+        for name, route in self.hold_routes.items():
+            if route.work_class not in self.classes:
+                errors.append(f"hold route {name}: unknown class {route.work_class}")
+            if name in self.routes:
+                errors.append(f"hold route {name}: also a gateway route")
         ports: dict[int, str] = {}
         for name, role in self.roles.items():
             if role.port in ports:

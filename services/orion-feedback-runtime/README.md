@@ -79,6 +79,24 @@ exist -- it can only add work, never remove it. Shared implementation:
 Before this, the sweep was an unbounded anti-join UPDATE every 15 min and was one of the three
 top I/O statements on athena's Postgres while never finding anything.
 
+## Durable render settlement (2026-09-28)
+
+A durable `render_scene` result is written as `settlement.state="pending"` and settled in place later
+by execution-dispatch (see its README). A dispatch frame holding any pending render is **parked**, not
+scored: its marker stays set, it is left out of the oldest-first lookup for up to 30s at a time, and the
+FIFO keeps draining the frames behind it. It is re-read each time the recheck comes due and scored once
+nothing in it is pending, or once it is `FEEDBACK_VISUAL_SETTLE_MAX_SEC` (900; 0 = off) old -- then the
+visual is scored as-is (`unknown`, logged `feedback_visual_settlement_bound_expired`). Parking is in
+memory; a restart simply re-parks. Evidence prefers the newest *settled* row per dispatch.
+
+A settled render's `latency_ms` is GPU seconds only; the run may have queued for the diffusion lane
+first. The scoring window therefore reaches the run's own `settlement.finished_at` (measured from the
+dispatch), so a render that ended minutes after dispatch clamps at `ORION_ACTION_SETTLE_MAX_SEC` and is
+refused, instead of being scored from a field sample taken before its image existed.
+
+A render without an image (a failed graph, a busy GPU, a timed-out run) maps to feedback kind `unknown`,
+never `failed`, and is skipped by the posterior update as `visual_non_observation:*`.
+
 ## Run
 
 ```bash

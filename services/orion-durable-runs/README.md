@@ -54,6 +54,88 @@ workflow. The last field comes from the existing persisted `run.started` event,
 not config or a guessed elapsed-time threshold. Failed/completed events carry
 the actual hold-fenced turn correlation. Queue cancellation is not completion.
 
+### Admitted visual reverie (`reverie.visual`, 2026-09-28)
+
+One image per run, checkpointed after every stage
+(`app/reverie_visual_graph.py`; spec
+`docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.md`).
+orion-thought does every stage's work over `orion:reverie:visual:step:request`
+(reply `orion:reverie:visual:step:reply:<correlation>`, one correlation per RPC,
+derived from run id + step + call count + restart fence so replies never cross):
+
+```text
+prepare -> resource_request -> resource_wait -> generate -> caption -> finish
+   ^            ^                                  |            |
+   |            +------ retry_wait <---------------+------------+
+   +-- retry_wait                                     (any node) -> failed
+```
+
+- **prepare** (no hold): thought claims the attempt, runs interpret, freezes the
+  prompt. `done` saves `attempt_id`; `terminal` (e.g. `already_satisfied`) goes
+  straight to `finish` without ever asking the pool for a hold.
+- **generate** runs under the run's pool hold: `resource = service.route.diffusion`
+  is placed by `config/gpu_pool.yaml` `hold_routes.diffusion` (class `diffusion`).
+  The hold is **released as soon as generate answers**, so caption (and interpret,
+  inside prepare) never carry it.
+- **caption** (no hold). `retry` with reason `needs_generate` (the image is gone from
+  disk) goes back through the hold to generate, after a backoff of
+  `DURABLE_RUNS_RETRY_BASE_SEC * 2^(n-1)` (capped at `DURABLE_RUNS_RETRY_MAX_SEC`) on the
+  run's regeneration count `n` (state `regenerations`), so a storage fault that keeps
+  losing the image cannot re-render back to back. Still bounded only by the deadline.
+- **Retries never spend the run's attempt budget.** A step `retry`, an RPC timeout or
+  a transport error releases any hold and waits `retry_after_sec` (thought's hint) or
+  `DURABLE_RUNS_RETRY_BASE_SEC * 2^n` capped at `DURABLE_RUNS_RETRY_MAX_SEC` (never
+  below 1 s), then resumes at the same stage. A recalled/lost hold re-queues. A generate
+  or caption `retry` whose reason says thought has no prepared attempt (`not_prepared`,
+  `plan_not_frozen`, `attempt_missing`) releases any hold and resumes at **prepare**
+  instead, since retrying the same stage could never fix it.
+- **The run deadline is the only failure bound**: `admission.deadline_at` (submit +
+  baseline interval; a resubmit of the same run with a different `deadline_at` is the
+  same run -- the first submission's deadline wins). Whichever node, wait or driver
+  notices it ends the run `failed` with `last_error = retry_window_expired`.
+- **Abandon is reliable.** Whenever a run ends without `completed` (deadline, operator
+  cancel, resume-failure bound, any graph failure), the driver records
+  `run.abandon_pending` in the run's event log *before* the terminal projection, then
+  sends thought `step = abandon` in the background (30 s bound) *after* it -- the
+  terminal never waits on thought. `attempt_id` is sent when known; otherwise thought
+  resolves the attempt by `visual_request.dispatch_id` (a lost prepare reply cannot
+  strand a claimed attempt). Only `done`, or `terminal` with reason `attempt_mismatch`
+  (nothing of ours to close), counts: it is recorded as `run.abandon_acked` and clears
+  the pending record. A timeout, transport error, `retry`, or any other `terminal`
+  (e.g. an older thought rejecting the request) stays pending and the reconcile loop
+  re-sends it after `DURABLE_RUNS_RETRY_BASE_SEC * 2^(n-1)` (capped at
+  `DURABLE_RUNS_RETRY_MAX_SEC`). Pending records live in `durable_resource_events` (no
+  new table; optional index `manual_migration_durable_resource_abandon_pending_v1.sql`),
+  are re-read newest-first every `DURABLE_RUNS_HOLD_STATUS_POLL_SEC`, and so survive a
+  durable-runs restart. After `ABANDON_GIVE_UP_SEC` (3 h, `orion/durable_admission/store.py`)
+  retries stop: thought's own max-age sweep has released the attempt by then. Paused or
+  completed runs are never abandoned.
+- Restart: `generate` is the work node. A restart mid-generate fences it and replays it
+  under the same hold (thought's generate is idempotent: the recorded artifact, or a
+  `generate_in_flight` retry). A restart after generate resumes at caption, with no
+  hold and no second generate.
+- Stage RPC wait: `DURABLE_RUNS_REVERIE_VISUAL_STEP_TIMEOUT_SEC` (generate waits
+  `max(that, brief.timeout_sec)`; the held generate is also bounded by the brief's
+  budget and the deadline).
+
+`run.completed` detail: `dispatch_id`, `proposal_id`, `decision_id`, `attempt_id`,
+`chain_id`, `outcome`, `reason`, `artifact_sha256`, `execution_receipt`, `retries`,
+`generate_elapsed_sec`, `visual_elapsed_sec` (thought's real-work seconds summed over
+done steps -- dispatch's cost; never queue or hold-wait time), `started_at`,
+`finished_at`. `run.failed` / `run.cancelled` carry the same ids plus `retries`,
+`error` / `last_error` and the last stage `reason`. The status API adds a
+`reverie_visual` block (attempt, outcome, retries, retry_at, elapsed, deadline),
+`error` and `work_started`.
+
+### Every admitted terminal reaches `orion:durable:run:state` (2026-09-28)
+
+`completed`, `failed` and `cancelled` admitted runs are all published as a
+`DurableRunStateV1` (node `finish`, `failed`, `finish`) from the same outbox row as
+their `run.<status>` lifecycle event (`entry_id = <run>:terminal:<status>:state`,
+acked only after both publishes, deduped by sql-writer). Before this only
+`completed` was, so a waiter such as cortex-exec's self-study reflect never saw an
+admitted failure end the run.
+
 `DurableRunner` can drive more than one compiled graph, keyed by
 `DurableRunRequestV1.workflow`. Today only `"curiosity.investigate"` is registered --
 this is plumbing for a second and third workflow (self-sense-eval's own graph, reflect's

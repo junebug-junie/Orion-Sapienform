@@ -121,7 +121,12 @@ class TestRouteResolves:
 
     def test_timeouts_are_staggered_innermost_first(self) -> None:
         """A slow generation must be reported by the innermost hop, not severed
-        by an outer one -- the same discipline the two prune routes use."""
+        by an outer one -- the same discipline the two prune routes use.
+
+        Pins the DIRECT path (CORTEX_EXEC_RENDER_SCENE_DURABLE_ENABLED=false or a
+        manual run), which still blocks on thought. The durable path only submits
+        (a 20s kickoff RPC); its bound is tested in orion-cortex-exec's
+        test_render_scene_durable_kickoff.py."""
         verb = yaml.safe_load(
             (REPO / "orion/cognition/verbs/skills.imagination.render_scene.v1.yaml").read_text()
         )

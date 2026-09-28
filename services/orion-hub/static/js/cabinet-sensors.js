@@ -829,6 +829,20 @@
   function renderCoolingLatest(payload) {
     var sample = payload && payload.sample;
     if (!sample) return;
+    if (payload.sensor_stale) {
+      var since = payload.last_fresh_at
+        ? new Date(payload.last_fresh_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        : "unknown";
+      if (els.coolingWatts) els.coolingWatts.textContent = "STALE";
+      if (els.coolingVolts) els.coolingVolts.textContent = "absent";
+      if (els.coolingSwitch) els.coolingSwitch.textContent = "absent";
+      if (els.coolingAge) els.coolingAge.textContent = age(payload.age_sec);
+      if (els.coolingLiveStatus) {
+        els.coolingLiveStatus.textContent = "AC reading STALE since " + since;
+        els.coolingLiveStatus.className = "mt-1 font-mono text-sm text-red-400";
+      }
+      return;
+    }
     if (els.coolingWatts) {
       els.coolingWatts.textContent =
         sample.cooling_watts === null || sample.cooling_watts === undefined

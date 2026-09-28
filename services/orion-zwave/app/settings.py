@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     ZWAVE_DEVICE_NAME: str = Field(default="portable_ac")
     COOLING_SAMPLE_CHANNEL: str = Field(default="orion:home:cooling:sample")
     COOLING_POLL_INTERVAL_SEC: float = Field(default=5.0)
+    # No fresh reading from the plug for this long => samples carry no readings, stale=true.
+    COOLING_STALE_AFTER_SEC: float = Field(default=120.0)
     HEARTBEAT_INTERVAL_SEC: float = Field(default=10.0)
     ORION_HEALTH_CHANNEL: str = Field(default="orion:system:health")
 

@@ -749,6 +749,7 @@ from orion.schemas.workflow_execution import (
     WorkflowScheduleSpecV1,
 )
 from orion.schemas.reading_turn import ReadingTurnRequestV1, ReadingTurnResultV1
+from orion.schemas.reverie_visual_run import ReverieVisualStepRequestV1, ReverieVisualStepResultV1
 from orion.schemas.reading import (
     ReadingRequestedV1, ReadingToolBindingV1, ReadingToolRequestV1, ReadingToolResultV1, ReadingLifecycleV1
 )
@@ -1000,6 +1001,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CuriosityTurnRequestV1": CuriosityTurnRequestV1,
     "ReadingTurnRequestV1": ReadingTurnRequestV1,
     "ReadingTurnResultV1": ReadingTurnResultV1,
+    "ReverieVisualStepRequestV1": ReverieVisualStepRequestV1,
+    "ReverieVisualStepResultV1": ReverieVisualStepResultV1,
     "CuriosityTurnResultV1": CuriosityTurnResultV1,
     "HelpRequestV1": HelpRequestV1,
     "PeerBriefV1": PeerBriefV1,
@@ -1863,6 +1866,8 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "CuriosityTurnRequestV1": SchemaRegistration(model=CuriosityTurnRequestV1, kind="curiosity.turn.request.v1"),
     "ReadingTurnRequestV1": SchemaRegistration(model=ReadingTurnRequestV1, kind="reading.turn.request.v1"),
     "ReadingTurnResultV1": SchemaRegistration(model=ReadingTurnResultV1, kind="reading.turn.result.v1"),
+    "ReverieVisualStepRequestV1": SchemaRegistration(model=ReverieVisualStepRequestV1, kind="reverie.visual.step.request.v1"),
+    "ReverieVisualStepResultV1": SchemaRegistration(model=ReverieVisualStepResultV1, kind="reverie.visual.step.result.v1"),
     "CuriosityTurnResultV1": SchemaRegistration(model=CuriosityTurnResultV1, kind="curiosity.turn.result.v1"),
     "HelpRequestV1": SchemaRegistration(
         model=HelpRequestV1,

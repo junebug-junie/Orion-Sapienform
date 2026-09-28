@@ -6,12 +6,21 @@ from contextlib import suppress
 from typing import Any
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
+
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.async_service import OrionBusAsync
 
 from .rpc_health import fold_bus
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.llm.resource_lease import GPU_LEASE_ROUTE
+from orion.schemas.reverie_visual_run import (
+    REVERIE_VISUAL_STEP_CHANNEL,
+    REVERIE_VISUAL_STEP_REQUEST_KIND,
+    REVERIE_VISUAL_STEP_RESULT_KIND,
+    ReverieVisualStepRequestV1,
+    ReverieVisualStepResultV1,
+)
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.thought import (
     AutonomySliceV1,
@@ -36,6 +45,7 @@ from .mind_enrichment import (
     work_shape_from_coloring,
 )
 from .settings import settings
+from .visual_steps import run_visual_step
 
 logger = logging.getLogger("orion-thought.bus")
 
@@ -80,6 +90,15 @@ async def _drain_pending_handler_tasks(*, timeout_sec: float = _HANDLER_DRAIN_TI
             task.cancel()
         await asyncio.gather(*still, return_exceptions=True)
     _ = done
+
+
+async def _missing_subscriptions(bus: OrionBusAsync, channels: tuple[str, ...]) -> list[str]:
+    """Channels Redis no longer lists us on. A failed probe (-1) is not evidence of loss."""
+    missing = []
+    for channel in channels:
+        if await _thought_channel_subscribers(bus, channel) == 0:
+            missing.append(channel)
+    return missing
 
 
 async def _thought_channel_subscribers(bus: OrionBusAsync, channel: str) -> int:
@@ -467,12 +486,60 @@ async def handle_stance_react_request(
     return thought
 
 
+def _message_channel(raw_msg: dict[str, Any]) -> str:
+    channel = raw_msg.get("channel")
+    return channel.decode() if isinstance(channel, bytes) else str(channel or "")
+
+
+_INVALID_STEP_RETRY_AFTER_SEC = 60.0
+
+
+async def handle_visual_step_request(bus: OrionBusAsync, env: BaseEnvelope, *, reply_to: str) -> None:
+    """One `reverie.visual` stage from orion-durable-runs; replies on `reply_to` under the
+    request envelope's own correlation id (durable-runs fences replies by it)."""
+    payload = env.payload or {}
+    try:
+        request = ReverieVisualStepRequestV1.model_validate(payload)
+    except ValidationError as exc:
+        logger.error("reverie visual step request invalid corr=%s err=%s", env.correlation_id, exc)
+        try:
+            # A retry, never terminal: during a rolling deploy the sender and this worker
+            # can disagree on the schema, and that skew must not kill in-flight runs.
+            # durable-runs fences replies by the envelope correlation, so fill what the
+            # payload lacks.
+            result = ReverieVisualStepResultV1(
+                run_id=str(payload.get("run_id") or "unknown"),
+                correlation_id=str(payload.get("correlation_id") or env.correlation_id),
+                step=payload.get("step"), status="retry", reason="invalid_step_request",
+                retry_after_sec=_INVALID_STEP_RETRY_AFTER_SEC,
+            )
+        except (ValidationError, AttributeError):
+            logger.error("reverie visual step request unanswerable (no valid step) corr=%s reply_to=%s",
+                         env.correlation_id, reply_to)
+            return
+    else:
+        result = await run_visual_step(bus, request)
+        logger.info("reverie visual step run=%s step=%s status=%s reason=%s elapsed=%s",
+                    request.run_id, request.step, result.status, result.reason, result.elapsed_sec)
+    await bus.publish(
+        reply_to,
+        BaseEnvelope(
+            kind=REVERIE_VISUAL_STEP_RESULT_KIND,
+            source=_source(),
+            correlation_id=env.correlation_id,
+            causality_chain=list(env.causality_chain or []),
+            payload=result.model_dump(mode="json"),
+        ),
+    )
+
+
 async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
     if not settings.orion_bus_enabled:
         logger.info("Bus disabled; worker not started")
         return
 
     channel = settings.channel_thought_request
+    channels = (channel, REVERIE_VISUAL_STEP_CHANNEL)
     backoff_sec = 1.0
 
     while True:
@@ -485,8 +552,8 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
         idle_polls = 0
         try:
             await bus.connect()
-            logger.info("subscribed channel=%s", channel)
-            async with bus.subscribe(channel) as pubsub:
+            logger.info("subscribed channels=%s", ",".join(channels))
+            async with bus.subscribe(*channels) as pubsub:
                 backoff_sec = 1.0
                 while True:
                     if stop_event is not None and stop_event.is_set():
@@ -500,11 +567,11 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
                         idle_polls += 1
                         if idle_polls >= _PUBSUB_IDLE_POLLS_BEFORE_HEALTH:
                             idle_polls = 0
-                            subs = await _thought_channel_subscribers(bus, channel)
-                            if subs == 0:
+                            missing = await _missing_subscriptions(bus, channels)
+                            if missing:
                                 logger.warning(
-                                    "pubsub subscription missing channel=%s; reconnecting",
-                                    channel,
+                                    "pubsub subscription missing channels=%s; reconnecting",
+                                    ",".join(missing),
                                 )
                                 reconnect = True
                                 break
@@ -554,6 +621,10 @@ async def _handle_bus_message(bus: OrionBusAsync, raw_msg: dict[str, Any]) -> No
     reply_channel = env.reply_to or (env.payload or {}).get("reply_channel")
     if not reply_channel:
         logger.warning("missing reply_to corr=%s", env.correlation_id)
+        return
+
+    if _message_channel(raw_msg) == REVERIE_VISUAL_STEP_CHANNEL or env.kind == REVERIE_VISUAL_STEP_REQUEST_KIND:
+        await handle_visual_step_request(bus, env, reply_to=reply_channel)
         return
 
     kind = env.kind or ""

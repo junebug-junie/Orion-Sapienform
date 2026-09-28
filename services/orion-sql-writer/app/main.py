@@ -47,6 +47,14 @@ async def lifespan(app: FastAPI):
                 "CREATE INDEX IF NOT EXISTS orion_biometrics_summary_node_ts_idx "
                 "ON orion_biometrics_summary (node, timestamp);"
             )
+            # Same hazard as `measurements` above: the mapper declares these columns, so they
+            # enter every home_cooling_sample INSERT and must exist before the writer serves.
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS home_cooling_sample ADD COLUMN IF NOT EXISTS stale BOOLEAN;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE IF EXISTS home_cooling_sample ADD COLUMN IF NOT EXISTS sample_age_sec DOUBLE PRECISION;"
+            )
             conn.exec_driver_sql(
                 "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS correlation_id TEXT;"
             )

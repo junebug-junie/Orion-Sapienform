@@ -16,7 +16,7 @@
 - Test interpreter: `PY=/tmp/introspect-venv/bin/python`, created in Task 1 Step 0 from `services/orion-hub/tests/requirements-reading.txt` (system python lacks `mcp`).
 - All test commands run from the worktree root with `PYTHONPATH=.`.
 - Read-only: nothing in this slice writes, re-queues, or changes any row.
-- Bounds: `MAX_ITEMS = 10`, `DEFAULT_LIMIT = 5`, `DEFAULT_TEXT_CAP = 900` chars (spec said 1200; lowered because `ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS=12000` truncates any single tool result above 12,000 chars), `JOURNAL_EXCERPT_CHARS = 600`, `SHORT_FIELD_CAP = 200` (title, why_now).
+- Bounds: `MAX_ITEMS = 5`, `DEFAULT_LIMIT = 5`, `DEFAULT_TEXT_CAP = 900` chars, `JOURNAL_EXCERPT_CHARS = 600`, `SHORT_FIELD_CAP = 200` (title, why_now), `URL_CAP = 500`. Reason: `ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS=12000` truncates any single tool result above 12,000 chars; measured worst case at 10 items was 18,416 chars, so the spec's 10 items × 1,200 chars cannot fit. 5 items × (900 text + 500 url + 2×200 short fields + overhead) ≈ 11k.
 - Empty ≠ unknown: success with nothing found is `ok=True, items=[], total_available=0`. Any transport/owner failure raises `IntrospectUnknownError` whose message contains `answer unknown`. Never return `items=[]` for a failure.
 - Reading results are always `epistemic_status="unsettled"`, `kind="reading_result"`.
 - A Stage 1 handoff counts as learned only when the row's `status == 'done'` (same rule as `operator.read_detail`'s `handoff_accepted`).
@@ -62,7 +62,7 @@
 
 **Interfaces:**
 - Produces:
-  - `orion.schemas.introspect`: `MAX_ITEMS: int = 10`, `DEFAULT_LIMIT: int = 5`, `DEFAULT_TEXT_CAP: int = 900`, `SHORT_FIELD_CAP: int = 200`, `IntrospectOperation = Literal["reading_result"]`, `clip_text(text: str | None, cap: int = DEFAULT_TEXT_CAP) -> tuple[str, bool]`, `IntrospectToolBindingV1(invocation_context, parent_run_id, parent_trace_id, memory_allowed)`, `IntrospectItemV1(id, occurred_at, kind, epistemic_status, text, truncated, sensitivity, extra)`, `IntrospectResultV1(ok, operation, as_of, total_available, items, error)`, `ReadingResultArguments(request_id, url, limit, since)`.
+  - `orion.schemas.introspect`: `MAX_ITEMS: int = 5`, `DEFAULT_LIMIT: int = 5`, `DEFAULT_TEXT_CAP: int = 900`, `SHORT_FIELD_CAP: int = 200`, `URL_CAP: int = 500`, `IntrospectOperation = Literal["reading_result"]`, `clip_text(text: str | None, cap: int = DEFAULT_TEXT_CAP) -> tuple[str, bool]`, `IntrospectToolBindingV1(invocation_context, parent_run_id, parent_trace_id, memory_allowed)`, `IntrospectItemV1(id, occurred_at, kind, epistemic_status, text, truncated, sensitivity, extra)`, `IntrospectResultV1(ok, operation, as_of, total_available, items, error)`, `ReadingResultArguments(request_id, url, limit, since)`.
   - `ReadingToolRequestV1.operation` accepts `"reading_result"`; new optional fields `limit: int | None`, `since: datetime | None`.
 
 - [ ] **Step 0: Prepare branch and test venv**
@@ -95,6 +95,7 @@ from orion.schemas.introspect import (
     DEFAULT_TEXT_CAP,
     MAX_ITEMS,
     SHORT_FIELD_CAP,
+    URL_CAP,
     IntrospectItemV1,
     IntrospectResultV1,
     IntrospectToolBindingV1,
@@ -173,7 +174,7 @@ def test_worst_case_result_fits_the_mcp_tool_result_cap():
     item = _item(
         text="x" * DEFAULT_TEXT_CAP, truncated=True,
         extra={
-            "url": "https://example.org/" + "p" * 180,
+            "url": "https://example.org/" + "p" * (URL_CAP - 20),
             "title": "t" * SHORT_FIELD_CAP,
             "why_now": "w" * SHORT_FIELD_CAP,
             "reading_status": "landing_pending",
@@ -210,7 +211,7 @@ def test_reading_tool_request_accepts_reading_result_selectors():
     ReadingToolRequestV1(operation="reading_result")
     ReadingToolRequestV1(operation="reading_result", url="https://example.org/a", limit=3)
     ReadingToolRequestV1(operation="reading_result", request_id=uuid4())
-    ReadingToolRequestV1(operation="reading_result", since=NOW, limit=10)
+    ReadingToolRequestV1(operation="reading_result", since=NOW, limit=MAX_ITEMS)
 
 
 @pytest.mark.parametrize("fields", [
@@ -252,12 +253,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-MAX_ITEMS = 10
+# MAX_ITEMS full-size items must fit under ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS
+# (12000) or the harness truncates the JSON mid-item.
+MAX_ITEMS = 5
 DEFAULT_LIMIT = 5
-# 10 items must fit under ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS (12000) or the
-# harness truncates the JSON mid-item.
 DEFAULT_TEXT_CAP = 900
 SHORT_FIELD_CAP = 200
+URL_CAP = 500
 
 IntrospectOperation = Literal["reading_result"]
 
@@ -446,7 +448,7 @@ git commit -m "feat(introspect): add introspect contracts and reading_result ope
 - Test: `services/orion-hub/tests/test_reading_postgres.py` (append one test; real disposable PostgreSQL)
 
 **Interfaces:**
-- Consumes: `IntrospectItemV1`, `IntrospectResultV1`, `clip_text`, `DEFAULT_LIMIT`, `SHORT_FIELD_CAP` (Task 1); `queue.reading_status(conn, request_id=None, *, url=None) -> dict`; `queue.derive_reading_status(s1, s2, landing_at) -> str`; `operator._journal_entries(conn, refs: list[str]) -> list[dict]` (ordered by `created_at`, keys `entry_id, created_at, title, body, source_ref`).
+- Consumes: `IntrospectItemV1`, `IntrospectResultV1`, `clip_text`, `DEFAULT_LIMIT`, `SHORT_FIELD_CAP`, `URL_CAP` (Task 1); `queue.reading_status(conn, request_id=None, *, url=None) -> dict`; `queue.derive_reading_status(s1, s2, landing_at) -> str`; `operator._journal_entries(conn, refs: list[str]) -> list[dict]` (ordered by `created_at`, keys `entry_id, created_at, title, body, source_ref`).
 - Produces: `async def reading_results(conn, *, request_id: UUID | None = None, url: str | None = None, limit: int = DEFAULT_LIMIT, since: datetime | None = None) -> IntrospectResultV1`; constant `JOURNAL_EXCERPT_CHARS = 600`.
 
 - [ ] **Step 1: Write the failing test**
@@ -552,6 +554,7 @@ from uuid import UUID
 from orion.schemas.introspect import (
     DEFAULT_LIMIT,
     SHORT_FIELD_CAP,
+    URL_CAP,
     IntrospectItemV1,
     IntrospectResultV1,
     clip_text,
@@ -599,7 +602,7 @@ def _item(row: Any, *, request_id: str | None, journal_excerpt: str | None = Non
     learned = _learned(row)
     text, truncated = clip_text(learned)
     extra: dict[str, Any] = {
-        "url": row["url"],
+        "url": clip_text(row["url"], URL_CAP)[0],
         "title": clip_text(row["title"], SHORT_FIELD_CAP)[0],
         "why_now": clip_text(row["why_now"], SHORT_FIELD_CAP)[0],
         "reading_status": derive_reading_status(row["status"], row["stage2_status"], row["landing_at"]),
@@ -876,7 +879,7 @@ RPC_TIMEOUT_SEC = 15.0
 READING_RESULTS_DESCRIPTION = (
     "Look up what you actually learned from sources read through your reading pipeline. "
     "Pass url or request_id for one reading, or neither for your most recent finished reads "
-    "(optional since=<ISO timestamp with timezone>, limit up to 10). Each item's text is the "
+    "(optional since=<ISO timestamp with timezone>, limit up to 5). Each item's text is the "
     "learned summary; learned=false means no output exists yet, so report its reading_status "
     "instead. Results are source-attributed candidates, not settled beliefs. items=[] means "
     "nothing matched; a tool error means the answer is unknown, never that nothing happened."

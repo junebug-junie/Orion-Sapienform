@@ -118,7 +118,7 @@ class IntrospectResultV1(BaseModel):
     error: str | None = None
 ```
 
-Per-operation argument models (`extra="forbid"`): `limit` (1–10, default 5),
+Per-operation argument models (`extra="forbid"`): `limit` (1–5, default 5),
 optional `since` (tz-aware), optional single-record id (`cycle_id`,
 `chain_id`, `run_id`), and for `memories` a required `query` (1–500 chars).
 
@@ -163,8 +163,8 @@ reading.
 
 ### Truth rules (all tools)
 
-- **Bounded:** max 10 items, per-item text cap (default 900 chars),
-  `truncated` flag set when cut. 10 × 900 plus per-item fields must stay under
+- **Bounded:** max 5 items, per-item text cap (default 900 chars), URL
+  cap 500, `truncated` flag set when cut. 5 full items must stay under
   `ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS` (12,000), above which the harness
   truncates the tool result mid-JSON; a test pins the worst case.
 - **Scaled:** `as_of` and `total_available` always present on success.

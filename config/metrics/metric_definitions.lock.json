@@ -1,12 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 682,
+  "metric_count": 683,
   "_last_change": {
-    "base": "merge base 05dcdbbdd (origin/main)",
-    "change_count": 0,
+    "base": "merge base bee8ddd97 (origin/main)",
+    "change_count": 1,
     "high_severity_count": 0,
     "changes": [
-      "no definition changes relative to the merge base"
+      "medium added metric://bus_channel/orion-hardware-watch/orion:curiosity:urgent:request"
     ]
   },
   "definitions": {
@@ -1688,6 +1688,18 @@
         "orion-graph-compression"
       ],
       "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hardware-watch/orion:curiosity:urgent:request": {
+      "schema_id": "CuriosityUrgentRequestV1",
+      "all_producers": [
+        "orion-hardware-watch",
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-hub"
+      ],
+      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-harness-governor/orion:harness:run:artifact": {

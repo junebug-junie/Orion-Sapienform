@@ -7,6 +7,7 @@ import re
 from contextlib import suppress
 
 from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.schemas.introspect import DEFAULT_LIMIT
 from orion.schemas.reading import (
     DurableReadingReceiptV1,
     ReadingStatusReceiptV1,
@@ -14,6 +15,7 @@ from orion.schemas.reading import (
     ReadingToolResultV1,
 )
 from orion.world_pulse_read.events import TOOL_CHANNEL, TOOL_RESULT_PREFIX
+from orion.world_pulse_read.introspect import reading_results
 from orion.world_pulse_read.queue import enqueue_reading, reading_status
 from orion.world_pulse_read.urls import normalize_source_url
 
@@ -97,7 +99,7 @@ class ReadingListener:
                         raise RuntimeError("enqueue returned a malformed durable receipt") from exc
                     if receipt.request_id != command.request.request_id:
                         raise RuntimeError("enqueue returned a mismatched request_id")
-                else:
+                elif command.operation == "reading_status":
                     phase = "status"
                     if command.url is not None:
                         result = await reading_status(conn, url=command.url)
@@ -112,6 +114,22 @@ class ReadingListener:
                     if command.url is not None:
                         if result.get("lookup_url") != normalize_source_url(command.url):
                             raise RuntimeError("status returned a mismatched URL")
+                else:
+                    phase = "reading_result"
+                    introspection = await reading_results(
+                        conn,
+                        request_id=command.request_id,
+                        url=command.url,
+                        limit=command.limit or DEFAULT_LIMIT,
+                        since=command.since,
+                    )
+                    result = introspection.model_dump(mode="json")
+                    logger.info(
+                        "introspect op=reading_result corr=%s items=%d total=%s",
+                        envelope.correlation_id,
+                        len(introspection.items),
+                        introspection.total_available,
+                    )
             response = ReadingToolResultV1(ok=True, result=result)
         except Exception as exc:
             logger.warning(

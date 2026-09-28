@@ -293,3 +293,67 @@ def test_new_bus_subjects_resolve_registered_contracts():
         enforcer.validate(channel)
         assert enforcer.entry_for(channel)["schema_id"] == schema
         assert resolve(schema) is not None
+
+
+def _introspect_tools(bus):
+    from orion.introspect.tools import IntrospectTools
+    from orion.schemas.introspect import IntrospectToolBindingV1
+
+    return IntrospectTools(
+        bus,
+        IntrospectToolBindingV1(
+            invocation_context="unified_chat",
+            parent_run_id="r",
+            parent_trace_id="t",
+            memory_allowed=True,
+        ),
+    )
+
+
+def test_reading_result_round_trips_through_real_listener(monkeypatch, caplog):
+    import logging
+    from datetime import datetime, timezone
+
+    from orion.schemas.introspect import IntrospectResultV1
+
+    seen = {}
+
+    async def fake_results(conn, **kwargs):
+        seen.update(kwargs)
+        return IntrospectResultV1(
+            ok=True,
+            operation="reading_result",
+            as_of=datetime.now(timezone.utc),
+            total_available=0,
+        )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("reading_result must never enqueue")
+
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "reading_results", fake_results)
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "enqueue_reading", forbidden)
+    bus = RpcBus(_FakeConn())
+    caplog.set_level(logging.INFO, logger="scripts.reading_listener")
+    out = asyncio.run(
+        _introspect_tools(bus).invoke(
+            "reading_results",
+            {"url": "https://EXAMPLE.org/a#frag", "limit": 3},
+        )
+    )
+    assert out["ok"] is True and out["items"] == [] and out["total_available"] == 0
+    assert seen == {"request_id": None, "url": "https://example.org/a", "limit": 3, "since": None}
+    assert "introspect op=reading_result" in caplog.text
+    assert f"corr={bus.commands[0].correlation_id}" in caplog.text
+
+
+def test_reading_result_failure_is_unknown_and_sanitized(monkeypatch, caplog):
+    from orion.introspect.tools import IntrospectUnknownError
+
+    async def boom(conn, **kwargs):
+        raise RuntimeError("lost postgres://orion:hunter2@db/orion")
+
+    monkeypatch.setitem(ReadingListener.handle.__globals__, "reading_results", boom)
+    bus = RpcBus(_FakeConn())
+    with pytest.raises(IntrospectUnknownError, match="answer unknown"):
+        asyncio.run(_introspect_tools(bus).invoke("reading_results", {}))
+    assert "hunter2" not in caplog.text

@@ -22,5 +22,6 @@ def test_build_sample_omits_zero_fill_when_watts_missing():
     )
     assert isinstance(sample, HomeCoolingSampleV1)
     assert sample.measurements.cooling_watts is None
-    assert sample.state.stale is False
+    # No wattage is never reported as a healthy live reading.
+    assert sample.state.stale is True
     assert sample.role == "cabinet_cooling"

@@ -250,21 +250,32 @@ async def test_close_drains_queued_messages_so_they_cannot_replay():
     assert client.last_fresh_at(2) == T0
     await client.close()
     assert client._inbound.empty()
-    # Neither the live-era stamp nor the queued event may leave the node looking fresh.
-    assert client.last_fresh_at(2) is None
+    # Neither the live-era per-value stamp nor the queued event may leave a value looking fresh.
     assert client.fresh_values(2, now=T0, max_age_sec=120.0) == {}
 
 
 @pytest.mark.asyncio
-async def test_close_forgets_freshness_stamps():
+async def test_close_forgets_value_freshness_but_keeps_last_answer_time():
     client = _client()
     client._handle_message(_meter_event(METER_W_PROPERTY_KEY, 870.0))
     client._handle_message(_meter_event(METER_V_PROPERTY_KEY, 121.0))
-    assert client.last_fresh_at(2) == T0
     assert client.fresh_values(2, now=T0, max_age_sec=120.0)
     await client.close()
-    assert client.last_fresh_at(2) is None
     assert client.fresh_values(2, now=T0, max_age_sec=120.0) == {}
+    assert client.last_fresh_at(2) == T0
+
+
+def test_recent_answer_without_fresh_watts_is_stale():
+    s = build_cooling_sample(
+        node_id=2, controller_ready=True, device_online=True,
+        watts=None, volts=121.0, amps=7.0, switch_on=True,
+        device_path="/dev/zwave", product="Shelly Wave Plug",
+        now=T0 + timedelta(seconds=5), last_fresh_at=T0, stale_after_sec=120.0,
+    )
+    assert s.state.stale is True
+    assert s.measurements.cooling_volts is None
+    assert s.state.switch_on is None
+    assert s.provenance.sample_age_sec == 5.0
 
 
 @pytest.mark.asyncio
@@ -279,6 +290,8 @@ async def test_reconnect_snapshot_after_close_is_not_published_as_fresh():
     sample = await zwave_main.poll_once(client, _settings(), now_fn=lambda: T0 + timedelta(seconds=5))
     assert sample.state.stale is True
     assert sample.measurements.cooling_watts is None
+    # Outage age survives the reconnect so the Hub can say "stale since HH:MM".
+    assert sample.provenance.sample_age_sec == 5.0
 
 
 @pytest.mark.asyncio

@@ -335,9 +335,9 @@ class ZWaveJSClient:
                 break
         self._controller_ready = False
         self._device_online.clear()
-        # A reconnect re-ingests the snapshot into the same keys; a surviving stamp would
-        # pass that cached value off as fresh.
-        self._last_fresh_at.clear()
+        # A reconnect re-ingests the snapshot into the same keys; a surviving per-value stamp
+        # would pass that cached value off as fresh. _last_fresh_at is kept: it is when the plug
+        # last really answered, which is what an outage report needs ("stale since HH:MM").
         self._value_fresh_at.clear()
         ws, self._ws = self._ws, None
         if ws is not None:

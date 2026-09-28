@@ -83,7 +83,9 @@ def build_cooling_sample(
     instance_id: str = "athena",
 ) -> HomeCoolingSampleV1:
     age = max(0.0, (now - last_fresh_at).total_seconds()) if last_fresh_at is not None else None
-    stale = age is None or age > stale_after_sec
+    # No fresh wattage is stale even when the last real answer is recent (e.g. right after a
+    # reconnect, when only snapshot values are cached).
+    stale = age is None or age > stale_after_sec or watts is None
     if stale:
         measurements = CoolingMeasurementsV1()
         state = CoolingObservedStateV1(stale=True)

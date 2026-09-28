@@ -3340,6 +3340,27 @@ channels:
     since: "2026-09-26"
     description: "Reading turn result with source-fetch receipts, checkpointed before Hub landing."
 
+  - name: "orion:reverie:visual:step:request"
+    kind: "request"
+    schema_id: "ReverieVisualStepRequestV1"
+    message_kind: "reverie.visual.step.request.v1"
+    producer_services: ["orion-durable-runs"]
+    consumer_services: ["orion-thought"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-09-28"
+    description: "One stage (prepare, generate, caption) of an admitted reverie.visual run. Only generate carries the run's diffusion hold, which thought validates before touching the GPU; reply uses the correlation ID."
+
+  - name: "orion:reverie:visual:step:reply:*"
+    kind: "result"
+    schema_id: "ReverieVisualStepResultV1"
+    message_kind: "reverie.visual.step.result.v1"
+    producer_services: ["orion-thought"]
+    consumer_services: ["orion-durable-runs"]
+    stability: "experimental"
+    since: "2026-09-28"
+    description: "Stage result: done (advance), retry (deferral; resume the same stage, no attempt spent) or terminal (finish with the named outcome). Checkpointed by the run."
+
   - name: "orion:curiosity:turn:request"
     kind: "request"
     schema_id: "CuriosityTurnRequestV1"

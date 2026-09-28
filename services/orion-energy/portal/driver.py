@@ -1,28 +1,38 @@
-"""The only module that touches a browser. UNVERIFIED against the live portal."""
+"""The only module that touches a browser.
+
+Login and the one-day Green Button download are verified against the live portal
+(2026-09-28); billing_rows / forecast_fields are still UNVERIFIED.
+"""
 
 from __future__ import annotations
 
+import re
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional, Protocol
 
 from . import selectors
 from .parse import is_login_url
 
+_PERIOD_TEXT = re.compile(r"^\s*(?:" + "|".join(map(re.escape, selectors.USAGE_PERIOD_OPTIONS)) + r")\s*$")
+
 
 class PortalDriver(Protocol):
     async def open_usage(self) -> str: ...
     async def login(self, *, username: str, password: str) -> str: ...
-    async def download_green_button(self, *, days: int, now: datetime) -> bytes: ...
+    async def usage_day_range(self) -> tuple[date, date]: ...
+    async def download_usage_day(self, day: date) -> bytes: ...
     async def billing_rows(self) -> list[dict[str, str]]: ...
     async def forecast_fields(self) -> Optional[dict[str, str]]: ...
     async def page_html(self) -> str: ...
 
 
-def green_button_range(now: datetime, *, days: int) -> tuple[date, date]:
-    end = now.date()
-    return end - timedelta(days=days), end
+def picker_date(raw: Optional[str]) -> date:
+    """The picker's min/max are calendar days stamped at UTC midnight: take the date as written."""
+    if not raw:
+        raise ValueError("usage date picker has no min/max")
+    return datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
 
 
 def prepare_profile_dir(profile_dir: str | Path) -> Path:
@@ -37,6 +47,7 @@ class PlaywrightDriver:
     def __init__(self, page: Any, base_url: str) -> None:
         self._page = page
         self._base = base_url.rstrip("/")
+        self._one_day_view = False
 
     async def open_usage(self) -> str:
         await self._page.goto(self._base + selectors.USAGE_PATH, wait_until="networkidle")
@@ -58,13 +69,30 @@ class PlaywrightDriver:
             pass
         return self._page.url
 
-    async def download_green_button(self, *, days: int, now: datetime) -> bytes:
+    async def usage_day_range(self) -> tuple[date, date]:
+        picker = self._page.locator(selectors.USAGE_THROUGH_INPUT)
+        return picker_date(await picker.get_attribute("min")), picker_date(await picker.get_attribute("max"))
+
+    async def _ensure_one_day_view(self) -> None:
+        if self._one_day_view:
+            return
         page = self._page
-        start, end = green_button_range(now, days=days)
-        await page.click(selectors.GREEN_BUTTON_OPEN)
-        await page.fill(selectors.GREEN_BUTTON_FROM, start.strftime(selectors.GREEN_BUTTON_DATE_FORMAT))
-        await page.fill(selectors.GREEN_BUTTON_TO, end.strftime(selectors.GREEN_BUTTON_DATE_FORMAT))
-        async with page.expect_download() as info:
+        await page.locator("mat-select").filter(has_text=_PERIOD_TEXT).first.click()
+        await page.locator("mat-option", has_text=selectors.USAGE_PERIOD_ONE_DAY).first.click()
+        await page.wait_for_load_state("networkidle")
+        self._one_day_view = True
+
+    async def download_usage_day(self, day: date) -> bytes:
+        """Hourly Green Button XML for one calendar day; `day` must be inside usage_day_range()."""
+        page = self._page
+        await self._ensure_one_day_view()
+        picker = page.locator(selectors.USAGE_THROUGH_INPUT)
+        await picker.fill(f"{day.month}/{day.day}/{day.year}")
+        await picker.press("Enter")
+        await picker.blur()
+        await page.wait_for_load_state("networkidle")
+        await page.wait_for_timeout(selectors.SETTLE_AFTER_DATE_SEC * 1000)
+        async with page.expect_download(timeout=selectors.DOWNLOAD_WAIT_SEC * 1000) as info:
             await page.click(selectors.GREEN_BUTTON_DOWNLOAD)
         download = await info.value
         return Path(await download.path()).read_bytes()

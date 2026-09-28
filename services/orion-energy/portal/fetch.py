@@ -16,7 +16,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -29,6 +29,7 @@ from .parse import PortalFieldError, bill_payload_from_fields, forecast_payload_
 logger = logging.getLogger("orion-energy-portal")
 
 _STAMP = "%Y%m%dT%H%M%SZ"
+_HOUR = timedelta(hours=1)
 _ATTRS = r"""(?:[^>"']|"[^"]*"|'[^']*')*"""
 _SCRIPT = re.compile(rf"(<script\b{_ATTRS}>).*?(</script\s*>|\Z)", re.IGNORECASE | re.DOTALL)
 _INPUT = re.compile(rf"<input\b{_ATTRS}>", re.IGNORECASE)
@@ -45,8 +46,27 @@ _VOLATILE_KEYS = ("retrieved_at", "as_of")
 class PortalOutcome:
     state: Literal["ok", "reauth_required", "error"]
     reason: str
-    xml_file: Optional[Path] = None
+    xml_files: tuple[Path, ...] = ()
     bill_files: tuple[Path, ...] = ()
+
+
+def usage_days(first: date, last: date, *, count: int) -> list[date]:
+    """The newest `count` days RMP offers, oldest first; never outside [first, last]."""
+    days = [last - timedelta(days=i) for i in range(max(0, count))]
+    return sorted(d for d in days if d >= first)
+
+
+def _day_xml_problem(xml: bytes, *, now: datetime) -> Optional[str]:
+    """None when the download is hourly ESPI; a daily reading would overwrite hour 0 in the ledger."""
+    if not xml:
+        return "empty_download"
+    try:
+        rows = parse_espi(xml, retrieved_at=now, source="rockymountain_power")
+    except EspiError as exc:
+        return f"espi_invalid:{exc}"[:120]
+    if any(r.interval_end - r.interval_start != _HOUR for r in rows):
+        return "non_hourly_download"
+    return None
 
 
 def _atomic_write(directory: Path, name: str, data: bytes) -> Path:
@@ -165,6 +185,12 @@ def _write_new_bills(
     return tuple(written)
 
 
+def _usage_failure(day: date, problem: str, delivered: list[Path], total: int) -> PortalOutcome:
+    """Stop at the first bad day: days already written stay delivered, the rest wait for next run."""
+    reason = f"usage_day_failed:{day.isoformat()}:{problem}:delivered={len(delivered)}/{total}"
+    return PortalOutcome("error", reason[:200], xml_files=tuple(delivered))
+
+
 async def run_once(
     driver: PortalDriver,
     *,
@@ -185,32 +211,40 @@ async def run_once(
             await driver.login(username=credentials.username, password=credentials.password)
             if is_login_url(await driver.open_usage()):
                 return PortalOutcome("reauth_required", "login_failed")
-        xml = await driver.download_green_button(days=backfill_days, now=now)
-        if not xml:
-            return PortalOutcome("error", "empty_download")
-        try:
-            parse_espi(xml, retrieved_at=now, source="rockymountain_power")
-        except EspiError as exc:
-            _save_raw(raw_dir, now, "green_button.xml", xml)
-            return PortalOutcome("error", f"espi_invalid:{exc}"[:200])
-        xml_file = _atomic_write(inbox_dir, f"rmp-portal-{stamp}.xml", xml)
+        first, last = await driver.usage_day_range()
+        days = usage_days(first, last, count=backfill_days)
+        if not days:
+            return PortalOutcome("error", "no_usage_days_available")
+        delivered: list[Path] = []
+        for day in days:
+            try:
+                xml = await driver.download_usage_day(day)
+            except Exception as exc:  # noqa: BLE001 -- the page is unreliable after a failed download
+                return _usage_failure(day, f"download_failed:{type(exc).__name__}", delivered, len(days))
+            problem = _day_xml_problem(xml, now=now)
+            if problem is not None:
+                if xml:
+                    _save_raw(raw_dir, now, f"green_button-{day.isoformat()}.xml", xml)
+                return _usage_failure(day, problem, delivered, len(days))
+            delivered.append(_atomic_write(inbox_dir, f"rmp-portal-{stamp}-{day.isoformat()}.xml", xml))
+        xml_files = tuple(delivered)
         if not scrape_bills:
-            return PortalOutcome("ok", "fetched_usage_only", xml_file=xml_file)
+            return PortalOutcome("ok", "fetched_usage_only", xml_files=xml_files)
 
         try:
             rows = await driver.billing_rows()
             forecast = await driver.forecast_fields()
         except Exception as exc:  # noqa: BLE001 -- any scrape failure is a visible error state
             await _snapshot_html(driver, raw_dir, now)
-            return PortalOutcome("error", f"billing_scrape_failed:{type(exc).__name__}", xml_file=xml_file)
+            return PortalOutcome("error", f"billing_scrape_failed:{type(exc).__name__}", xml_files=xml_files)
         if not rows:
             await _snapshot_html(driver, raw_dir, now)
-            return PortalOutcome("error", "bill_rows_empty", xml_file=xml_file)
+            return PortalOutcome("error", "bill_rows_empty", xml_files=xml_files)
         try:
             payloads = [bill_payload_from_fields(row, retrieved_at=now) for row in rows]
         except ValueError as exc:
             await _snapshot_html(driver, raw_dir, now)
-            return PortalOutcome("error", _field_reason("bill_parse_failed", exc), xml_file=xml_file)
+            return PortalOutcome("error", _field_reason("bill_parse_failed", exc), xml_files=xml_files)
         forecast_error: Optional[str] = None
         if forecast is not None:
             try:
@@ -223,9 +257,9 @@ async def run_once(
                 payloads, bill_inbox_dir=bill_inbox_dir, seen_path=seen_path, stamp=stamp
             )
         except OSError as exc:
-            return PortalOutcome("error", f"bill_write_failed:{type(exc).__name__}", xml_file=xml_file)
+            return PortalOutcome("error", f"bill_write_failed:{type(exc).__name__}", xml_files=xml_files)
         if forecast_error:
-            return PortalOutcome("error", forecast_error, xml_file=xml_file, bill_files=bill_files)
-        return PortalOutcome("ok", "fetched", xml_file=xml_file, bill_files=bill_files)
+            return PortalOutcome("error", forecast_error, xml_files=xml_files, bill_files=bill_files)
+        return PortalOutcome("ok", "fetched", xml_files=xml_files, bill_files=bill_files)
     except Exception as exc:  # noqa: BLE001 -- the loop must survive and report
         return PortalOutcome("error", type(exc).__name__)

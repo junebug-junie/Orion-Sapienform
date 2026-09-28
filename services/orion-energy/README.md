@@ -114,15 +114,24 @@ nano /mnt/storage-warm/orion-energy/portal/credentials.env   # RMP_USERNAME=... 
   the loop waits a full interval, so a bad password cannot lock the account.
 - No file: a login redirect is `reauth_required`/`session_expired` (manual reauth below).
 
-The sign-in form selectors are verified against the live page; the Green Button download
-and billing selectors are still UNVERIFIED (`portal/selectors.py`). Bill scraping is off
-by default (`ENERGY_PORTAL_SCRAPE_BILLS=false`), so a good run reads `ok`/`fetched_usage_only`.
+Usage comes one day at a time: RMP's Green Button download follows the usage page's
+period dropdown, and only "One Day" is hourly (One Week/Month are daily, Two Year monthly).
+Each attempt reads the date picker's allowed range and downloads the newest
+`ENERGY_PORTAL_BACKFILL_DAYS` days as `rmp-portal-<stamp>-<day>.xml`. A download that is not
+all one-hour readings is refused (`non_hourly_download`) -- a daily reading would overwrite
+that day's first hour in the ledger. The first failed day stops the run; earlier days stay
+delivered. RMP's day files run 02:00-02:00 local, not midnight-midnight (seen live, not
+explained). Don't hand-drop One Week/One Month exports for the same reason.
+
+Login and the usage download are verified live (2026-09-28); billing selectors are still
+UNVERIFIED (`portal/selectors.py`). Bill scraping is off by default
+(`ENERGY_PORTAL_SCRAPE_BILLS=false`), so a good run reads `ok`/`fetched_usage_only`.
 
 | Key | Default | What it does |
 |---|---|---|
 | `ENERGY_PORTAL_CREDENTIALS_PATH` | `/data/energy/portal/credentials.env` | chmod-600 login file (see above); absent = manual reauth only. |
 | `ENERGY_PORTAL_SCRAPE_BILLS` | `false` | Also scrape billing history / forecast after the usage download. |
-| `ENERGY_PORTAL_TIMEOUT_SEC` | `300` | Hard cap on one whole fetch attempt; hitting it records `error`/`timeout` in `status.json`. |
+| `ENERGY_PORTAL_TIMEOUT_SEC` | `300` | Base cap on one fetch attempt, plus 45s per requested day; hitting it records `error`/`timeout` in `status.json`. |
 | `ENERGY_PORTAL_RAW_DIR` | `/data/energy/portal/raw` | Where a failed download/scrape keeps its raw artifact (see below). |
 | `ENERGY_PORTAL_BACKFILL_DAYS` | `3` | Days of usage each daily fetch requests (1-730); `--days` overrides it for a one-off backfill. |
 
@@ -145,9 +154,10 @@ Bring it back with the `up -d` line in step 2 once the reauth or one-off fetch i
      --profile /mnt/storage-warm/orion-energy/portal/profile \
      --status /mnt/storage-warm/orion-energy/portal/status.json
    ```
-2. Two-year backfill once (portal service stopped), then the daily loop:
+2. Backfill once (portal service stopped; one download per day, ~5s each, capped at the
+   picker's first day), then the daily loop:
    ```bash
-   scripts/safe_docker_build.sh orion-energy --profile portal run --rm orion-energy-portal python -m portal.main --once --days 730
+   scripts/safe_docker_build.sh orion-energy --profile portal run --rm orion-energy-portal python -m portal.main --once --days 60
    scripts/safe_docker_build.sh orion-energy --profile portal up -d --build orion-energy-portal
    ```
 3. Set `ENERGY_PORTAL_ENABLED=true` for `orion-energy` and restart it.

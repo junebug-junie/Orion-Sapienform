@@ -20,11 +20,17 @@ LOGIN_PASSWORD = "#password"
 LOGIN_SUBMIT = "button#next"
 LOGIN_WAIT_SEC = 60.0
 
-GREEN_BUTTON_OPEN = "text=Green Button"
-GREEN_BUTTON_FROM = "input[name='startDate']"
-GREEN_BUTTON_TO = "input[name='endDate']"
-GREEN_BUTTON_DOWNLOAD = "button:has-text('Download')"
-GREEN_BUTTON_DATE_FORMAT = "%m/%d/%Y"
+# Verified 2026-09-28 on /secure/my-account/energy-usage. The Green Button download follows
+# the page's period dropdown: only "One Day" is hourly (One Week/Month are daily, Two Year
+# monthly), so the fetcher downloads one day at a time. The "Show usage through" date input
+# carries min/max attributes (e.g. 2026-09-26T00:00:00+00:00) = the days RMP has; entering a
+# date outside them leaves the download link dead for the rest of the session.
+USAGE_PERIOD_OPTIONS = ("Two Year", "One Year", "One Month", "One Week", "One Day")
+USAGE_PERIOD_ONE_DAY = "One Day"
+USAGE_THROUGH_INPUT = "input[placeholder^='Show usage through']"
+GREEN_BUTTON_DOWNLOAD = "a:has-text('DOWNLOAD GREEN BUTTON DATA')"
+DOWNLOAD_WAIT_SEC = 30.0
+SETTLE_AFTER_DATE_SEC = 1.5
 
 BILL_ROW = "[data-testid='billing-history-row']"
 BILL_ROW_FIELDS = {

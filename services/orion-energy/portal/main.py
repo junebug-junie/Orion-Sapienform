@@ -21,6 +21,12 @@ from .status import read_status, write_attempt_started, write_status
 logger = logging.getLogger("orion-energy-portal")
 
 MIN_DAYS, MAX_DAYS = 1, 730
+# Each day is its own portal download (~5s live); the base timeout covers login and page load.
+PER_DAY_BUDGET_SEC = 45.0
+
+
+def attempt_timeout_sec(base_sec: float, *, days: int) -> float:
+    return base_sec + PER_DAY_BUDGET_SEC * days
 
 
 def _utcnow() -> datetime:
@@ -93,7 +99,7 @@ async def attempt(settings: PortalSettings, *, days: int) -> PortalOutcome:
                     credentials=credentials,
                     scrape_bills=settings.ENERGY_PORTAL_SCRAPE_BILLS,
                 ),
-                timeout=settings.ENERGY_PORTAL_TIMEOUT_SEC,
+                timeout=attempt_timeout_sec(settings.ENERGY_PORTAL_TIMEOUT_SEC, days=days),
             )
     except (TimeoutError, asyncio.TimeoutError):
         outcome = PortalOutcome("error", "timeout")
@@ -101,10 +107,10 @@ async def attempt(settings: PortalSettings, *, days: int) -> PortalOutcome:
         outcome = PortalOutcome("error", f"browser_failed:{type(exc).__name__}")
     record_status(status_path, outcome, now=now)
     logger.info(
-        "energy_portal_fetch state=%s reason=%s xml=%s bills=%d",
+        "energy_portal_fetch state=%s reason=%s xml_days=%d bills=%d",
         outcome.state,
         outcome.reason,
-        outcome.xml_file.name if outcome.xml_file else None,
+        len(outcome.xml_files),
         len(outcome.bill_files),
     )
     return outcome

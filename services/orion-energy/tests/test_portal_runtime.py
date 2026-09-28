@@ -10,7 +10,7 @@ import pytest
 
 from orion.energy.importer_status import PortalStatus
 from portal import main as portal_main
-from portal.driver import green_button_range, prepare_profile_dir
+from portal.driver import picker_date, prepare_profile_dir
 from portal.fetch import PortalOutcome
 from portal.settings import PortalSettings
 from portal.status import read_status, write_reauth_status, write_status
@@ -200,8 +200,16 @@ def test_bills_seen_path_sits_next_to_status(tmp_path) -> None:
     assert portal_main.bills_seen_path(tmp_path / "p" / "status.json") == tmp_path / "p" / "bills_seen.json"
 
 
-def test_green_button_range_uses_passed_now() -> None:
-    assert green_button_range(NOW, days=3) == (date(2026, 9, 24), date(2026, 9, 27))
+def test_picker_date_takes_the_calendar_day_as_written() -> None:
+    assert picker_date("2026-09-26T00:00:00+00:00") == date(2026, 9, 26)
+    assert picker_date("2026-03-07T00:00:00Z") == date(2026, 3, 7)
+    with pytest.raises(ValueError):
+        picker_date(None)
+
+
+def test_attempt_timeout_grows_with_requested_days() -> None:
+    assert portal_main.attempt_timeout_sec(300, days=3) == 300 + 3 * portal_main.PER_DAY_BUDGET_SEC
+    assert portal_main.attempt_timeout_sec(300, days=60) > portal_main.attempt_timeout_sec(300, days=3)
 
 
 def test_profile_dir_is_created_private(tmp_path) -> None:

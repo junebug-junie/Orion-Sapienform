@@ -236,6 +236,53 @@ def test_cap_blocks_grant_and_pause_for_a_fourth_urgent_lease():
     assert preempts(run(active[:2] + [bg, u4], roles=agent_slots(3))) == ["bg"]
 
 
+# --- urgent owner reclaiming a borrowed role: the borrower is paused, not given 600 s ---------
+def _metacog_bg_on_agent(lease_id="mb", priority="background", **kw):
+    return lease("metacog", "granted", "agent", priority=priority, kind="hold", retryable=True,
+                 lease_id=lease_id, **kw)
+
+
+GPU2_LOADED = cards(gpu2=CardLive("gpu2", swapped_in={"agent-gpu2"}))
+
+
+def test_urgent_owner_reclaims_a_borrowing_hold_with_the_preempt_grace():
+    mb = _metacog_bg_on_agent()
+    v2 = hold("granted", "agent-gpu2", lease_id="v2")               # another pausable run it could use
+    decisions = run(_gpu3_full() + [mb, v2, urgent(lease_id="u")], crds=GPU2_LOADED)
+    assert of(Recall, decisions) == [Recall("mb", T0 + GRACE, "urgent_preempt")]   # no second victim
+
+
+def test_non_urgent_owner_still_reclaims_with_owner_waiting_and_the_hold_grace():
+    mb = _metacog_bg_on_agent()
+    decisions = run(_gpu3_full() + [mb, hold(priority="system", lease_id="o")])
+    assert of(Recall, decisions) == [
+        Recall("mb", T0 + timedelta(seconds=CFG.defaults.hold_clawback_grace_sec), "owner_waiting")]
+
+
+@pytest.mark.parametrize("borrower", [
+    lambda: _metacog_bg_on_agent(priority="interactive"),
+    lambda: _metacog_bg_on_agent(operator=True),
+    lambda: lease("metacog", "granted", "agent", priority="background", lease_id="mb"),   # a request
+], ids=["interactive_hold", "operator_hold", "request"])
+def test_ineligible_borrower_keeps_owner_waiting_for_an_urgent_owner(borrower):
+    decisions = run(_gpu3_full() + [borrower(), urgent(lease_id="u")])
+    assert [(r.lease_id, r.reason) for r in of(Recall, decisions)] == [("mb", "owner_waiting")]
+
+
+def test_one_borrower_is_paused_per_urgent_owner_the_rest_keep_owner_waiting():
+    newer = _metacog_bg_on_agent("new", granted_at=T0 - timedelta(seconds=10))
+    older = _metacog_bg_on_agent("old", granted_at=T0 - timedelta(seconds=100))
+    decisions = run(_gpu3_full() + [newer, older, urgent(lease_id="u")], roles=agent_slots(2))
+    assert sorted((r.lease_id, r.reason) for r in of(Recall, decisions)) == [
+        ("new", "urgent_preempt"), ("old", "owner_waiting")]
+
+
+def test_urgent_owner_reclaim_pauses_once_then_takes_the_slot():
+    mb = _metacog_bg_on_agent(age=100, granted_at=T0 - timedelta(seconds=50))
+    paused, got = _simulate(_gpu3_full() + [mb, urgent(lease_id="u")])
+    assert paused == ["mb"] and got == {"u": "agent"}
+
+
 def test_capped_urgent_is_not_a_waiting_owner():
     active = [urgent(status="granted", role="agent", lease_id=f"a{i}") for i in range(3)]
     borrower = lease("fast", "granted", "agent", lease_id="b")

@@ -477,3 +477,16 @@ def test_heartbeat_interval_must_fit_twice_in_the_pool_hold_ttl():
         with pytest.raises(ValueError, match="at most half"):
             runtime(pool, saver, store, DURABLE_RUNS_LEASE_HEARTBEAT_SEC=46, DURABLE_RUNS_LEASE_SECONDS=120)
     asyncio.run(with_database(scenario))
+
+
+def test_list_pending_pages_urgent_rows_first_so_a_long_backlog_cannot_hide_one():
+    async def scenario(pool, saver, store):
+        for i in range(3):
+            await store.submit(request(f"pending-bg-{i}").model_dump(mode="json"))
+        await store.submit(request("pending-u-1", resource="llm.route.agent", priority="urgent").model_dump(mode="json"))
+        legacy = request("pending-legacy-0").model_dump(mode="json")
+        legacy["admission"] = None                                   # no admission at all: sorts as background
+        await store.submit(legacy)
+        assert [r["run_id"] for r in await store.list_pending(limit=2)] == ["pending-u-1", "pending-bg-0"]
+        assert [r["run_id"] for r in await store.list_pending()] == ["pending-u-1", "pending-bg-0", "pending-bg-1", "pending-bg-2", "pending-legacy-0"]
+    asyncio.run(with_database(scenario))

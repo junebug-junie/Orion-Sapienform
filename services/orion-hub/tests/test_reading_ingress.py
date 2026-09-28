@@ -472,3 +472,33 @@ def test_index_loop_starts_only_when_search_enabled():
     assert asyncio.run(run(_search_cfg())) is True
     assert asyncio.run(run(_search_cfg(chroma_url=""))) is False
     assert asyncio.run(run(None)) is False
+
+
+def test_index_once_without_pool_says_so(caplog):
+    import logging
+
+    listener = ReadingListener(lambda: None, ServiceRef(name="orion-hub"), search=_search_cfg())
+    with caplog.at_level(logging.INFO):
+        assert asyncio.run(listener.index_once()) is None
+    assert "reading_search_index skipped reason=no_pool" in caplog.text
+
+
+@pytest.mark.parametrize("pool_ready,expected", [(False, 15.0), (True, 300.0)])
+def test_index_loop_retries_soon_only_while_pool_is_missing(monkeypatch, pool_ready, expected):
+    from orion.world_pulse_read.search import IndexPass
+
+    delays = []
+
+    async def fake_sleep(delay):
+        delays.append(delay)
+        raise asyncio.CancelledError
+
+    async def fake_index_once(self):
+        return IndexPass(indexed=0, pending=0) if pool_ready else None
+
+    monkeypatch.setattr(ReadingListener, "index_once", fake_index_once)
+    monkeypatch.setattr(ReadingListener._index_loop.__globals__["asyncio"], "sleep", fake_sleep)
+    listener = ReadingListener(lambda: None, ServiceRef(name="orion-hub"), search=_search_cfg())
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(listener._index_loop())
+    assert delays == [expected]

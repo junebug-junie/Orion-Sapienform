@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 _SAFE_ERROR = "reading_queue_unavailable; acceptance unknown, retry the same request"
 _SEARCH_UNAVAILABLE = "reading_search_unavailable; answer unknown"
+# The memory pool comes up after listeners start; do not wait a full index interval for it.
+_NO_POOL_RETRY_SEC = 15.0
 _SCHEMA_SQLSTATES = {"42P01", "42703"}
 _CONNECTION_SQLSTATE_PREFIX = "08"
 
@@ -208,6 +210,7 @@ class ReadingListener:
     async def index_once(self):
         pool = self.pool_provider()
         if pool is None:
+            logger.info("reading_search_index skipped reason=no_pool")
             return None
         # Release the connection before embedding; a pass can take seconds.
         async with pool.acquire() as conn:
@@ -221,8 +224,10 @@ class ReadingListener:
 
     async def _index_loop(self):
         while True:
+            delay = self.search.index_interval_sec
             try:
-                await self.index_once()
+                if await self.index_once() is None:
+                    delay = min(delay, _NO_POOL_RETRY_SEC)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -230,7 +235,7 @@ class ReadingListener:
                     "reading_search_index_failed exc_type=%s detail=%s",
                     type(exc).__name__, _safe_exception_detail(exc),
                 )
-            await asyncio.sleep(self.search.index_interval_sec)
+            await asyncio.sleep(delay)
 
     async def _run(self):
         while True:

@@ -198,6 +198,7 @@ class ZWaveJSClient:
         self._device_online: dict[int, bool] = {}
         self._product_by_node: dict[int, str] = {}
         self._last_fresh_at: dict[int, datetime] = {}
+        self._value_fresh_at: dict[int, dict[str, datetime]] = {}
         self.consecutive_poll_failures = 0
         self._listener_task: Optional[asyncio.Task[None]] = None
         self._dispatch_task: Optional[asyncio.Task[None]] = None
@@ -214,8 +215,26 @@ class ZWaveJSClient:
         target = self.node_id if node_id is None else node_id
         return self._last_fresh_at.get(target)
 
-    def _mark_fresh(self, node_id: int) -> None:
-        self._last_fresh_at[node_id] = self._now()
+    def fresh_values(
+        self, node_id: Optional[int] = None, *, now: datetime, max_age_sec: float
+    ) -> dict[str, dict[str, Any]]:
+        """Cached values whose own key was polled or pushed within ``max_age_sec`` of ``now``.
+
+        The start_listening snapshot never marks a key fresh, so snapshot-only values are absent.
+        """
+        target = self.node_id if node_id is None else node_id
+        stamps = self._value_fresh_at.get(target, {})
+        return {
+            key: dict(entry)
+            for key, entry in self._values_by_node.get(target, {}).items()
+            if key in stamps and (now - stamps[key]).total_seconds() <= max_age_sec
+        }
+
+    def _mark_fresh(self, node_id: int, key: str, *, electric_watts: bool) -> None:
+        now = self._now()
+        self._value_fresh_at.setdefault(node_id, {})[key] = now
+        if electric_watts:
+            self._last_fresh_at[node_id] = now
 
     def _poll_failed(self, node_id: int, reason: str) -> None:
         self.consecutive_poll_failures += 1
@@ -257,7 +276,7 @@ class ZWaveJSClient:
                     "propertyKey": METER_W_PROPERTY_KEY,
                 },
             )
-        except Exception as exc:  # noqa: BLE001 -- includes a closed socket (assert in _request)
+        except Exception as exc:  # noqa: BLE001 -- includes ConnectionError from a closed socket
             self._poll_failed(target, f"{type(exc).__name__}: {exc}")
             return None
         if not result.get("success", True):
@@ -280,7 +299,7 @@ class ZWaveJSClient:
             "nodeId": target,
         }
         self.consecutive_poll_failures = 0
-        self._mark_fresh(target)
+        self._mark_fresh(target, key, electric_watts=True)
         return watts
 
     async def connect(self) -> None:
@@ -307,9 +326,18 @@ class ZWaveJSClient:
                 except asyncio.CancelledError:
                     pass
                 setattr(self, task_name, None)
-        if self._ws is not None:
-            await self._ws.close()
-            self._ws = None
+        # Nothing learned on a dead socket may outlive it: queued messages could replay an
+        # old Electric_W event as fresh, and ready/online would describe the last live state.
+        while True:
+            try:
+                self._inbound.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        self._controller_ready = False
+        self._device_online.clear()
+        ws, self._ws = self._ws, None
+        if ws is not None:
+            await ws.close()
 
     async def _bootstrap(self) -> None:
         hello = await self._read_until(lambda msg: msg.get("type") in {"version", "api", "event", "result"})
@@ -362,7 +390,8 @@ class ZWaveJSClient:
         return str(self._message_id)
 
     async def _request(self, command: str, **params: Any) -> dict[str, Any]:
-        assert self._ws is not None
+        if self._ws is None:
+            raise ConnectionError("zwave-js websocket not connected")
         message_id = self._next_message_id()
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[dict[str, Any]] = loop.create_future()
@@ -446,10 +475,13 @@ class ZWaveJSClient:
             if (
                 normalized.get("commandClass") == METER_CC
                 and normalized.get("property") == "value"
-                and _is_electric_watts(normalized)
                 and _entry_numeric(normalized) is not None
             ):
-                self._mark_fresh(node_id)
+                self._mark_fresh(
+                    node_id,
+                    _value_map_key(normalized),
+                    electric_watts=_is_electric_watts(normalized),
+                )
             return
 
         if source == "node" and name == "metadata updated":

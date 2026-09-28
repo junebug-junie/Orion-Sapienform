@@ -154,25 +154,38 @@ async def poll_once(
     now_fn: Callable[[], datetime] = _utcnow,
 ) -> HomeCoolingSampleV1:
     node_id = settings.ZWAVE_NODE_ID
-    await client.refresh_meter_watts(node_id)
-    values = client.get_values(node_id)
-    sample = build_cooling_sample(
-        node_id=node_id,
-        controller_ready=client.controller_ready,
-        device_online=client.device_online(node_id),
-        watts=extract_meter_watts(values),
-        volts=extract_meter_volts(values),
-        amps=extract_meter_amps(values),
-        switch_on=extract_switch_on(values),
-        device_path="/dev/zwave",
-        product=client.product_name(node_id),
-        now=now_fn(),
-        last_fresh_at=client.last_fresh_at(node_id),
-        stale_after_sec=settings.COOLING_STALE_AFTER_SEC,
-        device_id=settings.ZWAVE_DEVICE_ID,
-        device_name=settings.ZWAVE_DEVICE_NAME,
-        instance_id=settings.INSTANCE_ID,
-    )
+    try:
+        await client.refresh_meter_watts(node_id)
+        now = now_fn()
+        values = client.get_values(node_id)
+        # Volts/amps are never polled; only a value the plug itself pushed within the
+        # stale window may be published — never the cached one under a fresh flag.
+        fresh = client.fresh_values(node_id, now=now, max_age_sec=settings.COOLING_STALE_AFTER_SEC)
+        sample = build_cooling_sample(
+            node_id=node_id,
+            controller_ready=client.controller_ready,
+            device_online=client.device_online(node_id),
+            watts=extract_meter_watts(values),
+            volts=extract_meter_volts(fresh),
+            amps=extract_meter_amps(fresh),
+            switch_on=extract_switch_on(values),
+            device_path="/dev/zwave",
+            product=client.product_name(node_id),
+            now=now,
+            last_fresh_at=client.last_fresh_at(node_id),
+            stale_after_sec=settings.COOLING_STALE_AFTER_SEC,
+            device_id=settings.ZWAVE_DEVICE_ID,
+            device_name=settings.ZWAVE_DEVICE_NAME,
+            instance_id=settings.INSTANCE_ID,
+        )
+    except Exception:
+        _COOLING_STATUS.update(
+            cooling_sensor="error",
+            cooling_sample_age_sec=None,
+            zwave_connected=client.connected,
+            consecutive_poll_failures=client.consecutive_poll_failures,
+        )
+        raise
     _COOLING_STATUS.update(
         cooling_sensor="stale" if sample.state.stale else "fresh",
         cooling_sample_age_sec=sample.provenance.sample_age_sec,
@@ -187,6 +200,34 @@ async def poll_once(
             client.connected,
         )
     return sample
+
+
+async def _ensure_connected(client: ZWaveJSClient, settings: Settings) -> None:
+    """A dead socket must not leave us publishing cache forever: reconnect when needed."""
+    if client.connected:
+        return
+    try:
+        await client.close()
+        await client.connect()
+        logger.info("zwave_js_connected ws=%s", settings.ZWAVE_JS_WS_URL)
+    except Exception as exc:
+        logger.warning(
+            "zwave_js_connect_failed ws=%s error=%s: %s",
+            settings.ZWAVE_JS_WS_URL,
+            type(exc).__name__,
+            exc,
+        )
+
+
+async def run_poll_cycle(client: ZWaveJSClient, bus: OrionBusAsync, settings: Settings) -> None:
+    """One cycle: reconnect if needed, then always poll and publish — stale while disconnected,
+    so silence stays visible downstream."""
+    await _ensure_connected(client, settings)
+    try:
+        sample = await poll_once(client, settings)
+        await _publish_sample(bus, settings, sample)
+    except Exception:
+        logger.exception("Cooling poll cycle failed; will retry")
 
 
 async def poll_cooling_loop() -> None:
@@ -219,21 +260,7 @@ async def poll_cooling_loop() -> None:
     client = ZWaveJSClient(settings.ZWAVE_JS_WS_URL, settings.ZWAVE_NODE_ID)
     try:
         while True:
-            if not client.connected:
-                # A dead socket must not leave us publishing cache forever: reconnect, and
-                # keep publishing (stale) samples while it is down so silence is visible.
-                try:
-                    await client.close()
-                    await client.connect()
-                    logger.info("zwave_js_connected ws=%s", settings.ZWAVE_JS_WS_URL)
-                except Exception:
-                    logger.exception("Z-Wave connect attempt failed ws=%s", settings.ZWAVE_JS_WS_URL)
-            try:
-                sample = await poll_once(client, settings)
-                await _publish_sample(bus, settings, sample)
-            except Exception:
-                logger.exception("Cooling poll cycle failed; will retry")
-
+            await run_poll_cycle(client, bus, settings)
             await asyncio.sleep(settings.COOLING_POLL_INTERVAL_SEC)
     finally:
         await client.close()

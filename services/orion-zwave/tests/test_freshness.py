@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, PropertyMock, patch
 
@@ -244,10 +245,40 @@ async def test_close_forgets_controller_ready_and_device_online():
 @pytest.mark.asyncio
 async def test_close_drains_queued_messages_so_they_cannot_replay():
     client = _client()
+    client._handle_message(_meter_event(METER_W_PROPERTY_KEY, 860.0))
     client._inbound.put_nowait(_meter_event(METER_W_PROPERTY_KEY, 870.0))
+    assert client.last_fresh_at(2) == T0
     await client.close()
     assert client._inbound.empty()
+    # Neither the live-era stamp nor the queued event may leave the node looking fresh.
     assert client.last_fresh_at(2) is None
+    assert client.fresh_values(2, now=T0, max_age_sec=120.0) == {}
+
+
+@pytest.mark.asyncio
+async def test_close_forgets_freshness_stamps():
+    client = _client()
+    client._handle_message(_meter_event(METER_W_PROPERTY_KEY, 870.0))
+    client._handle_message(_meter_event(METER_V_PROPERTY_KEY, 121.0))
+    assert client.last_fresh_at(2) == T0
+    assert client.fresh_values(2, now=T0, max_age_sec=120.0)
+    await client.close()
+    assert client.last_fresh_at(2) is None
+    assert client.fresh_values(2, now=T0, max_age_sec=120.0) == {}
+
+
+@pytest.mark.asyncio
+async def test_reconnect_snapshot_after_close_is_not_published_as_fresh():
+    client = _client()
+    client._handle_message(_meter_event(METER_W_PROPERTY_KEY, 870.0))
+    await client.close()
+    client._ingest_listening_result({"success": True, "result": {"state": {"nodes": [{
+        "nodeId": 2, "ready": True, "values": [_cached_meter(METER_W_PROPERTY_KEY, 850.0)],
+    }]}}})
+    client._request = AsyncMock(side_effect=TimeoutError("plug gone"))
+    sample = await zwave_main.poll_once(client, _settings(), now_fn=lambda: T0 + timedelta(seconds=5))
+    assert sample.state.stale is True
+    assert sample.measurements.cooling_watts is None
 
 
 @pytest.mark.asyncio
@@ -283,15 +314,80 @@ async def test_poll_cycle_reconnects_and_still_publishes_stale_when_connect_fail
 
 @pytest.mark.asyncio
 async def test_poll_cycle_skips_reconnect_while_connected(monkeypatch):
-    client = _client()
+    # run_poll_cycle reads the real clock, so the client must stamp on it too.
+    client = ZWaveJSClient("ws://test", node_id=2)
     client.close = AsyncMock()
     client.connect = AsyncMock()
     client._request = AsyncMock(return_value={"success": True, "result": {"value": 885.7}})
-    monkeypatch.setattr(zwave_main, "_publish_sample", AsyncMock())
+    publish = AsyncMock()
+    monkeypatch.setattr(zwave_main, "_publish_sample", publish)
     with patch.object(ZWaveJSClient, "connected", new_callable=PropertyMock, return_value=True):
         await zwave_main.run_poll_cycle(client, object(), _settings())
     client.close.assert_not_awaited()
     client.connect.assert_not_awaited()
+    publish.assert_awaited_once()
+    sample = publish.await_args.args[2]
+    assert sample.state.stale is False
+    assert sample.measurements.cooling_watts == 885.7
+
+
+@pytest.mark.asyncio
+async def test_poll_cycle_bounds_hanging_reconnect_and_still_publishes_stale(caplog, monkeypatch):
+    client = _client()
+    closes: list[str] = []
+    client.close = AsyncMock(side_effect=lambda: closes.append("close"))
+    connect_cancelled = asyncio.Event()
+
+    async def _hang() -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            connect_cancelled.set()
+            raise
+
+    client.connect = _hang
+    publish = AsyncMock()
+    monkeypatch.setattr(zwave_main, "_publish_sample", publish)
+    monkeypatch.setattr(zwave_main, "RECONNECT_TIMEOUT_SEC", 0.05)
+    with caplog.at_level("WARNING"):
+        await asyncio.wait_for(zwave_main.run_poll_cycle(client, object(), _settings()), timeout=2)
+    assert connect_cancelled.is_set()
+    assert closes == ["close", "close"]  # pre-connect reset, then cleanup after the timeout
+    assert "zwave_js_connect_failed" in caplog.text
+    publish.assert_awaited_once()
+    sample = publish.await_args.args[2]
+    assert sample.state.stale is True
+    assert sample.measurements.cooling_watts is None
+
+
+@pytest.mark.asyncio
+async def test_poll_once_ignores_second_stale_watts_like_entry():
+    client = _client()
+    # A snapshot-only watts-like label (never polled/pushed) sits ahead of the polled key.
+    client._values_by_node[2] = {
+        "50-0-value-power": {"commandClass": METER_CC, "endpoint": 0, "property": "value",
+                             "propertyKeyName": "Power (W)", "value": 12.0},
+    }
+    client._request = AsyncMock(return_value={"success": True, "result": {"value": 885.7}})
+    sample = await zwave_main.poll_once(client, _settings(), now_fn=lambda: T0)
+    assert sample.state.stale is False
+    assert sample.measurements.cooling_watts == 885.7
+
+
+@pytest.mark.asyncio
+async def test_switch_state_kept_while_watts_fresh_dropped_when_stale():
+    clock = [T0]
+    client = ZWaveJSClient("ws://test", node_id=2, now_fn=lambda: clock[0])
+    client._values_by_node[2] = {"37-0-currentValue": {"commandClass": 37, "endpoint": 0,
+                                                       "property": "currentValue", "value": True}}
+    client._request = AsyncMock(return_value={"success": True, "result": {"value": 885.7}})
+    fresh = await zwave_main.poll_once(client, _settings(), now_fn=lambda: clock[0])
+    assert fresh.state.switch_on is True
+    clock[0] = T0 + timedelta(seconds=300)
+    client._request = AsyncMock(side_effect=TimeoutError("plug gone"))
+    stale = await zwave_main.poll_once(client, _settings(), now_fn=lambda: clock[0])
+    assert stale.state.stale is True
+    assert stale.state.switch_on is None
 
 
 @pytest.mark.asyncio

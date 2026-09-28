@@ -30,6 +30,9 @@ from .zwave_client import (
 
 logger = logging.getLogger("orion-zwave")
 
+# Well under the worst case of connect (10s open) + bootstrap (10s read + 30s per RPC).
+RECONNECT_TIMEOUT_SEC = 20.0
+
 
 def setup_logging() -> None:
     handler = logging.StreamHandler(sys.stdout)
@@ -158,14 +161,14 @@ async def poll_once(
         await client.refresh_meter_watts(node_id)
         now = now_fn()
         values = client.get_values(node_id)
-        # Volts/amps are never polled; only a value the plug itself pushed within the
-        # stale window may be published — never the cached one under a fresh flag.
+        # Only a meter value the plug itself answered or pushed within the stale window may be
+        # published — never a cached one under a fresh flag.
         fresh = client.fresh_values(node_id, now=now, max_age_sec=settings.COOLING_STALE_AFTER_SEC)
         sample = build_cooling_sample(
             node_id=node_id,
             controller_ready=client.controller_ready,
             device_online=client.device_online(node_id),
-            watts=extract_meter_watts(values),
+            watts=extract_meter_watts(fresh),
             volts=extract_meter_volts(fresh),
             amps=extract_meter_amps(fresh),
             switch_on=extract_switch_on(values),
@@ -203,20 +206,32 @@ async def poll_once(
 
 
 async def _ensure_connected(client: ZWaveJSClient, settings: Settings) -> None:
-    """A dead socket must not leave us publishing cache forever: reconnect when needed."""
+    """A dead socket must not leave us publishing cache forever: reconnect when needed.
+
+    Bounded so a half-alive server cannot hold back this cycle's stale sample."""
     if client.connected:
         return
     try:
-        await client.close()
-        await client.connect()
+        await asyncio.wait_for(_reconnect(client), timeout=RECONNECT_TIMEOUT_SEC)
         logger.info("zwave_js_connected ws=%s", settings.ZWAVE_JS_WS_URL)
     except Exception as exc:
+        if isinstance(exc, TimeoutError):
+            # Cancellation skips connect()'s own cleanup; don't leave a half-open socket behind.
+            try:
+                await client.close()
+            except Exception:
+                logger.exception("zwave_js_close_after_timeout_failed")
         logger.warning(
             "zwave_js_connect_failed ws=%s error=%s: %s",
             settings.ZWAVE_JS_WS_URL,
             type(exc).__name__,
             exc,
         )
+
+
+async def _reconnect(client: ZWaveJSClient) -> None:
+    await client.close()
+    await client.connect()
 
 
 async def run_poll_cycle(client: ZWaveJSClient, bus: OrionBusAsync, settings: Settings) -> None:

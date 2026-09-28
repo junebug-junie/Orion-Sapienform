@@ -6,6 +6,8 @@ of the day was spent on turns the stance phase refused for GPU capacity
 (``turn_deferred:stance_react_failed: ...capacity...``): six refusals, zero
 reads, then ``world_pulse_read_blocked reason=daily_cap`` for the rest of the
 day. A refusal before any reading must not cost a reading slot.
+(The daily cap and cooldown were removed 2026-09-28; the refund still keeps
+the day counter honest for the status panel and sets the retry backoff.)
 
 A refund does three things:
 

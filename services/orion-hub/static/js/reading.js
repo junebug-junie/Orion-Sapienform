@@ -34,9 +34,22 @@
   }
 
   // A duplicate request is folded into its target read; its own row is never read.
+  // already_read: the URL was read before, so this row is passed on by design.
   function rowStatus(item) {
+    if (item && (item.last_error === "already_read" || item.stage2_error === "already_read")) {
+      return { text: "already read, passed on", tone: "warn" };
+    }
     if (item && item.duplicate_of) return { text: "merged into another read", tone: "warn" };
     return statusLabel(item && item.reading_status);
+  }
+
+  function submitText(out) {
+    if (out && out.duplicate === "already_read") {
+      return "Not queued: Orion already read this URL, so it is blocked as a duplicate by design. Showing the earlier read.";
+    }
+    if (out && out.duplicate === "already_queued") return "Already queued: joined the read that is in progress.";
+    const pos = out && out.queue_position ? ` — ${out.queue_position} of ${out.queue_depth} in line` : "";
+    return `Queued: ${statusLabel(out && out.status).text}${pos}`;
   }
 
   function actionResultText(label, out) {
@@ -71,8 +84,8 @@
     const active = s1 === "pending" || s1 === "claimed" || (s1 === "done" && (s2 === "pending" || s2 === "claimed"));
     return {
       cancel: active,
-      retry1: (s1 === "failed" || s1 === "skipped") && detail.last_error !== "stale_digest_item" && !unconsumedStage(detail, 1),
-      retry2: s1 === "done" && (s2 === "failed" || s2 === "skipped") && hasEvidence(detail) && !unconsumedStage(detail, 2),
+      retry1: (s1 === "failed" || s1 === "skipped") && !["stale_digest_item", "already_read"].includes(detail.last_error) && !unconsumedStage(detail, 1),
+      retry2: s1 === "done" && (s2 === "failed" || s2 === "skipped") && detail.stage2_error !== "already_read" && hasEvidence(detail) && !unconsumedStage(detail, 2),
     };
   }
 
@@ -86,6 +99,7 @@
     stage1_not_done: "Stage 2 needs a finished Stage 1 first.",
     no_read_evidence: "Stage 1 never actually fetched the source, so Stage 2 has nothing to work from. Retry Stage 1.",
     url_already_active: "Another read of this same URL is already queued or running.",
+    already_read: "Orion already read this URL, so it is blocked as a duplicate by design.",
     stale_digest_item_would_be_reskipped: "Old digest items are skipped automatically, so a retry would be skipped again. Use \"Read this URL again\" to queue it as a new read.",
     durable_run_not_found_retry_shortly: "The run hasn't reached the run service yet; try again shortly.",
     reading_control_requires_hub_page: "Controls only work from the Hub page.",
@@ -114,12 +128,11 @@
 
   function walletText(w) {
     if (!w) return "unknown";
-    const used = Number(w.done_today || 0), cap = Number(w.daily_cap || 0);
-    return `${used} of ${cap} used today${w.enabled ? "" : " (paused)"}`;
+    return `${Number(w.done_today || 0)} read today${w.enabled ? "" : " (paused)"}`;
   }
 
   const api = {
-    statusLabel, rowStatus, actionResultText, sourceLabel, allowedActions, refusalText,
+    statusLabel, rowStatus, submitText, actionResultText, sourceLabel, allowedActions, refusalText,
     listQuery, fmtAt, walletText, hasEvidence,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
@@ -326,13 +339,13 @@
         title: "Stop this read. Never charges a wallet.",
         onclick: () => act("Cancel read", `${BASE}/reads/${id}/cancel`) }, "Cancel"),
       el("button", { type: "button", disabled: !can.retry1, id: "retryStage1",
-        title: "Queue Stage 1 again with a fresh attempt budget. Uses a wallet A slot when it runs.",
+        title: "Queue Stage 1 again with a fresh attempt budget.",
         onclick: () => act("Retry stage 1", `${BASE}/reads/${id}/retry`, { stage: 1 }) }, "Retry stage 1"),
       el("button", { type: "button", disabled: !can.retry2, id: "retryStage2",
-        title: "Queue the follow-up again. Uses a wallet B slot when it runs.",
+        title: "Queue the follow-up again.",
         onclick: () => act("Retry stage 2", `${BASE}/reads/${id}/retry`, { stage: 2 }) }, "Retry stage 2"),
       // Escape hatch when no retry applies (e.g. an old digest item): a fresh request.
-      can.cancel || d.duplicate_of ? null : el("button", { type: "button", id: "readAgain",
+      can.cancel || d.duplicate_of || d.status === "done" || d.last_error === "already_read" ? null : el("button", { type: "button", id: "readAgain",
         title: "Put this URL in the submit form above as a new read.",
         onclick: () => {
           $("submitUrl").value = d.url || "";
@@ -410,12 +423,12 @@
       const out = await postJson(`${BASE}/reads`, {
         url, why_now: $("submitWhy").value.trim(), title: $("submitReadTitle").value.trim(),
       });
-      const pos = out.queue_position ? ` — ${out.queue_position} of ${out.queue_depth} in line` : "";
-      $("submitStatus").textContent = `Queued: ${statusLabel(out.status).text}${pos}`;
+      $("submitStatus").textContent = submitText(out);
       $("submitForm").reset();
       view.offset = 0;
       await loadList();
-      if (out.seed_id) await select(out.seed_id);
+      const target = out.duplicate_of || out.seed_id;
+      if (target) await select(target);
     } catch (err) {
       $("submitStatus").textContent = `Not queued: ${err.message}`;
     } finally {

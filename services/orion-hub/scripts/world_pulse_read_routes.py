@@ -123,10 +123,8 @@ async def world_pulse_read_schedule() -> JSONResponse:
         "available": False,
         "enabled": False,
         "done_today": 0,
-        "daily_cap": 12,
         "cooldown_key": WALLET_A_COOLDOWN_KEY,
         "count_key_prefix": WALLET_A_COUNT_KEY_PREFIX,
-        "cooldown_sec": None,
         "local_date": None,
         "tz": None,
         "last_read_at": None,
@@ -135,12 +133,6 @@ async def world_pulse_read_schedule() -> JSONResponse:
         cfg = _settings()
         payload["enabled"] = bool(
             getattr(cfg, "HUB_WORLD_PULSE_READ_ENABLED", False)
-        )
-        payload["daily_cap"] = int(
-            getattr(cfg, "HUB_WORLD_PULSE_READ_DAILY_CAP", 12) or 0
-        )
-        payload["cooldown_sec"] = float(
-            getattr(cfg, "HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC", 0) or 0
         )
         tz_name = getattr(cfg, "HUB_ENDOGENOUS_OUTREACH_TZ", "UTC") or "UTC"
         local_date = _local_date(tz_name)
@@ -164,7 +156,6 @@ async def world_pulse_read_schedule() -> JSONResponse:
 def _wallet_block(
     *,
     enabled: bool,
-    daily_cap: int,
     cooldown_key: str,
     count_key_prefix: str,
     last_at: str | None,
@@ -173,7 +164,6 @@ def _wallet_block(
     return {
         "enabled": enabled,
         "done_today": done_today,
-        "daily_cap": daily_cap,
         "cooldown_key": cooldown_key,
         "count_key_prefix": count_key_prefix,
         "last_at": last_at,
@@ -188,7 +178,6 @@ async def world_pulse_read_status() -> JSONResponse:
         "tz": None,
         "wallet_a": _wallet_block(
             enabled=False,
-            daily_cap=12,
             cooldown_key=WALLET_A_COOLDOWN_KEY,
             count_key_prefix=WALLET_A_COUNT_KEY_PREFIX,
             last_at=None,
@@ -196,7 +185,6 @@ async def world_pulse_read_status() -> JSONResponse:
         ),
         "wallet_b": _wallet_block(
             enabled=False,
-            daily_cap=12,
             cooldown_key=WALLET_B_COOLDOWN_KEY,
             count_key_prefix=WALLET_B_COUNT_KEY_PREFIX,
             last_at=None,
@@ -218,14 +206,8 @@ async def world_pulse_read_status() -> JSONResponse:
         payload["wallet_a"]["enabled"] = bool(
             getattr(cfg, "HUB_WORLD_PULSE_READ_ENABLED", False)
         )
-        payload["wallet_a"]["daily_cap"] = int(
-            getattr(cfg, "HUB_WORLD_PULSE_READ_DAILY_CAP", 12) or 0
-        )
         payload["wallet_b"]["enabled"] = bool(
             getattr(cfg, "HUB_WORLD_PULSE_READ_STAGE2_ENABLED", False)
-        )
-        payload["wallet_b"]["daily_cap"] = int(
-            getattr(cfg, "HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP", 12) or 0
         )
         payload["stage2_max_round_trips"] = int(
             getattr(cfg, "HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS", 5) or 0

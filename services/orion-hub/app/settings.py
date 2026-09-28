@@ -757,14 +757,6 @@ class Settings(BaseSettings):
     HUB_WORLD_PULSE_READ_TICK_SEC: float = Field(
         default=300.0, alias="HUB_WORLD_PULSE_READ_TICK_SEC"
     )
-    HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC: float = Field(
-        default=1800.0, alias="HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC"
-    )
-    # Wallet A daily cap. Independent of HUB_CURIOSITY_INVESTIGATION_DAILY_CAP
-    # — a debit here must not move the curiosity counter, and vice versa.
-    HUB_WORLD_PULSE_READ_DAILY_CAP: int = Field(
-        default=12, alias="HUB_WORLD_PULSE_READ_DAILY_CAP"
-    )
     # Hours in HUB_ENDOGENOUS_OUTREACH_TZ. START == END or -1 disables the
     # window. Bounded: an out-of-range hour is a permanent silent deadlock.
     HUB_WORLD_PULSE_READ_WINDOW_START_HOUR: int = Field(
@@ -803,12 +795,6 @@ class Settings(BaseSettings):
     )
     HUB_WORLD_PULSE_READ_STAGE2_TICK_SEC: float = Field(
         default=300.0, alias="HUB_WORLD_PULSE_READ_STAGE2_TICK_SEC"
-    )
-    HUB_WORLD_PULSE_READ_STAGE2_MIN_COOLDOWN_SEC: float = Field(
-        default=1800.0, alias="HUB_WORLD_PULSE_READ_STAGE2_MIN_COOLDOWN_SEC"
-    )
-    HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP: int = Field(
-        default=12, alias="HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP"
     )
     HUB_WORLD_PULSE_READ_STAGE2_WINDOW_START_HOUR: int = Field(
         default=0, ge=-1, le=23,

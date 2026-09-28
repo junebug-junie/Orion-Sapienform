@@ -103,6 +103,25 @@ def test_success_requires_explicit_ok_and_matching_durable_request_id():
     assert enforce_reading_receipt_grounding(final, [outcome]) == final
 
 
+def test_already_read_receipt_footer_says_blocked_not_accepted():
+    """Juniper asked for a URL Orion already read: the deterministic footer
+    must say it was blocked as a duplicate, never that it was accepted."""
+    tracker = ReadingReceiptTracker(BINDING)
+    tracker.observe(_tool_use("tool-1"))
+    payload = _accepted_payload(status="completed")
+    payload["result"].update(duplicate="already_read", duplicate_of="finding:earlier")
+    tracker.observe(_tool_result("tool-1", payload))
+
+    [outcome] = tracker.outcomes()
+    assert outcome.duplicate == "already_read"
+    final = enforce_reading_receipt_grounding("I already read that one.", [outcome])
+    assert "blocked as a duplicate by design" in final
+    assert "Reading recommendation accepted" not in final
+    assert str(_request_id()) in final
+    assert "earlier read status: `completed`" in final
+    assert enforce_reading_receipt_grounding(final, [outcome]) == final
+
+
 def test_accepted_recommendation_without_a_read_source_flags_unread_content():
     """An accepted queue write proves the save happened, not that the model
     read the source. Repro of a live Orion turn: it fabricated a paper's

@@ -32,6 +32,19 @@ test("rowStatus shows a folded duplicate as merged, not skipped", () => {
   assert.deepStrictEqual(rd.rowStatus({ reading_status: "skipped" }), { text: "skipped", tone: "warn" });
 });
 
+test("an already-read URL reads as passed on, not retryable, and submit says it was blocked", () => {
+  assert.deepStrictEqual(rd.rowStatus({ reading_status: "skipped", last_error: "already_read" }),
+    { text: "already read, passed on", tone: "warn" });
+  assert.deepStrictEqual(rd.rowStatus({ reading_status: "stage1_completed", stage2_error: "already_read" }),
+    { text: "already read, passed on", tone: "warn" });
+  assert.strictEqual(rd.allowedActions(detail({ status: "skipped", last_error: "already_read" })).retry1, false);
+  assert.strictEqual(rd.allowedActions(detail({ stage2_status: "skipped", stage2_error: "already_read" })).retry2, false);
+  assert.match(rd.submitText({ status: "completed", duplicate: "already_read" }), /blocked as a duplicate by design/);
+  assert.match(rd.submitText({ status: "queued", duplicate: "already_queued" }), /joined the read/);
+  assert.strictEqual(rd.submitText({ status: "queued", queue_position: 2, queue_depth: 9 }), "Queued: waiting to be read — 2 of 9 in line");
+  assert.match(rd.refusalText("already_read"), /duplicate by design/);
+});
+
 test("actionResultText does not claim a cancel landed on a finished run", () => {
   assert.match(rd.actionResultText("Cancel read", { action: "cancel_durable_run", durable_status: "completed",
     run_already_finished: true }), /too late, the run had already completed/);
@@ -65,9 +78,9 @@ test("listQuery only sends filters that are set", () => {
     "phase=failed&kind=reading&include_stale=true&limit=50&offset=50");
 });
 
-test("walletText shows usage against cap and paused state", () => {
-  assert.strictEqual(rd.walletText({ done_today: 3, daily_cap: 12, enabled: true }), "3 of 12 used today");
-  assert.strictEqual(rd.walletText({ done_today: 0, daily_cap: 12, enabled: false }), "0 of 12 used today (paused)");
+test("walletText shows reads today and paused state (no cap)", () => {
+  assert.strictEqual(rd.walletText({ done_today: 3, enabled: true }), "3 read today");
+  assert.strictEqual(rd.walletText({ done_today: 0, enabled: false }), "0 read today (paused)");
 });
 
 test("DOM layer never writes read content as HTML", () => {

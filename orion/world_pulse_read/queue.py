@@ -105,11 +105,11 @@ GENERAL_READING_SQL = "-- Additive general reading ingress; retains the existing
 INSERT_SQL = """
 INSERT INTO world_pulse_read_seed
     (seed_id, kind, run_id, url, title, section, item_id, priority, status,
-     request_id, request_json, root_request_id, duplicate_of, stage2_status)
+     request_id, request_json, root_request_id, duplicate_of, stage2_status, last_error)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
         CASE WHEN $12::text IS NULL THEN 'pending' ELSE 'skipped' END,
         $9,$10::jsonb,$11,$12,
-        CASE WHEN $12::text IS NULL THEN 'pending' ELSE 'skipped' END)
+        CASE WHEN $12::text IS NULL THEN 'pending' ELSE 'skipped' END, $13)
 ON CONFLICT DO NOTHING
 """
 
@@ -120,6 +120,26 @@ WHERE url = $1 AND duplicate_of IS NULL
        (status = 'done' AND stage2_status IN ('pending', 'claimed')))
 ORDER BY created_at, seed_id LIMIT 1
 """
+
+# A URL Orion already read (Stage 1 done with fetch evidence) is never read
+# again, whoever asks: live 2026-09-27 the NVIDIA Rubin page finished Stage 1
+# three times because ACTIVE_URL_SQL only sees rows still in flight. New
+# requests alias onto the earlier read with last_error ALREADY_READ; rows
+# already waiting are passed on by skip_already_read_*. Rows marked done before
+# the read-evidence gate (2026-09-25) may never have fetched anything, so they
+# do not count as a read.
+ALREADY_READ = "already_read"
+
+_HAS_READ_EVIDENCE = "(r.handoff_json->'read_evidence'->0) IS NOT NULL"
+
+_EARLIEST_READ = f"""
+SELECT r.seed_id FROM world_pulse_read_seed r
+WHERE r.url = {{url}} AND r.seed_id <> {{seed_id}} AND r.duplicate_of IS NULL
+  AND r.status = 'done' AND {_HAS_READ_EVIDENCE}
+ORDER BY r.completed_at, r.seed_id LIMIT 1
+"""
+
+READ_URL_SQL = _EARLIEST_READ.format(url="$1", seed_id="$2")
 
 REQUEST_ROW_SQL = "SELECT * FROM world_pulse_read_seed WHERE request_id = $1"
 
@@ -337,12 +357,16 @@ async def enqueue_seeds(
                 if count >= max_round_trips:
                     raise ValueError("round_trip_cap")
             await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", url)
-            active = await conn.fetchrow(ACTIVE_URL_SQL, url)
-            duplicate_of = active["seed_id"] if active and active["seed_id"] != seed.seed_id else None
+            duplicate_of = await conn.fetchval(READ_URL_SQL, url, seed.seed_id)
+            reason = ALREADY_READ if duplicate_of else None
+            if duplicate_of is None:
+                active = await conn.fetchrow(ACTIVE_URL_SQL, url)
+                duplicate_of = active["seed_id"] if active and active["seed_id"] != seed.seed_id else None
             status = await conn.execute(
                 INSERT_SQL, seed.seed_id, seed.kind, seed.run_id, url, seed.title,
                 seed.section, seed.item_id, _PRIORITY[seed.kind], request.request_id,
                 request.model_dump_json(), request.root_request_id or request.request_id, duplicate_of,
+                reason,
             )
         if isinstance(status, str) and status.endswith("1"):
             inserted += 1
@@ -426,6 +450,11 @@ async def _reading_status_row(conn: Any, row: Any) -> dict[str, Any]:
     queue_depth: int | None = None
     if status == "queued":
         queue_position, queue_depth = await _stage1_queue_position(conn, row)
+    duplicate = None
+    if ALREADY_READ in (own["last_error"], own["stage2_error"]):
+        duplicate = ALREADY_READ
+    elif own["duplicate_of"]:
+        duplicate = "already_queued"
     return {
         "request_id": str(request_id) if request_id is not None else None, "status": status,
         "request": _json_object(own["request_json"]),
@@ -442,6 +471,11 @@ async def _reading_status_row(conn: Any, row: Any) -> dict[str, Any]:
         # null otherwise rather than a stale/misleading number.
         "queue_position": queue_position,
         "queue_depth": queue_depth,
+        # already_read: this URL was read before, so it is not read again (by
+        # design); for a folded request, status and summary are the earlier
+        # read's. already_queued: folded into a read that was still in progress
+        # when the request arrived.
+        "duplicate": duplicate,
     }
 
 
@@ -632,6 +666,59 @@ async def skip_stale_digest_items(conn: Any, *, max_age_sec: float) -> int:
         SKIP_STALE_DIGEST_ITEMS_SQL, float(max_age_sec), STALE_DIGEST_ITEM_LAST_ERROR
     )
     return _update_rowcount(status)
+
+
+_SWEEP_EARLIEST_READ = _EARLIEST_READ.format(url="s.url", seed_id="s.seed_id")
+
+# Folds each passed-on row onto the earliest read, and re-points requests that
+# had joined it while it waited, so their status shows that read's result.
+SKIP_ALREADY_READ_STAGE1_SQL = f"""
+WITH swept AS (
+    UPDATE world_pulse_read_seed s
+    SET status = 'skipped', stage2_status = 'skipped', last_error = $1,
+        completed_at = now(), duplicate_of = ({_SWEEP_EARLIEST_READ})
+    WHERE s.status = 'pending' AND s.duplicate_of IS NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM reading_durable_turn d
+          WHERE d.seed_id = s.seed_id AND d.consumed_at IS NULL
+      )
+      AND EXISTS ({_SWEEP_EARLIEST_READ})
+    RETURNING s.seed_id, s.duplicate_of
+), repointed AS (
+    UPDATE world_pulse_read_seed a
+    SET duplicate_of = swept.duplicate_of, last_error = $1
+    FROM swept WHERE a.duplicate_of = swept.seed_id
+    RETURNING a.seed_id
+)
+SELECT (SELECT count(*) FROM swept) AS swept, (SELECT count(*) FROM repointed) AS repointed
+"""
+
+SKIP_ALREADY_READ_STAGE2_SQL = f"""
+UPDATE world_pulse_read_seed s
+SET stage2_status = 'skipped', stage2_error = $1, stage2_completed_at = now()
+WHERE s.status = 'done' AND s.stage2_status = 'pending' AND s.duplicate_of IS NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM reading_durable_turn d
+      WHERE d.seed_id = s.seed_id AND d.consumed_at IS NULL
+  )
+  AND EXISTS (
+      SELECT 1 FROM world_pulse_read_seed r
+      WHERE r.url = s.url AND r.seed_id <> s.seed_id AND r.duplicate_of IS NULL
+        AND r.status = 'done' AND r.stage2_status = 'done' AND {_HAS_READ_EVIDENCE}
+  )
+"""
+
+
+async def skip_already_read_stage1(conn: Any) -> int:
+    """Pass on waiting Stage 1 rows whose URL another row already read.
+    Runs every Stage 1 tick; a row with an open durable run is left to it."""
+    row = await conn.fetchrow(SKIP_ALREADY_READ_STAGE1_SQL, ALREADY_READ)
+    return int(row["swept"]) if row else 0
+
+
+async def skip_already_read_stage2(conn: Any) -> int:
+    """Pass on waiting follow-ups whose URL already had a finished follow-up."""
+    return _update_rowcount(await conn.execute(SKIP_ALREADY_READ_STAGE2_SQL, ALREADY_READ))
 
 
 async def mark_stage2_skipped(conn: Any, seed_id: str, *, reason: str) -> None:

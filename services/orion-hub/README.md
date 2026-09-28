@@ -3093,7 +3093,7 @@ past each loop's own decay threshold, not a heartbeat file).
 
 ## Deliberate reading from Unified Chat and curiosity
 
-Admission windows, daily caps, cooldowns and retry backoff gate new bindings,
+Admission windows and retry backoff gate new bindings,
 not recovery of already-bound durable work. Both workers continue polling an
 unconsumed binding for their own stage while those gates are closed; disabled
 workers still stop. This also retries delivery of the same immutable request
@@ -3102,15 +3102,30 @@ under a closed gate. Both stages default to around-the-clock reading (window
 hours 0/0). Existing installations with explicit window overrides must set
 both pairs to 0/0 and recreate Hub. Once-per-run settlement remains unchanged.
 
-Reading defaults to 12 settled runs per local day for each independent wallet:
-`HUB_WORLD_PULSE_READ_DAILY_CAP` (Stage 1) and
-`HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP` (Stage 2). Existing daily counts are
-preserved. There is no default time-of-day restriction; the unchanged
-30-minute minimum cooldown applies.
-Retry limits, backoff and GPU admission safeguards are unchanged. Set both
-keys in the local Hub `.env` and recreate Hub to apply; an ordinary container
-restart does not reload its environment. Roll back by restoring both caps to 6
-and recreating Hub. This does not cancel or refund existing work.
+**No reading budgets (2026-09-28).** There is no daily cap and no cooldown
+between reads. Each stage reads one source at a time, paced by durable-runs
+GPU admission and by the refund backoff (30 minutes after a turn refused before
+reading, doubling to a 4-hour ceiling). The day counter and last-read time are
+still kept and shown on the Reading tab. The retired keys
+(`HUB_WORLD_PULSE_READ_DAILY_CAP`, `HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP`,
+`HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC`,
+`HUB_WORLD_PULSE_READ_STAGE2_MIN_COOLDOWN_SEC`) are ignored if still set.
+
+**A URL is read once (2026-09-28).** Live 2026-09-27 the same NVIDIA page
+finished Stage 1 three times, because the ingress only folded new requests onto
+reads still in flight. Now a request for a URL whose Stage 1 already finished
+is folded onto that earlier read with `last_error=already_read`, whoever asks:
+World Pulse, curiosity, or Juniper through chat or the Hub. The receipt carries
+`duplicate: "already_read"` (or `"already_queued"` for a read still in
+progress) plus the earlier read's status and summary; the chat tool description
+tells Orion to say the URL was blocked as a duplicate by design. Rows already
+waiting when this shipped are passed on by a sweep each tick
+(`skip_already_read_stage1` / `_stage2` in `orion/world_pulse_read/queue.py`;
+log lines `world_pulse_read_skipped_already_read` and
+`world_pulse_read_stage2_skipped_already_read`), and the operator retry refuses
+with `already_read`. Stage 2 follow-up links that were already read are logged
+(`world_pulse_read_stage2_reentry_already_read`) and skipped without using a
+round trip.
 
 The model can call `recommend_reading(url, why_now)` to preserve a public source for asynchronous reading, or `reading_status(url=...)` / `reading_status(request_id=...)` to inspect existing work. Status requires exactly one selector. Use a supplied link directly without asking the user to remember a UUID. URL lookup uses the same normalization as ingress (including fragment removal), selects the newest matching request by creation time then seed ID, resolves duplicate aliases, and reports `lookup_url`, `matched_request_count`, and `selection=latest_request`. It does not fetch, enqueue, or retry. A missing URL returns `status=not_found`, `request_id=null`, and count zero. Different paths, queries, and arXiv versions remain distinct. Existing ID lookups are unchanged. A queued latest request does not imply earlier requests never ran; returned attempt counts and match count must not be flattened into that claim. Tool discovery alone is not evidence of status. WebFetch/search remain the tools for facts needed immediately. URL presence never automatically submits work.
 
@@ -3152,7 +3167,7 @@ See [implementation, exact checks and runtime limits](../../docs/superpowers/pr-
 - `GET /api/reads/{seed_id}`
 - `POST /api/reads` `{url, why_now, title}` -- the same `enqueue_reading` ingress as `recommend_reading`, with provenance `invocation_context="operator"`, `requested_by="juniper"`.
 - `POST /api/reads/{seed_id}/cancel` -- a stage with an open durable binding is cancelled at `HUB_READING_DURABLE_URL` and finished by the worker's existing cancel path; a waiting stage with no binding is skipped here. Both use `reading_cancelled_by_operator` and never charge a wallet. `run_already_finished: true` means the run had already completed or failed, so the cancel changed nothing.
-- `POST /api/reads/{seed_id}/retry` `{stage: 1|2}` -- terminal (`failed`/`skipped`) stages only, not aliases, no open binding; Stage 1 also refuses a URL already active elsewhere and any digest item older than `HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS` (the stale sweep would skip it again next tick; the tab's **Read this URL again** button queues it as a new read instead); Stage 2 needs Stage 1 `done` with read evidence. Resets that stage's attempts; spends a normal wallet slot when it runs.
+- `POST /api/reads/{seed_id}/retry` `{stage: 1|2}` -- terminal (`failed`/`skipped`) stages only, not aliases, no open binding; Stage 1 also refuses a URL already active elsewhere and any digest item older than `HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS` (the stale sweep would skip it again next tick; the tab's **Read this URL again** button queues it as a new read instead); Stage 2 needs Stage 1 `done` with read evidence. Both refuse `already_read` when another row already finished that stage for the same URL. Resets that stage's attempts. The **Read this URL again** button is hidden once Stage 1 is done (a new request would be blocked as a duplicate).
 
 Controls require `X-Requested-With: orion-hub` with a JSON body (same cross-site guard as the GPU pool panel); there is no operator token. Refusals return a short code (for example `url_already_active`) that the tab explains in plain words. Logs: `reading_operator_submit`, `reading_operator_cancel`, `reading_operator_retry`. Query/control code: `orion/world_pulse_read/operator.py`.
 

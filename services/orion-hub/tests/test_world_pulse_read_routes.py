@@ -29,8 +29,6 @@ ROUTES_PY = HUB_ROOT / "scripts" / "world_pulse_read_routes.py"
 _EXPECTED_DEFAULTS = {
     "HUB_WORLD_PULSE_READ_ENABLED": ("bool", "True"),
     "HUB_WORLD_PULSE_READ_TICK_SEC": ("float", "300"),
-    "HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC": ("float", "1800"),
-    "HUB_WORLD_PULSE_READ_DAILY_CAP": ("int", "12"),
     "HUB_WORLD_PULSE_READ_WINDOW_START_HOUR": ("int", "0"),
     "HUB_WORLD_PULSE_READ_WINDOW_END_HOUR": ("int", "0"),
     "HUB_WORLD_PULSE_READ_TIMEOUT_SEC": ("float", "3500"),
@@ -38,8 +36,6 @@ _EXPECTED_DEFAULTS = {
     "HUB_WORLD_PULSE_READ_LLM_ROUTE": ("str", '"agent"'),
     "HUB_WORLD_PULSE_READ_STAGE2_ENABLED": ("bool", "True"),
     "HUB_WORLD_PULSE_READ_STAGE2_TICK_SEC": ("float", "300"),
-    "HUB_WORLD_PULSE_READ_STAGE2_MIN_COOLDOWN_SEC": ("float", "1800"),
-    "HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP": ("int", "12"),
     "HUB_WORLD_PULSE_READ_STAGE2_WINDOW_START_HOUR": ("int", "0"),
     "HUB_WORLD_PULSE_READ_STAGE2_WINDOW_END_HOUR": ("int", "0"),
     "HUB_WORLD_PULSE_READ_STAGE2_TIMEOUT_SEC": ("float", "3500"),
@@ -48,6 +44,21 @@ _EXPECTED_DEFAULTS = {
     "HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS": ("int", "5"),
     "HUB_WORLD_PULSE_READ_MAX_ATTEMPTS": ("int", "3"),
 }
+
+# Budgets removed 2026-09-28: no daily cap, no cooldown between reads.
+_RETIRED_KEYS = (
+    "HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC",
+    "HUB_WORLD_PULSE_READ_DAILY_CAP",
+    "HUB_WORLD_PULSE_READ_STAGE2_MIN_COOLDOWN_SEC",
+    "HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP",
+)
+
+
+def test_retired_budget_keys_are_gone_everywhere() -> None:
+    for path in (SETTINGS_PY, ENV_EXAMPLE, MAIN_PY, ROUTES_PY):
+        text = path.read_text(encoding="utf-8")
+        for key in _RETIRED_KEYS:
+            assert key not in text, f"{key} still in {path.name}"
 
 
 def _field_default(src: str, name: str, typ: str) -> str:
@@ -78,13 +89,9 @@ def test_env_example_ships_keys_and_keeps_wallet_a_independent() -> None:
     assert enabled.group(1).strip().lower() in {"true", "1", "yes"}, (
         "deploy default is on after migration; .env_example enabled=%r" % enabled.group(1)
     )
-    cap = re.search(r"^HUB_WORLD_PULSE_READ_DAILY_CAP=(.+)$", text, re.M)
-    assert cap and int(float(cap.group(1).strip())) == 12
     stage2 = re.search(r"^HUB_WORLD_PULSE_READ_STAGE2_ENABLED=(.+)$", text, re.M)
     assert stage2, "HUB_WORLD_PULSE_READ_STAGE2_ENABLED missing"
     assert stage2.group(1).strip().lower() in {"true", "1", "yes"}
-    wallet_b = re.search(r"^HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP=(.+)$", text, re.M)
-    assert wallet_b and int(float(wallet_b.group(1).strip())) == 12
     trips = re.search(r"^HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS=(.+)$", text, re.M)
     assert trips and int(float(trips.group(1).strip())) == 5
     assert "HUB_CURIOSITY_INVESTIGATION_DAILY_CAP" in text
@@ -96,27 +103,16 @@ def test_env_example_ships_keys_and_keeps_wallet_a_independent() -> None:
     assert '"HUB_WORLD_PULSE_READ_"' in sync_src.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("module,inputs,gate,key", [
-    (wa, wa.WalletAInputs, wa.wallet_a_block_reason, "HUB_WORLD_PULSE_READ_DAILY_CAP"),
-    (wb, wb.WalletBInputs, wb.wallet_b_block_reason, "HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP"),
+@pytest.mark.parametrize("inputs,gate", [
+    (wa.WalletAInputs, wa.wallet_a_block_reason),
+    (wb.WalletBInputs, wb.wallet_b_block_reason),
 ])
-def test_raised_caps_preserve_pacing_and_budget(module, inputs, gate, key) -> None:
-    cap = int(_field_default(SETTINGS_PY.read_text(), key, "int"))
-    for start, end, expected_pace in [(8, 22, 4200), (0, 0, 1800)]:
-        pace = module.paced_cooldown_sec(
-            min_cooldown_sec=1800, daily_cap=cap, start_hour=start, end_hour=end,
-        )
-        assert pace == expected_pace
-        base = dict(
-            enabled=True, daily_cap=cap, seconds_since_last=pace,
-            min_cooldown_sec=pace, now_hour=12,
-            window_start_hour=start, window_end_hour=end,
-        )
-        for count in (6, 11):
-            assert gate(inputs(done_today=count, **base)) is None
-        assert gate(inputs(done_today=12, **base)) == "daily_cap"
-        assert gate(inputs(done_today=6, **{**base, "seconds_since_last": pace - 1})) == "cooldown"
-        assert gate(inputs(done_today=6, seconds_until_retry=1, **base)) == "refund_backoff"
+def test_only_switch_window_and_refund_backoff_gate_a_read(inputs, gate) -> None:
+    base = dict(enabled=True, now_hour=12, window_start_hour=8, window_end_hour=22)
+    assert gate(inputs(**base)) is None
+    assert gate(inputs(**{**base, "enabled": False})) == "disabled"
+    assert gate(inputs(**{**base, "now_hour": 3})) == "outside_window"
+    assert gate(inputs(seconds_until_retry=1, **base)) == "refund_backoff"
 
 
 @pytest.mark.parametrize("module,inputs,gate,prefix", [
@@ -132,24 +128,11 @@ def test_default_reading_windows_allow_every_hour(module, inputs, gate, prefix):
         hours.append(int(_field_default(settings, key, "int")))
         assert re.search(rf"^{key}=0$", template, re.M)
     assert hours == [0, 0]
-    assert module.paced_cooldown_sec(
-        min_cooldown_sec=1800, daily_cap=12, start_hour=hours[0], end_hour=hours[1],
-    ) == 1800
     for hour in range(24):
         assert gate(inputs(
-            enabled=True, done_today=0, daily_cap=12, seconds_since_last=1800,
-            min_cooldown_sec=1800, now_hour=hour,
+            enabled=True, now_hour=hour,
             window_start_hour=hours[0], window_end_hour=hours[1],
         )) is None
-
-
-def test_stage2_reentry_cap_default_matches_settings() -> None:
-    from scripts.world_pulse_read_stage2 import WorldPulseReadStage2Pipeline
-
-    default = inspect.signature(WorldPulseReadStage2Pipeline).parameters["wallet_a_daily_cap"].default
-    assert default == int(_field_default(
-        SETTINGS_PY.read_text(), "HUB_WORLD_PULSE_READ_DAILY_CAP", "int",
-    ))
 
 
 def test_schedule_route_imports_wallet_a_keys_never_retyped() -> None:
@@ -189,7 +172,6 @@ def test_main_wires_pipeline_from_settings_opt_in() -> None:
     assert "world_pulse_read_pipeline" in shutdown_global.group(1)
     assert "WorldPulseReadStage2Pipeline" in src
     assert "enabled=settings.HUB_WORLD_PULSE_READ_STAGE2_ENABLED" in src
-    assert "daily_cap=settings.HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP" in src
     assert "max_round_trips=settings.HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS" in src
     stage2_ctor = src.split("world_pulse_read_stage2 = WorldPulseReadStage2Pipeline(", 1)[1].split(
         "await world_pulse_read_stage2.start", 1
@@ -222,7 +204,7 @@ def client() -> TestClient:
 
 
 @pytest.mark.parametrize("settings_fail", [False, True])
-def test_unavailable_routes_keep_current_default_caps(client, monkeypatch, settings_fail):
+def test_unavailable_routes_report_no_cap(client, monkeypatch, settings_fail):
     from scripts import world_pulse_read_routes as routes
 
     def settings():
@@ -235,22 +217,20 @@ def test_unavailable_routes_keep_current_default_caps(client, monkeypatch, setti
     monkeypatch.setattr(routes, "_pool", lambda: None)
     schedule = client.get("/world-pulse-read/api/schedule").json()
     status = client.get("/world-pulse-read/api/status").json()
-    assert schedule["daily_cap"] == 12
-    assert status["wallet_a"]["daily_cap"] == 12
-    assert status["wallet_b"]["daily_cap"] == 12
+    assert "daily_cap" not in schedule and "cooldown_sec" not in schedule
+    assert "daily_cap" not in status["wallet_a"]
+    assert "daily_cap" not in status["wallet_b"]
     assert schedule["available"] is False
     assert status["available"] is False
 
 
-def test_schedule_payload_includes_daily_cap_and_wallet_a_keys(
+def test_schedule_payload_includes_wallet_a_keys(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from scripts import world_pulse_read_routes as routes
 
     cfg = SimpleNamespace(
         HUB_WORLD_PULSE_READ_ENABLED=False,
-        HUB_WORLD_PULSE_READ_DAILY_CAP=6,
-        HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC=1800.0,
         HUB_ENDOGENOUS_OUTREACH_TZ="UTC",
     )
     monkeypatch.setattr(routes, "_settings", lambda: cfg)
@@ -260,7 +240,7 @@ def test_schedule_payload_includes_daily_cap_and_wallet_a_keys(
     assert response.status_code == 200
     payload = response.json()
     assert payload["enabled"] is False
-    assert payload["daily_cap"] == 6
+    assert "daily_cap" not in payload
     assert payload["done_today"] == 0
     assert payload["cooldown_key"] == wa.WALLET_A_COOLDOWN_KEY
     assert payload["count_key_prefix"] == wa.WALLET_A_COUNT_KEY_PREFIX
@@ -275,8 +255,6 @@ def test_schedule_payload_reads_done_today_from_wallet_a_key(
 
     cfg = SimpleNamespace(
         HUB_WORLD_PULSE_READ_ENABLED=True,
-        HUB_WORLD_PULSE_READ_DAILY_CAP=6,
-        HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC=1800.0,
         HUB_ENDOGENOUS_OUTREACH_TZ="UTC",
     )
     store = {f"{wa.WALLET_A_COUNT_KEY_PREFIX}2026-09-06": "3"}
@@ -289,7 +267,6 @@ def test_schedule_payload_reads_done_today_from_wallet_a_key(
     payload = response.json()
     assert payload["enabled"] is True
     assert payload["done_today"] == 3
-    assert payload["daily_cap"] == 6
     assert payload["cooldown_key"] is wa.WALLET_A_COOLDOWN_KEY or (
         payload["cooldown_key"] == wa.WALLET_A_COOLDOWN_KEY
     )
@@ -333,9 +310,7 @@ def test_status_payload_includes_both_wallets_and_queue_counts(
 
     cfg = SimpleNamespace(
         HUB_WORLD_PULSE_READ_ENABLED=True,
-        HUB_WORLD_PULSE_READ_DAILY_CAP=6,
         HUB_WORLD_PULSE_READ_STAGE2_ENABLED=True,
-        HUB_WORLD_PULSE_READ_WALLET_B_DAILY_CAP=6,
         HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS=5,
         HUB_WORLD_PULSE_READ_MAX_ATTEMPTS=3,
         HUB_ENDOGENOUS_OUTREACH_TZ="UTC",
@@ -385,12 +360,10 @@ def test_status_payload_includes_both_wallets_and_queue_counts(
     assert payload["available"] is True
     assert payload["wallet_a"]["enabled"] is True
     assert payload["wallet_a"]["done_today"] == 3
-    assert payload["wallet_a"]["daily_cap"] == 6
     assert payload["wallet_a"]["cooldown_key"] == wa.WALLET_A_COOLDOWN_KEY
     assert payload["wallet_a"]["count_key_prefix"] == wa.WALLET_A_COUNT_KEY_PREFIX
     assert payload["wallet_b"]["enabled"] is True
     assert payload["wallet_b"]["done_today"] == 1
-    assert payload["wallet_b"]["daily_cap"] == 6
     assert payload["wallet_b"]["cooldown_key"] == wb.WALLET_B_COOLDOWN_KEY
     assert payload["wallet_b"]["count_key_prefix"] == wb.WALLET_B_COUNT_KEY_PREFIX
     assert payload["wallet_a"]["retry_not_before"] == "2026-09-06T17:00:00+00:00"
@@ -416,8 +389,6 @@ def test_schedule_still_works_alongside_status(
 
     cfg = SimpleNamespace(
         HUB_WORLD_PULSE_READ_ENABLED=True,
-        HUB_WORLD_PULSE_READ_DAILY_CAP=6,
-        HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC=1800.0,
         HUB_ENDOGENOUS_OUTREACH_TZ="UTC",
     )
     monkeypatch.setattr(routes, "_settings", lambda: cfg)

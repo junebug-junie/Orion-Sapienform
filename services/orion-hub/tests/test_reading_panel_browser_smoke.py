@@ -13,8 +13,8 @@ import pytest
 HUB = Path(__file__).resolve().parents[1]
 
 STATUS = {
-    "available": True, "wallet_a": {"enabled": True, "done_today": 3, "daily_cap": 12},
-    "wallet_b": {"enabled": True, "done_today": 1, "daily_cap": 12},
+    "available": True, "wallet_a": {"enabled": True, "done_today": 3},
+    "wallet_b": {"enabled": True, "done_today": 1},
     "queue": {"pending": 2, "claimed": 1, "done": 9, "failed": 1, "skipped": 4},
     "stage2_queue": {"pending": 1, "claimed": 0, "done": 4, "failed": 1, "skipped": 0},
     "retries": {"max_attempts": 3}, "last_stage1_at": "2026-09-27T05:00:00Z",
@@ -99,7 +99,7 @@ def test_reading_panel_browser_smoke():
         page.goto("http://hub.test/reading")
 
         page.wait_for_selector(f'#reads tr[data-seed="{DONE_ID}"]')
-        assert "3 of 12 used today" in page.inner_text("#stats")
+        assert "3 read today" in page.inner_text("#stats")
         assert "Juniper (Hub)" in page.inner_text("#reads")
         assert "Orion learned that X." in page.inner_text("#reads")
         assert "merged into another read" in page.inner_text('#reads tr[data-seed="reading:dup"]')

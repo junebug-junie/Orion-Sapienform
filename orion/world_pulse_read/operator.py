@@ -14,6 +14,8 @@ from orion.schemas.reading import ReadingRequestedV1
 from orion.world_pulse_read.durable import OPERATOR_CANCEL_REASON
 from orion.world_pulse_read.queue import (
     ACTIVE_URL_SQL,
+    ALREADY_READ,
+    READ_URL_SQL,
     STALE_DIGEST_ITEM_LAST_ERROR,
     derive_reading_status,
     enqueue_reading,
@@ -255,6 +257,14 @@ def _has_read_evidence(handoff: Any) -> bool:
     return isinstance(handoff, dict) and bool(handoff.get("read_evidence"))
 
 
+_OTHER_FOLLOW_UP_SQL = """
+SELECT stage2_status FROM world_pulse_read_seed
+WHERE url = $1 AND seed_id <> $2 AND duplicate_of IS NULL
+  AND status = 'done' AND stage2_status IN ('done', 'pending', 'claimed')
+ORDER BY stage2_status = 'done' DESC LIMIT 1
+"""
+
+
 async def retry_read(
     conn: Any, seed_id: str, *, stage: int, digest_item_max_age_sec: float = 0.0,
 ) -> dict[str, Any]:
@@ -283,6 +293,8 @@ async def retry_read(
             active = await conn.fetchrow(ACTIVE_URL_SQL, row["url"])
             if active and active["seed_id"] != seed_id:
                 raise OperatorActionError("url_already_active")
+            if await conn.fetchval(READ_URL_SQL, row["url"], seed_id):
+                raise OperatorActionError(ALREADY_READ)
             await conn.execute(
                 """UPDATE world_pulse_read_seed
                    SET status='pending', attempts=0, last_error=NULL,
@@ -299,6 +311,12 @@ async def retry_read(
                 raise OperatorActionError("stage2_not_terminal")
             if not _has_read_evidence(row["handoff_json"]):
                 raise OperatorActionError("no_read_evidence")
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", row["url"])
+            other = await conn.fetchval(_OTHER_FOLLOW_UP_SQL, row["url"], seed_id)
+            if other == "done":
+                raise OperatorActionError(ALREADY_READ)
+            if other is not None:
+                raise OperatorActionError("url_already_active")
             await conn.execute(
                 """UPDATE world_pulse_read_seed
                    SET stage2_status='pending', stage2_attempts=0, stage2_error=NULL,

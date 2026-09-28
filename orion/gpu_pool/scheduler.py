@@ -513,17 +513,25 @@ def schedule(
                       and q.hold_lease_id is None][:room]
     pausing = [l for l in leases if l.status == "recalling" and l.reason == PREEMPT and l.role
                and l.hold_lease_id is None]
+    # Past the abort, a paused hold's call still in flight keeps the slot until it ends (durable-runs
+    # cancels it within ~1 s). That call is still the pause: without this the urgent lease, not yet
+    # granted, would pause another hold every tick until it did. Matched on the call's role.
+    requeued = {l.lease_id: l for l in leases if l.status == "queued" and l.reason == PREEMPT
+                and l.kind == "hold" and l.hold_lease_id is None}
+    pausing += [replace(requeued[c.hold_lease_id], role=c.role) for c in active_now
+                if c.hold_lease_id in requeued and c.hold_lease_id not in hold_by_id]
 
     def preemptible(l: LeaseView) -> bool:
         return l.kind == "hold" and not l.operator and l.priority in PREEMPTIBLE \
             and not (l.expires_at is not None and l.expires_at <= now)
 
     def could_take(u: LeaseView, v: LeaseView) -> bool:
-        """Would ``u`` get ``v``'s slot once ``v`` is aborted and re-queued in place? Not when ``u``
-        only borrows a role ``v`` owns: owners are granted first, so ``v`` would win it back and be
-        paused again every grace. (A non-owner hold on a role with owner demand is recalled by
-        the owner rules below, so U1 never sees it.)"""
-        return ctx.placeable(u, v.role) and (cfg.owns(u.work_class, v.role) or not cfg.owns(v.work_class, v.role))
+        """Would ``u`` get ``v``'s slot once ``v`` is aborted and re-queued in place? Only on a role
+        ``u``'s class may use, and not when ``u`` only borrows a role ``v`` owns: owners are granted
+        first, so ``v`` would win it back and be paused again every grace. (A non-owner hold on a
+        role with owner demand is recalled by the owner rules below, so U1 never sees it.)"""
+        return v.role in cfg.classes[u.work_class].roles and ctx.placeable(u, v.role) \
+            and (cfg.owns(u.work_class, v.role) or not cfg.owns(v.work_class, v.role))
 
     owed: list[LeaseView] = []
     for u in waiting_urgent:

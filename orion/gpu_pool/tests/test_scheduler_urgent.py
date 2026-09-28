@@ -169,13 +169,16 @@ def test_borrowing_urgent_hold_never_pauses_the_roles_owner():
     assert preempts(run(_gpu3_full() + [v, _metacog_urgent()])) == []
 
 
-def _simulate(leases, ticks=5, roles=None):
+def _simulate(leases, ticks=5, roles=None, crds=None, before_tick=None, cfg=CFG):
     """Tick the scheduler, applying its decisions the way the runtime does: a preempt Abort
-    re-queues the hold in place (same lease_id and created_at; Task 3's resume-in-place)."""
+    re-queues the hold in place (same lease_id and created_at; Task 3's resume-in-place).
+    ``before_tick(tick, state)`` may change the world between ticks (a child call ending)."""
     state = {l.lease_id: l for l in leases}
     now, paused, got = T0, [], {}
-    for _ in range(ticks):
-        for x in schedule(CFG, roles or live(), cards(), list(state.values()), now):
+    for tick in range(ticks):
+        if before_tick is not None:
+            before_tick(tick, state)
+        for x in schedule(cfg, roles or live(), crds or cards(), list(state.values()), now):
             if isinstance(x, Grant):
                 state[x.lease_id] = replace(state[x.lease_id], status="granted", role=x.role, granted_at=now)
                 got[x.lease_id] = x.role
@@ -206,6 +209,65 @@ def test_pause_abort_requeue_gives_the_slot_to_urgent_exactly_once():
                    lease_id="v", age=100, granted_at=T0 - timedelta(seconds=50))
     paused, got = _simulate(_gpu3_full() + [fast_v, _metacog_urgent()])
     assert paused == ["v"] and got == {"u": "agent"}
+
+
+# --- a paused hold's call still in flight is the pause, not a reason for another one -----------
+def _child(hold_id="v", role="agent", lease_id="c"):
+    return lease("agent", "granted", role, priority="background", hold_lease_id=hold_id, lease_id=lease_id)
+
+
+def test_a_requeued_holds_child_still_on_the_slot_is_the_pause_in_flight():
+    v = hold(lease_id="v", age=100, reason="urgent_preempt")               # re-queued in place
+    w = hold("granted", "chat", lease_id="w", granted_at=T0 - timedelta(seconds=100))   # borrowing lent chat
+    u = urgent(lease_id="u")
+    d = run([v, _child(), w, u], crds=LENT)
+    assert of(Recall, d) == [] and grants(d) == {}
+    # the call ends: the slot is urgent's
+    assert grants(run([v, w, u], crds=LENT)) == {"u": "agent"}
+
+
+def test_the_in_flight_child_only_serves_an_urgent_lease_that_could_take_its_slot():
+    # the child sits on diffusion: nothing a metacog urgent lease can use, so it is owed a pause
+    v = lease("diffusion", priority="background", kind="hold", retryable=True, lease_id="v", age=100,
+              reason="urgent_preempt")
+    c = lease("diffusion", "granted", "diffusion", priority="background", hold_lease_id="v", lease_id="c")
+    fast_v = lease("fast", "granted", "agent", priority="background", kind="hold", retryable=True,
+                   lease_id="fv", granted_at=T0 - timedelta(seconds=10))
+    assert preempts(run(_gpu3_full() + [v, c, fast_v, _metacog_urgent()])) == ["fv"]
+    # a child of a hold re-queued for another reason is no pause
+    other = replace(hold(lease_id="v", age=100), reason="owner_waiting")
+    w = hold("granted", "chat", lease_id="w", granted_at=T0 - timedelta(seconds=100))
+    assert preempts(run([other, _child(), w, urgent(lease_id="u")], crds=LENT)) == ["w"]
+
+
+def test_one_pause_total_while_the_paused_runs_call_finishes():
+    v = hold("granted", "agent", lease_id="v", age=100, granted_at=T0 - timedelta(seconds=10))
+    w = hold("granted", "chat", lease_id="w", age=100, granted_at=T0 - timedelta(seconds=100))
+
+    def call_ends_late(tick, state):
+        if tick == 4:
+            state.pop("c", None)
+
+    paused, got = _simulate([v, _child(), w, urgent(lease_id="u")], ticks=6, crds=LENT,
+                            before_tick=call_ends_late)
+    assert paused == ["v"] and got == {"u": "agent"}
+
+
+# --- U1 only pauses a hold on a role the urgent lease's class may use --------------------------
+def _world_full():
+    return [lease("world", "granted", "world") for _ in range(2)]
+
+
+def _world_urgent():
+    return lease("world", priority="urgent", kind="hold", retryable=True, lease_id="u")
+
+
+def test_urgent_never_pauses_a_hold_on_a_role_outside_its_class():
+    on_chat = hold("granted", "chat", lease_id="c")                        # agent run borrowing lent chat
+    d = run(_world_full() + [on_chat, _world_urgent()], crds=LENT)
+    assert of(Recall, d) == [] and grants(d) == {}
+    paused, got = _simulate(_world_full() + [on_chat, _world_urgent()], crds=LENT)
+    assert paused == [] and got == {}
 
 
 # --- U3: stacking past H1, cap -----------------------------------------------------------

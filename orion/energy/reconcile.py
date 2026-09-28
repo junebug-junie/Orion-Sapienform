@@ -167,7 +167,7 @@ def reconcile_actual(
                 bill.energy_charge + bill.adjustments
             )
     if bill.customer_charge is not None:
-        buckets["customer_charge"] = (customer if tariff.customer_charge_monthly_usd else fixed) - bill.customer_charge
+        buckets["customer_charge"] = (customer if tariff.has_customer_charge else fixed) - bill.customer_charge
     delta_usd = total - utility_total
     return EnergyReconcileV1(
         **common,

@@ -224,6 +224,11 @@ class EnergyReconcileV1(BaseModel):
 
     Deltas are Orion minus utility. Orion is pre-tax; `utility_basis` says whether tax
     was removed from the utility number. A systematic miss is fixed by a tariff patch.
+
+    `bucket_deltas` compare like with like against the printed bill: `energy_charge` is the
+    block charges before riders; `energy_charge_plus_adjustments` adds every rider, including
+    those on the customer charge; `customer_charge` is the prorated customer charge alone
+    (all fixed charges for a tariff that does not mark one).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -240,8 +245,10 @@ class EnergyReconcileV1(BaseModel):
     orion_covered_through: Optional[datetime] = None
     orion_kwh: Optional[float] = Field(default=None, ge=0.0, allow_inf_nan=False)
     orion_energy_usd: Optional[float] = Field(default=None, ge=0.0, allow_inf_nan=False)
-    orion_fixed_usd: Optional[float] = Field(default=None, ge=0.0, allow_inf_nan=False)
-    orion_total_usd: Optional[float] = Field(default=None, ge=0.0, allow_inf_nan=False)
+    # May be negative: a per-bill credit (e.g. paperless -$0.50) can outweigh a very short
+    # period's prorated fixed charges, as it can on the utility's own bill.
+    orion_fixed_usd: Optional[float] = Field(default=None, allow_inf_nan=False)
+    orion_total_usd: Optional[float] = Field(default=None, allow_inf_nan=False)
     reconcile_gap: Optional[ReconcileGap] = None
     delta_kwh: Optional[float] = Field(default=None, allow_inf_nan=False)
     delta_usd: Optional[float] = Field(default=None, allow_inf_nan=False)

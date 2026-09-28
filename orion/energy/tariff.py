@@ -73,8 +73,16 @@ class BillEstimate:
     total_usd: float
 
 
-def _cents(value: float) -> float:
-    return float(Decimal(repr(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+RESERVED_LINE_NAMES = frozenset({BASE_ENERGY, CUSTOMER_CHARGE, "sales_tax"})
+
+
+def _dec(value: float, places: str = "1e-9") -> Decimal:
+    """Exact decimal of a config number; quantized so a float like 0.09833199999999999 reads 0.098332."""
+    return Decimal(repr(float(value))).quantize(Decimal(places), rounding=ROUND_HALF_UP)
+
+
+def _cents(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 @dataclass(frozen=True)
@@ -84,6 +92,7 @@ class Tariff:
     seasons: tuple[Season, ...]
     energy_multiplier: float
     fixed_monthly_usd: float
+    # Sums of fixed_items / per_bill_items / riders, precomputed by load_tariff.
     customer_charge_monthly_usd: float = 0.0
     customer_multiplier: float = 1.0
     per_bill_usd: float = 0.0
@@ -113,7 +122,9 @@ class Tariff:
                 out.append(None)
                 continue
             bound = block.up_to_kwh * scale
-            out.append(float(round(bound)) if self.round_block_kwh else bound)
+            if self.round_block_kwh:
+                bound = float(_dec(bound).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            out.append(bound)
         return out
 
     def _split(
@@ -149,6 +160,10 @@ class Tariff:
                 return block.usd_per_kwh * self.energy_multiplier
         raise TariffError("tariff has no open top block")
 
+    @property
+    def has_customer_charge(self) -> bool:
+        return any(item.component == CUSTOMER_CHARGE for item in self.fixed_items)
+
     def customer_charge_usd(self, period_days: Optional[float] = None) -> float:
         """The customer charge as printed (prorated, before riders)."""
         return self.customer_charge_monthly_usd * self._scale(period_days)
@@ -162,21 +177,26 @@ class Tariff:
     def itemize(self, kwh: float, *, month: int, period_days: float) -> BillEstimate:
         """Price a whole period's kWh line by line, rounding each line to the cent like the bill.
 
-        One season for the whole period (a bill spanning a season change is not modeled).
+        Decimal throughout, so an exact half cent (7.63% of $50.00 = 3.815) rounds up as printed
+        rather than down off a float like 3.81499999. One season for the whole period (a bill
+        spanning a season change is not modeled).
         """
-        lines: list[tuple[str, float]] = []
+        lines: list[tuple[str, Decimal]] = []
         blocks = self._split(kwh, cycle_kwh_before=0.0, month=month, period_days=period_days)
-        energy = 0.0
+        energy = Decimal(0)
         for index, (k, rate) in enumerate(blocks):
-            usd = _cents(k * rate)
+            usd = _cents(_dec(k, "1e-6") * _dec(rate))
             lines.append((f"energy_block_{index + 1}", usd))
             energy += usd
-        scale = self._scale(period_days)
-        components: dict[str, float] = {BASE_ENERGY: energy, CUSTOMER_CHARGE: 0.0}
-        fees = 0.0
-        exempt = 0.0
+        if self.proration_base_days is None:
+            scale = Decimal(1)
+        else:
+            scale = _dec(_require_positive("period_days", period_days)) / _dec(self.proration_base_days)
+        components: dict[str, Decimal] = {BASE_ENERGY: energy, CUSTOMER_CHARGE: Decimal(0)}
+        fees = Decimal(0)
+        exempt = Decimal(0)
         for item in self.fixed_items:
-            usd = _cents(item.usd * scale)
+            usd = _cents(_dec(item.usd) * scale)
             lines.append((item.name, usd))
             if item.component == CUSTOMER_CHARGE:
                 components[CUSTOMER_CHARGE] += usd
@@ -184,33 +204,33 @@ class Tariff:
                 fees += usd
             if item.tax_exempt:
                 exempt += usd
-        adjustments = 0.0
+        adjustments = Decimal(0)
         for rider in self.riders:
-            usd = _cents(rider.pct / 100.0 * sum(components[c] for c in rider.applies_to))
+            usd = _cents(_dec(rider.pct) / 100 * sum((components[c] for c in rider.applies_to), Decimal(0)))
             lines.append((rider.name, usd))
             components[rider.name] = usd
             adjustments += usd
-        credits = 0.0
+        credits = Decimal(0)
         for item in self.per_bill_items:
-            usd = _cents(item.usd)
+            usd = _cents(_dec(item.usd))
             lines.append((item.name, usd))
             credits += usd
             if item.tax_exempt:
                 exempt += usd
-        pre_tax = _cents(energy + components[CUSTOMER_CHARGE] + fees + adjustments + credits)
-        taxes = None if self.sales_tax_pct is None else _cents(self.sales_tax_pct / 100.0 * (pre_tax - exempt))
+        pre_tax = energy + components[CUSTOMER_CHARGE] + fees + adjustments + credits
+        taxes = None if self.sales_tax_pct is None else _cents(_dec(self.sales_tax_pct) / 100 * (pre_tax - exempt))
         if taxes is not None:
             lines.append(("sales_tax", taxes))
         return BillEstimate(
-            lines=tuple(lines),
-            energy_charge=_cents(energy),
-            customer_charge=_cents(components[CUSTOMER_CHARGE]),
-            adjustments=_cents(adjustments),
-            fees=_cents(fees),
-            credits=_cents(credits),
-            pre_tax_usd=pre_tax,
-            taxes=taxes,
-            total_usd=_cents(pre_tax + (taxes or 0.0)),
+            lines=tuple((name, float(usd)) for name, usd in lines),
+            energy_charge=float(energy),
+            customer_charge=float(components[CUSTOMER_CHARGE]),
+            adjustments=float(adjustments),
+            fees=float(fees),
+            credits=float(credits),
+            pre_tax_usd=float(pre_tax),
+            taxes=None if taxes is None else float(taxes),
+            total_usd=float(pre_tax + (taxes or Decimal(0))),
         )
 
 
@@ -275,6 +295,20 @@ def _season(name: str, raw: dict) -> Season:
     return Season(name=name, months=frozenset(int(m) for m in raw.get("months") or []), blocks=tuple(blocks))
 
 
+def _require_bool(raw: dict, key: str, *, context: str, default: bool = False) -> bool:
+    value = raw.get(key, default)
+    if not isinstance(value, bool):
+        raise TariffError(f"{context} key {key!r} must be true or false, got {value!r}")
+    return value
+
+
+def _require_name(raw: dict, *, context: str, default: Optional[str] = None) -> str:
+    value = raw.get("name", default)
+    if not isinstance(value, str) or not value:
+        raise TariffError(f"{context} name must be a non-empty string, got {value!r}")
+    return value
+
+
 def _pct_items(raw: Any, key: str) -> list[dict]:
     return [_require_mapping(item, context=f"{key}[{i}]") for i, item in enumerate(raw or [])]
 
@@ -299,10 +333,12 @@ def _riders(raw: Any) -> list[Rider]:
     out: list[Rider] = []
     for i, item in enumerate(_pct_items(raw, "riders")):
         context = f"riders[{i}]"
-        name = str(_require_key(item, "name", context=context))
+        name = _require_name(item, context=context)
         applies = item.get("applies_to")
         if not isinstance(applies, list) or not applies:
             raise TariffError(f"{context} applies_to must be a non-empty list")
+        if len(set(applies)) != len(applies):
+            raise TariffError(f"{context} applies_to repeats a component (it would be counted twice)")
         out.append(Rider(name, _require_number(item, "pct", context=context), tuple(str(a) for a in applies)))
     return out
 
@@ -322,6 +358,8 @@ def _multipliers(riders: list[Rider]) -> tuple[float, float]:
         coef[rider.name] = (e, c)
         energy += e
         customer += c
+    if energy <= 0.0 or customer <= 0.0:
+        raise TariffError(f"riders net to a non-positive multiplier (energy {energy}, customer {customer})")
     return energy, customer
 
 
@@ -330,13 +368,14 @@ def _charges(raw: Any, key: str) -> list[FixedCharge]:
     for i, item in enumerate(_pct_items(raw, key)):
         context = f"{key}[{i}]"
         component = item.get("component")
-        if component not in (None, CUSTOMER_CHARGE):
-            raise TariffError(f"{context} component must be {CUSTOMER_CHARGE!r} or absent, got {component!r}")
+        allowed = (None, CUSTOMER_CHARGE) if key == "fixed_monthly" else (None,)
+        if component not in allowed:
+            raise TariffError(f"{context} component must be one of {allowed}, got {component!r}")
         out.append(FixedCharge(
-            name=str(item.get("name", f"{key}_{i}")),
+            name=_require_name(item, context=context, default=f"{key}_{i}"),
             usd=_require_number(item, "usd", context=context),
             component=component,
-            tax_exempt=bool(item.get("tax_exempt", False)),
+            tax_exempt=_require_bool(item, "tax_exempt", context=context),
         ))
     return out
 
@@ -364,6 +403,17 @@ def load_tariff(path: str | Path) -> Tariff:
     energy_multiplier, customer_multiplier = _multipliers(riders)
     fixed_items = _charges(raw.get("fixed_monthly"), "fixed_monthly")
     per_bill_items = _charges(raw.get("per_bill"), "per_bill")
+    has_customer_charge = any(item.component == CUSTOMER_CHARGE for item in fixed_items)
+    for rider in riders:
+        if CUSTOMER_CHARGE in rider.applies_to and not has_customer_charge:
+            raise TariffError(f"rider {rider.name!r} applies to customer_charge but no fixed_monthly item is one")
+    names = [r.name for r in riders] + [c.name for c in fixed_items] + [c.name for c in per_bill_items]
+    clashes = sorted(
+        {n for n in names if names.count(n) > 1}
+        | {n for n in names if n in RESERVED_LINE_NAMES or n.startswith("energy_block_")}
+    )
+    if clashes:
+        raise TariffError(f"charge names must be unique and not reserved: {clashes}")
     proration_base_days: Optional[float] = None
     round_block_kwh = False
     if raw.get("proration") is not None:
@@ -371,7 +421,7 @@ def load_tariff(path: str | Path) -> Tariff:
         proration_base_days = _require_number(pro, "base_days", context="proration")
         if proration_base_days <= 0.0:
             raise TariffError("proration base_days must be > 0")
-        round_block_kwh = bool(pro.get("round_block_kwh", False))
+        round_block_kwh = _require_bool(pro, "round_block_kwh", context="proration")
     sales_tax_pct: Optional[float] = None
     if raw.get("sales_tax") is not None:
         sales_tax_pct = _require_number(_require_mapping(raw["sales_tax"], context="sales_tax"), "pct",

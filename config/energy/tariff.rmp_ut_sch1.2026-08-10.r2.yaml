@@ -69,3 +69,5 @@ sales_tax:
 known_gaps:
   - "A bill spanning the Sep/Oct season change: RMP's split is not modeled; each hour is priced by its own month."
   - "Lifeline tax exemption and whole-kWh block rounding are fitted to one bill; confirm on the next."
+  - "Accrual and run cost size blocks by the ENERGY_BILLING_CYCLE_START_DAY cycle (28-31 days), not the meter-read period (29-37); a long bill's extra first-block kWh price at the second-block rate until reconcile, which uses the bill's own dates."
+  - "Negative half-cent lines round away from zero (-2.435 -> -2.44); RMP's rule for that case is not seen yet."

@@ -72,7 +72,9 @@ prepare -> resource_request -> resource_wait -> generate -> caption -> finish
 ### Routing the diffusion hold
 
 `config/gpu_pool.yaml` gains `hold_routes:` (read by durable-runs `hold_placement`
-only, never by the gateway) with `diffusion: {class: diffusion, priority: system}`.
+only, never by the gateway) with `diffusion: {class: diffusion, priority: background}`
+(holds always take `ResourceRequirementV1.priority`, which is `background`; the diffusion
+class has one role and one slot, so priority only orders holds on that seat).
 `ResourceRequirementV1` accepts `resource = "service.route.<lane>"` in addition to
 `llm.route.<lane>`. The gateway's LLM route catalog is unchanged.
 

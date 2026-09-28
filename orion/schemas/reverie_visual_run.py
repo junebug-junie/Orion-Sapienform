@@ -22,8 +22,9 @@ A step result's ``status`` tells the graph what to do next:
 ``reason == "needs_generate"`` on a caption retry means the recorded image is gone from
 disk: the graph goes back through the hold to generate instead of retrying caption.
 
-``abandon`` is sent by the graph's ``failed`` node (run deadline, operator cancel) so
-thought closes the attempt; an attempt left ``active`` blocks every later claim.
+``abandon`` is sent whenever a run ends without completing (run deadline, operator cancel)
+and retried until thought acknowledges it, so thought closes the attempt; an attempt left
+``active`` blocks every later claim. It may omit ``attempt_id`` (resolved by dispatch_id).
 """
 
 from __future__ import annotations
@@ -91,7 +92,9 @@ class ReverieVisualStepRequestV1(BaseModel):
 
     @model_validator(mode="after")
     def step_shape(self):
-        if self.step != "prepare" and not self.attempt_id:
+        # abandon may omit attempt_id: a lost prepare reply must not strand a claimed attempt,
+        # so thought resolves it from visual_request.dispatch_id.
+        if self.step not in ("prepare", "abandon") and not self.attempt_id:
             raise ValueError(f"{self.step} requires attempt_id from prepare")
         if self.step == "generate" and self.gpu_lease is None:
             raise ValueError("generate requires the run's diffusion hold")
@@ -128,6 +131,6 @@ class ReverieVisualStepResultV1(BaseModel):
             raise ValueError("terminal step results must name an outcome")
         if self.status == "retry" and not self.reason:
             raise ValueError("retry step results must name a reason")
-        if self.status == "done" and self.step != "caption" and not self.attempt_id:
+        if self.status == "done" and self.step in ("prepare", "generate") and not self.attempt_id:
             raise ValueError("done prepare/generate results must carry attempt_id")
         return self

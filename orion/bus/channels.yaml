@@ -3349,7 +3349,7 @@ channels:
     single_consumer: true
     stability: "experimental"
     since: "2026-09-28"
-    description: "One stage (prepare, generate, caption) of an admitted reverie.visual run. Only generate carries the run's diffusion hold, which thought validates before touching the GPU; reply uses the correlation ID."
+    description: "One stage (prepare, generate, caption, abandon) of an admitted reverie.visual run. Only generate carries the run's diffusion hold, which thought validates before touching the GPU; reply uses the correlation ID."
 
   - name: "orion:reverie:visual:step:reply:*"
     kind: "result"

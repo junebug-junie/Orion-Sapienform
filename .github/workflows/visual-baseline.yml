@@ -61,10 +61,11 @@ jobs:
           services/orion-thought/tests/test_visual_steps.py
           services/orion-thought/tests/test_visual_steps_db.py
           services/orion-thought/tests/test_bus_listener_visual_step.py
-      - name: Durable render settlement contracts (dispatch + feedback)
-        run: >-
-          python -m pytest -q services/orion-execution-dispatch-runtime/tests/test_visual_settlement.py
-          services/orion-feedback-runtime/tests/test_visual_settlement_parking.py
+      # One process per service: both services' tests import a top-level `app` package.
+      - name: Durable render settlement contracts (execution-dispatch)
+        run: python -m pytest -q services/orion-execution-dispatch-runtime/tests/test_visual_settlement.py
+      - name: Durable render parking contracts (feedback-runtime)
+        run: python -m pytest -q services/orion-feedback-runtime/tests/test_visual_settlement_parking.py
       - name: Durable render kickoff (cortex-exec)
         run: |
           pip install -r services/orion-cortex-exec/requirements.txt

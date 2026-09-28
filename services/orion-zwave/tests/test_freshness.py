@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
 
+from app.main import build_cooling_sample
 from app.zwave_client import METER_CC, METER_W_PROPERTY_KEY, ZWaveJSClient
 from orion.schemas.telemetry.home_cooling import CoolingObservedStateV1
 
@@ -73,3 +74,37 @@ def test_pushed_non_watts_event_does_not_mark_fresh():
 
 def test_not_connected_without_socket():
     assert _client().connected is False
+
+
+def _sample(last_fresh_at, now=T0 + timedelta(seconds=30)):
+    return build_cooling_sample(
+        node_id=2, controller_ready=True, device_online=True,
+        watts=850.0, volts=121.0, amps=7.0, switch_on=True,
+        device_path="/dev/zwave", product="Shelly Wave Plug",
+        now=now, last_fresh_at=last_fresh_at, stale_after_sec=120.0,
+    )
+
+
+def test_fresh_sample_keeps_readings_and_reports_age():
+    s = _sample(T0)
+    assert s.state.stale is False
+    assert s.measurements.cooling_watts == 850.0
+    assert s.state.switch_on is True
+    assert s.provenance.sample_age_sec == 30.0
+
+
+def test_stale_sample_omits_every_cached_reading():
+    s = _sample(T0, now=T0 + timedelta(seconds=121))
+    assert s.state.stale is True
+    assert s.measurements.cooling_watts is None
+    assert s.measurements.cooling_volts is None
+    assert s.measurements.cooling_amps is None
+    assert s.state.switch_on is None
+    assert s.provenance.sample_age_sec == 121.0
+
+
+def test_never_fresh_is_stale_with_unknown_age():
+    s = _sample(None)
+    assert s.state.stale is True
+    assert s.measurements.cooling_watts is None
+    assert s.provenance.sample_age_sec is None

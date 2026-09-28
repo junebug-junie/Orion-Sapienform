@@ -56,16 +56,24 @@ def build_cooling_sample(
     device_path: Optional[str],
     product: Optional[str],
     now: datetime,
+    last_fresh_at: Optional[datetime],
+    stale_after_sec: float,
     device_id: str = "shelly-wave-plug-ac",
     device_name: str = "portable_ac",
     instance_id: str = "athena",
 ) -> HomeCoolingSampleV1:
-    measurements = CoolingMeasurementsV1(
-        cooling_watts=watts,
-        cooling_volts=volts,
-        cooling_amps=amps,
-    )
-    state = CoolingObservedStateV1(switch_on=switch_on) if switch_on is not None else CoolingObservedStateV1()
+    age = max(0.0, (now - last_fresh_at).total_seconds()) if last_fresh_at is not None else None
+    stale = age is None or age > stale_after_sec
+    if stale:
+        measurements = CoolingMeasurementsV1()
+        state = CoolingObservedStateV1(stale=True)
+    else:
+        measurements = CoolingMeasurementsV1(
+            cooling_watts=watts,
+            cooling_volts=volts,
+            cooling_amps=amps,
+        )
+        state = CoolingObservedStateV1(switch_on=switch_on, stale=False)
 
     return HomeCoolingSampleV1(
         ts=now,
@@ -82,7 +90,7 @@ def build_cooling_sample(
         ),
         measurements=measurements,
         state=state,
-        provenance=CoolingProvenanceV1(zwave_node_id=node_id),
+        provenance=CoolingProvenanceV1(zwave_node_id=node_id, sample_age_sec=age),
     )
 
 

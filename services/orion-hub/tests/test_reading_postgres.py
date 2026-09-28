@@ -638,3 +638,78 @@ def test_stale_sweep_keeps_a_digest_item_a_request_is_aliased_to(local_pg):
         assert got == {"digest_item:shared": "pending", "digest_item:alone": "skipped"}
         await conn.close()
     asyncio.run(run())
+
+
+def test_reading_results_introspection_is_read_only_and_distinguishes_states(local_pg):
+    from orion.schemas.introspect import DEFAULT_TEXT_CAP
+    from orion.world_pulse_read.introspect import reading_results
+
+    async def run():
+        conn, _ = await db(local_pg)
+        # Production journal_entries (sql-writer) has these columns; the shared
+        # helper's minimal table does not.
+        await conn.execute(
+            "ALTER TABLE journal_entries ADD COLUMN created_at timestamptz NOT NULL DEFAULT now(), "
+            "ADD COLUMN title text"
+        )
+        done = request("https://example.org/done")
+        queued = request("https://example.org/queued")
+        failed = request("https://example.org/failed")
+        for r in (done, queued, failed):
+            await queue.enqueue_reading(conn, r)
+        await conn.execute(
+            """UPDATE world_pulse_read_seed
+               SET status='done', stage2_status='done',
+                   handoff_json=$2::jsonb, stage2_result_json=$3::jsonb,
+                   handoff_at=now(), stage2_completed_at=now(), landing_at=now(),
+                   trace_id='t1', stage2_trace_id='t2'
+               WHERE request_id=$1""",
+            done.request_id,
+            json.dumps({"what_i_learned": "stage one note"}),
+            json.dumps({"summary": "S" * (DEFAULT_TEXT_CAP + 300)}),
+        )
+        await conn.execute(
+            "INSERT INTO journal_entries (entry_id, source_ref, body) "
+            "VALUES ('j1', 'world_pulse_read_stage2:t2', 'Journal body about the source')"
+        )
+        await conn.execute(
+            "UPDATE world_pulse_read_seed SET status='failed', last_error='boom', handoff_json=$2::jsonb "
+            "WHERE request_id=$1",
+            failed.request_id, json.dumps({"what_i_learned": "rejected handoff"}),
+        )
+        before = await conn.fetch("SELECT * FROM world_pulse_read_seed ORDER BY seed_id")
+
+        recent = await reading_results(conn)
+        assert recent.ok and recent.total_available == 1
+        [item] = recent.items
+        assert item.kind == "reading_result" and item.epistemic_status == "unsettled"
+        assert item.extra["url"] == "https://example.org/done"
+        assert item.extra["learned"] is True
+        assert item.truncated and len(item.text) == DEFAULT_TEXT_CAP
+        assert "journal_excerpt" not in item.extra
+
+        by_url = await reading_results(conn, url="https://EXAMPLE.org/done#x")
+        assert by_url.total_available == 1
+        assert by_url.items[0].extra["journal_excerpt"] == "Journal body about the source"
+        assert by_url.items[0].extra["request_id"] == str(done.request_id)
+
+        pending = await reading_results(conn, request_id=queued.request_id)
+        assert pending.items[0].text == ""
+        assert pending.items[0].extra["learned"] is False
+        assert pending.items[0].extra["reading_status"] == "queued"
+
+        rejected = await reading_results(conn, request_id=failed.request_id)
+        assert rejected.items[0].extra["reading_status"] == "failed"
+        assert rejected.items[0].extra["learned"] is False
+        assert rejected.items[0].text == ""
+
+        missing = await reading_results(conn, url="https://example.org/never")
+        assert missing.ok and missing.items == [] and missing.total_available == 0
+
+        future = await reading_results(conn, since=datetime(2999, 1, 1, tzinfo=timezone.utc))
+        assert future.ok and future.items == [] and future.total_available == 0
+
+        assert await conn.fetch("SELECT * FROM world_pulse_read_seed ORDER BY seed_id") == before
+        await conn.close()
+
+    asyncio.run(run())

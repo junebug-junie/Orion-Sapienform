@@ -5,9 +5,11 @@ no subject. An urgent run is the opposite: Juniper (or a hardware rule) asked a
 question about the machines right now, and the turn should answer it. So none
 of the self-directed sections are here -- no priors, crystallizations, peer
 notes, dreams, continuation, or hops -- only the question, the evidence Hub
-collected, what to find out, how to look, where to write the verdict, and the
-clock. The access guide and the clock are reused from `kickoff_prompt`, so the
-credentials and deadline wording cannot drift between the two prompts.
+collected, what to find out, where to look, where to write the verdict, and the
+clock. The tool guide is its own: kickoff's access section lists memory, chat
+and journal tables and frames every tool as optional, both wrong for an
+assignment about the machines. The clock and the graph URI are reused from
+`kickoff_prompt` so the deadline wording and credentials cannot drift.
 
 The question is inserted verbatim. Nothing here branches on its words.
 
@@ -20,16 +22,18 @@ from __future__ import annotations
 import json
 
 from orion.curiosity.incident_report import IS_REAL_VALUES, LABEL_INCIDENT_REPORT, SEVERITY_VALUES
-from orion.curiosity.kickoff_prompt import GRAPH_URI, _access_section, _budget_section
+from orion.curiosity.kickoff_prompt import GRAPH_URI, _budget_section
 from orion.curiosity.worldview import _RUN_ID_RE
 from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
 
 EVIDENCE_CHAR_CAP = 24_000
 TRUNCATION_MARKER = "[EVIDENCE TRUNCATED"
 
+TOOLS_HEADER = "WHERE TO LOOK. Use these to check the readings yourself."
+
 _HARDWARE_TABLES = (
-    ("orion_biometrics_summary", "per-host temps, fans, power over time (node, timestamp)"),
-    ("home_cooling_sample", "cabinet AC plug readings: watts, switch_on, stale (node, ts)"),
+    ("orion_biometrics_summary", "per-node measurements (jsonb): temp_c_max, fan_pct_max, cabinet_temp_c (athena only), ..."),
+    ("home_cooling_sample", "cabinet AC plug: cooling_watts, switch_on, stale, sample_age_sec"),
 )
 
 
@@ -98,14 +102,43 @@ def _checklist_section() -> list[str]:
     ]
 
 
-def _hardware_access_lines(pool_url: str) -> list[str]:
+def _tools_section(*, hub_url: str, pool_url: str) -> list[str]:
+    """Where to read the machines. Hardware sources only -- no memory tables.
+
+    Example queries checked live 2026-09-28. `orion_biometrics_summary.timestamp`
+    is TEXT shaped `YYYY-MM-DD HH:MM:SS.ffffff+00`, so the cutoff is a text
+    compare in the same shape (see `cabinet_ambient_routes.biometrics_summary_cutoff`);
+    that uses the (node, timestamp) index where a `::timestamptz` cast would scan.
+    """
     return [
-        "  For this incident, the same psql also reads (if Juniper has applied "
-        "the read-only grant; \"permission denied\" means not yet -- say so and "
-        "use the evidence above):",
-        *[f"      {name.ljust(36)} {what}" for name, what in _HARDWARE_TABLES],
-        "  And the GPU pool, who holds which GPU right now:",
+        TOOLS_HEADER,
+        "",
+        "  Hub's live readings (JSON):",
+        f"    curl -s {hub_url}/api/cabinet/cooling/latest",
+        f"    curl -s {hub_url}/api/cabinet/sensors/latest",
+        f"    curl -s '{hub_url}/api/biometrics/preview/snapshot?node=athena'    (or node=circe)",
+        f"    curl -s '{hub_url}/api/biometrics/preview/gpu?node=athena'         (or node=circe)",
+        "",
+        "  The GPU pool, who holds which GPU right now:",
         f"    curl -s {pool_url}/v1/pool",
+        "",
+        "  History in Postgres (read-only):",
+        *[f"      {name.ljust(26)} {what}" for name, what in _HARDWARE_TABLES],
+        "",
+        '    psql "$ORION_CURIOSITY_PG_DSN" -c "SELECT timestamp, node,',
+        "      measurements->>'temp_c_max' AS temp_c_max,",
+        "      measurements->>'cabinet_temp_c' AS cabinet_temp_c",
+        "      FROM orion_biometrics_summary WHERE node = 'athena'",
+        "      AND timestamp >= to_char(now() AT TIME ZONE 'UTC' - interval '60 minutes', "
+        "'YYYY-MM-DD HH24:MI:SS')",
+        '      ORDER BY timestamp DESC LIMIT 20"',
+        "",
+        '    psql "$ORION_CURIOSITY_PG_DSN" -c "SELECT ts, cooling_watts, switch_on, stale, sample_age_sec',
+        '      FROM home_cooling_sample ORDER BY ts DESC LIMIT 20"',
+        "",
+        "  \"permission denied\" on either table means Juniper has not applied the "
+        "read-only grant yet. Say so and work from the evidence above and the "
+        "HTTP readings.",
         "",
     ]
 
@@ -171,10 +204,12 @@ def build_urgent_prompt(
     hub_url: str = "http://127.0.0.1:8080",
     pool_url: str = "http://orion-athena-gpu-pool:8127",
     graph_enabled: bool = True,
-    atlas_graph: str = "orion_substrate",
 ) -> str:
     """Assemble the urgent investigation prompt.
 
+    `hub_url` must be reachable from the harness sandbox: Hub passes its
+    sandbox URL (`HUB_CURIOSITY_SANDBOX_HUB_URL`, live value
+    `http://host.docker.internal:8080`); the default is for local use only.
     `pool_url` defaults to the pool's `app-net` name: verified 2026-09-28
     reachable from the harness-governor sandbox, where `127.0.0.1:8127` is not.
     The report template is only offered when a graph is configured and the run
@@ -184,14 +219,7 @@ def build_urgent_prompt(
     lines = _assignment_section(seed)
     lines += _evidence_section(seed)
     lines += _checklist_section()
-    lines += _access_section(
-        own_graph=own_graph,
-        atlas_graph=atlas_graph,
-        hub_url=hub_url,
-        graph_enabled=graph_enabled,
-        writable=writable,
-    )
-    lines += _hardware_access_lines(pool_url)
+    lines += _tools_section(hub_url=hub_url, pool_url=pool_url)
     if writable:
         lines += _report_section(seed=seed, own_graph=own_graph, run_id=run_id)
     else:

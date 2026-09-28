@@ -11,7 +11,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from orion.curiosity import kickoff_prompt
-from orion.curiosity.urgent_prompt import EVIDENCE_CHAR_CAP, TRUNCATION_MARKER, build_urgent_prompt
+from orion.curiosity.urgent_prompt import (
+    EVIDENCE_CHAR_CAP,
+    TOOLS_HEADER,
+    TRUNCATION_MARKER,
+    build_urgent_prompt,
+)
 from orion.curiosity.worldview import TurnOutcome, WorldviewSnapshot
 from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
 
@@ -64,19 +69,74 @@ def test_incident_report_template_only_when_graph_enabled():
     assert "prose answer is the report" in disabled
 
 
-def test_pool_url_and_hardware_tables_named():
-    prompt = build_urgent_prompt(_seed(), run_id=RUN_ID, pool_url="http://pool.test:9")
-    assert "http://pool.test:9/v1/pool" in prompt
-    assert "orion_biometrics_summary" in prompt
-    assert "home_cooling_sample" in prompt
+def _tool_section(prompt: str) -> str:
+    start = prompt.index(TOOLS_HEADER)
+    ends = [prompt.find(h, start) for h in ("WRITE YOUR VERDICT", "THERE IS NO GRAPH")]
+    return prompt[start : min(e for e in ends if e != -1)]
+
+
+def test_tool_section_names_hardware_sources():
+    prompt = build_urgent_prompt(
+        _seed(), run_id=RUN_ID, hub_url="http://hub.test:8080", pool_url="http://pool.test:9"
+    )
+    tools = _tool_section(prompt)
+    assert 'psql "$ORION_CURIOSITY_PG_DSN"' in tools
+    assert "orion_biometrics_summary" in tools
+    assert "home_cooling_sample" in tools
+    assert "permission denied" in tools
+    for path in (
+        "/api/cabinet/cooling/latest",
+        "/api/cabinet/sensors/latest",
+        "/api/biometrics/preview/snapshot?node=athena",
+        "/api/biometrics/preview/gpu?node=athena",
+    ):
+        assert f"http://hub.test:8080{path}" in tools, path
+    assert "curl -s http://pool.test:9/v1/pool" in tools
+    assert "Look, do not touch" in prompt
+
     default = build_urgent_prompt(_seed(), run_id=RUN_ID)
     assert "http://orion-athena-gpu-pool:8127/v1/pool" in default
+    assert "http://127.0.0.1:8080/api/cabinet/cooling/latest" in default
 
 
-def test_reuses_kickoff_access_and_clock_sections():
+def test_example_queries_use_real_columns():
+    tools = _tool_section(build_urgent_prompt(_seed(), run_id=RUN_ID))
+    # orion_biometrics_summary.timestamp is TEXT ("YYYY-MM-DD HH:MM:SS.ffffff+00");
+    # the example compares it as text so the (node, timestamp) index is used.
+    assert "ORDER BY timestamp DESC" in tools
+    assert "measurements->>'temp_c_max'" in tools
+    assert "measurements->>'cabinet_temp_c'" in tools
+    assert "to_char(now() AT TIME ZONE 'UTC' - interval '60 minutes', 'YYYY-MM-DD HH24:MI:SS')" in tools
+    assert "cooling_watts" in tools and "stale" in tools and "ORDER BY ts DESC" in tools
+
+
+def test_tool_section_does_not_steer_toward_self_material():
+    for graph_enabled in (True, False):
+        prompt = build_urgent_prompt(_seed(), run_id=RUN_ID, graph_enabled=graph_enabled)
+        for phrase in (
+            "memory_crystallizations",
+            "memory_concept_relation_decisions",
+            "chat_history_log",
+            "journal_entries",
+            "expected to take",
+            "HOW TO REACH YOUR OWN MATERIAL",
+            "GRAPH.RO_QUERY",
+            "orion_substrate",
+            "(p:Prior)",
+            "read_recall",
+        ):
+            assert phrase not in prompt, (graph_enabled, phrase)
+
+
+def test_graph_write_is_only_the_incident_report():
+    prompt = build_urgent_prompt(_seed(), run_id=RUN_ID)
+    assert prompt.count("GRAPH.QUERY") == 2  # the CREATE and its read-back
+    assert prompt.count("CREATE (") == 1
+
+
+def test_reuses_kickoff_clock_section():
     prompt = build_urgent_prompt(_seed(), run_id=RUN_ID)
     assert kickoff_prompt._budget_section(writable=False)[0] in prompt
-    assert "HOW TO REACH YOUR OWN MATERIAL" in prompt
     # The clock is the non-writable variant: there is no :TurnOutcome here,
     # so it must not promise a continuation note.
     assert "continuation note" not in prompt
@@ -88,7 +148,7 @@ def test_sections_in_order():
         QUESTION,
         "fan_pct",
         "WHAT TO FIND OUT",
-        "HOW TO REACH YOUR OWN MATERIAL",
+        TOOLS_HEADER,
         ":IncidentReport",
         kickoff_prompt._budget_section(writable=False)[0],
         "ANSWER IN PLAIN PROSE",

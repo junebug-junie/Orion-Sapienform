@@ -34,18 +34,20 @@ _OCCURRED = "COALESCE(s.landing_at, s.stage2_completed_at, s.handoff_at, s.creat
 
 _ROW_SQL = f"SELECT {_COLUMNS} FROM world_pulse_read_seed s WHERE s.seed_id = $1"
 
-# count(*) OVER () is evaluated before LIMIT, so ``total`` is the full match count.
 # Rows whose Stage 1 handoff carries no tool-trace fetch are not readings (see
 # read_evidence.py); a Stage 2 summary built on one is no better. CASE, not AND,
 # because SQL does not guarantee short-circuit evaluation.
-_RECENT_SQL = f"""
-SELECT {_COLUMNS}, count(*) OVER () AS total
-FROM world_pulse_read_seed s
-WHERE s.duplicate_of IS NULL
+_VERIFIED_WHERE = """s.duplicate_of IS NULL
   AND s.status = 'done'
   AND CASE WHEN jsonb_typeof(s.handoff_json->'read_evidence') = 'array'
            THEN jsonb_array_length(s.handoff_json->'read_evidence') > 0
-           ELSE false END
+           ELSE false END"""
+
+# count(*) OVER () is evaluated before LIMIT, so ``total`` is the full match count.
+_RECENT_SQL = f"""
+SELECT {_COLUMNS}, count(*) OVER () AS total
+FROM world_pulse_read_seed s
+WHERE {_VERIFIED_WHERE}
   AND ($2::timestamptz IS NULL OR {_OCCURRED} >= $2)
 ORDER BY {_OCCURRED} DESC, s.seed_id DESC
 LIMIT $1

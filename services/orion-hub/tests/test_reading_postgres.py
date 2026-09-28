@@ -737,3 +737,125 @@ def test_reading_results_introspection_is_read_only_and_distinguishes_states(loc
         await conn.close()
 
     asyncio.run(run())
+
+
+def test_reading_search_index_and_query_use_real_sql_gate(local_pg):
+    import httpx
+
+    from orion.world_pulse_read.search import (
+        ReadingSearchConfig, index_missing_readings, search_readings, verified_rows,
+    )
+
+    cfg = ReadingSearchConfig(
+        chroma_url="http://chroma.test", embed_url="http://embed.test/embedding",
+        collection="orion_reading_results", min_similarity=0.6,
+    )
+
+    async def run():
+        conn, _ = await db(local_pg)
+        done, hollow, queued = (request(f"https://example.org/{n}") for n in ("done", "hollow", "queued"))
+        for r in (done, hollow, queued):
+            await queue.enqueue_reading(conn, r)
+        mark = """UPDATE world_pulse_read_seed SET status='done', stage2_status='done',
+                  handoff_json=$2::jsonb, stage2_result_json=$3::jsonb, handoff_at=now(),
+                  stage2_completed_at=now(), landing_at=now() WHERE request_id=$1"""
+        await conn.execute(mark, done.request_id, json.dumps({"read_evidence": [
+            {"tool_name": "WebFetch", "url": "https://example.org/done", "content_chars": 500}]}),
+            json.dumps({"summary": "GPU supply is tight"}))
+        await conn.execute(mark, hollow.request_id, json.dumps({"what_i_learned": "guess"}),
+                           json.dumps({"summary": "built on nothing"}))
+        seeds = {r["url"]: r["seed_id"] for r in await conn.fetch("SELECT url, seed_id FROM world_pulse_read_seed")}
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if req.url.host == "embed.test":
+                return httpx.Response(200, json={"doc_id": "q", "embedding": [1.0, 0.0], "embedding_dim": 2})
+            if req.url.path.endswith("/orion_reading_results"):
+                return httpx.Response(200, json={"id": "cid", "metadata": None})
+            if req.url.path.endswith("/get"):
+                return httpx.Response(200, json={"ids": [], "metadatas": []})
+            ids = [seeds[u] for u in ("https://example.org/done", "https://example.org/hollow", "https://example.org/queued")]
+            return httpx.Response(200, json={"ids": [ids], "distances": [[0.2, 0.2, 0.2]]})
+
+        published = []
+
+        class Bus:
+            async def publish(self, channel, envelope):
+                published.append(envelope.payload["doc_id"])
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            rows = await verified_rows(conn)
+            result = await index_missing_readings(rows, cfg, client=client, bus=Bus(), source=ServiceRef(name="orion-hub"))
+            assert (result.indexed, result.pending) == (1, 0)
+            assert published == [seeds["https://example.org/done"]]
+            found = await search_readings(conn, cfg, client=client, query="graphics cards", limit=5)
+            assert found.total_available == 1
+            assert found.items[0].extra["url"] == "https://example.org/done"
+            assert found.items[0].extra["similarity"] == 0.9
+            assert found.items[0].text == "GPU supply is tight"
+            future = await search_readings(conn, cfg, client=client, query="gpus", limit=5,
+                                           since=datetime(2999, 1, 1, tzinfo=timezone.utc))
+            assert future.items == [] and future.total_available == 0
+        await conn.close()
+
+    asyncio.run(run())
+
+
+def test_reading_search_index_and_query_use_real_sql_gate(local_pg):
+    import httpx
+
+    from orion.world_pulse_read.search import (
+        ReadingSearchConfig, index_missing_readings, search_readings, verified_rows,
+    )
+
+    cfg = ReadingSearchConfig(
+        chroma_url="http://chroma.test", embed_url="http://embed.test/embedding",
+        collection="orion_reading_results", min_similarity=0.6,
+    )
+
+    async def run():
+        conn, _ = await db(local_pg)
+        done, hollow, queued = (request(f"https://example.org/{n}") for n in ("done", "hollow", "queued"))
+        for r in (done, hollow, queued):
+            await queue.enqueue_reading(conn, r)
+        mark = """UPDATE world_pulse_read_seed SET status='done', stage2_status='done',
+                  handoff_json=$2::jsonb, stage2_result_json=$3::jsonb, handoff_at=now(),
+                  stage2_completed_at=now(), landing_at=now() WHERE request_id=$1"""
+        await conn.execute(mark, done.request_id, json.dumps({"read_evidence": [
+            {"tool_name": "WebFetch", "url": "https://example.org/done", "content_chars": 500}]}),
+            json.dumps({"summary": "GPU supply is tight"}))
+        await conn.execute(mark, hollow.request_id, json.dumps({"what_i_learned": "guess"}),
+                           json.dumps({"summary": "built on nothing"}))
+        seeds = {r["url"]: r["seed_id"] for r in await conn.fetch("SELECT url, seed_id FROM world_pulse_read_seed")}
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            if req.url.host == "embed.test":
+                return httpx.Response(200, json={"doc_id": "q", "embedding": [1.0, 0.0], "embedding_dim": 2})
+            if req.url.path.endswith("/orion_reading_results"):
+                return httpx.Response(200, json={"id": "cid", "metadata": None})
+            if req.url.path.endswith("/get"):
+                return httpx.Response(200, json={"ids": [], "metadatas": []})
+            ids = [seeds[u] for u in ("https://example.org/done", "https://example.org/hollow", "https://example.org/queued")]
+            return httpx.Response(200, json={"ids": [ids], "distances": [[0.2, 0.2, 0.2]]})
+
+        published = []
+
+        class Bus:
+            async def publish(self, channel, envelope):
+                published.append(envelope.payload["doc_id"])
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            rows = await verified_rows(conn)
+            result = await index_missing_readings(rows, cfg, client=client, bus=Bus(), source=ServiceRef(name="orion-hub"))
+            assert (result.indexed, result.pending) == (1, 0)
+            assert published == [seeds["https://example.org/done"]]
+            found = await search_readings(conn, cfg, client=client, query="graphics cards", limit=5)
+            assert found.total_available == 1
+            assert found.items[0].extra["url"] == "https://example.org/done"
+            assert found.items[0].extra["similarity"] == 0.9
+            assert found.items[0].text == "GPU supply is tight"
+            future = await search_readings(conn, cfg, client=client, query="gpus", limit=5,
+                                           since=datetime(2999, 1, 1, tzinfo=timezone.utc))
+            assert future.items == [] and future.total_available == 0
+        await conn.close()
+
+    asyncio.run(run())

@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import app.main as zwave_main
 from app.main import build_cooling_sample
+from app.settings import Settings
 from app.zwave_client import METER_CC, METER_W_PROPERTY_KEY, ZWaveJSClient
 from orion.schemas.telemetry.home_cooling import CoolingObservedStateV1
 
@@ -108,3 +110,39 @@ def test_never_fresh_is_stale_with_unknown_age():
     assert s.state.stale is True
     assert s.measurements.cooling_watts is None
     assert s.provenance.sample_age_sec is None
+
+
+@pytest.mark.asyncio
+async def test_poll_once_after_silence_publishes_stale_not_cache():
+    client = ZWaveJSClient("ws://test", node_id=2, now_fn=lambda: T0)
+    client._values_by_node[2] = {W_KEY: {"commandClass": METER_CC, "property": "value",
+                                         "propertyKey": METER_W_PROPERTY_KEY, "value": 850.0}}
+    client._last_fresh_at[2] = T0
+    client._request = AsyncMock(side_effect=TimeoutError("plug gone"))
+    settings = Settings(ZWAVE_NODE_ID=2, COOLING_STALE_AFTER_SEC=120.0)
+    sample = await zwave_main.poll_once(client, settings, now_fn=lambda: T0 + timedelta(seconds=300))
+    assert sample.state.stale is True
+    assert sample.measurements.cooling_watts is None
+    assert zwave_main.cooling_status()["cooling_sensor"] == "stale"
+    assert zwave_main.cooling_status()["consecutive_poll_failures"] == 1
+
+
+@pytest.mark.asyncio
+async def test_poll_once_fresh_poll_publishes_reading():
+    client = ZWaveJSClient("ws://test", node_id=2, now_fn=lambda: T0)
+    client._request = AsyncMock(return_value={"success": True, "result": {"value": 885.7}})
+    settings = Settings(ZWAVE_NODE_ID=2, COOLING_STALE_AFTER_SEC=120.0)
+    sample = await zwave_main.poll_once(client, settings, now_fn=lambda: T0 + timedelta(seconds=1))
+    assert sample.state.stale is False
+    assert sample.measurements.cooling_watts == 885.7
+    assert zwave_main.cooling_status()["cooling_sensor"] == "fresh"
+
+
+def test_heartbeat_carries_cooling_status():
+    chassis = zwave_main.build_heartbeat_chassis(Settings())
+    assert chassis._heartbeat_details is not None
+    assert "cooling_sensor" in chassis._heartbeat_details()
+
+
+def test_stale_window_setting_default():
+    assert Settings().COOLING_STALE_AFTER_SEC == 120.0

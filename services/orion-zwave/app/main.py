@@ -4,7 +4,7 @@ import asyncio
 import logging
 import sys
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -42,6 +42,23 @@ def setup_logging() -> None:
     root.setLevel(logging.INFO)
     root.handlers.clear()
     root.addHandler(handler)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+_COOLING_STATUS: dict[str, Any] = {
+    "cooling_sensor": "unknown",
+    "cooling_sample_age_sec": None,
+    "zwave_connected": False,
+    "consecutive_poll_failures": 0,
+}
+
+
+def cooling_status() -> dict[str, Any]:
+    """Heartbeat details: is the AC reading real right now?"""
+    return dict(_COOLING_STATUS)
 
 
 def build_cooling_sample(
@@ -131,6 +148,47 @@ async def _publish_sample(
         )
 
 
+async def poll_once(
+    client: ZWaveJSClient,
+    settings: Settings,
+    now_fn: Callable[[], datetime] = _utcnow,
+) -> HomeCoolingSampleV1:
+    node_id = settings.ZWAVE_NODE_ID
+    await client.refresh_meter_watts(node_id)
+    values = client.get_values(node_id)
+    sample = build_cooling_sample(
+        node_id=node_id,
+        controller_ready=client.controller_ready,
+        device_online=client.device_online(node_id),
+        watts=extract_meter_watts(values),
+        volts=extract_meter_volts(values),
+        amps=extract_meter_amps(values),
+        switch_on=extract_switch_on(values),
+        device_path="/dev/zwave",
+        product=client.product_name(node_id),
+        now=now_fn(),
+        last_fresh_at=client.last_fresh_at(node_id),
+        stale_after_sec=settings.COOLING_STALE_AFTER_SEC,
+        device_id=settings.ZWAVE_DEVICE_ID,
+        device_name=settings.ZWAVE_DEVICE_NAME,
+        instance_id=settings.INSTANCE_ID,
+    )
+    _COOLING_STATUS.update(
+        cooling_sensor="stale" if sample.state.stale else "fresh",
+        cooling_sample_age_sec=sample.provenance.sample_age_sec,
+        zwave_connected=client.connected,
+        consecutive_poll_failures=client.consecutive_poll_failures,
+    )
+    if sample.state.stale:
+        logger.warning(
+            "cooling_sample_stale age_sec=%s consecutive_poll_failures=%s connected=%s",
+            sample.provenance.sample_age_sec,
+            client.consecutive_poll_failures,
+            client.connected,
+        )
+    return sample
+
+
 async def poll_cooling_loop() -> None:
     settings = get_settings()
 
@@ -160,42 +218,18 @@ async def poll_cooling_loop() -> None:
 
     client = ZWaveJSClient(settings.ZWAVE_JS_WS_URL, settings.ZWAVE_NODE_ID)
     try:
-        await client.connect()
-    except Exception:
-        logger.exception("Failed to connect to zwave-js-server; retrying in poll interval")
         while True:
-            await asyncio.sleep(settings.COOLING_POLL_INTERVAL_SEC)
+            if not client.connected:
+                # A dead socket must not leave us publishing cache forever: reconnect, and
+                # keep publishing (stale) samples while it is down so silence is visible.
+                try:
+                    await client.close()
+                    await client.connect()
+                    logger.info("zwave_js_connected ws=%s", settings.ZWAVE_JS_WS_URL)
+                except Exception:
+                    logger.exception("Z-Wave connect attempt failed ws=%s", settings.ZWAVE_JS_WS_URL)
             try:
-                await client.connect()
-                break
-            except Exception:
-                logger.exception("Z-Wave reconnect attempt failed")
-
-    try:
-        while True:
-            try:
-                # Unsolicited meter reports are sparse; poll Electric_W each cycle.
-                await client.refresh_meter_watts(settings.ZWAVE_NODE_ID)
-                values = client.get_values(settings.ZWAVE_NODE_ID)
-                watts = extract_meter_watts(values)
-                volts = extract_meter_volts(values)
-                amps = extract_meter_amps(values)
-                switch_on = extract_switch_on(values)
-                sample = build_cooling_sample(
-                    node_id=settings.ZWAVE_NODE_ID,
-                    controller_ready=client.controller_ready,
-                    device_online=client.device_online(settings.ZWAVE_NODE_ID),
-                    watts=watts,
-                    volts=volts,
-                    amps=amps,
-                    switch_on=switch_on,
-                    device_path="/dev/zwave",
-                    product=client.product_name(settings.ZWAVE_NODE_ID),
-                    now=datetime.now(timezone.utc),
-                    device_id=settings.ZWAVE_DEVICE_ID,
-                    device_name=settings.ZWAVE_DEVICE_NAME,
-                    instance_id=settings.INSTANCE_ID,
-                )
+                sample = await poll_once(client, settings)
                 await _publish_sample(bus, settings, sample)
             except Exception:
                 logger.exception("Cooling poll cycle failed; will retry")
@@ -216,7 +250,8 @@ def build_heartbeat_chassis(settings: Optional[Settings] = None) -> HeartbeatOnl
             bus_enabled=s.ORION_BUS_ENABLED,
             heartbeat_interval_sec=s.HEARTBEAT_INTERVAL_SEC,
             health_channel=s.ORION_HEALTH_CHANNEL,
-        )
+        ),
+        heartbeat_details=cooling_status,
     )
 
 

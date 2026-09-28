@@ -989,7 +989,7 @@ def build_server(tools) -> Server:
         if name not in specs:
             raise ValueError(f"tool not available this turn: {name}")
         result = await tools.invoke(name, arguments or {})
-        return [TextContent(type="text", text=json.dumps(result, default=str))]
+        return [TextContent(type="text", text=json.dumps(result, default=str, ensure_ascii=False))]
 
     return server
 

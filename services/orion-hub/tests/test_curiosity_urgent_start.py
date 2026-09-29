@@ -249,7 +249,7 @@ def test_no_redis_refuses_and_still_reports() -> None:
     _assert_refusal_reported(loop, bus, "redis_unavailable")
 
 
-def test_a_refusal_never_overwrites_the_record_of_a_run_still_open_for_the_incident() -> None:
+def test_a_refusal_while_a_run_is_open_neither_overwrites_its_record_nor_claims_failure() -> None:
     bus = _Bus()
     loop = _loop(bus)
     started = asyncio.run(loop.start_urgent(_seed()))
@@ -257,8 +257,23 @@ def test_a_refusal_never_overwrites_the_record_of_a_run_still_open_for_the_incid
     assert asyncio.run(loop.start_urgent(_seed()))["reason"] == "urgent_disabled"
     stored = json.loads(bus.redis.hashes[URGENT_INCIDENTS_KEY][INCIDENT])
     assert stored["run_id"] == started["run_id"] and stored["status"] == "dispatched"
-    [(stub, _)] = loop.urgent_reporter.failed
-    assert stub["status"] == "refused:urgent_disabled"
+    # The open run still reports; a "failed" notice now would be false.
+    assert loop.urgent_reporter.failed == []
+
+
+def test_a_hung_role_check_is_bounded_and_never_strands_the_incident(monkeypatch) -> None:
+    monkeypatch.setitem(CuriosityInvestigation.start_urgent.__globals__, "URGENT_PG_ROLE_CHECK_SEC", 0.05)
+    bus = _Bus()
+    loop = _loop(bus, pg_readonly_role="orion_readonly")
+
+    async def _hang():
+        await asyncio.sleep(3600)
+
+    loop._pg_role_missing = _hang  # type: ignore[assignment]
+    result = asyncio.run(asyncio.wait_for(loop.start_urgent(_seed()), timeout=5))
+    assert result["ok"] is True
+    assert bus.redis.values[urgent_open_key(INCIDENT)] == result["run_id"]
+    assert len(bus.rpc_calls) == 1
 
 
 def test_incident_already_open_sends_no_second_notice() -> None:
@@ -494,6 +509,17 @@ def test_an_invalid_request_naming_an_incident_gets_a_failed_report() -> None:
     assert stub["trigger"] == "smoke" and stub["subject"] == "athena"
     assert len(stub["question"]) == 2000
     assert reason.startswith("refused: invalid_request: ")
+
+
+def test_an_invalid_request_for_an_incident_with_an_open_run_claims_no_failure() -> None:
+    bus = _Bus()
+    inv = _FakeInvestigation()
+    inv.urgent_reporter = _Reporter()
+    inv._bus = bus
+    bus.redis.values[urgent_open_key(INCIDENT)] = "abcdef123456"
+    payload = {**_seed().model_dump(mode="json"), "trigger": "smoke"}
+    asyncio.run(handle_urgent_request(bus, inv, _msg(bus, payload)))
+    assert inv.seeds == [] and inv.urgent_reporter.failed == []
 
 
 def test_an_invalid_request_without_a_usable_incident_id_is_only_logged() -> None:

@@ -14,6 +14,7 @@ import re
 from typing import Any
 
 from orion.schemas.curiosity_urgent import URGENT_REQUEST_CHANNEL, CuriosityUrgentRequestV1, CuriosityUrgentSeedV1
+from scripts.curiosity_investigation import urgent_open_key
 
 logger = logging.getLogger("orion-hub.curiosity_urgent")
 
@@ -39,6 +40,16 @@ async def _report_invalid(investigation: Any, payload: Any, exc: Exception) -> N
     if reporter is None:
         logger.warning("urgent_reporter_missing incident_id=%s", incident_id)
         return
+    redis = getattr(getattr(investigation, "_bus", None), "redis", None)
+    if redis is not None:
+        try:
+            held = await redis.get(urgent_open_key(incident_id))
+        except Exception:  # noqa: BLE001 -- unsure: still report
+            held = None
+        if held is not None:
+            # A run is still open for this incident and will report; "failed" would be false.
+            logger.info("urgent_request_invalid_not_reported incident_id=%s reason=run_open", incident_id)
+            return
     stub = {
         "incident_id": incident_id,
         "run_id": "",

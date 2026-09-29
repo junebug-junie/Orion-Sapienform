@@ -269,6 +269,7 @@ URGENT_INCIDENTS_KEY = "orion:curiosity:urgent:incidents"
 URGENT_INCIDENTS_MAX = 50
 # Past the overall urgent deadline, so the key outlives the run's own watchdog.
 URGENT_OPEN_KEY_GRACE_SEC = 600
+URGENT_PG_ROLE_CHECK_SEC = 5.0
 
 
 def urgent_open_key(incident_id: str) -> str:
@@ -1955,8 +1956,12 @@ class CuriosityInvestigation:
             except Exception:  # noqa: BLE001 -- unsure: leave the record alone, still report
                 held = b"unknown"
             if held is None:
-                # Never overwrite the record of a run still open for this incident.
                 await self._record_urgent_incident(stub)
+            elif held != b"unknown":
+                # A run is still open for this incident and will report; a "failed"
+                # notice now would be false. Leave its record alone too.
+                logger.info("curiosity_urgent_refusal_not_reported incident_id=%s reason=run_open", incident_id)
+                return {"ok": False, "reason": reason, "incident_id": incident_id}
         if self.urgent_reporter is None:
             logger.warning("urgent_reporter_missing incident_id=%s", incident_id)
         else:
@@ -1980,6 +1985,16 @@ class CuriosityInvestigation:
         if redis is None:
             return await self._refuse_urgent(seed, "redis_unavailable")
 
+        # A missing role does not refuse an urgent run (the HTTP readings still
+        # work); it only drops the psql history from the prompt. Checked before the
+        # open key is taken and bounded: a hung pool must not strand the incident.
+        pg_available = True
+        if self.pg_readonly_role:
+            try:
+                pg_available = not await asyncio.wait_for(self._pg_role_missing(), URGENT_PG_ROLE_CHECK_SEC)
+            except asyncio.TimeoutError:
+                logger.warning("curiosity_urgent_pg_role_check_timeout incident_id=%s", incident_id)
+
         run_id = uuid4().hex[:12]
         open_key = urgent_open_key(incident_id)
         if not await redis.set(open_key, run_id, nx=True, ex=self.urgent_open_key_ttl_sec()):
@@ -1989,9 +2004,6 @@ class CuriosityInvestigation:
 
         correlation_id = str(uuid5(NAMESPACE_URL, f"{INVESTIGATION_TAG}:{run_id}"))
         incident = self._urgent_incident(seed, run_id=run_id, status="dispatched")
-        # A missing role does not refuse an urgent run (the HTTP readings still
-        # work); it only drops the psql history from the prompt.
-        pg_available = not (self.pg_readonly_role and await self._pg_role_missing())
         prompt = build_urgent_prompt(
             seed,
             run_id=run_id,

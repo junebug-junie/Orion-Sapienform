@@ -241,9 +241,10 @@ operator view.
   `urgent_listener_not_running`, `bus_unavailable` and `redis_unavailable` up front (503).
 - **Every refusal is reported.** A refused `start_urgent` (and a bus request that fails
   validation but names a usable incident id) sends one critical `failed` notice
-  (`investigation failed: refused: <reason>`) and records a `refused:<reason>` incident stub —
-  never over the record of a run still open for that incident. `incident_already_open` sends
-  nothing: the open run reports.
+  (`investigation failed: refused: <reason>`) and records a `refused:<reason>` incident stub.
+  When a run is still open for that incident (`incident_already_open`, or any refusal or
+  invalid request while its open key is held) nothing is sent and its record is left alone:
+  the open run reports, and a "failed" notice would be false.
 
 **What shipped:**
 
@@ -463,7 +464,7 @@ The durable graph `curiosity.investigate` is reused; everything below is keyed o
    empty-evidence one into `no_structured_verdict`; failed and cancelled ⇒ `investigation failed`
    + evidence; timeout ⇒ INCOMPLETE report; no grant within 120 s ⇒ "not investigated" report
    with the evidence bundle; no run record 120 s after an unconfirmed dispatch ⇒ one `failed`
-   report and the incident freed; every refusal ⇒ one `failed` report; every notice
+   report and the incident freed; every refusal with no run open ⇒ one `failed` report; every notice
    critical with email, flag or verdict before prose.
 6. Live smoke: Hub "Run urgent" → pool shows an `urgent` hold → durable run completes → critical
    notice in Hub and email (email delivery verified, not assumed). **UNVERIFIED** — runs after

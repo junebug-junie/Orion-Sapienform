@@ -409,12 +409,13 @@ class UrgentReporter:
             # durable-runs commits the admission row before it publishes the
             # receipt (app/main.py: `await admission.submit` then publish), and the
             # request channel is pub/sub, so no row by now means no run will ever
-            # exist. Ends the incident: failed report, the deadline check stays
-            # quiet (deliver marks the run terminal), and the incident is freed.
+            # exist. Ends the incident: freed first (delivery can retry for a long
+            # time), the deadline check stays quiet, then the failed report.
+            self._terminal.add(run_id)
+            await self._release(incident)
             reason = f"cortex never registered the run (no run record after {self.grant_wait_sec:.0f} s)"
             request = compose_urgent_report(incident, kind="failed", reason=reason)
             await self.deliver(incident, request, kind="failed")
-            await self._release(incident)
             return
         if error:
             reason = f"could not confirm a GPU grant after {self.grant_wait_sec:.0f} s: {error}"
@@ -448,6 +449,8 @@ class UrgentReporter:
             # from the run store; the sent key stops a later duplicate.
             kind: ReportKind = "final" if terminal == "completed" else "failed"
             detail = (progress or {}).get("detail") or {}
+            # The run is over: free the incident before delivery, which can retry for a long time.
+            await self._release(incident)
             if kind == "final" and not detail:
                 # Still unreadable: say so as "failed", which dedupes separately
                 # from "final", so a late real verdict can still go out.
@@ -461,7 +464,6 @@ class UrgentReporter:
                 reason = str(detail.get("error") or terminal)
                 request = compose_urgent_report(incident, kind=kind, detail=detail, reason=reason)
                 await self.deliver(incident, request, kind=kind)
-            await self._release(incident)
             return
         reason = f"no result after {self.timeout_sec:.0f} s"
         if error:

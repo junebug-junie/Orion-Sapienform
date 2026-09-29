@@ -31,6 +31,13 @@ async def lifespan(app: FastAPI):
     logger.info("🌙 Orion Dream module starting up (readout façade; triggers go to cortex-orch)…")
 
     stop = asyncio.Event()
+    introspect = None
+    if settings.DREAM_INTROSPECT_ENABLED and settings.ORION_BUS_ENABLED:
+        from app.introspect_listener import build_listener
+
+        introspect = build_listener()
+        await introspect.start()
+        logger.info("dream introspect responder started")
     loop_task = None
     if settings.ORION_DREAM_CYCLE_ENABLED:
         from app.cycle import sleep_loop
@@ -42,6 +49,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    if introspect is not None:
+        await introspect.stop()
     stop.set()
     if loop_task is not None:
         try:

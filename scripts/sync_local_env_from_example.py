@@ -224,6 +224,11 @@ SYNC_PREFIXES = (
     # never land in the live .env.
     "HUB_WORLD_PULSE_READ_",
     "HUB_READING_",
+    # orion-dream introspect responder (dreams tool). Same blind spot: without
+    # these, the default sync reported "no changes" and none of the seven keys
+    # reached the live .env.
+    "DREAM_INTROSPECT_",
+    "DREAM_SEARCH_",
     "HUB_LLM_GATEWAY_",
     "HUB_CHAT_ATTACHMENT_",
     "HUB_AGENT_CONTEXT_EXEC_",

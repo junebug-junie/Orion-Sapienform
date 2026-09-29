@@ -36,6 +36,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 OWNERS: dict[str, str] = {
     "HARNESS_FCC_TIMEOUT_SEC": "services/orion-harness-governor/.env_example",
     "HUB_READING_SEARCH_MIN_SIMILARITY": "services/orion-hub/.env_example",
+    "DREAM_SEARCH_MIN_SIMILARITY": "services/orion-dream/.env_example",
 }
 
 # Line-level opt-out for text that quotes a value deliberately.

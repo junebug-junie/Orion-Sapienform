@@ -179,9 +179,22 @@ option on a card is YAML + compose only.
   (deleted with the bridge in 5.6).
 - Residents (`swap: null`) are never loaded directly (`not_a_swap_seat`): they come back only as a
   seat's evictions.
-- **Which path runs:** `agent-gpu2` still carries `swap.load/unload` in the committed YAML, so it
-  still goes through the stage-4 bridge (`gpu2.transition`). Stage 5.3 removes those two YAML keys to
-  cut it over (revert = revert the YAML); 5.6 deletes the bridge.
+- **Which path runs:** since stage 5.3 `agent-gpu2` has no `swap.load/unload` in the committed YAML,
+  so it runs through `launch_exec` (log line `launch_exec load role=agent-gpu2
+  service=atlas-agent-burst env=ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES=2
+  ATLAS_AGENT_BURST_PROFILE_NAME=<profile>`). The stage-4 bridge (`gpu2.transition`) stays in the code
+  until 5.6 as the rollback: put `load: gpu2/agent, unload: gpu2/restore` back and drop
+  `launch.profiles` (runbook `docs/runbooks/2026-09-29-gpu-pool-stage5-3-cutover.md`).
+- **`GET /v1/gpu-slots/circe-gpu2/status` no longer shows pool-driven swap progress** after 5.3:
+  its `state` is the bridge's in-memory state, reset to `neither` by a controller restart and by
+  every generic action (so a stale bridge `failed` cannot keep deferring images). Progress is on the bus (`orion:gpu_pool:actuate:result`) and in the pool's card
+  `actuation` (Hub GPU pool panel). Its `active` field is still read live from `docker compose ps`,
+  and that is what its one other reader needs: orion-thought's pre-generate check
+  (`ORION_VISUAL_ELASTIC_STATUS_ENABLED=true` in the live athena container, 2026-09-29) defers an
+  image when `active != "diffusion"`. With `state` stuck at `neither` that check reduces to the
+  container-derived `active`; the mid-drain window it no longer sees is already covered by the
+  image run's pool hold on `diffusion` (a load cannot evict diffusion under a granted hold). The
+  check and the route are deleted in 5.4 / 5.6.
 
 **Fence file operations.** It lives on the pinned volume `orion-gpu-lane-controller-state`
 (`docker compose down -v` deletes it and resets the accepted generation to 0 -- don't). If it is

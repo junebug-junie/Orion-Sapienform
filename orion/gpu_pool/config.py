@@ -263,6 +263,11 @@ class PoolConfig(BaseModel):
                     if card in self.cards and self.cards[card].index is None:
                         errors.append(f"role {name}: has a launch but card {card} has no index")
         for name, role in self.roles.items():
+            if role.swap is not None and role.swap.bridged and role.launch is not None and role.launch.profiles:
+                # The pool sends launch.profiles[0] on every load, and the controller refuses any
+                # profile for a bridged seat (bridge_cannot_set_profile): every load would fail.
+                errors.append(f"role {name}: launch.profiles on a seat with load/unload bridge verbs; the bridge "
+                              f"cannot set a profile, so every load would be refused")
             if role.swap is None or role.swap.bridged:
                 continue
             if role.operator_only and role.launch is None:
@@ -338,6 +343,14 @@ class PoolConfig(BaseModel):
         if swap is not None and swap.after_wait_sec is not None:
             return swap.after_wait_sec
         return self.defaults.swap_after_wait_sec
+
+    def load_profile(self, role: str) -> str | None:
+        """The profile the pool sends with a ``load`` of ``role``: the first ``launch.profiles``
+        entry (the allow-list's default). None when the role lists no profiles -> the actuator leaves
+        compose's own default. Choosing another entry by vision / per-slot ctx / VRAM is not built
+        yet (stage 5 spec, Decision 2 and "Corrections from building 5.2" 6)."""
+        launch = self.roles[role].launch
+        return launch.profiles[0] if launch is not None and launch.profiles else None
 
     def serialized_with(self, role: str) -> list[str]:
         """``serialize_with`` read symmetrically: what ``role`` lists plus every role listing it."""

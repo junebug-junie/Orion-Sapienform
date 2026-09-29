@@ -242,6 +242,8 @@ _GRAMMAR_QUEUES: list[asyncio.Queue[GrammarWorkItem]] | None = None
 _GRAMMAR_DEFERRED: list[deque[GrammarWorkItem]] | None = None
 _GRAMMAR_WORKER_TASKS: list[asyncio.Task] = []
 _GRAMMAR_BACKGROUND_TASKS: set[asyncio.Task] = set()
+_GRAMMAR_QUEUE_HIGH_WATER: dict[int, int] = {}
+GRAMMAR_QUEUE_FULL_ERROR = "grammar queue full"
 _WRITE_SEMAPHORE: asyncio.Semaphore | None = None
 _SPARK_CONTRACT_METRICS = SparkContractMetrics()
 COLLAPSE_STORED_KIND = "collapse.mirror.stored.v1"
@@ -286,7 +288,12 @@ def grammar_queue_snapshot() -> dict[str, Any]:
     if queues is None:
         return {"workers": shard_count, "total_depth": 0, "shards": []}
     shards = [
-        {"shard": idx, "depth": queues[idx].qsize(), "maxsize": queues[idx].maxsize}
+        {
+            "shard": idx,
+            "depth": queues[idx].qsize(),
+            "maxsize": queues[idx].maxsize,
+            "high_water": _GRAMMAR_QUEUE_HIGH_WATER.get(idx, 0),
+        }
         for idx in range(len(queues))
     ]
     return {
@@ -318,7 +325,7 @@ def _ensure_grammar_workers() -> None:
     shard_count = _grammar_shard_count()
     _get_grammar_executors()
     if _GRAMMAR_QUEUES is None:
-        _GRAMMAR_QUEUES = [asyncio.Queue(maxsize=512) for _ in range(shard_count)]
+        _GRAMMAR_QUEUES = [asyncio.Queue(maxsize=max(1, int(settings.sql_writer_grammar_queue_maxsize))) for _ in range(shard_count)]
     while len(_GRAMMAR_WORKER_TASKS) < shard_count:
         shard = len(_GRAMMAR_WORKER_TASKS)
         task = asyncio.create_task(_grammar_worker_loop(shard))
@@ -416,6 +423,9 @@ def _spawn_grammar_persist(
     queue = queues[shard]
     try:
         queue.put_nowait((env, event, payload, corr_id))
+        depth = queue.qsize()
+        if depth > _GRAMMAR_QUEUE_HIGH_WATER.get(shard, 0):
+            _GRAMMAR_QUEUE_HIGH_WATER[shard] = depth
     except asyncio.QueueFull:
         logger.warning(
             "grammar_queue_full shard=%s event_id=%s trace_id=%s",
@@ -429,7 +439,7 @@ def _spawn_grammar_persist(
                 env.kind,
                 corr_id,
                 payload,
-                "grammar queue full",
+                GRAMMAR_QUEUE_FULL_ERROR,
             )
         )
 

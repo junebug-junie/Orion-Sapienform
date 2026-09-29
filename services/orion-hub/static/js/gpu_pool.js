@@ -248,6 +248,7 @@
       lines.push(sw.actuatedRoles.length ? `pool actuates ${esc(sw.actuatedRoles.join(", "))}` : "observe only: swaps are reported, not actuated");
       if (a) {
         lines.push(`${esc(a.action)} ${esc(a.role)} (g${esc(a.generation)}, ${esc(a.reason)})`
+          + (a.profile ? ` · model ${esc(a.profile)}` : "")
           + (a.phase ? ` · phase ${esc(a.phase)}` : "") + (a.outcome ? ` · ${esc(a.outcome)}` : " · in flight")
           + (a.sent_at ? ` · sent ${esc(fmtAt(a.sent_at))}` : ""));
       }

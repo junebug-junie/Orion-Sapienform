@@ -263,8 +263,11 @@ def test_load_success_path_then_grant_on_the_seat():
         home, waiting = await demand_gpu2(rt, clock)
         [msg] = actuations(rt)
         assert (msg.role, msg.action, msg.actuator, msg.cards, msg.generation) == (SEAT, "load", "circe", ["gpu2"], 1)
-        assert msg.launch_digest == launch_digest(CFG, SEAT) and msg.profile is None
-        assert rt.cards["gpu2"].swap_state == "loading" and rt.bus.events("swap_started")
+        # 5.3: a load names the seat's default profile (launch.profiles[0]); detail.profile records it
+        assert msg.launch_digest == launch_digest(CFG, SEAT) and msg.profile == CFG.load_profile(SEAT) is not None
+        assert rt.cards["gpu2"].swap_state == "loading"
+        assert [e["detail"]["profile"] for e in rt.bus.events("swap_started")] == [msg.profile]
+        assert rt.cards["gpu2"].swap_action["profile"] == msg.profile
         stored = (await rt.store.cards())
         assert {c["card"]: c["swap_state"] for c in stored}["gpu2"] == "loading"   # persisted before sending
         await result(rt, msg, "accepted")
@@ -281,7 +284,7 @@ def test_load_success_path_then_grant_on_the_seat():
         await result(rt, msg, "succeeded", elapsed_ms=120000, observed={SEAT: "running", "diffusion": "exited"})
         assert SEAT in rt.cards["gpu2"].swapped_in and rt.cards["gpu2"].loaded_at == clock()
         [sw] = rt.bus.events("swapped")
-        assert sw["detail"]["action_id"] == msg.action_id
+        assert sw["detail"]["action_id"] == msg.action_id and sw["detail"]["profile"] == msg.profile
         await step(rt, clock, 30, beat=[home.lease_id, waiting.lease_id])   # discovery confirms the 27B
         assert (await rt.store.lease(waiting.lease_id))["role"] == SEAT
     run(go())

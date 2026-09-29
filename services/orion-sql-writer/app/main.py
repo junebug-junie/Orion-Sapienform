@@ -1021,6 +1021,19 @@ async def lifespan(app: FastAPI):
             "retention runs only at startup, which cannot keep up with arrival"
         )
 
+    # Replays events shed with error='grammar queue full' back into the ledger once the
+    # grammar lanes are idle. See app/grammar_fallback_drain.py.
+    drain_task: asyncio.Task | None = None
+    if float(getattr(settings, "sql_writer_grammar_drain_interval_sec", 0.0) or 0.0) > 0:
+        from app.grammar_fallback_drain import grammar_fallback_drain_loop
+
+        drain_task = asyncio.create_task(grammar_fallback_drain_loop(settings))
+    else:
+        logger.warning(
+            "grammar fallback drain DISABLED (SQL_WRITER_GRAMMAR_DRAIN_INTERVAL_SEC=0); "
+            "events shed on queue overflow stay in bus_fallback_log"
+        )
+
     # Object-permanence sweep -- see app/vision_object_permanence.py. Timer-
     # driven because a departure is a non-event: nothing frame-triggered can
     # ever detect one.
@@ -1067,7 +1080,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         pending = [
-            t for t in (task, watch_task, retention_task, vision_permanence_task,
+            t for t in (task, watch_task, retention_task, drain_task, vision_permanence_task,
                         vision_individuals_task, vision_rhythm_task, vision_expect_task)
             if t is not None
         ]

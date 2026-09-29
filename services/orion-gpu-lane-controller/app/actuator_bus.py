@@ -190,6 +190,13 @@ async def _run(req: GpuActuateV1, target: str | pool_fence.LaunchPlan, started: 
 
     generic = isinstance(target, pool_fence.LaunchPlan)
     hook = launch_exec.progress_hook if generic else gpu2.progress_hook
+    if generic:
+        # gpu2._state describes the last BRIDGE transition and is served by /v1/gpu-slots/circe-gpu2/status,
+        # which orion-thought's pre-image check reads (a "failed" without restored=True defers every
+        # image). A generic action on the card makes it stale: reset it to what a restart shows.
+        # Deleted with the bridge in 5.6.
+        gpu2._state.clear()
+        gpu2._state.update(state="neither", error=None)
     token = hook.set(progress)
     try:
         if generic:

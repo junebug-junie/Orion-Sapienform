@@ -74,10 +74,14 @@ def test_live_config_carries_the_5_1_values():
     launch = CFG.roles["agent-gpu2"].launch
     assert launch.cuda_env == "ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES"
     assert launch.profile_var == "ATLAS_AGENT_BURST_PROFILE_NAME"
-    assert launch.profiles == []          # nothing produces a profile until 5.3: compose default
+    # 5.3: one allowed profile, the one the seat has always announced; the pool sends it on a load
+    assert launch.profiles == ["qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex"]
+    assert CFG.load_profile("agent-gpu2") == launch.profiles[0]
+    assert CFG.load_profile("diffusion") is None and CFG.load_profile("chat") is None
+    assert launch.timeout_sec == 900
     assert CFG.roles["diffusion"].launch.cuda_env == "CUDA_VISIBLE_DEVICES"
-    # agent-gpu2 keeps its bridge until 5.3; experiment lost its dead verbs and is not actuatable
-    assert CFG.roles["agent-gpu2"].swap.bridged
+    # 5.3: agent-gpu2 is off the bridge; experiment lost its dead verbs in 5.1 and is not actuatable
+    assert not CFG.roles["agent-gpu2"].swap.bridged
     assert not CFG.roles["experiment"].swap.bridged and CFG.roles["experiment"].launch is None
 
 
@@ -230,7 +234,7 @@ def test_rejects_bad_serialize_with(names, match):
 
 def test_non_operator_swap_seat_without_launch_or_bridge_is_still_refused():
     data = copy.deepcopy(RAW)
-    data["roles"]["agent-gpu2"]["swap"].pop("load"), data["roles"]["agent-gpu2"]["swap"].pop("unload")
+    data["roles"]["agent-gpu2"]["swap"].pop("load", None), data["roles"]["agent-gpu2"]["swap"].pop("unload", None)
     data["roles"]["agent-gpu2"].pop("launch")
     with pytest.raises(ValidationError, match="need a launch"):
         PoolConfig.model_validate(data)
@@ -432,3 +436,26 @@ def test_worked_example_a_with_a_literal_device_is_refused(tmp_path):
     _edit_compose(tmp_path, BURST, lambda s: s.update(yaml.safe_load(literal)["services"]))
     problems = check_launch(cfg, tmp_path)
     assert any("atlas-vision4 CUDA_VISIBLE_DEVICES_OVERRIDE=4 must be" in p for p in problems), problems
+
+
+# --- stage 5.3: the cutover shape -----------------------------------------------------------------
+def test_swap_seat_with_only_a_launch_block_is_valid():
+    """5.3: agent-gpu2 carries no load/unload verbs; its launch block and diffusion's are enough."""
+    seat = RAW["roles"]["agent-gpu2"]
+    assert "load" not in seat["swap"] and "unload" not in seat["swap"]
+    assert "launch" in seat and "launch" in RAW["roles"]["diffusion"]
+    cfg = PoolConfig.model_validate(copy.deepcopy(RAW))
+    assert cfg.evicted_by("agent-gpu2") == ["diffusion"]
+
+
+def test_bridged_seat_listing_profiles_is_refused():
+    """The pool sends launch.profiles[0] on every load and the bridge refuses any profile
+    (bridge_cannot_set_profile), so the half-reverted rollback -- verbs back, profiles kept -- would
+    refuse every load. The validator catches it before a deploy does."""
+    data = copy.deepcopy(RAW)
+    data["roles"]["agent-gpu2"]["swap"].update(load="gpu2/agent", unload="gpu2/restore")
+    with pytest.raises(ValidationError, match="bridge cannot set a profile"):
+        PoolConfig.model_validate(data)
+    data["roles"]["agent-gpu2"]["launch"].pop("profiles")      # the full rollback is valid
+    cfg = PoolConfig.model_validate(data)
+    assert cfg.roles["agent-gpu2"].swap.bridged and cfg.load_profile("agent-gpu2") is None

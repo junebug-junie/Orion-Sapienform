@@ -18,8 +18,15 @@ def bad(mutate):
 
 
 def test_shipped_config_is_valid_and_names_no_models():
+    """Discovery learns what each worker runs; the pool YAML never assumes it. The one exception
+    (stage 5, Decision 2): a role's launch.profiles allow-list names config/llm_profiles.yaml
+    profiles the actuator may load -- checked against that file by check_launch, so it cannot
+    drift into a free-form model name. Those entries are removed before the check."""
     cfg = load_pool_config()
     body = "\n".join(l.split("#")[0] for l in DEFAULT_PATH.read_text().splitlines()).lower()
+    allowed = {p.lower() for spec in cfg.roles.values() if spec.launch for p in spec.launch.profiles}
+    for profile in sorted(allowed, key=len, reverse=True):
+        body = body.replace(profile, "<profile>")
     for model_word in ("qwen", "27b", "35b", "gguf", "deepseek"):
         assert model_word not in body, model_word
     assert cfg.digest

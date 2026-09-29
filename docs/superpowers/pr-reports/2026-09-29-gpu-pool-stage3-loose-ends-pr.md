@@ -80,7 +80,7 @@
 - 2,420 calls ran under a hold (role known);
 - 653 calls ran without a hold, spread across `agent`, `agent-gpu2`, `chat` and none.
 
-So an unheld turn is keyed `fcc:route:<route>`. The `route:` prefix stops "asked for agent" from sharing a baseline with "ran on agent".
+So an unheld turn is keyed `fcc:route:<route>`. The `route:` prefix stops "asked for agent" from sharing a baseline with "ran on agent". A label that points at a non-pool backend (live: `MODEL_HAIKU=nvidia_nim/...`) is keyed `fcc:backend:<backend>`, so a remote API's latency never lands in `fcc:unknown`.
 
 ## Metric lock
 
@@ -128,10 +128,10 @@ The removed/added pair is one channel whose name moved. The name is built from t
 ## Tests run
 
 ```text
-orion/harness/tests orion/situational/tests orion/gpu_pool/tests            702 passed
-services/orion-harness-governor tests                                       57 passed
-services/orion-cortex-exec tests/test_situation_provider.py                 17 passed (4 new)
-services/orion-hub tests/test_unified_turn_gpu_placement.py + surface_ctx   11 passed (3 new)
+orion/harness/tests orion/situational/tests orion/gpu_pool/tests            703 passed
+services/orion-harness-governor tests                                       58 passed
+services/orion-cortex-exec tests/test_situation_provider.py                 19 passed (6 new)
+services/orion-hub unified-turn + cockpit-hop tests                        34 passed (4 new)
 orion/gpu_pool/tests/test_placement.py                                      6 passed (new)
 services/orion-durable-runs tests (CI deps venv, throwaway postgres:16)     213 passed
   -- includes the held-turn acceptance tests that drive the real HarnessRunner under a gpu_lease
@@ -164,7 +164,28 @@ until the restart: the new prompt line and fcc:<role> keys have not been observe
 
 ## Review findings fixed
 
-(filled in after the code-review subagent)
+The code-review subagent found no must-fix issues. All should-fix items and the material nits are fixed:
+
+- Finding: Hub could name a model from a pool snapshot of any age, because its feed keeps the last one when the pool goes quiet.
+  - Fix: `_pool_state_is_fresh` treats a snapshot older than 30 s (six broadcasts) as absent. The brief then names the role without a model.
+  - Evidence: `test_stale_pool_snapshot_never_names_a_model`.
+- Finding: every non-llamacpp FCC run (e.g. `MODEL_HAIKU` → nvidia_nim) was keyed `fcc:unknown`, mixing a remote API into the unknown bucket.
+  - Fix: `resolve_fcc_backend()`. The runner carries `fcc_backend`, and the key becomes `fcc:backend:<backend>`.
+  - Evidence: `test_fcc_hop_non_pool_backend_keeps_its_own_key`, `test_harness_runner_resolves_route_or_backend_for_the_hop_key`.
+- Finding: on an unheld Hub turn, the brief (route `chat`) and the harness prefix (route `harness`) could each name a different "default" model.
+  - Fix: for an unheld unified turn, Hub sets `runtime_line_owner="harness"` and the brief omits its model line (`RuntimeContextV1.placement="harness"`), so only the harness line names a model. The brief's `route` for a lease is now the lease route (`agent`), not `chat`.
+  - Evidence: `test_no_hold_hands_the_model_line_to_the_harness`, `test_runtime_line_is_omitted_when_the_harness_owns_it`, `route == "agent"` assertion.
+- Finding: for a `mismatch` role the wording said the model "could not be read", but the pool did read it; it is just unconfirmed.
+  - Fix: discovery status carried through (`ServingPlacement.role_status`, `RuntimeContextV1.role_status`). The text now says "the pool reports that role as mismatch, not a confirmed model".
+  - Evidence: `test_runtime_context_mismatch_role_says_why_it_names_no_model`, `test_placement.py`.
+- Finding: the route-default probe used the raw label while the hop key used the default label.
+  - Fix: both use `request.fcc_model_label or DEFAULT_FCC_MODEL_LABEL`.
+  - Evidence: the probe is awaited with `"MODEL_SONNET"` when no label is given.
+- Finding: the workflow's `push:` path filter did not cover the touched files.
+  - Fix: added.
+- Finding: are old `fcc:<model>` keys held anywhere else?
+  - Fix: none needed. `channel_latency` has two readers. Equilibrium's transport baseline is one. `orion/substrate/rpc_delivery.py` is the other, but its `counted_hop` only counts bus-RPC hops, so it ignores `fcc:*` entirely (it also keeps only an in-memory rolling window). Its three frozen rows are covered in the retirement section.
+- Not changed: `resolve_fcc_backend` reads `~/.fcc/.env` synchronously on each turn. The previous probe did the same; this is a small local file read.
 
 ## Restart required
 
@@ -194,4 +215,5 @@ Live check after the restart:
 
 ## PR link
 
-(filled in after push)
+- https://github.com/junebug-junie/Orion-Sapienform/pull/2395 (merged 2026-09-29 06:03 UTC, before the review fixes landed)
+- Review fixes (the "Review findings fixed" section above): follow-up PR on branch `fix/gpu-pool-stage3-review-followups`

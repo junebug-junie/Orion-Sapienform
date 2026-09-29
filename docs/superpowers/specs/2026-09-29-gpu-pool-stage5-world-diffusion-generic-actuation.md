@@ -373,40 +373,14 @@ After 5.4 is verified live (zero new `durable_gateway_permits` rows for 24 h):
 | `power_intent_settled` `gpu_index` | derived source | gate recorded above |
 | field-digester `queue_contention` | unchanged (pool tables since 4.6) | none |
 
-## Missing questions (Juniper's policy calls; each has a recommendation, none decided here)
+## Juniper's answers (2026-09-29)
 
-1. **How long may one run hold gpu2's 27B seat?**
-   - Today `agent-gpu2` has `max_hold_sec: 3600`. Curiosity holds on `agent` run p50 ≈ 80 min, often 147+ min
-     (7-day `gpu_pool_leases`). Reading holds run p50 20 / p90 58 min on `agent`, and p50 15 / p90 47 min on
-     `agent-gpu2`.
-   - When the hour is up the seat unloads (29 `max_hold` unloads in 4 days). #2402 now replays the recalled hold
-     instead of failing it, but that can waste up to an hour of its work.
-   - **Option A (recommended): keep curiosity/self-sense holds off `agent-gpu2`.** A hold whose expected duration
-     exceeds a seat's `max_hold_sec` is not placed there. Reading fits within an hour at p90.
-     - Cost: one scheduler rule that reads the hold's declared budget.
-     - Curiosity waits for gpu1 instead of being evicted mid-run.
-   - **Option B:** raise `max_hold_sec` to ~9000 s. Diffusion then waits up to 2.5 h for its card, and the hourly
-     visual cadence is missed.
-   - **Linked:** chat reclaiming lent gpu0 recalled 231 leases in 7 days, 28 of them durable holds. Recommendation:
-     the same rule, so holds longer than chat's typical idle gap don't go to a lent card. Decide both together.
-2. **Pool events carry the turn's correlation id on the bus envelope.**
-   - Verified: `runtime._emit` → `_publish_inner` uses `turn_correlation_id` (`runtime.py:1143,1156`). 33,140 of
-     37,792 events in the last day have one.
-   - The parent spec said lease traffic would not. bus-mirror has **no** `gpu_pool` exclusion (grep
-     `services/orion-bus-mirror/app/`), and it records a hop whenever a correlation id reappears from a different
-     organ (`graph_writer.py` docstring). So `orion-gpu-pool` is likely already a node inside turn chains, carrying
-     queue wait. **UNVERIFIED live** (bus-mirror graph not queried here).
-   - **Option A: keep it, and amend the spec.** Needs a bus-mirror exclusion for `orion:gpu_pool:event` so queue wait
-     never enters bus-synaptic baselines, plus a before/after check of those baselines.
-   - **Option B (recommended, given the finding):** a fresh envelope id, keeping `turn_correlation_id` in the payload.
-     Every join (panel, `gpu_pool_events.turn_correlation_id`, grammar `correlation_id`) reads the payload field, so
-     nothing that joins changes.
-   - Either way it is a small PR, independent of stage 5.
-3. **Snapshot form for dropping `durable_gateway_permits`** (169k rows / 127 MB, over the backfill-protocol line).
-   - **Recommended:** a gzipped `pg_dump -t` of all four tables to `/tmp/gpu-pool-stage5-drop/` (a single file,
-     likely < 20 MB compressed), then drop.
-   - Alternative: keep the table renamed `_retired_durable_gateway_permits` for 30 days.
-4. **Experiment seat:** accept the deferral (Decision 3), or name the workload you want it for.
+These override the recommendations above.
+
+1. **gpu2 27B seat limit: raise it to about 2.5 h** (`max_hold_sec: 9000` on `agent-gpu2`). Curiosity and self-sense holds may still land on gpu2. The cost is accepted: image generation can wait up to about 2.5 h for gpu2. Chat reclaiming lent gpu0 stays as is. Ships in 5.1.
+2. **Pool events get fresh envelope correlation ids.** `turn_correlation_id` stays in the payload, which is what every join reads. That keeps GPU queue wait out of turn causal chains and out of the bus-synaptic baselines. Ships as its own small PR, alongside 5.1.
+3. **Snapshot before the drop:** a gzipped `pg_dump` of the four dead tables to `/tmp/gpu-pool-stage5-drop/`, then the drop. Only on Juniper's go at that step (5.6).
+4. **Experiment seat: deferred.** Not built in stage 5.
 
 ## Proposed schema / API changes
 

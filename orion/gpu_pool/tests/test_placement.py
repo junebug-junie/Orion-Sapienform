@@ -30,6 +30,9 @@ def test_lease_on_an_unconfirmed_role_never_names_a_model():
         p = placement_from_lease(role, discovered_role(STATE, role))
         assert p.model is None
         assert "do not name one" in p.self_line()
+    # mismatch: the pool DID read a model; the reason must say it is unconfirmed, not unreadable
+    assert "reports that role as mismatch" in placement_from_lease("fast", discovered_role(STATE, "fast")).self_line()
+    assert "could not be read" in placement_from_lease("missing", None).self_line()
 
 
 def test_route_default_is_worded_as_a_default_and_strips_the_path():

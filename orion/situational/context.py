@@ -647,7 +647,10 @@ def _situation_cache_key(ctx: dict[str, Any], cfg: SituationSettings) -> str:
     # cached brief must never carry another turn's "you are running on" line.
     placement = _gpu_placement_from_ctx(ctx)
     if placement is not None:
-        key = f"{key}:gpu={placement.get('role')}|{placement.get('model')}|{placement.get('profile')}"
+        key = (f"{key}:gpu={placement.get('role')}|{placement.get('model')}|{placement.get('profile')}"
+               f"|{placement.get('status')}")
+    elif _harness_owns_runtime_line(ctx):
+        key = f"{key}:runtime=harness"
     # A read-only build (an Orion-authored unified turn, e.g. outreach) must
     # not share an entry with the user's own turns: a cache hit skips
     # _build_conversation_phase entirely, so an outreach-built entry would
@@ -1270,7 +1273,14 @@ def _gpu_placement_from_ctx(ctx: dict[str, Any]) -> Optional[dict[str, Any]]:
         return None
     model = str(raw.get("model") or "").strip() or None
     profile = str(raw.get("profile") or "").strip() or None
-    return {"role": role, "model": model, "profile": profile}
+    status = str(raw.get("status") or "").strip() or None
+    return {"role": role, "model": model, "profile": profile, "status": status}
+
+
+def _harness_owns_runtime_line(ctx: dict[str, Any]) -> bool:
+    """``ctx["runtime_line_owner"] == "harness"``: the caller's prompt (orion-hub's unified turn
+    -> harness prefix) already states the default model of the route the motor really uses."""
+    return ctx.get("runtime_line_owner") == "harness"
 
 
 def _runtime_from_gpu_placement(
@@ -1287,15 +1297,22 @@ def _runtime_from_gpu_placement(
         return None
     placement = _gpu_placement_from_ctx(ctx)
     if placement is None:
+        if _harness_owns_runtime_line(ctx):
+            diagnostics.provider_status["runtime"] = "harness"
+            return RuntimeContextV1(available=False, route=cfg.runtime_route, placement="harness",
+                                    source="harness_prompt")
         return None
     diagnostics.provider_status["runtime"] = "ok" if placement["model"] else "unavailable"
+    from orion.llm.resource_lease import GPU_LEASE_ROUTE
+
     return RuntimeContextV1(
         available=bool(placement["model"]),
-        route=cfg.runtime_route,
+        route=GPU_LEASE_ROUTE,
         model_id=placement["model"],
         placement="lease",
         granted_role=placement["role"],
         profile_name=placement["profile"],
+        role_status=placement["status"],
         source="gpu_pool_lease",
     )
 
@@ -1947,7 +1964,7 @@ def _recency_phrase(age_seconds: Optional[float]) -> str:
     return "just now" if age_min < 1 else f"{age_min} min ago"
 
 
-def _runtime_line(runtime: RuntimeContextV1) -> str:
+def _runtime_line(runtime: RuntimeContextV1) -> Optional[str]:
     """What Orion may truthfully say about the model it runs on (GPU pool aware).
 
     A lease is a fact about this turn; the route table is only a default -- the pool places each
@@ -1958,8 +1975,14 @@ def _runtime_line(runtime: RuntimeContextV1) -> str:
             profile = f", profile {runtime.profile_name}" if runtime.profile_name else ""
             return (f"You are running on model: {runtime.model_id} (GPU pool role "
                     f"{runtime.granted_role}{profile}, held for this turn).")
-        return (f"This turn holds the GPU pool's {runtime.granted_role} role; the model loaded there "
-                "could not be read -- do not infer or guess a name.")
+        if runtime.role_status and runtime.role_status not in ("confirmed", "static"):
+            why = f"the pool reports that role as {runtime.role_status}, not a confirmed model"
+        else:
+            why = "the model loaded there could not be read"
+        return (f"This turn holds the GPU pool's {runtime.granted_role} role; {why} -- "
+                "do not infer or guess a name.")
+    if runtime.placement == "harness":
+        return None
     if runtime.available and runtime.model_id:
         return (f"Default model for route {runtime.route}: {runtime.model_id}. The GPU pool places each "
                 "call itself, so this is the route's default, not a confirmation of this turn.")
@@ -2096,7 +2119,9 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         # Same honesty rule as Room above -- no recent capture and a
         # deliberately-not-captured mood are different claims.
         lines.append("Juniper's affect: no recent capture; do not infer.")
-    lines.append(_runtime_line(brief.runtime))
+    runtime_line = _runtime_line(brief.runtime)
+    if runtime_line:
+        lines.append(runtime_line)
     # Curiosity/reverie are deliberately OMITTED rather than rendered as an
     # "unavailable; do not infer" placeholder when there is nothing to show
     # (unlike weather/lab/perception/affect/runtime above, which always emit

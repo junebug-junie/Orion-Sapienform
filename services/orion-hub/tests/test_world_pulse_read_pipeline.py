@@ -18,7 +18,7 @@ def held_model_boundary(monkeypatch):
     from orion.schemas.reading_turn import ReadingRunBriefV1, ReadingTurnRequestV1
     from scripts.world_pulse_read_pipeline import GenerateOutcome
 
-    async def generate(pipe, prompt, correlation_id, *, seed_id="test-seed"):
+    async def generate(pipe, prompt, correlation_id, *, seed_id="test-seed", retrieval_query=None):
         listener = ReadingTurnListener(pipe._source_ref, pipe._step_relay_provider)
         listener.bus = pipe._bus
         listener.rpc_bus = pipe._harness_rpc_bus or pipe._bus
@@ -26,7 +26,7 @@ def held_model_boundary(monkeypatch):
             run_id="test-run", correlation_id=correlation_id,
             brief=ReadingRunBriefV1(seed_id=seed_id, stage=1, prompt=prompt,
                 session_id=pipe.session_id, timeout_sec=pipe.timeout_sec,
-                fcc_model_label=pipe._fcc_model_label),
+                fcc_model_label=pipe._fcc_model_label, retrieval_query=retrieval_query),
             gpu_lease={"lease_id": "test-hold", "generation": 1,
                        "role": "agent", "holder": "durable-runs:test-run"},
         ))
@@ -1300,7 +1300,7 @@ def test_document_bound_prompt_without_the_snapshot_is_not_a_read(monkeypatch, t
     bus, conn, store = _FakeBus(), _FakeConn(), InMemorySubstrateGraphStore()
     row = _queue_document(conn, tmp_path)
 
-    async def generate(pipe, prompt, correlation_id, *, seed_id="test-seed"):
+    async def generate(pipe, prompt, correlation_id, *, seed_id="test-seed", retrieval_query=None):
         text = '```json\n{"what_i_learned": "prose", "candidate_priors": []}\n```'
         return GenerateOutcome(text, None, [], bound_prompt="an older prompt with no document")
 
@@ -1321,3 +1321,24 @@ def test_document_with_missing_snapshot_fails_before_any_wallet_debit(monkeypatc
     assert row["status"] == "failed"
     assert row["last_error"] == "document_snapshot_missing"
     assert _count_key() not in bus.redis.store
+
+
+def test_stage1_turn_recalls_about_the_source_title_not_the_prompt(monkeypatch) -> None:
+    """Recall retrieval design phase 3: the reading turn's recall searches the source,
+    carried on the stored brief -> listener -> execute_unified_turn(retrieval_query=...)."""
+    bus, conn, store = _FakeBus(), _FakeConn(), InMemorySubstrateGraphStore()
+    pipe = _pipeline(bus, conn, store)
+    captured: dict = {}
+
+    async def _turn(**kwargs):
+        captured.update(kwargs)
+        return [{"type": "final", "llm_response": '{"what_i_learned": "ok"}'}]
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _turn)
+    try:
+        asyncio.run(pipe._stage1_read(_seed()))
+    except Exception:  # noqa: BLE001 -- only the turn's arguments matter here
+        pass
+
+    assert captured["retrieval_query"] == "A"
+    assert captured["user_message"] != captured["retrieval_query"]

@@ -157,6 +157,13 @@ class CuriosityRunBriefV1(BaseModel):
     # Additive, investigate only: set for an urgent run (orion/schemas/curiosity_urgent.py).
     # Producers dump with exclude_none=True, so an unset seed never reaches an old runner.
     urgent: CuriosityUrgentSeedV1 | None = None
+    # Additive: what recall searches for during this run's turn -- the run's
+    # standing question (self-inquiry: the picked question; urgent: the seed's
+    # question; investigate: the continuation note). Carried on the brief so it
+    # survives a Hub restart (the checkpointed brief is the durable copy); the
+    # runner forwards it on CuriosityTurnRequestV1. ADDITIVE ON A `forbid`
+    # MODEL: deploy orion-durable-runs before orion-hub.
+    retrieval_query: str | None = Field(default=None, max_length=1000)
 
 
 class DurableRunRequestV1(BaseModel):
@@ -253,6 +260,9 @@ class CuriosityTurnRequestV1(BaseModel):
     # Additive: the run brief's urgent seed, forwarded so Hub runs the investigation turn.
     # Omitted on the wire when None (runner dumps with exclude_none=True).
     urgent: CuriosityUrgentSeedV1 | None = None
+    # Additive: the brief's retrieval_query (what recall searches for). Omitted
+    # on the wire when None, so a runner only sends it once Hub put it on the brief.
+    retrieval_query: str | None = Field(default=None, max_length=1000)
 
 
 class CuriosityTurnResultV1(BaseModel):

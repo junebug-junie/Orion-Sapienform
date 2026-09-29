@@ -141,6 +141,7 @@ from orion.curiosity.self_inquiry import (
     read_self_question_mints,
     self_definition_from_detail,
 )
+from orion.cognition.recall_query import cap_retrieval_query
 from orion.curiosity.self_inquiry_prompt import PreviousLivedAnswer, build_self_inquiry_prompt
 from orion.curiosity.self_question_pool import (
     SELECT_ALL_SQL,
@@ -333,6 +334,16 @@ def _line_keys(line: str) -> tuple[str, str, str]:
             _SENSE_EVAL_LAST_RUN_KEY,
         )
     return _COOLDOWN_KEY, _DAILY_COUNT_KEY_PREFIX, _LAST_RUN_KEY
+
+
+def _standing_question_from_view(view) -> str | None:
+    """What a world-curiosity run is still asking: the note the last run asked
+    itself to keep pulling on. None at a fresh kickoff (Orion has not chosen a
+    question yet), and recall then falls back to the Mind appraisal."""
+    outcome = getattr(view, "continuation", None)
+    if outcome is None or not getattr(outcome, "continue_line", False):
+        return None
+    return cap_retrieval_query(getattr(outcome, "continue_note", None))
 
 
 def _investigation_subject_from_view(view) -> str:
@@ -1795,6 +1806,10 @@ class CuriosityInvestigation:
         # Claim is unset at kickoff (Orion has not chosen). Continuation note
         # rides on Mind; the HelpRequest teach block stays on the harness prompt.
         self._mind_appraisal_by_run_id[run_id] = _investigation_subject_from_view(view)
+        # What recall searches for during the turn. Carried on the durable brief
+        # (and the in-process turn request), not only in the in-memory dict
+        # above, so a Hub restart mid-run does not lose it.
+        retrieval_query = _standing_question_from_view(view)
         if peer_briefs:
             # Hub is RO on worldview; peer service MERGEs consumed=true.
             await publish_peer_briefs_consumed(
@@ -1809,6 +1824,7 @@ class CuriosityInvestigation:
                     correlation_id=correlation_id,
                     prompt=prompt,
                     material=material,
+                    retrieval_query=retrieval_query,
                 )
             except asyncio.CancelledError:
                 # Hub going away mid-dispatch (the RPC to cortex-orch can take
@@ -1848,13 +1864,17 @@ class CuriosityInvestigation:
                         fcc_model_label=self._fcc_model_label,
                         timeout_sec=float(self.timeout_sec),
                         source_tag=INVESTIGATION_TAG,
+                        retrieval_query=retrieval_query,
                     ),
                     hold_lock=False,  # tick already holds _run_lock
                 )
                 text, debug = turn.text, dict(turn.debug)
             else:
                 await self._spend_turn_started(run_id)
-                text, debug = await self._generate(prompt, correlation_id, parent_run_id=run_id)
+                text, debug = await self._generate(
+                    prompt, correlation_id, parent_run_id=run_id,
+                    **({"retrieval_query": retrieval_query} if retrieval_query else {}),
+                )
                 await self._spend_turn_ended(run_id, turn_ok=bool(text))
         except asyncio.CancelledError:
             # Hub is going away mid-turn. Give the slot back and let the
@@ -2013,6 +2033,8 @@ class CuriosityInvestigation:
             pg_available=pg_available,
         )
         self._mind_appraisal_by_run_id[run_id] = seed.question
+        # The seed's question is the standing question; durable on the brief.
+        retrieval_query = cap_retrieval_query(seed.question)
         logger.info(
             "curiosity_urgent_starting incident_id=%s run=%s trigger=%s subject=%s corr=%s",
             incident_id, run_id, seed.trigger, seed.subject or "-", correlation_id,
@@ -2026,6 +2048,7 @@ class CuriosityInvestigation:
                 priority="urgent",
                 urgent=seed,
                 timeout_sec=self.urgent_turn_timeout_sec,
+                retrieval_query=retrieval_query,
             )
         except asyncio.CancelledError:
             await self._release_urgent_open_key(open_key)
@@ -2608,6 +2631,9 @@ class CuriosityInvestigation:
         # rides on Mind; the SelfDefinition / HelpRequest teach stays on the
         # harness prompt. Same subject builder as world-curiosity.
         self._mind_appraisal_by_run_id[run_id] = _investigation_subject_from_view(view)
+        # The picked question is this run's standing question: what recall
+        # searches for. Durable on the brief / turn request, not the dict above.
+        retrieval_query = cap_retrieval_query(picked.text)
         if peer_briefs:
             await publish_peer_briefs_consumed(
                 bus=self._bus,
@@ -2623,6 +2649,7 @@ class CuriosityInvestigation:
                     prompt=prompt,
                     material=material,
                     line=LINE_SELF_INQUIRY,
+                    retrieval_query=retrieval_query,
                 )
             except asyncio.CancelledError:
                 if not self.durable_admission_enabled:
@@ -2650,12 +2677,19 @@ class CuriosityInvestigation:
                         fcc_model_label=self._fcc_model_label,
                         timeout_sec=float(self.timeout_sec),
                         source_tag=SELF_INQUIRY_TAG,
+                        retrieval_query=retrieval_query,
                     ),
                     hold_lock=False,
                 )
                 text, debug = turn.text, dict(turn.debug)
             else:
-                text, debug = await self._generate(prompt, correlation_id, source=SELF_INQUIRY_TAG, parent_run_id=run_id)
+                text, debug = await self._generate(
+                    prompt,
+                    correlation_id,
+                    source=SELF_INQUIRY_TAG,
+                    parent_run_id=run_id,
+                    **({"retrieval_query": retrieval_query} if retrieval_query else {}),
+                )
         except asyncio.CancelledError:
             await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
             raise
@@ -3168,6 +3202,7 @@ class CuriosityInvestigation:
         session_id: str | None = None,
         gpu_lease: GpuLeaseRefV1 | None = None,
         urgent: bool = False,
+        retrieval_query: str | None = None,
     ) -> Tuple[str, dict]:
         """Real unified-turn generation. Returns ("", debug) on any failure,
         defer, or degraded run -- same "never fabricate, silence over a false
@@ -3196,7 +3231,12 @@ class CuriosityInvestigation:
         `urgent=True` (an urgent run's typed seed was on the turn request)
         makes `execute_unified_turn` proceed past a stance defer/refuse and
         fail -- not defer -- when stance is unavailable; that turn_error's
-        reason becomes `debug["error"]` so the run says why it failed."""
+        reason becomes `debug["error"]` so the run says why it failed.
+
+        `retrieval_query` is what recall searches for: the run's standing
+        question, carried durably on the run's brief / turn request. When a run
+        does not carry one, the Mind appraisal (in-memory, lost on a Hub
+        restart) is used instead, then None (recall condenses the prompt)."""
         if self._bus is None:
             return "", {"error": "no_bus"}
         from orion.cognition.cortex_payload_extract import looks_like_error_text
@@ -3216,6 +3256,7 @@ class CuriosityInvestigation:
             # Queue score is read inside turn_orchestrator from FieldState
             # (official digester meter — no Hub EWMA). Each hint fails open.
             await self._attach_role_teach_progress_hints(payload, parent_run_id)
+        turn_retrieval_query = cap_retrieval_query(retrieval_query) or cap_retrieval_query(appraisal)
         try:
             frames = await asyncio.wait_for(
                 execute_unified_turn(
@@ -3227,6 +3268,7 @@ class CuriosityInvestigation:
                     user_message=prompt,
                     utterance_origin="orion",
                     mind_appraisal_text=appraisal,
+                    retrieval_query=turn_retrieval_query,
                     # no_write: the journal entry below is the sole persistence
                     # path, so this does not also land as an untagged chat row.
                     # `fcc_model_label` is branch 1 of
@@ -3604,6 +3646,7 @@ class CuriosityInvestigation:
         line: str = LINE_INVESTIGATE,
         urgent: Optional[CuriosityUrgentSeedV1] = None,
         timeout_sec: Optional[float] = None,
+        retrieval_query: Optional[str] = None,
     ) -> CuriosityRunBriefV1:
         # An urgent run is shown no study material: the brief's counts stay zero.
         material_brief = (
@@ -3627,6 +3670,7 @@ class CuriosityInvestigation:
             source_tag=SELF_INQUIRY_TAG if line == LINE_SELF_INQUIRY else INVESTIGATION_TAG,
             line=line,
             urgent=urgent,
+            retrieval_query=cap_retrieval_query(retrieval_query),
         )
 
     async def _dispatch_via_cortex(
@@ -3707,6 +3751,7 @@ class CuriosityInvestigation:
         priority: str = "background",
         urgent: Optional[CuriosityUrgentSeedV1] = None,
         timeout_sec: Optional[float] = None,
+        retrieval_query: Optional[str] = None,
     ) -> bool:
         """Hand the run to cortex. True only when cortex replied `accepted`."""
         if self._bus is None:
@@ -3716,7 +3761,8 @@ class CuriosityInvestigation:
             workflow="curiosity.investigate",
             correlation_id=correlation_id,
             brief=self._run_brief(
-                prompt=prompt, material=material, line=line, urgent=urgent, timeout_sec=timeout_sec
+                prompt=prompt, material=material, line=line, urgent=urgent, timeout_sec=timeout_sec,
+                retrieval_query=retrieval_query,
             ),
             admission=(ResourceRequirementV1(
                 preferred_lane=self.llm_route or "agent",
@@ -3939,6 +3985,7 @@ class CuriosityInvestigation:
                        if request.gpu_lease is not None else {}),
                     **({"gpu_lease": request.gpu_lease} if request.gpu_lease is not None else {}),
                     **({"urgent": True} if request.urgent is not None else {}),
+                    **({"retrieval_query": request.retrieval_query} if request.retrieval_query else {}),
                 )
                 if measured:
                     await self._spend_turn_ended(request.run_id, turn_ok=bool(text))

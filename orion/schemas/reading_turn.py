@@ -23,6 +23,12 @@ class ReadingRunBriefV1(BaseModel):
     session_id: str
     timeout_sec: float = Field(gt=0)
     fcc_model_label: str | None = None
+    # Additive: what recall searches for during this reading turn --
+    # "<source title> — <stage-1 claim>" (stage 1 has no claim yet: title only).
+    # Stored in reading_durable_turn.request_json with the prompt, so it is as
+    # durable as the prompt. ADDITIVE ON A `forbid` MODEL: deploy
+    # orion-durable-runs before orion-hub.
+    retrieval_query: str | None = Field(default=None, max_length=1000)
 
 
 class ReadingTurnRequestV1(BaseModel):

@@ -36,6 +36,28 @@ CREATE TABLE IF NOT EXISTS reading_durable_turn (
 PRE_4_6_ADMISSION_KEYS = ("allow_elastic_activation", "alternatives", "pinned_lane", "operator_override")
 
 
+READING_RETRIEVAL_QUERY_SEPARATOR = " — "
+
+
+def reading_retrieval_query(seed, claim: str | None = None) -> str | None:
+    """What recall searches for during a reading turn: "<source title> — <stage-1 claim>".
+
+    Stage 1 has no claim yet, so it searches the title alone. A seed with no
+    title falls back to its URL, except a pinned document ref (an opaque hash
+    is not something memory can match). Capped at RecallQueryV1's 1000 chars.
+    """
+    from orion.cognition.recall_query import cap_retrieval_query
+    from orion.world_pulse_read.documents import is_document_ref
+
+    source = " ".join(str(getattr(seed, "title", "") or "").split())
+    if not source:
+        url = str(getattr(seed, "url", "") or "").strip()
+        source = "" if is_document_ref(url) else url
+    claim_text = " ".join(str(claim or "").split())
+    parts = [p for p in (source, claim_text) if p]
+    return cap_retrieval_query(READING_RETRIEVAL_QUERY_SEPARATOR.join(parts))
+
+
 def _stored_request(raw) -> DurableRunRequestV1:
     data = json.loads(raw) if isinstance(raw, str) else dict(raw)
     admission = data.get("admission")

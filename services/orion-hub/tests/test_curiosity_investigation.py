@@ -277,9 +277,11 @@ def _loop(bus, *, text: str | None = "found it", conn=None, **over) -> Curiosity
     loop._harness_rpc_bus = bus
 
     async def _fake_generate(
-        prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None
+        prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None,
+        **extra,
     ):
         loop.seen_prompt = prompt
+        loop.seen_generate_kwargs = dict(extra)
         return (text or ""), {
             "elapsed_sec": 1.0,
             "harness_step_count": 14,

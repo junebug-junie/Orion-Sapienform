@@ -42,6 +42,7 @@ from orion.schemas.pre_turn_appraisal import (
     PreTurnAppraisalRequestV1,
     TurnAppraisalBundleV1,
 )
+from orion.cognition.recall_query import cap_retrieval_query
 from orion.schemas.thought import StanceReactRequestV1, ThoughtEventV1
 from orion.llm.resource_lease import GPU_LEASE_ROUTE
 from orion.schemas.gpu_pool import GpuLeaseRefV1
@@ -928,6 +929,7 @@ async def execute_unified_turn(
     mind_appraisal_text: str | None = None,
     client_meta: dict[str, Any] | None = None,
     urgent: bool = False,
+    retrieval_query: str | None = None,
 ) -> list[dict[str, Any]]:
     """Orion capability: unified Hub chat turn.
 
@@ -949,6 +951,11 @@ async def execute_unified_turn(
     defer/refuse is overridden to proceed with an `urgent_override:<original>`
     reason, and an unavailable stance is a `turn_error` (the run fails), never
     a deferral.
+
+    `retrieval_query` is what recall should search for on this turn (a
+    self-initiated turn's standing question, a reading's source and claim).
+    None keeps today's behavior: recall condenses the turn text itself. It
+    rides StanceReactRequestV1.retrieval_query to cortex-exec's recall calls.
     """
     from scripts.settings import settings as hub_settings
 
@@ -1107,6 +1114,9 @@ async def execute_unified_turn(
         # Motor/harness still sees the full prompt; stance_inputs["user_message"]
         # must match StanceReactRequestV1.user_message (Mind snapshot user_text).
         stance_inputs["harness_user_message"] = user_message
+    stance_retrieval_query = cap_retrieval_query(retrieval_query)
+    if stance_retrieval_query:
+        stance_inputs["retrieval_query"] = stance_retrieval_query
     stance_req = StanceReactRequestV1(
         correlation_id=correlation_id,
         session_id=session_id,
@@ -1131,6 +1141,7 @@ async def execute_unified_turn(
         # agent-preferring caller (autonomous reading, curiosity) has no
         # caller-side fallback and needs orion-thought's.
         caller_handles_lane_fallback=payload.get("source") == "endogenous_outreach",
+        retrieval_query=stance_retrieval_query,
     )
     await _deliver_cockpit_frames(
         [

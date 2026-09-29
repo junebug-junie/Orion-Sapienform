@@ -17,7 +17,7 @@ from typing import Any
 
 from app.admitted_graph import (
     AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, replay_if_requeued,
-    resource_nodes,
+    resource_nodes, taken_back,
 )
 from app.self_sense_graph import Deps, SelfSenseAskFailed, SelfSenseRunState, make_nodes
 from orion.schemas.durable_run import SELF_SENSE_EVAL_NODES
@@ -36,9 +36,9 @@ def build_admitted_self_sense_graph(deps: Deps, admission: AdmissionDeps, checkp
             if any(not (answer or {}).get("text") for answer in (result.get("answers") or {}).values()):
                 # A question that failed records an empty answer. If the pool took the hold, this
                 # result is dropped and the node replays from the checkpointed answers.
-                released = await replay_if_requeued(admission, dict(state))
-                if released is not None:
-                    return {**released, "status": "waiting_resource"}
+                replay = await replay_if_requeued(admission, dict(state), {"status": "waiting_resource"})
+                if replay is not None:
+                    return replay
             return {**result, "status": "running", "last_error": None}
         except WorkflowDeadline:
             released = await admission.release(dict(state), "workflow_deadline")
@@ -50,8 +50,8 @@ def build_admitted_self_sense_graph(deps: Deps, admission: AdmissionDeps, checkp
         except HoldLost as exc:
             # The pool took the hold back (urgent pause, recall past its grace, lost heartbeat): wait
             # for the same hold (or a fresh one if the pool ended it) and replay. Not an attempt.
-            released = await admission.release(dict(state), exc.release_reason, keep_requeued=True)
-            return {**released, "status": "waiting_resource", "last_error": f"{type(exc).__name__}: {exc}"[:500]}
+            return await taken_back(admission, dict(state), exc.release_reason, f"{type(exc).__name__}: {exc}",
+                                    {"status": "waiting_resource"})
         except SelfSenseAskFailed as exc:
             # Transport blip: hand the hold back (or keep it if the pool already re-queued it) and
             # wait for a fresh grant. Partial answers stay on state; ask_questions skips keys done.

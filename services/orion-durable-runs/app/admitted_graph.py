@@ -91,6 +91,10 @@ class AdmissionDeps:
     # its grace, a lost heartbeat)? The release reason to use (``urgent_preempt`` / ``hold_lost``), or
     # None. For a node whose failed turn comes back as a result rather than an exception.
     requeued: Callable[[dict], Awaitable[str | None]] | None = None
+    # Bound on pool take-backs per run (DURABLE_RUNS_HOLD_MAX_TAKEBACKS); 0 = unbounded. A take-back
+    # is not a failed attempt, but a step that never fits the seats it lands on must not replay
+    # forever: past this many, the run fails with ``hold_takeback_limit``.
+    max_takebacks: int = 0
 
 
 # Urgent runs (brief.urgent) must end in a report within minutes: at most two
@@ -106,14 +110,27 @@ def retry_budget(admission: AdmissionDeps, state: dict) -> tuple[int, float]:
     return admission.max_attempts, admission.retry_base_seconds
 
 
-async def replay_if_requeued(admission: AdmissionDeps, state: dict) -> dict | None:
+async def taken_back(admission: AdmissionDeps, state: dict, reason: str, error: str, waiting: dict) -> dict:
+    """The pool took the run's hold back mid-node: keep the re-queued hold (``keep_requeued``) and
+    return ``waiting`` so the node replays -- no attempt spent. Counted in ``hold_takebacks``; past
+    ``admission.max_takebacks`` the run fails instead (``hold_takeback_limit:<n>``)."""
+    count = int(state.get("hold_takebacks") or 0) + 1
+    if admission.max_takebacks and count > admission.max_takebacks:
+        released = await admission.release(state, "hold_takeback_limit")
+        return {**released, "status": "failed", "hold_takebacks": count,
+                "last_error": f"hold_takeback_limit:{admission.max_takebacks}: {error}"[:500]}
+    released = await admission.release(state, reason, keep_requeued=True)
+    return {**released, **waiting, "hold_takebacks": count, "last_error": error[:500]}
+
+
+async def replay_if_requeued(admission: AdmissionDeps, state: dict, waiting: dict) -> dict | None:
     """A node's turn came back failed: if the pool says it took the hold back meanwhile, the failure
-    is the pool's (the turn's calls could not attach to the aborted hold). Keep the re-queued hold
-    and return the release update so the node replays; None when it was a real failure."""
+    is the pool's (the turn's calls could not attach to the aborted hold). Returns ``taken_back``'s
+    update (the node replays, or the take-back limit fails the run); None when it was a real failure."""
     reason = None if admission.requeued is None else await admission.requeued(state)
     if not reason:
         return None
-    return await admission.release(state, reason, keep_requeued=True)
+    return await taken_back(admission, state, reason, f"HoldLost: gpu_hold_requeued:{reason}", waiting)
 
 
 def resource_nodes(admission: AdmissionDeps):
@@ -170,10 +187,10 @@ def build_admitted_graph(deps: Deps, admission: AdmissionDeps, checkpointer: Any
         except HoldLost as exc:
             # The pool took the hold back (urgent pause, recall past its grace, lost heartbeat): wait
             # for the same hold again now (or ask afresh if the pool ended it), attempt untouched.
-            released = await admission.release(dict(state), exc.release_reason, keep_requeued=True)
-            return {**released, "status": "retrying", "retry_node": None,
-                    "retry_at": admission.now().isoformat(), "last_error": f"{type(exc).__name__}: {exc}"[:500],
-                    **failed_meta}
+            update = await taken_back(admission, dict(state), exc.release_reason, f"{type(exc).__name__}: {exc}",
+                                      {"status": "retrying", "retry_node": None,
+                                       "retry_at": admission.now().isoformat()})
+            return {**update, **failed_meta}
         except Exception as exc:
             # GraphBubbleUp/interrupt is a BaseException and is not caught here.
             attempt = int(state.get("attempt") or 0) + 1
@@ -183,7 +200,8 @@ def build_admitted_graph(deps: Deps, admission: AdmissionDeps, checkpointer: Any
                 released = await admission.release(dict(state), "attempt_failed")
                 return {**released, "status": "failed", "attempt": attempt, "last_error": error, **failed_meta}
             # A hold the pool already re-queued meanwhile keeps its lease_id and place; one still
-            # granted is handed back for the backoff.
+            # granted (at this generation or, since nothing heartbeats it through the backoff, a newer
+            # one) is handed back.
             released = await admission.release(dict(state), "attempt_failed", keep_requeued=True)
             delay = min(admission.retry_max_seconds, retry_base * 2 ** (attempt - 1))
             return {**released, "status": "retrying", "attempt": attempt, "last_error": error,

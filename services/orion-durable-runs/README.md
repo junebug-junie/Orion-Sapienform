@@ -380,7 +380,9 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
   failed on the first -- 19 live failures in three days). If the pool ended the hold instead
   (dead-lettered, released), the run asks afresh under a new request id. Only a refusal that is a
   property of the run (`deadline`, `pool_hold.refusal_is_terminal`) takes the failure path.
-  `resource.lease_expired` records each take-back (reason `recall_grace_exceeded`).
+  `resource.lease_expired` records each take-back (reason `recall_grace_exceeded`). State
+  `hold_takebacks` counts them; past `DURABLE_RUNS_HOLD_MAX_TAKEBACKS` (default 12, 0 = unbounded)
+  the run fails with `hold_takeback_limit:<n>` so a step that never fits cannot replay forever.
 - **Urgent preemption** (Plan 2, `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-2-pool-urgent.md`).
   The pool pauses a background/system hold for a waiting urgent run: recall, 5 s grace, then it
   puts the hold back in line in its original place (`queued`, reason `urgent_preempt`). The work

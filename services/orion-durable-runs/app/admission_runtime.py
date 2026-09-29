@@ -39,7 +39,7 @@ from app.admitted_self_sense_graph import build_admitted_self_sense_graph
 from app.graph import failed_turn_meta, finish_detail, recorded_turn_correlation_id, turn_correlation_id, urgent_detail
 from app.pool_hold import (
     HELD, URGENT_PREEMPT, WAITING as POOL_WAITING, PoolHolds, UnknownRoute, is_hold_ref, is_pool_trouble,
-    ref_dict, refusal_is_terminal,
+    hold_placement, ref_dict, refusal_is_terminal,
 )
 from app.reflect_graph import finish_detail as reflect_finish_detail
 from app.reading_graph import build_reading_graph, finish_detail as reading_finish_detail
@@ -109,6 +109,10 @@ def _without_backoff(hold: dict) -> dict:
 
 from app.admitted_graph import HoldLost
 
+# release() reasons of a pool take-back (HoldLost / HoldPreempted): the node goes straight back to
+# resource_wait, so a hold the pool already re-granted is kept for it.
+TAKEBACK_RELEASE_REASONS = frozenset({HoldLost.release_reason, URGENT_PREEMPT})
+
 
 class AdmissionRuntime:
     def __init__(self, settings, runner, pool, *, store=None, clock=None, holds=None):
@@ -125,7 +129,8 @@ class AdmissionRuntime:
             self.register, self.lease, self.execute, self.release, self.event,
             now=self.now, max_attempts=settings.retry_max_attempts,
             retry_base_seconds=settings.retry_base_sec, retry_max_seconds=settings.retry_max_sec,
-            guard=self.guard, keep_for_outreach=self.keep_for_outreach, requeued=self.requeued)
+            guard=self.guard, keep_for_outreach=self.keep_for_outreach, requeued=self.requeued,
+            max_takebacks=settings.hold_max_takebacks)
         self.deps = admission_deps
         # One compiled graph per workflow. Before 2026-09-22 every admitted run shared the
         # curiosity graph; before 4.5 an admitted reflect run still did.
@@ -401,7 +406,7 @@ class AdmissionRuntime:
             return WorkflowDeadline("workflow_deadline")
         work_class = ""
         try:
-            work_class = self.holds.placement(admission or {})[0]
+            work_class = hold_placement(self.holds.cfg, admission or {})[0]
         except UnknownRoute:
             pass
         if refusal_is_terminal(self.holds.cfg, reason, work_class):
@@ -615,9 +620,11 @@ class AdmissionRuntime:
             except Exception:  # noqa: BLE001 -- unknown: hand it back rather than strand a slot
                 reply = None
             # Also a hold the pool already re-granted at a newer generation (re-queued and granted
-            # again before this node noticed): ending it would lose the grant resource_wait is about
-            # to read.
-            regranted = reply is not None and reply.status in HELD and reply.grant is not None \
+            # again before this node noticed), but only on a take-back, which goes straight back to
+            # resource_wait: ending it would lose the grant resource_wait is about to read. After a
+            # failed attempt a backoff follows with nothing heartbeating it, so it is handed back.
+            regranted = reason in TAKEBACK_RELEASE_REASONS and reply is not None \
+                and reply.status in HELD and reply.grant is not None \
                 and lease is not None and reply.grant.generation != lease["generation"]
             if reply is not None and (reply.status in POOL_WAITING or regranted) and not is_pool_trouble(reply):
                 if lease and reply.status in POOL_WAITING and reply.reason == URGENT_PREEMPT:
@@ -704,9 +711,9 @@ class AdmissionRuntime:
             entry["beat"] = time.monotonic()
             try:
                 await self._beat(lease)
-            except Exception as exc:  # noqa: BLE001 -- HoldLost or a terminal refusal: gone either way
+            except (HoldLost, WorkflowDeadline, RuntimeError) as exc:  # a take-back or a refusal: gone either way
                 logger.warning("durable_outreach_hold_lost run=%s lease=%s %s", run_id, lease["lease_id"], exc)
-                await self._record_lost(state, lease, str(exc), None)
+                await self._record_lost(state, lease, type(exc).__name__, str(exc)[:200])
                 # Re-queued holds would be granted to a finished run: end it.
                 await self._end_hold(state, lease["lease_id"], lease, "lost")
 

@@ -197,7 +197,7 @@ def test_admission_runtime_routes_self_sense_workflow():
         lease_seconds=90,
         lease_heartbeat_sec=15,
         admission_tick_sec=1,
-        retry_max_attempts=1,
+        retry_max_attempts=1, hold_max_takebacks=12,
         retry_base_sec=1,
         retry_max_sec=1,
         state_channel="orion:durable:state",
@@ -219,7 +219,7 @@ def test_heartbeat_must_fit_twice_inside_the_pool_hold_ttl():
 
     from app.admission_runtime import AdmissionRuntime
 
-    settings = SimpleNamespace(service_name="x", lease_heartbeat_sec=50, retry_max_attempts=1, retry_base_sec=1,
+    settings = SimpleNamespace(service_name="x", lease_heartbeat_sec=50, retry_max_attempts=1, hold_max_takebacks=12, retry_base_sec=1,
                                retry_max_sec=1)
     with _pytest.raises(ValueError, match="at most half"):
         AdmissionRuntime(settings, SimpleNamespace(), pool=None, store=SimpleNamespace(),

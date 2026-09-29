@@ -104,9 +104,9 @@ def transition(state: LeaseState, event: dict[str, Any], cfg: PoolConfig) -> dic
     # here dead-lettered a durable run's hold on its third recall (live 2026-09-26..28: every run
     # longer than gpu2's max_hold_sec). A one-inference request lease still spends one.
     retryable = bool(state["request"].get("retryable"))
-    preempted = kind == "abort" and retryable \
+    requeue_in_place = kind == "abort" and retryable \
         and (event.get("reason") == URGENT_PREEMPT or state["request"].get("kind") == "hold")
-    if preempted:
+    if requeue_in_place:
         nxt = "queued"
 
     upd: dict[str, Any] = {"status": nxt, "reason": event.get("reason")}
@@ -127,7 +127,7 @@ def transition(state: LeaseState, event: dict[str, Any], cfg: PoolConfig) -> dic
         upd.update(queued_since=now.isoformat(), not_before=None, role=None)
         if kind == "replay":
             upd.update(attempt=1, replays=int(state.get("replays") or 0) + 1)
-    elif preempted:
+    elif requeue_in_place:
         upd.update(queued_since=now.isoformat(), not_before=None, role=None, recall_by=None,
                    expires_at=None)
 

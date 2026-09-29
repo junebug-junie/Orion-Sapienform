@@ -805,3 +805,78 @@ def test_urgent_max_concurrent_zero_drives_urgent_like_background():
         gate.set()
         await asyncio.gather(*rt.active.values())
     asyncio.run(scenario())
+
+
+# --- any pool take-back, not only urgent (2026-09-29) -----------------------------------------------
+
+def test_taken_back_classifies_every_mid_node_pool_answer():
+    """A re-queue for any reason or a newer-generation grant is HoldLost (same hold, no attempt); an
+    ended hold is HoldLost unless the reason is the run's own (deadline -> WorkflowDeadline, a class
+    nothing serves -> a plain error for the attempt path)."""
+    from app.admitted_graph import WorkflowDeadline
+    rt = bare_runtime(Holds([_reply("granted")]))
+    cases = {
+        ("queued", "recall_grace_exceeded", 1): HoldLost,
+        ("queued", None, 1): HoldLost,
+        ("backlogged", "no_serviceable_role", 1): HoldLost,
+        ("granted", None, 2): HoldLost,
+        ("recall", "max_hold", 2): HoldLost,
+        ("unavailable", "recall_grace_exceeded", 1): HoldLost,
+        ("ok", None, 1): HoldLost,
+        ("unavailable", "deadline", 1): WorkflowDeadline,
+        ("unavailable", "unknown_class:nothing-serves-this", 1): RuntimeError,
+    }
+    for (status, reason, generation), expected in cases.items():
+        exc = rt._taken_back(LEASE, _reply(status, reason=reason, generation=generation), {})
+        assert type(exc) is expected, (status, reason, exc)
+        assert not isinstance(exc, HoldPreempted)
+    assert type(rt._taken_back(LEASE, _reply("queued", reason=URGENT_PREEMPT), {})) is HoldPreempted
+    assert HoldLost("x").release_reason == "hold_lost" and HoldPreempted("x").release_reason == URGENT_PREEMPT
+
+
+def test_a_work_failure_after_a_non_urgent_requeue_is_a_take_back_not_an_attempt():
+    async def scenario():
+        rt = bare_runtime(Holds([_reply("granted")], status=_reply("queued", reason="recall_grace_exceeded")))
+
+        async def node(state):
+            raise RuntimeError("gpu_lease_attach_refused")
+
+        with pytest.raises(HoldLost) as raised:
+            await rt.execute(_held_state(), node)
+        assert type(raised.value) is HoldLost and raised.value.release_reason == "hold_lost"
+        assert await rt.requeued(_held_state()) == "hold_lost"
+        rt = bare_runtime(Holds([_reply("granted")], status=_reply("granted")))
+        assert await rt.requeued(_held_state()) is None                   # still ours: a real failure
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("reason,kept", [("hold_lost", True), (URGENT_PREEMPT, True), ("attempt_failed", False)])
+def test_release_keeps_a_regranted_hold_only_on_a_take_back(reason, kept):
+    """A take-back goes straight back to resource_wait, which reads the new grant; a failed attempt
+    backs off with nothing heartbeating the hold, so the seat is handed back instead of idling."""
+    async def scenario():
+        holds = Holds([_reply("granted")], status=_reply("granted", generation=2))
+        rt = bare_runtime(holds)
+        update = await rt.release(_held_state(), reason, keep_requeued=True)
+        if kept:
+            assert update["hold"]["lease_id"] == "hold-1" and holds.released == []
+            assert "resource.lease_expired" in rt.store.names()
+        else:
+            assert update["hold"] is None and holds.released == [reason]
+    asyncio.run(scenario())
+
+
+def test_the_take_back_limit_fails_the_run_instead_of_replaying_forever():
+    async def scenario():
+        world, saver = PreemptWorld(HoldLost("gpu_hold_lost:queued:recall_grace_exceeded")), InMemorySaver()
+        world.grant()
+        graph = world.graph(saver, max_takebacks=1)
+        delta = await _turn_update(graph, {**initial(), "hold_takebacks": 1})
+        assert delta["status"] == "failed" and delta["hold_takebacks"] == 2
+        assert delta["last_error"].startswith("hold_takeback_limit:1: HoldLost")
+        assert world.release_calls[0] == ("hold_takeback_limit", False)
+        world, saver = PreemptWorld(HoldLost("gpu_hold_lost:queued:recall_grace_exceeded")), InMemorySaver()
+        world.grant()
+        delta = await _turn_update(world.graph(saver, max_takebacks=2), {**initial(), "hold_takebacks": 1})
+        assert delta["status"] == "retrying" and delta["hold_takebacks"] == 2 and "attempt" not in delta
+    asyncio.run(scenario())

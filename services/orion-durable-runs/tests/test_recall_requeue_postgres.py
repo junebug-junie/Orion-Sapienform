@@ -190,3 +190,30 @@ def test_self_sense_run_recalled_past_grace_waits_for_a_hold_instead_of_failing(
         assert (await store.get_run(req.run_id))["terminal"] == "completed"
         await rt.close()
     asyncio.run(with_database(scenario))
+
+
+def test_a_step_that_never_fits_fails_at_the_take_back_limit_instead_of_replaying_forever():
+    """DURABLE_RUNS_HOLD_MAX_TAKEBACKS bounds the replay loop (take-backs are not attempts)."""
+    async def scenario(pool, saver, store):
+        gpu = await InProcessPool().boot()
+        blocker = await occupy_agent(gpu)
+        await gpu.rt.control(GpuPoolControlV1(verb="lend", card="gpu0"))
+        rt = runtime(pool, saver, store, asyncio.Event(), gpu=gpu, DURABLE_RUNS_HOLD_MAX_TAKEBACKS=1)
+        req = request("recall-limit")
+        driver, hold = await borrowed_chat_hold(gpu, rt, req)
+        owner = await recall_past_grace(gpu, hold["lease_id"], blocker)          # take-back 1: waits
+        await asyncio.wait_for(driver, 15)
+        assert await failed_error(store, req.run_id) == []
+        await gpu.dispatch(GpuLeaseRequestV1(verb="release", lease_id=owner, outcome="ok"))
+        await gpu.later(30, beat=[blocker])
+        await rt.on_pool_event({"holder": "durable-runs:recall-limit", "event": "granted"})
+        driver = asyncio.create_task(rt._drive(await store.get_run(req.run_id)))
+        await until(lambda: len(rt.runner.calls) == 2, attempts=1500)
+        await recall_past_grace(gpu, hold["lease_id"], blocker)                   # take-back 2: over
+        await asyncio.wait_for(driver, 15)
+        assert (await store.get_run(req.run_id))["terminal"] == "failed"
+        [error] = await failed_error(store, req.run_id)
+        assert error.startswith("hold_takeback_limit:1: HoldLost: gpu_hold_lost:queued:recall_grace_exceeded")
+        assert (await gpu.lease(hold["lease_id"]))["status"] == "released"      # the seat is given back
+        await rt.close()
+    asyncio.run(with_database(scenario))

@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     pool_retry_base_sec: float = Field(15.0, gt=0.0, alias="DURABLE_RUNS_POOL_RETRY_BASE_SEC")
     pool_retry_max_sec: float = Field(300.0, gt=0.0, alias="DURABLE_RUNS_POOL_RETRY_MAX_SEC")
     retry_max_attempts: int = Field(3, ge=1, le=20, alias="DURABLE_RUNS_RETRY_MAX_ATTEMPTS")
+    # The pool taking a run's hold back mid-node (recall past its grace, lost heartbeat) is not an
+    # attempt; this bounds how often one run may be taken back and replayed. 0 = unbounded.
+    hold_max_takebacks: int = Field(12, ge=0, le=1000, alias="DURABLE_RUNS_HOLD_MAX_TAKEBACKS")
     retry_base_sec: float = Field(30.0, gt=0.0, alias="DURABLE_RUNS_RETRY_BASE_SEC")
     retry_max_sec: float = Field(300.0, gt=0.0, alias="DURABLE_RUNS_RETRY_MAX_SEC")
     # Admitted runs: a run is failed terminally once it has at least

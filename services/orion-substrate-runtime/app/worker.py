@@ -3129,6 +3129,7 @@ class BiometricsSubstrateWorker:
             from orion.schemas.system_one_appraisal import (
                 SYSTEM_ONE_APPRAISAL_CHANNEL,
                 SYSTEM_ONE_APPRAISAL_KIND,
+                system_one_appraisal_correlation_id,
             )
 
             await publish_with_reconnect(
@@ -3137,7 +3138,9 @@ class BiometricsSubstrateWorker:
                 BaseEnvelope(
                     kind=SYSTEM_ONE_APPRAISAL_KIND,
                     source=self._service_ref(),
-                    correlation_id=frame.frame_id,
+                    correlation_id=system_one_appraisal_correlation_id(
+                        frame.frame_id
+                    ),
                     payload=frame.model_dump(mode="json"),
                 ),
                 log_label="substrate_system_one_appraisal_publish",

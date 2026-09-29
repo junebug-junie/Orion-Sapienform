@@ -282,7 +282,16 @@ async def notify(
         )
         asyncio.create_task(_publish_persistence_event(bus, "orion:notify:persistence:request", record))
 
-    return NotificationAccepted(ok=True, notification_id=payload.notification_id, status="queued")
+    # `status` stays "queued" for wire compatibility (persistence is still
+    # async); `email_status` carries the synchronous email outcome so a caller
+    # can tell a sent letter from a failed one without querying notify_requests.
+    return NotificationAccepted(
+        ok=True,
+        notification_id=payload.notification_id,
+        status="queued",
+        email_status=email_outcome.status,
+        detail=None if email_outcome.status == "sent" else email_outcome.reason,
+    )
 
 
 @app.post("/attention/request")

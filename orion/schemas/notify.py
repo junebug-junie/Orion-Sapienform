@@ -13,6 +13,11 @@ class NotificationAttachment(BaseModel):
     filename: str
     content_base64: str
     mime_type: str = Field("application/octet-stream")
+    # When set AND the request carries body_html, the attachment is embedded as
+    # an inline (multipart/related) part referenced from the HTML as
+    # `<img src="cid:{content_id}">` instead of a regular download attachment.
+    # Bare id, no angle brackets. Ignored for plain-text-only requests.
+    content_id: Optional[str] = None
 
 
 class NotificationRequest(BaseModel):
@@ -23,6 +28,10 @@ class NotificationRequest(BaseModel):
     title: str
     body_text: Optional[str] = None
     body_md: Optional[str] = None
+    # Optional HTML rendering of the email body. Sent as a text/html
+    # alternative alongside the plain-text part (body_text or body_md is the
+    # fallback). Email-only: not persisted and not sent to the in-app event.
+    body_html: Optional[str] = None
     context: Dict[str, Any] = Field(default_factory=dict)
     tags: List[str] = Field(default_factory=list)
     recipient_group: str = Field("juniper_primary")
@@ -41,6 +50,11 @@ class NotificationAccepted(BaseModel):
     notification_id: Optional[UUID] = None
     status: Optional[str] = None
     detail: Optional[str] = None
+    # What actually happened to the email for this request (EmailOutcome.status:
+    # "sent" | "failed" | "skipped" | "deferred"). "sent" means the SMTP server
+    # accepted it, not that it reached an inbox. None on endpoints that do not
+    # attempt email synchronously.
+    email_status: Optional[str] = None
 
 
 class NotificationRecord(BaseModel):

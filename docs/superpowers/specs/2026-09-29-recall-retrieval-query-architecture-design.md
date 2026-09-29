@@ -1,6 +1,6 @@
 # Recall retrieval architecture: separate the search query from the prompt
 
-Status: PROPOSAL (touches memory/recall and cognition loops; needs Juniper sign-off before implementation)
+Status: APPROVED by Juniper 2026-09-29 (all three missing questions answered with the recommendations below). Phase 1+2 in progress; Phase 3 follows.
 Date: 2026-09-29
 Evidence base: `recall_telemetry` (live since PR #2398, 2026-09-29 18:14 UTC), `grammar_events` RPC timeouts, two read-only code traces (upstream callers, downstream pipeline) against main @ 4ed5ee36e.
 
@@ -88,7 +88,7 @@ The principles behind it:
 6. **Anytime retrieval.** Run under a deadline set below the caller's timeout, and return what has arrived when it expires (`deadline_hit=true`). A partial answer beats a timeout that looks like "no memory".
 7. **Provenance-aware fusion.** Tokenize the query once, and record which backend and sub-query found each candidate. That makes a future reranker or reciprocal-rank fusion possible without re-plumbing. The reranker itself is a non-goal here.
 
-## Missing questions (for Juniper)
+## Missing questions (answered 2026-09-29: Juniper accepted each recommendation)
 
 1. **What should a self-initiated turn remember *about*?** Options:
    - (a) the standing question text;
@@ -174,4 +174,4 @@ Registry and channel catalogs: no new channels. Schema registry entries update f
 
 ## Recommended next patch
 
-Phase 1 alone, in orion-recall. It is service-bounded and needs no contract change, and it removes the timeout risk for every caller, including ones added later. Then Phase 2 (contract, consumer-first) and Phase 3 (callers). Phase 3 waits on Juniper's answer to missing question 1.
+Phase 1 alone, in orion-recall. It is service-bounded and needs no contract change, and it removes the timeout risk for every caller, including ones added later. Then Phase 2 (contract, consumer-first) and Phase 3 (callers). Phase 3 uses the approved answers: the standing question for self-inquiry/curiosity, source title + claim for reading, phase 3 reusing the phase 0+1 query, and reverie on `mode=context_only`.

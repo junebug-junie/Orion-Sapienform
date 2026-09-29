@@ -69,7 +69,7 @@ def test_insert_binds_json_columns_psycopg2_can_adapt(monkeypatch) -> None:
     worker._persist_decision(_decision())
     inserts = [e for e in log if "INSERT INTO recall_telemetry" in e[0]]
     assert len(inserts) == 1
-    assert inserts[0][1][-1] == 812
+    assert inserts[0][1][9] == 812
 
 
 def test_create_table_runs_once_per_process(monkeypatch) -> None:
@@ -104,3 +104,45 @@ def test_connect_is_time_bounded(monkeypatch) -> None:
     log = _install(monkeypatch)
     worker._persist_decision(_decision())
     assert log[0] == ("CONNECT", {"connect_timeout": 3}, None)
+
+
+def test_bounded_retrieval_columns_added_once_and_written(monkeypatch) -> None:
+    log = _install(monkeypatch)
+    decision = _decision().model_copy(
+        update={
+            "query_chars": 42,
+            "retrieval_query_source": "condensed",
+            "sub_query_count": 5,
+            "candidates_fetched": 30,
+            "candidates_kept": 12,
+            "deadline_hit": True,
+            "timings_ms": {"intake": 1, "total": 900},
+        }
+    )
+    worker._persist_decision(decision)
+    worker._persist_decision(decision)
+    alters = [e[0] for e in log if "ALTER TABLE recall_telemetry ADD COLUMN IF NOT EXISTS" in e[0]]
+    # Once per process, one per column.
+    assert len(alters) == len(worker._TELEMETRY_BOUNDED_RETRIEVAL_COLUMNS)
+    for col in ("query_chars", "retrieval_query_source", "sub_query_count", "candidates_fetched",
+                "candidates_kept", "deadline_hit", "timings_ms"):
+        assert any(col in a for a in alters)
+    insert = [e for e in log if "INSERT INTO recall_telemetry" in e[0]][0]
+    params = insert[1]
+    assert params[10:16] == (42, "condensed", 5, 30, 12, True)
+    assert params[16].adapted == {"intake": 1, "total": 900}
+
+
+def test_old_decision_without_new_fields_writes_nulls(monkeypatch) -> None:
+    log = _install(monkeypatch)
+    worker._persist_decision(_decision())
+    params = [e for e in log if "INSERT INTO recall_telemetry" in e[0]][0][1]
+    assert params[10:16] == (None, None, None, None, None, None)
+
+
+def test_sql_file_declares_every_bounded_retrieval_column() -> None:
+    from pathlib import Path
+
+    sql = (Path(__file__).resolve().parents[1] / "sql" / "recall_telemetry.sql").read_text()
+    for ddl in worker._TELEMETRY_BOUNDED_RETRIEVAL_COLUMNS:
+        assert f"ADD COLUMN IF NOT EXISTS {ddl};" in sql

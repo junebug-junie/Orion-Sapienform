@@ -1356,6 +1356,15 @@ async def _query_backends(
 
 _telemetry_table_ready = False
 _telemetry_failure_warned = False
+_TELEMETRY_BOUNDED_RETRIEVAL_COLUMNS = (
+    "query_chars integer",
+    "retrieval_query_source text",
+    "sub_query_count integer",
+    "candidates_fetched integer",
+    "candidates_kept integer",
+    "deadline_hit boolean",
+    "timings_ms jsonb",
+)
 
 
 def _persist_decision(decision: RecallDecisionV1) -> None:
@@ -1401,12 +1410,20 @@ def _persist_decision(decision: RecallDecisionV1) -> None:
                     )
                     """
                 )
+                # Bounded-retrieval columns (2026-09-29). Nullable and additive,
+                # so rows written before this deploy and rows from an older
+                # writer both stay valid. Kept in sync with
+                # sql/recall_telemetry.sql.
+                for column_ddl in _TELEMETRY_BOUNDED_RETRIEVAL_COLUMNS:
+                    cur.execute(f"ALTER TABLE recall_telemetry ADD COLUMN IF NOT EXISTS {column_ddl}")
                 _telemetry_table_ready = True
             cur.execute(
                 """
                 INSERT INTO recall_telemetry
-                (id, corr_id, session_id, node_id, verb, profile, query, selected_ids, backend_counts, latency_ms)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                (id, corr_id, session_id, node_id, verb, profile, query, selected_ids, backend_counts, latency_ms,
+                 query_chars, retrieval_query_source, sub_query_count, candidates_fetched, candidates_kept,
+                 deadline_hit, timings_ms)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (id) DO NOTHING
                 """,
                 (
@@ -1420,6 +1437,13 @@ def _persist_decision(decision: RecallDecisionV1) -> None:
                     Json(decision.selected_ids),
                     Json(decision.backend_counts),
                     decision.latency_ms,
+                    decision.query_chars,
+                    decision.retrieval_query_source,
+                    decision.sub_query_count,
+                    decision.candidates_fetched,
+                    decision.candidates_kept,
+                    decision.deadline_hit,
+                    Json(dict(decision.timings_ms or {})),
                 ),
             )
     except Exception as exc:

@@ -25,6 +25,7 @@ from orion.hub.cockpit_emit import (
 )
 from orion.hub.turn_request import build_orion_turn_request
 from orion.schemas.context_exec import ContextExecPermissionV1
+from orion.gpu_pool.placement import discovered_role, placement_from_lease
 from orion.situational.context import build_situation_for_ctx, hub_settings_to_runtime_namespace
 from orion.harness.attachment_staging import prune_staging, stage_attachments
 from orion.harness.repair import map_repair_pressure_contract
@@ -680,6 +681,31 @@ async def _situation_with_outreach_provenance(
         return situation_prompt_fragment
 
 
+def _turn_gpu_placement(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """The model this turn runs on, from the GPU pool lease it carries (a durable run's hold).
+
+    Every call under a hold runs on the hold's role, so the role is a fact about the turn; the
+    model is the pool's discovered profile for that role, read from Hub's own live pool feed
+    (orion:gpu_pool:state, every few seconds -- no extra RPC). Without a hold there is nothing
+    turn-specific to say and the situation brief falls back to the route's default. Fail-open:
+    no feed yet -> role without a model, which the brief renders as "do not name one"."""
+    raw = payload.get("gpu_lease")
+    if not isinstance(raw, dict):
+        return None
+    role = str(raw.get("role") or "").strip()
+    if not role:
+        return None
+    state = None
+    try:
+        from scripts.gpu_pool_routes import feed as gpu_pool_feed
+
+        state = gpu_pool_feed.state
+    except Exception:
+        state = None
+    placement = placement_from_lease(role, discovered_role(state, role))
+    return {"role": placement.role, "model": placement.model, "profile": placement.profile}
+
+
 async def _build_situation_prompt_fragment(
     *,
     session_id: str | None,
@@ -771,6 +797,9 @@ async def _build_situation_prompt_fragment(
                 presence_context = None
         if isinstance(presence_context, dict):
             situation_ctx["presence_context"] = presence_context
+        gpu_placement = _turn_gpu_placement(payload)
+        if gpu_placement is not None:
+            situation_ctx["gpu_placement"] = gpu_placement
         situation_brief, situation_fragment = await build_situation_for_ctx(
             situation_ctx, situation_runtime_ns
         )

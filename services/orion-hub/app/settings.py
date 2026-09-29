@@ -1015,6 +1015,14 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED: bool = Field(
         default=False, alias="HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED"
     )
+    # orion-durable-runs base URL for curiosity's Door-A: Hub posts
+    # /runs/{id}/release-outreach-lease here when outreach composition under the run's
+    # GPU pool hold is done. Empty = no release call (the hold ends at its outreach max).
+    # Its own key since stage 4.6 (it used to be derived from the deleted
+    # HUB_CURIOSITY_LEASE_VALIDATION_URL).
+    HUB_CURIOSITY_DURABLE_RUNS_URL: str = Field(
+        default="http://127.0.0.1:8124", alias="HUB_CURIOSITY_DURABLE_RUNS_URL"
+    )
     # The self-inquiry LINE of the same loop (orion/curiosity/self_inquiry.py):
     # a standing question -- "what am I, and what am I made of?" -- with its
     # OWN budget, separate from the investigation cap above. Same window,

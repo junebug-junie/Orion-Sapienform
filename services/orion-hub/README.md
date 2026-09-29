@@ -3194,8 +3194,8 @@ validates each turn's hold ref (`gpu_lease`) with the pool's `status` verb befor
 on it, and every LLM call of the turn (FCC via `X-Orion-Gpu-Lease`, stance/reflection/repair via
 `options.gpu_lease`) attaches to that hold. Duplicate turns coalesce by run ID plus hold
 identity/generation. For Door-A, durable-runs keeps the hold past finish; Hub composes under it,
-then posts `/runs/{id}/release-outreach-lease` to `HUB_READING_DURABLE_URL` (the durable-runs base
-URL, default `http://127.0.0.1:8124`). The old durable lease token (`X-Orion-Resource-Lease`,
+then posts `/runs/{id}/release-outreach-lease` to `HUB_CURIOSITY_DURABLE_RUNS_URL` (the durable-runs
+base URL, default `http://127.0.0.1:8124`). The old durable lease token (`X-Orion-Resource-Lease`,
 `HUB_CURIOSITY_LEASE_VALIDATION_URL`) was deleted in stage 4.6.
 Full ownership and activation: `docs/architecture/durable-resource-admission.md`.
 

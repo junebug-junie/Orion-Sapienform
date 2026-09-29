@@ -87,7 +87,7 @@ def test_door_a_release_url_default_matches_the_pre_4_6_derived_url():
 def test_main_wires_door_a_to_the_durable_runs_base_url():
     from pathlib import Path
     main = (Path(ci.__file__).parent / "main.py").read_text()
-    assert "durable_runs_url=settings.HUB_READING_DURABLE_URL" in main
+    assert "durable_runs_url=settings.HUB_CURIOSITY_DURABLE_RUNS_URL" in main
 
 
 def test_deleted_lease_token_is_refused_on_the_wire():

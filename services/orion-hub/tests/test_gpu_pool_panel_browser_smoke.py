@@ -144,7 +144,7 @@ def test_gpu_pool_panel_shows_swap_fault_guards_and_holds_with_their_calls():
                                         "swap": {"evicts": ["diffusion"]}},   # stage 5.3: no bridge verbs
                          "diffusion": {"kind": "service", "cards": ["gpu2"], "owner": ["diffusion"], "port": 8014,
                                        "slots": 1, "vram_gb": 24}})
-    state = dict(STATE, config=config, swap_guards={"thermal": None, "visual_baseline": "visual_baseline_urgent"},
+    state = dict(STATE, config=config, swap_guards={"thermal": "hot:temp_over_hot"},
                  cards=STATE["cards"] + [{
                      "card": "gpu2", "vram_gb": 32, "swapped_in": [], "swap_state": "fault", "swap_role": "agent-gpu2",
                      "actuated_roles": ["agent-gpu2"],
@@ -196,7 +196,7 @@ def test_gpu_pool_panel_shows_swap_fault_guards_and_holds_with_their_calls():
         assert page.locator('[data-card="gpu2"] button[data-verb="clear_fault"][data-card="gpu2"]').count() == 1
         assert "observe only" in page.inner_text('[data-card="gpu0"]') or "swap:" not in page.inner_text('[data-card="gpu0"]')
         guards = page.inner_text("#swapGuards")
-        assert "thermal: clear" in guards and "visual_baseline: visual_baseline_urgent" in guards
+        assert "thermal: hot:temp_over_hot" in guards and "visual_baseline" not in guards
         holds = page.inner_text("#holds")
         assert "durable-runs:run1" in holds and "0 running · 1 waiting" in holds and "turn-7" in holds
         assert page.locator('#holds tr.child[data-lease="C1callcallcall"]').count() == 1

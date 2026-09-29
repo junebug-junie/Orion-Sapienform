@@ -137,7 +137,7 @@ async def _guards_forever(reader: GuardReader) -> None:
     async with httpx.AsyncClient(timeout=3) as client:
         while not _stop.is_set():
             try:
-                runtime.guard_states = await reader.read(client, datetime.now(timezone.utc))
+                runtime.guard_states = await reader.read(client)
             except Exception as exc:  # noqa: BLE001 -- a guard that cannot be read blocks loads
                 runtime.guard_states = {g: f"unavailable:{type(exc).__name__}" for g in SWAP_GUARDS}
                 logger.warning("gpu_pool_guard_read_failed err=%s", exc)
@@ -266,9 +266,7 @@ async def lifespan(app: FastAPI):
     _chassis.append(hunter)
     _stop.clear()
     if any(spec.swap and spec.swap.guards for spec in cfg.roles.values()):
-        _tasks.append(asyncio.create_task(_guards_forever(GuardReader(
-            cabinet_url=_settings.cabinet_url, visual_activity_url=_settings.visual_activity_url,
-            clock=lambda: datetime.now(timezone.utc)))))
+        _tasks.append(asyncio.create_task(_guards_forever(GuardReader(cabinet_url=_settings.cabinet_url))))
     else:
         runtime.guard_states = {g: None for g in SWAP_GUARDS}
     _tasks.append(asyncio.create_task(_tick_forever()))

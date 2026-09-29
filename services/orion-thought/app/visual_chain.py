@@ -175,22 +175,16 @@ Every hop degrades honestly rather than fabricating:
 Default-off: `run_visual_chain_worker` is a no-op unless
 ORION_VISUAL_CHAIN_ENABLED.
 
-Patch 9: `call_diffusion_generate`'s call site now wraps the whole
-diffusion-host round trip (elastic-status pre-check plus `/generate`) in a
-`GpuCapacityPermit` (`orion.durable_admission.capacity_client`) before
-attempting it. Live-caught 2026-09-24, same day the freshness-window fix
-(PR #2306) let this chain reach diffusion-host again for the first time
-since 09-14: two back-to-back `CUDA error: CUDA-capable device(s) is/are
-busy or unavailable` failures, because `orion-world-model` shares this same
-physical card (circe GPU2) with zero OS/driver-level arbitration -- the
-existing `visual_elastic_status_enabled` pre-check only asks
-`orion-gpu-lane-controller`, which has no idea world-model exists (it only
-tracks diffusion/agent-burst). The capacity permit is real mutual exclusion
-on the actual hardware, not another status read: see
-`visual_chain_gpu2_capacity_*` in `settings.py` for the backend_key
-reasoning and why diffusion's long acquire budget (vs. world-model's short
-one, `services/orion-world-model/app/settings.py`) is what gives diffusion
-practical precedence on its own native card.
+GPU2 arbitration (GPU pool stage 5.4). `orion-world-model` shares this
+physical card (circe gpu2) with zero OS/driver-level arbitration -- two
+back-to-back `CUDA error: CUDA-capable device(s) is/are busy or unavailable`
+failures on 2026-09-24. The GPU pool is the one arbiter: diffusion work runs
+under a pool `diffusion` lease or hold, and the pool never places a `world`
+lease while one is active (`config/gpu_pool.yaml` `serialize_with`). The
+durable run's hold is the grant for its generate step; `generate_visual_bytes`
+takes its own `diffusion` request lease only when called without one. The old
+durable-runs `/capacity` permit and the gpu-lane-controller slot-status
+pre-check are gone; nothing falls back to them.
 """
 
 from __future__ import annotations
@@ -213,9 +207,11 @@ from uuid import uuid4
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.durable_admission.capacity_client import CapacityRejected, GpuCapacityPermit
+from orion.gpu_pool import client as gpu_pool_client
+from orion.gpu_pool.client import LeaseUnavailable, PoolRpcTimeout
 from orion.reverie.visual_storage import StoredVisualArtifact, store_visual_artifact
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.autonomy.thermal_gate import ThermalVerdict, thermal_state
 from orion.schemas.reverie_visual import (
     ReverieVisualArtifactV1,
@@ -649,19 +645,6 @@ def call_diffusion_generate(prompt: str, *, base_url: str, timeout_sec: float) -
     section 10 -- no dependency for one POST call), same choice
     foveal_probe.py and this service's own cortex_client make elsewhere.
     """
-    if settings.visual_elastic_status_enabled:
-        try:
-            with urllib.request.urlopen(settings.visual_elastic_controller_url.rstrip("/") +
-                    "/v1/gpu-slots/circe-gpu2/status", timeout=3) as response:
-                slot = json.load(response)
-            if slot.get("enabled") and (slot.get("active") != "diffusion" or
-                    slot.get("state") in {"draining", "activating"} or
-                    (slot.get("state") == "failed" and slot.get("restored") is not True)):
-                raise DiffusionResourceDeferred("controller_displacement")
-        except DiffusionResourceDeferred:
-            raise
-        except (urllib.error.URLError, OSError, ValueError):
-            raise DiffusionResourceDeferred("resource_status_unavailable")
     url = str(base_url).rstrip("/") + "/generate"
     body = json.dumps({"prompt": prompt}).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST")
@@ -688,9 +671,11 @@ def call_diffusion_generate(prompt: str, *, base_url: str, timeout_sec: float) -
             f"diffusion-host /generate returned HTTP {exc.code}: {exc.reason}"
         ) from exc
     except (urllib.error.URLError, OSError) as exc:
-        if settings.visual_elastic_status_enabled:
-            raise DiffusionResourceDeferred("diffusion_unreachable") from exc
-        raise DiffusionGenerationError(f"diffusion-host /generate failed: {exc}") from exc
+        # Unreachable diffusion-host is a deferral, not an image failure: the card can be mid-swap
+        # (an owner reclaim restarting it) even under a grant. This was the live behaviour through
+        # 2026-09-29 (ORION_VISUAL_ELASTIC_STATUS_ENABLED=true in the thought container); stage 5.4
+        # deleted that flag and its controller pre-check but keeps this outcome unconditionally.
+        raise DiffusionResourceDeferred("diffusion_unreachable") from exc
     if not data:
         raise DiffusionGenerationError("diffusion-host /generate returned empty body")
     return data
@@ -1120,39 +1105,70 @@ async def compute_visual_plan(
     )
 
 
-async def generate_visual_bytes(prompt: str, *, correlation_id: str) -> bytes:
-    """GPU2 capacity permit + elastic pre-check + diffusion. Raises
-    `DiffusionResourceDeferred` for every capacity/resource deferral; any other
-    exception is a generation failure."""
-    # GPU2 capacity mutex (settings.py docstring on visual_chain_gpu2_capacity_enabled):
-    # real cross-service mutual exclusion with orion-world-model, which shares
-    # this physical card with no OS-level arbitration. Covers the elastic-
-    # status pre-check inside call_diffusion_generate too, not just /generate
-    # itself, since both touch shared GPU state.
-    gpu_permit: GpuCapacityPermit | None = None
+# The lease every generate takes (gpu_pool.yaml class `diffusion`): attached under the run's hold, or its own.
+GPU_LEASE_WORK_CLASS = "diffusion"
+GPU_LEASE_PRIORITY = "background"
+
+
+async def _diffusion_call(prompt: str) -> bytes:
+    """The diffusion POST in a thread, awaited so the GPU lease around it stays held until that
+    thread has really exited. A cancelled caller (step or run deadline) cannot stop the thread,
+    and releasing the lease early would let the pool place a world lease on gpu2 while diffusion
+    is still computing (the 2026-09-24 CUDA-busy overlap). After a cancel it keeps waiting at
+    most one more diffusion timeout (+10 s), then gives the lease back and re-raises."""
+    work = asyncio.ensure_future(asyncio.to_thread(
+        call_diffusion_generate,
+        prompt,
+        base_url=settings.diffusion_host_base_url,
+        timeout_sec=settings.visual_chain_diffusion_timeout_sec,
+    ))
     try:
-        if settings.visual_chain_gpu2_capacity_enabled:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        loop = asyncio.get_running_loop()
+        until = loop.time() + float(settings.visual_chain_diffusion_timeout_sec) + 10.0
+        while not work.done() and loop.time() < until:
             try:
-                gpu_permit = await GpuCapacityPermit(
-                    capacity_url=settings.visual_chain_gpu2_capacity_url,
-                    lane=settings.visual_chain_gpu2_capacity_lane,
-                    backend_key=settings.visual_chain_gpu2_capacity_backend_key,
-                    correlation_id=correlation_id,
-                    max_inflight=settings.visual_chain_gpu2_capacity_max_inflight,
-                    budget_sec=settings.visual_chain_gpu2_capacity_budget_sec,
-                    poll_interval_sec=settings.visual_chain_gpu2_capacity_poll_interval_sec,
-                ).acquire()
-            except CapacityRejected as exc:
-                raise DiffusionResourceDeferred(f"gpu2_capacity:{exc}") from exc
-        return await asyncio.to_thread(
-            call_diffusion_generate,
-            prompt,
-            base_url=settings.diffusion_host_base_url,
-            timeout_sec=settings.visual_chain_diffusion_timeout_sec,
-        )
-    finally:
-        if gpu_permit is not None:
-            await gpu_permit.close()
+                await asyncio.wait({work}, timeout=until - loop.time())
+            except asyncio.CancelledError:
+                continue
+        if not work.done():
+            logger.error("visual chain: diffusion thread outlived its grace; releasing the GPU lease anyway")
+        work.add_done_callback(lambda t: t.cancelled() or t.exception())
+        raise
+
+
+async def generate_visual_bytes(
+    prompt: str, *, correlation_id: str, bus: Any = None, hold: GpuLeaseRefV1 | None = None,
+) -> bytes:
+    """Diffusion inside a GPU pool lease. Raises `DiffusionResourceDeferred` for every
+    capacity/resource deferral; any other exception is a generation failure.
+
+    ``hold``: the durable run's diffusion hold (already validated by visual_steps.generate_step).
+    The call ATTACHES under it: a child lease that runs in the hold's own slot and jumps its queue,
+    so it is not a second wait -- but it is a lease of its own that lives exactly as long as the
+    diffusion thread, even when the run gives the hold back mid-generate (step deadline, recall).
+    No hold (run-once route, legacy worker): a plain `diffusion` request lease.
+    Refused, late, or pool unreachable -> deferred, never an ungated call."""
+    if bus is None:
+        raise DiffusionResourceDeferred("gpu_pool_unreachable:no_bus")
+    acquired = False
+    try:
+        async with gpu_pool_client.gpu_lease(
+            bus, work_class=GPU_LEASE_WORK_CLASS, holder=settings.service_name,
+            priority=GPU_LEASE_PRIORITY, deadline_sec=float(settings.visual_chain_gpu_lease_deadline_sec),
+            turn_correlation_id=correlation_id, hold=hold,
+        ):
+            acquired = True
+            return await _diffusion_call(prompt)
+    except PoolRpcTimeout as exc:
+        raise DiffusionResourceDeferred("gpu_pool_unreachable") from exc
+    except LeaseUnavailable as exc:
+        raise DiffusionResourceDeferred(f"gpu_pool:{exc.reason}") from exc
+    except Exception as exc:
+        if acquired:
+            raise   # the diffusion call's own failure, unchanged
+        raise DiffusionResourceDeferred(f"gpu_pool_unreachable:{type(exc).__name__}") from exc
 
 
 async def describe_uploaded_visual(
@@ -1352,7 +1368,7 @@ async def _run_visual_chain_body(
         return chain
 
     try:
-        png_bytes = await generate_visual_bytes(plan.prompt, correlation_id=chain_id)
+        png_bytes = await generate_visual_bytes(plan.prompt, correlation_id=chain_id, bus=bus)
     except DiffusionResourceDeferred as exc:
         chain = build_resource_deferred_chain(
             chain_id, plan, str(exc), thermal_gate=thermal_gate, run_request=run_request, now_fn=now_fn

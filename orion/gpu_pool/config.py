@@ -19,7 +19,7 @@ DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "gpu_pool.yaml"
 PRIORITIES = ("urgent", "interactive", "system", "background")
 # Pool-side swap preconditions (stage 4 spec, "Guards"). A guard named here must be one the
 # scheduler evaluates; the scheduler side lands with the actuation engine (stage 4.3).
-SwapGuard = Literal["thermal", "visual_baseline"]
+SwapGuard = Literal["thermal"]   # visual_baseline deleted in stage 5.4
 SWAP_GUARDS = get_args(SwapGuard)
 
 

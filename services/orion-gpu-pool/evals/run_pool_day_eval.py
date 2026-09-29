@@ -24,6 +24,11 @@ Hard targets (exit 1 if missed; spec acceptance check 4 + stage 4 checks 2/3):
   - run call wait above one interleaved inference: 0  (gaps are shared, but a run's next call
     waits at most for the one higher-priority call that used its gap)
   - interleaved grants: > 0  (a system agent call used a run's tool gap)
+  - world/diffusion grant overlap: 0s  (a world lease and a diffusion lease GRANTED together on gpu2;
+    a scheduler property, not proof of physical non-overlap -- that needs callers to hold their lease
+    for as long as their GPU work runs, which the world-model/thought tests pin --
+    the mutex the durable-runs /capacity permit gave, kept by serialize_with since stage 5.4), and
+    serialize_with actually exercised (some serialized:<role> report)
 
 Urgent scenario (separate short replay, same real scheduler + lease table): background holds on
 agent and the loaded agent-gpu2 seat, chat traffic on chat, then an urgent hold. Hard targets:
@@ -119,6 +124,7 @@ def simulate(seed: int = 7) -> dict:
     counts = defaultdict(int)
     starvation = 0.0
     violations = 0
+    gpu2_overlap = 0   # seconds a world lease and a diffusion lease/hold were granted together (stage 5.4)
     next_arrival = {i: rng.expovariate(1 / t[2]) for i, t in enumerate(TRAFFIC)}
     n = 0
     failed_loads_left = FAILED_LOADS
@@ -256,6 +262,9 @@ def simulate(seed: int = 7) -> dict:
                         work_left[lid] = rng.uniform(1, 5)
 
         views = _views(leases)
+        on = {v.role for v in views if v.status in ("granted", "recalling")}
+        if "world" in on and "diffusion" in on:
+            gpu2_overlap += 1
 
         # owner starvation: owner queued past the borrower's bound while a borrower holds that role.
         # A single-call borrower's bound is clawback_grace_sec. A durable-run hold's is ONE of its
@@ -276,7 +285,7 @@ def simulate(seed: int = 7) -> dict:
                     break
 
         holds_on = {v.role: v for v in views if v.kind == "hold" and v.status in ("granted", "recalling")}
-        for d in schedule(CFG, live, cards, views, now, guards={"thermal": None, "visual_baseline": None}):
+        for d in schedule(CFG, live, cards, views, now, guards={"thermal": None}):
             if isinstance(d, SwapBlocked):
                 counts[f"swap_blocked:{d.reason}"] += 1
                 continue
@@ -327,6 +336,7 @@ def simulate(seed: int = 7) -> dict:
                                   "max": round(max(child_waits), 1) if child_waits else None},
             "interleaved_grants": interleaved,
             "owner_starvation_sec": starvation, "leases_lost": lost, "small_role_violations": violations,
+            "world_diffusion_grant_overlap_sec": gpu2_overlap,
             "run_blocked_behind_itself_sec": self_block, "run_call_waits_over_one_inference": over_one_inference}
 
 
@@ -404,7 +414,7 @@ def urgent_scenario(cfg=CFG) -> dict:
                     cards[c].last_active_at = now
 
         for d in schedule(cfg, LIVE, cards, _views(leases), now,
-                          guards={"thermal": None, "visual_baseline": None}):
+                          guards={"thermal": None}):
             if isinstance(d, (SwapLoad, SwapUnload, SwapBlocked, Serialized)):
                 continue                  # the seat is already loaded; no swap is part of this story
             st = leases[d.lease_id]
@@ -493,11 +503,13 @@ def main() -> int:
     import json
 
     print(json.dumps(report, indent=2))
-    failures = [k for k in ("owner_starvation_sec", "leases_lost", "small_role_violations",
+    failures = [k for k in ("owner_starvation_sec", "leases_lost", "small_role_violations", "world_diffusion_grant_overlap_sec",
                             "run_blocked_behind_itself_sec", "run_call_waits_over_one_inference") if report[k]]
     failures += urgent_failures(report["urgent_scenario"], rollback)
     if not report["interleaved_grants"]:
         failures.append("interleaved_grants")
+    if not (report["counts"].get("serialized:diffusion") or report["counts"].get("serialized:world")):
+        failures.append("serialize_with_not_exercised")   # the world/diffusion mutex never came up
     if not report["counts"].get("swap_failed_restored"):
         failures.append("failed_load_not_exercised")
     print("VERDICT:", "PASS" if not failures else f"FAIL {failures}")

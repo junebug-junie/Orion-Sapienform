@@ -97,7 +97,7 @@ async def later(rt, clock, sec):
     await rt.tick()
 
 
-CLEAR_GUARDS = {"thermal": None, "visual_baseline": None}
+CLEAR_GUARDS = {"thermal": None}
 SEAT_WAIT = CFG.swap_after_wait_sec("agent-gpu2")
 
 

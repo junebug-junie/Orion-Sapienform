@@ -10,7 +10,7 @@ import requests
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict
+from typing import Any, Awaitable, Callable, Dict
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -50,7 +50,8 @@ from orion.schemas.world_pulse import WorldPulseRunResultV1
 from .capability_gap_journal import build_daily_seed_payload, collect_capability_gaps
 from .perception_gap_journal import collect_perception_gaps
 from .walkway_forecast import collect_walkway_jobs, run_walkway_tick
-from .world_pulse_journal import handle_world_pulse_run_result_journal
+from .world_pulse_journal import drain_pending_world_pulse_journals, handle_world_pulse_run_result_journal
+from .pending_journal_store import PendingJournalStore, pending_journal_store_path_for
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
     SKILL_BIOMETRICS_SNAPSHOT_V1,
@@ -1131,12 +1132,15 @@ async def lifespan(app: FastAPI):
         ensure_github_compactor_daily_schedule(workflow_schedule_store)
     except Exception:
         logger.exception("github_compactor_schedule_bootstrap_failed")
-    scheduler_cursor_store = SchedulerCursorStore(
-        resolve_scheduler_cursor_store_path(
-            settings.actions_scheduler_cursor_store_path or None,
-            workflow_schedule_store_path=settings.actions_workflow_schedule_store_path,
-        )
+    _scheduler_cursor_path = resolve_scheduler_cursor_store_path(
+        settings.actions_scheduler_cursor_store_path or None,
+        workflow_schedule_store_path=settings.actions_workflow_schedule_store_path,
     )
+    scheduler_cursor_store = SchedulerCursorStore(_scheduler_cursor_path)
+    # Restart-durable retry queue for world_pulse_digest composes that failed
+    # retryably (gpu_pool_unavailable / timeout / empty decode); drained by
+    # _scheduler_loop. Lives next to scheduler_cursors.json on the same bind mount.
+    pending_journal_store = PendingJournalStore(pending_journal_store_path_for(_scheduler_cursor_path))
     for _ck, _cv in scheduler_cursor_store.all().items():
         if _ck == SCHEDULER_CURSOR_JOURNAL_KEY:
             last_journal_run = _cv
@@ -1290,7 +1294,14 @@ async def lifespan(app: FastAPI):
         dedupe_key: str,
         reason: str | None = None,
         world_pulse_result: WorldPulseRunResultV1 | None = None,
+        on_failure: Callable[[BaseException], Awaitable[None]] | None = None,
     ) -> bool:
+        """Returns True only when the journal was composed and its write published.
+
+        False covers three different outcomes (journaling disabled, cooldown/in-flight
+        dedupe, compose error). Callers that need to tell a compose *error* apart --
+        the world_pulse retry path -- pass `on_failure`, which is awaited with the
+        exception only on the error branch. Other callers are unaffected."""
         if not settings.actions_journaling_enabled:
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action, reason="journaling_disabled")
             return False
@@ -1340,6 +1351,11 @@ async def lifespan(app: FastAPI):
                 extra={"duration_ms": dt_ms},
             )
             logger.exception("Journal dispatch failed action=%s corr=%s", audit_action, parent.correlation_id)
+            if on_failure is not None:
+                try:
+                    await on_failure(exc)
+                except Exception:
+                    logger.exception("journal_on_failure_callback_failed action=%s", audit_action)
             return False
         finally:
             if acquired:
@@ -1687,6 +1703,7 @@ async def lifespan(app: FastAPI):
             settings=settings,
             dispatch_journal=_dispatch_journal,
             audit=_audit,
+            retry_store=pending_journal_store,
         )
 
     async def _handle_journal_collapse_stored(env: BaseEnvelope) -> bool:
@@ -2316,6 +2333,19 @@ async def lifespan(app: FastAPI):
                             correlation_id=str(env.correlation_id),
                             restart_dedupe_source="durable" if SCHEDULER_CURSOR_JOURNAL_KEY in cursor_keys_at_startup else "memory",
                         )
+
+                if settings.actions_world_pulse_journal_retry_enabled:
+                    try:
+                        await drain_pending_world_pulse_journals(
+                            store=pending_journal_store,
+                            settings=settings,
+                            dispatch_journal=_dispatch_journal,
+                            audit=_audit,
+                            source=src,
+                            now=now_utc,
+                        )
+                    except Exception:
+                        logger.exception("world_pulse_journal_retry_drain_failed")
 
                 for claimed in workflow_schedule_store.claim_due(now_utc=now_utc, limit=settings.actions_workflow_schedule_claim_batch_size):
                     dispatch_env = BaseEnvelope(kind=WORKFLOW_TRIGGER_KIND, source=src, correlation_id=str(uuid4()), payload={})

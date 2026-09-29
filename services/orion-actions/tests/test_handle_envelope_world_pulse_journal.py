@@ -153,3 +153,90 @@ def test_handle_envelope_does_not_fall_through_to_collapse_for_world_pulse_kind(
 
     asyncio.run(route_like_handle_envelope(env))
     assert collapse_called is False
+
+
+@pytest.mark.asyncio
+async def test_real_dispatch_journal_reports_compose_error_and_enqueues_retry(tmp_path) -> None:
+    """Drive main._dispatch_journal (the real closure) through a compose timeout and
+    a journaling-disabled skip: only the error branch may reach on_failure, so only it
+    enqueues a retry. Guards the on_failure seam against a refactor that drops it."""
+    from app.pending_journal_store import PendingJournalStore
+
+    captured: dict = {}
+
+    async def intercept(env: BaseEnvelope, **kw):
+        captured.update(kw)
+        return True
+
+    class _NoopHunter:
+        def __init__(self, *args, **kwargs) -> None:
+            self.bus = AsyncMock()
+
+        async def start(self) -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                pass
+
+    _real_create_task = asyncio.create_task
+
+    def _noop_create_task(coro, *args, **kwargs):
+        coro.close()
+
+        async def _cancellable() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                pass
+
+        return _real_create_task(_cancellable())
+
+    class _TimeoutBus:
+        async def rpc_request(self, *a, **kw):
+            raise TimeoutError("RPC timeout waiting on orion:cortex:result:x")
+
+        async def close(self) -> None:
+            return None
+
+    cfg = Settings(
+        ACTIONS_WORLD_PULSE_JOURNAL_ENABLED=True,
+        ACTIONS_JOURNALING_ENABLED=True,
+        ACTIONS_WORLD_PULSE_JOURNAL_RETRY_ENABLED=True,
+    )
+    store = PendingJournalStore(tmp_path / "pending_journals.json")
+
+    with (
+        patch.object(actions_main, "Hunter", _NoopHunter),
+        patch("orion.notify.client.NotifyClient", return_value=MagicMock()),
+        patch.object(actions_main.asyncio, "create_task", side_effect=_noop_create_task),
+        patch.object(actions_main.settings, "actions_scheduler_cursor_store_path", str(tmp_path / "scheduler_cursors.json")),
+        patch.object(actions_main.settings, "actions_journaling_enabled", True),
+        patch("app.main.handle_world_pulse_run_result_journal", side_effect=intercept),
+    ):
+        async with actions_main.lifespan(actions_main.app):
+            await actions_main.app.state.bus_handler(_envelope(run_id="wp-real-1"))
+            real_dispatch = captured["dispatch_journal"]
+            # lifespan wires its own restart-durable store next to scheduler_cursors.json
+            assert captured["retry_store"].path == tmp_path / "pending_journals.json"
+            actions_main._actions_rpc_bus = _TimeoutBus()
+
+            await handle_world_pulse_run_result_journal(
+                _envelope(run_id="wp-real-1"),
+                settings=cfg,
+                dispatch_journal=real_dispatch,
+                audit=AsyncMock(),
+                retry_store=store,
+            )
+            entry = store.get("wp-real-1")
+            assert entry is not None and entry.attempts == 1
+            assert "RPC timeout" in entry.last_error
+
+            with patch.object(actions_main.settings, "actions_journaling_enabled", False):
+                await handle_world_pulse_run_result_journal(
+                    _envelope(run_id="wp-real-2"),
+                    settings=cfg,
+                    dispatch_journal=real_dispatch,
+                    audit=AsyncMock(),
+                    retry_store=store,
+                )
+            assert store.get("wp-real-2") is None

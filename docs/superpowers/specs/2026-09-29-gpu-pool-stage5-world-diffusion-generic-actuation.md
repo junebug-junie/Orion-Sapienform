@@ -382,6 +382,14 @@ These override the recommendations above.
 3. **Snapshot before the drop:** a gzipped `pg_dump` of the four dead tables to `/tmp/gpu-pool-stage5-drop/`, then the drop. Only on Juniper's go at that step (5.6).
 4. **Experiment seat: deferred.** Not built in stage 5.
 
+## Corrections from building 5.1 (PR #2408)
+
+1. **Deploying any `launch` change means rebuilding circe's controller, not just pulling.** The controller reads the YAML from the host checkout but parses it with code baked into its image. A pull without a rebuild makes every action refuse with `config_unloadable:*`.
+2. **`serialize_with` needs an explicit reservation.** A lease blocked only by the pair reserves the partner role, so younger work can't take it and starve the older lease. Implemented as scheduler rule Z1 plus a report-only `Serialized` decision (`queued`, `reason=serialized:<role>`).
+3. **The `diffusion` launch_digest changes too**, not only agent-gpu2's.
+4. **The new `ATLAS_` keys need `sync_local_env_from_example.py orion-llamacpp-host --all-keys`**, because the default sync skips that prefix.
+5. **The experiment `not_actuatable` marker has no consumer before 5.7.** 5.1 ships only the validator exemption. Its operator lease still drains everything it evicts; that is unreachable while the pool is in observe mode, and gets fixed in 5.7.
+
 ## Proposed schema / API changes
 
 - `orion/gpu_pool/config.py`:

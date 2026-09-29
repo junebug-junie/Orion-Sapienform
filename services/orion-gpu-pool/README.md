@@ -67,6 +67,30 @@ paths until stages 3-5. Swap decisions are published as `swap_requested` events 
 returns, but re-dispatching a *request* on behalf of a caller that has gone away arrives with the
 gateway cutover (stage 3).
 
+## Stage 5.1: config + contracts
+
+Spec: `docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md`.
+
+- **`serialize_with`** (role key): nothing is placed on a role while a lease is active on a role it
+  serializes with, in either direction. `world: serialize_with: [diffusion]` keeps the old
+  `/capacity` permit's world/diffusion mutex on gpu2. No recall or preemption across the pair; the
+  waiting lease keeps its place in queue order (it reserves the blocking partner, so younger work
+  cannot keep taking it) and its deadline, and the pool emits one `queued` event with
+  `reason=serialized:<role>`, `detail.serialized=true` (edge-triggered per lease). Removing the
+  YAML line removes the rule. Nothing takes world leases until 5.4, so this is dormant.
+- **Class `world`** is `on_unavailable: wait` (was backlog): a world prediction replayed hours later
+  is useless.
+- **`launch.cuda_env` now names the compose interpolation variable** the actuator sets from the
+  card's `index`. `scripts/check_gpu_pool_config.py` refuses any launch service whose
+  `CUDA_VISIBLE_DEVICES[_OVERRIDE]`/`NVIDIA_VISIBLE_DEVICES` is not exactly `${cuda_env}` or
+  `${cuda_env:-<index>}`, and any literal `device_ids` pin.
+- **`launch.profile_var` / `launch.profiles`**: the variable the actuator sets to the chosen
+  `llm_profiles.yaml` profile (the service's `LLM_PROFILE_NAME` must interpolate it) and the
+  allow-list, first = default. Parsed and gated now; nothing sends a profile until 5.3.
+- **`experiment`** lost its dead bridge verbs; the validator exempts an operator-only seat with no
+  launch and no bridge (deferred; nothing can load it, and operator holds are refused in observe).
+- **Seat limit**: `agent-gpu2 max_hold_sec: 9000` (Juniper 2026-09-29).
+
 ## Durable-run holds (stage 4.3)
 
 Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md`. Built in
@@ -84,7 +108,7 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
 - **Gaps are shared** (Juniper, 2026-09-25): while no call of the run is in flight, a lease of
   **strictly higher** priority may use the slot. Equal/lower priority and other holds may not.
 - **Recall**: a hold borrowing another class's role is recalled as soon as that owner has demand
-  there; a swap seat with `max_hold_sec` (agent-gpu2: 3600 s) drains after being loaded that long.
+  there; a swap seat with `max_hold_sec` (agent-gpu2: 9000 s, ~2.5 h since stage 5.1) drains after being loaded that long.
   A recalled hold gets `hold_clawback_grace_sec` (600 s) to finish its current node, then is
   aborted and re-queued **in its original place, without spending an attempt** (2026-09-29; the
   same path as an urgent pause. Before, each abort spent one of `retry.max_attempts` and the third

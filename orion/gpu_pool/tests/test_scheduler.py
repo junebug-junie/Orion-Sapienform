@@ -153,10 +153,11 @@ def test_queued_past_deadline_is_unavailable_not_silent():
 
 
 def test_backlog_when_no_role_can_serve_then_requeue_when_it_returns():
-    down = live(world=RoleLive("world", False, 2))
-    q = lease("world", lease_id="w", retryable=True)
+    # diffusion: a backlog class (world became `wait` in stage 5 -- a stale prediction is useless)
+    down = live(diffusion=RoleLive("diffusion", False, 1))
+    q = lease("diffusion", lease_id="w", retryable=True)
     assert [b.lease_id for b in of(Backlog, run([q], roles=down))] == ["w"]
-    parked = lease("world", "backlogged", lease_id="w", retryable=True)
+    parked = lease("diffusion", "backlogged", lease_id="w", retryable=True)
     assert of(Requeue, run([parked], roles=down)) == []
     assert [r.lease_id for r in of(Requeue, run([parked]))] == ["w"]
 

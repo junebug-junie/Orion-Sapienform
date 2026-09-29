@@ -46,6 +46,14 @@ Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-de
      swap seat's after_wait_sec when no pause serves them (guards still apply). On a role it
      borrows, an urgent hold's gaps stay open to that role's owners (rule 5)
   urgent_max_concurrent caps active urgent leases; 0 is the rollback: urgent is background
+
+Stage 5 (docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md):
+  Z1 serialize_with: nothing is placed on a role while a lease (request, hold or child) is active on
+     a role it serializes with, in either direction. No recall and no preemption across the pair:
+     the waiting lease keeps its place in queue order (priority, then age) and its own deadline --
+     a lease blocked only by the mutex reserves the partner role, so later leases are not granted
+     there and the partner drains. A lease a free role would otherwise
+     take is reported as Serialized(reason="serialized:<role>"), never silent
 """
 from __future__ import annotations
 
@@ -181,8 +189,18 @@ class SwapBlocked:
     detail: str | None = None
 
 
+@dataclass(frozen=True)
+class Serialized:
+    """A queued lease a role could otherwise take right now, held back by ``serialize_with``
+    (stage 5): ``reason`` is ``serialized:<role>`` naming the role whose active lease blocks it.
+    Reported (edge-triggered by the runtime), never a lease transition: the lease stays queued."""
+    lease_id: str
+    role: str
+    reason: str
+
+
 Decision = Union[Grant, Recall, Abort, Expire, Unavailable, Backlog, Requeue, DeadLetter, SwapLoad, SwapUnload,
-                 SwapBlocked]
+                 SwapBlocked, Serialized]
 
 
 @dataclass
@@ -308,8 +326,17 @@ class _Ctx:
             return False
         return True
 
+    def serialized_by(self, role: str) -> str | None:
+        """The ``serialize_with`` partner (either direction) with an active lease, or None. Reads
+        ``used``/``holds``, which this tick's grants update, so two partners are never both granted
+        in one tick."""
+        for other in self.cfg.serialized_with(role):
+            if self.used.get(other) or self.holds.get(other):
+                return other
+        return None
+
     def placeable(self, lease: LeaseView, role: str) -> bool:
-        return self.usable(role) and self.fits(lease, role)
+        return self.usable(role) and self.fits(lease, role) and self.serialized_by(role) is None
 
 
 def _order(cfg: PoolConfig, leases: Iterable[LeaseView]) -> list[LeaseView]:
@@ -439,6 +466,25 @@ def schedule(
     def capped(lease: LeaseView) -> bool:
         return lease.priority == URGENT and urgent_n[0] >= d.urgent_max_concurrent
 
+    # Z1 queue order: a lease a role would take now but for serialize_with reserves the blocking
+    # partner(s): no LATER lease in queue order is granted there, so a stream of overlapping calls
+    # on one side cannot starve an older waiter on the other. role -> the role that reserved it.
+    serial_reserved: dict[str, str] = {}
+
+    def serial_blocked(lease: LeaseView, role: str) -> bool:
+        """``lease`` could take ``role`` now except for serialize_with (Z1)."""
+        return ctx.serialized_by(role) is not None and ctx.usable(role) and ctx.fits(lease, role) \
+            and ctx.free_for(lease, role) > 0
+
+    def reserve_partners(lease: LeaseView, roles: Iterable[str]) -> None:
+        if capped(lease):
+            return
+        for role in roles:
+            if serial_blocked(lease, role):
+                for partner in cfg.serialized_with(role):
+                    if ctx.used.get(partner) or ctx.holds.get(partner):
+                        serial_reserved.setdefault(partner, role)
+
     def grant(lease: LeaseView, role: str) -> None:
         out.append(Grant(lease.lease_id, role))
         granted.add(lease.lease_id)
@@ -471,10 +517,13 @@ def schedule(
     for lease in order:
         if capped(lease):
             continue
-        for role in cfg.classes[lease.work_class].roles:
-            if cfg.owns(lease.work_class, role) and ctx.placeable(lease, role) and ctx.free_for(lease, role) > 0:
+        own = [r for r in cfg.classes[lease.work_class].roles if cfg.owns(lease.work_class, r)]
+        for role in own:
+            if role not in serial_reserved and ctx.placeable(lease, role) and ctx.free_for(lease, role) > 0:
                 grant(lease, role)
                 break
+        else:
+            reserve_partners(lease, own)
 
     def admitted_urgent() -> list[LeaseView]:
         """The waiting urgent leases the cap still has room for, in queue order. Only these are owed
@@ -486,15 +535,19 @@ def schedule(
     admitted = {q.lease_id for q in admitted_urgent()}
 
     def owners_waiting(role: str) -> list[LeaseView]:
+        # usable+fits, not placeable: an owner held back only by serialize_with (Z1) still waits for
+        # its role, so no borrower may slip in ahead of it.
         return [q for q in order if q.lease_id not in granted
                 and (q.priority != URGENT or q.lease_id in admitted)
-                and cfg.owns(q.work_class, role) and ctx.placeable(q, role)]
+                and cfg.owns(q.work_class, role) and ctx.usable(role) and ctx.fits(q, role)]
 
     for lease in order:
         if lease.lease_id in granted or capped(lease):
             continue
         for role in cfg.classes[lease.work_class].roles:
-            if not ctx.placeable(lease, role) or ctx.free_for(lease, role) <= 0:
+            if role in serial_reserved or not ctx.placeable(lease, role) or ctx.free_for(lease, role) <= 0:
+                if role not in serial_reserved and (cfg.owns(lease.work_class, role) or not owners_waiting(role)):
+                    reserve_partners(lease, [role])
                 continue
             if not cfg.owns(lease.work_class, role) and owners_waiting(role):
                 continue
@@ -504,6 +557,25 @@ def schedule(
                 continue
             grant(lease, role)
             break
+
+    # serialize_with: say why a lease that a free role would otherwise take is still waiting --
+    # blocked by an active partner, or by a role reserved for an older waiter on the other side.
+    # Not for a lease the urgent cap holds back, nor on a borrowed role whose owners come first.
+    for lease in order:
+        if lease.lease_id in granted or capped(lease):
+            continue
+        for role in cfg.classes[lease.work_class].roles:
+            if not cfg.owns(lease.work_class, role) and owners_waiting(role):
+                continue
+            blocker = ctx.serialized_by(role)
+            if blocker is None and role in serial_reserved and ctx.usable(role) and ctx.fits(lease, role) \
+                    and ctx.free_for(lease, role) > 0:
+                blocker = serial_reserved[role]
+            elif blocker is not None and not serial_blocked(lease, role):
+                blocker = None
+            if blocker is not None:
+                out.append(Serialized(lease.lease_id, role, f"serialized:{blocker}"))
+                break
 
     # --- 4. recalls ------------------------------------------------------------------
     recalled: set[str] = set()

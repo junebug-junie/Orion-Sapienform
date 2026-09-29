@@ -56,7 +56,7 @@ from orion.gpu_pool.config import load_pool_config  # noqa: E402
 from orion.gpu_pool.lease_graph import initial_state, transition  # noqa: E402
 from orion.gpu_pool.scheduler import (  # noqa: E402
     Abort, Backlog, CardLive, DeadLetter, Expire, Grant, LeaseView, Recall, Requeue, RoleLive,
-    SwapBlocked, SwapLoad, SwapUnload, Unavailable, schedule,
+    Serialized, SwapBlocked, SwapLoad, SwapUnload, Unavailable, schedule,
 )
 
 CFG = load_pool_config()
@@ -280,6 +280,9 @@ def simulate(seed: int = 7) -> dict:
             if isinstance(d, SwapBlocked):
                 counts[f"swap_blocked:{d.reason}"] += 1
                 continue
+            if isinstance(d, Serialized):
+                counts[d.reason] += 1   # serialized:<role>; a report, not a transition
+                continue
             if isinstance(d, (SwapLoad, SwapUnload)):
                 for c in CFG.roles[d.role].cards:
                     cards[c].swap_state = "loading" if isinstance(d, SwapLoad) else "unloading"
@@ -402,7 +405,7 @@ def urgent_scenario(cfg=CFG) -> dict:
 
         for d in schedule(cfg, LIVE, cards, _views(leases), now,
                           guards={"thermal": None, "visual_baseline": None}):
-            if isinstance(d, (SwapLoad, SwapUnload, SwapBlocked)):
+            if isinstance(d, (SwapLoad, SwapUnload, SwapBlocked, Serialized)):
                 continue                  # the seat is already loaded; no swap is part of this story
             st = leases[d.lease_id]
             ev = {"type": _EV[type(d)], "at": at, "reason": getattr(d, "reason", None)}

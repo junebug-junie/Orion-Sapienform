@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Literal, get_args
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "gpu_pool.yaml"
 PRIORITIES = ("urgent", "interactive", "system", "background")
@@ -99,7 +99,16 @@ class LaunchSpec(BaseModel):
     env_file: str | None = None            # repo-relative; its committed template is <env_file>_example
     service: str                           # compose service name
     compose_profile: str | None = None
-    cuda_env: str = Field(pattern=r"^[A-Z_][A-Z0-9_]*$")   # env var the actuator sets from the cards' index
+    # Stage 5 meaning: the COMPOSE INTERPOLATION variable the actuator sets from the cards' index.
+    # check_launch requires every device entry of the service to be exactly ${cuda_env} or
+    # ${cuda_env:-<index>}, never a literal, so the actuator can always move the role.
+    cuda_env: str = Field(pattern=r"^[A-Z_][A-Z0-9_]*$")
+    # Stage 5: a model choice per role. profile_var is the compose interpolation variable the
+    # actuator sets to the chosen config/llm_profiles.yaml profile (the service's LLM_PROFILE_NAME
+    # must be ${profile_var} or ${profile_var:-...}); profiles is the allow-list, first = default.
+    # No profiles -> the pool sends profile=None and compose's default fills the seat.
+    profile_var: str | None = Field(None, pattern=r"^[A-Z_][A-Z0-9_]*$")
+    profiles: list[str] = Field(default_factory=list)
     drain: DrainSpec | None = None
     ready: str = "/health"
     timeout_sec: float = Field(600, gt=0)
@@ -115,6 +124,16 @@ class LaunchSpec(BaseModel):
     @classmethod
     def _ready_path(cls, value: str) -> str:
         return _http_path(value)
+
+    @model_validator(mode="after")
+    def _profiles_shape(self):
+        if self.profiles and self.profile_var is None:
+            raise ValueError("launch.profiles needs launch.profile_var (the variable the actuator sets)")
+        if len(set(self.profiles)) != len(self.profiles):
+            raise ValueError("launch.profiles has duplicates")
+        if self.profile_var is not None and self.profile_var == self.cuda_env:
+            raise ValueError("launch.profile_var and launch.cuda_env must be different variables")
+        return self
 
 
 class SwapSpec(BaseModel):
@@ -153,6 +172,9 @@ class RoleSpec(BaseModel):
     launch: LaunchSpec | None = None
     operator_only: bool = False
     max_hold_sec: float | None = Field(None, gt=0)
+    # Stage 5: roles that must never compute at the same time as this one (same card). Symmetric:
+    # the scheduler places nothing on R while a lease is active on a role R lists or that lists R.
+    serialize_with: list[str] = Field(default_factory=list)
 
     @field_validator("owner", mode="before")
     @classmethod
@@ -194,6 +216,7 @@ class PoolConfig(BaseModel):
     hold_routes: dict[str, RouteSpec] = Field(default_factory=dict)
     digest: str = ""
     source_text: str = Field("", exclude=True, repr=False)
+    _serial: dict[str, list[str]] = PrivateAttr(default_factory=dict)   # serialize_with, symmetric
 
     @field_validator("routes", "hold_routes", mode="before")
     @classmethod
@@ -223,6 +246,16 @@ class PoolConfig(BaseModel):
                         errors.append(f"role {name}: evicts unknown role {evicted}")
                     elif not set(other.cards) & set(role.cards):
                         errors.append(f"role {name}: evicts {evicted}, which shares no card with it")
+            if len(set(role.serialize_with)) != len(role.serialize_with):
+                errors.append(f"role {name}: serialize_with has duplicates")
+            for other_name in role.serialize_with:
+                other = self.roles.get(other_name)
+                if other_name == name:
+                    errors.append(f"role {name}: serialize_with names itself")
+                elif other is None:
+                    errors.append(f"role {name}: serialize_with unknown role {other_name}")
+                elif not set(other.cards) & set(role.cards):
+                    errors.append(f"role {name}: serialize_with {other_name}, which shares no card with it")
             if role.launch is not None:
                 if role.launch.actuator not in self.actuators:
                     errors.append(f"role {name}: launch.actuator {role.launch.actuator} is not in actuators")
@@ -231,6 +264,11 @@ class PoolConfig(BaseModel):
                         errors.append(f"role {name}: has a launch but card {card} has no index")
         for name, role in self.roles.items():
             if role.swap is None or role.swap.bridged:
+                continue
+            if role.operator_only and role.launch is None:
+                # Operator-only seat nothing can load yet (experiment, stage 5 Decision 3). Stays
+                # refused at runtime: operator holds are refused in observe mode, and 5.7's enforce
+                # rule requires launch blocks (the Hub "not_actuatable" surface ships with that).
                 continue
             unlaunched = [r for r in [name, *self.evicted_by(name)] if r in self.roles and self.roles[r].launch is None]
             if unlaunched:
@@ -267,6 +305,10 @@ class PoolConfig(BaseModel):
             ports[role.port] = name
         if errors:
             raise ValueError("; ".join(errors))
+        # serialize_with read symmetrically, once: the scheduler asks per placement check.
+        self._serial = {r: sorted(set(spec.serialize_with)
+                                  | {o for o, other in self.roles.items() if r in other.serialize_with})
+                        for r, spec in self.roles.items()}
         return self
 
     # --- derived views -------------------------------------------------------------
@@ -296,6 +338,10 @@ class PoolConfig(BaseModel):
         if swap is not None and swap.after_wait_sec is not None:
             return swap.after_wait_sec
         return self.defaults.swap_after_wait_sec
+
+    def serialized_with(self, role: str) -> list[str]:
+        """``serialize_with`` read symmetrically: what ``role`` lists plus every role listing it."""
+        return self._serial.get(role, [])
 
     def resident_roles(self) -> list[str]:
         """Roles loaded when no swap is active: everything without its own swap seat."""
@@ -368,7 +414,33 @@ def check_vram(cfg: PoolConfig, footprint_gb: dict[str, float]) -> list[str]:
     return problems
 
 
-_SUBST_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?-)([^}]*))?\}$")
+_SUBST_HEAD_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(:?-)?")
+# Container variables that pick a GPU. A launch role's service must set each one it uses only
+# through its launch.cuda_env interpolation (stage 5, "Meaning change: cuda_env, plus a gate").
+DEVICE_KEYS = ("CUDA_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES_OVERRIDE", "NVIDIA_VISIBLE_DEVICES")
+
+
+def _parse_subst(value: str) -> tuple[str, str | None, str | None] | None:
+    """``${VAR}``, ``${VAR:-d}`` or ``${VAR-d}`` spanning the WHOLE value -> (VAR, op, d); the
+    default may itself be an interpolation (``${A:-${B}}``, which compose accepts). None otherwise
+    (a literal, or anything mixing text and interpolations)."""
+    match = _SUBST_HEAD_RE.match(value)
+    if match is None:
+        return None
+    depth, i = 1, 2
+    while i < len(value) and depth:
+        if value.startswith("${", i):
+            depth, i = depth + 1, i + 2
+            continue
+        if value[i] == "}":
+            depth -= 1
+        i += 1
+    if depth or i != len(value):
+        return None
+    var, op = match.group(1), match.group(2)
+    if op is None:
+        return (var, None, None) if match.end() == len(value) - 1 else None
+    return var, op, value[match.end():-1]
 
 
 def _env_pairs(environment: Any) -> dict[str, str]:
@@ -401,26 +473,47 @@ def _resolve(value: str, template: dict[str, str]) -> str | None:
     (the operator contract): the env value wins; ``${VAR:-d}`` falls back to d when VAR is unset
     OR empty, ``${VAR-d}`` only when unset. A literal is itself. None when unresolvable."""
     value = value.strip().strip('"').strip("'")
-    match = _SUBST_RE.match(value)
-    if match is None:
+    parsed = _parse_subst(value)
+    if parsed is None:
         return None if "$" in value else value
-    var, op, default = match.groups()
+    var, op, default = parsed
     current = template.get(var)
+    fallback = _resolve(default, template) if default else None
     if op == ":-":
-        return current or default or None
+        return current or fallback
     if op == "-":
-        return current if var in template else (default or None)
+        return current if var in template else fallback
     return current or None
+
+
+def _interpolates(value: str, var: str) -> tuple[bool, str | None]:
+    """Is ``value`` exactly ``${var}`` or ``${var:-<default>}``? -> (ok, default)."""
+    parsed = _parse_subst(value.strip().strip('"').strip("'"))
+    if parsed is None or parsed[0] != var or parsed[1] not in (None, ":-"):
+        return False, None
+    return True, parsed[2]
+
+
+def _known_profiles(root: Path) -> set[str] | None:
+    """The profiles in ``<root>/config/llm_profiles.yaml`` -- the tree being checked, never another."""
+    path = root / "config" / "llm_profiles.yaml"
+    if not path.is_file():
+        return None
+    data = yaml.safe_load(path.read_text()) or {}
+    return set((data.get("profiles") or {}).keys())
 
 
 def check_launch(cfg: PoolConfig, root: str | Path) -> list[str]:
     """Every ``launch`` block must name something real in its compose file (stage 4 spec,
     "Validation additions"): the service exists (under its profile, if one is named), an llm role's
     service announces that role on that port, a service role publishes that host port, the service
-    sets ``cuda_env``, and -- when the compose value resolves from the committed templates -- it
-    points at the cards' ``index``. Static: reads compose + ``.env_example``, never a live ``.env``."""
+    picks its GPU only through ``${cuda_env}`` / ``${cuda_env:-<index>}`` (never a literal), and --
+    when that resolves from the committed templates -- it points at the cards' ``index``. With a
+    ``profile_var``, ``LLM_PROFILE_NAME`` must interpolate it, and every ``profiles`` entry must be a
+    config/llm_profiles.yaml profile. Static: reads compose + ``.env_example``, never a live ``.env``."""
     root = Path(root)
     problems: list[str] = []
+    known_profiles = _known_profiles(root)
     for name, role in cfg.roles.items():
         launch = role.launch
         if launch is None:
@@ -465,12 +558,55 @@ def check_launch(cfg: PoolConfig, root: str | Path) -> list[str]:
                     host_ports.append(_resolve(parts[-2], template))
             if str(role.port) not in host_ports:
                 problems.append(f"{where}: {launch.service} publishes host ports {host_ports}, pool expects {role.port}")
-        if launch.cuda_env not in env:
-            problems.append(f"{where}: {launch.service} does not set {launch.cuda_env}")
-        else:
-            device = _resolve(env[launch.cuda_env], template)
-            want = ",".join(str(cfg.cards[c].index) for c in role.cards if cfg.cards[c].index is not None)
-            if device is not None and want and device != want:
-                problems.append(f"{where}: {launch.service} {launch.cuda_env}={device}, cards {role.cards} "
+        want = ",".join(str(cfg.cards[c].index) for c in role.cards if cfg.cards[c].index is not None)
+        device_keys = [k for k in DEVICE_KEYS if k in env]
+        if not device_keys:
+            problems.append(f"{where}: {launch.service} sets none of {list(DEVICE_KEYS)}, so "
+                            f"{launch.cuda_env} cannot place it")
+        for key in device_keys:
+            ok, default = _interpolates(env[key], launch.cuda_env)
+            if not ok:
+                problems.append(f"{where}: {launch.service} {key}={env[key]} must be ${{{launch.cuda_env}}} or "
+                                f"${{{launch.cuda_env}:-{want}}} (the actuator sets it from the card index; "
+                                f"a literal device cannot move)")
+                continue
+            if default is not None and "$" not in default and want and default != want:
+                problems.append(f"{where}: {launch.service} {key} defaults to {default}, cards {role.cards} "
                                 f"have index {want}")
+            device = _resolve(env[key], template)
+            if device is not None and want and device != want:
+                problems.append(f"{where}: {launch.service} {key}={device} (from templates), cards {role.cards} "
+                                f"have index {want}")
+        pinned = _pinned_device_ids(service, launch.cuda_env)
+        if pinned:
+            problems.append(f"{where}: {launch.service} pins device_ids {pinned}; the GPU must come from "
+                            f"{launch.cuda_env}")
+        if launch.profile_var is not None:
+            ok, _ = _interpolates(env.get("LLM_PROFILE_NAME", ""), launch.profile_var)
+            if not ok:
+                problems.append(f"{where}: {launch.service} LLM_PROFILE_NAME={env.get('LLM_PROFILE_NAME')} must be "
+                                f"${{{launch.profile_var}}} or ${{{launch.profile_var}:-...}}")
+        if launch.profiles and role.kind != "llm":
+            problems.append(f"{where}.profiles: only llm roles load llm_profiles.yaml profiles")
+        if launch.profiles and known_profiles is None:
+            problems.append(f"{where}.profiles: config/llm_profiles.yaml not found to check them against")
+        for profile in launch.profiles if known_profiles is not None else []:
+            if profile not in known_profiles:
+                problems.append(f"{where}.profiles: {profile} is not a profile in config/llm_profiles.yaml")
     return problems
+
+
+def _pinned_device_ids(service: dict[str, Any], cuda_env: str) -> list[str]:
+    """``device_ids`` under deploy.resources.reservations.devices (or a ``gpus`` list) that are not
+    ``${cuda_env}``/``${cuda_env:-...}``: a second, compose-level device pin the actuator cannot move."""
+    out: list[str] = []
+    devices = (((service.get("deploy") or {}).get("resources") or {}).get("reservations") or {}).get("devices") or []
+    gpus = service.get("gpus")
+    if isinstance(gpus, list):
+        devices = [*devices, *gpus]
+    for dev in devices:
+        if isinstance(dev, dict):
+            for d in dev.get("device_ids") or []:
+                if not _interpolates(str(d), cuda_env)[0]:
+                    out.append(str(d))
+    return out

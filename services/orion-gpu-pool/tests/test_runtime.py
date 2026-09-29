@@ -268,9 +268,9 @@ def test_gpu0_lend_lets_agent_borrow_and_chat_recalls_it():
 def test_backlog_replays_when_the_role_returns():
     async def go():
         store, saver, clock = MemoryStore(), MemorySaver(), Clock()
-        rt, _ = make(down=("world",), store=store, saver=saver, clock=clock)
+        rt, _ = make(down=("diffusion",), store=store, saver=saver, clock=clock)   # a backlog class
         await boot(rt)
-        r = await rt.acquire(acq_r("world"))
+        r = await rt.acquire(acq_r("diffusion"))
         assert r.status == "backlogged"
         rt2, _ = make(store=store, saver=saver, clock=clock)   # restart, world is back
         await boot(rt2)
@@ -581,3 +581,29 @@ def test_a_slow_lock_holder_is_named_and_counted(caplog):
         assert any("op=acquire" in m and "live_leases" in m for m in slow), slow
         assert rt.lock_stats.drain() == {}                   # drained
     run(go())
+
+
+def test_serialize_with_reports_queued_reason_once_then_grants_after_release():
+    """Stage 5 Z1: world waits while diffusion computes on gpu2 and the pool says why, once."""
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        d = await rt.acquire(acq("diffusion"))
+        assert d.status == "granted"
+        w = await rt.acquire(acq("world"))
+        assert w.status == "queued"
+        await later(rt, clock, 1)
+        await later(rt, clock, 1)
+        why = [e for e in rt.bus.events("queued") if e["reason"] == "serialized:diffusion"]
+        assert len(why) == 1                                   # edge-triggered, not every tick
+        assert why[0]["lease_id"] == w.lease_id and why[0]["role"] == "world"
+        assert why[0]["cards"] == ["gpu2"] and why[0]["detail"] == {"serialized": True}
+        assert (await store_status(rt, w.lease_id)) == "queued"   # a report, not a transition
+        await rt.release(d.lease_id, "ok")
+        await later(rt, clock, 1)
+        assert (await store_status(rt, w.lease_id)) == "granted"
+    run(go())
+
+
+async def store_status(rt, lease_id):
+    return (await rt.store.lease(lease_id))["status"]

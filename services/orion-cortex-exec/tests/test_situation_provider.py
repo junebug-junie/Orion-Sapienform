@@ -401,6 +401,86 @@ async def test_runtime_context_reports_live_model_when_route_is_up(monkeypatch):
     assert brief["runtime"]["model_id"] == "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf"
     assert brief["runtime"]["served_by"] == "circe-worker-1"
     assert "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf" in fragment["compact_text"]
+    # No lease known: /routes is only the route's default under the GPU pool.
+    assert brief["runtime"]["placement"] == "route_default"
+    assert "Default model for route chat: Qwen3.6-35B-A3B-UD-Q5_K_M.gguf" in fragment["compact_text"]
+    assert "You are running on model" not in fragment["compact_text"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_context_spilled_lease_names_granted_role_not_route_default(monkeypatch):
+    """GPU pool spill: the turn's hold was granted agent-gpu2. The brief must state the model the
+    pool discovered on agent-gpu2, never the gateway's /routes default -- and must not even ask
+    /routes (the lease is the fact)."""
+    calls = {"n": 0}
+
+    def _urlopen(url, timeout=None):
+        calls["n"] += 1
+        return _FakeUrlopenResponse({"default_route": "chat", "routes": [
+            {"id": "chat", "status": "up", "model": "Route-Default-35B.gguf", "served_by": "circe-worker-chat"},
+        ]})
+
+    monkeypatch.setattr(situation, "urlopen", _urlopen)
+    ctx = {
+        "session_id": "sid-runtime-spill",
+        "raw_user_text": "hello",
+        "gpu_placement": {"role": "agent-gpu2", "model": "Spilled-Gpu2-27B.gguf", "profile": "gpu2-flex"},
+    }
+    brief, fragment = await build_situation_for_ctx(
+        ctx,
+        _settings(
+            orion_situation_runtime_enabled=True,
+            orion_situation_prompt_max_chars=situation._DEFAULT_PROMPT_MAX_CHARS,
+        ),
+    )
+    assert calls["n"] == 0
+    rt = brief["runtime"]
+    assert (rt["placement"], rt["granted_role"], rt["model_id"], rt["profile_name"]) == (
+        "lease", "agent-gpu2", "Spilled-Gpu2-27B.gguf", "gpu2-flex"
+    )
+    assert rt["source"] == "gpu_pool_lease"
+    text = fragment["compact_text"]
+    assert "You are running on model: Spilled-Gpu2-27B.gguf (GPU pool role agent-gpu2, profile gpu2-flex" in text
+    assert "Route-Default-35B" not in text
+
+
+@pytest.mark.asyncio
+async def test_runtime_context_lease_without_discovered_model_does_not_guess(monkeypatch):
+    monkeypatch.setattr(situation, "urlopen", lambda url, timeout=None: (_ for _ in ()).throw(AssertionError))
+    ctx = {"session_id": "sid-runtime-lease-nomodel", "raw_user_text": "hello",
+           "gpu_placement": {"role": "chat", "model": None, "profile": None}}
+    brief, fragment = await build_situation_for_ctx(
+        ctx,
+        _settings(
+            orion_situation_runtime_enabled=True,
+            orion_situation_prompt_max_chars=situation._DEFAULT_PROMPT_MAX_CHARS,
+        ),
+    )
+    assert brief["runtime"]["available"] is False
+    assert brief["runtime"]["granted_role"] == "chat"
+    assert "holds the GPU pool's chat role" in fragment["compact_text"]
+    assert "do not infer or guess a name" in fragment["compact_text"]
+
+
+@pytest.mark.asyncio
+async def test_situation_cache_never_replays_another_turns_placement(monkeypatch):
+    """The brief is cached per session; the lease is per turn. Two turns in one session on
+    different roles must each see their own role."""
+    monkeypatch.setattr(situation, "urlopen", lambda url, timeout=None: (_ for _ in ()).throw(AssertionError))
+    cfg = _settings(
+        orion_situation_runtime_enabled=True,
+        orion_situation_prompt_max_chars=situation._DEFAULT_PROMPT_MAX_CHARS,
+    )
+    base = {"session_id": "sid-runtime-cache", "raw_user_text": "hello"}
+    _, first = await build_situation_for_ctx(
+        {**base, "gpu_placement": {"role": "agent", "model": "A.gguf", "profile": "pa"}}, cfg
+    )
+    _, second = await build_situation_for_ctx(
+        {**base, "gpu_placement": {"role": "chat", "model": "C.gguf", "profile": "pc"}}, cfg
+    )
+    assert "GPU pool role agent" in first["compact_text"]
+    assert "GPU pool role chat" in second["compact_text"]
+    assert "A.gguf" not in second["compact_text"]
 
 
 @pytest.mark.asyncio

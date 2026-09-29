@@ -36,7 +36,7 @@ from app.admitted_graph import (
 )
 from app.admitted_reflect_graph import build_admitted_reflect_graph
 from app.admitted_self_sense_graph import build_admitted_self_sense_graph
-from app.graph import failed_turn_meta, finish_detail, recorded_turn_correlation_id, turn_correlation_id
+from app.graph import failed_turn_meta, finish_detail, recorded_turn_correlation_id, turn_correlation_id, urgent_detail
 from app.pool_hold import (
     HELD, URGENT_PREEMPT, WAITING as POOL_WAITING, PoolHolds, UnknownRoute, is_hold_ref, is_pool_trouble,
     ref_dict, refusal_is_terminal,
@@ -188,12 +188,17 @@ class AdmissionRuntime:
         that actually failed."""
         if workflow == REVERIE_VISUAL_WORKFLOW:
             return reverie_visual_terminal_detail(state, status)
+        # Urgent runs must end in a report, so their failed/cancelled facts say so (Hub keys on it).
+        urgent = urgent_detail(state)
         if status == "cancelled":
-            return {}
+            # An operator cancel carries no reason of its own (control() records only the action).
+            return {"error": "cancelled", "urgent": urgent} if urgent is not None else {}
         detail = {"error": state.get("last_error")}
         corr = recorded_turn_correlation_id(state)
         if corr:
             detail["turn_correlation_id"] = corr
+        if urgent is not None:
+            detail["urgent"] = urgent
         return detail
 
     @staticmethod
@@ -978,6 +983,9 @@ class AdmissionRuntime:
             # A cancel that wins the race against this projection still says which dispatch it was.
             actual = await self.store.finish_projection(
                 run_id, status, detail, cancelled_detail=self._terminal_detail_for(wf, "cancelled", state))
+        elif (cancelled := self._terminal_detail_for(wf, "cancelled", state)):
+            # Urgent runs: a cancel winning the race must still name the incident.
+            actual = await self.store.finish_projection(run_id, status, detail, cancelled_detail=cancelled)
         else:
             actual = await self.store.finish_projection(run_id, status, detail)
         if actual is not None and actual != status:

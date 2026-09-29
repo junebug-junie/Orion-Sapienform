@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -76,36 +75,40 @@ async def _fetch_primary_and_mirror_rows(
     calls meant a mirror-table failure (missing table, permission error,
     transient fault) discarded an already-successful primary result too.
 
-    Concurrent via ``asyncio.gather(..., return_exceptions=True)`` rather
-    than two sequential awaits, matching the existing isolate-independent-
-    lookups pattern already used for the same shape in
-    ``worker.py::_compute_entity_relatedness_boost_map`` -- both tables are
-    genuinely independent queries with no data dependency between them, so
-    there's no reason to pay two round-trip latencies instead of one.
+    Sequential, NOT ``asyncio.gather``: both queries share the ONE asyncpg
+    connection the caller opened, and an asyncpg connection runs exactly
+    one operation at a time -- a second ``fetch`` started while the first
+    is in flight raises ``InterfaceError: another operation is in
+    progress``. The earlier gather version (2026-08-19) did exactly that:
+    live 2026-09-29, orion-athena-recall logged 1,075 of those errors in
+    24h, one per call, always on the mirror query -- so every AI Town
+    mirror row was silently dropped from recall. Serializing on the same
+    connection (rather than opening a second connection or borrowing
+    from the cards pool) keeps this at one Postgres connection per call,
+    which matters under the connection ceiling (PR #2010); the "saved"
+    round-trip never existed anyway, because the second query always
+    failed instantly. Regression: tests/test_sql_chat_connection_exclusivity.py.
+
+    Each table keeps its own try/except, so one table's failure still
+    never discards the other table's rows.
 
     Shared by both ``fetch_chat_turn_timestamps`` and
     ``fetch_chat_turns_by_id`` rather than duplicated inline in each --
     review also flagged the original per-function inline scaffold as a
-    two-site hand-edit hazard, which is exactly what produced the bug this
-    helper fixes in the first place.
+    two-site hand-edit hazard, which is exactly what produced the
+    2026-08-19 bug (a mirror failure discarding primary rows) this helper
+    was first written to fix.
     """
-    primary_result, mirror_result = await asyncio.gather(
-        _fetch_rows_from_table(conn, primary_table, select_cols, id_col, ids, extra_where),
-        _fetch_rows_from_table(conn, mirror_table, select_cols, id_col, ids, extra_where),
-        return_exceptions=True,
-    )
-
-    if isinstance(primary_result, BaseException):
-        logger.warning("%s_primary_query_failed", log_prefix, exc_info=primary_result)
-        primary_rows: List[Any] = []
-    else:
-        primary_rows = primary_result
-
-    if isinstance(mirror_result, BaseException):
-        logger.warning("%s_mirror_query_failed", log_prefix, exc_info=mirror_result)
-        mirror_rows: List[Any] = []
-    else:
-        mirror_rows = mirror_result
+    primary_rows: List[Any] = []
+    mirror_rows: List[Any] = []
+    try:
+        primary_rows = await _fetch_rows_from_table(conn, primary_table, select_cols, id_col, ids, extra_where)
+    except Exception:
+        logger.warning("%s_primary_query_failed", log_prefix, exc_info=True)
+    try:
+        mirror_rows = await _fetch_rows_from_table(conn, mirror_table, select_cols, id_col, ids, extra_where)
+    except Exception:
+        logger.warning("%s_mirror_query_failed", log_prefix, exc_info=True)
 
     return primary_rows, mirror_rows
 

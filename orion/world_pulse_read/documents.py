@@ -12,10 +12,12 @@ file has a new sha256 and is a new read.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import posixpath
 import re
+import stat
 from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import quote, unquote, urlsplit
@@ -135,12 +137,14 @@ def parse_document_ref(value: Any) -> tuple[str, str | None]:
         raise DocumentSourceError("invalid_document_path")
     if not path.startswith("/") or any(seg == ".." for seg in path.split("/")):
         raise DocumentSourceError("invalid_document_path")
-    return posixpath.normpath(path), sha
+    # POSIX normpath keeps a leading "//"; Hub stores the single-slash form.
+    return "/" + posixpath.normpath(path).lstrip("/"), sha
 
 
 def normalize_document_ref(value: Any) -> str:
+    """The ref as Hub stores it: symlinks resolved where this host sees the path."""
     path, sha = parse_document_ref(value)
-    return document_ref(path, sha)
+    return document_ref(os.path.realpath(path), sha)
 
 
 def unversioned_ref(value: Any) -> str:
@@ -163,8 +167,11 @@ def _within(path: str, root: str) -> bool:
         return False
 
 
-def read_document(value: Any, policy: DocumentPolicy) -> CapturedDocument:
-    """Read one allowlisted text document. Blocking; call via a thread."""
+def check_document_path(value: Any, policy: DocumentPolicy) -> str:
+    """Policy checks on the path alone; returns it with symlinks resolved.
+
+    Blocking (resolving symlinks touches the filesystem); call via a thread.
+    """
     if not policy.roots:
         raise DocumentSourceError("document_reading_disabled")
     requested, _ = parse_document_ref(value)
@@ -176,19 +183,57 @@ def read_document(value: Any, policy: DocumentPolicy) -> CapturedDocument:
         raise DocumentSourceError("document_path_denied")
     if os.path.splitext(real)[1].lower() not in policy.extensions:
         raise DocumentSourceError("document_type_not_allowed")
+    return real
+
+
+def read_document(value: Any, policy: DocumentPolicy) -> CapturedDocument:
+    """Read one allowlisted text document. Blocking; call via a thread."""
+    real = check_document_path(value, policy)
     if not os.path.exists(real):
         raise DocumentSourceError("document_not_found")
-    # Before open(): opening a FIFO would block the reader indefinitely.
     if not os.path.isfile(real):
         raise DocumentSourceError("document_not_a_file")
+    return capture_text(real, _read_checked_file(real, policy.max_bytes + 1), policy)
+
+
+def _read_checked_file(real: str, limit: int) -> bytes:
+    # The path can be swapped between the checks above and open(): a directory
+    # for a symlink out of the roots, the file for a FIFO. So open without
+    # following a final symlink or blocking, then judge the file actually opened.
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     try:
-        with open(real, "rb") as handle:
-            data = handle.read(policy.max_bytes + 1)
+        fd = os.open(real, flags)
     except FileNotFoundError as exc:
         raise DocumentSourceError("document_not_found") from exc
     except OSError as exc:
+        code = "document_changed_during_read" if exc.errno == errno.ELOOP else "document_unreadable"
+        raise DocumentSourceError(code) from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise DocumentSourceError("document_not_a_file")
+        if _opened_path(fd, real) != real:
+            raise DocumentSourceError("document_changed_during_read")
+        chunks: list[bytes] = []
+        remaining = limit
+        while remaining > 0:
+            chunk = os.read(fd, min(remaining, 65536))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+    except OSError as exc:
         raise DocumentSourceError("document_unreadable") from exc
-    return capture_text(real, data, policy)
+    finally:
+        os.close(fd)
+
+
+def _opened_path(fd: int, fallback: str) -> str:
+    # Linux only; elsewhere the pre-open checks stand alone.
+    try:
+        return os.readlink(f"/proc/self/fd/{fd}")
+    except OSError:
+        return fallback
 
 
 def capture_text(path: str, data: bytes, policy: DocumentPolicy) -> CapturedDocument:

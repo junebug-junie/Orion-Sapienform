@@ -98,6 +98,33 @@ def test_sibling_directory_with_shared_prefix_is_not_inside_root(tmp_path) -> No
         read_document(str(tmp_path / "Orion-other" / "a.md"), _policy(tmp_path / "Orion"))
 
 
+def test_open_judges_the_file_it_opened_not_the_path_it_checked(tmp_path) -> None:
+    # Each case is what the checked path could be swapped to before open().
+    from orion.world_pulse_read.documents import _read_checked_file
+
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    root.mkdir(), outside.mkdir()
+    (outside / "secret.md").write_text("private")
+    os.mkfifo(root / "pipe.md")
+    (root / "final.md").symlink_to(outside / "secret.md")
+    (root / "docs").symlink_to(outside)
+    with pytest.raises(DocumentSourceError, match="document_not_a_file"):
+        _read_checked_file(str(root / "pipe.md"), 100)  # returns; never blocks on the FIFO
+    with pytest.raises(DocumentSourceError, match="document_changed_during_read"):
+        _read_checked_file(str(root / "final.md"), 100)
+    with pytest.raises(DocumentSourceError, match="document_changed_during_read"):
+        _read_checked_file(str(root / "docs" / "secret.md"), 100)
+
+
+def test_lookups_normalize_to_the_stored_form(tmp_path) -> None:
+    (tmp_path / "real").mkdir()
+    (tmp_path / "real" / "spec.md").write_text("text")
+    (tmp_path / "alias").symlink_to(tmp_path / "real")
+    stored = read_document(str(tmp_path / "real" / "spec.md"), _policy(tmp_path)).ref
+    assert normalize_document_ref(str(tmp_path / "alias" / "spec.md")) == unversioned_ref(stored)
+    assert normalize_document_ref("//mnt/x/spec.md") == "file:///mnt/x/spec.md"
+
+
 def test_empty_roots_disable_document_reading(tmp_path) -> None:
     (tmp_path / "a.md").write_text("text")
     with pytest.raises(DocumentSourceError, match="document_reading_disabled"):

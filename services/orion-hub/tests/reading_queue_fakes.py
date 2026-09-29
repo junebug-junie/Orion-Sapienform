@@ -125,6 +125,10 @@ class ReadingQueueFakeMixin:
         return await super().fetchrow(sql, *args)
 
     async def fetchval(self, sql, *args):
+        if "s.first_source = $2" in sql:
+            snap = self.__dict__.get("snapshots", {}).get(args[0])
+            return bool(snap) and (snap["first_source"] == args[1]
+                                   or any(r["url"] == args[1] for r in self.rows.values()))
         if "FROM reading_document_snapshot" in sql:
             snap = self.__dict__.get("snapshots", {}).get(args[0])
             return snap["content"] if snap else None

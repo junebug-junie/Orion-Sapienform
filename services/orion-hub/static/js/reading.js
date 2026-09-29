@@ -111,6 +111,8 @@
     document_not_found: "No file exists at that path (as Hub sees the disk).",
     document_not_a_file: "That path is not a regular file.",
     document_unreadable: "Hub could not open that file.",
+    document_changed_during_read: "That path changed while Hub was reading it, so it was refused.",
+    document_snapshot_missing: "Hub never captured that exact version from that path.",
     document_too_large: "That document is over the size limit, so it was refused rather than read in part.",
     document_not_text: "That file is not UTF-8 text.",
     document_empty: "That document is empty.",

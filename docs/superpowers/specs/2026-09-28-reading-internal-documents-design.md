@@ -48,6 +48,16 @@ channel, or reader is added.
   `.env*` and `id_*` names; key/cert suffixes.
 - Only the allowlisted extensions are read, and only as UTF-8 text with no NUL
   bytes. Non-regular files (FIFOs, devices) are refused before `open`.
+- The path can be swapped between the checks and the open (for example, for a
+  symlink, or for a named pipe that would block forever). The file is opened
+  without following a final symlink and without blocking, then judged by what
+  was actually opened: it must be a regular file, and its real path must be the
+  path that was checked. Otherwise the result is `document_changed_during_read`.
+- A request that already carries `?sha256=` is never re-read. It still passes
+  the same path checks and the on/off switch, and it is accepted only if Hub
+  captured those bytes from that exact path (the snapshot's `first_source`, or
+  an existing seed row with that ref). A known hash cannot vouch for a
+  different file.
 - Refusals return a short policy code only, never file text or a stack trace.
 - Captured text is stored in Hub's Postgres and sent to the same reader lane as
   web reads. Nothing leaves the host beyond what a web read already sends.

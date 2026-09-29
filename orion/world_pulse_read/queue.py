@@ -12,9 +12,9 @@ from orion.world_pulse_read.documents import (
     ENSURE_SNAPSHOT_SQL,
     DocumentPolicy,
     DocumentSourceError,
+    check_document_path,
     document_ref,
     is_document_ref,
-    load_snapshot,
     parse_document_ref,
     read_document,
     store_snapshot,
@@ -26,6 +26,18 @@ from orion.world_pulse_read.retry import FailureOutcome, is_capacity_deferral, i
 from orion.world_pulse_read.seeds import seeds_from_digest_payload
 
 _PRIORITY = {"finding": 0, "reading": 0, "digest_item": 10}
+
+# Seed rows only ever receive a document ref from accept_source, so an existing
+# row with this exact ref is as good as first_source: Hub captured these bytes
+# from this path.
+PINNED_SNAPSHOT_SQL = """
+SELECT EXISTS (
+    SELECT 1 FROM reading_document_snapshot s
+    WHERE s.sha256 = $1
+      AND (s.first_source = $2
+           OR EXISTS (SELECT 1 FROM world_pulse_read_seed r WHERE r.url = $2))
+)
+"""
 _STAGE1_STATUSES = ("pending", "claimed", "done", "failed", "skipped")
 _STAGE2_STATUSES = ("pending", "claimed", "done", "failed", "skipped")
 
@@ -346,20 +358,22 @@ async def accept_source(conn: Any, value: str, *, documents: DocumentPolicy | No
 
     URLs pass the public-address check. A document path is captured here,
     once: the returned ``file://...?sha256=`` names the stored snapshot the
-    reader will see. A source already pinned to a sha256 must name a snapshot
-    that exists; it is never re-read from disk.
+    reader will see. A source already pinned to a sha256 is never re-read from
+    disk (the file may have changed since), but it still passes the path
+    policy and must name bytes Hub itself captured from that same path.
     """
     if not is_document_ref(value):
         return await validate_source_url(value)
     path, sha = parse_document_ref(value)
-    if sha is not None:
-        if await load_snapshot(conn, sha) is None:
-            raise DocumentSourceError("document_snapshot_missing")
-        return document_ref(path, sha)
     policy = documents or DocumentPolicy.from_env()
-    doc = await asyncio.to_thread(read_document, path, policy)
-    await store_snapshot(conn, doc)
-    return doc.ref
+    if sha is None:
+        doc = await asyncio.to_thread(read_document, path, policy)
+        await store_snapshot(conn, doc)
+        return doc.ref
+    ref = document_ref(await asyncio.to_thread(check_document_path, path, policy), sha)
+    if not await conn.fetchval(PINNED_SNAPSHOT_SQL, sha, ref):
+        raise DocumentSourceError("document_snapshot_missing")
+    return ref
 
 
 async def enqueue_seeds(

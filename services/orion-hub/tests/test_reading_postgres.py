@@ -834,6 +834,14 @@ def test_document_capture_and_path_lookup_on_real_postgres(local_pg, tmp_path):
         # A pinned source must name a stored snapshot; it is never read from disk.
         with pytest.raises(DocumentSourceError, match="document_snapshot_missing"):
             await queue.enqueue_reading(conn, request(url=f"file://{doc}?sha256={'e' * 64}"), documents=policy)
+        # A real snapshot hash cannot vouch for a path it was not captured from.
+        other = tmp_path / "other.md"
+        other.write_text("other")
+        with pytest.raises(DocumentSourceError, match="document_snapshot_missing"):
+            await queue.enqueue_reading(conn, request(url=f"file://{other}?sha256={sha}"), documents=policy)
+        # The exact captured ref is accepted again (folded onto the first read).
+        again = await queue.enqueue_reading(conn, request(url=row["url"]), documents=policy)
+        assert again["duplicate_of"] == first["seed_id"]
         await conn.close()
 
     asyncio.run(run())

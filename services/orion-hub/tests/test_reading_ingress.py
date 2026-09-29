@@ -547,3 +547,39 @@ def test_chat_recommends_a_document_path_and_versions_dedup(tmp_path):
         assert len(conn.rows) == before
 
     asyncio.run(run())
+
+
+def test_a_pinned_document_ref_still_needs_policy_and_provenance(tmp_path):
+    from orion.world_pulse_read.documents import DocumentPolicy
+
+    conn = _FakeConn()
+    bus = RpcBus(conn)
+    bus.listener.documents = DocumentPolicy.from_values(roots=str(tmp_path), extensions=None, max_bytes=4096)
+    tools = ReadingTools(bus, ReadingToolBindingV1(invocation_context="unified_chat", parent_run_id="r", parent_trace_id="t"))
+    doc, other = tmp_path / "spec.md", tmp_path / "other.md"
+    doc.write_text("# Spec\n\nThe real design.\n")
+    other.write_text("# Other\n")
+
+    async def run():
+        first = await tools.invoke("recommend_reading", {"url": str(doc), "why_now": "Review"})
+        pinned = conn.rows[first["result"]["seed_id"]]["url"]
+        sha = pinned.rsplit("=", 1)[1]
+        # The exact ref Hub captured is accepted again without touching the file.
+        doc.write_text("# Spec\n\nEdited after capture.\n")
+        again = await tools.invoke("recommend_reading", {"url": pinned, "why_now": "Again"})
+        assert again["result"]["duplicate_of"] == first["result"]["seed_id"]
+        before = len(conn.rows)
+        # Someone else's hash cannot vouch for a different path.
+        for forged, code in [
+            (f"file:///etc/shadow?sha256={sha}", "document_outside_allowed_roots"),
+            (f"file://{other}?sha256={sha}", "document_snapshot_missing"),
+        ]:
+            with pytest.raises(RuntimeError, match=code):
+                await tools.invoke("recommend_reading", {"url": forged, "why_now": "Forged"})
+        # The kill switch covers pinned refs too.
+        bus.listener.documents = DocumentPolicy.from_values(roots="", extensions=None, max_bytes=4096)
+        with pytest.raises(RuntimeError, match="document_reading_disabled"):
+            await tools.invoke("recommend_reading", {"url": pinned, "why_now": "Disabled"})
+        assert len(conn.rows) == before
+
+    asyncio.run(run())

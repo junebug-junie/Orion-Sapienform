@@ -101,6 +101,6 @@ docker logs --since 10m orion-athena-recall 2>&1 | grep -c mirror_query_failed  
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/2398
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

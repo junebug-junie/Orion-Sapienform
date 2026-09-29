@@ -672,3 +672,16 @@ def test_live_config_refuses_a_profile_outside_its_allow_list(world, monkeypatch
     sink = world.handle(world.payload("agent-gpu2", ["gpu2"], profile="qwen3-8b-q4km-v100-16gb-balanced"))
     assert statuses(sink) == [("refused", None)] and sink[0].reason == "profile_not_allowed"
     assert world.docker.calls == [] and fence.read_state()["generations"] == {}
+
+
+def test_generic_action_resets_the_stale_bridge_state_thought_reads(world, monkeypatch):
+    """/v1/gpu-slots/circe-gpu2/status serves gpu2._state to orion-thought's pre-image check, which
+    defers every image on state=failed without restored=True. A generic action must not leave a
+    bridge-era `failed` there."""
+    _no_bridge(monkeypatch)
+    monkeypatch.setattr(gpu, "_state", {"state": "failed", "error": "burst_upstream_not_idle"})
+    world.write(real_config())
+    world.start(running=["atlas-agent-burst"])
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], action="unload", reason="idle"))
+    assert sink[-1].status == "succeeded"
+    assert gpu._state == {"state": "neither", "error": None}

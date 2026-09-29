@@ -293,15 +293,20 @@ def test_actuation_deadline_and_stuck_ceiling_cover_the_controllers_worst_case()
     first deadline is the sum of the launch timeouts the action touches, and it faults a card as
     stuck only after MAX_ACTION_TIMEOUTS x that. A failed load's realistic worst case on the
     controller -- two `docker ps` reads, diffusion's drain, the seat's ready wait, diffusion's
-    restore ready wait, plus a minute of quick docker calls -- must fit inside that ceiling."""
+    restore ready wait, plus four docker stop/up calls of up to 15 s -- must fit inside that
+    ceiling. Four docker calls each hanging near GPU_LANE_COMMAND_TIMEOUT_SEC do NOT fit: that is a
+    wedged actuator, which the ceiling exists to fault (runtime._action_timeout docstring)."""
     rt, _ = make()
     budget = rt._action_timeout(SEAT)
     seat, diffusion = CFG.roles[SEAT].launch, CFG.roles["diffusion"].launch
     assert budget == seat.timeout_sec + diffusion.timeout_sec == 1500
-    worst = (2 * CTL.launch_exec.READ_TIMEOUT_SEC + CTL.settings.Settings().GPU2_DRAIN_TIMEOUT_SEC
-             + seat.timeout_sec + diffusion.timeout_sec + 60)
-    assert worst > budget                      # past the first deadline: the pool polls `status`
-    assert worst < MAX_ACTION_TIMEOUTS * budget    # ... and stays inside the stuck ceiling
+    fields = CTL.settings.Settings.model_fields     # the shipped defaults, not whatever .env says
+    drain, command = fields["GPU2_DRAIN_TIMEOUT_SEC"].default, fields["GPU_LANE_COMMAND_TIMEOUT_SEC"].default
+    reads = 2 * CTL.launch_exec.READ_TIMEOUT_SEC
+    realistic = reads + drain + seat.timeout_sec + diffusion.timeout_sec + 4 * 15
+    wedged = reads + drain + seat.timeout_sec + diffusion.timeout_sec + 4 * command
+    assert budget < realistic < MAX_ACTION_TIMEOUTS * budget   # pool polls `status`, then stays patient
+    assert wedged > MAX_ACTION_TIMEOUTS * budget                # a hung docker call faults the card
 
 
 # --- scripts/gpu_pool_actuator_probe.py against the real controller ---------------------------------

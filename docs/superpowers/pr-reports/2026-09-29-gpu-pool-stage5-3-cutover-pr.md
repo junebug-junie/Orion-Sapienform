@@ -91,7 +91,7 @@ YAML-driven path any future seat will (spec worked examples A/B). Behaviour on a
 python scripts/check_gpu_pool_config.py                              ok (digest 08b098deef36cb6a)
 pytest orion/gpu_pool/tests -q                                       292 passed
 (cd services/orion-gpu-pool && pytest tests -q)                      98 passed, 7 skipped (Postgres store tests: no DSN locally; CI runs them)
-pytest services/orion-gpu-lane-controller/tests -q                   113 passed
+pytest services/orion-gpu-lane-controller/tests -q                   114 passed
 (cd services/orion-hub && pytest tests/test_gpu_pool_routes.py -q)   10 passed, 1 skipped
 node --test services/orion-hub/static/js/gpu_pool.test.js            15 pass
 pytest services/orion-hub/tests/test_gpu_pool_panel_browser_smoke.py 2 passed (playwright 1.63, scratch venv)
@@ -115,7 +115,34 @@ Not run. Deploy is a runbook step (Juniper's go), not part of this PR.
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+Code review ran in a subagent (orion-repo-agent) on the committed diff; suites re-run after fixes.
+
+- Finding (should-fix): the "fits inside the 3000 s stuck ceiling" claim ignored `GPU_LANE_COMMAND_TIMEOUT_SEC`
+  (900 s per compose call, four on a failed load, ~4100 s if they all hang), and the test used hand-picked constants.
+  - Fix: `_action_timeout` docstring now states both bounds; a hung docker call faulting the card is the ceiling's
+    purpose (pre-existing; the bridge had it with 300 s less room). The test reads the shipped
+    `Settings.model_fields` defaults and pins both: realistic (~1920 s) inside, wedged (~4260 s) outside.
+  - Evidence: `test_actuation_deadline_and_stuck_ceiling_cover_the_controllers_worst_case` passes.
+- Finding (should-fix): runbook and probe script were referenced but not yet committed at review time.
+  - Fix: committed (`0532993f2`).
+  - Evidence: `git ls-files docs/runbooks/2026-09-29-gpu-pool-stage5-3-cutover.md scripts/gpu_pool_actuator_probe.py`.
+- Finding (nit): a bridge-era `gpu2._state = failed` (no `restored`) would keep orion-thought deferring every
+  image until a controller restart, since the generic path never updates it.
+  - Fix: `actuator_bus._run` resets it to `neither` before every generic action; README says so.
+  - Evidence: new `test_generic_action_resets_the_stale_bridge_state_thought_reads`.
+- Finding (nit): the test's `Settings()` read the local `.env`.
+  - Fix: uses `Settings.model_fields[...].default`.
+  - Evidence: same deadline test.
+- Finding (nit): Hub browser smoke assertion never ran (no Playwright locally, no workflow runs that file).
+  - Fix: ran it in a scratch venv with Playwright 1.63.
+  - Evidence: `pytest services/orion-hub/tests/test_gpu_pool_panel_browser_smoke.py` -> 2 passed. (Still no CI
+    job runs it outside `schedule-browser-smoke.yml`'s own path filter.)
+- Finding (nit): `GpuActuateV1.profile` comment said "stage 4 always None".
+  - Fix: updated.
+  - Evidence: `orion/schemas/gpu_pool.py`.
+- Checked by the reviewer, no issue: model/recreate unchanged (46/46 live discovery events announce the same
+  profile; resolved `LLM_PROFILE_NAME` identical); digest agreement pinned by the e2e test; no consumer parses the
+  failure reasons; rollback shape valid; no module collision; fake/real clock not flaky (3/3 repeats).
 
 ## Restart required
 
@@ -137,10 +164,13 @@ scripts/safe_docker_build.sh orion-gpu-pool up -d --build gpu-pool
   - Mitigation: runbook step 1 first; the probe script reports MISMATCH/OK before and after each step; refusals are safe (card untouched, 600 s cooldown).
 - Severity: low
   - Concern: orion-thought's pre-image check (`ORION_VISUAL_ELASTIC_STATUS_ENABLED=true` live — the spec says it is off) reads the controller slot route, whose `state` no longer moves.
-  - Mitigation: it defers on `active != "diffusion"`, and `active` is read from `docker compose ps`; after the controller restart `state` is `neither`, which triggers none of its defer conditions. The draining window it no longer sees is covered by the image run's pool hold (a load cannot evict diffusion while its hold is granted: scheduler `residents_idle`). Deleted in 5.4.
+  - Mitigation: it defers on `active != "diffusion"`, and `active` is read from `docker compose ps`; `state` is reset to `neither` by the controller restart and by every generic action, which triggers none of its defer conditions. The draining window it no longer sees is covered by the image run's pool hold (a load cannot evict diffusion while its hold is granted: scheduler `residents_idle`). Deleted in 5.4.
 - Severity: low
   - Concern: a busy-27B unload still faults the card briefly (as with the bridge) before discovery clears it.
   - Mitigation: unchanged behaviour, only the reason text differs; covered by the e2e test.
+- Severity: low
+  - Concern: a failed load whose four docker calls each hang near their 900 s command timeout exceeds the 3000 s stuck ceiling; the pool faults the card and ignores the late result (pre-existing; 300 s tighter than on the bridge).
+  - Mitigation: by design (a wedged actuator must not hold the card); operator `clear_fault` reconciles via `status`.
 - Severity: low
   - Concern: acceptance check 3 (failed load, live) is not forced; UNVERIFIED live until a natural failure.
   - Mitigation: e2e test covers the rollback path through the real controller code.

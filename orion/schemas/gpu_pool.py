@@ -308,7 +308,7 @@ class GpuActuateV1(BaseModel):
     role: str = Field(min_length=1, max_length=64)
     action: ActuateAction
     cards: list[str] = Field(min_length=1)
-    profile: str | None = None          # llm_profiles.yaml profile; stage 4 always None (compose default)
+    profile: str | None = None          # llm_profiles.yaml profile: launch.profiles[0] on loads since 5.3; None = compose default
     launch_digest: str = Field(min_length=1, max_length=128)
     deadline_at: datetime
     reason: str = Field(min_length=1, max_length=256)    # demand | idle | max_hold | operator | reconcile ...

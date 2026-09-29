@@ -186,8 +186,8 @@ option on a card is YAML + compose only.
   until 5.6 as the rollback: put `load: gpu2/agent, unload: gpu2/restore` back and drop
   `launch.profiles` (runbook `docs/runbooks/2026-09-29-gpu-pool-stage5-3-cutover.md`).
 - **`GET /v1/gpu-slots/circe-gpu2/status` no longer shows pool-driven swap progress** after 5.3:
-  its `state` is the bridge's in-memory state (`neither` after a restart, never updated by
-  `launch_exec`). Progress is on the bus (`orion:gpu_pool:actuate:result`) and in the pool's card
+  its `state` is the bridge's in-memory state, reset to `neither` by a controller restart and by
+  every generic action (so a stale bridge `failed` cannot keep deferring images). Progress is on the bus (`orion:gpu_pool:actuate:result`) and in the pool's card
   `actuation` (Hub GPU pool panel). Its `active` field is still read live from `docker compose ps`,
   and that is what its one other reader needs: orion-thought's pre-generate check
   (`ORION_VISUAL_ELASTIC_STATUS_ENABLED=true` in the live athena container, 2026-09-29) defers an

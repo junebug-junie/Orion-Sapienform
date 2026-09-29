@@ -36,7 +36,7 @@ None. `grammar_queue_snapshot()` shards gain a `high_water` field (additive).
 
 ```text
 tests/test_grammar_fallback_drain.py: 9 passed
-services/orion-sql-writer/tests full suite: same 13 failures as unmodified main, 0 new
+services/orion-sql-writer/tests full suite: 12 failures, all also failing on unmodified main (main: 13); 0 new
 check_env_template_parity / check_env_key_single_source / check_compose_no_relative_mounts: PASS
 ```
 
@@ -72,7 +72,7 @@ Then confirm: `docker logs orion-athena-sql-writer | grep grammar_drain` and
 
 - Medium: queued events are in memory only; a restart mid-burst loses up to the queue depth (was previously durable via fallback on overflow). Mitigation: 2048 not 4096; drain covers overflow.
 - Low: the governor still emits ~900 events per run; this hides the symptom, not the emission. Follow-up: look at the producer.
-- Low: pre-existing 13 sql-writer test failures on main are unrelated.
+- Low: pre-existing sql-writer test failures on main are unrelated.
 
 ## PR link
 

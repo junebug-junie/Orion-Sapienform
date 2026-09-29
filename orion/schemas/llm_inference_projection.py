@@ -97,12 +97,33 @@ class LlmInferenceNodeStateV1(BaseModel):
     # outcome class -> count, e.g. {"served": 9, "upstream_timeout": 1}
     outcome_classes: dict[str, int] = Field(default_factory=dict)
 
-    # upstream_failed / (served + upstream_failed). None when nothing was sent
-    # upstream this window: "not measured", never a fake calm 0.0.
+    # Rolling failure share, NOT this window alone (2026-09-29): over the last
+    # FAILURE_WINDOW_SEC of this node's windows, upstream failures / max(attempts,
+    # FAILURE_MIN_DENOMINATOR), 0.0 until FAILURE_MIN_COUNT failures -- the RPC
+    # delivery bridge's rule (orion/substrate/rpc_delivery.py::hop_pressure). The
+    # worse of the node-pooled reading and the worst single worker's. None when
+    # nothing was sent upstream in the rolling window: "not measured", never a
+    # fake calm 0.0. See orion/substrate/llm_inference_loop/failure_window.py.
     inference_failure_pressure: float | None = Field(default=None, ge=0.0, le=1.0)
 
     evidence_event_ids: list[str] = Field(default_factory=list)
     observed_at: datetime
+
+
+class LlmInferenceWindowCountV1(BaseModel):
+    """One gateway window's upstream counts for one serving node, kept on the
+    projection so the failure reading can span several windows (2026-09-29)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    window_id: str
+    window_end: datetime
+    served: int = 0
+    upstream_failed: int = 0
+    # gateway worker label -> calls sent upstream (served + upstream failures) /
+    # upstream failures. Empty when the gateway predates per-worker counts.
+    worker_attempted: dict[str, int] = Field(default_factory=dict)
+    worker_failed: dict[str, int] = Field(default_factory=dict)
 
 
 class LlmInferenceProjectionV1(BaseModel):
@@ -116,3 +137,6 @@ class LlmInferenceProjectionV1(BaseModel):
     # target, or a served_by label outside the known-node convention), last window.
     last_unattributed_calls: int = 0
     last_window_id: str | None = None
+    # target_id -> this node's recent windows, oldest first, pruned to the rolling
+    # failure window (2026-09-29). Only the substrate runtime reads this row.
+    recent_windows: dict[str, list[LlmInferenceWindowCountV1]] = Field(default_factory=dict)

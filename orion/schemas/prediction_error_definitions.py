@@ -30,10 +30,12 @@ UNSTAMPED_DEFINITION_VERSION = 1
 #
 # chat_session v2 (2026-09-25): ``topic_coherence`` removed from the chat
 #   pressure hints -- it was ``1 - repair_pressure`` and double-weighted repair.
+# chat_session v3 (2026-09-29): the turn-change mean averages over only the
+#   turns a batch touched, not every turn ever stored (same fix as route v2).
 # route_arbitration v2 (2026-09-25): the decision-mismatch rate averages over
 #   only the runs a batch actually touched, not every run in the projection.
 PREDICTION_ERROR_DEFINITION_VERSIONS: dict[str, int] = {
-    "chat_session": 2,
+    "chat_session": 3,
     "route_arbitration": 2,
 }
 

@@ -296,10 +296,19 @@ raises inside dispatch is counted as `gateway_exception` (unattributed). Known l
 - the publisher has no shutdown hook: the partial window at SIGTERM is lost, and a
   publish failure mid-window drops the rest of that window (logged).
 
+Each node atom also carries per-worker counts (2026-09-29):
+`worker_attempted=<label>:<n>|...` (served + backend failures) and
+`worker_failed=<label>:<n>|...`, bounded to 8 labels (the rest count as `other`).
+Older reducers ignore the extra keys.
+
 Downstream: substrate-runtime's `llm_inference` reducer
 (`ENABLE_LLM_INFERENCE_REDUCER`) turns each window into node
-`inference_failure_pressure` = backend failures / (served + backend failures), which
-the field digester (`ENABLE_LLM_INFERENCE_FIELD_DIGESTION`) carries to
+`inference_failure_pressure`: over the node's last 600 s of windows, backend
+failures / max(served + backend failures, 10), and 0.0 until 2 failures are in that
+span -- the worse of the node-pooled share and the worst single worker's
+(`orion/substrate/llm_inference_loop/failure_window.py`, the RPC delivery bridge's
+rule). Before 2026-09-29 it was one window's unfloored share, so one timeout on a
+one-call minute read 1.0. The field digester (`ENABLE_LLM_INFERENCE_FIELD_DIGESTION`) carries to
 `capability:llm_inference` `reliability_pressure`. Refusals and `upstream_empty` are
 recorded in the projection for inspection and never reach the field. Replay what the
 channel would read from existing logs with

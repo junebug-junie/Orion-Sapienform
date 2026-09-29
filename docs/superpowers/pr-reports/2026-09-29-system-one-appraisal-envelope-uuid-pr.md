@@ -127,6 +127,6 @@ docker logs --since 10m orion-athena-substrate-runtime 2>&1 | grep -c substrate_
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2406
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

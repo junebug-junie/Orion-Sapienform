@@ -43,6 +43,10 @@ Exit codes
 0  fine
 1  alarm: saturated, or below --min-free-pct (only when --gate is passed)
 2  cannot check: no psycopg2, or a connection error unrelated to saturation
+4  --notify could not escalate: debounce state unusable, notify client missing,
+   or orion-notify did not accept the card. Wins over 1: an alarm nobody was
+   told about is the worse failure. On an unusable state the card is still sent,
+   undeduped, every tick.
 
 Same exit-code convention as scripts/check_sql_migrations_applied.py, so an infra
 failure can never be mistaken for a pass.
@@ -51,6 +55,7 @@ failure can never be mistaken for a pass.
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import json
 import os
@@ -92,6 +97,7 @@ if _REPO_ROOT not in sys.path:
 EXIT_OK = 0
 EXIT_ALARM = 1
 EXIT_CANNOT_CHECK = 2
+EXIT_ESCALATION_FAILED = 4
 
 # Postgres reports both forms of connection refusal with this SQLSTATE. Matching the
 # code rather than English text keeps this working under a non-English server locale.
@@ -265,10 +271,12 @@ class _StateLock:
         self._fh = open(self._path, "w")
         try:
             fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        except OSError as exc:
             self._fh.close()
             self._fh = None
-            return False
+            if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+                return False
+            raise  # not contention: surfaces as unusable state, never a quiet skip
         return True
 
     def __exit__(self, *exc: object) -> None:
@@ -279,12 +287,18 @@ class _StateLock:
 
 
 def _load_state(state_file: str) -> dict[str, Any]:
+    """Missing, unparseable, or wrong-shaped reads as empty (re-card, rewrite)."""
     try:
         with open(state_file, encoding="utf-8") as fh:
             loaded = json.load(fh)
-        return loaded if isinstance(loaded, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return {}
+    if not isinstance(loaded, dict):
+        return {}
+    rank = loaded.get("episode_rank")
+    if rank is not None and (isinstance(rank, bool) or not isinstance(rank, int)):
+        return {}
+    return loaded
 
 
 def _save_state(state_file: str, state: dict[str, Any]) -> None:
@@ -303,8 +317,10 @@ def _save_state(state_file: str, state: dict[str, Any]) -> None:
 SEVERITY_RANK = {"warning": 1, "critical": 2}
 
 
-def notify_alarm(args, *, reason: str, message: str, severity: str) -> None:
+def notify_alarm(args, *, reason: str, message: str, severity: str) -> bool:
     """Fire at most one Pending Attention card per alarm EPISODE, per severity.
+
+    Returns True when escalation FAILED (main() exits EXIT_ESCALATION_FAILED).
 
     Two rules, both of which have a way to go wrong that is worse than no
     debounce at all:
@@ -323,38 +339,34 @@ def notify_alarm(args, *, reason: str, message: str, severity: str) -> None:
        instead means the escalation warning -> critical still fires once, and the
        flap back down is silent.
 
+    If the debounce state cannot be used (unwritable telemetry dir -- the shape
+    that silenced the substrate ladder watch for ~34h on 2026-09-26), the card
+    goes out anyway with no dedupe: one per tick beats none.
+
     A human acks these cards; nothing here auto-resolves them, so re-firing while
     one is already open would be noise, not signal.
     """
     if not args.notify:
-        return
+        return False
     try:
-        _notify_alarm_locked(args, reason=reason, message=message, severity=severity)
+        return _notify_alarm_locked(args, reason=reason, message=message, severity=severity)
     except Exception as exc:  # noqa: BLE001 - escalation must never mask the alarm
-        # An unwritable telemetry root used to surface as an unhandled traceback,
-        # whose Python exit status 1 is indistinguishable from EXIT_ALARM.
-        print(
-            f"  escalation failed ({exc.__class__.__name__}: {exc}); "
-            "the alarm itself is still reported",
-            file=sys.stderr,
+        # A bug in the dedupe path is treated like unusable state: still card it.
+        err = _state_failure(exc)
+        _send_card(args, reason=reason, message=message, severity=severity, state_error=err)
+        return True
+
+
+def _send_card(args, *, reason: str, message: str, severity: str, state_error: Optional[str] = None) -> bool:
+    """One attention_request. Never raises; True when orion-notify accepted it."""
+    if state_error is not None:
+        message = (
+            f"The headroom watch cannot remember which cards it already sent ({state_error}), "
+            "so this card repeats every tick until that is fixed.\n\n" + message
         )
+    try:
+        from orion.notify.client import NotifyClient
 
-
-def _notify_alarm_locked(args, *, reason: str, message: str, severity: str) -> None:
-    with _StateLock(args.state_file) as acquired:
-        if not acquired:
-            return
-        state = _load_state(args.state_file)
-        rank = SEVERITY_RANK.get(severity, 1)
-        prev_rank = int(state.get("episode_rank") or 0)
-        confirmed = state.get("notified") is True
-        if prev_rank and confirmed and rank <= prev_rank:
-            return
-        try:
-            from orion.notify.client import NotifyClient
-        except ImportError as exc:
-            print(f"  notify unavailable ({exc}); alarm not escalated", file=sys.stderr)
-            return
         client = NotifyClient(
             base_url=args.notify_base_url, api_token=args.notify_api_token, timeout=10
         )
@@ -365,9 +377,48 @@ def _notify_alarm_locked(args, *, reason: str, message: str, severity: str) -> N
             context={
                 "source_service": "check_postgres_connection_headroom",
                 "reason": reason,
+                "dedupe_state_error": state_error,
             },
         )
-        ok = bool(getattr(accepted, "ok", False))
+    except Exception as exc:  # noqa: BLE001 - ImportError included: no client is no card
+        print(f"  ESCALATION FAILED: could not send attention card ({exc.__class__.__name__}: {exc})", file=sys.stderr)
+        return False
+    ok = bool(getattr(accepted, "ok", False))
+    if ok:
+        print("  attention card sent" + (" (UNDEDUPED fallback)" if state_error else ""), file=sys.stderr)
+    else:
+        print(
+            "  ESCALATION FAILED: orion-notify did not accept the attention card "
+            f"({getattr(accepted, 'detail', None)!r}); retrying next tick. No human has been told.",
+            file=sys.stderr,
+        )
+    return ok
+
+
+def _state_failure(exc: BaseException) -> str:
+    detail = f"{exc.__class__.__name__}: {exc}"
+    print(f"  ESCALATION FAILED: dedupe state unusable ({detail})", file=sys.stderr)
+    return detail
+
+
+def _notify_alarm_locked(args, *, reason: str, message: str, severity: str) -> bool:
+    try:
+        lock = _StateLock(args.state_file)
+        acquired = lock.__enter__()
+    except OSError as exc:
+        err = _state_failure(exc)
+        _send_card(args, reason=reason, message=message, severity=severity, state_error=err)
+        return True
+    try:
+        if not acquired:
+            return False
+        state = _load_state(args.state_file)
+        rank = SEVERITY_RANK.get(severity, 1)
+        prev_rank = int(state.get("episode_rank") or 0)
+        confirmed = state.get("notified") is True
+        if prev_rank and confirmed and rank <= prev_rank:
+            return False
+        ok = _send_card(args, reason=reason, message=message, severity=severity)
         state.update(
             {
                 "reason": reason,
@@ -376,25 +427,30 @@ def _notify_alarm_locked(args, *, reason: str, message: str, severity: str) -> N
                 "last_alarm_at": datetime.now(timezone.utc).isoformat(),
             }
         )
-        _save_state(args.state_file, state)
-        print(
-            f"  attention card {'sent' if ok else 'FAILED to send (will retry next tick)'}",
-            file=sys.stderr,
-        )
+        try:
+            _save_state(args.state_file, state)
+        except OSError as exc:
+            _state_failure(exc)  # card already sent (or failed) this tick; no second one
+            return True
+        return not ok
+    finally:
+        lock.__exit__(None, None, None)
 
 
-def clear_alarm(args) -> None:
+def clear_alarm(args) -> bool:
     """Alarm cleared: forget the episode so the next one notifies again.
 
     Silent by design -- an ack'd card has already been seen by a human, and there
-    is nothing for this script to auto-resolve.
+    is nothing for this script to auto-resolve. Returns True when the state could
+    not be used: nothing is alarming, but the next alarm could not be debounced,
+    and a broken escalation path must not exit 0.
     """
     if not args.notify:
-        return
+        return False
     try:
         with _StateLock(args.state_file) as acquired:
             if not acquired:
-                return
+                return False
             state = _load_state(args.state_file)
             if state.get("episode_rank") or state.get("reason") or state.get("notified"):
                 # Keep last_alarm_at: when the previous episode ended is worth
@@ -402,10 +458,9 @@ def clear_alarm(args) -> None:
                 state.update({"reason": None, "episode_rank": 0, "notified": False})
                 _save_state(args.state_file, state)
     except Exception as exc:  # noqa: BLE001 - see notify_alarm
-        print(
-            f"  could not clear escalation state ({exc.__class__.__name__}: {exc})",
-            file=sys.stderr,
-        )
+        _state_failure(exc)
+        return True
+    return False
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -459,7 +514,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 f"({exc.__class__.__name__}: {str(exc).strip()})",
                 file=sys.stderr,
             )
-            notify_alarm(
+            failed = notify_alarm(
                 args,
                 reason="saturated",
                 message=(
@@ -469,7 +524,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 ),
                 severity="critical",
             )
-            return EXIT_ALARM
+            return EXIT_ESCALATION_FAILED if failed else EXIT_ALARM
         print(f"cannot check connection headroom: {exc}", file=sys.stderr)
         return EXIT_CANNOT_CHECK
 
@@ -505,7 +560,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 f"(threshold {args.min_free_pct:.0f}%). {headroom.summary()}",
                 file=sys.stderr,
             )
-        notify_alarm(
+        failed = notify_alarm(
             args,
             reason="headroom_low",
             message=(
@@ -520,10 +575,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             ),
             severity="warning",
         )
+        if failed:
+            return EXIT_ESCALATION_FAILED
         if args.gate:
             return EXIT_ALARM
         return EXIT_OK
-    clear_alarm(args)
+    if clear_alarm(args):
+        return EXIT_ESCALATION_FAILED
     return EXIT_OK
 
 

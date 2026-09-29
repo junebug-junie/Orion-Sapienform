@@ -101,8 +101,18 @@ def test_one_table_failure_does_not_discard_the_other(monkeypatch, failing) -> N
 
     class _Conn(_ExclusiveConn):
         async def fetch(self, query, ids):
+            # Fail INSIDE the busy section (like a server-side error on a
+            # real connection), so the other query must run on the same
+            # connection after an error on it.
+            if self._busy:
+                raise InterfaceError("cannot perform operation: another operation is in progress")
             if f"FROM {bad}\n" in query:
-                raise RuntimeError("relation does not exist")
+                self._busy = True
+                try:
+                    await asyncio.sleep(0.01)
+                    raise RuntimeError("relation does not exist")
+                finally:
+                    self._busy = False
             return await super().fetch(query, ids)
 
     conn = _Conn(

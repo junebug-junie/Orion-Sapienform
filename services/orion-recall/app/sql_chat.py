@@ -95,8 +95,9 @@ async def _fetch_primary_and_mirror_rows(
     Shared by both ``fetch_chat_turn_timestamps`` and
     ``fetch_chat_turns_by_id`` rather than duplicated inline in each --
     review also flagged the original per-function inline scaffold as a
-    two-site hand-edit hazard, which is exactly what produced the bug this
-    helper fixes in the first place.
+    two-site hand-edit hazard, which is exactly what produced the
+    2026-08-19 bug (a mirror failure discarding primary rows) this helper
+    was first written to fix.
     """
     primary_rows: List[Any] = []
     mirror_rows: List[Any] = []

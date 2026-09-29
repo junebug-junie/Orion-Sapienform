@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     DREAM_SEARCH_EMBED_URL: str = Field(default="")
     DREAM_SEARCH_COLLECTION: str = Field(default="orion_dreams")
     DREAM_SEARCH_MIN_SIMILARITY: float = Field(
-        default=0.60, ge=0.0, le=1.0, alias="DREAM_SEARCH_MIN_SIMILARITY"
+        default=0.65, ge=0.0, le=1.0, alias="DREAM_SEARCH_MIN_SIMILARITY"
     )
     DREAM_SEARCH_INDEX_INTERVAL_SEC: float = Field(default=300.0, gt=0.0)
     DREAM_SEARCH_INDEX_BATCH: int = Field(default=10, ge=1, le=50)

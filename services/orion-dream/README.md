@@ -137,8 +137,10 @@ tool family (which turns get it, truth rules, search pattern), see the
     With either empty, recent/one still work, `query=` answers unknown, and
     the index loop does not run.
   - `DREAM_SEARCH_COLLECTION` (default `orion_dreams`).
-  - `DREAM_SEARCH_MIN_SIMILARITY`: the value is owned by `.env_example`
-    and set by the calibration eval above (0.60 today).
+  - `DREAM_SEARCH_MIN_SIMILARITY`: the value is owned by `.env_example`,
+    which also records the last calibration's numbers. The calibration eval
+    above sets it to the midpoint between the weakest related match and the
+    strongest unrelated one.
   - `DREAM_SEARCH_INDEX_INTERVAL_SEC` (default 300 s between passes) and
     `DREAM_SEARCH_INDEX_BATCH` (default 10 docs per pass).
 - **Logs.**

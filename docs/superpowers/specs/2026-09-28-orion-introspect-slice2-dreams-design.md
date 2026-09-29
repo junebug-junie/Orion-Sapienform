@@ -235,7 +235,7 @@ DREAM_INTROSPECT_ENABLED=true
 DREAM_SEARCH_CHROMA_URL=http://${PROJECT}-vector-db:8000
 DREAM_SEARCH_EMBED_URL=http://${PROJECT}-vector-host:8320/embedding
 DREAM_SEARCH_COLLECTION=orion_dreams
-DREAM_SEARCH_MIN_SIMILARITY=<set by calibration; see below>
+DREAM_SEARCH_MIN_SIMILARITY=0.65  # set by calibration; see below
 DREAM_SEARCH_INDEX_INTERVAL_SEC=300
 DREAM_SEARCH_INDEX_BATCH=10
 ```
@@ -256,16 +256,31 @@ return unknown. Local `.env` is synced with
    similarity ranks passages by semantic relevance to a query. Same basis as
    reading search.
 4. **Live sanity.** `services/orion-dream/evals/run_dream_search_calibration.py`
-   runs hand-written questions against the live index. Some have a known
-   target dream id; some have no matching dream (the negatives). It prints
-   the similarity of each target and of the best negative, then picks the
-   floor between them.
+   runs hand-written questions against the live corpus. It builds each doc
+   with the index's own code (`index_rows` + `document_text`, read-only
+   transaction), embeds it through vector-host, and scores cosine locally
+   (no Chroma, no bus). Some questions have a known target dream id; some
+   have no matching dream (the negatives). It prints the similarity of each
+   target and of the best negative, then picks the floor between them.
    - The gap must be non-degenerate: targets above negatives, not all
      scores bunched together.
    - If there is no gap, search ships with the floor set so only strong
      matches pass, and the PR says so.
-   - The corpus is small (19 narratives, 34 offered hypotheses); this is
-     recorded, not hidden.
+   - The corpus is small (19 narratives, 46 offered hypotheses on
+     2026-09-29); this is recorded, not hidden.
+   - **Result, 2026-09-29 (65 docs).** 4 related questions, all best hits
+     on the expected dream: related_min 0.733 (max 0.787). 3 unrelated:
+     unrelated_max 0.574 (min 0.503). Gap 0.159, midpoint 0.654, so the
+     floor is **0.65**. Scores spread 0.50–0.79, not saturated or flat.
+     Re-run at 0.65: exit 0.
+   - **Known weakness.** A side probe with off-topic questions that contain
+     the word "dream" ("did you dream about the ocean?", "a dream about my
+     grandmother") scored 0.66–0.70 against narratives, above the floor,
+     while a loose on-topic "vision" scored 0.67. The dream framing lifts
+     every narrative's score, so a query phrased that way can return a weak
+     narrative match. Topic-only queries (what the tool asks for) separate
+     cleanly; the default question set does not yet include dream-framed
+     negatives.
 5. **Existing mechanism.** Reading search, reused through the shared module.
 6. **Reversibility.** An env knob and a Chroma collection. Nothing is written
    to Postgres. Dropping the collection plus unsetting the URL removes it.

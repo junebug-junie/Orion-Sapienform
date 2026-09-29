@@ -222,6 +222,8 @@ from orion.schemas.durable_run import (
     DurableRunRequestV1,
     DurableRunStateV1,
 )
+from orion.curiosity.urgent_prompt import build_urgent_prompt
+from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
 
 # RPC source name on the pool ``status`` reads Hub makes for a carried hold ref (stage 4.4).
 GPU_LEASE_STATUS_SOURCE = "orion-hub"
@@ -258,6 +260,19 @@ _DAILY_COUNT_KEY_PREFIX = "orion:curiosity:count:"
 # depends on. Redis, not process state, for the same restart reason as above.
 _LAST_RUN_KEY = "orion:curiosity:last_run_id"
 _STATE_TTL_SEC = 172800
+
+# Urgent runs (start_urgent). One open run per incident, held by an NX key the
+# must-deliver reporter releases when the run ends; the incident hash is what
+# the Hub urgent list and the reporter read back.
+URGENT_OPEN_KEY_PREFIX = "orion:curiosity:urgent:open:"
+URGENT_INCIDENTS_KEY = "orion:curiosity:urgent:incidents"
+URGENT_INCIDENTS_MAX = 50
+# Past the overall urgent deadline, so the key outlives the run's own watchdog.
+URGENT_OPEN_KEY_GRACE_SEC = 600
+
+
+def urgent_open_key(incident_id: str) -> str:
+    return f"{URGENT_OPEN_KEY_PREFIX}{incident_id}"
 
 # The self-inquiry line (orion/curiosity/self_inquiry.py) keeps ITS OWN
 # cooldown, daily counter and continuation key, so its budget is separate
@@ -619,6 +634,10 @@ class CuriosityInvestigation:
         energy_stakes_enabled: bool = False,
         energy_stakes_reader: Optional[Callable[[], Awaitable[Optional[Mapping[str, Any]]]]] = None,
         energy_stakes_max_age_sec: float = 1800.0,
+        # --- urgent runs (start_urgent; HUB_CURIOSITY_URGENT_*) --------------
+        urgent_enabled: bool = False,
+        urgent_turn_timeout_sec: float = 900.0,
+        urgent_timeout_sec: float = 1200.0,
     ) -> None:
         # Durable runs: when on, `_investigate` builds the same prompt and
         # hands the run to cortex instead of running the turn here; the
@@ -804,6 +823,14 @@ class CuriosityInvestigation:
         self.energy_stakes_enabled = bool(energy_stakes_enabled)
         self.energy_stakes_reader = energy_stakes_reader
         self.energy_stakes_max_age_sec = float(energy_stakes_max_age_sec)
+        # Urgent runs: a seeded investigation Juniper or the hardware watcher
+        # asks for. `urgent_reporter` is set by main.py; `urgent_listener_task`
+        # is the bus consumer main.py starts (scripts/curiosity_urgent.py).
+        self.urgent_enabled = bool(urgent_enabled)
+        self.urgent_turn_timeout_sec = float(urgent_turn_timeout_sec)
+        self.urgent_timeout_sec = float(urgent_timeout_sec)
+        self.urgent_reporter: Any = None
+        self.urgent_listener_task: Optional[asyncio.Task] = None
 
     @property
     def graph_enabled(self) -> bool:
@@ -855,7 +882,7 @@ class CuriosityInvestigation:
 
     async def stop(self) -> None:
         self._stop.set()
-        for attr in ("_turn_listener_task", "_state_listener_task"):
+        for attr in ("urgent_listener_task", "_turn_listener_task", "_state_listener_task"):
             task = getattr(self, attr, None)
             if task is not None:
                 task.cancel()
@@ -1863,6 +1890,145 @@ class CuriosityInvestigation:
                 line=LINE_INVESTIGATE,
             )
         return None
+
+    # --- urgent runs ------------------------------------------------------------
+    #
+    # A seeded investigation Juniper (Hub button) or the hardware watcher (bus
+    # request) asks for right now. Same durable run and turn as `_investigate`,
+    # but: no `_run_lock`, no gates, no cooldown or daily-cap spend, the urgent
+    # prompt instead of the kickoff one, and GPU admission at `urgent` priority.
+    # Plan: docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md
+
+    async def start_urgent(self, seed: CuriosityUrgentSeedV1) -> dict[str, Any]:
+        incident_id = seed.incident_id
+        if not self.urgent_enabled:
+            return {"ok": False, "reason": "urgent_disabled", "incident_id": incident_id}
+        if not self.enabled:
+            # Without the loop running, nothing serves the runner's turn request.
+            return {"ok": False, "reason": "curiosity_disabled", "incident_id": incident_id}
+        if not self.durable_admission_enabled:
+            # Never run an urgent investigation at background priority.
+            return {"ok": False, "reason": "durable_admission_disabled", "incident_id": incident_id}
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return {"ok": False, "reason": "redis_unavailable", "incident_id": incident_id}
+
+        run_id = uuid4().hex[:12]
+        open_key = urgent_open_key(incident_id)
+        ttl = int(self.urgent_timeout_sec) + URGENT_OPEN_KEY_GRACE_SEC
+        if not await redis.set(open_key, run_id, nx=True, ex=ttl):
+            logger.info("curiosity_urgent_refused incident_id=%s reason=incident_already_open", incident_id)
+            return {"ok": False, "reason": "incident_already_open", "incident_id": incident_id}
+
+        correlation_id = str(uuid5(NAMESPACE_URL, f"{INVESTIGATION_TAG}:{run_id}"))
+        incident: dict[str, Any] = {
+            "incident_id": incident_id,
+            "run_id": run_id,
+            "question": seed.question,
+            "trigger": seed.trigger,
+            "subject": seed.subject,
+            "requested_at": seed.requested_at.isoformat(),
+            "requested_by": seed.requested_by,
+            # Hardware/pool readings only; the reporter attaches them when a run
+            # fails or never gets a GPU, since no run row may exist to read back.
+            "evidence": seed.evidence,
+            "status": "dispatched",
+        }
+        prompt = build_urgent_prompt(
+            seed,
+            run_id=run_id,
+            own_graph=self.graph_own,
+            hub_url=self.hub_url,
+            graph_enabled=self._reader is not None,
+        )
+        self._mind_appraisal_by_run_id[run_id] = seed.question
+        logger.info(
+            "curiosity_urgent_starting incident_id=%s run=%s trigger=%s subject=%s corr=%s",
+            incident_id, run_id, seed.trigger, seed.subject or "-", correlation_id,
+        )
+        failure = ""
+        try:
+            dispatched = await self._dispatch_durable_run(
+                run_id=run_id,
+                correlation_id=correlation_id,
+                prompt=prompt,
+                material=None,
+                priority="urgent",
+                urgent=seed,
+                timeout_sec=self.urgent_turn_timeout_sec,
+            )
+            if not dispatched:
+                failure = "cortex did not accept the durable run"
+        except asyncio.CancelledError:
+            await self._release_urgent_open_key(open_key)
+            raise
+        except Exception as exc:  # noqa: BLE001 -- reported below, never raised to the caller
+            dispatched = False
+            failure = f"{type(exc).__name__}: {exc}"[:300]
+
+        if not dispatched:
+            # Registration may still have landed with the receipt lost; if so the
+            # run's own terminal state is reported too. Released so Juniper can retry.
+            incident["status"] = "dispatch_failed"
+            await self._record_urgent_incident(incident)
+            await self._release_urgent_open_key(open_key)
+            self._mind_appraisal_by_run_id.pop(run_id, None)
+            logger.warning(
+                "curiosity_urgent_dispatch_failed incident_id=%s run=%s reason=%s", incident_id, run_id, failure
+            )
+            if self.urgent_reporter is None:
+                logger.warning("urgent_reporter_missing incident_id=%s", incident_id)
+            else:
+                try:
+                    await self.urgent_reporter.dispatch_failed(incident, failure)
+                except Exception:  # noqa: BLE001
+                    logger.exception("urgent_reporter_dispatch_failed_error incident_id=%s", incident_id)
+            return {"ok": False, "reason": "dispatch_failed", "incident_id": incident_id}
+
+        await self._record_urgent_incident(incident)
+        if self.urgent_reporter is None:
+            logger.warning("urgent_reporter_missing incident_id=%s", incident_id)
+        else:
+            try:
+                self.urgent_reporter.watch(incident)
+            except Exception:  # noqa: BLE001
+                logger.exception("urgent_reporter_watch_error incident_id=%s", incident_id)
+        return {"ok": True, "run_id": run_id, "incident_id": incident_id}
+
+    async def _release_urgent_open_key(self, open_key: str) -> None:
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return
+        try:
+            await redis.delete(open_key)
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_urgent_open_key_release_failed key=%s", open_key, exc_info=True)
+
+    async def _record_urgent_incident(self, incident: dict[str, Any]) -> None:
+        """Upsert the incident into the hash and keep only the newest `URGENT_INCIDENTS_MAX`."""
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return
+        try:
+            await redis.hset(URGENT_INCIDENTS_KEY, incident["incident_id"], json.dumps(incident, default=str))
+            if await redis.hlen(URGENT_INCIDENTS_KEY) <= URGENT_INCIDENTS_MAX:
+                return
+            rows = await redis.hgetall(URGENT_INCIDENTS_KEY)
+            by_age = []
+            for field, raw in rows.items():
+                try:
+                    requested_at = str(json.loads(raw).get("requested_at") or "")
+                except Exception:  # noqa: BLE001 -- an unreadable row is the first to go
+                    requested_at = ""
+                by_age.append((requested_at, field))
+            by_age.sort()
+            stale = [field for _, field in by_age[: len(by_age) - URGENT_INCIDENTS_MAX]]
+            if stale:
+                await redis.hdel(URGENT_INCIDENTS_KEY, *stale)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "curiosity_urgent_incident_record_failed incident_id=%s", incident.get("incident_id"), exc_info=True
+            )
 
     # --- the self-inquiry line ------------------------------------------------
     #
@@ -3289,23 +3455,36 @@ class CuriosityInvestigation:
     # --- durable runs: kickoff through cortex, turn on request, outreach on completion --
 
     def _run_brief(
-        self, *, prompt: str, material: StudyMaterial, line: str = LINE_INVESTIGATE
+        self,
+        *,
+        prompt: str,
+        material: Optional[StudyMaterial],
+        line: str = LINE_INVESTIGATE,
+        urgent: Optional[CuriosityUrgentSeedV1] = None,
+        timeout_sec: Optional[float] = None,
     ) -> CuriosityRunBriefV1:
-        return CuriosityRunBriefV1(
-            prompt=prompt,
-            session_id=self.session_id,
-            fcc_model_label=self._fcc_model_label,
-            timeout_sec=float(self.timeout_sec),
-            graph_configured=self._reader is not None,
-            material=CuriosityMaterialBriefV1(
+        # An urgent run is shown no study material: the brief's counts stay zero.
+        material_brief = (
+            CuriosityMaterialBriefV1(
                 approved_total=int(material.approved_total),
                 approved_by_kind=dict(material.approved_by_kind or {}),
                 crystallization_count=len(material.crystallizations),
                 relation_total=int(material.relation_total),
                 relation_count=len(material.relations),
-            ),
+            )
+            if material is not None
+            else CuriosityMaterialBriefV1()
+        )
+        return CuriosityRunBriefV1(
+            prompt=prompt,
+            session_id=self.session_id,
+            fcc_model_label=self._fcc_model_label,
+            timeout_sec=float(self.timeout_sec if timeout_sec is None else timeout_sec),
+            graph_configured=self._reader is not None,
+            material=material_brief,
             source_tag=SELF_INQUIRY_TAG if line == LINE_SELF_INQUIRY else INVESTIGATION_TAG,
             line=line,
+            urgent=urgent,
         )
 
     async def _dispatch_via_cortex(
@@ -3381,8 +3560,11 @@ class CuriosityInvestigation:
         run_id: str,
         correlation_id: str,
         prompt: str,
-        material: StudyMaterial,
+        material: Optional[StudyMaterial],
         line: str = LINE_INVESTIGATE,
+        priority: str = "background",
+        urgent: Optional[CuriosityUrgentSeedV1] = None,
+        timeout_sec: Optional[float] = None,
     ) -> bool:
         """Hand the run to cortex. True only when cortex replied `accepted`."""
         if self._bus is None:
@@ -3391,11 +3573,14 @@ class CuriosityInvestigation:
             run_id=run_id,
             workflow="curiosity.investigate",
             correlation_id=correlation_id,
-            brief=self._run_brief(prompt=prompt, material=material, line=line),
+            brief=self._run_brief(
+                prompt=prompt, material=material, line=line, urgent=urgent, timeout_sec=timeout_sec
+            ),
             admission=(ResourceRequirementV1(
                 allow_elastic_activation=self.elastic_activation_enabled,
                 preferred_lane=self.llm_route or "agent",
                 resource=f"llm.route.{self.llm_route or 'agent'}",
+                priority=priority,
             ) if self.durable_admission_enabled else None),
         )
         return await self._dispatch_via_cortex(

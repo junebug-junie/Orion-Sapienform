@@ -49,6 +49,7 @@ from scripts.notification_cache import NotificationCache
 from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
 from orion.core.bus.bus_schemas import ServiceRef
 from scripts.curiosity_investigation import CuriosityInvestigation
+from scripts.curiosity_urgent import urgent_request_loop
 from scripts.energy_stakes_gate import read_latest_energy_stakes
 from orion.world_pulse_read.search import ReadingSearchConfig
 from scripts.reading_listener import ReadingListener
@@ -675,8 +676,17 @@ async def startup_event():
                 # soft-ceiling extension and a long turn is killed mid-run --
                 # see curiosity_investigation._generate.
                 step_relay_provider=lambda: harness_step_relay,
+                urgent_enabled=settings.HUB_CURIOSITY_URGENT_ENABLED,
+                urgent_turn_timeout_sec=settings.HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC,
+                urgent_timeout_sec=settings.HUB_CURIOSITY_URGENT_TIMEOUT_SEC,
             )
             await curiosity_investigation.start(bus, harness_rpc_bus=rpc_bus)
+            # Urgent runs: the Hub button and the hardware watcher both publish on
+            # orion:curiosity:urgent:request. Cancelled by curiosity_investigation.stop().
+            if settings.HUB_CURIOSITY_URGENT_ENABLED and curiosity_investigation.enabled:
+                curiosity_investigation.urgent_listener_task = asyncio.create_task(
+                    urgent_request_loop(bus, curiosity_investigation)
+                )
 
             # World-pulse Stage 1 concept-read. Same lifecycle and the same
             # real unified-turn pipeline as curiosity above, isolated Wallet A

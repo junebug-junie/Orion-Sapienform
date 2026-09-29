@@ -998,6 +998,23 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_LEASE_VALIDATION_URL: str = Field(
         default="http://127.0.0.1:8124/leases/validate", alias="HUB_CURIOSITY_LEASE_VALIDATION_URL"
     )
+    # Urgent curiosity runs (docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md):
+    # a seeded investigation from the Hub button or orion:curiosity:urgent:request,
+    # admitted at `urgent` GPU priority, bypassing the curiosity gates. Needs
+    # HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=true or every request is refused.
+    HUB_CURIOSITY_URGENT_ENABLED: bool = Field(default=True, alias="HUB_CURIOSITY_URGENT_ENABLED")
+    # The urgent turn's own limit (the brief's timeout_sec).
+    HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC: float = Field(
+        default=900.0, gt=0.0, alias="HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC"
+    )
+    # No terminal run state by then -> an INCOMPLETE report goes out (the run keeps going).
+    HUB_CURIOSITY_URGENT_TIMEOUT_SEC: float = Field(
+        default=1200.0, gt=0.0, alias="HUB_CURIOSITY_URGENT_TIMEOUT_SEC"
+    )
+    # Run still waiting for a GPU by then -> a "not investigated" report goes out.
+    HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC: float = Field(
+        default=120.0, gt=0.0, alias="HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC"
+    )
     # The self-inquiry LINE of the same loop (orion/curiosity/self_inquiry.py):
     # a standing question -- "what am I, and what am I made of?" -- with its
     # OWN budget, separate from the investigation cap above. Same window,

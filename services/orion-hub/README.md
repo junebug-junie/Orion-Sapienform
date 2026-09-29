@@ -3195,6 +3195,38 @@ assigned lane through their Cortex requests. Ordinary turns keep their existing
 routes; Hub omits an absent lease from the legacy stance bus payload.
 Full ownership and activation: `docs/architecture/durable-resource-admission.md`.
 
+## Urgent curiosity runs
+
+An urgent run is an investigation someone asked for right now, instead of one Orion
+picked. Requests arrive on `orion:curiosity:urgent:request` (`CuriosityUrgentRequestV1`,
+`orion/schemas/curiosity_urgent.py`); the Hub button and the hardware watcher both
+publish there. `scripts/curiosity_urgent.py` validates each one (invalid payloads are
+logged as `urgent_request_invalid` and dropped) and calls
+`CuriosityInvestigation.start_urgent`, which:
+
+- refuses with `urgent_disabled`, `curiosity_disabled`, `durable_admission_disabled`
+  (an urgent run never runs at background priority) or `incident_already_open`
+  (Redis NX key `orion:curiosity:urgent:open:{incident_id}`, TTL
+  `HUB_CURIOSITY_URGENT_TIMEOUT_SEC + 600`);
+- builds the urgent prompt (`orion/curiosity/urgent_prompt.py`) and dispatches the
+  curiosity durable run with the seed on the brief, `timeout_sec =
+  HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC`, and GPU admission `priority: urgent`;
+- skips the run lock, cooldown, daily cap and waking window, and spends none of them;
+- records the incident in the Redis hash `orion:curiosity:urgent:incidents` (newest 50);
+- hands the incident to the urgent reporter (`watch` on success, `dispatch_failed` on
+  failure, which also releases the NX key so the incident can be retried).
+
+The evidence bundle (`scripts/urgent_evidence.py`, `collect_evidence()`) is hardware
+and GPU-pool state only, read with the same readers the Hub panels use: cabinet AC plug
+latest sample, the last hour of `cabinet_temp_c`, each node's biometrics measurements,
+per-GPU cards, and active/queued pool leases. Each section has its own timeout; a failing
+section becomes `{"error": ...}`. The bundle is trimmed (oldest trend points first) to fit
+the seed's 32 000-byte cap.
+
+Env: `HUB_CURIOSITY_URGENT_ENABLED` (default true), `HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC`
+(900), `HUB_CURIOSITY_URGENT_TIMEOUT_SEC` (1200), `HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC` (120).
+Plan: `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md`.
+
 
 ## Optional GPU2 elastic admission
 

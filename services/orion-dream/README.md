@@ -56,6 +56,90 @@ was deleted in the same patch.
 - **No Hunter** in this process: `dream.trigger` is consumed by **cortex-orch** so triggers are not duplicated.
 - `POST /dreams/run` publishes `dream.trigger` on `CHANNEL_DREAM_TRIGGER` for compatibility.
 
+### Introspect responder: `dreams`
+
+**What it does.** Lets Orion read back their own dreams instead of
+reconstructing them. It answers the orion-introspect `dreams` tool. For the whole
+tool family (which turns get it, truth rules, search pattern), see the
+[harness-governor overview](../orion-harness-governor/README.md#orion-introspect-orion-reading-back-their-own-records).
+
+- **What Orion can ask.** Their most recent dreams, one dream in full
+  (`dream_id`, up to 4,000 chars), or dreams by meaning (`query=`). Optional
+  `kind=narrative|hypothesis`, `since`, `limit` ≤ 5.
+- **Two kinds, labeled.**
+  - `dream_narrative` (id `dream:<n>`): the nightly story from `dreams`
+    (written by orion-sql-writer). Text is tldr + narrative; `extra` carries
+    `dream_date` and up to 8 themes. Timestamp is `created_at`, stored without
+    a timezone by a UTC server and returned as UTC.
+  - `dream_hypothesis` (id `dh-…`): a link a sleep cycle proposed, from
+    `dream_hypothesis`. Text is claim + why; `extra` carries `cycle_id` and
+    `expired`. Timestamp is `offered_at`.
+- **Protecting the blind experiment.** Curiosity shows each hypothesis once
+  with its arm (dream vs random-pair control) hidden, and
+  `scripts/dream_hypothesis_scorecard.py` compares adoption per arm.
+  - This responder returns **only hypotheses already offered**, from **both
+    arms**.
+  - It never selects `arm`, `ref_a` or `ref_b` (the offer never shows them,
+    and control refs come from a different pool).
+  - Never-offered hypotheses are never indexed, returned or counted. A test
+    pins every statement (`app/introspect_dreams.py`).
+- **Label.** Every item is `epistemic_status="unsettled"`: something Orion
+  had, not a fact about the world.
+- **Transport and trust.**
+  - Requests arrive on `orion:introspect:dream:request`
+    (`introspect.tool.request.v1`, `IntrospectRequestV1`).
+  - The reply goes to exactly `orion:introspect:result:<correlation_id>`
+    (`introspect.tool.result.v1`, `IntrospectResultV1`). Anything else is
+    ignored.
+  - Every connection is a read-only transaction.
+- **Empty vs unknown.**
+  - No match: `ok=true, items=[]`.
+  - A Postgres error returns `dreams_unavailable; answer unknown`.
+  - An embedder or Chroma failure, an unbuilt index, or search not configured
+    returns `dream_search_unavailable; answer unknown`.
+  - The tool turns either into an "answer unknown" error, never "no dreams".
+- **Search by meaning.**
+  - Every `DREAM_SEARCH_INDEX_INTERVAL_SEC` a hash-aware loop embeds new or
+    changed narratives and offered hypotheses via vector-host `/embedding`.
+    It upserts them through orion-vector-writer into Chroma
+    `DREAM_SEARCH_COLLECTION` (`orion_dreams`), up to
+    `DREAM_SEARCH_INDEX_BATCH` per pass. A dream is searchable within about
+    one interval.
+  - A query embeds only the question, keeps hits ≥
+    `DREAM_SEARCH_MIN_SIMILARITY`, and re-reads each hit from Postgres
+    through the same rules.
+  - Recalibrate the floor, read-only, from the host:
+
+    ```bash
+    POSTGRES_URI=postgresql://postgres:postgres@127.0.0.1:55432/conjourney \
+    DREAM_SEARCH_EMBED_URL=http://127.0.0.1:8320/embedding \
+    /tmp/introspect-venv/bin/python services/orion-dream/evals/run_dream_search_calibration.py
+    ```
+
+  - Shared plumbing: `orion/introspect/semantic_index.py`; dream parts in
+    `app/dream_search.py`.
+- **Env.** `DREAM_INTROSPECT_ENABLED`, `DREAM_SEARCH_CHROMA_URL`,
+  `DREAM_SEARCH_EMBED_URL`, `DREAM_SEARCH_COLLECTION`,
+  `DREAM_SEARCH_MIN_SIMILARITY`, `DREAM_SEARCH_INDEX_INTERVAL_SEC`,
+  `DREAM_SEARCH_INDEX_BATCH`. Empty search URLs keep recent/one working.
+- **Logs.**
+  - `introspect op=dreams corr=<id> mode=recent|one|search items=<n> total=<n>`
+  - `introspect_failed op=dreams corr=<id> mode=... category=dream_query_failure|dream_search_failure`
+  - `dream_search_index indexed=<n> pending=<n>`
+  - `dream_search_index_failed`
+- **Smoke (read-only).**
+
+  ```bash
+  ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --tool dreams --limit 3
+  ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --tool dreams --query "vision"
+  ```
+
+- **Turn off.** Set `DREAM_INTROSPECT_ENABLED=false` in
+  `services/orion-dream/.env` and recreate orion-dream from a worktree
+  (`scripts/safe_docker_build.sh orion-dream up -d --no-build`). The tool
+  then reports "answer unknown". To remove search, unset the two URLs; the
+  `orion_dreams` collection can be dropped; nothing is written to Postgres.
+
 ## Contracts (historical)
 
 ### Channels

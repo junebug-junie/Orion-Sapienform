@@ -239,6 +239,7 @@ correlation ID, so any claim Orion makes from it can be traced back to a stored
 record.
 
 Design: [`2026-09-28-orion-introspect-mcp-design.md`](../../docs/superpowers/specs/2026-09-28-orion-introspect-mcp-design.md).
+Dreams: [`2026-09-28-orion-introspect-slice2-dreams-design.md`](../../docs/superpowers/specs/2026-09-28-orion-introspect-slice2-dreams-design.md).
 Search by meaning: [`2026-09-28-orion-introspect-slice1b-semantic-search.md`](../../docs/superpowers/specs/2026-09-28-orion-introspect-slice1b-semantic-search.md).
 
 ### Tools
@@ -246,7 +247,7 @@ Search by meaning: [`2026-09-28-orion-introspect-slice1b-semantic-search.md`](..
 | Tool | What Orion can ask | Answered by | Request channel | Status |
 |---|---|---|---|---|
 | `reading_results` | What a reading actually taught them: recent finished reads, one read by `url`/`request_id`, or `query=` by meaning | orion-hub ([responder](../orion-hub/README.md#introspect-responder-reading_results)) | `orion:reading:tool:request`, operation `reading_result` | Live (slices 1 + 1b) |
-| `dreams` | Narrative dreams and the sleep-cycle hypotheses they have already been offered, recent / one / by meaning | orion-dream | `orion:introspect:dream:request` | Designed (slice 2) |
+| `dreams` | Narrative dreams and the sleep-cycle hypotheses they have already been offered, recent / one / by meaning | orion-dream ([responder](../orion-dream/README.md#introspect-responder-dreams)) | `orion:introspect:dream:request` | Live (slice 2) |
 | `reveries` | Their spontaneous-thought chains | orion-thought | `orion:introspect:reverie:request` | Planned |
 | `curiosity` | What their curiosity runs set out to do and what came of it | orion-substrate-runtime | `orion:introspect:curiosity:request` | Planned |
 | `memories` | Memory cards by meaning, with sensitivity labels | orion-recall | `orion:introspect:memory:request` | Planned; never listed when an outward-facing tool is attached |
@@ -335,7 +336,11 @@ Same pattern for every domain that supports `query=`:
   means unknown.
 - **Floor.** Set per domain by a calibration eval on real data. Readings:
   `services/orion-hub/evals/run_reading_search_calibration.py`.
-- **Code.** Reading search today: `orion/world_pulse_read/search.py`.
+- **Code.** Shared plumbing: `orion/introspect/semantic_index.py`. Domain
+  parts: `orion/world_pulse_read/search.py` (readings) and
+  `services/orion-dream/app/dream_search.py` (dreams). Floors:
+  `services/orion-hub/evals/run_reading_search_calibration.py` and
+  `services/orion-dream/evals/run_dream_search_calibration.py`.
 
 ### Verify it live
 

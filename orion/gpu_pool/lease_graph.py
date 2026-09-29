@@ -98,8 +98,14 @@ def transition(state: LeaseState, event: dict[str, Any], cfg: PoolConfig) -> dic
         raise InvalidTransition(f"{status} -/-> {kind}")
     # U2: a hold paused for urgent work goes back in line in its original place (created_at kept);
     # that is not a failed attempt. A caller that would not use a re-grant ends like any abort.
-    preempted = kind == "abort" and event.get("reason") == URGENT_PREEMPT \
-        and bool(state["request"].get("retryable"))
+    # The same holds for ANY recall of a retryable hold that ran out its grace (max_hold seat limit,
+    # owner reclaim, unlend, drain): the pool took the seat back, the run did nothing wrong
+    # (stage 4.3: "then it is aborted and re-queued under the same lease id"). Spending an attempt
+    # here dead-lettered a durable run's hold on its third recall (live 2026-09-26..28: every run
+    # longer than gpu2's max_hold_sec). A one-inference request lease still spends one.
+    retryable = bool(state["request"].get("retryable"))
+    preempted = kind == "abort" and retryable \
+        and (event.get("reason") == URGENT_PREEMPT or state["request"].get("kind") == "hold")
     if preempted:
         nxt = "queued"
 

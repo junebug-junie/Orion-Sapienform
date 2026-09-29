@@ -42,16 +42,26 @@ class HoldRecalled(RuntimeError):
 
 
 class HoldLost(RuntimeError):
-    """The pool no longer holds this run's hold at its generation."""
+    """The pool took this run's hold back mid-node: a recall ran out its grace (gpu2's max_hold
+    seat limit, an owner reclaiming its card, an unlend), the heartbeat was lost, or the pool ended
+    the hold. The turn is stopped. NOT a failed attempt (stage 4.3/4.5: "re-queued under the same
+    lease id"; "a lost hold stops the turn, and the run keeps the same lease id and its place in
+    line"): every admitted graph releases with ``keep_requeued=True`` -- the run waits for the SAME
+    hold when the pool kept it in line, and asks afresh when the pool ended it -- then replays the
+    node. A refusal that is a property of the run (deadline, ...) is never raised as HoldLost.
+
+    Live 2026-09-26..28: 19 runs failed on ``HoldLost`` (each recall spent one of three attempts;
+    self-sense failed on the first), all of them the pool taking a seat back, none the run's fault."""
+
+    release_reason = "hold_lost"
 
 
 class HoldPreempted(HoldLost):
     """An urgent run took this run's slot mid-node; the pool re-queued the hold in its original
-    place. The node replays when it is granted again. Not a failed attempt.
+    place. The node replays when it is granted again. Not a failed attempt. The one HoldLost that
+    records ``run.preempted`` (via release's pool read) and is released as ``urgent_preempt``."""
 
-    A HoldLost, so a graph that already keeps a re-queued hold on HoldLost without spending an
-    attempt (reading, reverie.visual, Door-A upkeep) handles it unchanged; graphs that spend an
-    attempt on HoldLost catch this first."""
+    release_reason = URGENT_PREEMPT
 
 
 # ``AdmissionDeps.lease`` outcomes (resource_wait's decision).
@@ -77,18 +87,20 @@ class AdmissionDeps:
     guard: Callable[[dict], Awaitable[dict | None]] | None = None
     # Door-A: keep heartbeating the run's hold after ``finish`` until Hub releases it.
     keep_for_outreach: Callable[[dict], Awaitable[None]] | None = None
-    # One pool read: did an urgent run take this run's hold (queued, urgent_preempt)? For a node whose
-    # failed turn comes back as a result rather than an exception (execute converts exceptions).
-    preempted: Callable[[dict], Awaitable[bool]] | None = None
+    # One pool read: did the pool take this run's hold back (re-queued it: urgent pause, a recall past
+    # its grace, a lost heartbeat)? The release reason to use (``urgent_preempt`` / ``hold_lost``), or
+    # None. For a node whose failed turn comes back as a result rather than an exception.
+    requeued: Callable[[dict], Awaitable[str | None]] | None = None
 
 
-async def replay_if_preempted(admission: AdmissionDeps, state: dict) -> dict | None:
-    """A node's turn came back failed: if the pool says an urgent run took the hold meanwhile, the
-    failure is the preemption's (its calls could not attach to the aborted hold). Keep the re-queued
-    hold and return the release update so the node replays; None when it was a real failure."""
-    if admission.preempted is None or not await admission.preempted(state):
+async def replay_if_requeued(admission: AdmissionDeps, state: dict) -> dict | None:
+    """A node's turn came back failed: if the pool says it took the hold back meanwhile, the failure
+    is the pool's (the turn's calls could not attach to the aborted hold). Keep the re-queued hold
+    and return the release update so the node replays; None when it was a real failure."""
+    reason = None if admission.requeued is None else await admission.requeued(state)
+    if not reason:
         return None
-    return await admission.release(state, URGENT_PREEMPT, keep_requeued=True)
+    return await admission.release(state, reason, keep_requeued=True)
 
 
 def resource_nodes(admission: AdmissionDeps):
@@ -142,11 +154,13 @@ def build_admitted_graph(deps: Deps, admission: AdmissionDeps, checkpointer: Any
             # Released by the runtime before the turn started: straight back to resource_request.
             return {"status": "retrying", "lease": None, "hold": None, "retry_node": None,
                     "retry_at": admission.now().isoformat()}
-        except HoldPreempted:
-            # The pool kept the hold's place in line: wait for it again now, attempt untouched.
-            released = await admission.release(dict(state), URGENT_PREEMPT, keep_requeued=True)
+        except HoldLost as exc:
+            # The pool took the hold back (urgent pause, recall past its grace, lost heartbeat): wait
+            # for the same hold again now (or ask afresh if the pool ended it), attempt untouched.
+            released = await admission.release(dict(state), exc.release_reason, keep_requeued=True)
             return {**released, "status": "retrying", "retry_node": None,
-                    "retry_at": admission.now().isoformat()}
+                    "retry_at": admission.now().isoformat(), "last_error": f"{type(exc).__name__}: {exc}"[:500],
+                    **failed_meta}
         except Exception as exc:
             # GraphBubbleUp/interrupt is a BaseException and is not caught here.
             attempt = int(state.get("attempt") or 0) + 1
@@ -154,8 +168,8 @@ def build_admitted_graph(deps: Deps, admission: AdmissionDeps, checkpointer: Any
             if attempt >= admission.max_attempts:
                 released = await admission.release(dict(state), "attempt_failed")
                 return {**released, "status": "failed", "attempt": attempt, "last_error": error, **failed_meta}
-            # A hold the pool already re-queued (lost heartbeat, recall past its grace) keeps its
-            # lease_id and place; one still granted is handed back for the backoff.
+            # A hold the pool already re-queued meanwhile keeps its lease_id and place; one still
+            # granted is handed back for the backoff.
             released = await admission.release(dict(state), "attempt_failed", keep_requeued=True)
             delay = min(admission.retry_max_seconds, admission.retry_base_seconds * 2 ** (attempt - 1))
             return {**released, "status": "retrying", "attempt": attempt, "last_error": error,

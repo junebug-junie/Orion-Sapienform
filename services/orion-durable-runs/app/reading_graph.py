@@ -2,7 +2,7 @@
 
 from typing import Any, TypedDict
 
-from app.admitted_graph import HoldLost, HoldRecalled, RunControlPending, replay_if_preempted, resource_nodes
+from app.admitted_graph import HoldLost, HoldRecalled, RunControlPending, replay_if_requeued, resource_nodes
 from app.graph import turn_correlation_id
 from orion.schemas.reading_turn import (
     ReadingRunBriefV1,
@@ -70,7 +70,7 @@ def build_reading_graph(run_turn, admission, checkpointer: Any):
             result = await admission.execute(dict(state), operation)
             if result.get("status") == "failed":
                 # A failed turn is a result here, not an exception: an urgent preemption's too.
-                released = await replay_if_preempted(admission, dict(state))
+                released = await replay_if_requeued(admission, dict(state))
                 if released is not None:
                     return {**released, "status": "waiting_resource"}
             return result
@@ -78,9 +78,9 @@ def build_reading_graph(run_turn, admission, checkpointer: Any):
             raise
         except HoldRecalled:
             return {"status": "waiting_resource", "lease": None, "hold": None}
-        except HoldLost:   # HoldPreempted too: the pool keeps its place, no attempt spent
+        except HoldLost as exc:   # HoldPreempted too: the pool keeps its place, no attempt spent
             released = await admission.release(
-                dict(state), "hold_lost", keep_requeued=True
+                dict(state), exc.release_reason, keep_requeued=True
             )
             return {**released, "status": "waiting_resource"}
         except Exception as exc:

@@ -32,7 +32,7 @@ NOW = datetime(2026, 9, 28, tzinfo=timezone.utc)
 HOLDER = "durable-runs:study-001"
 
 
-# --- graph: HoldPreempted replays the node, HoldLost still spends an attempt ------------------------
+# --- graph: HoldPreempted / HoldLost replay the node; a real turn failure spends an attempt --------
 
 class PreemptWorld(World):
     def __init__(self, raise_once: BaseException):
@@ -79,9 +79,24 @@ def test_preempted_turn_retries_now_under_the_same_hold_without_spending_an_atte
     asyncio.run(scenario())
 
 
-def test_a_lost_hold_still_spends_an_attempt_with_backoff():
+def test_a_lost_hold_waits_for_the_same_hold_without_spending_an_attempt():
+    """Live 2026-09-26..28: a recall past its grace (gpu2 max_hold, an owner reclaim) came back as
+    HoldLost and spent one of three attempts; the third recall failed the run. The pool took the seat
+    back -- the run did nothing wrong."""
     async def scenario():
-        world, saver = PreemptWorld(HoldLost("gpu_hold_lost:queued")), InMemorySaver()
+        world, saver = PreemptWorld(HoldLost("gpu_hold_lost:queued:recall_grace_exceeded")), InMemorySaver()
+        world.grant()
+        delta = await _turn_update(world.graph(saver), initial())
+        assert delta["status"] == "retrying" and "attempt" not in delta
+        assert delta["retry_at"] == world.now.isoformat()
+        assert delta["hold"] == {"request_id": "study-001:1", "lease_id": "hold-1"}
+        assert world.release_calls == [("hold_lost", True)]
+    asyncio.run(scenario())
+
+
+def test_a_real_turn_failure_still_spends_an_attempt_with_backoff():
+    async def scenario():
+        world, saver = PreemptWorld(RuntimeError("harness_boom")), InMemorySaver()
         world.grant()
         delta = await _turn_update(world.graph(saver), initial())
         assert delta["status"] == "retrying" and delta["attempt"] == 1
@@ -100,7 +115,7 @@ def _reading_state():
 
 def _reading_graph(world, saver, turn, preempted):
     return build_reading_graph(turn, AdmissionDeps(world.register, world.lease, world.execute, world.release,
-                                                   world.event, preempted=preempted), saver)
+                                                   world.event, requeued=preempted), saver)
 
 
 @pytest.mark.parametrize("preempted", [True, False])
@@ -117,7 +132,7 @@ def test_a_reading_turn_that_failed_because_its_hold_was_preempted_waits_instead
 
         async def was_preempted(state):
             asked.append(state["lease"]["lease_id"])
-            return preempted
+            return URGENT_PREEMPT if preempted else None
 
         result = await _reading_graph(world, InMemorySaver(), turn, was_preempted).ainvoke(_reading_state(), CFG)
         assert asked == ["hold-1"]
@@ -158,7 +173,7 @@ class HeldAdmission:
 
     def deps(self):
         return AdmissionDeps(self.register, self.lease, self.execute, self.release, self.event,
-                             now=lambda: NOW, max_attempts=3, preempted=self.preempted)
+                             now=lambda: NOW, max_attempts=3, requeued=self.preempted)
 
     async def register(self, state):
         return {"status": "waiting_resource", "hold": {"request_id": "r-1:1", "lease_id": "hold-1"}, "hold_seq": 1}
@@ -184,7 +199,7 @@ class HeldAdmission:
         return {"lease": None, "hold": None}
 
     async def preempted(self, state):
-        return self.is_preempted
+        return URGENT_PREEMPT if self.is_preempted else None
 
     async def event(self, *args):
         pass
@@ -356,6 +371,7 @@ def _held_state(workflow="self_study.reflect"):
 
 
 def test_beat_on_a_hold_requeued_for_urgent_work_raises_preempted_and_a_plain_requeue_is_lost():
+    """Both are HoldLost (neither spends an attempt); only the urgent one is HoldPreempted."""
     async def scenario():
         rt = bare_runtime(Holds([_reply("queued", reason=URGENT_PREEMPT)]))
         with pytest.raises(HoldPreempted):
@@ -461,9 +477,9 @@ def test_a_held_run_beats_within_the_urgent_grace_so_a_pause_is_seen_before_the_
         beats = []
         real_beat = rt._beat
 
-        async def timed(lease):
+        async def timed(lease, admission=None):
             beats.append(loop.time())
-            return await real_beat(lease)
+            return await real_beat(lease, admission)
 
         rt._beat = timed
 
@@ -488,9 +504,9 @@ def test_an_other_recall_keeps_the_normal_heartbeat(monkeypatch):
         beats = []
         real_beat = rt._beat
 
-        async def counted(lease):
+        async def counted(lease, admission=None):
             beats.append(1)
-            return await real_beat(lease)
+            return await real_beat(lease, admission)
 
         rt._beat = counted
 

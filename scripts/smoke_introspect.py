@@ -3,6 +3,9 @@
 
     ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --limit 3
     ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --query "graphics cards"
+    ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --tool dreams --limit 3
+    ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --tool dreams --query "vision"
+    ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --tool dreams --dream-id dream:19
 
 Read-only. Exit 0 = coherent answer, 1 = degenerate answer (a verified read with
 no text, or an empty recent window), 2 = answer unknown.
@@ -25,6 +28,8 @@ async def main() -> int:
     parser.add_argument("--url")
     parser.add_argument("--query")
     parser.add_argument("--limit", type=int, default=3)
+    parser.add_argument("--tool", choices=["reading_results", "dreams"], default="reading_results")
+    parser.add_argument("--dream-id")
     args = parser.parse_args()
     bus_url = os.environ.get("ORION_BUS_URL")
     if not bus_url:
@@ -36,6 +41,8 @@ async def main() -> int:
     )
     if args.query:
         arguments = {"query": args.query, "limit": args.limit}
+    elif args.tool == "dreams" and args.dream_id:
+        arguments = {"dream_id": args.dream_id}
     elif args.url:
         arguments = {"url": args.url}
     else:
@@ -47,7 +54,7 @@ async def main() -> int:
         print(f"UNKNOWN: bus unreachable ({type(exc).__name__})", file=sys.stderr)
         return 2
     try:
-        result = await IntrospectTools(bus, binding).invoke("reading_results", arguments)
+        result = await IntrospectTools(bus, binding).invoke(args.tool, arguments)
     except IntrospectUnknownError as exc:
         print(f"UNKNOWN: {exc}", file=sys.stderr)
         return 2
@@ -58,11 +65,15 @@ async def main() -> int:
     if degenerate:
         print(f"DEGENERATE: source_read=true with empty text: {degenerate}", file=sys.stderr)
         return 1
+    hollow = [i["id"] for i in result["items"] if args.tool == "dreams" and not i["text"]]
+    if hollow:
+        print(f"DEGENERATE: dream items with empty text: {hollow}", file=sys.stderr)
+        return 1
     unscored = [i["id"] for i in result["items"] if args.query and "similarity" not in i["extra"]]
     if unscored:
         print(f"DEGENERATE: query hits without similarity: {unscored}", file=sys.stderr)
         return 1
-    if not args.url and not args.query and result["total_available"] == 0:
+    if not args.url and not args.query and not args.dream_id and result["total_available"] == 0:
         print("DEGENERATE: recent window is empty; a responder that always answers [] passes nothing else",
               file=sys.stderr)
         return 1

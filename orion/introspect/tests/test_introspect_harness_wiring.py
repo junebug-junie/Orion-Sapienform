@@ -134,3 +134,14 @@ def test_brief_tells_orion_to_search_by_meaning():
     text = " ".join(introspect_brief_lines(binding))
     assert "query=" in text and "similarity" in text
     assert "answer is unknown" in text
+
+
+def test_brief_covers_dreams_as_experiences_not_facts():
+    from orion.introspect.brief import introspect_brief_lines
+    from orion.schemas.introspect import IntrospectToolBindingV1
+
+    binding = IntrospectToolBindingV1(
+        invocation_context="unified_chat", parent_run_id="r", parent_trace_id="t", memory_allowed=False,
+    )
+    text = " ".join(introspect_brief_lines(binding))
+    assert "dreams" in text and "not facts" in text and "unknown" in text

@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SUBSTRATE_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -242,12 +244,8 @@ def test_pending_system_one_frame_publishes_valid_envelope(monkeypatch) -> None:
     frame = _real_frame()
     # Live shape: not a UUID. This is the precondition of the bug.
     assert frame.frame_id.startswith("system-one-appraisal-")
-    try:
+    with pytest.raises(ValueError):
         UUID(frame.frame_id)
-    except ValueError:
-        pass
-    else:  # pragma: no cover
-        raise AssertionError("frame_id unexpectedly parses as a UUID")
 
     worker._pending_system_one_appraisal_frame = frame
     asyncio.run(worker._publish_pending_system_one_appraisal())

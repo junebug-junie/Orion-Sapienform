@@ -30,7 +30,7 @@ def held_model_boundary(monkeypatch):
             gpu_lease={"lease_id": "test-hold", "generation": 1,
                        "role": "agent", "holder": "durable-runs:test-run"},
         ))
-        return GenerateOutcome(result.text, result.error, result.source_fetches)
+        return GenerateOutcome(result.text, result.error, result.source_fetches, bound_prompt=prompt)
 
     monkeypatch.setattr(WorldPulseReadPipeline, "_generate", generate)
 
@@ -1243,3 +1243,81 @@ def test_zero_max_age_disables_the_stale_sweep() -> None:
     pipe = _pipeline(bus, conn, InMemorySubstrateGraphStore(), digest_item_max_age_days=0)
     asyncio.run(pipe.tick())
     assert _stale_sql_calls(conn) == []
+
+
+# --- Internal documents: captured at acceptance, read from the snapshot -------
+
+_DOC_TEXT = "# Relational stance\n\nThe choke point is enforce_chat_stance_quality.\n" * 8
+
+
+def _queue_document(conn, tmp_path, text=_DOC_TEXT):
+    from orion.schemas.reading import ReadingRequestedV1
+    from orion.world_pulse_read.documents import DocumentPolicy
+
+    doc = tmp_path / "spec.md"
+    doc.write_text(text)
+    policy = DocumentPolicy.from_values(roots=str(tmp_path), extensions=None, max_bytes=49152)
+    request = ReadingRequestedV1(url=f"file://{doc}", requested_by="juniper",
+                                 invocation_context="operator", why_now="review the spec")
+    seed = WorldPulseReadSeedV1(seed_id=f"reading:{request.request_id}", kind="reading",
+                                run_id=str(request.request_id), url=request.url, request=request)
+    asyncio.run(enqueue_seeds(conn, [seed], documents=policy))
+    return conn.rows[seed.seed_id]
+
+
+def test_document_read_embeds_the_snapshot_and_records_hub_evidence(monkeypatch, tmp_path) -> None:
+    import hashlib
+
+    bus, conn, store = _FakeBus(), _FakeConn(), InMemorySubstrateGraphStore()
+    row = _queue_document(conn, tmp_path)
+    sha = hashlib.sha256(_DOC_TEXT.encode()).hexdigest()
+    assert row["url"].endswith(f"spec.md?sha256={sha}")
+    # The file changes after acceptance; the reader must still see the snapshot.
+    (tmp_path / "spec.md").write_text("rewritten later")
+    seen = {}
+
+    async def _turn(**kwargs):
+        seen["prompt"] = kwargs["user_message"]
+        # The model fetched nothing: a document read never needs a web fetch.
+        return [_final_frame("The stance spec names the choke point.", fetches=[])]
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", _turn)
+    assert asyncio.run(_pipeline(bus, conn, store).tick(force=True)) is None
+
+    assert _DOC_TEXT in seen["prompt"] and "rewritten later" not in seen["prompt"]
+    assert "do not fetch or search for it" in seen["prompt"]
+    assert row["status"] == "done"
+    assert row["handoff_json"]["read_evidence"] == [{
+        "url": row["url"], "tool_name": "orion_document_snapshot",
+        "content_chars": len(_DOC_TEXT), "content_sha256": sha,
+    }]
+    assert len(bus.journal) == 1
+
+
+def test_document_bound_prompt_without_the_snapshot_is_not_a_read(monkeypatch, tmp_path) -> None:
+    from scripts.world_pulse_read_pipeline import GenerateOutcome, NO_READ_EVIDENCE_DOCUMENT_NOT_IN_PROMPT
+
+    bus, conn, store = _FakeBus(), _FakeConn(), InMemorySubstrateGraphStore()
+    row = _queue_document(conn, tmp_path)
+
+    async def generate(pipe, prompt, correlation_id, *, seed_id="test-seed"):
+        text = '```json\n{"what_i_learned": "prose", "candidate_priors": []}\n```'
+        return GenerateOutcome(text, None, [], bound_prompt="an older prompt with no document")
+
+    monkeypatch.setattr(WorldPulseReadPipeline, "_generate", generate)
+    assert asyncio.run(_pipeline(bus, conn, store).tick(force=True)) == "no_read_evidence"
+    assert row["status"] == "failed"
+    assert row["last_error"] == NO_READ_EVIDENCE_DOCUMENT_NOT_IN_PROMPT
+    assert bus.journal == []
+
+
+def test_document_with_missing_snapshot_fails_before_any_wallet_debit(monkeypatch, tmp_path) -> None:
+    bus, conn, store = _FakeBus(), _FakeConn(), InMemorySubstrateGraphStore()
+    row = _queue_document(conn, tmp_path)
+    conn.snapshots.clear()
+    _patch_turn(monkeypatch, [_final_frame("never runs", fetches=[])])
+
+    assert asyncio.run(_pipeline(bus, conn, store).tick(force=True)) == "bad_url"
+    assert row["status"] == "failed"
+    assert row["last_error"] == "document_snapshot_missing"
+    assert _count_key() not in bus.redis.store

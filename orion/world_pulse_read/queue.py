@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -7,12 +8,36 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from typing import Any, Sequence
 
 from orion.schemas.reading import ReadingRequestedV1
-from orion.world_pulse_read.urls import normalize_source_url, validate_source_url
+from orion.world_pulse_read.documents import (
+    ENSURE_SNAPSHOT_SQL,
+    DocumentPolicy,
+    DocumentSourceError,
+    check_document_path,
+    document_ref,
+    is_document_ref,
+    parse_document_ref,
+    read_document,
+    store_snapshot,
+    unversioned_ref,
+)
+from orion.world_pulse_read.urls import normalize_reading_source, validate_source_url
 from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseReadSeedV1
 from orion.world_pulse_read.retry import FailureOutcome, is_capacity_deferral, is_transient_failure
 from orion.world_pulse_read.seeds import seeds_from_digest_payload
 
 _PRIORITY = {"finding": 0, "reading": 0, "digest_item": 10}
+
+# Seed rows only ever receive a document ref from accept_source, so an existing
+# row with this exact ref is as good as first_source: Hub captured these bytes
+# from this path.
+PINNED_SNAPSHOT_SQL = """
+SELECT EXISTS (
+    SELECT 1 FROM reading_document_snapshot s
+    WHERE s.sha256 = $1
+      AND (s.first_source = $2
+           OR EXISTS (SELECT 1 FROM world_pulse_read_seed r WHERE r.url = $2))
+)
+"""
 _STAGE1_STATUSES = ("pending", "claimed", "done", "failed", "skipped")
 _STAGE2_STATUSES = ("pending", "claimed", "done", "failed", "skipped")
 
@@ -315,6 +340,7 @@ async def ensure_seed_queue_schema(conn: Any) -> None:
     await conn.execute(WORLD_PULSE_READ_RETRY_SQL)
     from orion.world_pulse_read.durable import READING_DURABLE_SQL
     await conn.execute(READING_DURABLE_SQL)
+    await conn.execute(ENSURE_SNAPSHOT_SQL)
 
 
 def request_for_seed(seed: WorldPulseReadSeedV1) -> ReadingRequestedV1:
@@ -327,9 +353,33 @@ def request_for_seed(seed: WorldPulseReadSeedV1) -> ReadingRequestedV1:
     )
 
 
+async def accept_source(conn: Any, value: str, *, documents: DocumentPolicy | None = None) -> str:
+    """Canonical, validated source for a new request.
+
+    URLs pass the public-address check. A document path is captured here,
+    once: the returned ``file://...?sha256=`` names the stored snapshot the
+    reader will see. A source already pinned to a sha256 is never re-read from
+    disk (the file may have changed since), but it still passes the path
+    policy and must name bytes Hub itself captured from that same path.
+    """
+    if not is_document_ref(value):
+        return await validate_source_url(value)
+    path, sha = parse_document_ref(value)
+    policy = documents or DocumentPolicy.from_env()
+    if sha is None:
+        doc = await asyncio.to_thread(read_document, path, policy)
+        await store_snapshot(conn, doc)
+        return doc.ref
+    ref = document_ref(await asyncio.to_thread(check_document_path, path, policy), sha)
+    if not await conn.fetchval(PINNED_SNAPSHOT_SQL, sha, ref):
+        raise DocumentSourceError("document_snapshot_missing")
+    return ref
+
+
 async def enqueue_seeds(
     conn: Any, seeds: Sequence[WorldPulseReadSeedV1], *,
     bus: Any = None, source: Any = None, max_round_trips: int | None = None,
+    documents: DocumentPolicy | None = None,
 ) -> int:
     """One ingress for World Pulse, tools and reentry. Commit before publication.
 
@@ -345,7 +395,7 @@ async def enqueue_seeds(
         # An already accepted request remains retryable even if DNS later fails.
         if await conn.fetchrow("SELECT seed_id FROM world_pulse_read_seed WHERE seed_id = $1", seed.seed_id):
             continue
-        url = await validate_source_url(str(request.url))
+        url = await accept_source(conn, str(request.url), documents=documents)
         request = ReadingRequestedV1.model_validate({**request.model_dump(), "url": url})
         async with conn.transaction():
             if max_round_trips is not None and request.root_request_id:
@@ -391,13 +441,15 @@ async def reading_status(
     if (request_id is None) == (url is None):
         raise ValueError("reading_status requires exactly one of request_id or url")
     if url is not None:
-        lookup_url = normalize_source_url(url)
+        lookup_url = normalize_reading_source(url)
+        # A bare document path matches every captured version of that file.
+        any_version = is_document_ref(lookup_url) and lookup_url == unversioned_ref(lookup_url)
         match = await conn.fetchrow(
             """SELECT *, count(*) OVER () AS matched_request_count
                FROM world_pulse_read_seed
-               WHERE url = $1
+               WHERE url = $1 OR ($2::boolean AND split_part(url, '?', 1) = $1)
                ORDER BY created_at DESC, seed_id DESC LIMIT 1""",
-            lookup_url,
+            lookup_url, any_version,
         )
         if match is None:
             return {

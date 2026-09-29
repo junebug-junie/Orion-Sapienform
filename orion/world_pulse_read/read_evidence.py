@@ -17,6 +17,7 @@ from typing import Any, Iterable, Optional
 from urllib.parse import urlsplit
 
 from orion.schemas.reading import SourceFetchEvidenceV1
+from orion.world_pulse_read.documents import SNAPSHOT_TOOL, is_document_ref
 from orion.world_pulse_read.url_filters import url_looks_like_section_index
 
 # last_error labels. Plain `no_read_evidence` is terminal (the model ran and
@@ -90,11 +91,30 @@ def parse_source_fetches(raw: Any) -> Optional[list[SourceFetchEvidenceV1]]:
     return out
 
 
+def document_snapshot_evidence(
+    seed_url: str, *, content_sha256: str, content_chars: int
+) -> SourceFetchEvidenceV1:
+    """Hub put this exact snapshot into the reader's bound prompt."""
+    return SourceFetchEvidenceV1(
+        url=seed_url, tool_name=SNAPSHOT_TOOL,
+        content_chars=content_chars, content_sha256=content_sha256,
+    )
+
+
 def source_read_evidence(
     seed_url: str, fetches: Iterable[SourceFetchEvidenceV1]
 ) -> list[SourceFetchEvidenceV1]:
     """The subset of ``fetches`` that shows this seed's source was read: a
-    non-listing page on the seed's site that returned real content."""
+    non-listing page on the seed's site that returned real content. For an
+    internal document, only Hub's own snapshot record for that exact
+    ``file://...?sha256=`` source counts -- no model tool call can produce one."""
+    if is_document_ref(seed_url):
+        return [
+            f for f in fetches
+            if f.tool_name == SNAPSHOT_TOOL and f.url == seed_url
+            and f.content_sha256 and seed_url.endswith(f"sha256={f.content_sha256}")
+            and f.content_chars > 0
+        ]
     return [
         f
         for f in source_page_candidates(seed_url, fetches)

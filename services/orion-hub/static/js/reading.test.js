@@ -87,3 +87,16 @@ test("DOM layer never writes read content as HTML", () => {
   const src = fs.readFileSync(path.join(__dirname, "reading.js"), "utf8");
   assert.doesNotMatch(src, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
 });
+
+test("documentLabel shows a captured document as its path and short version", () => {
+  const sha = "a".repeat(64);
+  assert.strictEqual(rd.documentLabel(`file:///mnt/scripts/Orion-Sapienform/docs/my%20spec.md?sha256=${sha}`),
+    "/mnt/scripts/Orion-Sapienform/docs/my spec.md (version aaaaaaaaaaaa)");
+  assert.strictEqual(rd.documentLabel("file:///srv/notes.md"), "/srv/notes.md");
+  assert.strictEqual(rd.documentLabel("https://example.org/a"), null);
+});
+
+test("document refusals speak plainly", () => {
+  assert.match(rd.refusalText("document_outside_allowed_roots"), /outside the folders/);
+  assert.match(rd.refusalText("document_too_large"), /refused rather than read in part/);
+});

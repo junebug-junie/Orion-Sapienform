@@ -721,6 +721,7 @@ async def startup_event():
                     index_interval_sec=settings.HUB_READING_SEARCH_INDEX_INTERVAL_SEC,
                     index_batch=settings.HUB_READING_SEARCH_INDEX_BATCH,
                 ),
+                documents=settings.reading_document_policy(),
             )
             await reading_listener.start(bus)
 

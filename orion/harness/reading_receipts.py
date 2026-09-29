@@ -21,7 +21,7 @@ from orion.schemas.reading import (
     SourceFetchEvidenceV1,
 )
 from orion.world_pulse_read.tools import deterministic_reading_request_id
-from orion.world_pulse_read.urls import normalize_source_url
+from orion.world_pulse_read.urls import normalize_reading_source
 
 _RECOMMEND_TOOL = "mcp__orion-reading__recommend_reading"
 _CONTEXT_FETCH_TOOL = "mcp__plugin_context-mode_context-mode__ctx_fetch_and_index"
@@ -187,7 +187,7 @@ class ReadingReceiptTracker:
             raw_url = str(args.get("url") or "").strip()
             why_now = str(args.get("why_now") or "")
             try:
-                url = normalize_source_url(raw_url)
+                url = normalize_reading_source(raw_url)
             except ValueError:
                 url = raw_url
             expected: UUID | None = None

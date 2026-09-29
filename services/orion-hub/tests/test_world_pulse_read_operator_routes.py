@@ -191,7 +191,7 @@ def test_cancel_durable_failures_are_explicit(client, routes, monkeypatch, statu
 def test_submit_rejections_surface_url_policy_codes(client, routes, monkeypatch, url, detail):
     from orion.world_pulse_read.urls import normalize_source_url
 
-    async def submit(conn, *, url, why_now, title, bus, source):
+    async def submit(conn, *, url, why_now, title, bus, source, documents=None):
         normalize_source_url(url)
         operator_request(url=url, why_now=why_now, title=title)
         return {}
@@ -229,3 +229,29 @@ def test_reading_page_and_tab_are_wired():
     assert "/static/js/reading_tab.js?v={{HUB_UI_ASSET_VERSION}}" in index
     assert (HUB_ROOT / "static" / "js" / "reading_tab.js").is_file()
     assert any(getattr(r, "path", "") == "/reading" for r in routes.page_router.routes)
+
+
+def test_submit_a_document_path_passes_hub_policy_and_surfaces_its_code(client, routes, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from orion.world_pulse_read.documents import DocumentPolicy
+    from orion.world_pulse_read import operator as real_operator
+
+    policy = DocumentPolicy.from_values(roots=str(tmp_path), extensions=None, max_bytes=4096)
+    monkeypatch.setattr(routes, "_settings", lambda: SimpleNamespace(reading_document_policy=lambda: policy))
+    seen = {}
+
+    async def submit(conn, **kwargs):
+        seen.update(kwargs)
+        # Real request construction and policy check, no queue.
+        real_operator.operator_request(url=kwargs["url"])
+        from orion.world_pulse_read.documents import read_document
+        read_document(kwargs["url"], kwargs["documents"])
+        return {"seed_id": "reading:doc", "status": "queued"}
+
+    monkeypatch.setattr(routes.reading_operator, "submit_read", submit)
+    (tmp_path / "spec.md").write_text("# Spec\n")
+    ok = client.post("/world-pulse-read/api/reads", headers=HEADERS, json={"url": str(tmp_path / "spec.md")})
+    assert ok.status_code == 200 and seen["documents"] is policy
+    refused = client.post("/world-pulse-read/api/reads", headers=HEADERS, json={"url": "/etc/hostname.md"})
+    assert refused.status_code == 400
+    assert refused.json()["detail"] == "document_outside_allowed_roots"

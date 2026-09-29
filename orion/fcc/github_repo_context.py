@@ -83,7 +83,7 @@ def github_mcp_brief_lines(*, workspace: Path | str | None = None) -> list[str]:
     return [
         (
             f"GitHub MCP is available (owner={owner!r}, repo={repo!r}). "
-            "Use it only when this turn's imperative needs PR/issue/repo facts and you judge "
+            "Use it only when this turn's task needs PR/issue/repo facts and you judge "
             "it appropriate — do not fetch GitHub data for unrelated turns."
         ),
         (
@@ -100,7 +100,7 @@ def github_mcp_brief_lines(*, workspace: Path | str | None = None) -> list[str]:
         ),
         (
             "Never call list_pull_requests without repo= set. Never omit perPage on list calls; "
-            "default perPage=1 unless the imperative explicitly needs a short ranked list."
+            "default perPage=1 unless the task explicitly needs a short ranked list."
         ),
         (
             "If a tool result is truncated by orion-fcc-mcp-proxy, summarize from the excerpt; "

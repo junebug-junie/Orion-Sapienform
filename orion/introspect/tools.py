@@ -11,7 +11,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.introspect import IntrospectResultV1, IntrospectToolBindingV1, ReadingResultArguments
 from orion.schemas.reading import ReadingToolRequestV1, ReadingToolResultV1
 from orion.world_pulse_read.events import TOOL_CHANNEL, TOOL_RESULT_PREFIX
-from orion.world_pulse_read.urls import normalize_source_url
+from orion.world_pulse_read.urls import normalize_reading_source
 
 RPC_TIMEOUT_SEC = 15.0
 
@@ -55,7 +55,7 @@ class IntrospectTools:
         command = ReadingToolRequestV1(
             operation="reading_result",
             request_id=args.request_id,
-            url=normalize_source_url(args.url) if args.url is not None else None,
+            url=normalize_reading_source(args.url) if args.url is not None else None,
             query=args.query,
             limit=args.limit,
             since=args.since,

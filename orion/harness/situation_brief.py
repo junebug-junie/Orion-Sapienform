@@ -46,8 +46,8 @@ def situation_block_brief_lines() -> list[str]:
         ),
         (
             "General posture: use situation context only when it materially serves "
-            "this turn's imperative. A section being present is not an instruction "
-            "to mention, narrate, or perform it."
+            "this turn's task (the user message). A section being present is not an "
+            "instruction to mention, narrate, or perform it."
         ),
     ]
 

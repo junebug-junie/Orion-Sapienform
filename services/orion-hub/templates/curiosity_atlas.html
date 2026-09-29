@@ -335,6 +335,8 @@ details.journal summary:hover { color: var(--ink); }
 .prior { padding: 14px 15px 12px; display: flex; flex-direction: column; gap: 8px; }
 .prior.closed { opacity: 0.75; }
 .prior .claim { font-size: 13px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.prior .claim.is-open { display: block; -webkit-line-clamp: unset; overflow: visible; white-space: pre-wrap; }
+.prior .claim-toggle { align-self: flex-start; font: inherit; font-size: 11.5px; color: var(--ink-2); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; }
 .prior .sub { font-size: 11.5px; color: var(--ink-muted); font-variant-numeric: tabular-nums; display: flex; gap: 8px; flex-wrap: wrap; }
 .prior .sub .status { font-weight: 620; color: var(--ink-2); }
 .prior .sub .status.closed { color: var(--critical); }
@@ -498,6 +500,7 @@ const GLYPH = {
 };
 const POLL_MS = 60000;
 const DAYS = 14;
+const PRIOR_CLAMP_CHARS = 160;  // roughly what four clamped lines hold at the narrowest (300px) prior card
 const LINE_FILTERS = [
   { id: "all", label: "All" },
   { id: "investigate", label: "World question" },
@@ -571,6 +574,7 @@ const state = {
   runs: null, atlas: null,
   tileSource: null,  // last live-window payload; budget/reach-out tiles never page
   openRunId: null, openRunSummaryHash: null,
+  openPriors: new Set(),  // prior ids whose claim Juniper opened; survives re-renders
   showClosed: false, filter: "",
   line: "all",
   untilMs: null,  // null = live window (now)
@@ -837,7 +841,7 @@ function timelineRow(it, run) {
     case "self_sense_answer":
       what = `<span class="lbl">${esc(it.question || it.question_key)}</span> ` +
              `<span class="dim">self-label ${it.self_label_score ?? "—"} · grounded ${it.grounded_record_score ?? "—"} · ${esc(it.answer_source)}</span>` +
-             (it.answer_text ? `<div class="txt">${esc(clip(it.answer_text, 600))}</div>` : "");
+             (it.answer_text ? `<div class="txt">${esc(it.answer_text)}</div>` : "");
       break;
     case "self_write": {
       const writeKind = it.write_kind || "";
@@ -845,16 +849,16 @@ function timelineRow(it, run) {
       what = `<span class="lbl">wrote ${lived ? "a lived answer" : "a self-definition"}</span>` +
              `${it.question_id ? ` <span class="dim">(${esc(it.question_id)})</span>` : ""}` +
              (it.text ? `<div class="txt">${esc(it.text)}</div>` : "") +
-             (it.evidence ? `<div class="sub">evidence: ${esc(clip(it.evidence, 300))}</div>` : "");
+             (it.evidence ? `<div class="sub">evidence: ${esc(it.evidence)}</div>` : "");
       break;
     }
     case "finding":
       what = `<span class="lbl">finding</span><div class="txt">${esc(it.text)}</div>` +
-             (it.evidence ? `<div class="sub">evidence: ${esc(clip(it.evidence, 300))}</div>` : "");
+             (it.evidence ? `<div class="sub">evidence: ${esc(it.evidence)}</div>` : "");
       break;
     case "revision":
       what = `<span class="lbl">prior ${conf(it.from)} → ${conf(it.to)}</span>, ${esc(it.from_status)} → ${esc(it.to_status)}` +
-             `<div class="txt">${esc(clip(it.claim || it.prior_id, 300))}</div>`;
+             `<div class="txt">${esc(it.claim || it.prior_id)}</div>`;
       break;
     case "outcome":
       what = `<span class="lbl">end of turn</span>` +
@@ -980,7 +984,7 @@ function renderStory(d) {
         ${sum.active_sec != null ? `<span>active <b>${esc(fmtDuration(sum.active_sec))}</b></span>` : ""}
         ${sum.lane_wait_sec != null ? `<span>lane wait <b>${esc(fmtDuration(sum.lane_wait_sec))}</b></span>` : ""}
       </div>
-      ${sum.role && sum.role.why ? `<div class="dim" style="font-size:12px;margin-top:4px">${esc(clip(sum.role.why, 280))}</div>` : ""}
+      ${sum.role && sum.role.why ? `<div class="dim" style="font-size:12px;margin-top:4px">${esc(sum.role.why)}</div>` : ""}
     </div>`;
 
   const po = d.prior_outcome;
@@ -1128,8 +1132,11 @@ function renderPriors(d) {
     const traj = p.trajectory || [];
     const rec = traj.filter((t) => t.recorded).length;
     const lastRun = p.last_run_id || p.created_by_run;
+    const long = (p.claim || "").length > PRIOR_CLAMP_CHARS;
+    const open = long && state.openPriors.has(p.prior_id);
     return `<div class="card prior${p.is_closed ? " closed" : ""}">
-      <div class="claim" title="${esc(p.claim)}">${esc(p.claim)}</div>
+      <div class="claim${open ? " is-open" : ""}" title="${esc(p.claim)}">${esc(p.claim)}</div>
+      ${long ? `<button class="claim-toggle" type="button" data-prior-claim="${esc(p.prior_id)}" aria-expanded="${open}">${open ? "show less" : "read it all"}</button>` : ""}
       <div class="sub">
         <span class="status${p.is_closed ? " closed" : ""}">${esc(p.status)}</span>
         <span>${conf(p.confidence)}</span>
@@ -1142,6 +1149,11 @@ function renderPriors(d) {
   }).join("") : `<p class="dim">${all.length ? "Nothing matches." : "Orion has not written a prior yet."}</p>`;
 }
 
+function togglePriorClaim(id) {
+  if (state.openPriors.has(id)) state.openPriors.delete(id); else state.openPriors.add(id);
+  renderPriors(state.atlas);
+}
+
 /* ---- contractor briefs -------------------------------------------------- */
 function renderPeerBriefs(d) {
   const el = $("peer-briefs-table");
@@ -1151,7 +1163,7 @@ function renderPeerBriefs(d) {
   el.innerHTML = `<thead><tr><th>Status</th><th>Peer</th><th>Summary</th><th>Run</th><th>Help</th></tr></thead>
     <tbody>${briefs.length ? briefs.map((b) => {
       const refused = b.status === "refused_budget";
-      const summary = refused ? (b.refusal_reason ? `refused: ${clip(b.refusal_reason, 120)}` : "refused_budget") : clip(b.summary, 160);
+      const summary = refused ? (b.refusal_reason ? `refused: ${b.refusal_reason}` : "refused_budget") : (b.summary || "");
       return `<tr><td><span class="mono">${esc(b.status || "—")}</span></td><td>${esc(b.peer || "—")}</td><td>${esc(summary)}</td>` +
              `<td><a class="runlink" data-run="${esc(b.run_id)}">${esc(b.run_id || "—")}</a></td><td class="mono">${esc(b.help_id || "—")}</td></tr>`;
     }).join("") : `<tr><td colspan="5" class="dim">No contractor briefs yet.</td></tr>`}</tbody>`;
@@ -1407,6 +1419,8 @@ function wire() {
   document.addEventListener("click", (e) => {
     const lineBtn = e.target.closest && e.target.closest("[data-line]");
     if (lineBtn) { e.preventDefault(); setLine(lineBtn.getAttribute("data-line")); return; }
+    const claim = e.target.closest && e.target.closest("[data-prior-claim]");
+    if (claim) { togglePriorClaim(claim.getAttribute("data-prior-claim")); return; }
     const t = e.target.closest && e.target.closest("[data-run]");
     if (t) { e.preventDefault(); openRun(t.getAttribute("data-run")); }
     const replyBtn = e.target.closest && e.target.closest("[data-reply-send]");

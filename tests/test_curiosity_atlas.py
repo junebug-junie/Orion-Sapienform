@@ -472,3 +472,14 @@ def test_an_iso_written_at_is_parsed_rather_than_read_as_missing() -> None:
     assert _stamp_ms(None) is None
     assert _stamp_ms("") is None
     assert _stamp_ms("not a date") is None
+
+
+def test_a_long_contractor_brief_summary_reaches_the_page_whole() -> None:
+    from orion.curiosity.atlas import _build_peer_brief
+
+    summary = "the peer read the whole article and said so. " * 40 + "END"
+    refusal = "budget ran out before the peer could start. " * 10 + "END"
+    ok = _build_peer_brief({"brief_id": "b", "summary": summary})
+    refused = _build_peer_brief({"brief_id": "c", "summary": "", "refusal_reason": refusal})
+    assert len(summary) > 800 and ok.summary.endswith("END")
+    assert len(refusal) > 200 and refused.refusal_reason.endswith("END")

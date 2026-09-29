@@ -63,7 +63,10 @@ if (fx.runs) {
   if (fx.runs_changed) out.renders.third = applyRuns(fx.runs_changed, fx.now || Date.now());
 }
 if (fx.atlas) { applyAtlas(fx.atlas); if (fx.show_closed) { state.showClosed = true; renderPriors(fx.atlas); }
-  if (fx.filter) { state.filter = fx.filter; renderPriors(fx.atlas); } }
+  if (fx.filter) { state.filter = fx.filter; renderPriors(fx.atlas); }
+  if (fx.toggles) { out.toggled = [];
+    for (const id of fx.toggles) { togglePriorClaim(id); out.toggled.push(ELS.priors.innerHTML); }
+    if (fx.atlas_changed) { applyAtlas(fx.atlas_changed); out.toggled.push(ELS.priors.innerHTML); } } }
 if (fx.story) renderStory(fx.story);
 if (fx.urgent) renderUrgent(fx.urgent);
 for (const k of Object.keys(ELS)) out[k] = ELS[k].innerHTML || ELS[k].textContent;
@@ -470,6 +473,69 @@ def test_the_self_card_and_briefs_render_and_prose_is_escaped(tmp_path) -> None:
     assert "refused: no budget" in out["peer-briefs-table"]
 
 
+# --- nothing Orion wrote is cut off ------------------------------------------
+
+
+_LONG = "Orion kept going past where the old page stopped reading. " * 20  # ~1180 chars
+_TAIL = "the last sentence Juniper could never see."
+
+
+def test_story_prose_renders_whole_not_clipped(tmp_path) -> None:
+    long_text = _LONG + _TAIL
+    run = _run()
+    story = {
+        "available": True, "found": True, "run": run, "readings_available": False, "journal_body": "",
+        "summary": {"hops": 1, "role": {"choice": "hire_peer", "why": long_text}},
+        "timeline": [
+            {"at": NOW_MS, "offset_sec": 1.0, "kind": "finding", "text": "f", "evidence": long_text},
+            {"at": NOW_MS, "offset_sec": 2.0, "kind": "self_write", "write_kind": "lived_answer",
+             "text": "t", "evidence": long_text},
+            {"at": NOW_MS, "offset_sec": 3.0, "kind": "revision", "prior_id": "p1", "claim": long_text,
+             "from": 0.5, "to": 0.6, "from_status": "open", "to_status": "revised"},
+            {"at": NOW_MS, "offset_sec": 4.0, "kind": "self_sense_answer", "question_key": "q",
+             "answer_text": long_text, "answer_source": "llm"},
+        ],
+    }
+    s = _render({"story": story}, tmp_path)["story"]
+    assert s.count(_TAIL) == 5, "role why, two evidences, revision claim, self-sense answer"
+    assert "…" not in s
+
+
+def test_contractor_brief_summaries_render_whole(tmp_path) -> None:
+    atlas = _atlas(peer_briefs=[
+        {"brief_id": "a", "help_id": "h", "run_id": "r1", "peer": "claude", "status": "ok",
+         "summary": _LONG + _TAIL, "refusal_reason": None},
+        {"brief_id": "b", "help_id": "h", "run_id": "r2", "peer": "claude", "status": "refused_budget",
+         "summary": "", "refusal_reason": _LONG + _TAIL},
+    ])
+    table = _render({"atlas": atlas}, tmp_path)["peer-briefs-table"]
+    assert table.count(_TAIL) == 2 and "…" not in table
+
+
+def test_a_long_prior_claim_is_all_there_and_opens_on_click(tmp_path) -> None:
+    long_claim = _LONG + _TAIL
+    atlas = _atlas(priors=[_prior(), _prior(prior_id="long", claim=long_claim)])
+    closed = _render({"atlas": atlas}, tmp_path)["priors"]
+    assert _TAIL in closed, "the full claim is in the DOM; only CSS clamps it"
+    assert 'data-prior-claim="long"' in closed and "read it all" in closed
+    assert closed.count("claim-toggle") == 1, "a short claim gets no toggle"
+    assert "is-open" not in closed
+
+    # A poll that brings a changed payload re-renders the cards; the open one stays open.
+    polled = _atlas(priors=[_prior(), _prior(prior_id="long", claim=long_claim, times_tested=3)])
+    opened, reclosed, reopened, after_poll = _render(
+        {"atlas": atlas, "toggles": ["long", "long", "long"], "atlas_changed": polled}, tmp_path
+    )["toggled"]
+    assert opened.count("is-open") == 1 and "show less" in opened and 'aria-expanded="true"' in opened
+    assert "is-open" not in reclosed and "read it all" in reclosed
+    assert "is-open" in reopened
+    assert "tested 3×" in after_poll and after_poll.count("is-open") == 1
+
+    page = TEMPLATE.read_text(encoding="utf-8")
+    assert ".prior .claim.is-open" in page and "-webkit-line-clamp: unset" in page
+    assert 'closest("[data-prior-claim]")' in page and "togglePriorClaim(claim.getAttribute" in page
+
+
 def test_orion_prose_in_the_story_is_escaped(tmp_path) -> None:
     run = _run()
     story = {"available": True, "found": True, "run": run, "readings_available": False, "journal_body": "",
@@ -551,6 +617,14 @@ def test_the_tab_button_and_its_panel_both_exist() -> None:
     assert 'href="#curiosity-atlas"' in index
     assert 'id="curiosity-atlas" data-panel="curiosity-atlas"' in index
     assert 'src="/curiosity"' in index, "the iframe must point at the real route"
+
+
+def test_the_iframe_is_sized_to_the_viewport_not_its_minimum() -> None:
+    """`h-full` never resolved (its flex parent has no definite height), so
+    the frame sat at its 40rem floor on every screen."""
+    index = (_HUB / "templates" / "index.html").read_text(encoding="utf-8")
+    frame = index.split('id="curiosityAtlasPanelFrame"', 1)[1].split(">", 1)[0]
+    assert "h-[calc(100vh-" in frame and "h-full" not in frame
 
 
 def test_every_hub_side_wire_the_tab_needs_is_present() -> None:

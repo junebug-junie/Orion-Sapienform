@@ -808,3 +808,40 @@ def test_reading_search_index_and_query_use_real_sql_gate(local_pg):
         await conn.close()
 
     asyncio.run(run())
+
+
+def test_document_capture_and_path_lookup_on_real_postgres(local_pg, tmp_path):
+    from orion.world_pulse_read.documents import DocumentPolicy, DocumentSourceError
+
+    doc = tmp_path / "spec_100%_done.md"
+    doc.write_text("# Spec\n\nv1 body\n")
+    policy = DocumentPolicy.from_values(roots=str(tmp_path), extensions=None, max_bytes=4096)
+
+    async def run():
+        conn, _ = await db(local_pg)
+        first = await queue.enqueue_reading(conn, request(url=f"file://{doc}"), documents=policy)
+        row = await conn.fetchrow("SELECT url FROM world_pulse_read_seed WHERE seed_id=$1", first["seed_id"])
+        sha = row["url"].rsplit("=", 1)[1]
+        snap = await conn.fetchrow("SELECT content, content_chars, first_source FROM reading_document_snapshot WHERE sha256=$1", sha)
+        assert snap["content"] == "# Spec\n\nv1 body\n" and snap["first_source"] == row["url"]
+        doc.write_text("# Spec\n\nv2 body\n")
+        second = await queue.enqueue_reading(conn, request(url=f"file://{doc}"), documents=policy)
+        assert second["duplicate"] is None
+        # `%` in the path must not act as a LIKE wildcard; split_part is exact.
+        status = await queue.reading_status(conn, url=str(doc))
+        assert status["request_id"] == second["request_id"] and status["matched_request_count"] == 2
+        assert (await queue.reading_status(conn, url=str(tmp_path / "spec_1.md")))["status"] == "not_found"
+        # A pinned source must name a stored snapshot; it is never read from disk.
+        with pytest.raises(DocumentSourceError, match="document_snapshot_missing"):
+            await queue.enqueue_reading(conn, request(url=f"file://{doc}?sha256={'e' * 64}"), documents=policy)
+        # A real snapshot hash cannot vouch for a path it was not captured from.
+        other = tmp_path / "other.md"
+        other.write_text("other")
+        with pytest.raises(DocumentSourceError, match="document_snapshot_missing"):
+            await queue.enqueue_reading(conn, request(url=f"file://{other}?sha256={sha}"), documents=policy)
+        # The exact captured ref is accepted again (folded onto the first read).
+        again = await queue.enqueue_reading(conn, request(url=row["url"]), documents=policy)
+        assert again["duplicate_of"] == first["seed_id"]
+        await conn.close()
+
+    asyncio.run(run())

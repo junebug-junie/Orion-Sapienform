@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from orion.harness.operator_brief import HARNESS_MOTOR_MAX_READ_LINES, is_relational_motor_stance
+from orion.harness.operator_brief import HARNESS_MOTOR_MAX_READ_LINES, HARNESS_RESPOND_TO_TASK, is_relational_motor_stance
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
 from orion.harness.tests.fixtures import make_grounding_capsule, make_thought
 from orion.schemas.cognition.answer_contract import AnswerContract
@@ -572,7 +572,7 @@ def test_harness_motor_instruction_relational_discourages_tools() -> None:
     assert is_relational_motor_stance(thought) is True
     instruction = harness_motor_instruction(thought=thought, answer_contract=None)
     assert "do NOT use GitHub MCP" in instruction
-    assert "Execute your imperative" in instruction
+    assert HARNESS_RESPOND_TO_TASK in instruction
 
 
 def test_harness_motor_instruction_relational_enforces_single_turn_reply() -> None:
@@ -614,6 +614,6 @@ def test_harness_motor_instruction_instrumental_omits_single_turn_language() -> 
 def test_harness_motor_instruction_imperative_forward() -> None:
     thought = make_thought(imperative="Inspect docker logs for orion-hub.")
     instruction = harness_motor_instruction(thought=thought, answer_contract=None)
-    assert "Execute your imperative" in instruction
+    assert HARNESS_RESPOND_TO_TASK in instruction
     assert f"over {HARNESS_MOTOR_MAX_READ_LINES} lines" in instruction
     assert "rg/Grep" in instruction

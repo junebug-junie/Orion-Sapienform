@@ -21,6 +21,10 @@ class ReadingQueueFakeMixin:
         yield self
 
     async def execute(self, sql, *args):
+        if "INSERT INTO reading_document_snapshot" in sql:
+            snapshots = self.__dict__.setdefault("snapshots", {})
+            snapshots.setdefault(args[0], {"content": args[1], "first_source": args[3]})
+            return "INSERT 0 1"
         result = await super().execute(sql, *args)
         if "INSERT INTO world_pulse_read_seed" in sql and result == "INSERT 0 1":
             row = self.rows[args[0]]
@@ -68,8 +72,10 @@ class ReadingQueueFakeMixin:
             # exercises active-only selection against disposable PostgreSQL.
             return None
         if "AS matched_request_count" in sql:
+            any_version = len(args) > 1 and args[1]
             matches = sorted(
-                (r for r in self.rows.values() if r["url"] == args[0]),
+                (r for r in self.rows.values() if r["url"] == args[0]
+                 or (any_version and r["url"].split("?", 1)[0] == args[0])),
                 key=lambda r: (r["created_at"], r["seed_id"]), reverse=True,
             )
             if not matches:
@@ -119,6 +125,13 @@ class ReadingQueueFakeMixin:
         return await super().fetchrow(sql, *args)
 
     async def fetchval(self, sql, *args):
+        if "s.first_source = $2" in sql:
+            snap = self.__dict__.get("snapshots", {}).get(args[0])
+            return bool(snap) and (snap["first_source"] == args[1]
+                                   or any(r["url"] == args[1] for r in self.rows.values()))
+        if "FROM reading_document_snapshot" in sql:
+            snap = self.__dict__.get("snapshots", {}).get(args[0])
+            return snap["content"] if snap else None
         if "r.url = $1 AND r.seed_id <> $2" in sql:
             return next((r["seed_id"] for r in self.rows.values() if r["url"] == args[0]
                          and r["seed_id"] != args[1] and not r.get("duplicate_of")

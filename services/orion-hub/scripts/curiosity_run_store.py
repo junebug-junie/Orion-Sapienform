@@ -413,7 +413,7 @@ async def read_runs_payload(
         "has_newer": has_newer,
         "line": line,
         "stores": stores.payload(),
-        "runs": [run_to_payload(r) for r in runs],
+        "runs": [run_to_payload(r, list_view=True) for r in runs],
         "reach_outs": reach_out_totals(all_runs),
         "totals": {ln: sum(1 for r in all_runs if r.line == ln) for ln in LINES},
     }

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
-from app.graph import CuriosityRunState, Deps, failed_turn_meta, make_nodes
+from app.graph import CuriosityRunState, Deps, failed_turn_meta, is_urgent, make_nodes
 from app.pool_hold import URGENT_PREEMPT
 from orion.schemas.durable_run import CURIOSITY_NODES
 
@@ -80,6 +80,19 @@ class AdmissionDeps:
     # One pool read: did an urgent run take this run's hold (queued, urgent_preempt)? For a node whose
     # failed turn comes back as a result rather than an exception (execute converts exceptions).
     preempted: Callable[[dict], Awaitable[bool]] | None = None
+
+
+# Urgent runs (brief.urgent) must end in a report within minutes: at most two
+# attempts per node, 10 s·2^n backoff. Never looser than the service budget.
+URGENT_MAX_ATTEMPTS = 2
+URGENT_RETRY_BASE_SECONDS = 10.0
+
+
+def retry_budget(admission: AdmissionDeps, state: dict) -> tuple[int, float]:
+    """(max_attempts, retry_base_seconds) for this run."""
+    if is_urgent(state):
+        return min(admission.max_attempts, URGENT_MAX_ATTEMPTS), URGENT_RETRY_BASE_SECONDS
+    return admission.max_attempts, admission.retry_base_seconds
 
 
 async def replay_if_preempted(admission: AdmissionDeps, state: dict) -> dict | None:
@@ -151,13 +164,14 @@ def build_admitted_graph(deps: Deps, admission: AdmissionDeps, checkpointer: Any
             # GraphBubbleUp/interrupt is a BaseException and is not caught here.
             attempt = int(state.get("attempt") or 0) + 1
             error = f"{type(exc).__name__}: {exc}"[:500]
-            if attempt >= admission.max_attempts:
+            max_attempts, retry_base = retry_budget(admission, state)
+            if attempt >= max_attempts:
                 released = await admission.release(dict(state), "attempt_failed")
                 return {**released, "status": "failed", "attempt": attempt, "last_error": error, **failed_meta}
             # A hold the pool already re-queued (lost heartbeat, recall past its grace) keeps its
             # lease_id and place; one still granted is handed back for the backoff.
             released = await admission.release(dict(state), "attempt_failed", keep_requeued=True)
-            delay = min(admission.retry_max_seconds, admission.retry_base_seconds * 2 ** (attempt - 1))
+            delay = min(admission.retry_max_seconds, retry_base * 2 ** (attempt - 1))
             return {**released, "status": "retrying", "attempt": attempt, "last_error": error,
                     "retry_node": None, "retry_at": (admission.now() + timedelta(seconds=delay)).isoformat(),
                     **failed_meta}
@@ -188,8 +202,9 @@ def build_admitted_graph(deps: Deps, admission: AdmissionDeps, checkpointer: Any
                 attempts = dict(state.get("tail_attempts") or {})
                 attempts[name] = attempts.get(name, 0) + 1
                 released = await admission.release(state, "node_failed")
-                delay = min(admission.retry_max_seconds, admission.retry_base_seconds * 2 ** (attempts[name]-1))
-                return {**released, "status": "failed" if attempts[name] >= admission.max_attempts else "retrying",
+                max_attempts, retry_base = retry_budget(admission, state)
+                delay = min(admission.retry_max_seconds, retry_base * 2 ** (attempts[name]-1))
+                return {**released, "status": "failed" if attempts[name] >= max_attempts else "retrying",
                         "last_error": f"{type(exc).__name__}: {exc}"[:500],
                         "tail_attempts": attempts, "retry_node": name,
                         "retry_at": (admission.now()+timedelta(seconds=delay)).isoformat()}

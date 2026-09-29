@@ -198,7 +198,8 @@ class GpuCardStateV1(BaseModel):
     loaded_at: datetime | None = None         # when the pool loaded (or adopted) the seat here
     actuated_roles: list[str] = Field(default_factory=list)   # seats on this card the pool may actuate
     # The current or last GpuActuateV1 for this card set: action_id, role, action, generation,
-    # sent_at, acked_at, deadline_at, phase, outcome, reason.
+    # sent_at, acked_at, deadline_at, phase, outcome, reason, profile (stage 5.3: the llm_profiles.yaml
+    # profile a load named, None for unloads and roles without launch.profiles).
     actuation: dict[str, Any] | None = None
 
 

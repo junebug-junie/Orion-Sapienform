@@ -602,7 +602,15 @@ class PoolRuntime:
 
     def _action_timeout(self, seat: str) -> float:
         """The whole action: a load drains+stops what it evicts then starts the seat; an unload
-        stops the seat then starts the residents. Budget every launch it touches."""
+        stops the seat then starts the residents. Budget every launch it touches.
+
+        agent-gpu2 after the stage-5.3 cutover: 900 (seat) + 600 (diffusion) = 1500 s to the first
+        `status`, faulted as stuck at MAX_ACTION_TIMEOUTS x that = 3000 s. The controller's realistic
+        worst case -- a failed load: two `docker ps` reads (<= 30 s each) + diffusion drain
+        (GPU2_DRAIN_TIMEOUT_SEC, 300) + seat ready wait (900) + restore diffusion's ready (600) +
+        a few quick `docker stop`/`up` calls -- is ~1900 s: past the first deadline (the pool keeps
+        polling while `status` says in_flight) and inside the ceiling. Pinned by
+        tests/test_stage5_3_cutover_e2e.py."""
         names = [seat, *self.cfg.evicted_by(seat)]
         total = sum(self.cfg.roles[r].launch.timeout_sec for r in names if self.cfg.roles[r].launch)
         return total or 900.0
@@ -639,12 +647,17 @@ class PoolRuntime:
         now = self.now()
         generation = max(c.swap_generation for c in cards) + 1
         timeout = self._action_timeout(seat)
+        # Stage 5.3: a load names the seat's model -- launch.profiles[0], or None (compose default)
+        # when the role lists none. An unload stops the seat and restarts residents on their own
+        # compose defaults, so it never carries one.
+        profile = self.cfg.load_profile(seat) if action == "load" else None
         msg = GpuActuateV1(
             action_id=f"{seat}:{action}:g{generation}:{uuid.uuid4().hex[:8]}", generation=generation,
-            actuator=spec.launch.actuator, role=seat, action=action, cards=list(spec.cards), profile=None,
+            actuator=spec.launch.actuator, role=seat, action=action, cards=list(spec.cards), profile=profile,
             launch_digest=launch_digest(self.cfg, seat), deadline_at=now + timedelta(seconds=timeout),
             reason=d.reason)
         act = {"action_id": msg.action_id, "role": seat, "action": action, "generation": generation,
+               "profile": profile,
                "reason": d.reason, "sent_at": now.isoformat(), "deadline_at": msg.deadline_at.isoformat(),
                "acked_at": None, "phase": None, "outcome": None, "status_action_id": None,
                "status_sent_at": None, "extensions": 0}
@@ -659,11 +672,11 @@ class PoolRuntime:
         # Persisted BEFORE the request leaves: a crash after the send still finds the action and
         # reconciles with `status` instead of sending a second transition.
         await self._save_cards(cards, "actuate")
-        logger.info("gpu_pool_actuate_send seat=%s action=%s action_id=%s generation=%s reason=%s",
-                    seat, action, msg.action_id, generation, d.reason)
+        logger.info("gpu_pool_actuate_send seat=%s action=%s action_id=%s generation=%s profile=%s reason=%s",
+                    seat, action, msg.action_id, generation, profile, d.reason)
         await self._emit(GpuPoolEventV1(event="swap_started", role=seat, cards=list(spec.cards), reason=d.reason,
                                         detail={"action": action, "action_id": msg.action_id,
-                                                "generation": generation, "actuated": True}))
+                                                "generation": generation, "profile": profile, "actuated": True}))
         await self._publish(GPU_POOL_ACTUATE_REQUEST_CHANNEL, GPU_ACTUATE_KIND, msg.model_dump(mode="json"), None)
 
     async def _send_status(self, seat: str, act: dict, *, reason: str) -> None:
@@ -714,8 +727,8 @@ class PoolRuntime:
             await self._emit(GpuPoolEventV1(
                 event=event, role=seat, cards=list(self.cfg.roles[seat].cards), reason=reason,
                 detail={"action": act.get("action"), "action_id": act.get("action_id"),
-                        "generation": act.get("generation"), "swap_state": state, "actuated": True,
-                        **(detail or {})}))
+                        "generation": act.get("generation"), "profile": act.get("profile"),
+                        "swap_state": state, "actuated": True, **(detail or {})}))
 
     def _observed_outcome(self, seat: str, observed: dict[str, str]) -> bool | None:
         """What the containers say: True = seat up and its evictees down, False = evictees up and

@@ -141,7 +141,7 @@ def test_gpu_pool_panel_shows_swap_fault_guards_and_holds_with_their_calls():
     config = dict(CONFIG, cards={**CONFIG["cards"], "gpu2": {"vram_gb": 32}},
                   roles={**CONFIG["roles"],
                          "agent-gpu2": {"kind": "llm", "cards": ["gpu2"], "owner": ["agent"], "port": 8016,
-                                        "swap": {"evicts": ["diffusion"], "load": "gpu2/agent", "unload": "gpu2/restore"}},
+                                        "swap": {"evicts": ["diffusion"]}},   # stage 5.3: no bridge verbs
                          "diffusion": {"kind": "service", "cards": ["gpu2"], "owner": ["diffusion"], "port": 8014,
                                        "slots": 1, "vram_gb": 24}})
     state = dict(STATE, config=config, swap_guards={"thermal": None, "visual_baseline": "visual_baseline_urgent"},
@@ -149,7 +149,9 @@ def test_gpu_pool_panel_shows_swap_fault_guards_and_holds_with_their_calls():
                      "card": "gpu2", "vram_gb": 32, "swapped_in": [], "swap_state": "fault", "swap_role": "agent-gpu2",
                      "actuated_roles": ["agent-gpu2"],
                      "actuation": {"action": "load", "role": "agent-gpu2", "generation": 4, "reason": "demand",
-                                   "outcome": "failed", "sent_at": "2026-09-24T11:59:00Z"}}],
+                                   "profile": "qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex",
+                                   "phase": "rolling_back", "outcome": "failed",
+                                   "sent_at": "2026-09-24T11:59:00Z"}}],
                  leases=STATE["leases"] + [
                      {"lease_id": "H1holdholdhold", "request_id": "run1:1", "holder": "durable-runs:run1",
                       "work_class": "chat", "priority": "background", "kind": "hold", "status": "granted",
@@ -189,6 +191,8 @@ def test_gpu_pool_panel_shows_swap_fault_guards_and_holds_with_their_calls():
         gpu2 = page.inner_text('[data-card="gpu2"]')
         assert "swap: fault agent-gpu2" in gpu2 and "FAULT" in gpu2 and "pool actuates agent-gpu2" in gpu2
         assert "load agent-gpu2 (g4, demand)" in gpu2 and "failed" in gpu2
+        # stage 5.3: the model the load named, and the phase the controller last reported on the bus
+        assert "model qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex" in gpu2 and "phase rolling_back" in gpu2
         assert page.locator('[data-card="gpu2"] button[data-verb="clear_fault"][data-card="gpu2"]').count() == 1
         assert "observe only" in page.inner_text('[data-card="gpu0"]') or "swap:" not in page.inner_text('[data-card="gpu0"]')
         guards = page.inner_text("#swapGuards")

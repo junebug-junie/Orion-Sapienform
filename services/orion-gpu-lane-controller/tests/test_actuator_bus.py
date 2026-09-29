@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 
+from cutover_config import rollback_config, write_rollback_config
 from test_api import REPO_ROOT, main_module
 from orion.gpu_pool.config import launch_digest, load_pool_config
 from orion.schemas.gpu_pool import GpuActuateResultV1
@@ -26,10 +27,12 @@ settings = main_module.settings
 
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
-    """A private copy of config/gpu_pool.yaml as the controller's own checkout."""
+    """The controller's own checkout: config/gpu_pool.yaml in its stage-5.3 ROLLBACK shape (bridge
+    verbs back on agent-gpu2). These are bridge tests; the live file now takes the generic path
+    (tests/test_launch_exec.py), and the bridge stays until 5.6 as the cutover's rollback."""
     root = tmp_path / "repo"
     (root / "config").mkdir(parents=True)
-    shutil.copy(REPO_ROOT / "config" / "gpu_pool.yaml", root / "config" / "gpu_pool.yaml")
+    write_rollback_config(root / "config" / "gpu_pool.yaml")
     monkeypatch.setattr(settings, "GPU_LANE_REPO_ROOT", str(root))
     monkeypatch.setattr(settings, "GPU2_POOL_FENCE_STATE_PATH", str(tmp_path / "state" / "fence.json"))
     monkeypatch.setattr(settings, "GPU2_ENABLED", True)
@@ -209,7 +212,8 @@ def test_digest_follows_own_checkout(repo, monkeypatch):
     must be refused -- the controller only starts what its own YAML says."""
     sent = digest(repo)
     path = repo / "config" / "gpu_pool.yaml"
-    path.write_text(path.read_text().replace("ready: /health, timeout_sec: 900", "ready: /health, timeout_sec: 901"))
+    assert path.read_text().count("timeout_sec: 900") == 1   # agent-gpu2 only
+    path.write_text(path.read_text().replace("timeout_sec: 900", "timeout_sec: 901"))
     assert digest(repo) != sent
     sink = Sink()
     run(lambda: bus.handle(payload(repo, launch_digest=sent), sink))
@@ -447,14 +451,30 @@ def test_progress_publish_failure_does_not_change_outcome(repo, monkeypatch):
     assert [r.status for r in sink.results] == ["accepted", "succeeded"]
 
 
-def test_real_config_launch_blocks_resolve_to_bridge_targets():
-    """The committed YAML is what circe runs: agent-gpu2 load/unload must map onto the two fixed
-    gpu2 transitions, and diffusion (evicted resident, no swap verbs) is not directly actuatable."""
+def test_real_config_launch_blocks_resolve_to_launch_plans():
+    """Stage 5.3: the committed YAML is what circe runs. agent-gpu2 has no bridge verbs, so load and
+    unload both resolve to a generic LaunchPlan built from its launch block and diffusion's;
+    diffusion (evicted resident) is still not directly actuatable."""
+    from orion.gpu_pool.config import PoolConfig
     cfg = load_pool_config(REPO_ROOT / "config" / "gpu_pool.yaml")
-    assert fence.resolve(cfg, role="agent-gpu2", action="load", cards=["gpu2"], digest=None) == "agent-burst"
-    assert fence.resolve(cfg, role="agent-gpu2", action="unload", cards=["gpu2"], digest=None) == "diffusion"
+    profile = cfg.load_profile("agent-gpu2")
+    assert profile == "qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex"
+    for action in ("load", "unload"):
+        plan = fence.resolve(cfg, role="agent-gpu2", action=action, cards=["gpu2"], digest=None,
+                             profile=profile if action == "load" else None)
+        assert isinstance(plan, fence.LaunchPlan)
+        assert (plan.seat.service, plan.seat.compose_profile) == ("atlas-agent-burst", "agent-burst")
+        assert [p.service for p in plan.evicts] == ["diffusion-host"]
+        assert plan.evicts[0].env == {"CUDA_VISIBLE_DEVICES": "2"}   # the bridge's fixed extra_env, now derived
+    load = fence.resolve(cfg, role="agent-gpu2", action="load", cards=["gpu2"], digest=None, profile=profile)
+    assert load.seat.env == {"ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES": "2", "ATLAS_AGENT_BURST_PROFILE_NAME": profile}
+    assert load.seat.timeout_sec == 900.0
     with pytest.raises(fence.Refusal, match="not_a_swap_seat"):
         fence.resolve(cfg, role="diffusion", action="load", cards=["gpu2"], digest=None)
+    # ... and the rollback shape (bridge verbs back) still maps onto the two fixed gpu2 transitions.
+    old = PoolConfig.model_validate(rollback_config())
+    assert fence.resolve(old, role="agent-gpu2", action="load", cards=["gpu2"], digest=None) == "agent-burst"
+    assert fence.resolve(old, role="agent-gpu2", action="unload", cards=["gpu2"], digest=None) == "diffusion"
 
 
 # --- review regressions ------------------------------------------------------------------------

@@ -75,15 +75,18 @@ Exit codes: 0 = all monitored paths under threshold (also returned if this
                 bus_core_health_watchdog.py's exit-code contract so a
                 monitoring wrapper keying off exit code behaves the same
                 way across both scripts).
-            2 = could not complete the check for a reason outside any
-                single monitored path (a filesystem error writing state --
-                e.g. the telemetry tree not yet created/chowned on a fresh
-                host). Deliberately distinct from exit 1 so a permissions
-                failure can never be misread as "disk full."
+            2 = no longer returned (was: state file unwritable). That case
+                is now exit 4, and the paths are still measured and carded.
             3 = the watchdog itself broke on an unexpected/unhandled
                 exception (a bug in this script). Deliberately distinct
                 from both exit 1 and exit 2, same convention as
                 bus_core_health_watchdog.py.
+            4 = escalation failed: orion-notify did not accept a card, or
+                the debounce state could not be used (bad paths are then
+                carded every tick with no dedupe -- repeated cards beat
+                silence). Wins over 1: a breach nobody was told about is the
+                worse failure. Same code as the postgres-headroom and
+                substrate-ladder watches.
 """
 from __future__ import annotations
 
@@ -118,6 +121,7 @@ DEFAULT_PATHS = (
     "/mnt/storage-lukewarm",
 )
 DEFAULT_THRESHOLD_PCT = 90.0
+EXIT_ESCALATION_FAILED = 4
 
 
 def default_state_file(telemetry_root: str, project: str) -> Path:
@@ -277,6 +281,7 @@ def _publish_attention(
     percent_used: float | None,
     error: str | None,
     threshold_pct: float,
+    state_error: str | None = None,
 ) -> bool:
     """Returns True only if orion-notify actually confirmed the attention
     request (`NotificationAccepted.ok`). The real `NotifyClient.
@@ -296,6 +301,11 @@ def _publish_attention(
     else:
         message = f"Could not check disk usage on {path}: {error}"
         reason = f"[Orion disk watchdog] {path} check failed"
+    if state_error is not None:
+        message = (
+            f"The disk watchdog cannot remember which cards it already sent ({state_error}), "
+            "so this card repeats every tick until that is fixed.\n\n" + message
+        )
 
     context = {
         "source_service": "disk-threshold-watchdog",
@@ -306,6 +316,7 @@ def _publish_attention(
         "threshold_pct": threshold_pct,
         "error": error,
         "reason": reason,
+        "dedupe_state_error": state_error,
     }
     try:
         result = notify.attention_request(
@@ -339,10 +350,24 @@ def run(
     state_file: Path,
     notify: NotifyClient,
     now: datetime | None = None,
-) -> tuple[dict[str, Any], bool]:
-    now = now or datetime.now(timezone.utc)
+) -> tuple[dict[str, Any], bool, list[str]]:
+    """Returns (state, any_bad, escalation_failures).
 
-    with _StateLock(state_file):
+    escalation_failures is non-empty when a human may not have been told:
+    orion-notify refused a card, or the debounce state could not be used. In
+    the latter case every bad path is carded with no dedupe (one card per path
+    per tick) -- repeated cards beat silence, which is what a root-owned state
+    dir produced for the substrate ladder watch for ~34h on 2026-09-26.
+    """
+    now = now or datetime.now(timezone.utc)
+    lock = _StateLock(state_file)
+    try:
+        lock.__enter__()
+    except OSError as exc:  # WatchdogLockedError is a RuntimeError, not caught here
+        return _run_stateless(paths, threshold_pct, notify, now, f"{type(exc).__name__}: {exc}")
+
+    failures: list[str] = []
+    try:
         state = load_state(state_file)
         any_bad = False
         for path in paths:
@@ -362,10 +387,44 @@ def run(
                     error=error,
                     threshold_pct=threshold_pct,
                 )
+                if not new_path_state["notified"]:
+                    failures.append(f"{path}: orion-notify did not accept the {status} card")
             state["paths"][path] = new_path_state
-        _atomic_write_json(state_file, state)
+        try:
+            _atomic_write_json(state_file, state)
+        except OSError as exc:
+            # Cards (if any) already went out this tick; do not send them twice.
+            failures.append(f"dedupe state unusable ({type(exc).__name__}: {exc})")
+    finally:
+        lock.__exit__(None, None, None)
 
-    return state, any_bad
+    return state, any_bad, failures
+
+
+def _run_stateless(
+    paths: list[str], threshold_pct: float, notify: NotifyClient, now: datetime, state_error: str
+) -> tuple[dict[str, Any], bool, list[str]]:
+    failures = [f"dedupe state unusable ({state_error})"]
+    state: dict[str, Any] = {"paths": {}}
+    any_bad = False
+    for path in paths:
+        percent_used, error = measure_path(path)
+        new_path_state, status, _ = evaluate_path({}, percent_used, error, threshold_pct, now)
+        if status != "ok":
+            any_bad = True
+            new_path_state["notified"] = _publish_attention(
+                notify,
+                path=path,
+                status=status,
+                percent_used=percent_used,
+                error=error,
+                threshold_pct=threshold_pct,
+                state_error=state_error,
+            )
+            if not new_path_state["notified"]:
+                failures.append(f"{path}: orion-notify did not accept the {status} card")
+        state["paths"][path] = new_path_state
+    return state, any_bad, failures
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -412,17 +471,10 @@ def main(argv: list[str] | None = None) -> int:
     notify = NotifyClient(base_url=args.notify_base_url, api_token=args.notify_api_token, timeout=10)
 
     try:
-        state, any_bad = run(paths, args.threshold_pct, state_file, notify)
+        state, any_bad, failures = run(paths, args.threshold_pct, state_file, notify)
     except WatchdogLockedError as exc:
         print(f"disk_threshold_watchdog: SKIPPED -- {exc}", file=sys.stderr)
         return 0
-    except OSError as exc:
-        print(
-            f"disk_threshold_watchdog: FAILED -- could not write state file: {exc}. "
-            "Check directory ownership/permissions.",
-            file=sys.stderr,
-        )
-        return 2
     except Exception as exc:  # noqa: BLE001 -- deliberate catch-all, see docstring's Exit codes
         print(
             f"disk_threshold_watchdog: UNEXPECTED ERROR -- {type(exc).__name__}: {exc}. "
@@ -442,6 +494,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"disk_threshold_watchdog: {path} status={status} used={pct_str}")
         print("disk_threshold_watchdog: OK -- all paths under threshold." if not any_bad else "disk_threshold_watchdog: ATTENTION -- see above.", file=sys.stderr if any_bad else sys.stdout)
 
+    for failure in failures:
+        print(f"disk_threshold_watchdog: ESCALATION FAILED -- {failure}", file=sys.stderr)
+    if failures:
+        return EXIT_ESCALATION_FAILED
     return 1 if any_bad else 0
 
 

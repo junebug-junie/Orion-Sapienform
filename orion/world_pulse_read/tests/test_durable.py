@@ -122,3 +122,41 @@ def test_cancelled_run_has_separate_noncharging_outcome():
     with patch("orion.world_pulse_read.durable.httpx.AsyncClient", return_value=client):
         with pytest.raises(ReadingCancelled):
             asyncio.run(poll_turn(req, "http://durable"))
+
+
+class _BindingConn:
+    """Just enough of asyncpg for bind_turn's "an unconsumed binding exists" path."""
+
+    def __init__(self, stored):
+        self.stored = stored
+
+    def transaction(self):
+        class _Tx:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+        return _Tx()
+
+    async def fetchval(self, sql, *args):
+        return "reading:test" if "world_pulse_read_seed" in sql else self.stored
+
+
+@pytest.mark.parametrize("as_text", [True, False])
+def test_a_binding_stored_before_4_6_still_binds(as_text):
+    """Regression (stage 4.6 review): bindings committed before 4.6 carry the deleted broker
+    fields; ResourceRequirementV1 is extra="forbid", so reading them back used to raise and
+    wedge the seed in reading_binding_unavailable forever. Live 2026-09-29: 39 unconsumed rows."""
+    import json
+    from orion.world_pulse_read.durable import bind_turn
+
+    original = request()
+    stored = original.model_dump(mode="json")
+    stored["admission"].update(allow_elastic_activation=False, alternatives=[], pinned_lane=None,
+                               operator_override=None)
+    with pytest.raises(Exception):
+        DurableRunRequestV1.model_validate(stored)   # the hazard: the bare model refuses the row
+    conn = _BindingConn(json.dumps(stored) if as_text else stored)
+    bound = asyncio.run(bind_turn(conn, original.brief, original.correlation_id))
+    assert bound == original   # same run id, same prompt: the stored binding stays authoritative

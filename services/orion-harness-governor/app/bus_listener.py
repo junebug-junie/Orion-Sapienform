@@ -53,7 +53,7 @@ _FCC_PRESPAWN_CODES = frozenset({"fcc_bad_model_label", "fcc_lane_context_too_sm
 _FCC_SELF_KILL_CODES = frozenset({"fcc_stream_line_limit", "fcc_draft_length_ceiling_exceeded"})
 
 
-def fcc_hop_key(serving_role: str | None, fcc_route: str | None = None) -> str:
+def fcc_hop_key(serving_role: str | None, fcc_route: str | None = None, fcc_backend: str | None = None) -> str:
     """RPC-health hop key for the FCC motor leg (orion/core/bus/rpc_health.py conventions).
 
     - ``fcc:<role>``: the turn held a GPU pool lease (a durable run's hold), so every call ran on
@@ -61,7 +61,9 @@ def fcc_hop_key(serving_role: str | None, fcc_route: str | None = None) -> str:
     - ``fcc:route:<route>``: no hold. Each call was placed by the pool on its own and the harness
       never sees those grants, so only the requested gateway route is known. The ``route:`` prefix
       keeps "asked for agent" from sharing a baseline with "ran on agent".
-    - ``fcc:unknown``: neither is known.
+    - ``fcc:backend:<backend>``: a non-pool backend (e.g. ``MODEL_HAIKU`` -> ``nvidia_nim``), a
+      remote API with its own latency population.
+    - ``fcc:unknown``: none is known.
 
     Replaces ``fcc:<served_model>`` (retired 2026-09-29): the model name the CLI echoed split one
     lane into several keys whenever the pool spilled a call to another card, and also minted
@@ -74,6 +76,9 @@ def fcc_hop_key(serving_role: str | None, fcc_route: str | None = None) -> str:
     route = str(fcc_route or "").strip()
     if route:
         return f"fcc:route:{route}"
+    backend = str(fcc_backend or "").strip()
+    if backend:
+        return f"fcc:backend:{backend}"
     return "fcc:unknown"
 
 
@@ -97,7 +102,11 @@ def record_fcc_hop(bus: Any, motor: Any) -> None:
         if elapsed_sec is None:
             return
         code = str(getattr(motor, "grounding_status", "") or "")
-        hop = fcc_hop_key(getattr(motor, "serving_role", None), getattr(motor, "fcc_route", None))
+        hop = fcc_hop_key(
+            getattr(motor, "serving_role", None),
+            getattr(motor, "fcc_route", None),
+            getattr(motor, "fcc_backend", None),
+        )
         elapsed_ms = float(elapsed_sec) * 1000.0
         if code in _FCC_TIMEOUT_CODES:
             bus.record_hop_timeout(hop, elapsed_ms)
@@ -381,7 +390,6 @@ async def handle_harness_run_request(
             grammar_receipts=motor.grammar_receipts,
             reading_receipts=motor.reading_receipts,
             preserve_structured_output=bool(request.reading_only),
-            resource_lease=request.resource_lease,
             gpu_lease=request.gpu_lease,
             fcc_model_label=request.fcc_model_label,
             repair_overlay=repair_overlay,
@@ -711,16 +719,15 @@ async def run_bus_worker(
                     decoded = bus.codec.decode(msg.get("data"))
                     payload = decoded.envelope.payload if decoded.ok else {}
                     body = payload if isinstance(payload, dict) else {}
-                    # A turn under a durable lease (old token) or a GPU pool hold (stage 4) is
-                    # admitted: it runs outside the legacy lock, or it would queue behind
-                    # unrelated turns while its own card sits reserved for it.
-                    admitted = isinstance(body.get("resource_lease"), dict) or isinstance(body.get("gpu_lease"), dict)
+                    # A turn under a GPU pool hold is admitted: it runs outside the legacy lock,
+                    # or it would queue behind unrelated turns while its own card sits reserved for it.
+                    admitted = isinstance(body.get("gpu_lease"), dict)
                     key = None
                     if admitted:
                         # One outstanding motor per fenced turn. Duplicate
                         # pub/sub delivery shares the original reply channel.
                         request = HarnessRunRequestV1.model_validate(payload)
-                        fence = request.resource_lease or request.gpu_lease
+                        fence = request.gpu_lease
                         key = f"{request.correlation_id}:{fence.lease_id}:{fence.generation}"
                         if key in admitted_inflight:
                             continue

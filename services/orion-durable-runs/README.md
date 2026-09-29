@@ -417,6 +417,10 @@ Deleted in 4.5 (kill means kill, no fallback): the durable broker, lane policy a
 `durable_resource_demands` / `durable_resource_leases` / `durable_elastic_slot` get no new rows;
 they stay only because `/capacity` joins them until stage 5.
 
+Deleted in 4.6: the durable lease token itself (`ResourceLeaseV1`, `X-Orion-Resource-Lease`,
+`options.resource_lease`, the gateway's `LeaseGuard`). A run's GPU pool hold ref (`GpuLeaseRefV1`:
+`X-Orion-Gpu-Lease`, `options.gpu_lease`) is the only run lease.
+
 A resume that keeps failing is retried on the next reconcile tick, but once a run has at least
 `DURABLE_RUNS_RESUME_MAX_FAILURES` (default 10) failures since its last real node progress AND
 the first of them is `DURABLE_RUNS_RESUME_MIN_FAILURE_SPAN_SEC` (default 600) old, it is failed
@@ -462,5 +466,6 @@ Where a run runs is the pool's decision: its `agent` class may use `agent`, then
 when loaded (the pool loads it after a hold waits `swap.after_wait_sec`, 1200 s, with the thermal
 and visual-baseline guards clear), then `chat` while gpu0 is lent. Unlending gpu0 recalls a hold
 borrowing it (grace, then abort and re-queue). `ResourceRequirementV1.alternatives`,
-`allow_elastic_activation`, `pinned_lane` and `operator_override` are accepted and ignored until
-producers stop sending them (PR 4.6).
+`allow_elastic_activation`, `pinned_lane` and `operator_override` were deleted in 4.6
+(`extra="forbid"`: a producer still sending them is refused). A duplicate receipt of a row stored
+before 4.6 still ignores those keys when comparing (`IGNORED_ADMISSION_FIELDS`).

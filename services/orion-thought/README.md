@@ -27,14 +27,13 @@ LISTEN orion:thought:request
   → PUBLISH orion:thought:artifact
 ```
 
-An admitted turn supplies optional `StanceReactRequestV1.resource_lease` using
-`ResourceLeaseV1`. Hub sends the same lease ID and generation used by the turn's
-motor; Thought forwards it in the Cortex Exec context and sets both `llm_route`
-and `llm_lane` to the assigned lease lane. Gateway can therefore account for
-stance under the existing reservation. The assigned lane takes precedence over
-the caller's route preference. Requests without a lease keep their prior route
-behavior and Hub omits only the absent `resource_lease` field from the bus payload,
-preserving the existing payload's null fields for rolling upgrades.
+An admitted turn supplies optional `StanceReactRequestV1.gpu_lease` (the durable run's GPU pool
+hold ref, `GpuLeaseRefV1`). Hub sends the same hold the turn's motor runs under; Thought forwards it
+in the Cortex Exec context and sets both `llm_route` and `llm_lane` to `agent` (the hold's work
+class, never its role), so the gateway attaches stance to the existing hold instead of queueing it
+behind the run. The hold takes precedence over the caller's route preference. Requests without a
+hold keep their prior route behavior. The older durable token (`resource_lease` /
+`ResourceLeaseV1`) was deleted in GPU pool stage 4.6.
 
 ## Local checks
 

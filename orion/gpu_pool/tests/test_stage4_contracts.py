@@ -88,6 +88,27 @@ def test_lease_ref_round_trip_and_header():
         GpuLeaseRefV1(lease_id="hold-1", generation=0, role="agent", holder="h")
 
 
+def test_the_hold_ref_is_the_only_run_lease_after_4_6():
+    """Stage 4.6 deleted the durable token and the broker-only admission fields (kill means kill)."""
+    import orion.llm.resource_lease as wire
+    import orion.schemas.resource_admission as admission
+
+    assert not hasattr(admission, "ResourceLeaseV1")
+    for name in ("LEASE_HEADER", "encode_lease_header", "decode_lease_header", "validate_resource_lease"):
+        assert not hasattr(wire, name), name
+    with pytest.raises(ValueError):   # never registered; guards against a future re-registration
+        resolve("ResourceLeaseV1")
+    for field in ("allow_elastic_activation", "alternatives", "pinned_lane", "operator_override"):
+        assert field not in admission.ResourceRequirementV1.model_fields
+        with pytest.raises(ValidationError):   # extra="forbid": a producer still sending one is refused
+            admission.ResourceRequirementV1(**{field: None})
+    permit = dict(request_id="r", correlation_id="c", lane="world", backend_key="http://w", max_inflight=1,
+                  budget_sec=1.0)
+    assert admission.CapacityAcquireV1(**permit).lease is None
+    with pytest.raises(ValidationError):
+        admission.CapacityAcquireV1(**permit, lease={"lease_id": "legacy"})
+
+
 # --- pool events / card state ----------------------------------------------------------------
 @pytest.mark.parametrize("event", ["swap_started", "swap_failed", "actuate_refused", "swap_requested", "swapped"])
 def test_new_swap_events(event):

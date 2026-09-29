@@ -103,15 +103,6 @@ class Settings(BaseSettings):
     # Hub lane (live .env has said quick since 2026-08; the code default lagged behind it).
     llm_route_default: str = Field("quick", alias="LLM_ROUTE_DEFAULT")
 
-    # Durable-run leases (options.resource_lease / X-Orion-Resource-Lease) are still validated
-    # against durable-runs until stage 4. They are an admission token only: placement always
-    # comes from a pool lease.
-    llm_gateway_lease_validation_enabled: bool = Field(False, alias="LLM_GATEWAY_LEASE_VALIDATION_ENABLED")
-    llm_gateway_lease_validation_url: str = Field(
-        "http://durable-runs:8121/leases/validate", alias="LLM_GATEWAY_LEASE_VALIDATION_URL"
-    )
-    llm_gateway_lease_validation_timeout_sec: float = Field(2.0, gt=0, alias="LLM_GATEWAY_LEASE_VALIDATION_TIMEOUT_SEC")
-    llm_gateway_lease_check_interval_sec: float = Field(5.0, gt=0, alias="LLM_GATEWAY_LEASE_CHECK_INTERVAL_SEC")
     llm_lane_default: str = Field("chat", alias="LLM_LANE_DEFAULT")
     llm_lane_routing_enabled: bool = Field(True, alias="LLM_LANE_ROUTING_ENABLED")
     llm_gateway_health_port: int = Field(8210, alias="LLM_GATEWAY_HEALTH_PORT")

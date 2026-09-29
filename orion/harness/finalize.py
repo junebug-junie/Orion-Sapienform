@@ -37,7 +37,6 @@ from orion.schemas.reading import ReadingRecommendationOutcomeV1
 from orion.llm.routes import is_agent_route_model_label
 from orion.llm.resource_lease import GPU_LEASE_ROUTE
 from orion.schemas.gpu_pool import GpuLeaseRefV1
-from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.schemas.thought import StanceHarnessSliceV1, ThoughtEventV1
 from orion.substrate.ids import stable_hash_id
 from orion.thought.policy_refusal import TRUST_RUPTURE_DEFER_THRESHOLD
@@ -350,23 +349,20 @@ def maybe_quick_lane_verdict(
 
 def resolve_finalize_llm_lane(
     *,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> str:
     """Gateway llm_route/llm_lane for harness finalize (reflect + repair).
 
-    Owner rule (2026-09-15): admitted lease wins; else agent FCC model label
-    → agent; else chat (default unified Hub chat / non-agent labels including
-    MODEL_SONNET). Do not hardcode ordinary finalize to agent — that stranded
-    chat turns behind curiosity (corr 60f0e051).
+    Owner rule (2026-09-15): an admitted run's GPU pool hold wins; else agent
+    FCC model label → agent; else chat (default unified Hub chat / non-agent
+    labels including MODEL_SONNET). Do not hardcode ordinary finalize to agent —
+    that stranded chat turns behind curiosity (corr 60f0e051).
 
-    A GPU pool hold (stage 4) is next: its calls attach to the hold's role
-    whatever route they name, so the route only names the work class
-    (``GPU_LEASE_ROUTE``, durable holds are agent class).
+    A hold's calls attach to the hold's role whatever route they name, so the
+    route only names the work class (``GPU_LEASE_ROUTE``, durable holds are
+    agent class).
     """
-    if resource_lease is not None:
-        return str(resource_lease.lane)
     if gpu_lease is not None:
         return GPU_LEASE_ROUTE
     if is_agent_route_model_label(fcc_model_label):
@@ -383,12 +379,10 @@ def build_finalize_reflect_context(
     repair_overlay: HarnessRepairOverlayV1,
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> dict[str, Any]:
     lane = resolve_finalize_llm_lane(
-        resource_lease=resource_lease,
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
@@ -401,11 +395,10 @@ def build_finalize_reflect_context(
         "repair_overlay": repair_overlay.model_dump(mode="json"),
         "finalize_overlay": "",
         "user_message": user_message,
-        # Owner-lane finalize: lease lane when admitted; else agent FCC label
+        # Owner-lane finalize: hold route when admitted; else agent FCC label
         # → agent; else chat. Cortex-exec honors top-level llm_route/llm_lane.
         "llm_route": lane,
         "llm_lane": lane,
-        **({"resource_lease": resource_lease.model_dump(mode="json")} if resource_lease else {}),
         **({"gpu_lease": gpu_lease.model_dump(mode="json")} if gpu_lease else {}),
         "allow_chat_fallback": False,
         "metadata": {
@@ -424,7 +417,6 @@ def build_finalize_reflect_plan_request(
     repair_overlay: HarnessRepairOverlayV1,
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> PlanExecutionRequest:
@@ -444,7 +436,6 @@ def build_finalize_reflect_plan_request(
             repair_overlay=repair_overlay,
             user_message=user_message,
             grammar_receipts=grammar_receipts,
-            resource_lease=resource_lease,
             gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
         ),
@@ -489,7 +480,6 @@ async def run_finalize_reflection(
     user_message: str = "",
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     cortex_client: CortexClientFn | None = None,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> tuple[FinalizeReflectionV1, bool, str | None]:
@@ -518,7 +508,6 @@ async def run_finalize_reflection(
         repair_overlay=overlay,
         user_message=user_message,
         grammar_receipts=grammar_receipts,
-        resource_lease=resource_lease,
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
@@ -619,7 +608,6 @@ async def maybe_run_finalize_tool_retry(
     bus: Any = None,
     grammar_channel: str = DEFAULT_GRAMMAR_EVENT_CHANNEL,
     grammar_publish_fn: Any = None,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> tuple[FinalizeReflectionV1, list[GrammarReceiptV1], bool, str | None, str | None]:
@@ -787,7 +775,6 @@ async def maybe_run_finalize_tool_retry(
             user_message=user_message,
             grammar_receipts=receipts,
             cortex_client=cortex_client,
-            resource_lease=resource_lease,
             gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
         )
@@ -851,12 +838,10 @@ def build_response_repair_context(
     reflection: FinalizeReflectionV1,
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> dict[str, Any]:
     lane = resolve_finalize_llm_lane(
-        resource_lease=resource_lease,
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
@@ -869,7 +854,6 @@ def build_response_repair_context(
         # Same owner as reflect (5b).
         "llm_route": lane,
         "llm_lane": lane,
-        **({"resource_lease": resource_lease.model_dump(mode="json")} if resource_lease else {}),
         **({"gpu_lease": gpu_lease.model_dump(mode="json")} if gpu_lease else {}),
         "allow_chat_fallback": False,
         "metadata": {
@@ -886,7 +870,6 @@ def build_response_repair_plan_request(
     reflection: FinalizeReflectionV1,
     user_message: str,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> PlanExecutionRequest:
@@ -904,7 +887,6 @@ def build_response_repair_plan_request(
             reflection=reflection,
             user_message=user_message,
             grammar_receipts=grammar_receipts,
-            resource_lease=resource_lease,
             gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
         ),
@@ -949,7 +931,6 @@ async def run_orion_response_repair(
     user_message: str = "",
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     cortex_client: CortexClientFn | None = None,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
@@ -968,7 +949,6 @@ async def run_orion_response_repair(
         reflection=reflection,
         user_message=user_message,
         grammar_receipts=grammar_receipts,
-        resource_lease=resource_lease,
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
@@ -1317,7 +1297,6 @@ async def run_harness_finalize_chain(
     system_error_publish_fn: PublishFn | None = None,
     grammar_channel: str = DEFAULT_GRAMMAR_EVENT_CHANNEL,
     grammar_publish_fn: Any = None,
-    resource_lease: ResourceLeaseV1 | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
 ) -> HarnessFinalizeChainResult:
@@ -1336,7 +1315,7 @@ async def run_harness_finalize_chain(
     JSON in place of prose-oriented 5c. The default remains false, preserving
     conditional response repair for ordinary turns.
 
-    Owner identity comes from ``resource_lease`` when admitted, otherwise from
+    Owner identity comes from ``gpu_lease`` (the run's hold) when admitted, otherwise from
     ``fcc_model_label``. The same owner lane flows through reflection, any
     re-reflection, and conditional response repair.
 
@@ -1360,7 +1339,6 @@ async def run_harness_finalize_chain(
         user_message=user_message,
         grammar_receipts=grammar_receipts,
         cortex_client=cortex_client,
-        resource_lease=resource_lease,
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
@@ -1387,7 +1365,6 @@ async def run_harness_finalize_chain(
                 user_message=user_message,
                 grammar_receipts=grammar_receipts,
                 cortex_client=cortex_client,
-                resource_lease=resource_lease,
                 gpu_lease=gpu_lease,
                 fcc_model_label=fcc_model_label,
                 bus=bus,
@@ -1447,7 +1424,6 @@ async def run_harness_finalize_chain(
                 user_message=user_message,
                 grammar_receipts=grammar_receipts,
                 cortex_client=cortex_client,
-                resource_lease=resource_lease,
                 gpu_lease=gpu_lease,
                 fcc_model_label=fcc_model_label,
             )

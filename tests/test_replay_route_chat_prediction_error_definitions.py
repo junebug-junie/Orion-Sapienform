@@ -46,6 +46,8 @@ def test_chat_replay_runs_and_v2_drops_topic_coherence() -> None:
             "last_updated_at": (T0 + timedelta(minutes=i)).isoformat(),
         }
     out = replay.replay_chat({"turns": turns})
-    assert len(out["v1"]) == len(out["v2"]) == 5
+    assert len(out["v1"]) == len(out["v2"]) == len(out["v3"]) == 5
     # raw deltas differ because v1 counted repair twice
     assert out["v1:raw"] != out["v2:raw"]
+    # v2 divides the new turn's change by every stored turn; v3 does not.
+    assert out["v3:raw"][-1] > out["v2:raw"][-1] * 4

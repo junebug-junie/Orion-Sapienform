@@ -3235,17 +3235,14 @@ investigation and self-inquiry submissions. An uncertain receipt never triggers
 an unleased direct fallback or a budget refund: inspect/retry the same run ID.
 Set the flag false to preserve the prior non-admitted durable kickoff.
 
-Hub validates admitted turn fences using `HUB_CURIOSITY_LEASE_VALIDATION_URL`
-(default `http://127.0.0.1:8124/leases/validate`, since Hub uses host networking).
-Each admitted turn uses its lease's assigned lane and request's inference timeout; concurrent
-admitted lanes bypass the legacy local turn lock. Duplicate turns coalesce by
-run ID plus lease identity/generation, and even cached results require a current
-fence. Shutdown cancels and joins active turn tasks. The typed lease passes
-through the unified turn and Harness request into FCC's per-process
-`X-Orion-Resource-Lease` header; it never enters the prompt or a global env value.
-Stance, reflection, re-reflection, and conditional response repair use the same lease and
-assigned lane through their Cortex requests. Ordinary turns keep their existing
-routes; Hub omits an absent lease from the legacy stance bus payload.
+An admitted run waits in orion-durable-runs for one GPU pool hold (GPU pool stage 4). Hub
+validates each turn's hold ref (`gpu_lease`) with the pool's `status` verb before spending a turn
+on it, and every LLM call of the turn (FCC via `X-Orion-Gpu-Lease`, stance/reflection/repair via
+`options.gpu_lease`) attaches to that hold. Duplicate turns coalesce by run ID plus hold
+identity/generation. For Door-A, durable-runs keeps the hold past finish; Hub composes under it,
+then posts `/runs/{id}/release-outreach-lease` to `HUB_CURIOSITY_DURABLE_RUNS_URL` (the durable-runs
+base URL, default `http://127.0.0.1:8124`). The old durable lease token (`X-Orion-Resource-Lease`,
+`HUB_CURIOSITY_LEASE_VALIDATION_URL`) was deleted in stage 4.6.
 Full ownership and activation: `docs/architecture/durable-resource-admission.md`.
 
 ## Urgent curiosity runs
@@ -3339,14 +3336,10 @@ no GPU, unconfirmed dispatch) through the real reader, run-state handler and com
 Plan: `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md`.
 
 
-## Optional GPU2 elastic admission
+## GPU2 (agent-gpu2)
 
-GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
-[ownership ADR](../../docs/architecture/gpu2-elastic-admission.md),
-[pre-edit repository/live evidence](../../docs/architecture/gpu2-elastic-evidence.md),
-and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
-for this service's exact flags, HTTP contracts and operator commands.
-No production env sync, migration, GPU transition or deployment was performed.
+gpu2 is loaded and unloaded only by orion-gpu-pool (GPU pool stage 4). The old per-run
+`HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED` permission was deleted in stage 4.6.
 
 ## Lend chat GPU (gpu0 in orion-gpu-pool)
 

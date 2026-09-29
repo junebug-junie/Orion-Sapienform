@@ -150,7 +150,7 @@ def test_turn_carries_the_hold_ref_and_never_the_pool_role_as_a_route():
         [req] = world.turn_requests
         assert req.gpu_lease is not None and req.gpu_lease.model_dump() == world.ref()
         # The hold landed on agent-gpu2: that is a pool role, never a route label.
-        assert req.assigned_lane is None and req.lease is None and req.fcc_model_label is None
+        assert req.assigned_lane is None and req.fcc_model_label is None
         assert "agent-gpu2" not in req.model_dump_json(exclude={"gpu_lease"})
     asyncio.run(scenario())
 

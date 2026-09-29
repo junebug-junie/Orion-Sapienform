@@ -28,6 +28,22 @@ CREATE TABLE IF NOT EXISTS reading_durable_turn (
 """
 
 
+# ResourceRequirementV1 fields deleted in GPU pool stage 4.6. Bindings committed before it were
+# dumped with them (defaults: false / [] / null); the model is extra="forbid", so a stored row is
+# read back without them. The stored prompt/run id stay authoritative; these keys never meant
+# anything to the pool. Durable-runs' duplicate-receipt comparison ignores them too
+# (orion/durable_admission/store.py IGNORED_ADMISSION_FIELDS), so a resubmit is the same run.
+PRE_4_6_ADMISSION_KEYS = ("allow_elastic_activation", "alternatives", "pinned_lane", "operator_override")
+
+
+def _stored_request(raw) -> DurableRunRequestV1:
+    data = json.loads(raw) if isinstance(raw, str) else dict(raw)
+    admission = data.get("admission")
+    if isinstance(admission, dict):
+        data["admission"] = {k: v for k, v in admission.items() if k not in PRE_4_6_ADMISSION_KEYS}
+    return DurableRunRequestV1.model_validate(data)
+
+
 class ReadingPending(Exception):
     """No settled model result yet. Never charge a wallet or failed attempt."""
 
@@ -50,9 +66,7 @@ async def bind_turn(conn, brief: ReadingRunBriefV1, correlation_id: str):
             brief.stage,
         )
         if active is not None:
-            return DurableRunRequestV1.model_validate(
-                json.loads(active) if isinstance(active, str) else active
-            )
+            return _stored_request(active)
         attempt = await conn.fetchval(
             "SELECT COALESCE(MAX(attempt), -1) + 1 FROM reading_durable_turn WHERE seed_id=$1 AND stage=$2",
             brief.seed_id,
@@ -88,9 +102,7 @@ async def _insert_binding(conn, brief, correlation_id, attempt):
         brief.stage,
         attempt,
     )
-    return DurableRunRequestV1.model_validate(
-        json.loads(raw) if isinstance(raw, str) else raw
-    )
+    return _stored_request(raw)
 
 
 async def poll_turn(request: DurableRunRequestV1, base_url: str) -> ReadingTurnResultV1:

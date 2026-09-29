@@ -1012,12 +1012,16 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_KICKOFF_VIA_CORTEX: bool = Field(
         default=True, alias="HUB_CURIOSITY_KICKOFF_VIA_CORTEX"
     )
-    HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED: bool = Field(False, alias="HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED")
     HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED: bool = Field(
         default=False, alias="HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED"
     )
-    HUB_CURIOSITY_LEASE_VALIDATION_URL: str = Field(
-        default="http://127.0.0.1:8124/leases/validate", alias="HUB_CURIOSITY_LEASE_VALIDATION_URL"
+    # orion-durable-runs base URL for curiosity's Door-A: Hub posts
+    # /runs/{id}/release-outreach-lease here when outreach composition under the run's
+    # GPU pool hold is done. Empty = no release call (the hold ends at its outreach max).
+    # Its own key since stage 4.6 (it used to be derived from the deleted
+    # HUB_CURIOSITY_LEASE_VALIDATION_URL).
+    HUB_CURIOSITY_DURABLE_RUNS_URL: str = Field(
+        default="http://127.0.0.1:8124", alias="HUB_CURIOSITY_DURABLE_RUNS_URL"
     )
     # Urgent curiosity runs (docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md):
     # a seeded investigation from the Hub button or orion:curiosity:urgent:request,

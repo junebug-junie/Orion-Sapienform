@@ -67,44 +67,15 @@ def test_failed_start_restores_and_failed_restore_observable(monkeypatch):
 
 def test_noop_and_independent_slot_lock(monkeypatch):
     async def scenario():
-        monkeypatch.setattr(gpu.settings,"GPU2_ENABLED",True)
         monkeypatch.setattr(gpu,"authority",AsyncMock(return_value={"can_transition":True}))
         monkeypatch.setattr(gpu,"status",AsyncMock(return_value=snapshot(active="agent-burst")))
         monkeypatch.setattr(gpu,"model_ready",AsyncMock(return_value=True))
         start=AsyncMock();monkeypatch.setattr(gpu,"start",start)
         async with main_module.lane_control._FLIP_LOCK:
-            assert (await gpu.flip(req()))["status"] == "noop"
+            assert (await gpu.transition(req()))["status"] == "noop"
         start.assert_not_called()
     asyncio.run(scenario())
 
-def test_same_slot_concurrent_calls_do_not_race(monkeypatch):
-    async def scenario():
-        monkeypatch.setattr(gpu.settings,"GPU2_ENABLED",True)
-        entered=asyncio.Event();release=asyncio.Event()
-        async def transition(_):
-            entered.set();await release.wait();return {"status":"success"}
-        monkeypatch.setattr(gpu,"transition",transition)
-        first=asyncio.create_task(gpu.flip(req()))
-        await entered.wait()
-        assert (await gpu.flip(req()))["status"] == "busy"
-        release.set();await first
-    asyncio.run(scenario())
-
-def test_gpu2_activation_needs_no_token(monkeypatch):
-    from fastapi.testclient import TestClient
-    monkeypatch.setattr(main_module.settings,"GPU_LANE_CONTROLLER_TOKEN","")
-    flip=AsyncMock(return_value={"status":"success"})
-    monkeypatch.setattr(gpu,"flip",flip)
-    response=TestClient(main_module.app).post("/v1/gpu-slots/activate",json=req().model_dump())
-    assert response.status_code == 200
-    flip.assert_awaited_once_with(req())
-
-
-def test_gpu2_tokenless_activation_still_disabled_by_feature_gate(monkeypatch):
-    from fastapi.testclient import TestClient
-    monkeypatch.setattr(gpu.settings,"GPU2_ENABLED",False)
-    response=TestClient(main_module.app).post("/v1/gpu-slots/activate",json=req().model_dump())
-    assert response.status_code == 503
 
 
 def test_completed_duplicate_does_not_require_owners_to_drain(monkeypatch):
@@ -128,13 +99,6 @@ def test_active_upstream_prevents_restoration(monkeypatch):
     stop.assert_not_called()
 
 
-def test_authority_rechecks_thermal_eligibility_before_mutation(monkeypatch):
-    monkeypatch.setattr(gpu,'request',AsyncMock(return_value={
-        'operation_id':'test:1','generation':1,'desired_target':'agent-burst',
-        'can_transition':True,'activation_eligible':False}))
-    with pytest.raises(RuntimeError,match='activation_eligibility_suppressed'):
-        asyncio.run(gpu.authority(req()))
-
 
 def test_previous_rollback_is_not_evidence_for_next_operation(monkeypatch):
     monkeypatch.setattr(gpu,'authority',AsyncMock(return_value={'can_transition':True}))
@@ -144,20 +108,3 @@ def test_previous_rollback_is_not_evidence_for_next_operation(monkeypatch):
     result=asyncio.run(gpu.transition(req()))
     assert result['status']=='failed'
     assert 'restored' not in result and 'cold_start_seconds' not in result
-
-
-@pytest.mark.parametrize("token,header,result,code", [
-    ("",None,"success",503), ("secret","secret","success",401),
-    ("secret","Bearer secret","failed",503), ("secret","Bearer secret","success",200),
-])
-def test_gpu1_slot_route_preserves_its_contract(token,header,result,code,monkeypatch):
-    from fastapi.testclient import TestClient
-    monkeypatch.setattr(main_module.settings,"GPU_LANE_CONTROLLER_TOKEN",token)
-    flip=AsyncMock(return_value={"status":result})
-    monkeypatch.setattr(main_module.lane_control,"flip",flip)
-    body={"slot":"circe-gpu1","target":"agent","operation_id":"legacy:1","generation":1}
-    response=TestClient(main_module.app).post("/v1/gpu-slots/activate",json=body,
-        headers={"Authorization":header} if header else {})
-    assert response.status_code == code
-    if not token or header == token:
-        flip.assert_not_called()

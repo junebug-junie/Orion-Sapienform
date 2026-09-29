@@ -32,7 +32,6 @@ def repo(tmp_path, monkeypatch):
     shutil.copy(REPO_ROOT / "config" / "gpu_pool.yaml", root / "config" / "gpu_pool.yaml")
     monkeypatch.setattr(settings, "GPU_LANE_REPO_ROOT", str(root))
     monkeypatch.setattr(settings, "GPU2_POOL_FENCE_STATE_PATH", str(tmp_path / "state" / "fence.json"))
-    monkeypatch.setattr(settings, "GPU2_AUTHORITY", "pool")
     monkeypatch.setattr(settings, "GPU2_ENABLED", True)
     monkeypatch.setattr(settings, "GPU_POOL_ACTUATOR_NAME", "circe")
     monkeypatch.setattr(bus, "_task", None)
@@ -128,46 +127,35 @@ def test_unaddressable_garbage_publishes_nothing(repo):
     assert sink.results == []
 
 
-# --- authority switch --------------------------------------------------------------------------
+# --- the pool is the only gpu2 authority (stage 4.6) -------------------------------------------
 
-def test_default_authority_is_durable_and_refuses_pool_requests(repo, monkeypatch):
-    monkeypatch.setattr(settings, "GPU2_AUTHORITY", "durable")
-    transition = AsyncMock()
-    monkeypatch.setattr(gpu, "transition", transition)
-    sink = Sink()
-    run(lambda: bus.handle(payload(repo), sink))
-    assert sink.statuses == [("refused", None)] and sink.results[0].reason == "authority_durable"
-    transition.assert_not_called()
-    assert not (repo.parent / "state" / "fence.json").exists()  # nothing persisted, nothing fenced
+def test_the_durable_authority_switch_and_its_callback_url_are_gone():
+    fresh = type(settings)(_env_file=None)
+    assert not hasattr(fresh, "GPU2_AUTHORITY") and not hasattr(fresh, "GPU2_AUTHORITY_URL")
+    assert not hasattr(gpu, "pool_authority") and not hasattr(gpu, "flip")
 
 
-def test_settings_default_is_durable():
-    from pydantic_settings import BaseSettings  # noqa: F401 -- settings class, fresh instance
-    assert type(settings)(_env_file=None).GPU2_AUTHORITY == "durable"
-
-
-def test_durable_authority_uses_durable_callback_not_pool_fence(repo, monkeypatch):
-    monkeypatch.setattr(settings, "GPU2_AUTHORITY", "durable")
-    pool = AsyncMock()
+def test_authority_is_the_pool_fence(repo, monkeypatch):
+    pool = AsyncMock(return_value={"can_transition": True})
     monkeypatch.setattr(fence, "authority", pool)
-    monkeypatch.setattr(gpu, "request", AsyncMock(return_value={
-        "operation_id": "d:1", "generation": 1, "desired_target": "agent-burst",
-        "can_transition": True, "activation_eligible": True}))
+    request = AsyncMock()
+    monkeypatch.setattr(gpu, "request", request)
     req = GpuSlotRequestV1(slot="circe-gpu2", target="agent-burst", operation_id="d:1", generation=1)
-    assert asyncio.run(gpu.authority(req))["can_transition"] is True
-    pool.assert_not_called()
+    assert asyncio.run(gpu.authority(req, require_drained=False))["can_transition"] is True
+    pool.assert_awaited_once_with(req, require_drained=False)
+    request.assert_not_called()  # no /elastic/status callback to durable-runs
 
 
-def test_pool_authority_refuses_http_activate(repo, monkeypatch):
+def test_http_activate_route_is_gone(repo, monkeypatch):
     transition = AsyncMock()
     monkeypatch.setattr(gpu, "transition", transition)
     body = {"slot": "circe-gpu2", "target": "agent-burst", "operation_id": "d:9", "generation": 9}
     response = TestClient(main_module.app).post("/v1/gpu-slots/activate", json=body)
-    assert response.status_code == 503 and response.json()["error"] == "authority_pool"
+    assert response.status_code in (404, 405)
     transition.assert_not_called()
 
 
-def test_pool_authority_status_never_calls_durable(repo, monkeypatch):
+def test_status_never_calls_durable(repo, monkeypatch):
     request = AsyncMock()
     monkeypatch.setattr(gpu, "request", request)
     monkeypatch.setattr(gpu, "snapshots", lambda: {})
@@ -575,7 +563,6 @@ def test_lifespan_runs_one_heartbeat_chassis(monkeypatch):
         async def stop(self):
             pass
     monkeypatch.setattr(settings, "ORION_BUS_ENABLED", True)
-    monkeypatch.setattr(settings, "GPU2_AUTHORITY", "durable")
     monkeypatch.setattr(main_module, "build_actuator_chassis", lambda: Fake("actuator"))
     monkeypatch.setattr(main_module, "build_heartbeat_chassis", lambda: Fake("heartbeat"))
     with TestClient(main_module.app):

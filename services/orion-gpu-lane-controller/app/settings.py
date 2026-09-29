@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -11,17 +10,13 @@ class Settings(BaseSettings):
     GPU2_ENABLED: bool = False
     GPU2_DIFFUSION_URL: str = "http://100.112.254.99:8014"
     GPU2_AGENT_URL: str = "http://100.112.254.99:8016"
-    GPU2_AUTHORITY_URL: str = "http://100.92.216.81:8124"
     GPU2_DRAIN_TIMEOUT_SEC: float = 300.0
     GPU2_MODEL_READY_TIMEOUT_SEC: float = 600.0
 
-    # GPU pool stage 4.2 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
-    # Who may move gpu2. `durable` (default) = today: durable-runs' HTTP activate route, fenced by
-    # GPU2_AUTHORITY_URL/elastic/status; pool actuation requests are refused `authority_durable`.
-    # `pool` = only GpuActuateV1 on the bus, fenced by the pool's generation (persisted at
-    # GPU2_POOL_FENCE_STATE_PATH) and launch_digest; the HTTP activate route is refused. Transitional:
-    # the `durable` branch is deleted in stage 4.6.
-    GPU2_AUTHORITY: Literal["durable", "pool"] = "durable"
+    # GPU pool stage 4 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md).
+    # gpu2 moves only on GpuActuateV1 from the pool (bus), fenced by the pool's generation (persisted
+    # at GPU2_POOL_FENCE_STATE_PATH) and launch_digest. Stage 4.6 deleted the `durable` authority
+    # (durable-runs' HTTP activate route + GPU2_AUTHORITY_URL/elastic/status) and the GPU2_AUTHORITY switch.
     # This host's actuator name in config/gpu_pool.yaml `actuators:`; requests for another name are ignored.
     GPU_POOL_ACTUATOR_NAME: str = "circe"
     # Last accepted pool generation + recent action results. Must be on a volume that survives a

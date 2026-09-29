@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 from orion.schemas.cognition.answer_contract import AnswerContract
@@ -44,7 +45,6 @@ from orion.schemas.pre_turn_appraisal import (
 from orion.schemas.thought import StanceReactRequestV1, ThoughtEventV1
 from orion.llm.resource_lease import GPU_LEASE_ROUTE
 from orion.schemas.gpu_pool import GpuLeaseRefV1
-from orion.schemas.resource_admission import ResourceLeaseV1
 from orion.substrate.appraisal.turn_window import build_turn_window
 from orion.llm.routes import FCC_LLAMACPP_MODEL_PREFIX, fcc_model_for_route, is_agent_route_model_label
 from orion.hub.runtime_activity import get_runtime_activity
@@ -702,8 +702,37 @@ def _turn_gpu_placement(payload: dict[str, Any]) -> dict[str, Any] | None:
         state = gpu_pool_feed.state
     except Exception:
         state = None
+    if not _pool_state_is_fresh(state):
+        # The feed keeps its last snapshot when the bus drops or the pool dies; naming a model
+        # from an hours-old snapshot would be the same false claim this replaces.
+        state = None
     placement = placement_from_lease(role, discovered_role(state, role))
-    return {"role": placement.role, "model": placement.model, "profile": placement.profile}
+    return {"role": placement.role, "model": placement.model, "profile": placement.profile,
+            "status": placement.role_status}
+
+
+# The pool broadcasts state every GPU_POOL_STATE_PUBLISH_SEC (5s); a snapshot older than a few
+# broadcasts means the feed is not hearing the pool.
+_POOL_STATE_MAX_AGE_SEC = 30.0
+
+
+def _pool_state_is_fresh(state: Any) -> bool:
+    if not isinstance(state, dict):
+        return False
+    try:
+        generated = datetime.fromisoformat(str(state.get("generated_at")).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if generated.tzinfo is None:
+        generated = generated.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - generated).total_seconds() <= _POOL_STATE_MAX_AGE_SEC
+
+
+def _harness_owns_model_line(payload: dict[str, Any]) -> bool:
+    """A unified turn without a lease: the harness prompt already states the default of the
+    route the motor actually asks for, so the situation brief's own route-default line (always
+    ``ORION_SITUATION_RUNTIME_ROUTE``) would name a second route and model next to it."""
+    return not isinstance(payload.get("gpu_lease"), dict)
 
 
 async def _build_situation_prompt_fragment(
@@ -800,6 +829,8 @@ async def _build_situation_prompt_fragment(
         gpu_placement = _turn_gpu_placement(payload)
         if gpu_placement is not None:
             situation_ctx["gpu_placement"] = gpu_placement
+        elif _harness_owns_model_line(payload):
+            situation_ctx["runtime_line_owner"] = "harness"
         situation_brief, situation_fragment = await build_situation_for_ctx(
             situation_ctx, situation_runtime_ns
         )
@@ -935,8 +966,8 @@ async def execute_unified_turn(
     # already final by this point.
     mode_tag = str(payload.get("mode") or "orion").strip().lower()
     resolved_fcc_model_label = _resolve_fcc_model_label(payload, mode_tag)
-    if payload.get("gpu_lease") is not None and payload.get("resource_lease") is None:
-        # Stage 4: every call of a held turn attaches to the hold's role; name the hold's
+    if payload.get("gpu_lease") is not None:
+        # Every call of a held turn attaches to the hold's role; name the hold's
         # work-class route once here so no caller's chat label can send a chat-class attach.
         resolved_fcc_model_label = f"{FCC_LLAMACPP_MODEL_PREFIX}{GPU_LEASE_ROUTE}"
 
@@ -1061,12 +1092,7 @@ async def execute_unified_turn(
     from scripts.harness_governor_client import HarnessGovernorClient
     from scripts.thought_client import ThoughtClient
 
-    stance_lease = (
-        ResourceLeaseV1.model_validate(payload["resource_lease"])
-        if payload.get("resource_lease") is not None
-        else None
-    )
-    # Stage 4: the durable run's GPU pool hold ref rides the whole turn (stance + harness).
+    # The durable run's GPU pool hold ref rides the whole turn (stance + harness).
     turn_gpu_lease = (
         GpuLeaseRefV1.model_validate(payload["gpu_lease"])
         if payload.get("gpu_lease") is not None
@@ -1088,14 +1114,12 @@ async def execute_unified_turn(
         association=association,
         repair_bundle=repair_bundle,
         stance_inputs=stance_inputs,
-        # Admission owns the lane for the whole turn. Without a lease, preserve
+        # Admission owns the lane for the whole turn. Without a hold, preserve
         # the resolved motor preference: agent override or Exec's chat default.
         llm_route=(
-            stance_lease.lane if stance_lease is not None
-            else GPU_LEASE_ROUTE if turn_gpu_lease is not None
+            GPU_LEASE_ROUTE if turn_gpu_lease is not None
             else "agent" if is_agent_route_model_label(resolved_fcc_model_label) else None
         ),
-        resource_lease=stance_lease,
         gpu_lease=turn_gpu_lease,
         # endogenous_outreach.py (OUTREACH_TAG="endogenous_outreach") already runs
         # its OWN agent-lane-then-chat-lane fallback around this whole call (PR
@@ -1446,7 +1470,6 @@ async def execute_unified_turn(
         progress_lines=progress_lines,
     )
     harness_req = HarnessRunRequestV1(
-        resource_lease=payload.get("resource_lease"),
         gpu_lease=payload.get("gpu_lease"),
         inference_timeout_sec=payload.get("inference_timeout_sec"),
         reading_binding=reading_binding,

@@ -6,9 +6,8 @@ phase, then exactly one terminal ``succeeded`` | ``failed`` | ``refused``. The d
 readiness and rollback steps are gpu2.transition()'s, unchanged; only who asks, and the fence,
 differ (app/pool_fence.py).
 
-Nothing moves unless GPU2_AUTHORITY=pool. Under the default ``durable`` every request addressed to
-this actuator is refused ``authority_durable`` (so a pool that sends early gets a clear answer, not
-a timeout), and durable-runs keeps the HTTP activate route exactly as before.
+The pool is the only thing that moves gpu2 (stage 4.6 deleted the durable-runs HTTP activate route
+and its ``/elastic/status`` fence).
 
 Spec: docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md.
 """
@@ -119,8 +118,6 @@ async def _refuse(req: GpuActuateV1, reason: str, publish: Publish, corr: Any) -
 
 async def _dispatch(req: GpuActuateV1, publish: Publish, corr: Any) -> None:
     global _task, _current
-    if not gpu2.pool_authority():
-        return await _refuse(req, "authority_durable", publish, corr)
     if not settings.GPU2_ENABLED:
         return await _refuse(req, "gpu2_disabled", publish, corr)
     status_view = None

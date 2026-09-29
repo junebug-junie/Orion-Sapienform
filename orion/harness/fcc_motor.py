@@ -449,6 +449,26 @@ def _route_key_from_fcc_env_value(raw_value: str) -> Optional[Tuple[str, str]]:
     return backend, route_key
 
 
+def resolve_fcc_backend(
+    fcc_model_label: str | None, *, env: Dict[str, str] | None = None
+) -> Optional[Tuple[str, str]]:
+    """``(backend, route)`` a turn's FCC label resolves to (``("llamacpp", "agent")``,
+    ``("nvidia-nim", "z-ai/glm-5.2")``), any backend, or None. Same two label shapes and order as
+    `label_to_claude_model_id`."""
+    label = str(fcc_model_label or "").strip()
+    if not label:
+        return None
+    parsed = _route_key_from_fcc_env_value(label)
+    if parsed is None:
+        resolved_env = (
+            env
+            if env is not None
+            else load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
+        )
+        parsed = _route_key_from_fcc_env_value(resolved_env.get(label, ""))
+    return parsed
+
+
 def resolve_fcc_route_key(
     fcc_model_label: str | None, *, env: Dict[str, str] | None = None
 ) -> Optional[str]:
@@ -462,17 +482,7 @@ def resolve_fcc_route_key(
     on" self-context on exactly the lane where it differs most from the
     default. None for a non-llamacpp backend (not a gateway pool route).
     """
-    label = str(fcc_model_label or "").strip()
-    if not label:
-        return None
-    parsed = _route_key_from_fcc_env_value(label)
-    if parsed is None:
-        resolved_env = (
-            env
-            if env is not None
-            else load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
-        )
-        parsed = _route_key_from_fcc_env_value(resolved_env.get(label, ""))
+    parsed = resolve_fcc_backend(fcc_model_label, env=env)
     if parsed is None:
         return None
     backend, route_key = parsed
@@ -744,35 +754,30 @@ def _build_subprocess_env(
     turn_deadline_epoch: Optional[float] = None,
     turn_step_stall_sec: Optional[float] = None,
     n_ctx: Optional[int] = None,
-    resource_lease: dict | None = None,
     gpu_lease: dict | None = None,
 ) -> Dict[str, str]:
     env = os.environ.copy()
-    from orion.llm.resource_lease import (
-        GPU_LEASE_HEADER, LEASE_HEADER, encode_gpu_lease_header, encode_lease_header,
-    )
+    from orion.llm.resource_lease import GPU_LEASE_HEADER, encode_gpu_lease_header
     # Never inherit another run's lease; preserve unrelated custom headers.
-    ours = {LEASE_HEADER.lower(), GPU_LEASE_HEADER.lower()}
+    ours = {GPU_LEASE_HEADER.lower()}
     headers = [line for line in env.get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines()
                if line.partition(":")[0].strip().lower() not in ours]
-    if resource_lease is not None:
-        headers.append(f"{LEASE_HEADER}: {encode_lease_header(resource_lease)}")
     if gpu_lease is not None:
-        # Stage 4: the run's GPU pool hold. The gateway attaches every call to it, so the run's own
+        # The run's GPU pool hold. The gateway attaches every call to it, so the run's own
         # calls never queue behind the hold that reserves their slot.
         headers.append(f"{GPU_LEASE_HEADER}: {encode_gpu_lease_header(gpu_lease)}")
     if headers:
         env["ANTHROPIC_CUSTOM_HEADERS"] = "\n".join(headers)
     else:
         env.pop("ANTHROPIC_CUSTOM_HEADERS", None)
-    if resource_lease is not None or gpu_lease is not None:
+    if gpu_lease is not None:
         # FCC's external proxy has no header-forwarding contract. Send this
         # protected request directly to the existing Anthropic Gateway route.
         env["ANTHROPIC_BASE_URL"] = os.environ.get(
             "HARNESS_LLM_GATEWAY_URL", "http://llm-gateway:8210"
         ).rstrip("/")
-        # Claude requires a token, but Gateway authorizes this request using
-        # its broker fence. Do not send the external FCC proxy's credential.
+        # Claude requires a token, but the pool fences this request (the gateway
+        # attaches it to the hold). Do not send the external FCC proxy's credential.
         env["ANTHROPIC_AUTH_TOKEN"] = "orion-resource-lease"
         env.pop("ANTHROPIC_API_KEY", None)
     else:
@@ -870,7 +875,6 @@ async def run_fcc_turn(
     stream_read_limit: int = DEFAULT_STREAM_READ_LIMIT,
     reading_binding=None,
     reading_only=False,
-    resource_lease: dict | None = None,
     gpu_lease: dict | None = None,
 ) -> AsyncIterator[Dict[str, object]]:
     """Orion capability: the actual FCC-Claude process.
@@ -1012,7 +1016,6 @@ async def run_fcc_turn(
             *argv,
             cwd=workspace,
             env=_build_subprocess_env(
-                resource_lease=resource_lease,
                 gpu_lease=gpu_lease,
                 n_ctx=lane_n_ctx,
                 fcc_server_url=fcc_server_url,

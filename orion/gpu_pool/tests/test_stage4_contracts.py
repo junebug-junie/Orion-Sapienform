@@ -96,7 +96,7 @@ def test_the_hold_ref_is_the_only_run_lease_after_4_6():
     assert not hasattr(admission, "ResourceLeaseV1")
     for name in ("LEASE_HEADER", "encode_lease_header", "decode_lease_header", "validate_resource_lease"):
         assert not hasattr(wire, name), name
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError):   # never registered; guards against a future re-registration
         resolve("ResourceLeaseV1")
     for field in ("allow_elastic_activation", "alternatives", "pinned_lane", "operator_override"):
         assert field not in admission.ResourceRequirementV1.model_fields

@@ -230,6 +230,12 @@ and compose fallbacks remain false when a deployment supplies no env contract;
 `DURABLE_RUNS_ADMISSION_SHADOW` also remains false because shadow mode does not
 execute admitted work. Relevant operator-template values:
 
+> **Superseded.** GPU pool stage 4.5 deleted the broker (runner policy/widening/discovery rows) and
+> stage 4.6 deleted the durable lease token: the Hub lease validator
+> (`HUB_CURIOSITY_LEASE_VALIDATION_URL`) and the Gateway `LLM_GATEWAY_LEASE_VALIDATION_*` /
+> `LLM_GATEWAY_CAPACITY_*` settings no longer exist. A run's GPU pool hold ref is the only run lease;
+> see `docs/superpowers/pr-reports/2026-09-29-gpu-pool-stage4-6-cleanup-pr.md`. Table kept as history.
+
 | Service | Settings |
 | --- | --- |
 | Runner | `DURABLE_RUNS_ADMISSION_ENABLED=true`, `DURABLE_RUNS_CAPACITY_ENABLED=true`, `DURABLE_RUNS_ADMISSION_SHADOW=false` |

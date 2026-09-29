@@ -1,6 +1,6 @@
 ## Summary
 
-- Grammar lane queue depth is now `SQL_WRITER_GRAMMAR_QUEUE_MAXSIZE` (default 2048; was hardcoded 512 since 2026-06-13).
+- Grammar lane queue depth is now a setting, `SQL_WRITER_GRAMMAR_QUEUE_MAXSIZE`, default unchanged at 512. Deliberately NOT raised: the queue is in memory and lost on restart, so overflow goes straight to the durable fallback table and the drain replays it.
 - Per-lane `high_water` added to `grammar_queue_snapshot()`.
 - New drain loop replays events shed with error `grammar queue full` from `bus_fallback_log` back into the grammar ledger while all lanes are idle.
 
@@ -29,7 +29,7 @@ None. `grammar_queue_snapshot()` shards gain a `high_water` field (additive).
 
 ## Env/config changes
 
-- Added keys: `SQL_WRITER_GRAMMAR_QUEUE_MAXSIZE=2048`, `SQL_WRITER_GRAMMAR_DRAIN_INTERVAL_SEC=30` (0 disables), `SQL_WRITER_GRAMMAR_DRAIN_BATCH=200`.
+- Added keys: `SQL_WRITER_GRAMMAR_QUEUE_MAXSIZE=512`, `SQL_WRITER_GRAMMAR_DRAIN_INTERVAL_SEC=30` (0 disables), `SQL_WRITER_GRAMMAR_DRAIN_BATCH=200`.
 - `.env_example` updated: yes. Local `.env`: the sync script skipped these (`SQL_WRITER_` is outside its synced prefixes), added by hand.
 
 ## Tests run
@@ -70,7 +70,7 @@ Then confirm: `docker logs orion-athena-sql-writer | grep grammar_drain` and
 
 ## Risks / concerns
 
-- Medium: queued events are in memory only; a restart mid-burst loses up to the queue depth (was previously durable via fallback on overflow). Mitigation: 2048 not 4096; drain covers overflow.
+- Low: queued events (<=512/lane) are in memory only and lost on restart -- unchanged from before this PR. Overflow is durable.
 - Low: the governor still emits ~900 events per run; this hides the symptom, not the emission. Follow-up: look at the producer.
 - Low: pre-existing sql-writer test failures on main are unrelated.
 

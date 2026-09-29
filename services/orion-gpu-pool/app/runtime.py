@@ -560,12 +560,12 @@ class PoolRuntime:
         key = (d.lease_id, d.reason)
         if key in self._serialized_reported or row is None:
             return
-        self._serialized_reported.add(key)
         await self._emit(GpuPoolEventV1(
             event="queued", lease_id=d.lease_id, holder=row.get("holder"), work_class=row.get("work_class"),
             priority=row.get("priority"), role=d.role, cards=list(self.cfg.roles[d.role].cards),
             turn_correlation_id=row.get("turn_correlation_id"), attempt=row.get("attempt"),
             reason=d.reason, detail={"serialized": True}))
+        self._serialized_reported.add(key)   # only once sent: a failed publish is retried next tick
 
     @staticmethod
     def _swap_key(d: SwapLoad | SwapUnload | SwapBlocked) -> tuple:

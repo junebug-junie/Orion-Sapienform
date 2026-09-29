@@ -78,9 +78,7 @@ def test_live_config_carries_the_5_1_values():
     assert CFG.roles["diffusion"].launch.cuda_env == "CUDA_VISIBLE_DEVICES"
     # agent-gpu2 keeps its bridge until 5.3; experiment lost its dead verbs and is not actuatable
     assert CFG.roles["agent-gpu2"].swap.bridged
-    assert CFG.not_actuatable("agent-gpu2") is None
-    assert not CFG.roles["experiment"].swap.bridged
-    assert CFG.not_actuatable("experiment") == "not_actuatable"
+    assert not CFG.roles["experiment"].swap.bridged and CFG.roles["experiment"].launch is None
 
 
 def test_agent_burst_compose_resolves_to_todays_device_and_profile():
@@ -130,6 +128,32 @@ def test_gate_rejects_template_value_off_the_card_index(tmp_path):
                                                    "ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES=1"))
     problems = check_launch(CFG, tmp_path)
     assert any("CUDA_VISIBLE_DEVICES_OVERRIDE=1 (from templates)" in p for p in problems), problems
+
+
+def test_gate_accepts_a_device_ids_pin_through_cuda_env_and_rejects_another_var(tmp_path):
+    _tree(tmp_path)
+    ids = lambda v: (lambda s: s["atlas-agent-burst"]["deploy"]["resources"]["reservations"]["devices"][0]
+                     .update(device_ids=[v]))
+    _edit_compose(tmp_path, BURST, ids("${ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES:-2}"))
+    assert check_launch(CFG, tmp_path) == []
+    _edit_compose(tmp_path, BURST, ids("${SOME_OTHER_VAR}"))
+    problems = check_launch(CFG, tmp_path)
+    assert any("pins device_ids ['${SOME_OTHER_VAR}']" in p for p in problems), problems
+
+
+def test_gate_nested_device_default_is_not_read_as_a_literal(tmp_path):
+    _tree(tmp_path)
+    _edit_compose(tmp_path, BURST, lambda s: _set_env(
+        s["atlas-agent-burst"], "CUDA_VISIBLE_DEVICES_OVERRIDE",
+        "${ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES:-${SOME_UNSET_VAR:-2}}"))
+    assert check_launch(CFG, tmp_path) == []
+
+
+def test_gate_checks_profiles_against_the_tree_it_checks(tmp_path):
+    _tree(tmp_path)
+    (tmp_path / "config/llm_profiles.yaml").unlink()
+    problems = check_launch(_with_profiles([AGENT_27B]), tmp_path)
+    assert any("llm_profiles.yaml not found" in p for p in problems), problems
 
 
 def test_gate_rejects_a_literal_compose_device_pin(tmp_path):
@@ -265,7 +289,41 @@ def test_a_child_on_the_partner_role_also_blocks():
     hold = _lease("h", "diffusion", "granted", "diffusion", kind="hold", priority="background")
     call = _lease("c", "diffusion", "granted", "diffusion", hold_lease_id="h")
     w = _lease("w", "world")
-    assert not _of(Grant, _run([hold, call, w]))
+    d = _run([hold, call, w])
+    assert not _of(Grant, d)
+    assert [(s.lease_id, s.reason) for s in _of(Serialized, d)] == [("w", "serialized:diffusion")]
+
+
+def test_an_older_waiter_keeps_its_place_against_a_stream_on_the_other_side():
+    """world has 2 slots: without the reservation, overlapping world calls would starve an older
+    diffusion hold forever (a younger w2 slipping in while w1 still runs)."""
+    w1 = _lease("w1", "world", "granted", "world", priority="background")
+    h = _lease("h", "diffusion", kind="hold", priority="background", age=100, retryable=True)
+    w2 = _lease("w2", "world", priority="background", age=1)
+    d = _run([w1, h, w2])
+    assert not _of(Grant, d)                                  # w2 waits behind the older hold
+    assert {(s.lease_id, s.reason) for s in _of(Serialized, d)} == {
+        ("h", "serialized:world"), ("w2", "serialized:diffusion")}
+    d = _run([h, w2])                                         # w1 finished: the hold goes first
+    assert {g.lease_id: g.role for g in _of(Grant, d)} == {"h": "diffusion"}
+
+
+def test_higher_priority_still_goes_first_across_the_pair():
+    w1 = _lease("w1", "world", "granted", "world")
+    h = _lease("h", "diffusion", kind="hold", priority="background", age=100, retryable=True)
+    w2 = _lease("w2", "world", priority="system", age=1)
+    assert {g.lease_id for g in _of(Grant, _run([w1, h, w2]))} == {"w2"}   # queue order is priority first
+
+
+def test_urgent_capped_lease_is_not_reported_serialized():
+    import dataclasses
+    data = copy.deepcopy(RAW)
+    data["defaults"]["urgent_max_concurrent"] = 1
+    cfg = PoolConfig.model_validate(data)
+    busy = _lease("u0", "agent", "granted", "agent", priority="urgent")
+    hold = _lease("h", "diffusion", "granted", "diffusion", kind="hold", priority="background")
+    w = _lease("w", "world", priority="urgent")
+    assert not _of(Serialized, _run([busy, hold, w], cfg=cfg))
 
 
 def test_both_queued_in_one_tick_grants_only_one_side():
@@ -365,7 +423,6 @@ def test_worked_example_a_add_gpu4_is_config_only(tmp_path):
     _edit_compose(tmp_path, BURST, lambda s: s.update(yaml.safe_load(GPU4_COMPOSE)["services"]))
     assert check_launch(cfg, tmp_path) == []
     assert cfg.evicted_by("vision4") == ["fast2"] and not cfg.roles["vision4"].swap.bridged
-    assert cfg.not_actuatable("vision4") is None
 
 
 def test_worked_example_a_with_a_literal_device_is_refused(tmp_path):

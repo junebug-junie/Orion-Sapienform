@@ -74,7 +74,8 @@ Spec: `docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic
 - **`serialize_with`** (role key): nothing is placed on a role while a lease is active on a role it
   serializes with, in either direction. `world: serialize_with: [diffusion]` keeps the old
   `/capacity` permit's world/diffusion mutex on gpu2. No recall or preemption across the pair; the
-  waiting lease keeps its place and deadline, and the pool emits one `queued` event with
+  waiting lease keeps its place in queue order (it reserves the blocking partner, so younger work
+  cannot keep taking it) and its deadline, and the pool emits one `queued` event with
   `reason=serialized:<role>`, `detail.serialized=true` (edge-triggered per lease). Removing the
   YAML line removes the rule. Nothing takes world leases until 5.4, so this is dormant.
 - **Class `world`** is `on_unavailable: wait` (was backlog): a world prediction replayed hours later
@@ -86,7 +87,8 @@ Spec: `docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic
 - **`launch.profile_var` / `launch.profiles`**: the variable the actuator sets to the chosen
   `llm_profiles.yaml` profile (the service's `LLM_PROFILE_NAME` must interpolate it) and the
   allow-list, first = default. Parsed and gated now; nothing sends a profile until 5.3.
-- **`experiment`** lost its dead bridge verbs and is `not_actuatable` (`PoolConfig.not_actuatable`).
+- **`experiment`** lost its dead bridge verbs; the validator exempts an operator-only seat with no
+  launch and no bridge (deferred; nothing can load it, and operator holds are refused in observe).
 - **Seat limit**: `agent-gpu2 max_hold_sec: 9000` (Juniper 2026-09-29).
 
 ## Durable-run holds (stage 4.3)

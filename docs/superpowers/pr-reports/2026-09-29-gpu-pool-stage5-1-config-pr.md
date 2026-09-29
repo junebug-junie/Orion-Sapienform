@@ -8,9 +8,11 @@ instead of 1 hour.
 
 - **A new YAML rule, `serialize_with`, keeps world and image generation off gpu2 at the same time.**
   `world: serialize_with: [diffusion]`. The scheduler places nothing on a role while a lease is
-  active on its partner, in either direction. It never recalls or pre-empts across the pair. The
-  waiting lease keeps its place and its own deadline, and the pool says why once, with a `queued`
-  event carrying `reason=serialized:<role>`. It is dormant today, because the world model does not
+  active on its partner, in either direction. It never recalls or pre-empts across the pair.
+- **The waiting lease keeps its place in line.** If a lease is blocked only by this rule, the
+  partner role is reserved, so younger work cannot keep taking it. Without that, world's two slots
+  could starve an older image hold forever. The pool says why once, with a `queued` event carrying
+  `reason=serialized:<role>`. It is dormant today, because the world model does not
   take pool leases until 5.4.
 - **`launch.cuda_env` now names the compose variable the actuator will set**, and there is a CI gate
   for it. `scripts/check_gpu_pool_config.py` refuses any launch service whose GPU is a literal. Each
@@ -23,8 +25,9 @@ instead of 1 hour.
 - **`launch.profile_var` / `launch.profiles` (a model choice per role)** are parsed and gated. The
   allow-list is checked against `config/llm_profiles.yaml`, and `LLM_PROFILE_NAME` must interpolate
   `profile_var`. Nothing produces a profile until 5.3; `agent-gpu2` gets `profile_var` only.
-- **Class `world` is now `on_unavailable: wait`.** `experiment` lost its dead bridge verbs and is
-  reported `not_actuatable`. `agent-gpu2` `max_hold_sec` went from 3600 to 9000 (Juniper, 2026-09-29).
+- **Class `world` is now `on_unavailable: wait`.** `experiment` lost its dead bridge verbs. The
+  validator exempts an operator-only seat that has no launch block and no bridge (deferred, stage 5
+  Decision 3). `agent-gpu2` `max_hold_sec` went from 3600 to 9000 (Juniper, 2026-09-29).
 
 ## Outcome moved
 
@@ -50,11 +53,11 @@ instead of 1 hour.
 - `orion/gpu_pool/config.py`:
   - new fields `RoleSpec.serialize_with`, `LaunchSpec.profile_var` and `LaunchSpec.profiles`;
   - new cross-reference checks;
-  - `PoolConfig.serialized_with()` and `PoolConfig.not_actuatable()`;
+  - `PoolConfig.serialized_with()`, built once at validation time;
   - the interpolation parser now understands nested defaults (`${A:-${B}}`);
   - `check_launch` gains the device and profile gates.
-- `orion/gpu_pool/scheduler.py`: rule Z1 (`_Ctx.serialized_by`, checked in `placeable`) and a new
-  report-only decision `Serialized`.
+- `orion/gpu_pool/scheduler.py`: rule Z1 (`_Ctx.serialized_by` checked in `placeable`, plus a
+  queue-order reservation of the blocking partner) and a new report-only decision `Serialized`.
 - `services/orion-gpu-pool/app/runtime.py`: `Serialized` → an edge-triggered `queued` event.
 - `services/orion-llamacpp-host`: compose interpolation plus two `.env_example` keys.
 
@@ -120,8 +123,8 @@ instead of 1 hour.
 ```text
 PYTHONPATH=. python scripts/check_gpu_pool_config.py
   check_gpu_pool_config: ok (4 cards, 8 roles, 7 classes, 2 launch blocks, digest e58f5238846b0bb7)
-PYTHONPATH=. python -m pytest orion/gpu_pool/tests -q                 284 passed
-cd services/orion-gpu-pool && python -m pytest tests -q               89 passed, 7 skipped (Postgres, run in CI)
+PYTHONPATH=. python -m pytest orion/gpu_pool/tests -q                 290 passed
+cd services/orion-gpu-pool && python -m pytest tests -q               91 passed, 7 skipped (Postgres, run in CI)
 cd services/orion-gpu-lane-controller && python -m pytest tests -q    77 passed
 cd services/orion-durable-runs && python -m pytest tests -q           188 passed, 64 skipped (Postgres)
 cd services/orion-llm-gateway && python -m pytest tests -q            304 passed
@@ -143,11 +146,11 @@ The eval's day of traffic includes world and diffusion together, so the mutex is
 Compared with origin/main on the same simulation:
 
 - world system p95 wait went from 2 s to 48 s (world now waits while a diffusion call runs);
-- diffusion p95 wait went from 117 s to 3 s;
+- diffusion system p95 wait went from 117 s to 17 s;
 - backlog decisions went from 111 to 1 (world no longer backlogs);
 - owner starvation, lost leases and small-role violations stay at 0;
-- 8025 `serialized:diffusion` scheduler reports were counted per tick. The runtime emits one per
-  lease.
+- the scheduler counted 8839 `serialized:diffusion` and 18 `serialized:world` reports, once per
+  tick. The runtime emits one per lease.
 
 In production (5.4) world's 2 s deadline turns that wait into today's `gpu_contended`, as the permit
 does now.
@@ -168,7 +171,71 @@ No image was built. Nothing was deployed.
 
 ## Review findings fixed
 
-(filled in after the review subagent; see below)
+A code-review subagent reviewed commit 6f1fb8ec7. It found no blockers. Every finding is fixed
+except where noted.
+
+- **Finding (should-fix): younger world work could jump an older diffusion hold and starve it.**
+  world has 2 slots, so overlapping calls kept diffusion blocked. That contradicted "keeps its
+  place".
+  - Fix: a lease blocked only by serialize reserves the blocking partner role. No later lease in
+    queue order (priority, then age) is granted there, in either grant loop.
+  - Evidence: `test_an_older_waiter_keeps_its_place_against_a_stream_on_the_other_side` and
+    `test_higher_priority_still_goes_first_across_the_pair`. The first test fails when the
+    reservation is removed (mutation checked).
+- **Finding (should-fix): the deploy ordering was under-specified.** The digest changes, and the
+  controller's image and checkout are coupled.
+  - Fix: the Restart section and the controller README spell out pull + rebuild on circe and a
+    rebuild on athena at the same commit, done while gpu2 has diffusion resident.
+- **Finding (should-fix): `PoolConfig.not_actuatable()` had no consumer** (a keyword cathedral).
+  - Fix: the method is removed. Only the validator exemption for an operator-only seat without a
+    launch block stays. The Hub "not_actuatable" surface belongs with 5.7, where operator holds
+    become possible.
+  - Not fixed here, and pre-existing: an operator lease for `experiment` still drains everything the
+    seat evicts, although nothing can load it. It is unreachable today, because operator holds are
+    refused in observe mode. Follow-up for 5.7.
+- **Finding (nit): `_report_serialized` marked the event as reported before publishing it.**
+  - Fix: the key is now added after `_emit` returns.
+- **Finding (nit): the report loop could name the wrong cause** for a lease held back by the urgent
+  cap, or on a borrowed role whose owners come first.
+  - Fix: both cases are skipped.
+  - Evidence: `test_urgent_capped_lease_is_not_reported_serialized`, which fails without the fix
+    (mutation checked).
+- **Finding (nit): an owner blocked only by serialize dropped out of `owners_waiting`**, which could
+  let a borrower in.
+  - Fix: `owners_waiting` now uses `usable and fits`, without the serialize check.
+- **Finding (nit): `serialized_with()` rescanned every role on every call.**
+  - Fix: it is built once, in a private attribute, at validation time.
+- **Finding (nit): a nested device default (`${X:-${Y}}`) was compared as a literal** (a false
+  positive).
+  - Fix: the literal comparison is skipped for an interpolated default. The resolved-value check
+    still applies.
+  - Evidence: `test_gate_nested_device_default_is_not_read_as_a_literal`.
+- **Finding (nit): `device_ids: ["${OTHER}"]` passed the gate.**
+  - Fix: `device_ids` entries must interpolate `cuda_env`.
+  - Evidence: `test_gate_accepts_a_device_ids_pin_through_cuda_env_and_rejects_another_var`.
+- **Finding (nit): the profile check fell back to the repo's own `llm_profiles.yaml`** when the
+  checked tree had none.
+  - Fix: it now checks only the tree under test, and reports "not found" otherwise.
+  - Evidence: `test_gate_checks_profiles_against_the_tree_it_checks`.
+- **Finding (nit): test gaps.**
+  - Fix: the child-blocks test now asserts the reason, and the queue-order and urgent-cap tests
+    were added.
+
+## Spec corrections found while implementing
+
+1. **The 5.1 deploy row says "circe pull". That alone breaks the controller.** Its YAML comes from
+   the host checkout, but its parser is baked into the image, and the models reject unknown keys.
+   New keys plus the old image means every action refuses `config_unloadable:*`. The correct step is
+   pull **and** `safe_docker_build.sh orion-gpu-lane-controller up -d --build`.
+2. **"The waiting lease keeps its place" needs an explicit reservation.** A plain "not placeable
+   while the partner is active" rule lets a two-slot role starve its partner. 5.1 implements the
+   reservation (see above).
+3. **The diffusion `launch_digest` also changes**, not only agent-gpu2's. Any new `LaunchSpec` field
+   changes every launch digest.
+4. **The default `sync_local_env_from_example.py` run skips the new `ATLAS_` keys**, because they are
+   outside `SYNC_PREFIXES`. It needs `orion-llamacpp-host --all-keys`. The spec says "then sync".
+5. **The Decision 3 "validator marks experiment `not_actuatable`" has no consumer until 5.7.** 5.1
+   ships only the exemption.
 
 ## Restart required
 

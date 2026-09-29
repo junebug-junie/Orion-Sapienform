@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Literal, get_args
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "gpu_pool.yaml"
 PRIORITIES = ("urgent", "interactive", "system", "background")
@@ -216,6 +216,7 @@ class PoolConfig(BaseModel):
     hold_routes: dict[str, RouteSpec] = Field(default_factory=dict)
     digest: str = ""
     source_text: str = Field("", exclude=True, repr=False)
+    _serial: dict[str, list[str]] = PrivateAttr(default_factory=dict)   # serialize_with, symmetric
 
     @field_validator("routes", "hold_routes", mode="before")
     @classmethod
@@ -265,7 +266,10 @@ class PoolConfig(BaseModel):
             if role.swap is None or role.swap.bridged:
                 continue
             if role.operator_only and role.launch is None:
-                continue  # not_actuatable: an operator-only seat nothing can load yet (stage 5 Decision 3)
+                # Operator-only seat nothing can load yet (experiment, stage 5 Decision 3). Stays
+                # refused at runtime: operator holds are refused in observe mode, and 5.7's enforce
+                # rule requires launch blocks (the Hub "not_actuatable" surface ships with that).
+                continue
             unlaunched = [r for r in [name, *self.evicted_by(name)] if r in self.roles and self.roles[r].launch is None]
             if unlaunched:
                 errors.append(f"role {name}: swap seat has no load/unload bridge, so it and every role it "
@@ -301,6 +305,10 @@ class PoolConfig(BaseModel):
             ports[role.port] = name
         if errors:
             raise ValueError("; ".join(errors))
+        # serialize_with read symmetrically, once: the scheduler asks per placement check.
+        self._serial = {r: sorted(set(spec.serialize_with)
+                                  | {o for o, other in self.roles.items() if r in other.serialize_with})
+                        for r, spec in self.roles.items()}
         return self
 
     # --- derived views -------------------------------------------------------------
@@ -333,17 +341,7 @@ class PoolConfig(BaseModel):
 
     def serialized_with(self, role: str) -> list[str]:
         """``serialize_with`` read symmetrically: what ``role`` lists plus every role listing it."""
-        mine = set(self.roles[role].serialize_with)
-        mine |= {r for r, spec in self.roles.items() if role in spec.serialize_with}
-        return sorted(mine)
-
-    def not_actuatable(self, role: str) -> str | None:
-        """Why the pool can never load/unload this swap seat, or None. Today only an operator-only
-        seat with neither a bridge nor a launch (``experiment``, deferred in stage 5)."""
-        spec = self.roles[role]
-        if spec.swap is None or spec.swap.bridged or spec.launch is not None:
-            return None
-        return "not_actuatable"
+        return self._serial.get(role, [])
 
     def resident_roles(self) -> list[str]:
         """Roles loaded when no swap is active: everything without its own swap seat."""
@@ -420,7 +418,6 @@ _SUBST_HEAD_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)(:?-)?")
 # Container variables that pick a GPU. A launch role's service must set each one it uses only
 # through its launch.cuda_env interpolation (stage 5, "Meaning change: cuda_env, plus a gate").
 DEVICE_KEYS = ("CUDA_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES_OVERRIDE", "NVIDIA_VISIBLE_DEVICES")
-PROFILES_PATH = Path(__file__).resolve().parents[2] / "config" / "llm_profiles.yaml"
 
 
 def _parse_subst(value: str) -> tuple[str, str | None, str | None] | None:
@@ -498,9 +495,8 @@ def _interpolates(value: str, var: str) -> tuple[bool, str | None]:
 
 
 def _known_profiles(root: Path) -> set[str] | None:
+    """The profiles in ``<root>/config/llm_profiles.yaml`` -- the tree being checked, never another."""
     path = root / "config" / "llm_profiles.yaml"
-    if not path.is_file():
-        path = PROFILES_PATH
     if not path.is_file():
         return None
     data = yaml.safe_load(path.read_text()) or {}
@@ -574,14 +570,14 @@ def check_launch(cfg: PoolConfig, root: str | Path) -> list[str]:
                                 f"${{{launch.cuda_env}:-{want}}} (the actuator sets it from the card index; "
                                 f"a literal device cannot move)")
                 continue
-            if default is not None and want and default != want:
+            if default is not None and "$" not in default and want and default != want:
                 problems.append(f"{where}: {launch.service} {key} defaults to {default}, cards {role.cards} "
                                 f"have index {want}")
             device = _resolve(env[key], template)
             if device is not None and want and device != want:
                 problems.append(f"{where}: {launch.service} {key}={device} (from templates), cards {role.cards} "
                                 f"have index {want}")
-        pinned = _pinned_device_ids(service)
+        pinned = _pinned_device_ids(service, launch.cuda_env)
         if pinned:
             problems.append(f"{where}: {launch.service} pins device_ids {pinned}; the GPU must come from "
                             f"{launch.cuda_env}")
@@ -600,9 +596,9 @@ def check_launch(cfg: PoolConfig, root: str | Path) -> list[str]:
     return problems
 
 
-def _pinned_device_ids(service: dict[str, Any]) -> list[str]:
-    """Literal ``device_ids`` under deploy.resources.reservations.devices (or a ``gpus`` list):
-    a second, compose-level device pin the actuator cannot move."""
+def _pinned_device_ids(service: dict[str, Any], cuda_env: str) -> list[str]:
+    """``device_ids`` under deploy.resources.reservations.devices (or a ``gpus`` list) that are not
+    ``${cuda_env}``/``${cuda_env:-...}``: a second, compose-level device pin the actuator cannot move."""
     out: list[str] = []
     devices = (((service.get("deploy") or {}).get("resources") or {}).get("reservations") or {}).get("devices") or []
     gpus = service.get("gpus")
@@ -611,6 +607,6 @@ def _pinned_device_ids(service: dict[str, Any]) -> list[str]:
     for dev in devices:
         if isinstance(dev, dict):
             for d in dev.get("device_ids") or []:
-                if "$" not in str(d):
+                if not _interpolates(str(d), cuda_env)[0]:
                     out.append(str(d))
     return out

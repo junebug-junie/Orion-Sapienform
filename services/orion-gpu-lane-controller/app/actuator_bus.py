@@ -1,4 +1,5 @@
-"""Stage 4.2 bridge: the GPU pool's actuation requests, executed by gpu2.transition().
+"""The GPU pool's actuation requests: stage-5.2 generic launch plans (app/launch_exec.py), or the
+stage-4.2 bridge (gpu2.transition()) for seats that still carry swap.load/unload verbs.
 
 Subscribes to ``orion:gpu_pool:actuate:request`` (GpuActuateV1) and answers on
 ``orion:gpu_pool:actuate:result`` (GpuActuateResultV1): ``accepted``, then one ``progress`` per
@@ -31,7 +32,7 @@ from orion.schemas.gpu_pool import (
 )
 from orion.schemas.gpu_slot import GpuSlotRequestV1
 
-from . import gpu2, pool_fence
+from . import gpu2, launch_exec, pool_fence
 from .settings import settings
 
 Publish = Callable[[GpuActuateResultV1, Any], Awaitable[None]]
@@ -41,26 +42,16 @@ _task: asyncio.Task | None = None
 _current: dict[str, Any] | None = None   # the in-flight request, for replays and `status`
 
 
-def _observed_state(snap: dict[str, Any]) -> str:
-    if snap.get("error") or snap.get("state") == "unknown":
-        return "unknown"
-    if any(r.get("state") == "running" for r in snap.get("containers") or []):
-        return "running"
-    if snap.get("state") == "absent":
-        return "absent"
-    if snap.get("state") in {"exited", "dead", "created"}:
-        return "exited"
-    return "unknown"
-
-
 async def observe() -> dict[str, str]:
-    """Role -> container state on gpu2, for the pool to reconcile from. Never raises."""
+    """Role -> container state for every launch role naming this actuator (stage 5.2: from this
+    checkout's YAML, not a fixed gpu2 pair), for the pool to reconcile from. Never raises; an
+    unloadable config yields {} (the pool reads that as "nothing observed")."""
     try:
-        snaps = await asyncio.to_thread(gpu2.snapshots)
+        plans = pool_fence.role_plans(await asyncio.to_thread(pool_fence.load_config))
     except Exception:  # noqa: BLE001
-        return {role: "unknown" for role in pool_fence.TARGET_ROLES.values()}
-    return {pool_fence.TARGET_ROLES[t]: _observed_state(snap) for t, snap in snaps.items()
-            if t in pool_fence.TARGET_ROLES}
+        logger.warning("gpu_actuate_observe_config_unloadable")
+        return {}
+    return await launch_exec.observe(plans)
 
 
 def _result(req: GpuActuateV1, status: str, *, started: float | None = None, **fields) -> GpuActuateResultV1:
@@ -141,17 +132,15 @@ async def _dispatch(req: GpuActuateV1, publish: Publish, corr: Any) -> None:
     async with _admit_lock:
         if req.deadline_at <= datetime.now(timezone.utc):
             return await _refuse(req, "deadline_passed", publish, corr)
-        if req.profile is not None:
-            return await _refuse(req, "profile_unsupported", publish, corr)  # stage 4 never sends one
         try:
             cfg = await asyncio.to_thread(pool_fence.load_config)
             target = pool_fence.resolve(cfg, role=req.role, action=req.action, cards=req.cards,
-                                        digest=req.launch_digest)
+                                        digest=req.launch_digest, profile=req.profile)
         except pool_fence.Refusal as exc:
             return await _refuse(req, str(exc), publish, corr)
         except Exception as exc:  # noqa: BLE001 -- unparseable own config: act on nothing
             return await _refuse(req, f"config_unloadable:{type(exc).__name__}", publish, corr)
-        if (_task is not None and not _task.done()) or gpu2._lock.locked():
+        if (_task is not None and not _task.done()) or gpu2._lock.locked() or launch_exec.lock.locked():
             return await _refuse(req, "busy", publish, corr)
         try:
             # Re-read after every await above: a transition that finished meanwhile recorded its
@@ -181,7 +170,8 @@ async def _dispatch(req: GpuActuateV1, publish: Publish, corr: Any) -> None:
             logger.warning("gpu_actuate_accepted_publish_failed action_id={}", req.action_id)
 
 
-async def _run(req: GpuActuateV1, target: str, started: float, publish: Publish, corr: Any) -> None:
+async def _run(req: GpuActuateV1, target: str | pool_fence.LaunchPlan, started: float,
+               publish: Publish, corr: Any) -> None:
     global _current
 
     async def progress(phase: str) -> None:
@@ -189,15 +179,20 @@ async def _run(req: GpuActuateV1, target: str, started: float, publish: Publish,
             _current["phase"] = phase
         await publish(_result(req, "progress", started=started, phase=phase), corr)
 
-    slot_req = GpuSlotRequestV1(slot="circe-gpu2", target=target, operation_id=req.action_id,
-                                generation=req.generation)
-    token = gpu2.progress_hook.set(progress)
+    generic = isinstance(target, pool_fence.LaunchPlan)
+    hook = launch_exec.progress_hook if generic else gpu2.progress_hook
+    token = hook.set(progress)
     try:
-        outcome = await gpu2.transition(slot_req)
-    except Exception as exc:  # noqa: BLE001 -- transition() catches its own; this is belt and braces
+        if generic:
+            outcome = await launch_exec.execute(target, req.action,
+                                                launch_exec.Intent(req.action_id, req.generation))
+        else:
+            outcome = await gpu2.transition(GpuSlotRequestV1(
+                slot="circe-gpu2", target=target, operation_id=req.action_id, generation=req.generation))
+    except Exception as exc:  # noqa: BLE001 -- both catch their own; this is belt and braces
         outcome = {"status": "failed", "error": f"transition_crashed:{type(exc).__name__}"}
     finally:
-        gpu2.progress_hook.reset(token)
+        hook.reset(token)
     observed = await observe()
     if outcome.get("status") in {"success", "noop"}:
         final = _result(req, "succeeded", started=started, observed=observed,

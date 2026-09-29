@@ -1152,8 +1152,8 @@ class PoolRuntime:
         the turn's. bus-mirror turns every shared envelope correlation_id into CAUSALLY_FOLLOWED_BY
         edges, so publishing on the turn's id put orion-gpu-pool inside turn causal chains (36 live
         pool edges on 2026-09-29, feeding bus_synaptic_prediction_error). Spec 2026-09-24-gpu-pool-design.md,
-        "Transport-metric and reader impacts" item 1. The turn stays joinable through the payload's
-        ``turn_correlation_id``, which is the only field every consumer reads."""
+        "Transport-metric and reader impacts" item 1. No consumer reads the envelope correlation_id;
+        the turn stays joinable through the payload's ``turn_correlation_id``."""
         if self.bus is None:
             return
         await self._publish(GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND, event.model_dump(mode="json"),

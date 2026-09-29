@@ -46,6 +46,14 @@ Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-de
      swap seat's after_wait_sec when no pause serves them (guards still apply). On a role it
      borrows, an urgent hold's gaps stay open to that role's owners (rule 5)
   urgent_max_concurrent caps active urgent leases; 0 is the rollback: urgent is background
+  U4 shed (docs/superpowers/plans/2026-09-29-urgent-curiosity-plan-4-5-hardware-watch-and-shedding.md):
+     ``shed`` maps a priority to the shed reason blocking it (orion/gpu_pool/shed.py decides which;
+     only background/system are ever passed). A queued, backlogged or retrying lease of a shed
+     priority gets no NEW grant and is reported as Shed(reason="shed:<name>"); it is not demand
+     anywhere (no owner-waiting recall, no swap load, no seat drain, no wait/backlog/fail verdict)
+     and keeps its place in line and its deadline. Running work is untouched: nothing is recalled,
+     and a granted hold's own calls (children) are still granted. Decided on the lease's ORIGINAL
+     priority, so the urgent rollback never makes urgent work sheddable
 
 Stage 5 (docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md):
   Z1 serialize_with: nothing is placed on a role while a lease (request, hold or child) is active on
@@ -59,7 +67,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
-from typing import Iterable, Union
+from typing import Iterable, Mapping, Union
 
 from orion.gpu_pool.config import PoolConfig
 from orion.schemas.gpu_pool import URGENT_PREEMPT as PREEMPT
@@ -199,8 +207,16 @@ class Serialized:
     reason: str
 
 
+@dataclass(frozen=True)
+class Shed:
+    """A lease a shed reason keeps waiting (U4): ``reason`` is ``shed:<name>``. Reported
+    (edge-triggered by the runtime), never a lease transition: the lease stays where it is."""
+    lease_id: str
+    reason: str
+
+
 Decision = Union[Grant, Recall, Abort, Expire, Unavailable, Backlog, Requeue, DeadLetter, SwapLoad, SwapUnload,
-                 SwapBlocked, Serialized]
+                 SwapBlocked, Serialized, Shed]
 
 
 @dataclass
@@ -351,6 +367,7 @@ def schedule(
     now: datetime,
     seen_ctx: dict[str, int] | None = None,
     guards: dict[str, str | None] | None = None,
+    shed: Mapping[str, str] | None = None,
 ) -> list[Decision]:
     """``seen_ctx``: each role's last-seen per-slot context, kept by the caller across restarts of
     the role. Used ONLY to decide "too big for this class" -- a briefly-down big role must not make
@@ -358,9 +375,15 @@ def schedule(
 
     ``guards``: swap-guard name -> None when clear, else why it fails (a guard the caller could not
     read must be passed as failing, e.g. "unavailable"). A name missing from a dict fails closed.
-    ``None`` means the caller evaluates no guards at all (pure tests, the replay eval)."""
+    ``None`` means the caller evaluates no guards at all (pure tests, the replay eval).
+
+    ``shed``: priority -> shed reason name (U4). None or empty = nothing shed."""
     d = cfg.defaults
     out: list[Decision] = []
+    # U4, on the ORIGINAL priority (before the urgent rollback below rewrites urgent to background).
+    shed_of = {l.lease_id: shed[l.priority] for l in leases
+               if shed and l.hold_lease_id is None and l.priority in shed
+               and l.status in ("queued", "backlogged", "retry_wait")}
     if d.urgent_max_concurrent <= 0:
         # Rollback switch: urgent behaves exactly like background (no pause, no stacking).
         leases = [replace(l, priority="background") if l.priority == URGENT else l for l in leases]
@@ -434,7 +457,8 @@ def schedule(
             # A resident owner that could actually run there wants its card back: the seat drains.
             if not spec.operator_only and any(
                     ctx.cfg.owns(q.work_class, ev) and ctx.fits(q, ev)
-                    for q in queued + backlogged for ev in cfg.evicted_by(seat)):
+                    for q in queued + backlogged if q.lease_id not in shed_of
+                    for ev in cfg.evicted_by(seat)):
                 ctx.draining.add(seat)
             # H4: a seat loaded for max_hold_sec gives its card back (loaded_at is only set when
             # the pool itself loaded or adopted the seat, never by observation alone).
@@ -443,7 +467,8 @@ def schedule(
                     and (now - min(loaded_at)).total_seconds() >= spec.max_hold_sec:
                 ctx.draining.add(seat)
                 max_held.add(seat)
-        elif spec.operator_only and any(q.work_class in spec.owner and q.operator for q in queued):
+        elif spec.operator_only and any(q.work_class in spec.owner and q.operator and q.lease_id not in shed_of
+                                        for q in queued):
             # An operator is taking the cards: everything the seat evicts drains.
             ctx.draining.update(cfg.evicted_by(seat))
 
@@ -456,6 +481,12 @@ def schedule(
         else:
             still_backlogged.append(lease)
     backlogged = still_backlogged
+
+    # U4: shed leases leave the placement pass entirely -- reported, never granted, never demand.
+    for lease in _order(cfg, [l for l in queued if l.lease_id in shed_of]):
+        out.append(Shed(lease.lease_id, f"shed:{shed_of[lease.lease_id]}"))
+    queued = [l for l in queued if l.lease_id not in shed_of]
+    backlogged = [l for l in backlogged if l.lease_id not in shed_of]
 
     # --- 3. grants: a run's own calls first, then owners on their own roles, then the rest
     order = _order(cfg, queued)

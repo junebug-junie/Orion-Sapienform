@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     visual_activity_url: str = Field("http://orion-athena-thought:7155/visual-chain/activity",
                                      alias="GPU_POOL_VISUAL_ACTIVITY_URL")
     guard_refresh_sec: float = Field(30.0, gt=0, alias="GPU_POOL_GUARD_REFRESH_SEC")
+    # U4 shed lever kill switch (orion/gpu_pool/shed.py). OFF in code: the pool still receives and
+    # shows shed signals (orion-hardware-watch cooling incidents) but blocks nothing. ON in .env_example.
+    shed_enabled: bool = Field(False, alias="GPU_POOL_SHED_ENABLED")
 
     @property
     def actuate_role_list(self) -> list[str]:

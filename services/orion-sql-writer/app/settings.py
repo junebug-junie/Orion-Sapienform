@@ -630,6 +630,14 @@ class Settings(BaseSettings):
         alias="SQL_WRITER_ALLOW_ACCEPTED_PRESSURE_INGEST",
     )
     sql_writer_grammar_trace_batch_max: int = Field(64, alias="SQL_WRITER_GRAMMAR_TRACE_BATCH_MAX")
+    # Per-lane grammar queue depth (hardcoded 512 until 2026-09-29). Kept small on purpose: the
+    # queue is in memory and lost on restart. A governor run flushes ~900 events in ~10s onto ONE
+    # lane (722 shed on 2026-09-29); overflow goes straight to durable bus_fallback_log and the
+    # drain below replays it. Raising this trades durability for nothing.
+    sql_writer_grammar_queue_maxsize: int = Field(512, alias="SQL_WRITER_GRAMMAR_QUEUE_MAXSIZE")
+    # Self-healing replay of events shed with error='grammar queue full'. 0 disables.
+    sql_writer_grammar_drain_interval_sec: float = Field(30.0, alias="SQL_WRITER_GRAMMAR_DRAIN_INTERVAL_SEC")
+    sql_writer_grammar_drain_batch: int = Field(200, alias="SQL_WRITER_GRAMMAR_DRAIN_BATCH")
     sql_writer_grammar_trace_batch_timeout_sec: float = Field(45.0, alias="SQL_WRITER_GRAMMAR_TRACE_BATCH_TIMEOUT_SEC")
 
     @property

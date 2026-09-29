@@ -831,6 +831,9 @@ class CuriosityInvestigation:
         self.urgent_timeout_sec = float(urgent_timeout_sec)
         self.urgent_reporter: Any = None
         self.urgent_listener_task: Optional[asyncio.Task] = None
+        # Terminal-report deliveries retry for up to 30 min; held here so the
+        # run-state loop never waits on them.
+        self._urgent_report_tasks: set[asyncio.Task] = set()
 
     @property
     def graph_enabled(self) -> bool:
@@ -1946,9 +1949,8 @@ class CuriosityInvestigation:
             "curiosity_urgent_starting incident_id=%s run=%s trigger=%s subject=%s corr=%s",
             incident_id, run_id, seed.trigger, seed.subject or "-", correlation_id,
         )
-        failure = ""
         try:
-            dispatched = await self._dispatch_durable_run(
+            confirmed = await self._dispatch_durable_run(
                 run_id=run_id,
                 correlation_id=correlation_id,
                 prompt=prompt,
@@ -1957,18 +1959,13 @@ class CuriosityInvestigation:
                 urgent=seed,
                 timeout_sec=self.urgent_turn_timeout_sec,
             )
-            if not dispatched:
-                failure = "cortex did not accept the durable run"
         except asyncio.CancelledError:
             await self._release_urgent_open_key(open_key)
             raise
         except Exception as exc:  # noqa: BLE001 -- reported below, never raised to the caller
-            dispatched = False
             failure = f"{type(exc).__name__}: {exc}"[:300]
-
-        if not dispatched:
-            # Registration may still have landed with the receipt lost; if so the
-            # run's own terminal state is reported too. Released so Juniper can retry.
+            # Raised before the request left Hub: no run can exist. Released so
+            # Juniper can retry.
             incident["status"] = "dispatch_failed"
             await self._record_urgent_incident(incident)
             await self._release_urgent_open_key(open_key)
@@ -1985,6 +1982,13 @@ class CuriosityInvestigation:
                     logger.exception("urgent_reporter_dispatch_failed_error incident_id=%s", incident_id)
             return {"ok": False, "reason": "dispatch_failed", "incident_id": incident_id}
 
+        if not confirmed:
+            # No `accepted` from cortex (rejected, timed out, or the receipt was
+            # lost) -- registration may still have landed. Keep the open key so a
+            # retry cannot start a second run; the grant-wait check reports "not
+            # investigated" if no run appears.
+            incident["status"] = "dispatch_unconfirmed"
+            logger.warning("curiosity_urgent_dispatch_unconfirmed incident_id=%s run=%s", incident_id, run_id)
         await self._record_urgent_incident(incident)
         if self.urgent_reporter is None:
             logger.warning("urgent_reporter_missing incident_id=%s", incident_id)
@@ -1993,7 +1997,76 @@ class CuriosityInvestigation:
                 self.urgent_reporter.watch(incident)
             except Exception:  # noqa: BLE001
                 logger.exception("urgent_reporter_watch_error incident_id=%s", incident_id)
+        if not confirmed:
+            return {"ok": True, "run_id": run_id, "incident_id": incident_id, "unconfirmed": True}
         return {"ok": True, "run_id": run_id, "incident_id": incident_id}
+
+    async def _handle_urgent_run_state(self, state: DurableRunStateV1) -> None:
+        """completed -> final report; terminal failed / cancelled -> failed report."""
+        detail = state.detail or {}
+        if state.status == "completed":
+            kind, reason = "final", ""
+        elif state.status == "cancelled" or (state.status == "failed" and state.node == "failed"):
+            kind, reason = "failed", str(detail.get("error") or state.status)
+        else:
+            return
+        urgent = detail.get("urgent") or {}
+        incident_id = str(urgent.get("incident_id") or "")
+        incident = await self._load_urgent_incident(incident_id)
+        if incident is None:
+            # Evicted or never recorded: the finish detail still names the
+            # incident. No evidence bundle to attach, but the report goes out.
+            logger.warning("curiosity_urgent_incident_missing incident_id=%s run=%s", incident_id, state.run_id)
+            incident = {**urgent, "run_id": state.run_id, "evidence": None}
+        elif str(incident.get("run_id") or "") != state.run_id:
+            logger.warning(
+                "curiosity_urgent_run_mismatch incident_id=%s stored_run=%s run=%s",
+                incident_id, incident.get("run_id"), state.run_id,
+            )
+            incident = {**incident, "run_id": state.run_id}
+        incident["status"] = state.status
+        await self._record_urgent_incident(incident)
+        await self._release_urgent_open_key_for(incident_id, state.run_id)
+        self._mind_appraisal_by_run_id.pop(state.run_id, None)
+        logger.info("curiosity_urgent_ended incident_id=%s run=%s status=%s", incident_id, state.run_id, state.status)
+        if self.urgent_reporter is None:
+            logger.warning("urgent_reporter_missing incident_id=%s", incident_id)
+            return
+        from .urgent_report import compose_urgent_report
+
+        request = compose_urgent_report(incident, kind=kind, detail=detail, reason=reason)
+        task = asyncio.create_task(self.urgent_reporter.deliver(incident, request, kind=kind))
+        self._urgent_report_tasks.add(task)
+        task.add_done_callback(self._urgent_report_tasks.discard)
+
+    async def _load_urgent_incident(self, incident_id: str) -> Optional[dict[str, Any]]:
+        redis = getattr(self._bus, "redis", None)
+        if redis is None or not incident_id:
+            return None
+        try:
+            raw = await redis.hget(URGENT_INCIDENTS_KEY, incident_id)
+            record = json.loads(raw) if raw else None
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_urgent_incident_read_failed incident_id=%s", incident_id, exc_info=True)
+            return None
+        return record if isinstance(record, dict) else None
+
+    async def _release_urgent_open_key_for(self, incident_id: str, run_id: str) -> None:
+        """Release the open key only if it still belongs to this run."""
+        redis = getattr(self._bus, "redis", None)
+        if redis is None or not incident_id:
+            return
+        open_key = urgent_open_key(incident_id)
+        try:
+            held = await redis.get(open_key)
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_urgent_open_key_read_failed key=%s", open_key, exc_info=True)
+            return
+        if held is None:
+            return
+        held = held.decode() if isinstance(held, bytes) else str(held)
+        if held == run_id:
+            await self._release_urgent_open_key(open_key)
 
     async def _release_urgent_open_key(self, open_key: str) -> None:
         redis = getattr(self._bus, "redis", None)
@@ -3899,6 +3972,11 @@ class CuriosityInvestigation:
         # Every transition feeds Hub's live activity surface, before the
         # outreach filter below narrows to `completed`.
         get_runtime_activity().run_state(state.model_dump(mode="json"))
+        if state.workflow == "curiosity.investigate" and isinstance((state.detail or {}).get("urgent"), dict):
+            # Urgent runs end in a report, never in reach-out or the ordinary
+            # completion hooks.
+            await self._handle_urgent_run_state(state)
+            return
         if state.workflow != "curiosity.investigate" or state.status != "completed":
             return
         detail = state.detail or {}

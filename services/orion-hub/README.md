@@ -3213,8 +3213,34 @@ logged as `urgent_request_invalid` and dropped) and calls
   HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC`, and GPU admission `priority: urgent`;
 - skips the run lock, cooldown, daily cap and waking window, and spends none of them;
 - records the incident in the Redis hash `orion:curiosity:urgent:incidents` (newest 50);
-- hands the incident to the urgent reporter (`watch` on success, `dispatch_failed` on
-  failure, which also releases the NX key so the incident can be retried).
+- hands the incident to the urgent reporter: `watch` after dispatch, `dispatch_failed`
+  only when dispatch raised (that also releases the NX key so the incident can be
+  retried). When cortex did not confirm (rejected, timed out, receipt lost) the run may
+  still have registered, so the key is kept, the incident is `dispatch_unconfirmed`, the
+  run is watched, and the result carries `"unconfirmed": true`.
+
+Every urgent run ends in a critical Hub + email notice (`scripts/urgent_report.py`,
+`event_kind=curiosity.urgent.report`, channels `in_app` + `email`):
+
+- `final` on `completed`: verdict / operator action / likely cause / cited evidence
+  from the run's `:IncidentReport`, then Orion's prose. No usable report shows the
+  `no_structured_verdict` flag with the prose and the evidence bundle.
+- `failed` on a terminal `failed` or `cancelled` state (reason = `detail.error`), or when
+  dispatch raised: the reason plus the evidence bundle.
+- `no_gpu` when the run has not got past resource wait by
+  `HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC` (no grant/admit/start event in
+  `durable_resource_events`, or no run record at all): "not investigated".
+- `timeout` when no terminal state by `HUB_CURIOSITY_URGENT_TIMEOUT_SEC`: INCOMPLETE; the
+  later final/failed notice still goes out. If the run store shows it already ended but
+  Hub missed the bus event, the final/failed notice is sent from the store instead.
+
+orion-notify never enforces `dedupe_key`, so Hub dedupes itself with
+`orion:curiosity:urgent:sent:{incident_id}:{kind}` (7 days; the value is the run id, so a
+retried run for the same incident is still reported) and retries a refused send
+(2, 4, 8, 16, 32, 60, 60 … s) for up to 30 minutes, then logs `urgent_report_undelivered`
+and sets the incident status `report_undelivered`. Urgent runs never go through
+reach-out. The two watchdog timers are in-process: a Hub restart mid-run loses them, but
+the final/failed notice still rides the durable run-state event.
 
 The evidence bundle (`scripts/urgent_evidence.py`, `collect_evidence()`) is hardware
 and GPU-pool state only, read with the same readers the Hub panels use: cabinet AC plug

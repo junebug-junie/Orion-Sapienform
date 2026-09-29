@@ -222,30 +222,50 @@ def test_curiosity_loop_off_refuses_since_nothing_would_serve_the_turn() -> None
     assert bus.rpc_calls == [] and bus.redis.values == {}
 
 
-def test_dispatch_failure_tells_the_reporter_and_releases_the_open_key() -> None:
-    bus = _Bus(reply_status="rejected")
+def test_unconfirmed_dispatch_keeps_the_key_and_is_watched_not_failed() -> None:
+    # No `accepted` from cortex does not mean nothing registered: the receipt
+    # can be lost. The watchdog reports "not investigated" if no run appears.
+    for bus in (_Bus(reply_status="rejected"), _Bus(raise_on_rpc=True)):
+        loop = _loop(bus)
+        result = asyncio.run(loop.start_urgent(_seed()))
+
+        assert result["ok"] is True and result["unconfirmed"] is True
+        assert result["incident_id"] == INCIDENT and result["run_id"]
+        assert bus.redis.values[urgent_open_key(INCIDENT)] == result["run_id"]
+        stored = json.loads(bus.redis.hashes[URGENT_INCIDENTS_KEY][INCIDENT])
+        assert stored["status"] == "dispatch_unconfirmed"
+        assert loop.urgent_reporter.watched == [stored]
+        assert loop.urgent_reporter.failed == []
+        # Still open, so a retry cannot start a second run for the same incident.
+        assert asyncio.run(loop.start_urgent(_seed()))["reason"] == "incident_already_open"
+
+
+def test_confirmed_dispatch_has_no_unconfirmed_flag() -> None:
+    result = asyncio.run(_loop(_Bus()).start_urgent(_seed()))
+    assert result == {"ok": True, "run_id": result["run_id"], "incident_id": INCIDENT}
+
+
+def test_dispatch_exception_tells_the_reporter_and_releases_the_open_key() -> None:
+    bus = _Bus()
     loop = _loop(bus)
+
+    async def _boom(**kwargs):
+        raise RuntimeError("brief would not build")
+
+    loop._dispatch_durable_run = _boom  # type: ignore[assignment]
     result = asyncio.run(loop.start_urgent(_seed()))
 
     assert result["ok"] is False and result["reason"] == "dispatch_failed"
     assert urgent_open_key(INCIDENT) not in bus.redis.values
     [(incident, reason)] = loop.urgent_reporter.failed
     assert incident["incident_id"] == INCIDENT and incident["status"] == "dispatch_failed"
-    assert reason
+    assert reason == "RuntimeError: brief would not build"
     stored = json.loads(bus.redis.hashes[URGENT_INCIDENTS_KEY][INCIDENT])
     assert stored["status"] == "dispatch_failed"
     assert loop.urgent_reporter.watched == []
     # Released, so the incident can be retried.
-    bus.reply_status = "accepted"
+    del loop._dispatch_durable_run
     assert asyncio.run(loop.start_urgent(_seed()))["ok"] is True
-
-
-def test_dispatch_exception_is_a_dispatch_failure_not_a_crash() -> None:
-    bus = _Bus(raise_on_rpc=True)
-    loop = _loop(bus)
-    result = asyncio.run(loop.start_urgent(_seed()))
-    assert result["ok"] is False and result["reason"] == "dispatch_failed"
-    assert len(loop.urgent_reporter.failed) == 1
 
 
 def test_missing_reporter_is_logged_and_the_run_still_starts(caplog) -> None:

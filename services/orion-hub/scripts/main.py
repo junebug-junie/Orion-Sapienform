@@ -50,6 +50,8 @@ from scripts.bus_synaptic_trigger_notifier import BusSynapticTriggerNotifier
 from orion.core.bus.bus_schemas import ServiceRef
 from scripts.curiosity_investigation import CuriosityInvestigation
 from scripts.curiosity_urgent import urgent_request_loop
+from scripts.urgent_report import UrgentReporter, read_urgent_run_progress
+from orion.notify.client import NotifyClient
 from scripts.energy_stakes_gate import read_latest_energy_stakes
 from orion.world_pulse_read.search import ReadingSearchConfig
 from scripts.reading_listener import ReadingListener
@@ -681,6 +683,16 @@ async def startup_event():
                 urgent_timeout_sec=settings.HUB_CURIOSITY_URGENT_TIMEOUT_SEC,
             )
             await curiosity_investigation.start(bus, harness_rpc_bus=rpc_bus)
+            # Every urgent run ends in a critical Hub + email notice (final,
+            # failed, INCOMPLETE, or not investigated) -- scripts/urgent_report.py.
+            curiosity_investigation.urgent_reporter = UrgentReporter(
+                notify=NotifyClient(settings.NOTIFY_BASE_URL, settings.NOTIFY_API_TOKEN or None),
+                redis=getattr(bus, "redis", None),
+                settings=settings,
+                run_state_reader=lambda run_id: read_urgent_run_progress(
+                    getattr(app.state, "memory_pg_pool", None), run_id
+                ),
+            )
             # Urgent runs: the Hub button and the hardware watcher both publish on
             # orion:curiosity:urgent:request. Cancelled by curiosity_investigation.stop().
             if settings.HUB_CURIOSITY_URGENT_ENABLED and curiosity_investigation.enabled:

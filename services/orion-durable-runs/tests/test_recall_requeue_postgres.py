@@ -66,8 +66,10 @@ async def recall_past_grace(gpu, hold_id, blocker):
                                                  priority="interactive", request_id=f"owner-{hold_id}-{gpu.clock()}"))
     assert owner.status == "granted"
     await until(lambda: gpu.rt.store.leases[hold_id]["status"] == "recalling", attempts=1500)
-    await gpu.later(GRACE - 30, beat=[blocker, owner.lease_id, hold_id])
-    await gpu.later(60, beat=[blocker, owner.lease_id])
+    # every=20 < the owner's 30 s request TTL: later() advances the clock BEFORE it beats, and the
+    # durable driver can run (and make the pool tick) in between -- a 30 s step would expire the owner.
+    await gpu.later(GRACE - 30, beat=[blocker, owner.lease_id, hold_id], every=20)
+    await gpu.later(60, beat=[blocker, owner.lease_id], every=20)
     assert gpu.rt.store.leases[hold_id]["status"] != "recalling"      # aborted past its grace
     return owner.lease_id
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timezone
 
 from orion.schemas.attention_frame import (
@@ -89,7 +90,7 @@ def test_coalition_ids_from_association() -> None:
 def test_parse_stance_react_payload_from_dict() -> None:
     raw = _thought().model_dump(mode="json")
     parsed = parse_stance_react_payload(raw)
-    assert parsed.event_id == "t-1"
+    assert parsed.imperative == "Answer directly."
     assert parsed.profile == "stance_react"
 
 
@@ -127,7 +128,7 @@ def test_parse_stance_react_payload_from_markdown_wrapped_json() -> None:
     inner = _thought().model_dump(mode="json")
     wrapped = f"Here is the stance JSON:\n```json\n{json.dumps(inner)}\n```"
     parsed = parse_stance_react_payload(wrapped)
-    assert parsed.event_id == inner["event_id"]
+    assert parsed.imperative == inner["imperative"]
 
 
 def test_parse_stance_react_payload_coerces_false_interaction_regime() -> None:
@@ -222,3 +223,31 @@ def test_apply_stance_react_pipeline_refuse_trust_rupture() -> None:
     assert result.disposition == "refuse"
     assert result.boundary_register is True
     assert "trust_rupture" in result.disposition_reasons
+
+
+def test_parse_stance_react_payload_stamps_identity_in_code() -> None:
+    """Live 2026-09-28 (corr=f924c7b9...): the stance model wrote event_id,
+    session_id and created_at itself and the parser kept them."""
+    raw = _thought().model_dump(mode="json")
+    raw.update(
+        {
+            "event_id": "evt-9a2b3c4d5e6f7g8h9i0j",
+            "correlation_id": "c-model",
+            "session_id": "sess-orion-main-001",
+            "created_at": "2026-09-28T12:00:00",
+        }
+    )
+    before = datetime.now(timezone.utc)
+    parsed = parse_stance_react_payload(raw, correlation_id="c-real", session_id="sess-real")
+    assert parsed.event_id != "evt-9a2b3c4d5e6f7g8h9i0j"
+    uuid.UUID(parsed.event_id)
+    assert parsed.correlation_id == "c-real"
+    assert parsed.session_id == "sess-real"
+    assert parsed.created_at >= before
+
+
+def test_parse_stance_react_payload_drops_model_session_when_request_has_none() -> None:
+    raw = _thought().model_dump(mode="json")
+    raw["session_id"] = "sess-orion-main-001"
+    parsed = parse_stance_react_payload(raw, correlation_id="c-real", session_id=None)
+    assert parsed.session_id is None

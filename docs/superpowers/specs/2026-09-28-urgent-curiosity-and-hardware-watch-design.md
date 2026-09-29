@@ -237,8 +237,13 @@ operator view.
   reads of the hardware tables get "permission denied", and the prompt says what that means.
 - **More refusals than drafted**, because a request nothing consumes would read as "started"
   and never report: `start_urgent` also refuses `curiosity_disabled` and `redis_unavailable`;
-  the button route refuses `urgent_disabled`, `urgent_listener_not_running` and
-  `bus_unavailable` up front.
+  the button route refuses `urgent_disabled`, `durable_admission_disabled`,
+  `urgent_listener_not_running`, `bus_unavailable` and `redis_unavailable` up front (503).
+- **Every refusal is reported.** A refused `start_urgent` (and a bus request that fails
+  validation but names a usable incident id) sends one critical `failed` notice
+  (`investigation failed: refused: <reason>`) and records a `refused:<reason>` incident stub —
+  never over the record of a run still open for that incident. `incident_already_open` sends
+  nothing: the open run reports.
 
 **What shipped:**
 
@@ -246,22 +251,28 @@ operator view.
   12–32, `question` 1–2000 chars, `trigger: manual|heat|cooling`, `subject` ≤ 120, `evidence`
   ≤ 32 000 bytes serialized, `requested_at`, `requested_by`) and `CuriosityUrgentRequestV1`
   (same fields, the bus request). `CuriosityRunBriefV1.urgent` and
-  `CuriosityTurnRequestV1.urgent` are optional and left off the wire when unset, so services
-  deploy in any order.
+  `CuriosityTurnRequestV1.urgent` are optional and left off the wire when unset, and
+  cortex-orch forwards the admission request with `exclude_none`, so an older durable-runs
+  never sees an `urgent: null` it does not know. Services deploy in any order.
 - Channel `orion:curiosity:urgent:request` (kind `curiosity.urgent.request.v1`); producers
   `orion-hub` (manual) and `orion-hardware-watch` (Part 4); consumer `orion-hub`.
 - Hub `POST /curiosity/api/urgent {question}` collects the evidence bundle and **publishes** a
   `manual` request (one path for the button and the watcher). `GET /curiosity/api/urgent` lists
   the newest 20 incidents without their bundles. The Curiosity panel has the question box, the
   "Run urgent" button and the urgent-runs list.
-- Hub's consumer calls `start_urgent`: one open run per incident (Redis NX key, TTL = overall
-  timeout + 600 s), GPU admission `priority: urgent`, brief `timeout_sec = 900`. It skips the run
+- Hub's consumer calls `start_urgent`: one open run per incident (Redis NX key holding the run
+  id, TTL = overall timeout + 2 × turn timeout + 10 s + 600 s), GPU admission `priority: urgent`
+  with `deadline_at = now + HUB_CURIOSITY_URGENT_TIMEOUT_SEC`, brief `timeout_sec = 900`. At the
+  deadline durable-runs fails the run (`workflow_deadline`, with the urgent detail) whether it is
+  still queued or mid-turn, so the incident always gets a terminal event. It skips the run
   lock, cooldown, daily cap, waking window and energy hold, and spends none of them. It refuses
   when durable admission is off — an urgent run never runs at background priority.
 - **Unconfirmed dispatch keeps the incident open.** If cortex never confirms the run (rejected,
   timed out, receipt lost) it may still have registered, so the NX key is kept, the incident is
-  `dispatch_unconfirmed`, and the watchdog still runs: no run record at 120 s ⇒ "not
-  investigated". Only a dispatch that raised is a clean failure (key released, `failed` report).
+  `dispatch_unconfirmed`, and the watchdog still runs: no run record at 120 s ⇒ one `failed`
+  report ("cortex never registered the run") and the key is released (only if it still holds this
+  run id). Readable progress at 120 s behaves like a confirmed run. A dispatch that raised is a
+  clean failure too (key released, `failed` report).
 - Evidence bundle (`services/orion-hub/scripts/urgent_evidence.py`): cabinet AC latest sample +
   freshness, last 60 min of `cabinet_temp_c`, per-node biometrics, per-GPU cards, active/queued
   pool leases. Each section has its own timeout; a failing one becomes `{"error": ...}`. Trimmed
@@ -288,13 +299,14 @@ The durable graph `curiosity.investigate` is reused; everything below is keyed o
 | Limits | Turn 900 s (`HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC` via the brief's `timeout_sec`); stall **stays 420 s** (a process-wide harness env, not per turn); attempts `min(max_attempts, 2)`, backoff `10 s·2^(n-1)` — also for the tail nodes (report read, attention row, journal); overall 1200 s (`HUB_CURIOSITY_URGENT_TIMEOUT_SEC`) |
 | Finish detail | Urgent runs add `urgent` (incident, trigger, subject, question, requested_at — not the bundle), `incident_report`, `report_flag`. Failed and cancelled urgent runs also carry `urgent`, with the reason in `error` |
 | After | The report (Part 3) replaces reach-out and help-request enqueue. The journal node still runs. Not shipped: setting `:TurnOutcome.continue_line` to the incident |
-| No GPU | Not past resource wait by `HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC=120` ⇒ no-LLM "not investigated" report with the evidence; the run keeps going |
+| No GPU | Not past resource wait by `HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC=120` ⇒ no-LLM "not investigated" report with the evidence; the run keeps waiting until its admission deadline |
 
 ### Part 3 — must-deliver report (as shipped)
 
 - `services/orion-hub/scripts/urgent_report.py`. Four kinds: `final` (completed), `failed`
-  (terminal failed or cancelled, or dispatch raised), `timeout` (no terminal state by 1200 s;
-  the run keeps going and its final/failed notice still follows), `no_gpu` (120 s check above).
+  (terminal failed or cancelled, dispatch raised, refused, or never registered), `timeout` (no
+  terminal state by 1200 s; the run is being stopped at its admission deadline and its final or
+  failed notice follows), `no_gpu` (120 s check above).
 - Every notice: `severity="critical"`, `channels_requested=["in_app","email"]`,
   `event_kind="curiosity.urgent.report"`, `dedupe_key=f"urgent:{incident_id}:{kind}"`.
 - Body order: flag line (`FLAG: no_structured_verdict`, `investigation failed: <reason>`,
@@ -307,7 +319,11 @@ The durable graph `curiosity.investigate` is reused; everything below is keyed o
   then logs `urgent_report_undelivered` and marks the incident `report_undelivered`.
 - The 120 s and 1200 s checks are in-process timers: a Hub restart mid-run loses them. The
   final/failed notice still goes out because it rides the durable run-state event. If the run
-  store shows the run ended but Hub missed the event, the deadline check sends it from the store.
+  store shows the run ended but Hub missed the event, the deadline check sends it from the store,
+  reading the detail from the run-state row or, if that lags, the terminal outbox event. A
+  completed run whose detail is still unreadable is re-read once 60 s later; if still unreadable
+  it logs `urgent_report_missed_terminal_unreadable` and sends no empty final (that would
+  dedupe-block the real one). Any terminal found frees the incident's open key.
 - notify accepting means queued, not emailed: Hub cannot see an SMTP failure.
 - Eval: `services/orion-hub/evals/run_urgent_report_eval.py` replays every outcome through the
   real reader, run-state handler, watchdog and composer.
@@ -443,8 +459,9 @@ The durable graph `curiosity.investigate` is reused; everything below is keyed o
    urgent prompt contains question + evidence and none of the self-material sections;
    `read_turn_result` maps a valid `:IncidentReport` into the report, and a missing/malformed/
    empty-evidence one into `no_structured_verdict`; failed and cancelled ⇒ `investigation failed`
-   + evidence; timeout ⇒ INCOMPLETE report; no grant within 120 s (or no run record after an
-   unconfirmed dispatch) ⇒ "not investigated" report with the evidence bundle; every notice
+   + evidence; timeout ⇒ INCOMPLETE report; no grant within 120 s ⇒ "not investigated" report
+   with the evidence bundle; no run record 120 s after an unconfirmed dispatch ⇒ one `failed`
+   report and the incident freed; every refusal ⇒ one `failed` report; every notice
    critical with email, flag or verdict before prose.
 6. Live smoke: Hub "Run urgent" → pool shows an `urgent` hold → durable run completes → critical
    notice in Hub and email (email delivery verified, not assumed). **UNVERIFIED** — runs after

@@ -3200,24 +3200,33 @@ Full ownership and activation: `docs/architecture/durable-resource-admission.md`
 An urgent run is an investigation someone asked for right now, instead of one Orion
 picked. Requests arrive on `orion:curiosity:urgent:request` (`CuriosityUrgentRequestV1`,
 `orion/schemas/curiosity_urgent.py`); the Hub button and the hardware watcher both
-publish there. `scripts/curiosity_urgent.py` validates each one (invalid payloads are
-logged as `urgent_request_invalid` and dropped) and calls
+publish there. `scripts/curiosity_urgent.py` validates each one (an invalid payload is
+logged as `urgent_request_invalid`; when it still names a usable incident id it also gets a
+`failed` notice, `refused: invalid_request`) and calls
 `CuriosityInvestigation.start_urgent`, which:
 
 - refuses with `urgent_disabled`, `curiosity_disabled`, `durable_admission_disabled`
   (an urgent run never runs at background priority), `redis_unavailable` or `incident_already_open`
-  (Redis NX key `orion:curiosity:urgent:open:{incident_id}`, TTL
-  `HUB_CURIOSITY_URGENT_TIMEOUT_SEC + 600`);
+  (Redis NX key `orion:curiosity:urgent:open:{incident_id}` holding the run id, TTL
+  `HUB_CURIOSITY_URGENT_TIMEOUT_SEC + 2 × HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC + 610`).
+  Every refusal except `incident_already_open` (the open run reports) sends one `failed`
+  notice and records a `refused:<reason>` stub, never over a still-open run's record;
 - builds the urgent prompt (`orion/curiosity/urgent_prompt.py`) and dispatches the
   curiosity durable run with the seed on the brief, `timeout_sec =
-  HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC`, and GPU admission `priority: urgent`;
+  HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC`, and GPU admission `priority: urgent` with
+  `deadline_at = now + HUB_CURIOSITY_URGENT_TIMEOUT_SEC` (durable-runs fails the run with
+  `workflow_deadline` there, queued or mid-turn). The prompt offers `psql` history only when
+  the `HUB_CURIOSITY_PG_READONLY_ROLE` role exists (or the check is off);
 - skips the run lock, cooldown, daily cap and waking window, and spends none of them;
-- records the incident in the Redis hash `orion:curiosity:urgent:incidents` (newest 50);
+- records the incident in the Redis hash `orion:curiosity:urgent:incidents` (newest 50 by
+  `requested_at`; an incident whose open key is held is never evicted);
 - hands the incident to the urgent reporter: `watch` after dispatch, `dispatch_failed`
   only when dispatch raised (that also releases the NX key so the incident can be
   retried). When cortex did not confirm (rejected, timed out, receipt lost) the run may
   still have registered, so the key is kept, the incident is `dispatch_unconfirmed`, the
-  run is watched, and the result carries `"unconfirmed": true`.
+  run is watched, and the result carries `"unconfirmed": true`. If there is still no run
+  record at the grant wait, that is one `failed` notice ("cortex never registered the run")
+  and the key is released (only while it still holds this run id).
 
 Every urgent run ends in a critical Hub + email notice (`scripts/urgent_report.py`,
 `event_kind=curiosity.urgent.report`, channels `in_app` + `email`):
@@ -3225,14 +3234,19 @@ Every urgent run ends in a critical Hub + email notice (`scripts/urgent_report.p
 - `final` on `completed`: verdict / operator action / likely cause / cited evidence
   from the run's `:IncidentReport`, then Orion's prose. No usable report shows the
   `no_structured_verdict` flag with the prose and the evidence bundle.
-- `failed` on a terminal `failed` or `cancelled` state (reason = `detail.error`), or when
-  dispatch raised: the reason plus the evidence bundle.
+- `failed` on a terminal `failed` or `cancelled` state (reason = `detail.error`), when
+  dispatch raised, on a refusal, or when an unconfirmed run never registered: the reason
+  plus the evidence bundle.
 - `no_gpu` when the run has not got past resource wait by
   `HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC` (no grant/admit/start event in
   `durable_resource_events`, or no run record at all): "not investigated".
 - `timeout` when no terminal state by `HUB_CURIOSITY_URGENT_TIMEOUT_SEC`: INCOMPLETE; the
-  later final/failed notice still goes out. If the run store shows it already ended but
-  Hub missed the bus event, the final/failed notice is sent from the store instead.
+  run is being stopped at its admission deadline and its final/failed notice follows. If the
+  run store shows it already ended but Hub missed the bus event, the final/failed notice is
+  sent from the store instead (detail from the run-state row, or the terminal outbox event
+  when that lags; a completed run with unreadable detail is re-read once after 60 s, and if
+  still unreadable logs `urgent_report_missed_terminal_unreadable` rather than send an empty
+  final). Either way the incident's open key is released.
 
 orion-notify never enforces `dedupe_key`, so Hub dedupes itself with
 `orion:curiosity:urgent:sent:{incident_id}:{kind}` (7 days; the value is the run id, so a
@@ -3254,7 +3268,8 @@ The Curiosity panel's "Run urgent" box (`templates/curiosity_atlas.html`) posts
 a `manual` request (`requested_by="juniper"`, incident id `uuid4().hex`) on the channel
 above; it returns `{"ok": true, "incident_id"}`. It refuses up front with 400
 `question_required` / `question_too_long` (over 2000 chars) and 503 `loop_not_running`,
-`urgent_disabled`, `urgent_listener_not_running` or `bus_unavailable` -- a request with no
+`urgent_disabled`, `durable_admission_disabled`, `urgent_listener_not_running`,
+`bus_unavailable` or `redis_unavailable` -- a request with no
 consumer would read as started and never run. `GET /curiosity/api/urgent` lists the newest
 20 incidents from the hash, without their evidence bundles.
 

@@ -56,8 +56,9 @@ class _Task:
 
 
 class _Loop:
-    def __init__(self, *, urgent_enabled=True, listener=None):
+    def __init__(self, *, urgent_enabled=True, listener=None, durable_admission_enabled=True):
         self.urgent_enabled = urgent_enabled
+        self.durable_admission_enabled = durable_admission_enabled
         self.urgent_listener_task = listener if listener is not None else _Task()
         self.seeds = []
 
@@ -185,6 +186,25 @@ def test_no_bus_or_disabled_bus_is_503(monkeypatch) -> None:
         status, body = _post("why?")
         assert status == 503
         assert body == {"ok": False, "reason": "bus_unavailable"}
+
+
+def test_admission_off_is_503_not_a_published_request_that_start_urgent_refuses(monkeypatch) -> None:
+    bus = _Bus()
+    calls = _install(monkeypatch, loop=_Loop(durable_admission_enabled=False), bus=bus)
+    status, body = _post("why?")
+    assert status == 503
+    assert body == {"ok": False, "reason": "durable_admission_disabled"}
+    assert bus.published == [] and calls == []
+
+
+def test_bus_without_redis_is_503(monkeypatch) -> None:
+    bus = _Bus()
+    bus.redis = None
+    calls = _install(monkeypatch, loop=_Loop(), bus=bus)
+    status, body = _post("why?")
+    assert status == 503
+    assert body == {"ok": False, "reason": "redis_unavailable"}
+    assert bus.published == [] and calls == []
 
 
 def test_publish_failure_is_ok_false_not_a_crash(monkeypatch) -> None:

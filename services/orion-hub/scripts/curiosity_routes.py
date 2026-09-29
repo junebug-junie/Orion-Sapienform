@@ -661,11 +661,16 @@ async def curiosity_urgent_api(payload: dict) -> JSONResponse:
         return _urgent_refusal("loop_not_running", 503)
     if not getattr(loop, "urgent_enabled", False):
         return _urgent_refusal("urgent_disabled", 503)
+    if not getattr(loop, "durable_admission_enabled", False):
+        # start_urgent would refuse it anyway; say so now, not in a later email.
+        return _urgent_refusal("durable_admission_disabled", 503)
     listener = getattr(loop, "urgent_listener_task", None)
     if listener is None or listener.done():
         return _urgent_refusal("urgent_listener_not_running", 503)
     if bus is None or not getattr(bus, "enabled", False):
         return _urgent_refusal("bus_unavailable", 503)
+    if getattr(bus, "redis", None) is None:
+        return _urgent_refusal("redis_unavailable", 503)
 
     from uuid import uuid4
 

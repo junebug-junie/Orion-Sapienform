@@ -376,6 +376,21 @@ def test_dispatch_failed_delivers_a_failed_report() -> None:
     assert "investigation failed: RuntimeError: boom" in req.body_text
 
 
+def test_dispatch_failed_still_delivers_without_redis() -> None:
+    """start_urgent reports a redis_unavailable refusal through this same reporter."""
+    notify = _Notify()
+    reporter = UrgentReporter(notify=notify, redis=None, settings=SETTINGS, run_state_reader=lambda r: None)
+
+    async def scenario():
+        await reporter.dispatch_failed(_incident(run_id="", status="refused:redis_unavailable"),
+                                       "refused: redis_unavailable")
+        await asyncio.gather(*list(reporter._tasks))
+
+    asyncio.run(scenario())
+    [req] = notify.sent
+    assert "investigation failed: refused: redis_unavailable" in req.body_text
+
+
 # --- watchdog -----------------------------------------------------------------
 
 

@@ -1902,30 +1902,10 @@ class CuriosityInvestigation:
     # prompt instead of the kickoff one, and GPU admission at `urgent` priority.
     # Plan: docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md
 
-    async def start_urgent(self, seed: CuriosityUrgentSeedV1) -> dict[str, Any]:
-        incident_id = seed.incident_id
-        if not self.urgent_enabled:
-            return {"ok": False, "reason": "urgent_disabled", "incident_id": incident_id}
-        if not self.enabled:
-            # Without the loop running, nothing serves the runner's turn request.
-            return {"ok": False, "reason": "curiosity_disabled", "incident_id": incident_id}
-        if not self.durable_admission_enabled:
-            # Never run an urgent investigation at background priority.
-            return {"ok": False, "reason": "durable_admission_disabled", "incident_id": incident_id}
-        redis = getattr(self._bus, "redis", None)
-        if redis is None:
-            return {"ok": False, "reason": "redis_unavailable", "incident_id": incident_id}
-
-        run_id = uuid4().hex[:12]
-        open_key = urgent_open_key(incident_id)
-        ttl = int(self.urgent_timeout_sec) + URGENT_OPEN_KEY_GRACE_SEC
-        if not await redis.set(open_key, run_id, nx=True, ex=ttl):
-            logger.info("curiosity_urgent_refused incident_id=%s reason=incident_already_open", incident_id)
-            return {"ok": False, "reason": "incident_already_open", "incident_id": incident_id}
-
-        correlation_id = str(uuid5(NAMESPACE_URL, f"{INVESTIGATION_TAG}:{run_id}"))
-        incident: dict[str, Any] = {
-            "incident_id": incident_id,
+    @staticmethod
+    def _urgent_incident(seed: CuriosityUrgentSeedV1, *, run_id: str, status: str) -> dict[str, Any]:
+        return {
+            "incident_id": seed.incident_id,
             "run_id": run_id,
             "question": seed.question,
             "trigger": seed.trigger,
@@ -1935,8 +1915,57 @@ class CuriosityInvestigation:
             # Hardware/pool readings only; the reporter attaches them when a run
             # fails or never gets a GPU, since no run row may exist to read back.
             "evidence": seed.evidence,
-            "status": "dispatched",
+            "status": status,
         }
+
+    async def _refuse_urgent(self, seed: CuriosityUrgentSeedV1, reason: str) -> dict[str, Any]:
+        """A refused urgent request still ends in a failed report (Hub + email) --
+        the requester is never left believing it started."""
+        incident_id = seed.incident_id
+        logger.warning("curiosity_urgent_refused incident_id=%s reason=%s", incident_id, reason)
+        stub = self._urgent_incident(seed, run_id="", status=f"refused:{reason}")
+        redis = getattr(self._bus, "redis", None)
+        if redis is not None:
+            try:
+                held = await redis.get(urgent_open_key(incident_id))
+            except Exception:  # noqa: BLE001 -- unsure: leave the record alone, still report
+                held = b"unknown"
+            if held is None:
+                # Never overwrite the record of a run still open for this incident.
+                await self._record_urgent_incident(stub)
+        if self.urgent_reporter is None:
+            logger.warning("urgent_reporter_missing incident_id=%s", incident_id)
+        else:
+            try:
+                await self.urgent_reporter.dispatch_failed(stub, f"refused: {reason}")
+            except Exception:  # noqa: BLE001
+                logger.exception("urgent_reporter_dispatch_failed_error incident_id=%s", incident_id)
+        return {"ok": False, "reason": reason, "incident_id": incident_id}
+
+    async def start_urgent(self, seed: CuriosityUrgentSeedV1) -> dict[str, Any]:
+        incident_id = seed.incident_id
+        if not self.urgent_enabled:
+            return await self._refuse_urgent(seed, "urgent_disabled")
+        if not self.enabled:
+            # Without the loop running, nothing serves the runner's turn request.
+            return await self._refuse_urgent(seed, "curiosity_disabled")
+        if not self.durable_admission_enabled:
+            # Never run an urgent investigation at background priority.
+            return await self._refuse_urgent(seed, "durable_admission_disabled")
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return await self._refuse_urgent(seed, "redis_unavailable")
+
+        run_id = uuid4().hex[:12]
+        open_key = urgent_open_key(incident_id)
+        ttl = int(self.urgent_timeout_sec) + URGENT_OPEN_KEY_GRACE_SEC
+        if not await redis.set(open_key, run_id, nx=True, ex=ttl):
+            # The open run reports for this incident; a second notice would be a duplicate.
+            logger.info("curiosity_urgent_refused incident_id=%s reason=incident_already_open", incident_id)
+            return {"ok": False, "reason": "incident_already_open", "incident_id": incident_id}
+
+        correlation_id = str(uuid5(NAMESPACE_URL, f"{INVESTIGATION_TAG}:{run_id}"))
+        incident = self._urgent_incident(seed, run_id=run_id, status="dispatched")
         prompt = build_urgent_prompt(
             seed,
             run_id=run_id,

@@ -198,12 +198,26 @@ def test_a_second_request_for_the_same_incident_is_refused() -> None:
     assert len(bus.rpc_calls) == 1
 
 
+def _assert_refusal_reported(loop, bus, reason: str) -> None:
+    """A refusal is never silent: a failed report for the incident, and a record."""
+    [(stub, why)] = loop.urgent_reporter.failed
+    assert why == f"refused: {reason}"
+    assert stub["incident_id"] == INCIDENT and stub["run_id"] == ""
+    assert stub["status"] == f"refused:{reason}"
+    assert stub["question"] == "Why is athena at 88C?" and stub["evidence"] == _seed().evidence
+    assert loop.urgent_reporter.watched == []
+    if bus.redis is not None:
+        stored = json.loads(bus.redis.hashes[URGENT_INCIDENTS_KEY][INCIDENT])
+        assert stored == stub
+
+
 def test_admission_off_refuses_rather_than_running_at_background_priority() -> None:
     bus = _Bus()
     loop = _loop(bus, durable_admission_enabled=False)
     result = asyncio.run(loop.start_urgent(_seed()))
     assert result["ok"] is False and result["reason"] == "durable_admission_disabled"
     assert bus.rpc_calls == [] and bus.redis.values == {}
+    _assert_refusal_reported(loop, bus, "durable_admission_disabled")
 
 
 def test_urgent_disabled_refuses() -> None:
@@ -212,6 +226,7 @@ def test_urgent_disabled_refuses() -> None:
     result = asyncio.run(loop.start_urgent(_seed()))
     assert result["ok"] is False and result["reason"] == "urgent_disabled"
     assert bus.rpc_calls == []
+    _assert_refusal_reported(loop, bus, "urgent_disabled")
 
 
 def test_curiosity_loop_off_refuses_since_nothing_would_serve_the_turn() -> None:
@@ -220,6 +235,37 @@ def test_curiosity_loop_off_refuses_since_nothing_would_serve_the_turn() -> None
     result = asyncio.run(loop.start_urgent(_seed()))
     assert result["ok"] is False and result["reason"] == "curiosity_disabled"
     assert bus.rpc_calls == [] and bus.redis.values == {}
+    _assert_refusal_reported(loop, bus, "curiosity_disabled")
+
+
+def test_no_redis_refuses_and_still_reports() -> None:
+    bus = _Bus()
+    bus.redis = None
+    loop = _loop(bus)
+    result = asyncio.run(loop.start_urgent(_seed()))
+    assert result == {"ok": False, "reason": "redis_unavailable", "incident_id": INCIDENT}
+    assert bus.rpc_calls == []
+    _assert_refusal_reported(loop, bus, "redis_unavailable")
+
+
+def test_a_refusal_never_overwrites_the_record_of_a_run_still_open_for_the_incident() -> None:
+    bus = _Bus()
+    loop = _loop(bus)
+    started = asyncio.run(loop.start_urgent(_seed()))
+    loop.urgent_enabled = False
+    assert asyncio.run(loop.start_urgent(_seed()))["reason"] == "urgent_disabled"
+    stored = json.loads(bus.redis.hashes[URGENT_INCIDENTS_KEY][INCIDENT])
+    assert stored["run_id"] == started["run_id"] and stored["status"] == "dispatched"
+    [(stub, _)] = loop.urgent_reporter.failed
+    assert stub["status"] == "refused:urgent_disabled"
+
+
+def test_incident_already_open_sends_no_second_notice() -> None:
+    bus = _Bus()
+    loop = _loop(bus)
+    asyncio.run(loop.start_urgent(_seed()))
+    asyncio.run(loop.start_urgent(_seed()))
+    assert loop.urgent_reporter.failed == []
 
 
 def test_unconfirmed_dispatch_keeps_the_key_and_is_watched_not_failed() -> None:
@@ -311,6 +357,7 @@ def test_ordinary_dispatch_keeps_background_priority() -> None:
 class _FakeInvestigation:
     def __init__(self) -> None:
         self.seeds: list = []
+        self.urgent_reporter = None
 
     async def start_urgent(self, seed):
         self.seeds.append(seed)
@@ -340,6 +387,30 @@ def test_an_invalid_bus_request_is_dropped_without_raising(caplog) -> None:
         asyncio.run(handle_urgent_request(bus, inv, {"data": b"not an envelope"}))
     assert inv.seeds == []
     assert "urgent_request_invalid" in caplog.text
+
+
+def test_an_invalid_request_naming_an_incident_gets_a_failed_report() -> None:
+    bus = _Bus()
+    inv = _FakeInvestigation()
+    inv.urgent_reporter = _Reporter()
+    payload = {**_seed().model_dump(mode="json"), "trigger": "smoke", "question": "Q" * 5000}
+    asyncio.run(handle_urgent_request(bus, inv, _msg(bus, payload)))
+    assert inv.seeds == []
+    [(stub, reason)] = inv.urgent_reporter.failed
+    assert stub["incident_id"] == INCIDENT and stub["run_id"] == ""
+    assert stub["status"] == "refused:invalid_request"
+    assert stub["trigger"] == "smoke" and stub["subject"] == "athena"
+    assert len(stub["question"]) == 2000
+    assert reason.startswith("refused: invalid_request: ")
+
+
+def test_an_invalid_request_without_a_usable_incident_id_is_only_logged() -> None:
+    bus = _Bus()
+    inv = _FakeInvestigation()
+    inv.urgent_reporter = _Reporter()
+    for payload in ({"question": ""}, {"incident_id": "NOT-HEX", "question": "x"}, {"incident_id": 12345}):
+        asyncio.run(handle_urgent_request(bus, inv, _msg(bus, payload)))
+    assert inv.urgent_reporter.failed == []
 
 
 class _SubBus(_Bus):

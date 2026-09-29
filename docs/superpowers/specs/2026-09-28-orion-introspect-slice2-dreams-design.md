@@ -271,29 +271,41 @@ return unknown. Local `.env` is synced with
      scores bunched together.
    - If there is no gap, search ships with the floor set so only strong
      matches pass, and the PR says so.
-   - The corpus is small (19 narratives, 46 offered hypotheses on
-     2026-09-29); this is recorded, not hidden.
-   - **Result, 2026-09-29 (65 docs).** 4 related questions, all best hits
+   - The corpus is small (19 narratives, 49 offered hypotheses on
+     2026-09-29); this is recorded, not hidden. It grows every ~6h sleep
+     cycle, so these numbers drift; re-run the eval whenever the floor is
+     recalibrated.
+   - **Result, 2026-09-29 (68 docs).** 4 related questions, all best hits
      on the expected dream: related_min 0.733 (max 0.787). 3 unrelated:
-     unrelated_max 0.574 (min 0.503). Gap 0.159, midpoint 0.654, so the
-     floor is **0.65**. Scores spread 0.50–0.79, not saturated or flat.
-     Re-run at 0.65: exit 0.
-   - **Known weakness.** A side probe with off-topic questions that contain
-     the word "dream" ("did you dream about the ocean?", "a dream about my
-     grandmother") scored 0.66–0.70 against narratives, above the floor,
-     while a loose on-topic "vision" scored 0.67. The dream framing lifts
-     every narrative's score, so a query phrased that way can return a weak
-     narrative match. Topic-only queries separate cleanly. The eval now
-     measures this on its own `KNOWN_WEAKNESS` section (never sets the
+     unrelated_max 0.603 ("medieval poetry" → `dh-d7a58be50c83`; min
+     0.503). Gap 0.130, midpoint 0.668. Scores spread 0.50–0.79, not
+     saturated or flat. Run at 0.65: exit 0.
+   - **Why 0.65, not the midpoint.** 0.65 sits inside the gap, 0.083 below
+     related_min and 0.047 above unrelated_max, and deliberately 0.018
+     below the midpoint to favor recall. Under the tool's truth rules the
+     two errors are not symmetric: an empty result falsely tells Orion "no
+     dream matched", while a weak match arrives labeled `unsettled` with
+     its similarity visible.
+   - **Known weakness.** Off-topic questions that contain the word
+     "dream" score above the floor against narratives. The dream framing
+     lifts every narrative's score, so a query phrased that way can return
+     a weak narrative match. Topic-only queries separate cleanly. The eval
+     measures this in its own `KNOWN_WEAKNESS` section (never sets the
      floor or the exit code): 6 dream-worded related, 4 dream-worded
-     unrelated questions. 2026-09-29: framed_related_min 0.692,
-     framed_unrelated_max 0.698, gap −0.006; "did you dream about pull
-     requests?" ranks dream:19/12/16 above the correct dream:17 (0.610);
-     all four framed negatives (0.660–0.698) clear the floor.
-   - **Floor stays 0.65.** Raising it to clear framed negatives would drop
-     real topic-only matches (e.g. dream:16 at 0.661), and an empty result
-     falsely tells Orion no dream matched, while a weak match arrives
-     labeled `unsettled` with its similarity visible.
+     unrelated questions. Same 2026-09-29 run (68 docs):
+     framed_related_min 0.692, framed_unrelated_max 0.698 ("a dream about
+     my grandmother" → dream:14), gap −0.006; all four framed negatives
+     (0.660–0.698) clear the floor; "did you dream about pull requests?"
+     ranks dream:19/12/16 above the correct dream:17 (0.610).
+   - **Floor stays 0.65.** Clearing every framed negative needs a floor
+     above 0.698. That would drop the second expected matches — topic-only
+     dream:16 (0.661) for the vision question, dream-worded dream:15
+     (0.636) for "did you dream about your eyes / vision?" — and the
+     correct dream:17 (0.610) for "did you dream about pull requests?",
+     which would then return nothing at all. The correct best hits survive
+     (topic-only min 0.733, dream-worded correct min 0.716), so the cost is
+     lost secondary and mis-ranked matches, traded for hiding weak
+     `unsettled` ones — the wrong trade under the truth rules above.
    - **Mitigation (structural, not a word filter).** The `dreams` tool
      description and harness brief tell the model that every record is
      already a dream, so `query` names only the topic ("pull requests",

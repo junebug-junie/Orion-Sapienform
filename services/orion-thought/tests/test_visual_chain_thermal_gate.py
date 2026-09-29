@@ -9,6 +9,7 @@ silently, and that a dead sensor does not quietly remove the capability.
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -148,8 +149,10 @@ class TestDegradedAndDisabled:
         # With the flag off the gate must not even be consulted, and the run
         # must reach the GPU request. `_no_gpu_allowed` raises there, and the
         # chain converts that into a generation_failed readout -- so reaching
-        # "generation_failed" IS the proof the gate was bypassed.
-        chain = asyncio.run(visual_chain.run_visual_chain_once(bus=None))
+        # "generation_failed" IS the proof the gate was bypassed. A bus is needed since
+        # GPU pool stage 5.4: a run with no hold asks the pool (granted by conftest's fake)
+        # before diffusion, and with no bus it would defer before reaching the request.
+        chain = asyncio.run(visual_chain.run_visual_chain_once(bus=AsyncMock()))
 
         assert called == [], "gate was consulted despite being disabled"
         assert chain.terminal_reason == "generation_failed"

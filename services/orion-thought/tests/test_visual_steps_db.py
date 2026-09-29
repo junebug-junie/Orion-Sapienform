@@ -54,7 +54,6 @@ def db(monkeypatch, tmp_path):
     store, engine = _schema_engine(monkeypatch, _MIGRATIONS)
     settings = visual_chain.settings
     monkeypatch.setattr(settings, "thermal_gate_enabled", False)
-    monkeypatch.setattr(settings, "visual_chain_gpu2_capacity_enabled", False)
     monkeypatch.setattr(settings, "visual_chain_enabled", False)
     monkeypatch.setattr(settings, "visual_chain_interpretation_enabled", False)
     monkeypatch.setattr(settings, "visual_chain_storage_dir", str(tmp_path))
@@ -216,9 +215,9 @@ async def test_generate_timeout_then_abandon_is_released_by_the_generate_itself(
     release = asyncio.Event()
     real_generate = db.vc.generate_visual_bytes
 
-    async def slow(prompt, *, correlation_id):
+    async def slow(prompt, *, correlation_id, hold=None, bus=None):
         await release.wait()
-        return await real_generate(prompt, correlation_id=correlation_id)
+        return await real_generate(prompt, correlation_id=correlation_id, hold=hold, bus=bus)
 
     monkeypatch.setattr(db.vc, "generate_visual_bytes", slow)
     timed_out = await _step(db, "generate", attempt_id=attempt_id)

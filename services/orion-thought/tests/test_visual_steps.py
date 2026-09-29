@@ -107,7 +107,6 @@ def env(monkeypatch, tmp_path):
         monkeypatch.setattr(store, name, getattr(fake, name))
     monkeypatch.setattr(visual_steps, "_unrecorded_renders", {})
     monkeypatch.setattr(visual_chain.settings, "thermal_gate_enabled", False)
-    monkeypatch.setattr(visual_chain.settings, "visual_chain_gpu2_capacity_enabled", False)
     monkeypatch.setattr(visual_chain.settings, "visual_chain_enabled", False)
     monkeypatch.setattr(visual_chain.settings, "visual_chain_interpretation_enabled", False)
     monkeypatch.setattr(visual_chain.settings, "visual_chain_storage_dir", str(tmp_path))
@@ -357,6 +356,16 @@ async def test_missing_stage_column_is_a_retry_never_a_recompute(env, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_generate_under_the_runs_hold_takes_no_second_gpu_gate(env, gpu_pool):
+    """GPU pool stage 5.4: the run's validated diffusion hold is the grant. The generate step
+    never asks the pool again (and never asks durable-runs /capacity, which is gone)."""
+    attempt_id, result = await _generated(env)
+    assert result.status == "done"
+    assert gpu_pool.calls == []
+    assert len(env.holds) >= 1 and len(env.generate_calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_generate_records_the_image_and_reports_its_work_time(env):
     attempt_id, result = await _generated(env)
     stage = env.store.rows[attempt_id]["stage_json"]
@@ -492,7 +501,7 @@ async def test_generate_deadline_leaves_the_work_running_until_it_records_its_ex
     release = asyncio.Event()
     diffusion_calls = []
 
-    async def slow(prompt, *, correlation_id):
+    async def slow(prompt, *, correlation_id, hold=None, bus=None):
         diffusion_calls.append(prompt)
         await release.wait()
         return _png()
@@ -523,7 +532,7 @@ async def test_hung_diffusion_releases_the_lock_at_the_in_flight_ceiling(env, mo
     monkeypatch.setattr(env.steps, "visual_step_generate_deadline_sec", lambda: 0.05)
     monkeypatch.setattr(env.steps, "_in_flight_window_sec", lambda: 0.3)
 
-    async def hung(prompt, *, correlation_id):
+    async def hung(prompt, *, correlation_id, hold=None, bus=None):
         await asyncio.sleep(30)
 
     monkeypatch.setattr(env.vc, "generate_visual_bytes", hung)

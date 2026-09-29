@@ -23,6 +23,13 @@ from orion.introspect.binding import introspect_binding_for_turn
 from orion.introspect.brief import append_introspect_harness_brief
 from orion.world_pulse_read.tools import append_reading_mcp_harness_brief
 
+HARNESS_TASK_HEADER = "TASK THIS TURN (respond to this message):"
+HARNESS_STANCE_GUIDANCE_HEADER = (
+    "STANCE GUIDANCE (how to approach the task above, not a replacement for it; "
+    "anything here the task did not ask for is optional: do it only if it is cheap "
+    "and directly serves the answer):"
+)
+
 
 def _format_stance_slice(sl: StanceHarnessSliceV1) -> list[str]:
     lines = [
@@ -156,10 +163,11 @@ def compile_harness_prefix(
 
     Deterministically materializes the stance-conditioned context of the FCC
     motor prompt, in render order: the unified operator brief, grounding self
-    block, backend self-context, situation context, Thought imperative and
-    stance slice, autonomy slice, prior tool-fetch line, recent-turn history,
-    user message, repair overlay, enabled MCP tool briefs (including orion-introspect), and (when a
-    situation fragment was rendered) the canonical Situation-block explainer
+    block, backend self-context, situation context, prior tool-fetch line,
+    recent-turn history, the task header and user message, the stance guidance
+    header with Thought imperative, stance slice, autonomy slice and strain
+    refs, repair overlay, enabled MCP tool briefs (including orion-introspect),
+    and (when a situation fragment was rendered) the canonical Situation-block explainer
     (orion/harness/situation_brief.py). The full `claude -p` prompt is this
     prefix plus the harness_motor_instruction that build_harness_prompt
     (runner.py) appends on user-message turns — check both when chasing
@@ -201,18 +209,15 @@ def compile_harness_prefix(
         # before this parameter existed.
         parts.append(situation_prompt_fragment)
 
-    parts.extend(
-        [
-            f"Imperative: {thought.imperative}",
-            f"Tone: {thought.tone}",
-        ]
-    )
-    parts.extend(_format_stance_slice(thought.stance_harness_slice))
+    stance_lines: list[str] = [
+        f"Imperative: {thought.imperative}",
+        f"Tone: {thought.tone}",
+    ]
+    stance_lines.extend(_format_stance_slice(thought.stance_harness_slice))
     if thought.autonomy_slice is not None:
-        parts.extend(_format_autonomy_slice(thought.autonomy_slice))
-
+        stance_lines.extend(_format_autonomy_slice(thought.autonomy_slice))
     if thought.strain_refs:
-        parts.append(f"Strain refs: {', '.join(thought.strain_refs)}")
+        stance_lines.append(f"Strain refs: {', '.join(thought.strain_refs)}")
 
     if prior_tool_fetch_names:
         # Cross-turn continuity within this same session (see
@@ -228,7 +233,10 @@ def compile_harness_prefix(
     parts.extend(_format_recent_turns(recent_turns or []))
 
     if user_message.strip():
+        parts.append(HARNESS_TASK_HEADER)
         parts.append(f"User message: {user_message.strip()}")
+        parts.append(HARNESS_STANCE_GUIDANCE_HEADER)
+    parts.extend(stance_lines)
 
     if repair_overlay.mode != "default":
         parts.append(f"Repair mode: {repair_overlay.mode}")

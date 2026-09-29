@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from orion.harness.operator_brief import HARNESS_RESPOND_TO_TASK
 from orion.harness.runner import HarnessMotorResult, HarnessRunner, build_harness_prompt
 from orion.harness.tests.fixtures import make_thought
 from orion.schemas.cognition.answer_contract import AnswerContract
@@ -744,7 +745,7 @@ async def test_harness_runner_uses_compile_harness_prefix() -> None:
     assert "Imperative: Check logs first." in prompt
     assert "Tone: direct" in prompt
     assert "what broke?" in prompt
-    assert "Execute your imperative" in prompt
+    assert HARNESS_RESPOND_TO_TASK in prompt
 
 
 @pytest.mark.asyncio

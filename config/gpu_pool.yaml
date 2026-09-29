@@ -50,9 +50,10 @@ roles:
                # self-sense holds may land here; image generation may wait up to ~2.5 h for gpu2.
                max_hold_sec: 9000,
                # load/unload: stage-4 bridge verbs onto the controller's fixed gpu2 transitions (deleted in stage 5).
-               # after_wait_sec keeps today's 1200s elastic trigger; guards are today's elastic eligibility checks.
+               # after_wait_sec keeps today's 1200s elastic trigger. guards: thermal only -- visual_baseline was
+               # deleted in stage 5.4 (a reverie-visual diffusion hold reclaims gpu2 through the queue).
                swap: {evicts: [diffusion], load: gpu2/agent, unload: gpu2/restore,
-                      after_wait_sec: 1200, guards: [thermal, visual_baseline]},
+                      after_wait_sec: 1200, guards: [thermal]},
                launch: {actuator: circe, compose: services/orion-llamacpp-host/docker-compose.atlas-workers.yml,
                         env_file: services/orion-llamacpp-host/.env, service: atlas-agent-burst,
                         compose_profile: agent-burst,
@@ -105,7 +106,7 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
 
 hold_routes:   # durable-run holds on non-LLM roles; durable-runs reads these, the gateway never does
   # reverie.visual's generate step (docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.md).
-  # Advisory for the diffusion host itself: orion-thought validates the hold ref before generating,
-  # and still takes the /capacity permit world-model shares gpu2 through until stage 5.4.
+  # The hold IS the grant (stage 5.4): orion-thought validates the hold ref before generating and
+  # takes no second gate; world.serialize_with keeps world-model off gpu2 while it is held.
   # priority is informational: ResourceRequirementV1.priority (always background) wins for holds.
   diffusion: {class: diffusion, priority: background}

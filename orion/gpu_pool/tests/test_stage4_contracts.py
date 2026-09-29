@@ -242,7 +242,7 @@ def test_unbridged_seat_with_launches_is_valid_and_after_wait_overrides():
     data = copy.deepcopy(RAW)
     swap = data["roles"]["agent-gpu2"]["swap"]
     swap.pop("load"), swap.pop("unload")
-    swap.update(after_wait_sec=1200, guards=["thermal", "visual_baseline"])
+    swap.update(after_wait_sec=1200, guards=["thermal"])
     cfg = PoolConfig.model_validate(data)
     assert cfg.swap_after_wait_sec("agent-gpu2") == 1200
     assert cfg.swap_after_wait_sec("experiment") == cfg.defaults.swap_after_wait_sec

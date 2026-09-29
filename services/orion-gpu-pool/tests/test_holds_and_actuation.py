@@ -529,15 +529,12 @@ def test_min_residency_is_reported_when_demand_arrives_inside_it():
 
 def test_guards_block_an_armed_load_and_say_which():
     async def go():
-        rt, clock = make(guards={"thermal": "hot:temp_over_hot", "visual_baseline": None})
+        rt, clock = make(guards={"thermal": "hot:temp_over_hot"})
         await boot(rt)
         await demand_gpu2(rt, clock)
         assert actuations(rt) == []
         [s] = rt.bus.events("swap_requested")
         assert s["reason"] == "guard:thermal" and s["detail"]["guard_state"] == "hot:temp_over_hot"
-        rt.guard_states = {"thermal": None, "visual_baseline": "visual_baseline_urgent"}
-        await step(rt, clock, 1)
-        assert rt.bus.events("swap_requested")[-1]["reason"] == "guard:visual_baseline"
         rt.guard_states = dict(CLEAR_GUARDS)
         await step(rt, clock, 1)
         assert [m.action for m in actuations(rt)] == ["load"]
@@ -546,7 +543,7 @@ def test_guards_block_an_armed_load_and_say_which():
 
 def test_an_unread_guard_blocks_loading():
     async def go():
-        rt, clock = make(guards={"thermal": "unread", "visual_baseline": "unread"})
+        rt, clock = make(guards={"thermal": "unread"})
         await boot(rt)
         await demand_gpu2(rt, clock)
         assert actuations(rt) == [] and rt.bus.events("swap_requested")[0]["reason"] == "guard:thermal"

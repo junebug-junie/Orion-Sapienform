@@ -91,6 +91,25 @@ Spec: `docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic
   launch and no bridge (deferred; nothing can load it, and operator holds are refused in observe).
 - **Seat limit**: `agent-gpu2 max_hold_sec: 9000` (Juniper 2026-09-29).
 
+
+## Stage 5.4: world-model and image generation on pool leases
+
+- **world-model** (circe, gpu2) takes a `world` request lease around every CUDA forward pass
+  (`priority=system`, deadline `WM_GPU_LEASE_DEADLINE_SEC`=2 s). Still queued at the deadline ->
+  its task returns `error_code=gpu_contended`; this pool's event for it reads
+  `queued reason=serialized:diffusion` when a diffusion lease/hold is why. Unreachable pool ->
+  `gpu_pool_unreachable`. Class `world` is `on_unavailable: wait` (5.1).
+- **Image generation**: a reverie-visual durable run's `diffusion` hold (`hold_routes.diffusion`)
+  is the grant. orion-thought's generate step validates it and takes no second gate. A generate
+  outside a durable run (run-once route, legacy worker) takes a `diffusion` request lease.
+- **Nothing calls durable-runs `/capacity` any more** (gate:
+  `orion/gpu_pool/tests/test_stage5_4_no_capacity_callers.py`). Deleted in 5.6.
+- **`visual_baseline` swap guard deleted**, with `GPU_POOL_VISUAL_ACTIVITY_URL` and the image's
+  copy of `config/proposals/visual_baseline.v1.yaml`. The 27B load is guarded by `thermal` only; an
+  overdue image baseline reclaims gpu2 through the queue (a diffusion hold, owner reclaim).
+- Eval: `run_pool_day_eval.py` now fails on any second where a world and a diffusion lease are
+  granted together (`world_diffusion_overlap_sec`), or if `serialize_with` never came up.
+
 ## Durable-run holds (stage 4.3)
 
 Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md`. Built in
@@ -203,8 +222,9 @@ would pause a real background run, so it waits for Juniper's approval.
 
 Loads are blocked -- reported as `swap_requested {actuated: false, reason}` -- by `min_residency`
 (after an unload, `swap_min_residency_sec`), `cooldown`, and the seat's `swap.guards`:
-`guard:thermal` (cabinet sensor; a degraded or missing reading blocks) and `guard:visual_baseline`
-(visual chain baseline overdue or an attempt running; stage-4-only). Guards are read every
+`guard:thermal` (cabinet sensor; a degraded or missing reading blocks). The stage-4
+`guard:visual_baseline` was deleted in stage 5.4: a reverie-visual run's diffusion hold reclaims gpu2
+through the queue (owner reclaim) instead. Guards are read every
 `GPU_POOL_GUARD_REFRESH_SEC` outside the lease lock; a guard never read blocks.
 
 The Hub GPU-pool panel shows each card's `swap_state` (fault in red), the action in flight or last

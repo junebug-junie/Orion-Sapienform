@@ -154,6 +154,7 @@ services/orion-cortex-exec: per-file (whole-dir collection collides on verb regi
      story_weave_smoke); test_gpu_lease_forwarding.py 11 passed
 services/orion-hub: pytest tests -q -> 38 failed, 3004 passed, 73 skipped
   (the same 38 fail on origin/main: UI smoke, memory-graph routes, etc.); touched files 236 passed
+  after merging main: gateway+harness+gpu_pool+world_pulse_read+controller 1085 passed; durable-runs 240 passed; Hub 38 failed / 3118 passed (same 38)
 services/orion-durable-runs (throwaway postgres:16, ORION_ADMISSION_TEST_DSN): pytest tests -q -> 213 passed
 services/orion-gpu-lane-controller: pytest tests -q                   -> 77 passed
 services/orion-field-digester (throwaway postgres:16, GPU_POOL_TEST_POSTGRES_URI): pytest tests -q -> 263 passed
@@ -253,6 +254,6 @@ name if a build argument is required. world-model changed a comment only: no reb
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2401
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -118,7 +118,7 @@ def test_production_generate_only_binds_and_polls_durable_run(monkeypatch, cls, 
         return await callback(conn)
 
     pipe._with_conn = with_conn
-    bound = SimpleNamespace(run_id="immutable-run")
+    bound = SimpleNamespace(run_id="immutable-run", brief=SimpleNamespace(prompt="Read source"))
     bind = AsyncMock(return_value=bound)
     poll = AsyncMock(side_effect=ReadingPending("waiting_resource"))
     monkeypatch.setitem(cls._generate.__globals__, "bind_turn", bind)

@@ -104,7 +104,27 @@
     durable_run_not_found_retry_shortly: "The run hasn't reached the run service yet; try again shortly.",
     reading_control_requires_hub_page: "Controls only work from the Hub page.",
     reading_db_unavailable: "Hub has no database connection right now.",
+    document_reading_disabled: "Reading documents by path is turned off (HUB_READING_DOCUMENT_ROOTS is empty).",
+    document_outside_allowed_roots: "That path is outside the folders Orion is allowed to read.",
+    document_path_denied: "That path is blocked (secrets, keys and .git are never read).",
+    document_type_not_allowed: "Only text documents can be read (e.g. .md, .txt, .rst).",
+    document_not_found: "No file exists at that path (as Hub sees the disk).",
+    document_not_a_file: "That path is not a regular file.",
+    document_unreadable: "Hub could not open that file.",
+    document_too_large: "That document is over the size limit, so it was refused rather than read in part.",
+    document_not_text: "That file is not UTF-8 text.",
+    document_empty: "That document is empty.",
+    invalid_document_path: "That doesn't look like an absolute file path.",
   };
+
+  // file:///abs/path?sha256=<hex> -> "/abs/path (version abcdef123456)".
+  function documentLabel(url) {
+    const m = /^file:\/\/(\/[^?#]*)(?:\?sha256=([0-9a-f]{64}))?$/.exec(String(url || ""));
+    if (!m) return null;
+    let path = m[1];
+    try { path = decodeURIComponent(path); } catch (_) { /* keep raw */ }
+    return m[2] ? `${path} (version ${m[2].slice(0, 12)})` : path;
+  }
 
   function refusalText(code) {
     return REFUSALS[code] || String(code || "request failed");
@@ -133,7 +153,7 @@
 
   const api = {
     statusLabel, rowStatus, submitText, actionResultText, sourceLabel, allowedActions, refusalText,
-    listQuery, fmtAt, walletText, hasEvidence,
+    listQuery, fmtAt, walletText, hasEvidence, documentLabel,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.OrionReading = api;
@@ -167,7 +187,7 @@
   function safeLink(url, label) {
     const ok = /^https?:\/\//i.test(String(url || ""));
     return ok ? el("a", { href: url, target: "_blank", rel: "noopener noreferrer", text: label || url })
-              : el("span", { text: label || url || "" });
+              : el("span", { text: label || documentLabel(url) || url || "" });
   }
 
   async function getJson(path) {
@@ -244,8 +264,8 @@
         onclick: () => select(item.seed_id),
       }, [
         el("td", { class: "title-cell" }, [
-          el("div", { class: "t", text: item.title || item.url }),
-          item.title ? el("div", { class: "u", text: item.url }) : null,
+          el("div", { class: "t", text: item.title || documentLabel(item.url) || item.url }),
+          item.title ? el("div", { class: "u", text: documentLabel(item.url) || item.url }) : null,
           item.preview ? el("div", { class: "preview", text: item.preview }) : null,
         ]),
         el("td", { text: sourceLabel(item) }),
@@ -292,8 +312,9 @@
       el("h3", { text: "Beliefs they might adopt" }), priorsList(h.candidate_priors),
       el("h3", { text: "New concepts" }), conceptsList(h.concept_candidates),
       el("h3", { text: "Open questions" }), list(h.open_threads, (t) => t),
-      el("h3", { text: "Proof they fetched the source" }),
-      list(h.read_evidence, (e) => [el("span", { class: "badge", text: e.tool_name || "fetch" }), " ",
+      el("h3", { text: "Proof they read the source" }),
+      list(h.read_evidence, (e) => [el("span", { class: "badge",
+        text: e.tool_name === "orion_document_snapshot" ? "Hub document snapshot" : (e.tool_name || "fetch") }), " ",
         safeLink(e.url), el("span", { class: "muted", text: ` · ${e.content_chars || 0} characters` })]),
     ]);
     return box;

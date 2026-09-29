@@ -17,6 +17,7 @@ from orion.schemas.reading import (
     ReadingToolResultV1,
 )
 from orion.world_pulse_read.events import TOOL_CHANNEL, TOOL_RESULT_PREFIX
+from orion.world_pulse_read.documents import DocumentPolicy, DocumentSourceError
 from orion.world_pulse_read.introspect import reading_results
 from orion.world_pulse_read.queue import enqueue_reading, reading_status
 from orion.world_pulse_read.search import (
@@ -28,7 +29,7 @@ from orion.world_pulse_read.search import (
     rank_readings,
     verified_rows,
 )
-from orion.world_pulse_read.urls import normalize_source_url
+from orion.world_pulse_read.urls import normalize_reading_source
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +79,14 @@ def _safe_exception_detail(exc: Exception) -> str:
 
 
 class ReadingListener:
-    def __init__(self, pool_provider, source_ref, search: ReadingSearchConfig | None = None):
+    def __init__(
+        self, pool_provider, source_ref, search: ReadingSearchConfig | None = None,
+        documents: DocumentPolicy | None = None,
+    ):
         self.pool_provider = pool_provider
         self.source_ref = source_ref
         self.search = search
+        self.documents = documents
         self.task = None
         self.index_task = None
         self.bus = None
@@ -122,7 +127,10 @@ class ReadingListener:
             async with pool.acquire() as conn:
                 if command.operation == "recommend_reading":
                     phase = "enqueue"
-                    result = await enqueue_reading(conn, command.request, bus=self.bus, source=self.source_ref)
+                    result = await enqueue_reading(
+                        conn, command.request, bus=self.bus, source=self.source_ref,
+                        documents=self.documents,
+                    )
                     try:
                         receipt = DurableReadingReceiptV1.model_validate(result)
                     except ValueError as exc:
@@ -142,7 +150,7 @@ class ReadingListener:
                     if command.request_id is not None and receipt.request_id != command.request_id:
                         raise RuntimeError("status returned a mismatched request_id")
                     if command.url is not None:
-                        if result.get("lookup_url") != normalize_source_url(command.url):
+                        if result.get("lookup_url") != normalize_reading_source(command.url):
                             raise RuntimeError("status returned a mismatched URL")
                 else:
                     if scored is not None:
@@ -182,7 +190,13 @@ class ReadingListener:
                 _safe_exception_detail(exc),
             )
             # Do not leak DSNs, SQL or arbitrary exception text into model context.
-            error = _SEARCH_UNAVAILABLE if isinstance(exc, SearchUnavailableError) else _SAFE_ERROR
+            if isinstance(exc, SearchUnavailableError):
+                error = _SEARCH_UNAVAILABLE
+            elif isinstance(exc, DocumentSourceError):
+                # A fixed policy code (documents.py), never file content or paths.
+                error = str(exc)
+            else:
+                error = _SAFE_ERROR
             response = ReadingToolResultV1(ok=False, error=error)
         await self._publish_response(reply, envelope, response)
 

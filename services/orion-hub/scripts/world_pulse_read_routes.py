@@ -76,6 +76,11 @@ def _settings() -> Any:
     return get_settings()
 
 
+def _document_policy() -> Any:
+    make = getattr(_settings(), "reading_document_policy", None)
+    return make() if callable(make) else None
+
+
 def _bus() -> Any:
     from . import main as hub_main
 
@@ -337,12 +342,12 @@ async def submit_read(
         async with pool.acquire() as conn:
             receipt = await reading_operator.submit_read(
                 conn, url=body.url.strip(), why_now=body.why_now.strip(), title=body.title.strip(),
-                bus=_bus(), source=_source_ref(),
+                bus=_bus(), source=_source_ref(), documents=_document_policy(),
             )
     except ValidationError as exc:
         raise HTTPException(400, "invalid_source_url") from exc
     except ValueError as exc:
-        # URL policy codes from orion.world_pulse_read.urls; no SQL or DSN text.
+        # Source policy codes (urls.py / documents.py); no SQL, DSN or file text.
         raise HTTPException(400, str(exc)[:200]) from exc
     logger.info("reading_operator_submit seed_id=%s status=%s", receipt.get("seed_id"), receipt.get("status"))
     return JSONResponse(content=receipt, headers=_NO_CACHE)

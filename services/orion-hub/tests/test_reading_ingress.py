@@ -502,3 +502,48 @@ def test_index_loop_retries_soon_only_while_pool_is_missing(monkeypatch, pool_re
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(listener._index_loop())
     assert delays == [expected]
+
+
+def test_chat_recommends_a_document_path_and_versions_dedup(tmp_path):
+    from orion.world_pulse_read.documents import DocumentPolicy
+
+    conn = _FakeConn()
+    bus = RpcBus(conn)
+    bus.listener.documents = DocumentPolicy.from_values(roots=str(tmp_path), extensions=None, max_bytes=4096)
+    tools = ReadingTools(bus, ReadingToolBindingV1(invocation_context="unified_chat", parent_run_id="r", parent_trace_id="t"))
+    doc = tmp_path / "spec.md"
+    doc.write_text("# Spec v1\n\nFirst version of the design.\n")
+
+    async def run():
+        first = await tools.invoke("recommend_reading", {"url": str(doc), "why_now": "Review the spec"})
+        assert first["ok"] is True
+        row = conn.rows[first["result"]["seed_id"]]
+        assert row["url"].startswith(f"file://{doc}?sha256=")
+        assert conn.snapshots[row["url"].rsplit("=", 1)[1]]["content"].startswith("# Spec v1")
+        event = next(e for c, e in bus.published if c == REQUESTED_CHANNEL)
+        assert resolve("ReadingRequestedV1").model_validate(event.payload).url == row["url"]
+
+        # Unchanged file: joins the read already waiting, not a second read.
+        same = await tools.invoke("recommend_reading", {"url": f"file://{doc}", "why_now": "Again, please"})
+        assert same["result"]["duplicate"] == "already_queued"
+        assert same["result"]["duplicate_of"] == first["result"]["seed_id"]
+
+        # Edited file: a new version is a new read.
+        doc.write_text("# Spec v2\n\nThe design changed.\n")
+        edited = await tools.invoke("recommend_reading", {"url": str(doc), "why_now": "It changed"})
+        assert edited["result"]["duplicate"] is None
+        assert conn.rows[edited["result"]["seed_id"]]["url"] != row["url"]
+
+        # A bare path looks up the latest captured version of that file.
+        status = await tools.invoke("reading_status", {"url": str(doc)})
+        assert status["result"]["request_id"] == edited["result"]["request_id"]
+        assert status["result"]["matched_request_count"] == 3
+
+        outside = tmp_path.parent / "elsewhere.md"
+        outside.write_text("not allowed")
+        before = len(conn.rows)
+        with pytest.raises(RuntimeError, match="document_outside_allowed_roots"):
+            await tools.invoke("recommend_reading", {"url": str(outside), "why_now": "Try it"})
+        assert len(conn.rows) == before
+
+    asyncio.run(run())

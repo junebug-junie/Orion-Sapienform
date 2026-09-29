@@ -764,6 +764,27 @@ class Settings(BaseSettings):
     HUB_READING_SEARCH_INDEX_BATCH: int = Field(
         default=10, ge=1, le=50, alias="HUB_READING_SEARCH_INDEX_BATCH"
     )
+    # Internal documents by absolute path (orion/world_pulse_read/documents.py).
+    # Comma-separated roots Hub may read under; empty disables document reading.
+    HUB_READING_DOCUMENT_ROOTS: str = Field(
+        default="/mnt/scripts/Orion-Sapienform,/mnt/orion-fcc/repo",
+        alias="HUB_READING_DOCUMENT_ROOTS",
+    )
+    HUB_READING_DOCUMENT_EXTENSIONS: str = Field(
+        default=".md,.markdown,.txt,.rst,.adoc", alias="HUB_READING_DOCUMENT_EXTENSIONS"
+    )
+    HUB_READING_DOCUMENT_MAX_BYTES: int = Field(
+        default=49152, ge=1, alias="HUB_READING_DOCUMENT_MAX_BYTES"
+    )
+
+    def reading_document_policy(self):
+        from orion.world_pulse_read.documents import DocumentPolicy
+
+        return DocumentPolicy.from_values(
+            roots=self.HUB_READING_DOCUMENT_ROOTS,
+            extensions=self.HUB_READING_DOCUMENT_EXTENSIONS,
+            max_bytes=self.HUB_READING_DOCUMENT_MAX_BYTES,
+        )
     # Sibling of curiosity: same tick / Wallet / unified-turn lifecycle, a
     # different Redis prefix (Wallet A). Default True once the seed-queue
     # migration is applied (operator can still set false to pause).

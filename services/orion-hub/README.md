@@ -3111,6 +3111,13 @@ still kept and shown on the Reading tab. The retired keys
 `HUB_WORLD_PULSE_READ_MIN_COOLDOWN_SEC`,
 `HUB_WORLD_PULSE_READ_STAGE2_MIN_COOLDOWN_SEC`) are ignored if still set.
 
+**Internal documents (2026-09-28).** Orion can also read a text file by absolute path, for example a markdown spec. Juniper can paste the path into the Reading tab, or Orion can pass it to `recommend_reading` in chat. When the request is accepted, Hub reads the file once. The contents are stored by hash in `reading_document_snapshot`, and the source becomes `file:///abs/path?sha256=<hex>`. Stage 1 hands those exact bytes to the reader inside the prompt and tells it not to fetch anything. The read-evidence record is then written by Hub with `tool_name="orion_document_snapshot"`, and only after checking that the text really is in the bound prompt. A model tool call cannot forge that record. Because each version is pinned by hash, an unchanged file comes back as `already_read`. An edited file counts as a new read. A status lookup by the bare path finds any version. Limits:
+- only files under `HUB_READING_DOCUMENT_ROOTS` (default: the repo checkout plus Orion's copy at `/mnt/orion-fcc/repo`, both already mounted into Hub);
+- only `HUB_READING_DOCUMENT_EXTENSIONS` types;
+- at most `HUB_READING_DOCUMENT_MAX_BYTES` (49152). Anything larger is refused, never truncated.
+
+Hub also refuses `.git`, `.ssh`, `.env*`, key files, symlinks that point outside the roots, and non-UTF-8 files. Each refusal comes back as a short code such as `document_outside_allowed_roots` or `document_too_large`. Setting the roots to an empty string turns document reading off. Stage 2 stays web-only. Measure how much of the spec corpus is readable with `pytest services/orion-hub/evals/test_reading_document_eval.py -s`.
+
 **A URL is read once (2026-09-28).** Live 2026-09-27 the same NVIDIA page
 finished Stage 1 three times, because the ingress only folded new requests onto
 reads still in flight. Now a request for a URL whose Stage 1 already finished

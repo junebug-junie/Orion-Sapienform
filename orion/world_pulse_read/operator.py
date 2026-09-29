@@ -11,6 +11,7 @@ import json
 from typing import Any
 
 from orion.schemas.reading import ReadingRequestedV1
+from orion.world_pulse_read.documents import DocumentPolicy, is_document_ref, normalize_document_ref
 from orion.world_pulse_read.durable import OPERATOR_CANCEL_REASON
 from orion.world_pulse_read.queue import (
     ACTIVE_URL_SQL,
@@ -328,6 +329,8 @@ async def retry_read(
 
 
 def operator_request(*, url: str, why_now: str = "", title: str = "") -> ReadingRequestedV1:
+    if is_document_ref(url):
+        url = normalize_document_ref(url)
     return ReadingRequestedV1(
         url=url, requested_by="juniper", invocation_context="operator",
         why_now=why_now, title=title,
@@ -336,8 +339,9 @@ def operator_request(*, url: str, why_now: str = "", title: str = "") -> Reading
 
 async def submit_read(
     conn: Any, *, url: str, why_now: str = "", title: str = "",
-    bus: Any = None, source: Any = None,
+    bus: Any = None, source: Any = None, documents: DocumentPolicy | None = None,
 ) -> dict[str, Any]:
     return await enqueue_reading(
         conn, operator_request(url=url, why_now=why_now, title=title), bus=bus, source=source,
+        documents=documents,
     )

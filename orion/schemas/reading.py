@@ -5,9 +5,11 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, TypeAdapter, field_validator, model_serializer, model_validator
 
 from orion.schemas.introspect import MAX_ITEMS, QUERY_CAP, normalize_query
+
+_HTTP_URL = TypeAdapter(HttpUrl)
 
 ReadingContext = Literal["unified_chat", "curiosity", "world_pulse", "operator"]
 ReadingStatus = Literal[
@@ -26,7 +28,9 @@ ReadingStatus = Literal[
 class ReadingRequestedV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: UUID = Field(default_factory=uuid4)
-    url: HttpUrl
+    # An HTTP(S) URL, or an internal document ``file:///abs/path[?sha256=<hex>]``
+    # (orion/world_pulse_read/documents.py). Hub pins the sha256 at acceptance.
+    url: str = Field(min_length=1, max_length=8192)
     requested_by: Literal["juniper", "orion", "world_pulse"]
     invocation_context: ReadingContext
     why_now: str = Field(default="", max_length=4000)
@@ -36,6 +40,16 @@ class ReadingRequestedV1(BaseModel):
     requested_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     root_request_id: UUID | None = None
     parent_request_id: UUID | None = None
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _source(cls, value: Any) -> str:
+        raw = str(value).strip()
+        if raw.lower().startswith("file:"):
+            if not raw.startswith("file:///") or any(ord(c) < 32 or c.isspace() for c in raw):
+                raise ValueError("document source must be file:///<absolute path>")
+            return raw
+        return str(_HTTP_URL.validate_python(raw))
 
     @model_validator(mode="after")
     def coherent_provenance(self):
@@ -220,6 +234,16 @@ class SourceFetchEvidenceV1(BaseModel):
     url: str = Field(min_length=1)
     tool_name: str = Field(min_length=1)
     content_chars: int = Field(ge=0)
+    # Set only for a Hub-captured document snapshot: the exact bytes read.
+    content_sha256: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_sha(self, handler):
+        # Web-fetch evidence stays byte-identical to what it was before documents.
+        data = handler(self)
+        if data.get("content_sha256") is None:
+            data.pop("content_sha256", None)
+        return data
 
 
 class ReadingLifecycleV1(BaseModel):

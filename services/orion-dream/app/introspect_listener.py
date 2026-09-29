@@ -19,6 +19,7 @@ from app.dream_search import index_missing, rank
 from app.introspect_dreams import by_ids, index_rows, one, recent
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.introspect.redact import safe_exception_detail
 from orion.introspect.semantic_index import HTTP_TIMEOUT_SEC, SearchConfig, SearchUnavailableError
 from orion.introspect.transport import DREAM_REQUEST_CHANNEL, REQUEST_KIND, RESULT_KIND, RESULT_PREFIX
 from orion.schemas.introspect import DreamsArguments, IntrospectRequestV1, IntrospectResultV1
@@ -90,7 +91,7 @@ class DreamIntrospectListener:
                 "introspect_failed op=dreams corr=%s mode=%s category=%s exc_type=%s detail=%s",
                 envelope.correlation_id, mode,
                 "dream_search_failure" if search_failed else "dream_query_failure",
-                type(exc).__name__, str(exc).replace("\n", " ")[:300],
+                type(exc).__name__, safe_exception_detail(exc),
             )
             result = _failed(now, SEARCH_UNAVAILABLE if search_failed else QUERY_UNAVAILABLE)
         else:
@@ -122,7 +123,7 @@ class DreamIntrospectListener:
                 raise
             except Exception as exc:
                 logger.warning("dream_search_index_failed exc_type=%s detail=%s",
-                               type(exc).__name__, str(exc).replace("\n", " ")[:300])
+                               type(exc).__name__, safe_exception_detail(exc))
             await asyncio.sleep(self.search.index_interval_sec)
 
     async def _run(self) -> None:

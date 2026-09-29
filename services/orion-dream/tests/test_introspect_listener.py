@@ -1,12 +1,13 @@
 """Dream responder: trusted reply path, modes, read-only, empty vs unknown."""
 import asyncio
+import logging
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from app import introspect_listener as il
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.introspect.semantic_index import IndexPass, SearchConfig
+from orion.introspect.semantic_index import IndexPass, SearchConfig, SearchUnavailableError
 from orion.introspect.transport import REQUEST_KIND, RESULT_KIND, RESULT_PREFIX
 from orion.schemas.introspect import IntrospectRequestV1, IntrospectResultV1, IntrospectToolBindingV1
 
@@ -42,13 +43,15 @@ class FakeConn:
 
 
 class FakeEngine:
-    def __init__(self, rows=(), fail=False):
-        self.conn, self.fail = FakeConn(list(rows)), fail
+    def __init__(self, rows=(), fail=False, fail_message="db down"):
+        self.conn, self.fail, self.fail_message = FakeConn(list(rows)), fail, fail_message
+        self.opened = 0
 
     @contextmanager
     def connect(self):
+        self.opened += 1
         if self.fail:
-            raise ConnectionError("db down")
+            raise ConnectionError(self.fail_message)
         yield self.conn
 
 
@@ -113,10 +116,46 @@ def test_database_failure_is_unknown_not_empty():
     assert not result.ok and result.error == il.QUERY_UNAVAILABLE
 
 
+def test_database_failure_log_redacts_dsn_credentials(caplog):
+    engine = FakeEngine(fail=True, fail_message="could not connect: postgresql://postgres:secret@host/db")
+    with caplog.at_level(logging.WARNING, logger="orion-dream.introspect"):
+        [(_, reply)] = _handle(_listener(engine), _envelope({}))
+    result = IntrospectResultV1.model_validate(reply.payload)
+    assert not result.ok and result.error == il.QUERY_UNAVAILABLE
+    [record] = [r for r in caplog.records if r.getMessage().startswith("introspect_failed")]
+    logged = record.getMessage()
+    assert "secret" not in logged and "postgresql://[REDACTED]@host/db" in logged
+
+
 def test_search_not_configured_is_unknown():
     off = SearchConfig(chroma_url="", embed_url="", collection="orion_dreams", min_similarity=0.6)
-    [(_, reply)] = _handle(_listener(search=off), _envelope({"query": "vision"}))
-    assert IntrospectResultV1.model_validate(reply.payload).error == il.SEARCH_UNAVAILABLE
+    engine = FakeEngine([NARR])
+    [(_, reply)] = _handle(_listener(engine, search=off), _envelope({"query": "vision"}))
+    result = IntrospectResultV1.model_validate(reply.payload)
+    assert not result.ok and result.error == il.SEARCH_UNAVAILABLE
+    assert engine.opened == 0 and engine.conn.calls == []
+
+
+def test_search_backend_failure_is_unknown(monkeypatch):
+    async def down(client, cfg, query):
+        raise SearchUnavailableError("chroma unreachable")
+    monkeypatch.setattr(il, "rank", down)
+    engine = FakeEngine([NARR])
+    [(_, reply)] = _handle(_listener(engine), _envelope({"query": "vision"}))
+    result = IntrospectResultV1.model_validate(reply.payload)
+    assert not result.ok and result.error == il.SEARCH_UNAVAILABLE
+    assert engine.opened == 0
+
+
+def test_search_hits_then_database_failure_is_query_unknown(monkeypatch):
+    async def hits(client, cfg, query):
+        return [("dream:19", 0.8)]
+    monkeypatch.setattr(il, "rank", hits)
+    engine = FakeEngine(fail=True)
+    [(_, reply)] = _handle(_listener(engine), _envelope({"query": "vision"}))
+    result = IntrospectResultV1.model_validate(reply.payload)
+    assert not result.ok and result.error == il.QUERY_UNAVAILABLE
+    assert engine.opened == 1
 
 
 def test_search_with_no_hits_is_empty_and_skips_postgres(monkeypatch):
@@ -228,3 +267,18 @@ def test_lifespan_starts_and_stops_the_responder_only_when_enabled(monkeypatch):
     monkeypatch.setattr(main.settings, "DREAM_INTROSPECT_ENABLED", False)
     asyncio.run(run_lifespan())
     assert events == ["serving"]
+
+
+def test_build_listener_with_default_settings_has_search_off(monkeypatch):
+    import sqlalchemy
+
+    from app import introspect_listener as live_il
+    from app import settings as settings_mod
+
+    for key in ("DREAM_SEARCH_CHROMA_URL", "DREAM_SEARCH_EMBED_URL", "DREAM_SEARCH_COLLECTION"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(settings_mod, "settings", settings_mod.Settings(_env_file=None))
+    monkeypatch.setattr(sqlalchemy, "create_engine", lambda *a, **k: FakeEngine())
+    listener = live_il.build_listener()
+    assert listener.search is not None and not listener.search.enabled
+    assert listener.search.chroma_url == "" and listener.search.embed_url == ""

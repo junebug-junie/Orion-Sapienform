@@ -100,7 +100,7 @@ def _literals(text: str, key: str) -> Iterator[tuple[int, str]]:
     """
     patterns = (
         rf"{re.escape(key)}\s*[:]?[-=]\s*([0-9]+(?:\.[0-9]+)?s?)",
-        rf"Field\(\s*([0-9]+(?:\.[0-9]+)?)[^)]*alias=[\"']{re.escape(key)}[\"']",
+        rf"Field\(\s*(?:default\s*=\s*)?([0-9]+(?:\.[0-9]+)?)[^)]*alias=[\"']{re.escape(key)}[\"']",
     )
     lines = text.splitlines()
     for pattern in patterns:

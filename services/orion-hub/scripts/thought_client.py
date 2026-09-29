@@ -84,10 +84,6 @@ class ThoughtClient:
         reply_to = f"{settings.CHANNEL_THOUGHT_RESULT_PREFIX}{correlation_id}"
         wait_sec = max(0.1, float(timeout_sec if timeout_sec is not None else settings.TIMEOUT_SEC))
         payload = request.model_dump(mode="json")
-        if request.resource_lease is None:
-            # Preserve every legacy field (including its nulls); only the new
-            # optional lease is omitted for consumers that reject extra fields.
-            payload.pop("resource_lease", None)
         if request.gpu_lease is None:
             # Absent stage-4 hold ref: keep the old wire shape. (An un-upgraded orion-thought would
             # silently DROP a present ref -- no extra="forbid" -- so it must deploy first.)

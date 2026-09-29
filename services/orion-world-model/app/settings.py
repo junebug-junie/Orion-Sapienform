@@ -128,8 +128,7 @@ class Settings(BaseSettings):
     # what gives it practical precedence on its own native card without any
     # new priority concept in the broker itself.
     WM_GPU2_CAPACITY_ENABLED: bool = True
-    # circe reaches orion-durable-runs (athena) over Tailscale -- same
-    # address orion-gpu-lane-controller's own GPU2_AUTHORITY_URL uses.
+    # circe reaches orion-durable-runs (athena) over Tailscale.
     WM_GPU2_CAPACITY_URL: str = "http://100.92.216.81:8124/capacity"
     # Deliberately orion-diffusion-host's own base URL, not a made-up
     # logical key -- an opaque shared identifier both services agree on.

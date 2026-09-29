@@ -342,7 +342,7 @@ class DurableRunner:
             # turn that valid long attempt into an early retry. Queue waiting
             # never reaches this RPC at all.
             rpc_timeout = self._settings.turn_rpc_timeout_sec
-            admitted = request.lease is not None or request.gpu_lease is not None
+            admitted = request.gpu_lease is not None
             if admitted:
                 rpc_timeout = max(rpc_timeout, request.timeout_sec)
             raw = await self._bus.rpc_request(

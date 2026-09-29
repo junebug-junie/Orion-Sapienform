@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from . import pool_placement
 from .passthrough_proxy import proxy_on_pool
 from .settings import settings
-from .resource_lease import LeaseGuard, ResourceLeaseRejected, gpu_lease_from_headers, lease_error
+from .resource_lease import ResourceLeaseRejected, gpu_lease_from_headers, lease_error
 
 logger = logging.getLogger("orion-llm-gateway.anthropic")
 
@@ -271,7 +271,6 @@ async def handle_messages_post(request: Request) -> Response:
             {"error": {"type": "invalid_request", "message": str(exc)}}, status_code=400
         )
     try:
-        guard = LeaseGuard.from_headers(request.headers, lane=route_key)
         hold = gpu_lease_from_headers(request.headers)
     except ResourceLeaseRejected as exc:
         return JSONResponse(lease_error(str(exc)), status_code=409)
@@ -297,7 +296,6 @@ async def handle_messages_post(request: Request) -> Response:
         forward_body=forward_body,
         path="/v1/messages",
         holder=pool_placement.HOLDER_ANTHROPIC,
-        guard=guard,
         hold=hold,
         correlation_id=correlation_id,
         min_ctx_tokens=pool_placement.estimate_min_ctx_tokens(

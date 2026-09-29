@@ -1490,7 +1490,6 @@ async def _dispatch_reflect_durable_run(
             llm_route=llm_route,
         ),
         admission=ResourceRequirementV1(
-            allow_elastic_activation=True,
             preferred_lane=llm_route or "agent",
             resource=f"llm.route.{llm_route or 'agent'}",
         ),

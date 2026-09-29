@@ -121,12 +121,12 @@ NEVER_SYNC_KEYS = frozenset(
 
 # Prefixes / exact keys synced after .env_example edits (default mode).
 SYNC_PREFIXES = (
-    # Durable admission spans runner, Orch, Hub and Gateway. Hub's existing
-    # HUB_CURIOSITY_ prefix already covers its side; these three were missing.
+    # Durable admission spans runner, Orch and Hub. Hub's existing HUB_CURIOSITY_
+    # prefix already covers its side. (The Gateway's LLM_GATEWAY_LEASE_ /
+    # LLM_GATEWAY_CAPACITY_ keys were deleted with the durable lease token, GPU pool
+    # stage 4.6; its pool-placement keys are below.)
     "DURABLE_RUNS_",
     "CORTEX_DURABLE_",
-    "LLM_GATEWAY_LEASE_",
-    "LLM_GATEWAY_CAPACITY_",
     # GPU pool (2026-09-25, stage 3): the pool's own keys and the Gateway's pool-placement keys.
     # Without these the default sync visited both .env files and silently added nothing.
     "GPU_POOL_",

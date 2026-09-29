@@ -38,7 +38,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from orion.schemas.reading_turn import ReadingRunBriefV1, READING_WORKFLOW
 from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW, ReverieVisualRunBriefV1
 from orion.schemas.gpu_pool import GpuLeaseRefV1
-from orion.schemas.resource_admission import ResourceLeaseV1, ResourceRequirementV1
+from orion.schemas.resource_admission import ResourceRequirementV1
 
 DURABLE_RUN_REQUEST_CHANNEL = "orion:durable:run:request"
 DURABLE_RUN_STATE_CHANNEL = "orion:durable:run:state"
@@ -231,11 +231,9 @@ class CuriosityTurnRequestV1(BaseModel):
     timeout_sec: float = Field(gt=0.0)
     source_tag: str = "curiosity_investigation"
     attempt: int = Field(default=1, ge=1)
-    lease: ResourceLeaseV1 | None = None
     assigned_lane: str | None = None
-    # Stage 4: the run's GPU pool hold. Hub validates it with the pool's ``status`` verb and runs
-    # the turn under it (every LLM call attaches to the hold). Consumer first: Hub must accept this
-    # before durable-runs 4.5 sends it (extra="forbid").
+    # The run's GPU pool hold. Hub validates it with the pool's ``status`` verb and runs the turn
+    # under it (every LLM call attaches to the hold).
     gpu_lease: GpuLeaseRefV1 | None = None
     # Additive: an explicit session to run this turn under, distinct from
     # curiosity's own shared investigation session. self_sense_eval needs

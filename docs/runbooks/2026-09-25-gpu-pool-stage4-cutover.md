@@ -351,6 +351,11 @@ Any step can be reversed in reverse order; the later the step, the more has to b
 
 ## After the cutover (PR 4.6, not this runbook)
 
+Done in `chore/gpu-pool-stage4-6-cleanup` (report:
+`docs/superpowers/pr-reports/2026-09-29-gpu-pool-stage4-6-cleanup-pr.md`). The rollback steps above
+that start the pre-4.5 image no longer apply once 4.6 is deployed: the old durable token, the
+controller's `durable` authority and its activate route are gone.
+
 Delete the old `ResourceLeaseV1` / `X-Orion-Resource-Lease` / gateway `LeaseGuard` path across its
 importers, the controller's `durable` authority branch and the gpu2 activate route, the
 field-digester legacy half, the deprecated `ResourceRequirementV1` fields, the dead env keys

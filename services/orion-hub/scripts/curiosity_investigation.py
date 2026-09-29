@@ -196,9 +196,9 @@ from orion.curiosity.worldview import (
 )
 from orion.llm.routes import FCC_LLAMACPP_MODEL_PREFIX, fcc_model_for_route
 from orion.gpu_pool.client import LeaseUnavailable, durable_run_holder, validate_hold_ref
-from orion.llm.resource_lease import GPU_LEASE_ROUTE, validate_resource_lease
+from orion.llm.resource_lease import GPU_LEASE_ROUTE
 from orion.schemas.gpu_pool import GpuLeaseRefV1
-from orion.schemas.resource_admission import ResourceRequirementV1, ResourceLeaseV1
+from orion.schemas.resource_admission import ResourceRequirementV1
 from orion.journaler.schemas import JournalEntryWriteV1
 from orion.curiosity.journal import (  # moved 2026-09-06; names unchanged for callers/tests
     INVESTIGATION_TAG,
@@ -589,8 +589,9 @@ class CuriosityInvestigation:
         reader: Optional[WorldviewReader] = None,
         kickoff_via_cortex: bool = False,
         durable_admission_enabled: bool = False,
-        elastic_activation_enabled: bool = False,
-        lease_validation_url: str = "http://127.0.0.1:8124/leases/validate",
+        # Base URL of orion-durable-runs (same service the reading loop submits to); Hub posts
+        # ``/runs/{id}/release-outreach-lease`` there when Door-A composition is done.
+        durable_runs_url: str = "http://127.0.0.1:8124",
         cortex_request_channel: str = "orion:cortex:request",
         cortex_result_prefix: str = "orion:cortex:result",
         # --- contractor peer soft-nudge ------------------------------------
@@ -626,10 +627,9 @@ class CuriosityInvestigation:
         # reports completion on `orion:durable:run:state` (outreach stays here).
         self.kickoff_via_cortex = bool(kickoff_via_cortex)
         self.durable_admission_enabled = bool(durable_admission_enabled)
-        self.elastic_activation_enabled = bool(elastic_activation_enabled)
         if self.durable_admission_enabled and not self.kickoff_via_cortex:
             raise ValueError("durable admission requires kickoff_via_cortex")
-        self.lease_validation_url = lease_validation_url
+        self.durable_runs_url = durable_runs_url
         self._turn_tasks: set[asyncio.Task] = set()
         self.cortex_request_channel = cortex_request_channel
         self.cortex_result_prefix = cortex_result_prefix
@@ -2845,7 +2845,6 @@ class CuriosityInvestigation:
         parent_run_id: str | None = None,
         fcc_model_label: str | None = None,
         timeout_sec: float | None = None,
-        resource_lease: ResourceLeaseV1 | None = None,
         session_id: str | None = None,
         gpu_lease: GpuLeaseRefV1 | None = None,
     ) -> Tuple[str, dict]:
@@ -2880,9 +2879,6 @@ class CuriosityInvestigation:
         started = time.monotonic()
         turn_timeout = self.timeout_sec if timeout_sec is None else timeout_sec
         payload = _turn_payload(source, fcc_model_label or self._fcc_model_label)
-        if resource_lease is not None:
-            payload["resource_lease"] = resource_lease.model_dump(mode="json")
-            payload["inference_timeout_sec"] = turn_timeout
         if gpu_lease is not None:
             # Stage 4: every LLM call of the turn attaches to the run's GPU pool hold.
             payload["gpu_lease"] = gpu_lease.model_dump(mode="json")
@@ -3076,7 +3072,6 @@ class CuriosityInvestigation:
         run_id: str,
         hop_notes: Optional[list[tuple[int, str]]] = None,
         line: str = LINE_INVESTIGATE,
-        resource_lease: ResourceLeaseV1 | None = None,
         gpu_lease: GpuLeaseRefV1 | None = None,
     ) -> Optional[str]:
         """Orion decided a finding is worth telling Juniper about. Compose it.
@@ -3093,9 +3088,9 @@ class CuriosityInvestigation:
         (2026-09-22): if Orion burned a run and asked to share, they share.
         Delivery still goes through `offer_message(skip_schedule_gates=True)`.
 
-        When ``resource_lease`` is set (durable admission held the grant past
-        finish for Door-A), composition uses that lease and Hub releases it
-        afterward so the GPU slot is not stranded.
+        When ``gpu_lease`` is set (durable-runs kept the run's GPU pool hold past
+        finish for Door-A), composition runs under that hold and Hub asks
+        durable-runs to release it afterward so the GPU slot is not stranded.
 
         EVERY exit below leaves a decision row (2026-09-22): the ones that
         reach `offer_message` are recorded there; the ones that do not go
@@ -3112,14 +3107,13 @@ class CuriosityInvestigation:
                 run_id=run_id,
                 hop_notes=hop_notes,
                 line=line,
-                resource_lease=resource_lease,
                 gpu_lease=gpu_lease,
                 correlation_id=correlation_id,
             )
         finally:
-            if resource_lease is not None or gpu_lease is not None:
-                # Durable-runs owns the release of either grant (a pool hold becomes a pool
-                # ``release`` there in 4.5); Hub only says it is done composing.
+            if gpu_lease is not None:
+                # Durable-runs owns the release of the hold (a pool ``release``); Hub only
+                # says it is done composing.
                 await self._release_outreach_lease(run_id)
 
     async def _maybe_reach_out_inner(
@@ -3130,7 +3124,6 @@ class CuriosityInvestigation:
         run_id: str,
         hop_notes: Optional[list[tuple[int, str]]],
         line: str,
-        resource_lease: ResourceLeaseV1 | None,
         correlation_id: str,
         gpu_lease: GpuLeaseRefV1 | None = None,
     ) -> Optional[str]:
@@ -3209,7 +3202,6 @@ class CuriosityInvestigation:
             correlation_id,
             source=OUTREACH_TAG,
             require_lookup=False,
-            resource_lease=resource_lease,
             gpu_lease=gpu_lease,
         )
         if not text:
@@ -3236,10 +3228,11 @@ class CuriosityInvestigation:
         return None if result.get("outreach") else str(result.get("reason") or "not_sent")
 
     async def _release_outreach_lease(self, run_id: str) -> None:
-        """Free the durable-runs grant held past finish for Door-A composition.
+        """Free the GPU pool hold durable-runs kept past finish for Door-A composition.
 
-        Best-effort: a failed release leaves the lease to expire on TTL so the
-        broker recovers capacity without Hub blocking the investigation path.
+        Best-effort: durable-runs bounds an unreleased outreach hold itself
+        (DURABLE_RUNS_OUTREACH_HOLD_MAX_SEC), so Hub never blocks the
+        investigation path on this call.
         """
         url = self._outreach_lease_release_url(run_id)
         if not url:
@@ -3264,15 +3257,10 @@ class CuriosityInvestigation:
             )
 
     def _outreach_lease_release_url(self, run_id: str) -> str:
-        """Derive release URL from the lease-validate base (no new env key)."""
-        base = str(self.lease_validation_url or "").strip()
-        if not base:
+        """``<durable_runs_url>/runs/{run_id}/release-outreach-lease``; empty base = no call."""
+        root = str(self.durable_runs_url or "").strip().rstrip("/")
+        if not root:
             return ""
-        marker = "/leases/validate"
-        if marker in base:
-            root = base.split(marker, 1)[0].rstrip("/")
-        else:
-            root = base.rstrip("/")
         return f"{root}/runs/{run_id}/release-outreach-lease"
 
     # --- durable runs: kickoff through cortex, turn on request, outreach on completion --
@@ -3382,7 +3370,6 @@ class CuriosityInvestigation:
             correlation_id=correlation_id,
             brief=self._run_brief(prompt=prompt, material=material, line=line),
             admission=(ResourceRequirementV1(
-                allow_elastic_activation=self.elastic_activation_enabled,
                 preferred_lane=self.llm_route or "agent",
                 resource=f"llm.route.{self.llm_route or 'agent'}",
             ) if self.durable_admission_enabled else None),
@@ -3426,7 +3413,6 @@ class CuriosityInvestigation:
                 lived_answers=list(lived_answers),
             ),
             admission=(ResourceRequirementV1(
-                allow_elastic_activation=self.elastic_activation_enabled,
                 preferred_lane=self.llm_route or "agent",
                 resource=f"llm.route.{self.llm_route or 'agent'}",
             ) if self.durable_admission_enabled else None),
@@ -3481,7 +3467,7 @@ class CuriosityInvestigation:
         )
         try:
             result = await self._turn_result_for(
-                request, hold_lock=request.lease is None and request.gpu_lease is None
+                request, hold_lock=request.gpu_lease is None
             )
         except Exception as exc:
             # A stale fence is a prompt refusal, not a full inference RPC wait.
@@ -3551,15 +3537,6 @@ class CuriosityInvestigation:
         (asyncio.Lock is not re-entrant)."""
         now = time.monotonic()
         key = f"{request.run_id}:{request.correlation_id}"
-        if request.lease is not None:
-            lease = request.lease
-            if lease.run_id != request.run_id or request.assigned_lane != lease.lane:
-                raise ValueError("curiosity resource lease identity mismatch")
-            await validate_resource_lease(
-                lease.model_dump(mode="json"), lane=lease.lane, backend_key=lease.backend_key,
-                validation_url=self.lease_validation_url,
-            )
-            key = f"{request.run_id}:{request.correlation_id}:{lease.lease_id}:{lease.generation}"
         if request.gpu_lease is not None:
             # Stage 4: the pool is the fence. Refuse a hold that is gone, re-granted (stale
             # generation) or another run's before spending a harness turn on it.
@@ -3598,13 +3575,11 @@ class CuriosityInvestigation:
                     # already falls back to `self.session_id` when this is
                     # None, same as every other caller.
                     session_id=request.session_id,
-                    **({"fcc_model_label": f"{FCC_LLAMACPP_MODEL_PREFIX}{request.lease.lane}", "timeout_sec": request.timeout_sec,
-                        "resource_lease": request.lease} if request.lease is not None else {}),
                     # A hold's role (e.g. agent-gpu2) is not a route: FCC names the hold's
                     # work-class route and the gateway attaches every call to the hold.
                     **({"fcc_model_label": f"{FCC_LLAMACPP_MODEL_PREFIX}{GPU_LEASE_ROUTE}",
                         "timeout_sec": request.timeout_sec}
-                       if request.gpu_lease is not None and request.lease is None else {}),
+                       if request.gpu_lease is not None else {}),
                     **({"gpu_lease": request.gpu_lease} if request.gpu_lease is not None else {}),
                 )
                 if measured:
@@ -3761,17 +3736,6 @@ class CuriosityInvestigation:
             reach_out=True,
             reach_out_why=str(detail.get("reach_out_why") or ""),
         )
-        lease = None
-        raw_lease = detail.get("resource_lease")
-        if isinstance(raw_lease, dict) and raw_lease:
-            try:
-                lease = ResourceLeaseV1.model_validate(raw_lease)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "curiosity_outreach_lease_invalid run=%s err=%s",
-                    state.run_id,
-                    exc,
-                )
         gpu_lease = None
         raw_ref = detail.get("gpu_lease")
         if raw_ref is not None:
@@ -3797,7 +3761,6 @@ class CuriosityInvestigation:
             finding_text=str(detail.get("finding_text") or ""),
             run_id=state.run_id,
             line=str(detail.get("line") or LINE_INVESTIGATE),
-            resource_lease=lease,
             gpu_lease=gpu_lease,
         )
 

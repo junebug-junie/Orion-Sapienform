@@ -191,7 +191,7 @@ def test_waiting_run_queues_in_the_pool_wakes_on_the_grant_and_completes_under_i
         assert len(restarted.runner.calls) == 1
         turn = restarted.runner.calls[0]
         assert turn.gpu_lease.lease_id == hold["lease_id"] and turn.gpu_lease.holder == "durable-runs:waiting-001"
-        assert turn.assigned_lane is None and turn.lease is None
+        assert turn.assigned_lane is None
         assert (await store.get_run(waiting.run_id))["terminal"] == "completed"
         assert (await gpu.lease(hold["lease_id"]))["status"] == "released"
         assert (await restarted.submit(waiting))["status"] == "completed"
@@ -426,7 +426,7 @@ def test_legacy_durable_lease_in_a_checkpoint_is_dropped_and_the_run_asks_the_po
         await rt._drive(await store.get_run(req.run_id))
         assert (await store.get_run(req.run_id))["terminal"] == "completed"
         [turn] = rt.runner.calls
-        assert turn.lease is None and turn.gpu_lease is not None and turn.assigned_lane is None
+        assert turn.gpu_lease is not None and turn.assigned_lane is None
         assert "agent-burst" not in turn.model_dump_json()
         assert await legacy_rows(store) == (0, 0)
         await rt.close()

@@ -36,7 +36,7 @@ from .openai_passthrough import register_openai_passthrough_routes
 from . import grammar_emit, pool_placement, upstream_cancel
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
-from .resource_lease import LeaseGuard, ResourceLeaseRejected, gpu_lease_from_options
+from .resource_lease import ResourceLeaseRejected, gpu_lease_from_options
 from .settings import settings
 
 logger = logging.getLogger("orion-llm-gateway")
@@ -341,18 +341,14 @@ async def _dispatch_chat(body: ChatBody, *, correlation_id: str, holder: str = "
     plan = plan_llm_chat(body)
     if plan.error is not None:
         return dict(plan.error)
-    # A durable-run lease is validated first (don't take a GPU for a stale token), then kept
-    # checked for the whole call. It is admission only: placement is the pool lease below.
-    guard = LeaseGuard((body.options or {}).get("resource_lease"), lane=plan.route)
     try:
-        # Stage 4: a call carrying its run's GPU pool hold ref attaches to that hold.
+        # A call carrying its run's GPU pool hold ref attaches to that hold.
         hold = gpu_lease_from_options(body.options)
-        await guard.check()
-        return await guard.run(_dispatch_on_pool(plan, correlation_id=correlation_id, holder=holder, hold=hold))
     except ResourceLeaseRejected as exc:
         logger.warning("resource_lease_rejected correlation_id=%s reason=%s", correlation_id, exc)
         return {"text": "", "content": "", "route": plan.route,
                 "raw": {"error": "resource_lease_rejected", "details": {"reason": str(exc)}}}
+    return await _dispatch_on_pool(plan, correlation_id=correlation_id, holder=holder, hold=hold)
 
 
 async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, holder: str,

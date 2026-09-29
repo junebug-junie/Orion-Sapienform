@@ -1012,12 +1012,8 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_KICKOFF_VIA_CORTEX: bool = Field(
         default=True, alias="HUB_CURIOSITY_KICKOFF_VIA_CORTEX"
     )
-    HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED: bool = Field(False, alias="HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED")
     HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED: bool = Field(
         default=False, alias="HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED"
-    )
-    HUB_CURIOSITY_LEASE_VALIDATION_URL: str = Field(
-        default="http://127.0.0.1:8124/leases/validate", alias="HUB_CURIOSITY_LEASE_VALIDATION_URL"
     )
     # The self-inquiry LINE of the same loop (orion/curiosity/self_inquiry.py):
     # a standing question -- "what am I, and what am I made of?" -- with its

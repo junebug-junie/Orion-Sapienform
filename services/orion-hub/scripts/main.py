@@ -652,8 +652,9 @@ async def startup_event():
                 dream_hypotheses_per_run=settings.HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN,
                 kickoff_via_cortex=settings.HUB_CURIOSITY_KICKOFF_VIA_CORTEX,
                 durable_admission_enabled=settings.HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED,
-                elastic_activation_enabled=settings.HUB_CURIOSITY_ELASTIC_ACTIVATION_ENABLED,
-                lease_validation_url=settings.HUB_CURIOSITY_LEASE_VALIDATION_URL,
+                # Door-A's release-outreach call goes to the same orion-durable-runs the
+                # reading loop submits to (one service, one base URL).
+                durable_runs_url=settings.HUB_READING_DURABLE_URL,
                 # The self-inquiry line: own budget, same loop. See the
                 # settings' own comment and orion/curiosity/self_inquiry.py.
                 self_inquiry_enabled=settings.HUB_CURIOSITY_SELF_INQUIRY_ENABLED,

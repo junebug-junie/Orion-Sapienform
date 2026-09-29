@@ -321,14 +321,13 @@ Sources (all SQL counts): `world_pulse_seed_pending`, `durable_demand_pending`, 
 `gpu_pool_waiting` (leases queued/backlogged in `gpu_pool_leases`; replaced the gateway's
 `/admission` waiting sum when the gateway cut over to orion-gpu-pool, 2026-09-24).
 
-GPU pool stage 4.4 (2026-09-25): `durable_demand_pending` counts durable runs waiting for a GPU
-across the move from durable-runs' own broker to pool holds -- pending `durable_resource_demands`
-plus `gpu_pool_leases` holds (`kind='hold'`, holder `durable-runs:<run_id>`) that are queued or
-backlogged, a run with both counted once as its hold (`DURABLE_WAITING_SQL` in `app/store.py`).
-Its oldest wait is the older of a demand's `created_at` and a hold's `queued_since`.
-`gpu_pool_waiting` counts `kind='request'` only, so a hold is never counted twice. Before the
-cutover the hold half is empty (live 2026-09-25: 12 pending demands, 0 holds -- identical to the
-old reading); after the migration the legacy half is, and 4.6 deletes it.
+GPU pool stage 4.4 / 4.6: `durable_demand_pending` counts durable runs waiting for a GPU --
+`gpu_pool_leases` holds (`kind='hold'`, holder `durable-runs:<run_id>`) that are queued or
+backlogged (`DURABLE_WAITING_SQL` in `app/store.py`); its oldest wait is the oldest such hold's
+`queued_since` (`created_at` if unset). Stage 4.4 briefly unioned in durable-runs' own broker queue
+(pending `durable_resource_demands`) across the cutover; stage 4.6 (2026-09-29) dropped that frozen
+legacy half, so the table is no longer read. `gpu_pool_waiting` counts `kind='request'` and
+non-durable (operator) holds only, so a hold is never counted twice.
 
 ## Telemetry-anomaly metacog trigger (2026-07-21)
 

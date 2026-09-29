@@ -333,6 +333,9 @@ class UrgentReporter:
         try:
             raw = await self._redis.hget(URGENT_INCIDENTS_KEY, incident_id)
             record = json.loads(raw) if raw else dict(incident)
+            if str(record.get("run_id") or "") != str(incident.get("run_id") or ""):
+                # The record is another run's (a retry of the same incident): not ours to mark.
+                return
             if kind in _WATCHDOG_KINDS and str(record.get("status") or "") not in _OPEN_STATUSES:
                 return
             record["status"] = status

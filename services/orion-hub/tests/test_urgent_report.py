@@ -746,6 +746,32 @@ def test_urgent_terminal_does_not_release_another_runs_open_key() -> None:
     assert bus.redis.values[urgent_open_key(INCIDENT)] == b"ffffff000000"
 
 
+def test_a_terminal_for_another_run_never_overwrites_the_incident_record() -> None:
+    """A retry of the incident owns the record now; an older run's terminal reports from
+    its own event and leaves that record exactly as it was."""
+    bus = _Bus()
+    _seed_hash(bus.redis, run_id="ffffff000000", status="dispatched")
+    before = bus.redis.hashes[URGENT_INCIDENTS_KEY][INCIDENT]
+    bus.redis.values[urgent_open_key(INCIDENT)] = b"ffffff000000"
+    loop = _loop(bus)
+    _handle(loop, _state_msg(bus, status="completed", node="finish", detail=_detail()))
+    assert bus.redis.hashes[URGENT_INCIDENTS_KEY][INCIDENT] == before
+    [(incident, req, kind)] = loop.urgent_reporter.delivered
+    assert kind == "final" and incident["run_id"] == RUN and req.correlation_id == RUN
+    assert incident["evidence"] is None  # the other run's bundle is not borrowed
+    assert bus.redis.values[urgent_open_key(INCIDENT)] == b"ffffff000000"
+
+
+def test_delivery_never_marks_another_runs_record() -> None:
+    redis = _Redis()
+    _seed_hash(redis, run_id="ffffff000000", status="dispatched")
+    before = redis.hashes[URGENT_INCIDENTS_KEY][INCIDENT]
+    reporter = _reporter(redis=redis)
+    req = compose_urgent_report(_incident(), kind="final", detail=_detail())
+    assert asyncio.run(reporter.deliver(_incident(), req, kind="final")) is True
+    assert redis.hashes[URGENT_INCIDENTS_KEY][INCIDENT] == before
+
+
 def test_urgent_terminal_without_a_stored_incident_still_reports() -> None:
     bus = _Bus()
     loop = _loop(bus)

@@ -2046,19 +2046,27 @@ class CuriosityInvestigation:
         urgent = detail.get("urgent") or {}
         incident_id = str(urgent.get("incident_id") or "")
         incident = await self._load_urgent_incident(incident_id)
-        if incident is None:
-            # Evicted or never recorded: the finish detail still names the
-            # incident. No evidence bundle to attach, but the report goes out.
-            logger.warning("curiosity_urgent_incident_missing incident_id=%s run=%s", incident_id, state.run_id)
-            incident = {**urgent, "run_id": state.run_id, "evidence": None}
-        elif str(incident.get("run_id") or "") != state.run_id:
-            logger.warning(
-                "curiosity_urgent_run_mismatch incident_id=%s stored_run=%s run=%s",
-                incident_id, incident.get("run_id"), state.run_id,
-            )
-            incident = {**incident, "run_id": state.run_id}
-        incident["status"] = state.status
-        await self._record_urgent_incident(incident)
+        if incident is not None and str(incident.get("run_id") or "") == state.run_id:
+            incident["status"] = state.status
+            await self._record_urgent_incident(incident)
+        else:
+            # Evicted, never recorded, or the record belongs to another run of the
+            # same incident: the finish detail still names the incident, so the
+            # report goes out from the event alone. Another run's record is never
+            # overwritten -- that run's own reporting reads it.
+            if incident is None:
+                logger.warning(
+                    "curiosity_urgent_incident_missing incident_id=%s run=%s", incident_id, state.run_id
+                )
+            else:
+                logger.warning(
+                    "curiosity_urgent_run_mismatch incident_id=%s stored_run=%s run=%s",
+                    incident_id, incident.get("run_id"), state.run_id,
+                )
+            stored = incident
+            incident = {**urgent, "run_id": state.run_id, "evidence": None, "status": state.status}
+            if stored is None:
+                await self._record_urgent_incident(incident)
         await self.release_urgent_open_key_for(incident_id, state.run_id)
         self._mind_appraisal_by_run_id.pop(state.run_id, None)
         logger.info("curiosity_urgent_ended incident_id=%s run=%s status=%s", incident_id, state.run_id, state.status)

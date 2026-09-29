@@ -21,7 +21,7 @@ from uuid import uuid4
 
 from jinja2 import Environment
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from orion.llm.routes import LLM_ROUTE_ALIASES, METACOG_LLM_ROUTES, normalize_llm_route
 from orion.core.bus.async_service import OrionBusAsync
@@ -596,12 +596,10 @@ def _postprocess_metacog_draft_summary(entry_dict: Dict[str, Any], *, draft_mode
         summary_source = "fallback_generated"
     else:
         summary_source = "draft_missing_summary"
-        what_changed = entry_dict.get("what_changed") or {}
-        summary = what_changed.get("summary") if isinstance(what_changed, dict) else None
-        if summary:
-            entry_dict["what_changed_summary"] = _truncate_text(summary, 2000)
-            summary_source = "what_changed.summary"
-        elif entry_dict.get("summary"):
+        # The draft no longer authors what_changed (publish computes it from
+        # evidence), so the base entry's what_changed is the fallback template's
+        # and must not win over the draft's own summary.
+        if entry_dict.get("summary"):
             entry_dict["what_changed_summary"] = _truncate_text(entry_dict.get("summary"), 2000)
             summary_source = "summary"
         else:
@@ -616,15 +614,38 @@ def _postprocess_metacog_draft_summary(entry_dict: Dict[str, Any], *, draft_mode
     entry_dict["state_snapshot"] = state_snapshot
 
 
+def _validate_draft_patch_per_field(
+    filtered: Dict[str, Any],
+) -> tuple[MetacogDraftTextPatchV1 | None, list[str]]:
+    """Validate the draft patch, dropping only the fields that fail.
+
+    One wrong-shaped field (e.g. tags_suggested as a string) must not discard a
+    usable summary. But a draft is only real if a non-empty summary survives --
+    checked on every path, including a first-try success on an empty patch
+    (e.g. the model sent only a stripped what_changed). Otherwise returns
+    (None, invalid) so the caller records a real fallback: publish then uses the
+    evidence-derived summary, and the baseline firebreak still applies, instead
+    of the fallback template's text being published as LLM output.
+    """
+    invalid: list[str] = []
+    try:
+        patch = MetacogDraftTextPatchV1.model_validate(filtered)
+    except ValidationError as exc:
+        invalid = sorted({str(err["loc"][0]) for err in exc.errors() if err.get("loc")}) or ["<root>"]
+        try:
+            patch = MetacogDraftTextPatchV1.model_validate(
+                {k: v for k, v in filtered.items() if k not in invalid}
+            )
+        except ValidationError:
+            return None, invalid
+    if not str(patch.summary or "").strip():
+        return None, invalid or ["summary:missing"]
+    return patch, invalid
+
+
 def _apply_draft_patch(entry_dict: Dict[str, Any], patch: MetacogDraftTextPatchV1) -> None:
     entry_dict["mantra"] = _truncate_text(patch.mantra, 2000) or entry_dict.get("mantra")
     entry_dict["summary"] = _truncate_text(patch.summary, 2000) or entry_dict.get("summary")
-
-    if patch.what_changed:
-        entry_dict["what_changed"] = {
-            "summary": _truncate_text(patch.what_changed.summary, 2000),
-            "evidence": _truncate_list(patch.what_changed.evidence, 12, 2000),
-        }
 
     if patch.tags_suggested:
         state_snapshot = entry_dict.get("state_snapshot")
@@ -3421,11 +3442,16 @@ async def call_step_services(
                             logger.warning("Draft patch stripped keys: %s", stripped)
 
                         patch_error = None
-                        try:
-                            patch_model = MetacogDraftTextPatchV1.model_validate(filtered)
-                        except Exception as exc:
-                            logger.warning("MetacogDraftService patch rejected: %s", exc)
-                            patch_error = str(exc)
+                        patch_model, invalid_fields = _validate_draft_patch_per_field(filtered)
+                        if invalid_fields:
+                            logger.warning(
+                                "MetacogDraftService dropped wrong-shaped draft fields %s (corr_id=%s)",
+                                invalid_fields,
+                                correlation_id,
+                            )
+                            stripped = [*stripped, *(f"{f}:invalid_shape" for f in invalid_fields)]
+                        if patch_model is None:
+                            patch_error = f"invalid_fields:{','.join(invalid_fields)}"
                             patch_model = MetacogDraftTextPatchV1()
                         if patch_error is None and _is_metacog_draft_example_echo(patch_model):
                             logger.warning(

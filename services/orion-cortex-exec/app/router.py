@@ -936,6 +936,19 @@ class PlanRunner:
         ):
             recall_cfg = dict(recall_cfg)
             recall_cfg["enabled"] = False
+        verb_recall_mode = (
+            str(plan.metadata.get("recall_mode_default") or "").strip().lower()
+            if isinstance(plan.metadata, dict)
+            else ""
+        )
+        if verb_recall_mode and "mode" not in recall_cfg:
+            # Verb YAML `recall_mode` (e.g. reverie's context_only). run_recall_step
+            # reads recall_cfg["mode"] on every path (pre-recall, PCR, supervisor);
+            # the inline plan step reads ctx["recall"], so that copy gets it too.
+            recall_cfg = dict(recall_cfg)
+            recall_cfg["mode"] = verb_recall_mode
+            if isinstance(ctx.get("recall"), dict) and "mode" not in ctx["recall"]:
+                ctx["recall"] = {**ctx["recall"], "mode": verb_recall_mode}
         raw_enabled = recall_cfg.get("enabled", True)
         ctx.setdefault("recall", recall_cfg)
         recall_enabled = recall_enabled_value(recall_cfg)

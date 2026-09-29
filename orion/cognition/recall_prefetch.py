@@ -10,6 +10,7 @@ from uuid import uuid4
 from orion.cognition.recall_query import (
     DEFAULT_RECALL_REPLY_PREFIX,
     build_recall_query_v1,
+    retrieval_query_from_ctx,
     last_user_message_from_ctx,
     recall_ctx_merge_from_reply,
 )
@@ -130,7 +131,7 @@ async def prefetch_recall_bundle_for_projection(
         return None, diagnostics
 
     fragment_text = last_user_message_from_ctx(ctx)
-    if not fragment_text:
+    if not fragment_text and not retrieval_query_from_ctx(ctx):
         diagnostics["reason"] = "empty_query_text"
         diagnostics["retryable"] = False
         return None, diagnostics
@@ -144,6 +145,7 @@ async def prefetch_recall_bundle_for_projection(
         recall_profile=recall_profile,
         recall_cfg=recall_cfg,
         reply_to=reply_channel,
+        deadline_ms=int(float(timeout_sec) * 1000) if timeout_sec else None,
     )
     if req is None:
         diagnostics["reason"] = "query_build_failed"

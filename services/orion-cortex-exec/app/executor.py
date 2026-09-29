@@ -27,6 +27,11 @@ from orion.llm.routes import LLM_ROUTE_ALIASES, METACOG_LLM_ROUTES, normalize_ll
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import AttachmentRefV1, BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 from orion.core.contracts.recall import RecallQueryV1
+from orion.cognition.recall_query import (
+    cap_retrieval_query,
+    recall_mode_from_cfg,
+    retrieval_query_from_ctx,
+)
 
 from orion.schemas.agents.schemas import DeliberationRequest
 from orion.core.verbs import VerbResultV1
@@ -2435,9 +2440,17 @@ async def run_recall_step(
     retrieval_intent: str | None = None,
     task_hints: Dict[str, Any] | None = None,
     seed_crystallization_id: str | None = None,
+    retrieval_query: str | None = None,
 ) -> Tuple[StepExecutionResult, Dict[str, Any], str]:
     """RecallService bus RPC. If ``rpc_timeout_sec`` is omitted, wait is ``min(STEP_TIMEOUT_MS, lane cap)``:
     ``CHAT_QUICK_RECALL_TIMEOUT_SEC`` for ``ctx['verb']`` in fast single-pass chat verbs, else ``RECALL_RPC_TIMEOUT_SEC``.
+
+    What recall searches for: ``retrieval_query`` when given (PCR phase 3 passes
+    the one phase 0+1 used), else ``ctx["retrieval_query"]`` (the caller's
+    choice, e.g. a self-inquiry run's standing question), else None and recall
+    condenses ``fragment`` itself. ``fragment`` stays the turn text either way.
+    ``recall_cfg["mode"]`` (``context_only`` for verbs whose YAML says so) and
+    ``deadline_ms`` (the RPC wait actually used) ride on the same request.
     """
     t0 = time.time()
     recall_client = RecallClient(bus)
@@ -2452,6 +2465,13 @@ async def run_recall_step(
     )
 
     fragment_text = _last_user_message(ctx) or ""
+    search_text = (
+        cap_retrieval_query(retrieval_query)
+        if retrieval_query is not None
+        else retrieval_query_from_ctx(ctx)
+    )
+    recall_mode = recall_mode_from_cfg(recall_cfg)
+    deadline_ms = max(1, int(round(float(recall_timeout) * 1000)))
     _log_grounding_snapshot(
         component=f"recall:{step_name}",
         ctx=ctx,
@@ -2497,9 +2517,15 @@ async def run_recall_step(
         retrieval_intent=retrieval_intent,
         task_hints=task_hints,
         seed_crystallization_id=seed_crystallization_id,
+        retrieval_query=search_text,
+        deadline_ms=deadline_ms,
+        mode=recall_mode,
     )
 
-    logs: List[str] = [f"rpc -> RecallService (profile={req.profile})"]
+    logs: List[str] = [
+        f"rpc -> RecallService (profile={req.profile}, mode={req.mode}, "
+        f"retrieval_query={'caller' if req.retrieval_query else 'none'}, deadline_ms={req.deadline_ms})"
+    ]
     debug: Dict[str, Any] = {}
     profile_source = (ctx.get("debug") or {}).get("recall_profile_source")
     override_source = (ctx.get("debug") or {}).get("recall_profile_override_source")

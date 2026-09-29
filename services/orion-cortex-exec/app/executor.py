@@ -620,20 +620,26 @@ def _validate_draft_patch_per_field(
     """Validate the draft patch, dropping only the fields that fail.
 
     One wrong-shaped field (e.g. tags_suggested as a string) must not discard a
-    usable summary. Returns (None, invalid) when nothing usable survives -- no
-    summary and no mantra -- so the caller records a real fallback.
+    usable summary. But a draft is only real if a non-empty summary survives --
+    checked on every path, including a first-try success on an empty patch
+    (e.g. the model sent only a stripped what_changed). Otherwise returns
+    (None, invalid) so the caller records a real fallback: publish then uses the
+    evidence-derived summary, and the baseline firebreak still applies, instead
+    of the fallback template's text being published as LLM output.
     """
+    invalid: list[str] = []
     try:
-        return MetacogDraftTextPatchV1.model_validate(filtered), []
+        patch = MetacogDraftTextPatchV1.model_validate(filtered)
     except ValidationError as exc:
-        invalid = sorted({str(err["loc"][0]) for err in exc.errors() if err.get("loc")})
-    kept = {k: v for k, v in filtered.items() if k not in invalid}
-    try:
-        patch = MetacogDraftTextPatchV1.model_validate(kept)
-    except ValidationError:
-        return None, invalid or ["<root>"]
-    if not (str(patch.summary or "").strip() or str(patch.mantra or "").strip()):
-        return None, invalid
+        invalid = sorted({str(err["loc"][0]) for err in exc.errors() if err.get("loc")}) or ["<root>"]
+        try:
+            patch = MetacogDraftTextPatchV1.model_validate(
+                {k: v for k, v in filtered.items() if k not in invalid}
+            )
+        except ValidationError:
+            return None, invalid
+    if not str(patch.summary or "").strip():
+        return None, invalid or ["summary:missing"]
     return patch, invalid
 
 

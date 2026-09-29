@@ -39,3 +39,20 @@ def test_nothing_usable_is_a_real_fallback():
     patch, invalid = _validate_draft_patch_per_field({"summary": {"not": "text"}, "tags_suggested": ["x"]})
     assert patch is None
     assert invalid == ["summary"]
+
+
+def test_only_a_stripped_what_changed_is_a_fallback_not_an_empty_llm_draft():
+    # Review finding: {"what_changed": ...} alone sanitized to {} and validated
+    # as an empty "llm" patch, publishing the fallback template text as cognition.
+    sanitized, _ = _sanitize_patch_payload(
+        {"what_changed": {"evidence": {"a": 1}}}, model=MetacogDraftTextPatchV1
+    )
+    patch, invalid = _validate_draft_patch_per_field(sanitized)
+    assert patch is None
+    assert invalid == ["summary:missing"]
+
+
+def test_mantra_without_summary_is_a_fallback():
+    patch, invalid = _validate_draft_patch_per_field({"summary": {"x": 1}, "mantra": "Hold."})
+    assert patch is None
+    assert invalid == ["summary"]

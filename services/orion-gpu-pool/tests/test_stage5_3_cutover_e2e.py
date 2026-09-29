@@ -302,3 +302,54 @@ def test_actuation_deadline_and_stuck_ceiling_cover_the_controllers_worst_case()
              + seat.timeout_sec + diffusion.timeout_sec + 60)
     assert worst > budget                      # past the first deadline: the pool polls `status`
     assert worst < MAX_ACTION_TIMEOUTS * budget    # ... and stays inside the stuck ceiling
+
+
+# --- scripts/gpu_pool_actuator_probe.py against the real controller ---------------------------------
+
+def _probe_module():
+    spec = importlib.util.spec_from_file_location("gpu_pool_actuator_probe", REPO / "scripts" / "gpu_pool_actuator_probe.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _ask(circe, msg) -> list[dict]:
+    got: list[dict] = []
+
+    async def go():
+        async def publish(result, corr):
+            got.append(result.model_dump(mode="json"))
+        await CTL.actuator_bus.handle(msg.model_dump(mode="json"), publish)
+        if CTL.actuator_bus._task is not None:
+            await CTL.actuator_bus._task
+    _run(go())
+    return got
+
+
+def test_probe_reads_status_and_digest_agreement_without_touching_anything(tmp_path, monkeypatch):
+    """The runbook's pre/post-deploy probe: `status` answers with what is on the card; `digest` is
+    refused profile_not_allowed when both checkouts agree -- no docker call, no generation spent."""
+    probe = _probe_module()
+    circe = Circe(tmp_path, monkeypatch)
+    status = _ask(circe, probe.build(CFG, SEAT, "status"))
+    assert probe.verdict("status", status).startswith("OK: observed={'agent-gpu2': 'absent', 'diffusion': 'running'}")
+    digest = _ask(circe, probe.build(CFG, SEAT, "digest"))
+    assert probe.verdict("digest", digest) == "OK: launch digests agree"
+    assert circe.docker.calls == []
+    assert CTL.pool_fence.read_state()["generations"] == {}
+
+
+def test_probe_reports_a_controller_checkout_on_another_commit(tmp_path, monkeypatch):
+    """circe still on the rollback shape (bridge verbs) while the pool runs 5.3: MISMATCH."""
+    import yaml
+    probe = _probe_module()
+    circe = Circe(tmp_path, monkeypatch)
+    path = tmp_path / "circe" / "config" / "gpu_pool.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["roles"][SEAT]["swap"].update(load="gpu2/agent", unload="gpu2/restore")
+    data["roles"][SEAT]["launch"].pop("profiles")
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    got = _ask(circe, probe.build(CFG, SEAT, "digest"))
+    assert probe.verdict("digest", got) == "MISMATCH: controller checkout/image is not on this commit"
+    assert probe.verdict("digest", []).startswith("NO ANSWER")
+    assert circe.docker.calls == []

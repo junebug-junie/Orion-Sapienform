@@ -81,7 +81,7 @@ async def lifespan(app: FastAPI):
     await app.state.dispatch_bus.connect()
     # RPC-health publish from the dispatch bus: every rpc_request the handlers make
     # (cortex-exec :background finalize, substrate appraisal) records here, and
-    # bus_listener.record_fcc_hop adds the FCC subprocess leg as fcc:<served_model>.
+    # bus_listener.record_fcc_hop adds the FCC subprocess leg as fcc:<role>.
     app.state.rpc_health_publisher = build_rpc_health_publisher(lambda: app.state.dispatch_bus)
     if settings.orion_bus_enabled:
         app.state.rpc_health_publisher.start()

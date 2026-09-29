@@ -17,9 +17,13 @@ today. Exporting seven keys from it changes how ergonomic the credentials are,
 not who can reach them. What the credentials THEMSELVES allow is the real
 boundary, and it is enforced by Postgres and FalkorDB, not by this file:
 
-  ORION_CURIOSITY_PG_DSN      role `orion_readonly`: SELECT on exactly four
-                              tables, no INSERT/UPDATE/DELETE, no CREATE.
-                              Verified live -- every write case errored.
+  ORION_CURIOSITY_PG_DSN      role `orion_readonly`: SELECT on the four memory
+                              tables, plus the two hardware telemetry tables
+                              (`orion_biometrics_summary`, `home_cooling_sample`)
+                              once `scripts/sql/2026-09-28_grant_orion_readonly_hardware.sql`
+                              is applied, for urgent runs. No INSERT/UPDATE/
+                              DELETE, no CREATE. Verified live -- every write
+                              case errored.
   ORION_CURIOSITY_GRAPH_*     ACL user `orion_curiosity`: RO on the Atlas,
                               RW on `orion_worldview`, denied everywhere else.
 

@@ -144,6 +144,40 @@ def test_admission_accepts_only_a_persisted_matching_receipt():
     bus.publish.assert_not_awaited()
 
 
+def test_admission_forward_leaves_unset_fields_off_the_wire():
+    """An ordinary run's brief must reach durable-runs with no `urgent` key (nor any other
+    None field): an older runner's `extra="forbid"` brief would reject `"urgent": null`."""
+    from orion.schemas.durable_run import DurableRunRequestV1
+
+    bus = _admission_bus()
+    asyncio.run(dispatch_durable_run(
+        bus=bus, source=ServiceRef(name="orion-cortex-orch"),
+        req=_req({"durable_run": {**_durable_payload(), "admission": {}}}),
+        correlation_id="corr-1", admission_enabled=True,
+    ))
+    forwarded = bus.rpc_request.await_args.args[1].payload
+    assert "urgent" not in forwarded["brief"]
+    assert "fcc_model_label" not in forwarded["brief"] and "deadline_at" not in forwarded["admission"]
+    # Still the same request once re-validated (no required field went missing).
+    assert DurableRunRequestV1.model_validate(forwarded).brief.urgent is None
+
+
+def test_admission_forward_keeps_an_urgent_seed():
+    seed = {"incident_id": "a1" * 16, "question": "why hot?", "trigger": "manual",
+            "requested_at": "2026-09-28T20:00:00+00:00", "evidence": {"reading": None}}
+    payload = {**_durable_payload(), "admission": {"priority": "urgent"}}
+    payload["brief"] = {**payload["brief"], "urgent": seed}
+    bus = _admission_bus()
+    asyncio.run(dispatch_durable_run(
+        bus=bus, source=ServiceRef(name="orion-cortex-orch"), req=_req({"durable_run": payload}),
+        correlation_id="corr-1", admission_enabled=True,
+    ))
+    forwarded = bus.rpc_request.await_args.args[1].payload
+    assert forwarded["brief"]["urgent"]["incident_id"] == "a1" * 16
+    assert forwarded["brief"]["urgent"]["evidence"] == {"reading": None}  # dict values are kept
+    assert forwarded["admission"]["priority"] == "urgent"
+
+
 @pytest.mark.parametrize("case", ["timeout", "wrong_kind", "wrong_run", "disabled"])
 def test_uncertain_admission_never_falls_back_to_pubsub(case):
     bus = _admission_bus(kind="unrelated" if case == "wrong_kind" else "durable.run.receipt.v1")

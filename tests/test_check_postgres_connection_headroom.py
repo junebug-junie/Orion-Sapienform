@@ -24,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 from scripts.check_postgres_connection_headroom import (  # noqa: E402
     EXIT_ALARM,
     EXIT_CANNOT_CHECK,
+    EXIT_ESCALATION_FAILED,
     EXIT_OK,
     Headroom,
     connection_params,
@@ -560,10 +561,12 @@ def test_notify_without_gate_does_not_wipe_a_live_alarm(monkeypatch, tmp_path):
 
 
 def test_escalation_failure_is_not_reported_as_an_alarm(monkeypatch, tmp_path, capsys):
-    """An unwritable state dir must not masquerade as a full database.
+    """An unwritable state dir must not masquerade as a full database -- nor as a pass.
 
     notify_alarm used to let this escape as an unhandled traceback, whose Python
-    exit status 1 is indistinguishable from EXIT_ALARM.
+    exit status 1 is indistinguishable from EXIT_ALARM. It then became exit 0
+    with one log line, the shape that hid 204 red substrate-ladder runs for ~34h
+    on 2026-09-26. It is now its own code.
     """
     recorder = {}
     unwritable = tmp_path / "nope"
@@ -575,8 +578,62 @@ def test_escalation_failure_is_not_reported_as_an_alarm(monkeypatch, tmp_path, c
         unwritable / "s.json",
         extra=["--notify"],
     )
-    assert rc == EXIT_OK
-    assert recorder.get("calls", []) == []
+    assert rc == EXIT_ESCALATION_FAILED
+    assert rc not in (EXIT_ALARM, EXIT_CANNOT_CHECK, EXIT_OK)
+    assert recorder.get("calls", []) == [], "nothing alarming: no card"
+    assert "ESCALATION FAILED: dedupe state unusable" in capsys.readouterr().err
+
+
+def test_an_alarm_with_unwritable_state_still_cards_every_tick(monkeypatch, tmp_path, capsys):
+    """Replay of the ladder-watch incident shape on this watcher: no memory, so
+    the card goes out undeduped rather than not at all."""
+    recorder = {}
+    unwritable = tmp_path / "nope"
+    unwritable.write_text("i am a file, not a directory")
+    for _ in range(2):
+        rc = _run(monkeypatch, _alarming_conn(), recorder, unwritable / "s.json", extra=["--notify"])
+        assert rc == EXIT_ESCALATION_FAILED
+    assert len(recorder["calls"]) == 2
+    assert "repeats every tick" in recorder["calls"][0]["message"]
+    assert recorder["calls"][0]["context"]["dedupe_state_error"]
+
+
+def test_a_card_orion_notify_refused_exits_escalation_failed(monkeypatch, tmp_path, capsys):
+    recorder = {}
+    rc = _run(monkeypatch, _alarming_conn(), recorder, tmp_path / "s.json", extra=["--notify"], ok=False)
+    assert rc == EXIT_ESCALATION_FAILED
+    assert "ESCALATION FAILED: orion-notify did not accept" in capsys.readouterr().err
+
+
+def test_a_confirmed_card_is_a_plain_alarm(monkeypatch, tmp_path):
+    recorder = {}
+    state = tmp_path / "s.json"
+    assert _run(monkeypatch, _alarming_conn(), recorder, state, extra=["--notify"]) == EXIT_ALARM
+    assert _run(monkeypatch, _alarming_conn(), recorder, state, extra=["--notify"]) == EXIT_ALARM
+
+
+def test_a_malformed_state_file_still_cards_the_alarm(monkeypatch, tmp_path):
+    """Review finding: a non-numeric episode_rank raised inside the dedupe path
+    and the card was never attempted, every tick."""
+    recorder = {}
+    state = tmp_path / "s.json"
+    state.write_text('{"episode_rank": "high", "notified": true}')
+    assert _run(monkeypatch, _alarming_conn(), recorder, state, extra=["--notify"]) == EXIT_ALARM
+    assert len(recorder["calls"]) == 1
+
+
+def test_a_crash_in_the_dedupe_path_still_cards_the_alarm(monkeypatch, tmp_path):
+    import scripts.check_postgres_connection_headroom as mod
+
+    def crash(*a, **k):
+        raise ValueError("bug")
+
+    monkeypatch.setattr(mod, "_load_state", crash)
+    recorder = {}
+    rc = _run(monkeypatch, _alarming_conn(), recorder, tmp_path / "s.json", extra=["--notify"])
+    assert rc == EXIT_ESCALATION_FAILED
+    assert len(recorder["calls"]) == 1
+    assert recorder["calls"][0]["context"]["dedupe_state_error"].startswith("ValueError")
 
 
 def test_the_notify_client_is_importable_when_run_as_a_script(tmp_path):

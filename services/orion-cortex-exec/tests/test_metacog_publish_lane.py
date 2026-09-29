@@ -461,11 +461,13 @@ def test_publish_builds_metacog_entry_from_real_artifacts_no_self_report():
 
     ctx = {
         "trigger": {
-            "trigger_kind": "dense",
-            "reason": "substrate_eventfulness:0.60",
-            "upstream": {"substrate_score": 0.6, "reasons": ["execution_pressure_spike"]},
+            # dense/pulse were retired 2026-09-29 (never fired); a live
+            # evidence-bearing kind stands in for "a real event".
+            "trigger_kind": "telemetry_anomaly",
+            "reason": "telemetry_anomaly:elevated:recon_loss=0.04320:threshold=0.01440",
+            "upstream": {"recon_loss": 0.0432, "threshold": 0.0144, "deviation_direction": "elevated", "top_channels": ["failure_pressure=0.80000"], "encoder_id": "mood-arc-encoder:v4"},
         },
-        "trigger_kind": "dense",
+        "trigger_kind": "telemetry_anomaly",
         "substrate_eventfulness_score": 0.6,
         "substrate_eventfulness_reasons": ["execution_pressure_spike"],
         "collapse_entry": valid_entry,
@@ -501,23 +503,23 @@ def test_publish_builds_metacog_entry_from_real_artifacts_no_self_report():
     payload = envelope.payload
     assert "numeric_sisters" not in payload
     assert "state_snapshot" not in payload
-    assert payload["trigger_kind"] == "dense"
-    assert payload["trigger_reason"] == "substrate_eventfulness:0.60"
+    assert payload["trigger_kind"] == "telemetry_anomaly"
+    assert payload["trigger_reason"] == "telemetry_anomaly:elevated:recon_loss=0.04320:threshold=0.01440"
     assert payload["state"]["substrate_eventfulness_score"] == 0.6
     assert payload["state"]["substrate_eventfulness_reasons"] == ["execution_pressure_spike"]
     # 2026-09-24: causal_density / severity / touches / evidence come from
     # the TRIGGER's own upstream (orion.metacog.evidence_map), not from the
     # global state blend or the pipeline step log.
-    assert payload["causal_density"]["score"] == pytest.approx(0.6)
-    assert payload["causal_density"]["rationale"].startswith("event_magnitude[dense]")
+    assert payload["causal_density"]["score"] == pytest.approx(0.68)
+    assert payload["causal_density"]["rationale"].startswith("event_magnitude[telemetry_anomaly]")
     assert payload["is_causally_dense"] is True
     assert payload["snapshot_kind"] == "confirmed_dense"
     assert payload["severity"] == "critical"
-    assert payload["touches"] == ["execution_trajectory"]
-    assert payload["provenance"]["source"] == "cortex_exec.metacog_pipeline.dense"
-    assert payload["provenance"]["impacts"] == ["execution_trajectory"]
+    assert payload["touches"] == ["mood-arc-encoder:v4", "channel:failure_pressure"]
+    assert payload["provenance"]["source"] == "cortex_exec.metacog_pipeline.telemetry_anomaly"
+    assert payload["provenance"]["impacts"] == ["mood-arc-encoder:v4", "channel:failure_pressure"]
     evidence = payload["what_changed"]["evidence"]
-    assert "substrate eventfulness 0.60" in evidence
+    assert "recon_loss 0.0432 vs threshold 0.0144 (3.00x), elevated" in evidence
     # Pipeline step log moved out of evidence into provenance.
     assert not any(e.startswith(("exec ->", "ok <-", "skip <-", "error <-")) for e in evidence)
     assert "exec -> MetacogPublishService" in payload["provenance"]["pipeline_steps"]
@@ -635,13 +637,13 @@ def test_publish_output_unaffected_by_enrich_removal_end_to_end(monkeypatch):
     template = _load_template("log_orion_metacognition_draft.j2")
     ctx = _draft_ctx()
     ctx["trigger"] = {
-        "trigger_kind": "dense",
-        "reason": "substrate_eventfulness:0.60",
+        "trigger_kind": "telemetry_anomaly",
+        "reason": "telemetry_anomaly:elevated:recon_loss=0.04320:threshold=0.01440",
         "pressure": 0.6,
         "zen_state": "not_zen",
-        "upstream": {"substrate_score": 0.6, "reasons": ["execution_pressure_spike"]},
+        "upstream": {"recon_loss": 0.0432, "threshold": 0.0144, "deviation_direction": "elevated", "top_channels": ["failure_pressure=0.80000"], "encoder_id": "mood-arc-encoder:v4"},
     }
-    ctx["trigger_kind"] = "dense"
+    ctx["trigger_kind"] = "telemetry_anomaly"
     ctx["substrate_eventfulness_score"] = 0.6
     ctx["substrate_eventfulness_reasons"] = ["execution_pressure_spike"]
 
@@ -696,19 +698,19 @@ def test_publish_output_unaffected_by_enrich_removal_end_to_end(monkeypatch):
     assert payload["summary"] == "Steady coherence, slight clarity uptick."
     assert payload["mantra"] == "Hold the signal."
     assert "numeric_sisters" not in payload
-    assert payload["trigger_kind"] == "dense"
+    assert payload["trigger_kind"] == "telemetry_anomaly"
     assert payload["state"]["substrate_eventfulness_score"] == 0.6
-    assert payload["causal_density"]["score"] == pytest.approx(0.6)
+    assert payload["causal_density"]["score"] == pytest.approx(0.68)
     assert payload["is_causally_dense"] is True
     assert payload["snapshot_kind"] == "confirmed_dense"
-    assert payload["touches"] == ["execution_trajectory"]
+    assert payload["touches"] == ["mood-arc-encoder:v4", "channel:failure_pressure"]
     assert payload["severity"] == "critical"
-    assert payload["provenance"]["source"] == "cortex_exec.metacog_pipeline.dense"
-    assert payload["provenance"]["impacts"] == ["execution_trajectory"]
+    assert payload["provenance"]["source"] == "cortex_exec.metacog_pipeline.telemetry_anomaly"
+    assert payload["provenance"]["impacts"] == ["mood-arc-encoder:v4", "channel:failure_pressure"]
     # LLM's what_changed is no longer published; the deterministic one is.
     assert payload["what_changed"]["evidence"] == [
-        "substrate eventfulness 0.60",
-        "reason execution_pressure_spike",
+        "recon_loss 0.0432 vs threshold 0.0144 (3.00x), elevated",
+        "top channel failure_pressure=0.80000",
     ]
     assert "spark clarity band high" not in payload["what_changed"]["evidence"]
 

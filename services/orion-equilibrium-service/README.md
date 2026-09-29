@@ -37,9 +37,9 @@ This section exists because design decisions for this system have historically o
 
 | `trigger_kind` | Evidence source | Cooldown lane | Status |
 |---|---|---|---|
-| `baseline` | Scheduled tick, `EQUILIBRIUM_METACOG_BASELINE_INTERVAL_SEC` | shared | live |
+| `baseline` | Scheduled tick | — | **retired 2026-09-29** (see below) |
 | `manual` | User-triggered Collapse Mirror event | shared | live |
-| `dense` / `pulse` | Substrate self-state eventfulness score | shared | live |
+| `dense` / `pulse` | Substrate self-state eventfulness score | — | **retired 2026-09-29** (never fired; see below) |
 | `relational` | Real `repair_pressure_v2` appraisal | shared | live |
 | `telemetry_anomaly` | Trained autoencoder reconstruction-loss anomaly | shared | live (2026-07-21) |
 | `chat_turn` | Correlated `ThoughtEventV1` + `HarnessRunV1` (or a governor/stance-react timeout) | own (`EQUILIBRIUM_METACOG_CHAT_TURN_COOLDOWN_SEC`) | live (2026-07-23) |
@@ -54,16 +54,19 @@ This section exists because design decisions for this system have historically o
 - `docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md` + `docs/superpowers/specs/2026-07-23-rpc-health-signal-gateway-wiring-design.md` — why the old `transport_pressure`/`bus_health` family was found narrowly-scoped/misleading, and the real `rpc_health` signal built to replace it.
 - `docs/superpowers/specs/2026-07-24-transport-metacog-trigger-design.md` — the `transport` trigger kind's own design (why it doesn't build on the old `bus.transport` grammar lane, Options A/B/C).
 
-### Baseline metacog trigger
+### Retired: baseline heartbeat and substrate dense/pulse triggers (2026-09-29)
 
-`_metacog_baseline_loop()` runs on `EQUILIBRIUM_METACOG_BASELINE_INTERVAL_SEC` (default `1000`s) whenever `EQUILIBRIUM_METACOG_ENABLE=true`, and is the fallback trigger every other trigger type in this file effectively bypasses when it fires first: on each tick it first tries the substrate dense/pulse trigger (below); only if that doesn't fire does it fall through to a real `trigger_kind=baseline` (`reason="scheduled_check"`). `EQUILIBRIUM_METACOG_BASELINE_MAX_SKIPS` (default `3`) forces a baseline trigger anyway after that many consecutive ticks where the distress/zen scores haven't changed, so a genuinely quiet system still gets a periodic real trigger rather than skipping forever.
+`_metacog_baseline_loop()` used to publish `trigger_kind=baseline` (`reason="scheduled_check"`, empty `upstream`) on a timer, first trying the substrate `dense`/`pulse` gate. Both are gone -- loop, gate module, settings and compose keys:
+
+- **baseline** carried no evidence, so once PR #2393 let its rows publish again they were the same sentence every hour ("Baseline check triggered with no active alerts, indicating stable system state." / "Stability is the foundation of progress.") -- an LLM call per hour to say nothing happened. `orion_metacog` now only holds rows where something happened.
+- **dense/pulse** were structurally unreachable since the 2026-07-22 SelfStateV1 removal: `compute_substrate_eventfulness()` maxes at `0.25`, below both thresholds (`0.30`/`0.55`).
+
+A real "nothing is happening" signal, if wanted later, should be derived from the absence of the event-driven triggers, not from a timer. `orion/metacog/evidence_map.py` keeps its baseline/dense/pulse mappers only so historical rows still replay.
 
 | Env | Default | Purpose |
 |-----|---------|---------|
-| `EQUILIBRIUM_METACOG_ENABLE` | `true` | Master gate for the whole metacog trigger pipeline (baseline + every trigger type below) |
-| `EQUILIBRIUM_METACOG_BASELINE_INTERVAL_SEC` | `1000` | Baseline loop cadence |
-| `EQUILIBRIUM_METACOG_BASELINE_MAX_SKIPS` | `3` | Force a real trigger after this many unchanged ticks |
-| `EQUILIBRIUM_METACOG_COOLDOWN_SEC` | `30` | Global cooldown in `_publish_metacog_trigger()` -- applies across every trigger type in this file, not baseline-specific; a trigger firing during cooldown is silently dropped (logged, not queued) |
+| `EQUILIBRIUM_METACOG_ENABLE` | `true` | Master gate for every trigger type below |
+| `EQUILIBRIUM_METACOG_COOLDOWN_SEC` | `30` | Global cooldown in `_publish_metacog_trigger()` for kinds without their own lane; a trigger firing during cooldown is dropped (logged, not queued) |
 
 ### Manual metacog trigger
 
@@ -72,23 +75,6 @@ Fires `trigger_kind=manual` (`reason="user_collapse_event"`) whenever a real use
 | Env | Default | Purpose |
 |-----|---------|---------|
 | `CHANNEL_COLLAPSE_MIRROR_USER_EVENT` | `orion:collapse:intake` | Source channel (single consumer: this service) |
-
-### Substrate-driven metacog triggers (dense / pulse)
-
-When `EQUILIBRIUM_METACOG_ENABLE=true`, the baseline loop can emit **substrate-aware** triggers before falling back to scheduled baseline ticks. Equilibrium reads fresh Postgres projections (`substrate_self_state`, `substrate_execution_trajectory_projection`) via the shared felt-state reader and scores eventfulness.
-
-**Dead since the 2026-07-22 SelfStateV1 removal — confirmed live 2026-08-11, not fixed here.** `compute_substrate_eventfulness()`'s only surviving scoring term (`execution_failures`) maxes out at `0.25`. Both thresholds below sit above that ceiling (`pulse` needs `>= 0.30`, `dense` needs `>= 0.55`), so neither `trigger_kind` can ever fire regardless of what happens in the world — this is not "rare," it's structurally unreachable. The code's own docstring already flags `dense` as broken; it doesn't note `pulse` is broken too. Reviving this needs either lower thresholds or a real replacement scoring term (SelfStateV1's own replacement never arrived) — deliberately left as-is in this patch; noted here so it isn't mistaken for a live signal.
-
-| Env | Default | Purpose |
-|-----|---------|---------|
-| `EQUILIBRIUM_METACOG_SUBSTRATE_TRIGGER_ENABLE` | `true` | Master gate for substrate dense/pulse triggers |
-| `EQUILIBRIUM_METACOG_SUBSTRATE_DENSE_THRESHOLD` | `0.55` | Eventfulness score → `trigger_kind=dense` |
-| `EQUILIBRIUM_METACOG_SUBSTRATE_PULSE_THRESHOLD` | `0.30` | Eventfulness score → `trigger_kind=pulse` |
-| `ENABLE_SUBSTRATE_FELT_STATE_CTX` | `false` in code; `true` in `.env_example` | Must be on for Postgres hydration |
-| `SUBSTRATE_FELT_STATE_DATABASE_URL` | conjourney Postgres URL | Reader DB target |
-| `SUBSTRATE_FELT_STATE_MAX_AGE_SEC` | `120` | Stale rows ignored |
-
-Docker compose wires all six keys from `.env`. Without `ENABLE_SUBSTRATE_FELT_STATE_CTX=true`, substrate triggers silently fall through to baseline.
 
 ### Relational metacog trigger
 

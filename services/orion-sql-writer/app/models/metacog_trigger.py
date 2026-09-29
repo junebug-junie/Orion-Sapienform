@@ -10,7 +10,7 @@ class MetacogTriggerSQL(Base):
     id = Column(String, primary_key=True, index=True, default=lambda: str(uuid4()))
     correlation_id = Column(String, index=True, nullable=True)
 
-    trigger_kind = Column(String, nullable=False)  # baseline, dense, manual, pulse
+    trigger_kind = Column(String, nullable=False)  # free-form; baseline/dense/pulse are historical only (retired 2026-09-29)
     reason = Column(Text, nullable=True)
     zen_state = Column(String, nullable=True)      # zen, not_zen, unknown
     pressure = Column(Float, default=0.0)

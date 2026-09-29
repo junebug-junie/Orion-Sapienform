@@ -31,7 +31,7 @@ async def run_smoke():
 
     logger.info("Initializing smoke test schemas...")
     trigger = MetacogTriggerV1(
-        trigger_kind="baseline",
+        trigger_kind="manual",
         reason="smoke_test",
         zen_state="zen",
         pressure=0.1

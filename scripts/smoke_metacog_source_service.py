@@ -35,7 +35,7 @@ def _load_executor_module():
 
 def main() -> None:
     executor_module = _load_executor_module()
-    entry = executor_module._fallback_metacog_draft({"trigger": {"trigger_kind": "baseline"}})
+    entry = executor_module._fallback_metacog_draft({"trigger": {"trigger_kind": "manual"}})
     assert entry.source_service == "metacog"
     print("ok")
 

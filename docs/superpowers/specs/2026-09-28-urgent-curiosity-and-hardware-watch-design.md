@@ -2,7 +2,9 @@
 
 **Date:** 2026-09-28
 **Status:** Design approved by Juniper in chat (2026-09-28). Part 1 implemented (Plan 2, branch
-`feat/gpu-pool-urgent-class`); Parts 2–5 not implemented.
+`feat/gpu-pool-urgent-class`). Parts 2, 2b and 3 implemented (Plan 3, branch
+`feat/curiosity-urgent-runs`; live smoke UNVERIFIED). Part 5 implemented (Plan 1, PR #2382).
+Part 4 not implemented.
 **Branch:** `docs/urgent-curiosity-hardware-watch`
 
 ## Arsonist summary
@@ -219,68 +221,115 @@ Plan: `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-2-pool-urgent.md`
   preemption smoke is **UNVERIFIED**: it pauses a real background run, so it waits for Juniper's
   approval.
 
-### Part 2 — seeded urgent curiosity runs
+### Part 2 — seeded urgent curiosity runs (as shipped, Plan 3)
 
-- New schema `CuriosityUrgentRequestV1` (`orion/schemas/curiosity_urgent.py`):
-  `incident_id`, `question` (1–2000 chars), `trigger: Literal["manual","heat","cooling"]`,
-  `subject` (e.g. `athena`, `circe/gpu2`, `cabinet_ac`), `evidence: dict` (snapshot of the readings
-  that fired), `requested_at`, `requested_by`.
-- New channel `orion:curiosity:urgent:request`; producers `orion-hub`, `orion-hardware-watch`;
-  consumer `orion-hub`. Registered in `orion/bus/channels.yaml` + `orion/schemas/registry.py`.
-- Hub: `POST /curiosity/api/urgent {question}` publishes the request (manual); a Hub consumer turns
-  any request into a run. Urgent runs bypass `_run_lock`, cooldown, daily cap, waking window,
-  energy hold. They keep `MIN_HARNESS_STEPS`. At most one open run per `incident_id`.
-- `CuriosityRunBriefV1` gains optional `urgent: CuriosityUrgentSeedV1` (incident_id, question,
-  trigger, subject, evidence). The kickoff prompt uses the seed question + evidence instead of the
-  self-authored subject.
-- Already shipped in Part 1: `ResourceRequirementV1.priority` accepts `urgent` (that is what makes
-  the hold urgent; there is no route for it), and durable-runs drives urgent runs outside the
-  4-driver cap. Part 2 only has to set `priority: urgent` on the run's admission.
-- Grant `orion_readonly` `SELECT` on `orion_biometrics_summary` (includes the cabinet Nano's
-  `measurements->>'cabinet_temp_c'`) and `home_cooling_sample` (new
-  `scripts/sql/2026-09-28_grant_orion_readonly_hardware.sql`).
-- UI: Curiosity panel gets a question box + "Run urgent" button and an urgent-runs list (status,
-  incident, trigger).
+Plan: `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md`
+(branch `feat/curiosity-urgent-runs`). Hub README section "Urgent curiosity runs" has the
+operator view.
 
-### Part 2b — urgent run mechanics (inside the turn)
+**Changed from the first draft of this part:**
 
-Today (grounded): one `claude -p` turn (`orion/harness/fcc_motor.py:933-962`) on route `agent`
-(`llamacpp/agent` via llm-gateway), inside `harness-governor` on athena, Bash with
-`bypassPermissions`. Hub path `_turn_result_for` → `execute_unified_turn` → Thought stance
-`react()` (may defer/refuse, `turn_orchestrator.py:1090`) → `HarnessRunRequestV1`. Kickoff prompt
-(`orion/curiosity/kickoff_prompt.py:954-1034`) is "your own time, no task" + self material, prose
-output, "no verdict schema"; only structured output is the `:TurnOutcome` graph node. Validity:
-final frame, ≥ `MIN_HARNESS_STEPS=3`, non-error, non-empty. Limits: 7200 s turn, 420 s stall,
-3 attempts, 30 s·2^n backoff. Output → journal; optional reach-out = second, blockable turn.
+- **Evidence for Hub-started runs lives on the run, not an incident row.** Hub collects the
+  bundle, puts it on the seed, and it travels in the run brief (persisted in durable-runs' run
+  row) and in Hub's Redis incident record. The `hardware_watch_incident` table is Part 4.
+- **The grant is an operator step.** `scripts/sql/2026-09-28_grant_orion_readonly_hardware.sql`
+  ships; applying it is a production DB write, so Juniper runs it. Until then Orion's `psql`
+  reads of the hardware tables get "permission denied", and the prompt says what that means.
+- **More refusals than drafted**, because a request nothing consumes would read as "started"
+  and never report: `start_urgent` also refuses `curiosity_disabled` and `redis_unavailable`;
+  the button route refuses `urgent_disabled`, `durable_admission_disabled`,
+  `urgent_listener_not_running`, `bus_unavailable` and `redis_unavailable` up front (503).
+- **Every refusal is reported.** A refused `start_urgent` (and a bus request that fails
+  validation but names a usable incident id) sends one critical `failed` notice
+  (`investigation failed: refused: <reason>`) and records a `refused:<reason>` incident stub.
+  When a run is still open for that incident (`incident_already_open`, or any refusal or
+  invalid request while its open key is held) nothing is sent and its record is left alone:
+  the open run reports, and a "failed" notice would be false.
 
-Urgent changes (durable graph `curiosity.investigate` reused; behaviour keyed off `brief.urgent`):
+**What shipped:**
+
+- Schemas (`orion/schemas/curiosity_urgent.py`): `CuriosityUrgentSeedV1` (`incident_id` hex
+  12–32, `question` 1–2000 chars, `trigger: manual|heat|cooling`, `subject` ≤ 120, `evidence`
+  ≤ 32 000 bytes serialized, `requested_at`, `requested_by`) and `CuriosityUrgentRequestV1`
+  (same fields, the bus request). `CuriosityRunBriefV1.urgent` and
+  `CuriosityTurnRequestV1.urgent` are optional and left off the wire when unset, and
+  cortex-orch forwards the admission request with `exclude_none`, so an older durable-runs
+  never sees an `urgent: null` it does not know. Services deploy in any order.
+- Channel `orion:curiosity:urgent:request` (kind `curiosity.urgent.request.v1`); producers
+  `orion-hub` (manual) and `orion-hardware-watch` (Part 4); consumer `orion-hub`.
+- Hub `POST /curiosity/api/urgent {question}` collects the evidence bundle and **publishes** a
+  `manual` request (one path for the button and the watcher). `GET /curiosity/api/urgent` lists
+  the newest 20 incidents without their bundles. The Curiosity panel has the question box, the
+  "Run urgent" button and the urgent-runs list.
+- Hub's consumer calls `start_urgent`: one open run per incident (Redis NX key holding the run
+  id, TTL = overall timeout + 2 × turn timeout + 10 s + 600 s), GPU admission `priority: urgent`
+  with `deadline_at = now + HUB_CURIOSITY_URGENT_TIMEOUT_SEC`, brief `timeout_sec = 900`. At the
+  deadline durable-runs fails the run (`workflow_deadline`, with the urgent detail) whether it is
+  still queued or mid-turn, so the incident always gets a terminal event. It skips the run
+  lock, cooldown, daily cap, waking window and energy hold, and spends none of them. It refuses
+  when durable admission is off — an urgent run never runs at background priority.
+- **Unconfirmed dispatch keeps the incident open.** If cortex never confirms the run (rejected,
+  timed out, receipt lost) it may still have registered, so the NX key is kept, the incident is
+  `dispatch_unconfirmed`, and the watchdog still runs: no run record at 120 s ⇒ one `failed`
+  report ("cortex never registered the run") and the key is released (only if it still holds this
+  run id). Readable progress at 120 s behaves like a confirmed run. A dispatch that raised is a
+  clean failure too (key released, `failed` report).
+- Evidence bundle (`services/orion-hub/scripts/urgent_evidence.py`): cabinet AC latest sample +
+  freshness, last 60 min of `cabinet_temp_c`, per-node biometrics, per-GPU cards, active/queued
+  pool leases. Each section has its own timeout; a failing one becomes `{"error": ...}`. Trimmed
+  to the 32 000-byte cap. Not in it yet: GPU temperature (Part 4 starts collecting it), `docker
+  ps`, container restarts.
+
+### Part 2b — urgent run mechanics (inside the turn, as shipped)
+
+Ordinary turn today (grounded): one `claude -p` turn on route `agent` inside
+`harness-governor`; Hub `_turn_result_for` → `execute_unified_turn` → stance `react()` (may
+defer/refuse) → `HarnessRunRequestV1`. Held curiosity turns get the brief's `timeout_sec`
+(8840 s today, not the 7200 s the first draft said); per-step stall 420 s; 3 attempts, 30 s·2^n
+backoff.
+
+The durable graph `curiosity.investigate` is reused; everything below is keyed off the typed
+`urgent` field, never the question's words.
 
 | Step | Urgent behaviour |
 |---|---|
-| Stance | Skipped. Hub passes the urgent seed so `execute_unified_turn` bypasses `react()` defer/refuse; a stance error is a run failure, not a deferral |
-| Prompt | New `build_urgent_prompt(seed)` in `orion/curiosity/urgent_prompt.py`: assignment header (question or fired rule), evidence bundle, checklist (confirm real vs sensor fault → cause → severity → recommended operator action), tool guide, clock. No random material, priors, peer briefs, dreams |
-| Tools | Existing sandbox. `orion_readonly` gets SELECT on `orion_biometrics_summary`, `home_cooling_sample`, `hardware_watch_incident`; curl to pool `GET` lease/state endpoints; `docker ps/logs/stats` on athena (socket already mounted — live smoke required). No live shell on circe: circe facts come from the evidence bundle |
-| Evidence bundle | Collected by hardware-watch at incident open (manual runs: Hub collects the same bundle): last 60 min of the triggering series, current per-host temps/power/fan, per-GPU temp/power/util (from biometrics sample incl. new `temperature.gpu`), cabinet temp trend, AC readings + freshness, pool active leases, `docker ps` on athena, container restarts in last hour. Stored on the incident row; injected into the prompt and readable via psql |
-| Output | Required graph node `:IncidentReport{incident_id, is_real: real|sensor_fault|unclear, likely_cause, evidence (list of cited readings/queries), severity: low|high|critical, operator_action, confidence 0-1}` plus the prose. `read_turn_result` reads it. Missing/malformed ⇒ report still sent, prose attached, flagged `no_structured_verdict` |
-| Validity | Keep ≥ 3 steps, non-empty, non-error. Add: an `IncidentReport` whose `evidence` is empty counts as `no_structured_verdict` (no empty-shell verdicts) |
-| Limits | Turn `HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC=900`, stall 180 s, `max_attempts=2`, backoff 10 s, overall `HUB_CURIOSITY_URGENT_TIMEOUT_SEC=1200` |
-| Timeout | Partial draft sent, labelled INCOMPLETE |
-| After | Must-deliver report (Part 3) replaces the reach-out turn. Journal entry kept; `:TurnOutcome.continue_line` set to the incident so ordinary curiosity can revisit it |
-| No GPU | If no urgent hold is granted within `HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC=120` (circe down/hot, pool unavailable), send a no-LLM report: evidence bundle + fired rule, marked "not investigated" |
+| Stance | Still runs (the harness request needs the thought). A defer/refuse is overridden to `proceed` and records `urgent_override:<original>` in `disposition_reasons`. Stance unavailable (no thought) is a run failure (`urgent_stance_unavailable`), never a deferral |
+| Prompt | `build_urgent_prompt` (`orion/curiosity/urgent_prompt.py`): assignment header, the question verbatim, evidence bundle (24 000-char cap), checklist (real vs sensor fault → cause → severity → one operator action), its own tool guide, the `:IncidentReport` instruction, the clock, "verdict, cause, action first". No self material, priors, peer briefs, dreams or continuation |
+| Tools | Its own guide, not kickoff's: Hub telemetry URLs via `HUB_CURIOSITY_SANDBOX_HUB_URL` (`/api/cabinet/cooling/latest`, `/api/cabinet/sensors/latest`, `/api/biometrics/preview/snapshot` and `/gpu`), the pool at `http://orion-athena-gpu-pool:8127/v1/pool`, `psql` on `orion_biometrics_summary` and `home_cooling_sample` (after the grant), the own-graph `:IncidentReport` write and read-back. "Look, do not touch": no restarts or switching. The guide names no docker commands; circe facts come from the bundle and the Hub URLs (`node=circe`) |
+| Output | `:IncidentReport{run_id, incident_id, is_real, likely_cause, evidence[], severity, operator_action, confidence}` plus the prose. durable-runs reads it (`read_incident_report`, never raises); newest node wins. Missing, malformed, or empty `evidence` ⇒ `no_structured_verdict`, prose still sent |
+| Limits | Turn 900 s (`HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC` via the brief's `timeout_sec`); stall **stays 420 s** (a process-wide harness env, not per turn); attempts `min(max_attempts, 2)`, backoff `10 s·2^(n-1)` — also for the tail nodes (report read, attention row, journal); overall 1200 s (`HUB_CURIOSITY_URGENT_TIMEOUT_SEC`) |
+| Finish detail | Urgent runs add `urgent` (incident, trigger, subject, question, requested_at — not the bundle), `incident_report`, `report_flag`. Failed and cancelled urgent runs also carry `urgent`, with the reason in `error` |
+| After | The report (Part 3) replaces reach-out and help-request enqueue. The journal node still runs. Not shipped: setting `:TurnOutcome.continue_line` to the incident |
+| No GPU | Not past resource wait by `HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC=120` ⇒ no-LLM "not investigated" report with the evidence; the run keeps waiting until its admission deadline |
 
-Defaults chosen by the agent (Juniper skipped the question; override freely): graph-node report with
-prose fallback; evidence bundle instead of SSH to circe; no-LLM report instead of cloud fallback.
+### Part 3 — must-deliver report (as shipped)
 
-### Part 3 — must-deliver report
-
-- On urgent run end (completed, failed, timed out at `HUB_CURIOSITY_URGENT_TIMEOUT_SEC=1200`, or
-  empty output), Hub calls `NotifyClient.send` with `severity="critical"`,
-  `channels_requested=["in_app","email"]`, `dedupe_key=f"urgent:{incident_id}:report"`. Body order:
-  verdict line (`is_real` / severity / confidence), operator action, likely cause, cited evidence,
-  then the prose. Flags shown at top when present: INCOMPLETE, `no_structured_verdict`,
-  "not investigated". Failure ⇒ `investigation failed: <reason>` + the raw evidence bundle.
-  No outcome is silent.
-- Retries until orion-notify accepts (bounded backoff, logged with incident_id).
+- `services/orion-hub/scripts/urgent_report.py`. Four kinds: `final` (completed), `failed`
+  (terminal failed or cancelled, dispatch raised, refused, or never registered), `timeout` (no
+  terminal state by 1200 s; the run is being stopped at its admission deadline and its final or
+  failed notice follows), `no_gpu` (120 s check above).
+- Every notice: `severity="critical"`, `channels_requested=["in_app","email"]`,
+  `event_kind="curiosity.urgent.report"`, `dedupe_key=f"urgent:{incident_id}:{kind}"`.
+- Body order: flag line (`FLAG: no_structured_verdict`, `investigation failed: <reason>`,
+  `INCOMPLETE`, `not investigated`) → verdict line (`is_real` / severity / confidence) → operator
+  action → likely cause → cited evidence → the evidence bundle when there is no verdict → Orion's
+  prose → trigger, question, ids. Title leads with the verdict, e.g. `URGENT: real / critical — athena`.
+- **orion-notify stores `dedupe_key` but never enforces it**, so Hub dedupes: Redis
+  `orion:curiosity:urgent:sent:{incident_id}:{kind}` (7 days, holds the run id so a retried run
+  is still reported). A refused send retries 2, 4, 8, 16, 32, 60, 60 … s for up to 30 minutes,
+  then logs `urgent_report_undelivered` and marks the incident `report_undelivered`.
+- The 120 s and 1200 s checks are in-process timers: a Hub restart mid-run loses them. The
+  final/failed notice still goes out because it rides the durable run-state event. If the run
+  store shows the run ended but Hub missed the event, the deadline check sends it from the store,
+  reading the detail from the run-state row or, if that lags, the terminal outbox event. A
+  completed run whose detail is still unreadable is re-read once 60 s later; if still unreadable
+  it logs `urgent_report_missed_terminal_unreadable` and sends a critical *failed* notice
+  ("completed but its result could not be read"), never an empty final: failed and final
+  dedupe separately, so a late real verdict still goes out. Any terminal found frees the
+  incident's open key.
+- notify accepting means queued, not emailed: Hub cannot see an SMTP failure.
+- Eval: `services/orion-hub/evals/run_urgent_report_eval.py` replays every outcome through the
+  real reader, run-state handler, watchdog and composer.
 
 ### Part 4 — `orion-hardware-watch`
 
@@ -354,12 +403,19 @@ prose fallback; evidence bundle instead of SSH to circe; no-LLM report instead o
   replies (existing field); durable-run event `run.preempted`; `defaults.urgent_preempt_grace_sec`,
   `defaults.urgent_max_concurrent`.
 - Dropped: gateway error `gpu_pool_preempted` and route `curiosity_urgent` (see Part 1).
-- Still to add: `CuriosityUrgentRequestV1`, `CuriosityUrgentSeedV1`, `CuriosityRunBriefV1.urgent`;
-  `HardwareWatchIncidentV1`; `CoolingObservedStateV1.stale`; `measurements.gpu_temp_c_max`.
-- Channels: `orion:curiosity:urgent:request`, `orion:hardware:watch:incident`.
-- HTTP: Hub `POST /curiosity/api/urgent`; hardware-watch `GET /incidents`,
-  `POST /incidents/{id}/resolve`, `GET /health`.
-- Tables: `hardware_watch_incident`; `home_cooling_sample.stale`.
+- Shipped (Parts 2/2b/3, Plan 3): `CuriosityUrgentSeedV1`, `CuriosityUrgentRequestV1`;
+  optional `CuriosityRunBriefV1.urgent` and `CuriosityTurnRequestV1.urgent` (omitted when
+  unset); channel `orion:curiosity:urgent:request` (`curiosity.urgent.request.v1`); graph node
+  `:IncidentReport`; finish-detail keys `urgent` / `incident_report` / `report_flag` (failed and
+  cancelled urgent runs carry `urgent` + `error`); `execute_unified_turn(..., urgent=...)`; Hub
+  `POST` + `GET /curiosity/api/urgent`; notify `event_kind=curiosity.urgent.report`; Hub env
+  `HUB_CURIOSITY_URGENT_ENABLED`, `_TURN_TIMEOUT_SEC` (900), `_TIMEOUT_SEC` (1200),
+  `_GRANT_WAIT_SEC` (120); grant SQL `scripts/sql/2026-09-28_grant_orion_readonly_hardware.sql`
+  (not applied — operator step).
+- Shipped (Part 5, Plan 1): `CoolingObservedStateV1.stale`; `home_cooling_sample.stale`.
+- Still to add (Part 4): `HardwareWatchIncidentV1`; `measurements.gpu_temp_c_max`; channel
+  `orion:hardware:watch:incident`; hardware-watch `GET /incidents`,
+  `POST /incidents/{id}/resolve`, `GET /health`; table `hardware_watch_incident`.
 
 ## Files likely to touch
 
@@ -401,12 +457,18 @@ prose fallback; evidence bundle instead of SSH to circe; no-LLM report instead o
 4. Rules replay eval over the real 7-day history reproduces the gate counts (CPU p95 ≈ 1/week
    athena, ≈ 9/week circe) and fires the AC rule on the real 33.1 W stretch.
 5. zwave test: failed poll never yields a fresh-looking sample; stale ⇒ no watts + `stale=true`.
-5a. Urgent-run tests: urgent seed bypasses stance defer; urgent prompt contains question + evidence
-   and none of the self-material sections; `read_turn_result` maps a valid `:IncidentReport` into
-   the report, and a missing/empty-evidence one into `no_structured_verdict`; timeout ⇒ INCOMPLETE
-   report; no grant within 120 s ⇒ "not investigated" report with the evidence bundle.
+5a. Urgent-run tests (**met in Plan 3**, unit tests + `run_urgent_report_eval.py`): a stance
+   defer/refuse is overridden with `urgent_override:<original>` and a missing stance fails the run;
+   urgent prompt contains question + evidence and none of the self-material sections;
+   `read_turn_result` maps a valid `:IncidentReport` into the report, and a missing/malformed/
+   empty-evidence one into `no_structured_verdict`; failed and cancelled ⇒ `investigation failed`
+   + evidence; timeout ⇒ INCOMPLETE report; no grant within 120 s ⇒ "not investigated" report
+   with the evidence bundle; no run record 120 s after an unconfirmed dispatch ⇒ one `failed`
+   report and the incident freed; every refusal with no run open ⇒ one `failed` report; every notice
+   critical with email, flag or verdict before prose.
 6. Live smoke: Hub "Run urgent" → pool shows an `urgent` hold → durable run completes → critical
-   notice in Hub and email (email delivery verified, not assumed).
+   notice in Hub and email (email delivery verified, not assumed). **UNVERIFIED** — runs after
+   deploy and after Juniper applies the grant; Juniper confirms the email.
 7. Live smoke: simulated AC incident (test hook on hardware-watch) → alert within one tick → urgent
    run → report; pool shed guard visible while open, cleared on resolve.
 

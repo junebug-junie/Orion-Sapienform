@@ -643,6 +643,11 @@ def _situation_cache_key(ctx: dict[str, Any], cfg: SituationSettings) -> str:
     # finding, not a hypothetical.
     modality = _build_surface_context(ctx).input_modality
     key = f"{session_key}:{modality}:{_presence_cache_fingerprint(ctx, cfg)}"
+    # The GPU pool placement is per turn (one turn holds agent, the next agent-gpu2), so a
+    # cached brief must never carry another turn's "you are running on" line.
+    placement = _gpu_placement_from_ctx(ctx)
+    if placement is not None:
+        key = f"{key}:gpu={placement.get('role')}|{placement.get('model')}|{placement.get('profile')}"
     # A read-only build (an Orion-authored unified turn, e.g. outreach) must
     # not share an entry with the user's own turns: a cache hit skips
     # _build_conversation_phase entirely, so an outreach-built entry would
@@ -688,7 +693,9 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
     affect_ctx = await _build_affect_context(cfg, diagnostics)
     curiosity_ctx = await _build_curiosity_context(cfg, diagnostics)
     reverie_ctx = await _build_reverie_context(cfg, diagnostics)
-    runtime_ctx = await _build_runtime_context(cfg, diagnostics)
+    runtime_ctx = _runtime_from_gpu_placement(ctx, cfg, diagnostics) or await _build_runtime_context(
+        cfg, diagnostics
+    )
     surface_ctx = _build_surface_context(ctx)
     affordances = _build_affordances(ctx, presence, phase_ctx, env_ctx, lab_ctx, surface_ctx, time_ctx)
     diagnostics.relevance_reasons = [a.kind for a in affordances if a.trigger_relevance == "active"]
@@ -1248,6 +1255,48 @@ def _fetch_runtime_context(cfg: SituationSettings) -> RuntimeContextV1:
         served_by=entry.get("served_by"),
         backend=entry.get("backend"),
         source="orion-llm-gateway",
+    )
+
+
+def _gpu_placement_from_ctx(ctx: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """``ctx["gpu_placement"]``: ``{"role", "model", "profile"}`` for a turn that holds a GPU pool
+    lease (orion.gpu_pool.placement.ServingPlacement, filled by the caller, e.g. orion-hub's
+    unified turn from the durable run's GpuLeaseRefV1). None when absent or malformed."""
+    raw = ctx.get("gpu_placement")
+    if not isinstance(raw, dict):
+        return None
+    role = str(raw.get("role") or "").strip()
+    if not role:
+        return None
+    model = str(raw.get("model") or "").strip() or None
+    profile = str(raw.get("profile") or "").strip() or None
+    return {"role": role, "model": model, "profile": profile}
+
+
+def _runtime_from_gpu_placement(
+    ctx: dict[str, Any], cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+) -> Optional[RuntimeContextV1]:
+    """The model this turn runs on, from the lease it holds -- not the gateway's route table.
+
+    Under the GPU pool a route's default worker is not necessarily where a call runs (an agent
+    call can be served by agent-gpu2 or chat), so ``_fetch_runtime_context``'s /routes answer is
+    only a default. When the caller knows the turn's granted role, that is the fact; no network
+    read happens here (the caller resolved role -> discovered profile). Spec:
+    docs/superpowers/specs/2026-09-24-gpu-pool-design.md, reader impacts item 5."""
+    if not cfg.runtime_enabled:
+        return None
+    placement = _gpu_placement_from_ctx(ctx)
+    if placement is None:
+        return None
+    diagnostics.provider_status["runtime"] = "ok" if placement["model"] else "unavailable"
+    return RuntimeContextV1(
+        available=bool(placement["model"]),
+        route=cfg.runtime_route,
+        model_id=placement["model"],
+        placement="lease",
+        granted_role=placement["role"],
+        profile_name=placement["profile"],
+        source="gpu_pool_lease",
     )
 
 
@@ -1898,6 +1947,25 @@ def _recency_phrase(age_seconds: Optional[float]) -> str:
     return "just now" if age_min < 1 else f"{age_min} min ago"
 
 
+def _runtime_line(runtime: RuntimeContextV1) -> str:
+    """What Orion may truthfully say about the model it runs on (GPU pool aware).
+
+    A lease is a fact about this turn; the route table is only a default -- the pool places each
+    unleased call itself, so "you are running on X" from /routes would be a false statement about
+    Orion under spill (spec 2026-09-24-gpu-pool-design.md, reader impacts item 5)."""
+    if runtime.placement == "lease" and runtime.granted_role:
+        if runtime.available and runtime.model_id:
+            profile = f", profile {runtime.profile_name}" if runtime.profile_name else ""
+            return (f"You are running on model: {runtime.model_id} (GPU pool role "
+                    f"{runtime.granted_role}{profile}, held for this turn).")
+        return (f"This turn holds the GPU pool's {runtime.granted_role} role; the model loaded there "
+                "could not be read -- do not infer or guess a name.")
+    if runtime.available and runtime.model_id:
+        return (f"Default model for route {runtime.route}: {runtime.model_id}. The GPU pool places each "
+                "call itself, so this is the route's default, not a confirmation of this turn.")
+    return "Current model: unavailable; do not infer or guess a name."
+
+
 def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> SituationPromptFragmentV1:
     lines = [
         f"Local context: {brief.time.time_of_day_label.replace('_', ' ')} {brief.time.weekday}, {brief.time.timezone}.",
@@ -2028,10 +2096,7 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         # Same honesty rule as Room above -- no recent capture and a
         # deliberately-not-captured mood are different claims.
         lines.append("Juniper's affect: no recent capture; do not infer.")
-    if brief.runtime.available and brief.runtime.model_id:
-        lines.append(f"You are currently running on model: {brief.runtime.model_id} (route={brief.runtime.route}).")
-    else:
-        lines.append("Current model: unavailable; do not infer or guess a name.")
+    lines.append(_runtime_line(brief.runtime))
     # Curiosity/reverie are deliberately OMITTED rather than rendered as an
     # "unavailable; do not infer" placeholder when there is nothing to show
     # (unlike weather/lab/perception/affect/runtime above, which always emit

@@ -472,7 +472,9 @@ postgres-headroom-watch:
 # (orion/schema_skew_discovery.py finds every forbid-model (file, writer,
 # readers) triple from call sites; `--list-candidates` shows them; one docker
 # exec per container reads its copies, fields compared on the host). Read-only
-# against Postgres, docker, and git. Exit 1 = red, 2 = could not check.
+# against Postgres, docker, and git. Exit 1 = red, 2 = could not check,
+# 4 = --notify could not escalate (state unusable or orion-notify refused; red is
+# then carded every tick undeduped). Same exit-4 contract as disk/headroom watches.
 # substrate-ladder-watch adds a debounced Hub Pending Attention card via
 # orion-notify, the same path disk-threshold-watchdog/postgres-headroom-watch use
 # from host cron. See scripts/check_substrate_ladder_liveness.py.

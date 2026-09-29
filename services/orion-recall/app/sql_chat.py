@@ -75,35 +75,40 @@ async def _fetch_primary_and_mirror_rows(
     calls meant a mirror-table failure (missing table, permission error,
     transient fault) discarded an already-successful primary result too.
 
-    Sequential on purpose, not ``asyncio.gather``: both queries share one
-    asyncpg connection, and a connection runs one statement at a time. The
-    earlier concurrent version made the second fetch fail instantly with
-    ``InterfaceError: another operation is in progress`` on every call
-    (724 ``*_mirror_query_failed`` warnings/hour live, 2026-09-29), so the
-    mirror table's rows were never returned. Two round trips on an open
-    connection cost milliseconds.
+    Sequential, NOT ``asyncio.gather``: both queries share the ONE asyncpg
+    connection the caller opened, and an asyncpg connection runs exactly
+    one operation at a time -- a second ``fetch`` started while the first
+    is in flight raises ``InterfaceError: another operation is in
+    progress``. The earlier gather version (2026-08-19) did exactly that:
+    live 2026-09-29, orion-athena-recall logged 1,075 of those errors in
+    24h, one per call, always on the mirror query -- so every AI Town
+    mirror row was silently dropped from recall. Serializing on the same
+    connection (rather than opening a second connection or borrowing
+    from the cards pool) keeps this at one Postgres connection per call,
+    which matters under the connection ceiling (PR #2010); the "saved"
+    round-trip never existed anyway, because the second query always
+    failed instantly. Regression: tests/test_sql_chat_connection_exclusivity.py.
+
+    Each table keeps its own try/except, so one table's failure still
+    never discards the other table's rows.
 
     Shared by both ``fetch_chat_turn_timestamps`` and
     ``fetch_chat_turns_by_id`` rather than duplicated inline in each --
     review also flagged the original per-function inline scaffold as a
-    two-site hand-edit hazard, which is exactly what produced the bug this
-    helper fixes in the first place.
+    two-site hand-edit hazard, which is exactly what produced the
+    2026-08-19 bug (a mirror failure discarding primary rows) this helper
+    was first written to fix.
     """
+    primary_rows: List[Any] = []
+    mirror_rows: List[Any] = []
     try:
-        primary_rows: List[Any] = await _fetch_rows_from_table(
-            conn, primary_table, select_cols, id_col, ids, extra_where
-        )
+        primary_rows = await _fetch_rows_from_table(conn, primary_table, select_cols, id_col, ids, extra_where)
     except Exception:
         logger.warning("%s_primary_query_failed", log_prefix, exc_info=True)
-        primary_rows = []
-
     try:
-        mirror_rows: List[Any] = await _fetch_rows_from_table(
-            conn, mirror_table, select_cols, id_col, ids, extra_where
-        )
+        mirror_rows = await _fetch_rows_from_table(conn, mirror_table, select_cols, id_col, ids, extra_where)
     except Exception:
         logger.warning("%s_mirror_query_failed", log_prefix, exc_info=True)
-        mirror_rows = []
 
     return primary_rows, mirror_rows
 

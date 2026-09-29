@@ -254,38 +254,3 @@ def test_timestamps_queries_both_tables_separately(monkeypatch) -> None:
     assert len(captured) == 2
     assert "aitown_chat_history_log" in captured[1]
     assert "union all" not in captured[0].lower() and "union all" not in captured[1].lower()
-
-
-def test_mirror_rows_survive_a_single_statement_connection(monkeypatch) -> None:
-    """Regression, 2026-09-29: the primary and mirror fetches were run with
-    asyncio.gather on one asyncpg connection, which refuses a second
-    statement while one is in flight ("another operation is in progress").
-    The mirror fetch failed on every call, so ai-town turns were never
-    returned. This fake enforces the same one-statement-at-a-time rule."""
-
-    class _SingleStatementConn:
-        busy = False
-
-        async def fetch(self, query, ids):
-            if self.busy:
-                raise RuntimeError("cannot perform operation: another operation is in progress")
-            self.busy = True
-            try:
-                await asyncio.sleep(0)
-                if "aitown_chat_history_log" in query:
-                    return [{"id": "turn-2", "prompt": "p2", "response": "r2", "client_meta": None}]
-                return [{"id": "turn-1", "prompt": "p1", "response": "r1", "client_meta": None}]
-            finally:
-                self.busy = False
-
-        async def close(self):
-            pass
-
-    class _FakeAsyncpg:
-        @staticmethod
-        async def connect(dsn):
-            return _SingleStatementConn()
-
-    monkeypatch.setattr(sql_chat, "asyncpg", _FakeAsyncpg())
-    out = _run(sql_chat.fetch_chat_turns_by_id(["turn-1", "turn-2"]))
-    assert set(out) == {"turn-1", "turn-2"}

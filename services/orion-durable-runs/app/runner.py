@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 from uuid import UUID, uuid4
@@ -48,6 +48,7 @@ from orion.curiosity.attention_schema import (
     read_attended_priors,
     to_attention_schema as curiosity_to_attention_schema,
 )
+from orion.curiosity.incident_report import NO_STRUCTURED_VERDICT, IncidentReport, read_incident_report
 from orion.curiosity.self_inquiry import (
     lived_answer_to_detail,
     read_lived_answer,
@@ -115,6 +116,12 @@ JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 DEFAULT_WORKFLOW = "curiosity.investigate"
 SELF_SENSE_EVAL_WORKFLOW = "self_sense_eval"
 SELF_STUDY_REFLECT_WORKFLOW = "self_study.reflect"
+
+
+def incident_report_to_detail(report: IncidentReport | None) -> dict[str, Any] | None:
+    if report is None:
+        return None
+    return {**asdict(report), "evidence": list(report.evidence)}
 
 
 def _corr_uuid(raw: str) -> UUID:
@@ -419,9 +426,12 @@ class DurableRunner:
             raise ValueError("reverie visual step result identity mismatch")
         return result
 
-    async def _read_turn_result(self, run_id: str) -> dict[str, Any]:
+    async def _read_turn_result(self, run_id: str, *, urgent: bool = False) -> dict[str, Any]:
+        """Never raises. Urgent runs also get `incident_report` (dict or None)
+        and `report_flag` ("no_structured_verdict" whenever the report is None,
+        including an unreadable graph); ordinary runs never query it."""
         reader = self._reader
-        empty = {
+        empty: dict[str, Any] = {
             "outcome": None,
             "footprint": None,
             "hops": [],
@@ -430,6 +440,8 @@ class DurableRunner:
             "self_definition": None,
             "lived_answer": None,
         }
+        if urgent:
+            empty.update(incident_report=None, report_flag=NO_STRUCTURED_VERDICT)
         if reader is None:
             return empty
 
@@ -444,6 +456,13 @@ class DurableRunner:
             # Lived self-inquiry writes `:LivedAnswer` instead of `:SelfDefinition`.
             self_definition = read_self_definition(reader, run_id)
             lived_answer = read_lived_answer(reader, run_id)
+            urgent_found: dict[str, Any] = {}
+            if urgent:
+                report, flag = read_incident_report(reader, run_id)
+                urgent_found = {
+                    "incident_report": incident_report_to_detail(report),
+                    "report_flag": flag if report is None else None,
+                }
             return {
                 "outcome": (
                     {
@@ -462,6 +481,7 @@ class DurableRunner:
                 "graph_readable": footprint is not None,
                 "self_definition": self_definition_to_detail(self_definition),
                 "lived_answer": lived_answer_to_detail(lived_answer),
+                **urgent_found,
             }
 
         try:

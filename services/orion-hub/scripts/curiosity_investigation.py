@@ -76,7 +76,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Awaitable, Callable, Mapping, Optional, Tuple
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -222,6 +222,8 @@ from orion.schemas.durable_run import (
     DurableRunRequestV1,
     DurableRunStateV1,
 )
+from orion.curiosity.urgent_prompt import build_urgent_prompt
+from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
 
 # RPC source name on the pool ``status`` reads Hub makes for a carried hold ref (stage 4.4).
 GPU_LEASE_STATUS_SOURCE = "orion-hub"
@@ -258,6 +260,31 @@ _DAILY_COUNT_KEY_PREFIX = "orion:curiosity:count:"
 # depends on. Redis, not process state, for the same restart reason as above.
 _LAST_RUN_KEY = "orion:curiosity:last_run_id"
 _STATE_TTL_SEC = 172800
+
+# Urgent runs (start_urgent). One open run per incident, held by an NX key the
+# must-deliver reporter releases when the run ends; the incident hash is what
+# the Hub urgent list and the reporter read back.
+URGENT_OPEN_KEY_PREFIX = "orion:curiosity:urgent:open:"
+URGENT_INCIDENTS_KEY = "orion:curiosity:urgent:incidents"
+URGENT_INCIDENTS_MAX = 50
+# Past the overall urgent deadline, so the key outlives the run's own watchdog.
+URGENT_OPEN_KEY_GRACE_SEC = 600
+URGENT_PG_ROLE_CHECK_SEC = 5.0
+
+
+def urgent_open_key(incident_id: str) -> str:
+    return f"{URGENT_OPEN_KEY_PREFIX}{incident_id}"
+
+
+def _urgent_requested_ts(value: Any) -> float:
+    """Epoch seconds for an incident's `requested_at` (naive = UTC); -inf when unreadable."""
+    try:
+        stamp = datetime.fromisoformat(str(value or ""))
+    except ValueError:
+        return float("-inf")
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.timestamp()
 
 # The self-inquiry line (orion/curiosity/self_inquiry.py) keeps ITS OWN
 # cooldown, daily counter and continuation key, so its budget is separate
@@ -619,6 +646,10 @@ class CuriosityInvestigation:
         energy_stakes_enabled: bool = False,
         energy_stakes_reader: Optional[Callable[[], Awaitable[Optional[Mapping[str, Any]]]]] = None,
         energy_stakes_max_age_sec: float = 1800.0,
+        # --- urgent runs (start_urgent; HUB_CURIOSITY_URGENT_*) --------------
+        urgent_enabled: bool = False,
+        urgent_turn_timeout_sec: float = 900.0,
+        urgent_timeout_sec: float = 1200.0,
     ) -> None:
         # Durable runs: when on, `_investigate` builds the same prompt and
         # hands the run to cortex instead of running the turn here; the
@@ -804,6 +835,17 @@ class CuriosityInvestigation:
         self.energy_stakes_enabled = bool(energy_stakes_enabled)
         self.energy_stakes_reader = energy_stakes_reader
         self.energy_stakes_max_age_sec = float(energy_stakes_max_age_sec)
+        # Urgent runs: a seeded investigation Juniper or the hardware watcher
+        # asks for. `urgent_reporter` is set by main.py; `urgent_listener_task`
+        # is the bus consumer main.py starts (scripts/curiosity_urgent.py).
+        self.urgent_enabled = bool(urgent_enabled)
+        self.urgent_turn_timeout_sec = float(urgent_turn_timeout_sec)
+        self.urgent_timeout_sec = float(urgent_timeout_sec)
+        self.urgent_reporter: Any = None
+        self.urgent_listener_task: Optional[asyncio.Task] = None
+        # Terminal-report deliveries retry for up to 30 min; held here so the
+        # run-state loop never waits on them.
+        self._urgent_report_tasks: set[asyncio.Task] = set()
 
     @property
     def graph_enabled(self) -> bool:
@@ -855,7 +897,7 @@ class CuriosityInvestigation:
 
     async def stop(self) -> None:
         self._stop.set()
-        for attr in ("_turn_listener_task", "_state_listener_task"):
+        for attr in ("urgent_listener_task", "_turn_listener_task", "_state_listener_task"):
             task = getattr(self, attr, None)
             if task is not None:
                 task.cancel()
@@ -868,6 +910,14 @@ class CuriosityInvestigation:
             task.cancel()
         await asyncio.gather(*self._turn_tasks, return_exceptions=True)
         self._turn_tasks.clear()
+        # Urgent report deliveries (they retry for up to 30 min) and the reporter's timers.
+        for task in self._urgent_report_tasks:
+            task.cancel()
+        await asyncio.gather(*self._urgent_report_tasks, return_exceptions=True)
+        self._urgent_report_tasks.clear()
+        close_reporter = getattr(self.urgent_reporter, "close", None)
+        if close_reporter is not None:
+            await close_reporter()
         if self._task is not None:
             self._task.cancel()
             try:
@@ -1864,6 +1914,276 @@ class CuriosityInvestigation:
             )
         return None
 
+    # --- urgent runs ------------------------------------------------------------
+    #
+    # A seeded investigation Juniper (Hub button) or the hardware watcher (bus
+    # request) asks for right now. Same durable run and turn as `_investigate`,
+    # but: no `_run_lock`, no gates, no cooldown or daily-cap spend, the urgent
+    # prompt instead of the kickoff one, and GPU admission at `urgent` priority.
+    # Plan: docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md
+
+    @staticmethod
+    def _urgent_incident(seed: CuriosityUrgentSeedV1, *, run_id: str, status: str) -> dict[str, Any]:
+        return {
+            "incident_id": seed.incident_id,
+            "run_id": run_id,
+            "question": seed.question,
+            "trigger": seed.trigger,
+            "subject": seed.subject,
+            "requested_at": seed.requested_at.isoformat(),
+            "requested_by": seed.requested_by,
+            # Hardware/pool readings only; the reporter attaches them when a run
+            # fails or never gets a GPU, since no run row may exist to read back.
+            "evidence": seed.evidence,
+            "status": status,
+        }
+
+    def urgent_open_key_ttl_sec(self) -> int:
+        """Outlives every way the run can still end: the admission deadline, then
+        up to two turn attempts and the 10 s urgent retry backoff past it, plus grace."""
+        return int(self.urgent_timeout_sec + 2 * self.urgent_turn_timeout_sec + 10 + URGENT_OPEN_KEY_GRACE_SEC)
+
+    async def _refuse_urgent(self, seed: CuriosityUrgentSeedV1, reason: str) -> dict[str, Any]:
+        """A refused urgent request still ends in a failed report (Hub + email) --
+        the requester is never left believing it started."""
+        incident_id = seed.incident_id
+        logger.warning("curiosity_urgent_refused incident_id=%s reason=%s", incident_id, reason)
+        stub = self._urgent_incident(seed, run_id="", status=f"refused:{reason}")
+        redis = getattr(self._bus, "redis", None)
+        if redis is not None:
+            try:
+                held = await redis.get(urgent_open_key(incident_id))
+            except Exception:  # noqa: BLE001 -- unsure: leave the record alone, still report
+                held = b"unknown"
+            if held is None:
+                await self._record_urgent_incident(stub)
+            elif held != b"unknown":
+                # A run is still open for this incident and will report; a "failed"
+                # notice now would be false. Leave its record alone too.
+                logger.info("curiosity_urgent_refusal_not_reported incident_id=%s reason=run_open", incident_id)
+                return {"ok": False, "reason": reason, "incident_id": incident_id}
+        if self.urgent_reporter is None:
+            logger.warning("urgent_reporter_missing incident_id=%s", incident_id)
+        else:
+            try:
+                await self.urgent_reporter.dispatch_failed(stub, f"refused: {reason}")
+            except Exception:  # noqa: BLE001
+                logger.exception("urgent_reporter_dispatch_failed_error incident_id=%s", incident_id)
+        return {"ok": False, "reason": reason, "incident_id": incident_id}
+
+    async def start_urgent(self, seed: CuriosityUrgentSeedV1) -> dict[str, Any]:
+        incident_id = seed.incident_id
+        if not self.urgent_enabled:
+            return await self._refuse_urgent(seed, "urgent_disabled")
+        if not self.enabled:
+            # Without the loop running, nothing serves the runner's turn request.
+            return await self._refuse_urgent(seed, "curiosity_disabled")
+        if not self.durable_admission_enabled:
+            # Never run an urgent investigation at background priority.
+            return await self._refuse_urgent(seed, "durable_admission_disabled")
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return await self._refuse_urgent(seed, "redis_unavailable")
+
+        # A missing role does not refuse an urgent run (the HTTP readings still
+        # work); it only drops the psql history from the prompt. Checked before the
+        # open key is taken and bounded: a hung pool must not strand the incident.
+        pg_available = True
+        if self.pg_readonly_role:
+            try:
+                pg_available = not await asyncio.wait_for(self._pg_role_missing(), URGENT_PG_ROLE_CHECK_SEC)
+            except asyncio.TimeoutError:
+                logger.warning("curiosity_urgent_pg_role_check_timeout incident_id=%s", incident_id)
+
+        run_id = uuid4().hex[:12]
+        open_key = urgent_open_key(incident_id)
+        if not await redis.set(open_key, run_id, nx=True, ex=self.urgent_open_key_ttl_sec()):
+            # The open run reports for this incident; a second notice would be a duplicate.
+            logger.info("curiosity_urgent_refused incident_id=%s reason=incident_already_open", incident_id)
+            return {"ok": False, "reason": "incident_already_open", "incident_id": incident_id}
+
+        correlation_id = str(uuid5(NAMESPACE_URL, f"{INVESTIGATION_TAG}:{run_id}"))
+        incident = self._urgent_incident(seed, run_id=run_id, status="dispatched")
+        prompt = build_urgent_prompt(
+            seed,
+            run_id=run_id,
+            own_graph=self.graph_own,
+            hub_url=self.hub_url,
+            graph_enabled=self._reader is not None,
+            pg_available=pg_available,
+        )
+        self._mind_appraisal_by_run_id[run_id] = seed.question
+        logger.info(
+            "curiosity_urgent_starting incident_id=%s run=%s trigger=%s subject=%s corr=%s",
+            incident_id, run_id, seed.trigger, seed.subject or "-", correlation_id,
+        )
+        try:
+            confirmed = await self._dispatch_durable_run(
+                run_id=run_id,
+                correlation_id=correlation_id,
+                prompt=prompt,
+                material=None,
+                priority="urgent",
+                urgent=seed,
+                timeout_sec=self.urgent_turn_timeout_sec,
+            )
+        except asyncio.CancelledError:
+            await self._release_urgent_open_key(open_key)
+            raise
+        except Exception as exc:  # noqa: BLE001 -- reported below, never raised to the caller
+            failure = f"{type(exc).__name__}: {exc}"[:300]
+            # Raised before the request left Hub: no run can exist. Released so
+            # Juniper can retry.
+            incident["status"] = "dispatch_failed"
+            await self._record_urgent_incident(incident)
+            await self._release_urgent_open_key(open_key)
+            self._mind_appraisal_by_run_id.pop(run_id, None)
+            logger.warning(
+                "curiosity_urgent_dispatch_failed incident_id=%s run=%s reason=%s", incident_id, run_id, failure
+            )
+            if self.urgent_reporter is None:
+                logger.warning("urgent_reporter_missing incident_id=%s", incident_id)
+            else:
+                try:
+                    await self.urgent_reporter.dispatch_failed(incident, failure)
+                except Exception:  # noqa: BLE001
+                    logger.exception("urgent_reporter_dispatch_failed_error incident_id=%s", incident_id)
+            return {"ok": False, "reason": "dispatch_failed", "incident_id": incident_id}
+
+        if not confirmed:
+            # No `accepted` from cortex (rejected, timed out, or the receipt was
+            # lost) -- registration may still have landed. Keep the open key so a
+            # retry cannot start a second run; the grant-wait check reports "not
+            # investigated" if no run appears.
+            incident["status"] = "dispatch_unconfirmed"
+            logger.warning("curiosity_urgent_dispatch_unconfirmed incident_id=%s run=%s", incident_id, run_id)
+        await self._record_urgent_incident(incident)
+        if self.urgent_reporter is None:
+            logger.warning("urgent_reporter_missing incident_id=%s", incident_id)
+        else:
+            try:
+                self.urgent_reporter.watch(incident)
+            except Exception:  # noqa: BLE001
+                logger.exception("urgent_reporter_watch_error incident_id=%s", incident_id)
+        if not confirmed:
+            return {"ok": True, "run_id": run_id, "incident_id": incident_id, "unconfirmed": True}
+        return {"ok": True, "run_id": run_id, "incident_id": incident_id}
+
+    async def _handle_urgent_run_state(self, state: DurableRunStateV1) -> None:
+        """completed -> final report; terminal failed / cancelled -> failed report."""
+        detail = state.detail or {}
+        if state.status == "completed":
+            kind, reason = "final", ""
+        elif state.status == "cancelled" or (state.status == "failed" and state.node == "failed"):
+            kind, reason = "failed", str(detail.get("error") or state.status)
+        else:
+            return
+        urgent = detail.get("urgent") or {}
+        incident_id = str(urgent.get("incident_id") or "")
+        incident = await self._load_urgent_incident(incident_id)
+        if incident is not None and str(incident.get("run_id") or "") == state.run_id:
+            incident["status"] = state.status
+            await self._record_urgent_incident(incident)
+        else:
+            # Evicted, never recorded, or the record belongs to another run of the
+            # same incident: the finish detail still names the incident, so the
+            # report goes out from the event alone. Another run's record is never
+            # overwritten -- that run's own reporting reads it.
+            if incident is None:
+                logger.warning(
+                    "curiosity_urgent_incident_missing incident_id=%s run=%s", incident_id, state.run_id
+                )
+            else:
+                logger.warning(
+                    "curiosity_urgent_run_mismatch incident_id=%s stored_run=%s run=%s",
+                    incident_id, incident.get("run_id"), state.run_id,
+                )
+            stored = incident
+            incident = {**urgent, "run_id": state.run_id, "evidence": None, "status": state.status}
+            if stored is None:
+                await self._record_urgent_incident(incident)
+        await self.release_urgent_open_key_for(incident_id, state.run_id)
+        self._mind_appraisal_by_run_id.pop(state.run_id, None)
+        logger.info("curiosity_urgent_ended incident_id=%s run=%s status=%s", incident_id, state.run_id, state.status)
+        if self.urgent_reporter is None:
+            logger.warning("urgent_reporter_missing incident_id=%s", incident_id)
+            return
+        from .urgent_report import compose_urgent_report
+
+        request = compose_urgent_report(incident, kind=kind, detail=detail, reason=reason)
+        task = asyncio.create_task(self.urgent_reporter.deliver(incident, request, kind=kind))
+        self._urgent_report_tasks.add(task)
+        task.add_done_callback(self._urgent_report_tasks.discard)
+
+    async def _load_urgent_incident(self, incident_id: str) -> Optional[dict[str, Any]]:
+        redis = getattr(self._bus, "redis", None)
+        if redis is None or not incident_id:
+            return None
+        try:
+            raw = await redis.hget(URGENT_INCIDENTS_KEY, incident_id)
+            record = json.loads(raw) if raw else None
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_urgent_incident_read_failed incident_id=%s", incident_id, exc_info=True)
+            return None
+        return record if isinstance(record, dict) else None
+
+    async def release_urgent_open_key_for(self, incident_id: str, run_id: str) -> None:
+        """Release the open key only if it still belongs to this run."""
+        redis = getattr(self._bus, "redis", None)
+        if redis is None or not incident_id:
+            return
+        open_key = urgent_open_key(incident_id)
+        try:
+            held = await redis.get(open_key)
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_urgent_open_key_read_failed key=%s", open_key, exc_info=True)
+            return
+        if held is None:
+            return
+        held = held.decode() if isinstance(held, bytes) else str(held)
+        if held == run_id:
+            await self._release_urgent_open_key(open_key)
+
+    async def _release_urgent_open_key(self, open_key: str) -> None:
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return
+        try:
+            await redis.delete(open_key)
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_urgent_open_key_release_failed key=%s", open_key, exc_info=True)
+
+    async def _record_urgent_incident(self, incident: dict[str, Any]) -> None:
+        """Upsert the incident into the hash and keep only the newest `URGENT_INCIDENTS_MAX`."""
+        redis = getattr(self._bus, "redis", None)
+        if redis is None:
+            return
+        try:
+            await redis.hset(URGENT_INCIDENTS_KEY, incident["incident_id"], json.dumps(incident, default=str))
+            if await redis.hlen(URGENT_INCIDENTS_KEY) <= URGENT_INCIDENTS_MAX:
+                return
+            rows = await redis.hgetall(URGENT_INCIDENTS_KEY)
+            by_age = []
+            for field, raw in rows.items():
+                try:
+                    requested_at = _urgent_requested_ts(json.loads(raw).get("requested_at"))
+                except Exception:  # noqa: BLE001 -- an unreadable row is the first to go
+                    requested_at = float("-inf")
+                by_age.append((requested_at, field))
+            by_age.sort(key=lambda item: item[0])
+            stale = []
+            for _, field in by_age[: len(by_age) - URGENT_INCIDENTS_MAX]:
+                name = field.decode() if isinstance(field, bytes) else str(field)
+                # An incident whose run is still open keeps its record: the reporter reads it.
+                if await redis.get(urgent_open_key(name)) is None:
+                    stale.append(field)
+            if stale:
+                await redis.hdel(URGENT_INCIDENTS_KEY, *stale)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "curiosity_urgent_incident_record_failed incident_id=%s", incident.get("incident_id"), exc_info=True
+            )
+
     # --- the self-inquiry line ------------------------------------------------
     #
     # orion/curiosity/self_inquiry.py. Same turn, same credentials, same graph,
@@ -2848,6 +3168,7 @@ class CuriosityInvestigation:
         resource_lease: ResourceLeaseV1 | None = None,
         session_id: str | None = None,
         gpu_lease: GpuLeaseRefV1 | None = None,
+        urgent: bool = False,
     ) -> Tuple[str, dict]:
         """Real unified-turn generation. Returns ("", debug) on any failure,
         defer, or degraded run -- same "never fabricate, silence over a false
@@ -2871,7 +3192,12 @@ class CuriosityInvestigation:
         self-sense eval line does, so its scheduled runs match the host
         script's `orion/evals/self_sense_runner.SESSION_ID` instead of
         picking up unrelated curiosity-loop history as context. Review
-        finding, 2026-09-19."""
+        finding, 2026-09-19.
+
+        `urgent=True` (an urgent run's typed seed was on the turn request)
+        makes `execute_unified_turn` proceed past a stance defer/refuse and
+        fail -- not defer -- when stance is unavailable; that turn_error's
+        reason becomes `debug["error"]` so the run says why it failed."""
         if self._bus is None:
             return "", {"error": "no_bus"}
         from orion.cognition.cortex_payload_extract import looks_like_error_text
@@ -2940,6 +3266,7 @@ class CuriosityInvestigation:
                         self._step_relay_provider() if self._step_relay_provider else None
                     ),
                     harness_step_queue=None,
+                    urgent=urgent,
                 ),
                 timeout=turn_timeout,
             )
@@ -2970,9 +3297,13 @@ class CuriosityInvestigation:
             # turn_deferred / turn_error / turn_degraded. Thought declining an
             # unsolicited turn is a legitimate outcome, not an error to alarm on.
             other = frames[-1] if frames else {}
+            frame_type = other.get("type") if isinstance(other, dict) else None
+            error = "no_final_frame"
+            if urgent and frame_type == "turn_error" and other.get("error"):
+                error = str(other["error"])
             return "", {
-                "error": "no_final_frame",
-                "frame_type": other.get("type") if isinstance(other, dict) else None,
+                "error": error,
+                "frame_type": frame_type,
                 "elapsed_sec": elapsed,
             }
         if final.get("context_overflow"):
@@ -3278,23 +3609,36 @@ class CuriosityInvestigation:
     # --- durable runs: kickoff through cortex, turn on request, outreach on completion --
 
     def _run_brief(
-        self, *, prompt: str, material: StudyMaterial, line: str = LINE_INVESTIGATE
+        self,
+        *,
+        prompt: str,
+        material: Optional[StudyMaterial],
+        line: str = LINE_INVESTIGATE,
+        urgent: Optional[CuriosityUrgentSeedV1] = None,
+        timeout_sec: Optional[float] = None,
     ) -> CuriosityRunBriefV1:
-        return CuriosityRunBriefV1(
-            prompt=prompt,
-            session_id=self.session_id,
-            fcc_model_label=self._fcc_model_label,
-            timeout_sec=float(self.timeout_sec),
-            graph_configured=self._reader is not None,
-            material=CuriosityMaterialBriefV1(
+        # An urgent run is shown no study material: the brief's counts stay zero.
+        material_brief = (
+            CuriosityMaterialBriefV1(
                 approved_total=int(material.approved_total),
                 approved_by_kind=dict(material.approved_by_kind or {}),
                 crystallization_count=len(material.crystallizations),
                 relation_total=int(material.relation_total),
                 relation_count=len(material.relations),
-            ),
+            )
+            if material is not None
+            else CuriosityMaterialBriefV1()
+        )
+        return CuriosityRunBriefV1(
+            prompt=prompt,
+            session_id=self.session_id,
+            fcc_model_label=self._fcc_model_label,
+            timeout_sec=float(self.timeout_sec if timeout_sec is None else timeout_sec),
+            graph_configured=self._reader is not None,
+            material=material_brief,
             source_tag=SELF_INQUIRY_TAG if line == LINE_SELF_INQUIRY else INVESTIGATION_TAG,
             line=line,
+            urgent=urgent,
         )
 
     async def _dispatch_via_cortex(
@@ -3370,8 +3714,11 @@ class CuriosityInvestigation:
         run_id: str,
         correlation_id: str,
         prompt: str,
-        material: StudyMaterial,
+        material: Optional[StudyMaterial],
         line: str = LINE_INVESTIGATE,
+        priority: str = "background",
+        urgent: Optional[CuriosityUrgentSeedV1] = None,
+        timeout_sec: Optional[float] = None,
     ) -> bool:
         """Hand the run to cortex. True only when cortex replied `accepted`."""
         if self._bus is None:
@@ -3380,11 +3727,21 @@ class CuriosityInvestigation:
             run_id=run_id,
             workflow="curiosity.investigate",
             correlation_id=correlation_id,
-            brief=self._run_brief(prompt=prompt, material=material, line=line),
+            brief=self._run_brief(
+                prompt=prompt, material=material, line=line, urgent=urgent, timeout_sec=timeout_sec
+            ),
             admission=(ResourceRequirementV1(
                 allow_elastic_activation=self.elastic_activation_enabled,
                 preferred_lane=self.llm_route or "agent",
                 resource=f"llm.route.{self.llm_route or 'agent'}",
+                priority=priority,
+                # Urgent runs end by the overall urgent deadline: durable-runs fails
+                # the run (queued or running) with `workflow_deadline` and its
+                # urgent detail, so Hub sends the failed report and frees the incident.
+                deadline_at=(
+                    datetime.now(timezone.utc) + timedelta(seconds=self.urgent_timeout_sec)
+                    if urgent is not None else None
+                ),
             ) if self.durable_admission_enabled else None),
         )
         return await self._dispatch_via_cortex(
@@ -3606,6 +3963,7 @@ class CuriosityInvestigation:
                         "timeout_sec": request.timeout_sec}
                        if request.gpu_lease is not None and request.lease is None else {}),
                     **({"gpu_lease": request.gpu_lease} if request.gpu_lease is not None else {}),
+                    **({"urgent": True} if request.urgent is not None else {}),
                 )
                 if measured:
                     await self._spend_turn_ended(request.run_id, turn_ok=bool(text))
@@ -3702,6 +4060,11 @@ class CuriosityInvestigation:
         # Every transition feeds Hub's live activity surface, before the
         # outreach filter below narrows to `completed`.
         get_runtime_activity().run_state(state.model_dump(mode="json"))
+        if state.workflow == "curiosity.investigate" and isinstance((state.detail or {}).get("urgent"), dict):
+            # Urgent runs end in a report, never in reach-out or the ordinary
+            # completion hooks.
+            await self._handle_urgent_run_state(state)
+            return
         if state.workflow != "curiosity.investigate" or state.status != "completed":
             return
         detail = state.detail or {}

@@ -16,6 +16,7 @@ from orion.fcc.context_budget import (
     measure_step_payload_chars,
 )
 from orion.harness.fcc_motor import (
+    DEFAULT_FCC_MODEL_LABEL,
     _extract_tool_name,
     _extract_tool_result_errors,
     classify_step_tool_kind,
@@ -24,6 +25,7 @@ from orion.harness.fcc_motor import (
     load_fcc_env,
     probe_current_served_model,
     resolve_auth_token,
+    resolve_fcc_route_key,
     run_fcc_turn,
     summarize_harness_step,
 )
@@ -32,6 +34,13 @@ from orion.harness.grammar_emit import (
     build_harness_grammar_events,
     publish_harness_lifecycle_grammar,
     short_error_kind,
+)
+from orion.gpu_pool.placement import (
+    ServingPlacement,
+    discovered_role,
+    fetch_pool_state,
+    placement_from_lease,
+    placement_from_route_default,
 )
 from orion.harness.grammar_publish import publish_harness_step_grammar
 from orion.harness.last_tool_fetch_cache import publish_last_tool_fetch, read_last_tool_fetch
@@ -82,12 +91,15 @@ class HarnessMotorResult:
     # distance from 7200s is real headroom and "the budget is too small"
     # stops being a guess.
     fcc_elapsed_sec: float | None = None
-    # The gateway's currently-served model as probed BEFORE the subprocess ran
-    # (probe_current_served_model). Unlike fcc_served_model (echoed by the CLI's
-    # assistant events, so None when a run stalls before its first one), this is
-    # known for early timeouts too -- the RPC-health `fcc:<served_model>` hop key
-    # falls back to it (services/orion-harness-governor/app/bus_listener.py).
-    probed_served_model: str | None = None
+    # Where the FCC leg ran, for the RPC-health hop key `fcc:<role>`
+    # (services/orion-harness-governor/app/bus_listener.py::fcc_hop_key). A held
+    # turn (request.gpu_lease, a durable run's hold) runs every call on the
+    # hold's role, so `serving_role` is that granted role. Without a hold each
+    # call is placed on its own and the harness never sees the grants, so only
+    # the requested gateway route (`fcc_route`) is known. Both are known before
+    # the subprocess starts, so an early timeout keys the same as a success.
+    serving_role: str | None = None
+    fcc_route: str | None = None
     # Verbosity/stuck-loop signals (see runner.py's step loop for how these accumulate).
     # Carried on the result object -- not just recorded into grammar_collector -- because
     # services/orion-harness-governor/app/bus_listener.py's _emit_finalize_lifecycle_grammar
@@ -181,7 +193,7 @@ def build_harness_prompt(
     workspace: str | None = None,
     prior_tool_fetch_names: list[str] | None = None,
     attachments: list[Any] | None = None,
-    current_served_model: str | None = None,
+    serving_placement: ServingPlacement | None = None,
     recent_turns: list[TurnWindowMessageV1] | None = None,
     situation_prompt_fragment: str | None = None,
     reading_binding: Any = None,
@@ -194,7 +206,7 @@ def build_harness_prompt(
         answer_contract=answer_contract,
         workspace=workspace or os.environ.get("HARNESS_FCC_WORKSPACE"),
         prior_tool_fetch_names=prior_tool_fetch_names,
-        current_served_model=current_served_model,
+        serving_placement=serving_placement,
         recent_turns=recent_turns,
         situation_prompt_fragment=situation_prompt_fragment,
         reading_binding=reading_binding,
@@ -284,6 +296,7 @@ class HarnessRunner:
         fcc_timeout_sec: float = 120.0,
         node_name: str | None = None,
         served_model_probe: Callable[..., Awaitable[str | None]] | None = None,
+        pool_state_probe: Callable[[], Awaitable[dict[str, Any] | None]] | None = None,
     ) -> None:
         self.bus = bus
         self.grammar_channel = grammar_channel
@@ -291,7 +304,13 @@ class HarnessRunner:
         self.fcc_runner = fcc_runner or default_fcc_runner
         self.fcc_timeout_sec = fcc_timeout_sec
         self.served_model_probe = served_model_probe or probe_current_served_model
+        # The GPU pool's live state (discovered role -> profile/model), read only for a
+        # turn that holds a lease. Injectable for tests.
+        self.pool_state_probe = pool_state_probe or self._read_pool_state
         self.node_name = node_name or _default_harness_node_name()
+
+    async def _read_pool_state(self) -> dict[str, Any] | None:
+        return await fetch_pool_state(self.bus, source="orion-harness-governor")
 
     async def run(
         self,
@@ -324,28 +343,42 @@ class HarnessRunner:
         overlay = repair_overlay or map_repair_pressure_contract(request.repair_pressure_contract)
         coalition = coalition_snapshot or build_coalition_snapshot(thought)
 
-        async def _probe_served_model() -> str | None:
-            # Best-effort self-context: which real backend is about to serve
-            # this turn (see fcc_motor.probe_current_served_model).
-            # Belt-and-suspenders try/except on top of that function's own
-            # internal fail-open -- a self-context probe must never be the
-            # reason a turn doesn't start, regardless of what's injected
-            # here in tests or added later.
+        gpu_lease = getattr(request, "gpu_lease", None)
+        serving_role = gpu_lease.role if gpu_lease is not None else None
+        try:
+            # Same default the motor applies (run_fcc_turn), so the hop key names
+            # the route the subprocess actually asked for.
+            fcc_route = resolve_fcc_route_key(request.fcc_model_label or DEFAULT_FCC_MODEL_LABEL)
+        except Exception:
+            logger.warning("fcc_route_resolve failed corr=%s", request.correlation_id, exc_info=True)
+            fcc_route = None
+
+        async def _probe_serving_placement() -> ServingPlacement | None:
+            # Best-effort self-context: which real backend serves this turn.
+            # A held turn: the hold's role (a fact -- every call under a hold
+            # runs on it) and the pool's discovered profile for that role.
+            # Otherwise: the route's default model, stated as a default, since
+            # the pool places each unheld call on its own and may spill it
+            # (spec 2026-09-24-gpu-pool-design.md, reader impacts item 5).
+            # Never the reason a turn doesn't start.
             try:
-                return await self.served_model_probe(request.fcc_model_label)
+                if serving_role:
+                    state = await self.pool_state_probe()
+                    return placement_from_lease(serving_role, discovered_role(state, serving_role))
+                model = await self.served_model_probe(request.fcc_model_label)
+                return placement_from_route_default(fcc_route, model) if model else None
             except Exception:
                 logger.warning(
-                    "served_model_probe failed corr=%s", request.correlation_id, exc_info=True
+                    "serving_placement_probe failed corr=%s", request.correlation_id, exc_info=True
                 )
-                return None
+                return placement_from_lease(serving_role, None) if serving_role else None
 
-        # Independent reads (bus lookup, gateway probe) -- run concurrently
-        # rather than serially so a slow/unreachable orion-llm-gateway (the
-        # probe has its own timeout, default 2s) doesn't add to the bus
-        # round-trip on top of its own latency.
-        prior_tool_fetch, current_served_model = await asyncio.gather(
+        # Independent reads (bus lookup, pool/gateway probe) -- run concurrently
+        # rather than serially so a slow/unreachable probe (its own timeout,
+        # default 2s) doesn't add to the bus round-trip on top of its own latency.
+        prior_tool_fetch, serving_placement = await asyncio.gather(
             read_last_tool_fetch(self.bus, session_id=thought.session_id),
-            _probe_served_model(),
+            _probe_serving_placement(),
         )
         prior_tool_fetch_names = (prior_tool_fetch or {}).get("tool_names")
 
@@ -357,7 +390,7 @@ class HarnessRunner:
             workspace=os.environ.get("HARNESS_FCC_WORKSPACE"),
             prior_tool_fetch_names=prior_tool_fetch_names,
             attachments=list(getattr(request, "attachments", None) or []),
-            current_served_model=current_served_model,
+            serving_placement=serving_placement,
             recent_turns=list(getattr(request, "recent_turns", None) or []),
             situation_prompt_fragment=getattr(request, "situation_prompt_fragment", None),
             reading_binding=getattr(request, "reading_binding", None),
@@ -651,7 +684,8 @@ class HarnessRunner:
                 context_gathering_step_count=context_gathering_step_count,
                 execution_step_count=execution_step_count,
                 fcc_served_model=fcc_served_model,
-                probed_served_model=current_served_model,
+                serving_role=serving_role,
+                fcc_route=fcc_route,
                 reading_receipts=reading_receipts,
                 source_fetches=reading_tracker.source_fetches(),
             )
@@ -713,7 +747,8 @@ class HarnessRunner:
             context_gathering_step_count=context_gathering_step_count,
             execution_step_count=execution_step_count,
             fcc_served_model=fcc_served_model,
-            probed_served_model=current_served_model,
+            serving_role=serving_role,
+            fcc_route=fcc_route,
             reading_receipts=reading_receipts,
             source_fetches=reading_tracker.source_fetches(),
         )

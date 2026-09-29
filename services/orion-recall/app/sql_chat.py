@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -76,12 +75,13 @@ async def _fetch_primary_and_mirror_rows(
     calls meant a mirror-table failure (missing table, permission error,
     transient fault) discarded an already-successful primary result too.
 
-    Concurrent via ``asyncio.gather(..., return_exceptions=True)`` rather
-    than two sequential awaits, matching the existing isolate-independent-
-    lookups pattern already used for the same shape in
-    ``worker.py::_compute_entity_relatedness_boost_map`` -- both tables are
-    genuinely independent queries with no data dependency between them, so
-    there's no reason to pay two round-trip latencies instead of one.
+    Sequential on purpose, not ``asyncio.gather``: both queries share one
+    asyncpg connection, and a connection runs one statement at a time. The
+    earlier concurrent version made the second fetch fail instantly with
+    ``InterfaceError: another operation is in progress`` on every call
+    (724 ``*_mirror_query_failed`` warnings/hour live, 2026-09-29), so the
+    mirror table's rows were never returned. Two round trips on an open
+    connection cost milliseconds.
 
     Shared by both ``fetch_chat_turn_timestamps`` and
     ``fetch_chat_turns_by_id`` rather than duplicated inline in each --
@@ -89,23 +89,21 @@ async def _fetch_primary_and_mirror_rows(
     two-site hand-edit hazard, which is exactly what produced the bug this
     helper fixes in the first place.
     """
-    primary_result, mirror_result = await asyncio.gather(
-        _fetch_rows_from_table(conn, primary_table, select_cols, id_col, ids, extra_where),
-        _fetch_rows_from_table(conn, mirror_table, select_cols, id_col, ids, extra_where),
-        return_exceptions=True,
-    )
+    try:
+        primary_rows: List[Any] = await _fetch_rows_from_table(
+            conn, primary_table, select_cols, id_col, ids, extra_where
+        )
+    except Exception:
+        logger.warning("%s_primary_query_failed", log_prefix, exc_info=True)
+        primary_rows = []
 
-    if isinstance(primary_result, BaseException):
-        logger.warning("%s_primary_query_failed", log_prefix, exc_info=primary_result)
-        primary_rows: List[Any] = []
-    else:
-        primary_rows = primary_result
-
-    if isinstance(mirror_result, BaseException):
-        logger.warning("%s_mirror_query_failed", log_prefix, exc_info=mirror_result)
-        mirror_rows: List[Any] = []
-    else:
-        mirror_rows = mirror_result
+    try:
+        mirror_rows: List[Any] = await _fetch_rows_from_table(
+            conn, mirror_table, select_cols, id_col, ids, extra_where
+        )
+    except Exception:
+        logger.warning("%s_mirror_query_failed", log_prefix, exc_info=True)
+        mirror_rows = []
 
     return primary_rows, mirror_rows
 

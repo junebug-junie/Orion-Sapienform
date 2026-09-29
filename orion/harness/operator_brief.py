@@ -81,14 +81,15 @@ nothing was actually checked.
 
 HARNESS_RELATIONAL_TOOL_DISCIPLINE = """\
 Relational/minimal turn: do NOT use GitHub MCP or repo/runtime tools unless the task
-message itself needs verified facts this turn. Acknowledge and stay present — no task tracking.
+(the message, read with the recent conversation) needs verified facts this turn. Acknowledge and stay present — no task tracking.
 Produce exactly one reply in your own voice. Never write dialogue, narration, or replies
 attributed to the other person — do not simulate how they might respond or continue the
 conversation on their behalf.
 """
 
 HARNESS_INSTRUMENTAL_TOOL_DISCIPLINE = """\
-Instrumental turn: use tools when the task requires verified repo or runtime facts.
+Instrumental turn: use tools when the task (the message, read with the recent conversation)
+requires verified repo or runtime facts.
 Record each meaningful step before answering.
 """
 

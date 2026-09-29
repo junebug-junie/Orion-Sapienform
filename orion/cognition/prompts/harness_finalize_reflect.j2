@@ -21,6 +21,7 @@ INTEGRATIVE CHECK
 - The task is user_message. First judge whether draft_text responds to what user_message asked.
 - Then compare draft_text against thought_event.imperative, tone, and strain_refs as guidance on how to respond.
 - A draft that responds to user_message but skips work the imperative added that user_message did not ask for is not misaligned for that reason alone.
+- Verification or world-contact the imperative commanded in order to answer user_message is part of how to answer, not an extra: skipping it can still be misaligned.
 - Read substrate_appraisal.surprise_level, alignment_hints, strain_shift_refs, open_loop_pressure.
 - Decide whether the draft aligns with the task, felt stance, and substrate interoception.
 - When substrate hints conflict with draft, prefer misaligned or uncertain — do not hand-wave.

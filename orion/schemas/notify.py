@@ -4,7 +4,9 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from orion.schemas.cortex.contracts import AgentTraceSummaryV1
 
@@ -18,6 +20,27 @@ class NotificationAttachment(BaseModel):
     # `<img src="cid:{content_id}">` instead of a regular download attachment.
     # Bare id, no angle brackets. Ignored for plain-text-only requests.
     content_id: Optional[str] = None
+
+    @field_validator("content_id")
+    @classmethod
+    def _normalize_content_id(cls, v: Optional[str]) -> Optional[str]:
+        # Bad ids otherwise surface as a broken Content-ID header (image never
+        # matches its cid: reference) or a mid-send ValueError that fails the
+        # whole letter. Reject at the boundary instead (HTTP 422).
+        if v is None:
+            return None
+        cid = v.strip()
+        if cid.lower().startswith("cid:"):
+            cid = cid[4:]
+        cid = cid.strip().strip("<>").strip()
+        if not cid:
+            return None
+        if not _CONTENT_ID_RE.fullmatch(cid):
+            raise ValueError("content_id must match [A-Za-z0-9._@+-]{1,200}")
+        return cid
+
+
+_CONTENT_ID_RE = re.compile(r"[A-Za-z0-9._@+-]{1,200}")
 
 
 class NotificationRequest(BaseModel):
@@ -43,6 +66,13 @@ class NotificationRequest(BaseModel):
     session_id: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     attachments: Optional[List[NotificationAttachment]] = None
+
+    @model_validator(mode="after")
+    def _unique_content_ids(self) -> "NotificationRequest":
+        cids = [a.content_id for a in (self.attachments or []) if a.content_id]
+        if len(cids) != len(set(cids)):
+            raise ValueError("attachment content_id values must be unique within a request")
+        return self
 
 
 class NotificationAccepted(BaseModel):

@@ -300,7 +300,55 @@ def test_html_with_inline_and_regular_attachments_wraps_in_mixed(monkeypatch):
     assert attached.get_filename() == "log.txt"
 
 
-def test_long_html_body_is_not_truncated(monkeypatch):
-    html = "<p>" + ("word " * 50000) + "END</p>"
+@pytest.mark.parametrize("html", [
+    "<p>" + ("word " * 50000) + "END</p>",
+    "<p>" + ("\u00e9" * 100000) + "END</p>",  # single line, non-ASCII, no spaces
+    "<p>" + ("x" * 100000) + "END</p>",  # single line, ASCII, no spaces
+])
+def test_long_html_body_is_not_truncated_and_is_smtp_safe(monkeypatch, html):
     msg = _capture_send(monkeypatch, _req(body_text="fallback", body_html=html))
     assert msg.get_payload()[1].get_content().rstrip().endswith("END</p>")
+    # what actually goes on the wire must respect SMTP's 998-octet line limit
+    assert max(len(line) for line in msg.as_bytes().split(b"\n")) <= 998
+
+
+def test_regular_attachment_before_inline_one_still_nests_correctly(monkeypatch):
+    msg = _capture_send(
+        monkeypatch,
+        _req(
+            body_text="fallback",
+            body_html='<img src="cid:x">',
+            attachments=[_att("log.txt", mime="text/plain", data=b"log"), _att("x.png", cid="x")],
+        ),
+    )
+    assert msg.get_content_type() == "multipart/mixed"
+    alt, attached = msg.get_payload()
+    related = alt.get_payload()[1]
+    assert related.get_content_type() == "multipart/related"
+    assert related.get_payload()[1]["Content-ID"] == "<x>"
+    assert attached.get_filename() == "log.txt"
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("reverie1", "reverie1"),
+    ("<reverie1>", "reverie1"),
+    ("cid:reverie1@orion", "reverie1@orion"),
+    ("  ", None),
+])
+def test_content_id_is_normalized(raw, expected):
+    assert _att("a.png", cid=raw).content_id == expected
+
+
+@pytest.mark.parametrize("bad", ["a b", "a>b<c", "x\r\nBcc: evil@example.com", "a" * 201])
+def test_invalid_content_id_is_rejected_at_the_boundary(bad):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _att("a.png", cid=bad)
+
+
+def test_duplicate_content_ids_are_rejected():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _req(body_html="<p/>", attachments=[_att("a.png", cid="x"), _att("b.png", cid="x")])

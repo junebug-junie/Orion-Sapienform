@@ -519,11 +519,28 @@ async def test_notify_response_reports_skipped_when_no_transport(monkeypatch) ->
 
 
 @pytest.mark.asyncio
-async def test_body_html_is_not_persisted(monkeypatch) -> None:
-    """body_html is email-only; the persisted record must not carry it."""
-    m, req, published, coros = _app_request(monkeypatch, _Transport())
-    monkeypatch.setattr(m, "should_send_email", lambda p: (True, "policy_ok"))
+async def test_body_html_is_not_published_on_any_bus_channel(monkeypatch) -> None:
+    """body_html is email-only. Assert on the serialized envelopes actually
+    handed to the bus on BOTH paths (persistence + in-app hub event), so a
+    future `**payload.model_dump()` refactor on either would trip this."""
+    pytest.importorskip("fastapi")
+    from types import SimpleNamespace
+
+    from app import main as m
     from orion.schemas.notify import NotificationRequest
+
+    sent: list = []
+    coros: list = []
+
+    class _Bus:
+        async def publish(self, channel, envelope):
+            sent.append((channel, envelope))
+
+    monkeypatch.setattr(m.asyncio, "create_task", lambda c: coros.append(c) or None)
+    monkeypatch.setattr(m, "_check_token", lambda *_a, **_k: None)
+    monkeypatch.setattr(m, "should_send_email", lambda p: (True, "policy_ok"))
+    monkeypatch.setattr(m.settings, "NOTIFY_IN_APP_ENABLED", True)
+    req = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(bus=_Bus(), email_transport=_Transport())))
 
     await m.notify(
         payload=NotificationRequest(
@@ -532,7 +549,11 @@ async def test_body_html_is_not_persisted(monkeypatch) -> None:
         ),
         request=req,
     )
-    records = await _drain(coros, published)
-    dumped = records[0].model_dump()
-    assert "body_html" not in dumped
-    assert "big letter" not in repr(dumped)
+    for c in coros:
+        await c
+    channels = {c for c, _ in sent}
+    assert channels == {m.settings.NOTIFY_IN_APP_CHANNEL, "orion:notify:persistence:request"}, channels
+    for channel, env in sent:
+        blob = env.model_dump_json()
+        assert "big letter" not in blob, f"body_html leaked onto {channel}"
+        assert "body_html" not in blob, f"body_html key leaked onto {channel}"

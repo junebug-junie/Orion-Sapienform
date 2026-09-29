@@ -245,6 +245,9 @@ clients cannot reach tailnet-hosted hub URLs. Give an attachment a
 embedded as an inline part of a `multipart/related` group next to the HTML.
 Attachments without `content_id` (or any attachment on a plain-text-only
 request) are sent as ordinary download attachments, exactly as before.
+`content_id` must match `[A-Za-z0-9._@+-]{1,200}` (a `cid:` prefix or angle
+brackets are stripped) and be unique within a request; anything else is a 422.
+An `@`-qualified id such as `reverie1@orion` is the most portable form.
 
 ```python
 import base64

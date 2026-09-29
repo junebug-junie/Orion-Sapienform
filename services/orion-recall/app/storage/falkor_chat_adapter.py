@@ -41,17 +41,24 @@ logger = logging.getLogger(__name__)
 
 
 def _falkor_ts_cutoff(since_minutes: int, *, now: datetime | None = None) -> str:
-    """ISO cutoff in the exact shape the writer stores ``ChatTurn.ts``.
+    """Cutoff for ``WHERE t.ts >= $cutoff`` on the writer's ISO strings.
 
     orion-meta-tags writes ``ts`` as ``datetime.isoformat()`` of an aware UTC
-    datetime: ``2026-09-29T04:11:00.120601+00:00`` (verified live
-    2026-09-29: all 1,916 chat.history ChatTurns are 32 chars and end in
-    ``+00:00``). Same fixed-width shape on both sides, so Cypher's string
-    ``>=`` orders them correctly, like with like.
+    datetime. That is ``2026-09-29T04:11:00.120601+00:00`` normally, but
+    ``2026-09-29T04:11:00+00:00`` when microsecond == 0 (isoformat drops the
+    fraction). A cutoff that always carries ``.%f`` compares wrongly against
+    the second shape ('+' sorts before '.'), so it would drop a turn at
+    exactly the cutoff second (code review, PR #2416).
+
+    So the cutoff is floored to whole seconds with no fraction and no offset:
+    ``2026-09-29T04:11:00``. Every stored value in that second or later has
+    that 19-char string as a prefix or sorts above it, and every earlier
+    second sorts below it, whichever shape it has. Flooring can admit at
+    most <1s of older turns; the post-filter in the worker is the exact net.
     """
     base = now or datetime.now(timezone.utc)
     cutoff = base.astimezone(timezone.utc) - timedelta(minutes=int(since_minutes))
-    return cutoff.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+    return cutoff.strftime("%Y-%m-%dT%H:%M:%S")
 
 
 async def fetch_falkor_chatturn_fragments(

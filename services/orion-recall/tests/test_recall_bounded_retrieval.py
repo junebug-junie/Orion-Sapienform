@@ -285,11 +285,39 @@ def test_anchor_tokens_ignore_uuid_segments_and_hex_ids() -> None:
     assert worker._anchor_tokens(text) == ["gpu1"]
 
 
-def test_memory_browse_regex_live() -> None:
+def test_memory_browse_regex_live(monkeypatch) -> None:
+    monkeypatch.setattr(worker.settings, "RECALL_BROWSE_SHORTCUT_ENABLED", True)
     assert worker._is_memory_browse("show recent memories") is True
+    assert worker._is_memory_browse("list my memories") is True
     assert worker._is_memory_browse("what is the weather") is False
     # A long prompt that merely mentions "recall ... context" is not a browse request.
     assert worker._is_memory_browse(_long_query()) is False
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Can you show me the context around the gpu1 crash?",
+        "Recall the context of our conversation about Falkor latency",
+        "list the recent errors from the scheduler",
+    ],
+)
+def test_memory_browse_does_not_hijack_ordinary_questions(monkeypatch, question) -> None:
+    """Review, PR #2416: these took the recent-only path and skipped retrieval."""
+    monkeypatch.setattr(worker.settings, "RECALL_BROWSE_SHORTCUT_ENABLED", True)
+    assert worker._is_memory_browse(question) is False
+
+
+def test_memory_browse_off_by_default() -> None:
+    assert worker.settings.RECALL_BROWSE_SHORTCUT_ENABLED is False
+    assert worker._is_memory_browse("show recent memories") is False
+
+
+def test_browse_flag_off_keeps_full_retrieval(wired) -> None:
+    q = RecallQueryV1(fragment="show recent memories", verb="stance_react")
+    _bundle, decision = asyncio.run(worker.process_recall(q, corr_id="c-browse-off"))
+    assert decision.sub_query_count and decision.sub_query_count >= 1
+    assert len(wired["falkor_neighborhood"].calls) >= 1
 
 
 def test_anchor_rail_reaches_exact_fetch_without_monkeypatching_tokens(wired) -> None:
@@ -367,8 +395,8 @@ def test_falkor_chat_pushes_window_into_cypher(monkeypatch) -> None:
     )
     cypher, params = fake.calls[0]
     assert "WHERE t.ts >= $cutoff" in cypher
-    # Same shape the writer stores: 2026-09-29T04:11:00.120601+00:00
-    assert len(params["cutoff"]) == 32 and params["cutoff"].endswith("+00:00")
+    # Whole seconds, no fraction/offset: 2026-09-29T04:11:00
+    assert len(params["cutoff"]) == 19
 
 
 def test_falkor_chat_without_window_is_unchanged(monkeypatch) -> None:
@@ -395,8 +423,21 @@ def test_falkor_cutoff_orders_like_stored_timestamps() -> None:
 
     now = datetime(2026, 9, 29, 7, 11, 0, 120601, tzinfo=timezone.utc)
     cutoff = falkor_chat_adapter._falkor_ts_cutoff(180, now=now)
-    assert cutoff == "2026-09-29T04:11:00.120601+00:00"
+    assert cutoff == "2026-09-29T04:11:00"
+    # Both stored shapes isoformat() produces, inside the window:
     assert "2026-09-29T04:11:00.120602+00:00" >= cutoff
+    assert "2026-09-29T04:11:00+00:00" >= cutoff  # microsecond == 0: no fraction
+    assert "2026-09-29T04:11:01+00:00" >= cutoff
+    # ...and outside it, in both shapes:
+    assert "2026-09-29T04:10:59.999999+00:00" < cutoff
+    assert "2026-09-29T04:10:59+00:00" < cutoff
+
+
+def test_falkor_cutoff_with_whole_second_now() -> None:
+    from datetime import datetime, timezone
+
+    cutoff = falkor_chat_adapter._falkor_ts_cutoff(0, now=datetime(2026, 9, 29, 4, 11, 0, 0, tzinfo=timezone.utc))
+    assert "2026-09-29T04:11:00+00:00" >= cutoff
     assert "2026-09-29T04:10:59.999999+00:00" < cutoff
 
 
@@ -427,3 +468,200 @@ def test_condense_without_questions_uses_informative_score() -> None:
     # Social filler dropped; the one substantive clause is over budget, so it is hard-cut.
     assert worker._condense_query(text, max_chars=60) == "The gpu1 lane stalled during the p4 migration window yesterd"
     assert worker._condense_query(text, max_chars=200) == "The gpu1 lane stalled during the p4 migration window yesterday"
+
+
+
+# ── Code review (PR #2416) regressions ───────────────────────────────────────
+
+
+def _blocking(seconds: float, result):
+    """SYNC stub that blocks its thread with time.sleep. An async spy can't
+    catch loop-blocking; this one freezes the event loop if called on it."""
+
+    calls: List[Dict[str, Any]] = []
+
+    def _fn(*args, **kwargs):
+        import threading
+
+        calls.append({**kwargs, "_on_loop_thread": threading.current_thread() is threading.main_thread()})
+        time.sleep(seconds)
+        return list(result)
+
+    _fn.calls = calls  # type: ignore[attr-defined]
+    return _fn
+
+
+async def _run_with_ticker(coro):
+    """Run ``coro`` while a ticker counts event-loop turns. Returns
+    (result, elapsed_s, ticks). A blocked loop shows up as ~0 ticks."""
+    ticks = 0
+    stop = False
+
+    async def _tick():
+        nonlocal ticks
+        while not stop:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    t = asyncio.ensure_future(_tick())
+    started = time.perf_counter()
+    try:
+        result = await coro
+    finally:
+        stop = True
+        await t
+    return result, time.perf_counter() - started, ticks
+
+
+def _rdf_anchor_profile() -> Dict[str, Any]:
+    return {**_profile(), "enable_rdf": True}
+
+
+def test_anchor_rdf_exact_runs_off_the_event_loop_and_keeps_sql_partial(wired, monkeypatch) -> None:
+    """Review finding 2 + anchor-sink nit: the sync RDF exact-match call
+    (requests.post) used to run on the event loop inside the concurrent fetch.
+    With a 1.5s blocking stub and a 500ms deadline, recall must return on time
+    with the SQL half of the anchor rail kept."""
+    monkeypatch.setattr(worker, "get_profile", lambda _n: _rdf_anchor_profile())
+    monkeypatch.setattr(worker.settings, "RECALL_RDF_ENDPOINT_URL", "http://rdf.invalid")
+    blocking = _blocking(1.5, [])
+    monkeypatch.setattr(worker, "fetch_rdf_chatturn_exact_matches", blocking)
+    exact_item = type(
+        "Row", (), {"id": "anchor-sql-1", "source_ref": "chat_history_log", "text": "gpu1 lane recovered", "ts": time.time(), "tags": []}
+    )()
+    wired["exact"].result = [exact_item]
+
+    q = RecallQueryV1(fragment="did gpu1 recover", verb="stance_react", deadline_ms=500)
+    (bundle, decision), elapsed, ticks = asyncio.run(
+        _run_with_ticker(worker.process_recall(q, corr_id="c-anchor-block"))
+    )
+    assert blocking.calls, "rdf exact stub was not reached"
+    assert not any(c["_on_loop_thread"] for c in blocking.calls)
+    assert elapsed < 1.2
+    assert ticks >= 20  # loop kept turning while the stub slept
+    assert decision.deadline_hit is True
+    assert decision.backend_counts.get("sql_timeline_anchor") == 1
+    assert "anchor-sql-1" in decision.selected_ids
+
+
+def test_anchor_rail_shares_the_fetch_semaphore(wired, monkeypatch) -> None:
+    """Review finding 5: with RECALL_FETCH_CONCURRENCY=1, the anchor rail and
+    the backend units never overlap."""
+    monkeypatch.setattr(worker.settings, "RECALL_FETCH_CONCURRENCY", 1)
+    in_flight = 0
+    peak = 0
+
+    def _tracked(spy):
+        async def _fn(*a, **k):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            try:
+                await asyncio.sleep(0.01)
+                return await spy(*a, **k)
+            finally:
+                in_flight -= 1
+
+        return _fn
+
+    for name, attr in (
+        ("exact", "fetch_exact_fragments"),
+        ("falkor_neighborhood", "fetch_falkor_neighborhood_fragments"),
+        ("bus_synaptic_anomaly", "fetch_bus_synaptic_anomaly_fragments"),
+        ("falkor_chat", "fetch_falkor_chatturn_fragments"),
+    ):
+        monkeypatch.setattr(worker, attr, _tracked(wired[name]))
+    q = RecallQueryV1(fragment="did gpu1 and p4 recover on Tesla", verb="stance_react")
+    asyncio.run(worker.process_recall(q, corr_id="c-sem"))
+    assert wired["exact"].calls, "anchor rail did not run"
+    assert peak == 1
+
+
+def test_fetch_concurrency_default_is_four(monkeypatch) -> None:
+    assert worker.settings.RECALL_FETCH_CONCURRENCY == 4
+    assert worker._fetch_concurrency() == 4
+
+
+def test_shadow_compare_not_triggered_by_anchor_tokens_alone(wired, monkeypatch) -> None:
+    """Review finding 3: main's triggers only (empty or vector-topped bundle)."""
+    import app.recall_v2 as recall_v2
+
+    calls: List[Any] = []
+
+    async def _shadow(q, *, profile=None):
+        calls.append(q)
+        return MemoryBundleV1(), {}
+
+    monkeypatch.setattr(recall_v2, "run_recall_v2_shadow", _shadow)
+    q = RecallQueryV1(fragment="did gpu1 recover", verb="stance_react")
+    bundle, _decision = asyncio.run(worker.process_recall(q, corr_id="c-shadow-anchor"))
+    assert bundle.items  # bus anomaly feed keeps it non-empty
+    assert worker._anchor_tokens("did gpu1 recover") == ["gpu1"]
+    assert calls == []
+
+    wired["bus_synaptic_anomaly"].result = []
+    asyncio.run(worker.process_recall(q, corr_id="c-shadow-empty"))
+    assert len(calls) == 1  # empty bundle still triggers it, as on main
+
+
+def test_v2_shadow_sync_calls_run_off_the_event_loop(monkeypatch) -> None:
+    """Review finding 3: the shadow's sync RDF / pageindex calls go to threads."""
+    import app.recall_v2 as recall_v2
+
+    async def _empty(*a, **k):
+        return []
+
+    blocking_rdf = _blocking(0.4, [])
+    blocking_exact = _blocking(0.4, [])
+    blocking_pageindex = _blocking(0.4, [])
+    monkeypatch.setattr(recall_v2, "fetch_rdf_fragments", blocking_rdf)
+    monkeypatch.setattr(recall_v2, "fetch_rdf_chatturn_exact_matches", blocking_exact)
+    monkeypatch.setattr(recall_v2, "_pageindex_candidates", lambda plan, top_k=8: blocking_pageindex(top_k=top_k))
+    monkeypatch.setattr(recall_v2, "fetch_exact_fragments", _empty)
+    monkeypatch.setattr(recall_v2, "fetch_recent_fragments", _empty)
+
+    q = RecallQueryV1(fragment="find exact anchor COMMIT123 in memory", profile="reflect.v1")
+    _result, elapsed, ticks = asyncio.run(_run_with_ticker(recall_v2.run_recall_v2_shadow(q, profile=_profile())))
+    assert blocking_rdf.calls and blocking_exact.calls and blocking_pageindex.calls
+    for stub in (blocking_rdf, blocking_exact, blocking_pageindex):
+        assert not any(c["_on_loop_thread"] for c in stub.calls)
+    assert elapsed >= 1.0
+    # ~1.2s of sync sleeping; on-loop it would be ~0 ticks.
+    assert ticks >= 50
+
+
+def test_boost_gets_same_entity_count_as_fallback(wired, monkeypatch) -> None:
+    """Nit: process_recall and the boost's own fallback pass max(K,3) ranked entities."""
+    monkeypatch.setattr(worker.settings, "RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED", True)
+    monkeypatch.setattr(worker.settings, "RECALL_MAX_SUB_QUERIES", 1)
+    seen: List[List[str]] = []
+
+    async def _boost(*, query_text, candidates, query_entities=None):
+        seen.append(list(query_entities or []))
+        return {}, []
+
+    monkeypatch.setattr(worker, "_compute_entity_relatedness_boost_map", _boost)
+    text = "Check settings.py, Nvidia Tesla, gpu1 and Falkor Graph after the Atlas move"
+    asyncio.run(worker.process_recall(RecallQueryV1(fragment=text, verb="stance_react"), corr_id="c-boost"))
+    assert seen and len(seen[0]) == 3
+    assert seen[0] == worker._boost_query_entities(text)
+
+
+def test_condense_never_empty_for_non_empty_input() -> None:
+    ws = " " * 700
+    assert worker._condense_query(ws, max_chars=600) != ""
+    punct = "." * 700
+    assert worker._condense_query(punct, max_chars=600) != ""
+
+
+def test_intake_skips_whitespace_only_fragment(monkeypatch) -> None:
+    monkeypatch.setattr(worker.settings, "RECALL_MAX_QUERY_CHARS", 600)
+    intake = worker._intake_query(RecallQueryV1(fragment=" " * 700), profile_name="reflect.v1")
+    assert intake["search_text"] == "" and intake["source"] == "fragment"
+
+
+def test_condense_hard_cut_counts_toward_budget() -> None:
+    long_clause = "gpu1 " * 200  # one 1000-char clause, no terminators
+    out = worker._condense_query(long_clause + ". short tail clause here", max_chars=100)
+    assert len(out) <= 100
+    assert "short tail" not in out

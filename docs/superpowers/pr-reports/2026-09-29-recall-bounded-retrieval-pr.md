@@ -20,7 +20,7 @@ Recall was slow because it searched for the whole prompt. A 30,663-character sel
 On the real stored queries (stubbed backends, so this is work done, not live latency):
 
 - The 30,663-char prompt goes from 268 searches and a projected 1,876 backend calls to 3 searches and 9 calls.
-- Every long real query now does at most 13 backend calls.
+- Every long real query now does at most 12 backend calls.
 - For short questions, the top 8 results match the uncapped pipeline 97.7% of the time on average. Every difference comes from no longer searching for the bare word "What".
 
 Live effect (design acceptance check 6: stance_react max latency under 10s, no RecallService RPC timeouts) is **UNVERIFIED** until deploy.
@@ -68,7 +68,12 @@ Live effect (design acceptance check 6: stance_react max latency under 10s, no R
 
 ## Env/config changes
 
-- Added keys: `RECALL_MAX_QUERY_CHARS=600`, `RECALL_MAX_SUB_QUERIES=4` (0 = old uncapped fan-out, the rollback lever), `RECALL_DEADLINE_MS_DEFAULT=60000`.
+- Added keys:
+  - `RECALL_MAX_QUERY_CHARS=600` (`<=0` turns condensation off).
+  - `RECALL_MAX_SUB_QUERIES=4`. Setting it to 0 restores only the old *entity fan-out*: every extracted entity, unfiltered and in first-appearance order, becomes a sub-query and a `related_by_entities` pattern. It does **not** restore the old pipeline. Feeds still run once, fetches stay concurrent under the deadline, and the regex and time-window fixes stay. Condensation, the deadline and browse each have their own knob.
+  - `RECALL_DEADLINE_MS_DEFAULT=60000` (`<=0` turns the default deadline off).
+  - `RECALL_FETCH_CONCURRENCY=4`: backend units in flight per recall, anchor rail included. This is also the fetch stage's per-recall Postgres connection ceiling.
+  - `RECALL_BROWSE_SHORTCUT_ENABLED=false`: the recent-only browse shortcut. Off keeps main's behavior.
 - `.env_example` updated: yes. `docker-compose.yml` gets `:-default` fallbacks.
 - Local `.env` synced: yes, with `python scripts/sync_local_env_from_example.py --all-keys orion-recall`. It wrote the three keys to the primary checkout's live `services/orion-recall/.env`. The default (no `--all-keys`) mode skips these keys because they're outside its prefix list.
 - Skipped keys requiring operator action: none.
@@ -78,7 +83,7 @@ Live effect (design acceptance check 6: stance_react max latency under 10s, no R
 ```text
 services/orion-recall: pytest tests evals -q -p no:cacheprovider
   main baseline:  3 failed, 284 passed
-  this branch:    2 failed, 320 passed
+  this branch:    2 failed, 338 passed (after review fixes; 320 before them)
   Still failing, both pre-existing:
     test_recall_policy_harness::test_process_recall_diagnostic_contains_gating_suppression_and_selection
       (its old TypeError is fixed; it now reaches a stale assert that vector is "enabled",
@@ -105,7 +110,7 @@ max chars searched: 600  [bound 600]
 stopword sub-queries: none
 context feeds called at most once per recall: True
 short queries (<=500 chars): n=64 top-8 overlap bounded-vs-uncapped mean=0.977 min=0.750
-long queries (>600 chars): n=16 max wall=33ms (stub I/O 5ms/call) backend calls new=13 vs old sequential projected=1876
+long queries (>600 chars): n=16 max wall=49ms (stub I/O 5ms/call) backend calls new=12 vs old sequential projected=1876
   stance_react 30663 chars -> condensed 600 chars, 3 sub-queries (uncapped 268), calls 9 (old projected 1876)
   stance_react  7577 chars -> condensed 600 chars, 6 sub-queries (uncapped 75),  calls 13 (old projected 525)
 pytest services/orion-recall/evals: 5 passed
@@ -124,7 +129,40 @@ are 32-char ISO strings ending +00:00, the same shape as the cutoff, so the stri
 
 ## Review findings fixed
 
-- Code review is being run by the orchestrator (not in this session).
+Code review of this PR (orchestrator). Every fix has a regression test, and each test was mutation-checked: reverting the fix makes it fail. Loop-blocking fixes are tested with SYNC `time.sleep` stubs that record which thread they ran on, plus an event-loop tick counter.
+
+- Finding (should-fix 1): the revived browse shortcut hijacked ordinary short questions ("Can you show me the context around the gpu1 crash?", "Recall the context of our conversation about Falkor latency", "list the recent errors from the scheduler") onto the recent-only path.
+  - Fix: behind `RECALL_BROWSE_SHORTCUT_ENABLED`, default false (main's behavior). When on, the object of the verb must be memory/memories within 3 words.
+  - Evidence: `test_memory_browse_does_not_hijack_ordinary_questions` (all 3 questions), `test_memory_browse_off_by_default`, `test_browse_flag_off_keeps_full_retrieval`.
+- Finding (should-fix 2): the anchor rail's sync `fetch_rdf_chatturn_exact_matches` (requests.post, up to 5s) ran on the event loop inside the concurrent fetch.
+  - Fix: `asyncio.to_thread`. The other sync I/O on that path (the RDF adapters, graph compression) was already threaded.
+  - Evidence: `test_anchor_rdf_exact_runs_off_the_event_loop_and_keeps_sql_partial`. A 1.5s blocking stub with a 500ms deadline: recall returns in under 1.2s, the loop keeps ticking (20+), and the stub runs off the loop thread.
+- Finding (should-fix 3): the v2 shadow compare fired inline on any anchor-bearing query.
+  - Fix: main's effective triggers restored (empty or vector-topped bundle only). The shadow's sync calls (RDF exact, pageindex `requests.post`, `fetch_rdf_fragments`) now run in threads.
+  - Evidence: `test_shadow_compare_not_triggered_by_anchor_tokens_alone`; `test_v2_shadow_sync_calls_run_off_the_event_loop` (each blocking stub asserted off the loop thread).
+- Finding (should-fix 4): the telemetry `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` takes ACCESS EXCLUSIVE even when the column exists, so it could hang behind a backup and queue the inserts.
+  - Fix: read `information_schema.columns` first and ALTER only missing columns, under `SET lock_timeout = '2s'` and `statement_timeout = '5s'`. The DDL is attempted once per process, success or fail. The insert writes only columns it has confirmed exist, so a failed DDL degrades to the old row shape instead of failing the write.
+  - Evidence: `test_existing_columns_take_no_alter_lock`, `test_only_missing_columns_are_altered_after_lock_timeout_is_set`, `test_ddl_lock_timeout_does_not_block_insert_or_retry`.
+- Finding (should-fix 5): up to about 9 concurrent Postgres connections per recall.
+  - Fix: `RECALL_FETCH_CONCURRENCY` (default 4), and the anchor job now takes the same semaphore.
+  - Evidence: `test_anchor_rail_shares_the_fetch_semaphore` (at concurrency 1, peak in-flight is 1), `test_fetch_concurrency_default_is_four`.
+  - Acknowledged limit: `to_thread` work that outlives the deadline still holds its connection until the thread finishes.
+- Finding (should-fix 6): `RECALL_MAX_SUB_QUERIES=0` was described as a full rollback.
+  - Fix: the wording in settings.py, `.env_example`, README and this report now says exactly what it restores (the entity fan-out) and what it doesn't. Browse has its own flag.
+  - Evidence: see "Env/config changes" above.
+- Nit: `_condense_query` could return '' for non-empty input, and the hard-cut branch never counted toward the budget.
+  - Fix: it falls back to the raw head, so it's never empty. Whitespace-only fragments skip condensation (nothing to search). The hard cut now sets `used`.
+  - Evidence: `test_condense_never_empty_for_non_empty_input`, `test_intake_skips_whitespace_only_fragment`, `test_condense_hard_cut_counts_toward_budget`.
+- Nit: the Falkor cutoff always carried `.%f+00:00`, so a stored `...:00+00:00` (microsecond == 0) compared wrongly.
+  - Fix: the cutoff is floored to whole seconds with no fraction or offset (`2026-09-29T04:11:00`). That is prefix-safe for both stored shapes, and the worker's post-filter stays the exact net.
+  - Evidence: `test_falkor_cutoff_orders_like_stored_timestamps` (both shapes, in and out of window), `test_falkor_cutoff_with_whole_second_now`.
+- Nit: the anchor job lost all its results when the deadline cancelled it.
+  - Fix: it writes each half (SQL, RDF) to the same partial-results sink as the backend units.
+  - Evidence: `test_anchor_rdf_exact_runs_off_the_event_loop_and_keeps_sql_partial` keeps the SQL anchor hit after the deadline.
+- Nit: the boost got K entities from process_recall but max(K, 3) from its own fallback.
+  - Fix: both paths call `_boost_query_entities` (max(K, 3) ranked, or the raw list when K=0).
+  - Evidence: `test_boost_gets_same_entity_count_as_fallback`.
+
 - Self-found before review:
   - Finding: once the anchor regex was fixed, it treated UUID segments and trace ids ("be03", "cb4dd9417c8d4020") as anchors on 12 of 80 real queries.
     - Fix: strip UUIDs before matching, and drop pure-hex tokens of 8+ characters.
@@ -147,12 +185,13 @@ scripts/safe_docker_build.sh orion-recall up -d --build
 
 - **Severity: medium.** Two dead paths come back to life:
   - the anchor rail, which runs exact-match SQL for tokens like `gpu1`;
-  - the memory-browse shortcut, for short "show recent memories"-style requests.
-  - These change results for queries that contain them. The v2 shadow compare also fires on anchor queries now, bounded by the remaining deadline.
-  - Mitigation: the id-shaped false positives are guarded, and browse is limited to short text. Watch `recall_telemetry` `backend_counts.sql_timeline_anchor` after deploy.
+  - the memory-browse shortcut, which ships **off** (`RECALL_BROWSE_SHORTCUT_ENABLED=false`).
+  - The anchor rail changes results for queries with tokens like `gpu1`. The v2 shadow compare keeps main's triggers, so anchors alone don't fire it.
+  - Mitigation: the id-shaped false positives are guarded. Watch `recall_telemetry` `backend_counts.sql_timeline_anchor` after deploy.
+- **Severity: low.** At most `RECALL_FETCH_CONCURRENCY` (default 4) fetch units hold Postgres connections at once per recall. But `to_thread` work that outlives the deadline keeps its connection until the thread finishes: the deadline stops *waiting*, not the work.
 - **Severity: medium.** Condensation is a backstop, not the fix. For a long prompt it searches the question plus the densest sentences, which can still miss what the turn is about. Phase 3 (callers send `retrieval_query`) is the real fix.
 - **Severity: low.**
-  - The deadline cancels waiting on thread-offloaded calls (the RDF adapters, graph compression), but the thread itself runs to completion in the default executor.
+  - The deadline cancels waiting on thread-offloaded calls (the RDF adapters, the anchor RDF exact match, graph compression), but the thread itself runs to completion in the default executor.
   - SQL chat windowing (`fetch_chat_turn_timestamps`) runs after the fetch deadline and is not covered by it.
 - **Severity: low.** `latency_ms` now includes the boost, fusion and shadow compare. Dashboards comparing before and after will see a step up that is measurement, not regression.
 - **Severity: low.** Entity specificity ranking uses shape and length, not Falkor entity degree: that would be an extra round trip before retrieval. The boost still applies its own degree discount.

@@ -301,12 +301,20 @@ _MEMORY_BROWSE_MAX_CHARS = 160
 
 
 def _is_memory_browse(text: str) -> bool:
+    """Recent-only browse shortcut. Off by default
+    (RECALL_BROWSE_SHORTCUT_ENABLED=false keeps main's pre-2026-09-29
+    behavior, when this regex could never match). When on, the object of the
+    verb must be memory/memories within a few words ("show recent memories",
+    "list my memories"): ordinary questions like "show me the context around
+    the gpu1 crash" or "list the recent errors" must keep full retrieval
+    (code review, PR #2416)."""
+    if not bool(getattr(settings, "RECALL_BROWSE_SHORTCUT_ENABLED", False)):
+        return False
     if not text or len(text) > _MEMORY_BROWSE_MAX_CHARS:
         return False
     lowered = text.lower()
     return bool(
-        re.search(r"\b(fetch|show|list|browse|recall)\b", lowered)
-        and re.search(r"\b(memory|memories|recent|context)\b", lowered)
+        re.search(r"\b(fetch|show|list|browse|recall)\b(?:\s+[a-z']+){0,3}?\s+(memory|memories)\b", lowered)
     )
 
 
@@ -477,12 +485,16 @@ def _condense_query(text: str, *, max_chars: int) -> str:
         extra = len(clause) + (2 if picked else 0)
         if used + extra > max_chars:
             if not picked:
-                picked.append(clause[:max_chars].strip())
+                cut = clause[:max_chars].strip()
+                if cut:
+                    picked.append(cut)
+                    used = len(cut)
             continue
         picked.append(clause)
         used += extra
     condensed = ". ".join(picked).strip()
-    return condensed[:max_chars].strip() or str(text or "")[:max_chars].strip()
+    # Never empty for non-empty input: fall back to the raw head.
+    return condensed[:max_chars].strip() or str(text or "")[:max_chars].strip() or str(text or "")[:max_chars]
 
 
 def _intake_query(q: RecallQueryV1, *, profile_name: str) -> Dict[str, Any]:
@@ -504,6 +516,9 @@ def _intake_query(q: RecallQueryV1, *, profile_name: str) -> Dict[str, Any]:
     targeting = _derive_chat_general_query(q.fragment, verb=q.verb, profile_name=profile_name)
     text = str(targeting.get("query_fragment") or q.fragment or "")
     max_chars = _max_query_chars()
+    if not text.strip():
+        # Whitespace only: nothing to search for, and nothing to condense.
+        return {"search_text": "", "source": "fragment", "query_targeting": targeting}
     if max_chars > 0 and len(text) > max_chars:
         condensed = _condense_query(text, max_chars=max_chars)
         targeting = {**targeting, "query_fragment": condensed, "query_changed": True, "condensed_from_chars": len(text)}
@@ -758,6 +773,15 @@ _ENTITY_RELATEDNESS_MIN_INJECTION_SCORE = 0.15
 _ENTITY_RELATEDNESS_UNKNOWN_DEGREE_DISCOUNT = 0.1
 
 
+def _boost_query_entities(query_text: str) -> List[str]:
+    """Entities the boost targets: the specificity-ranked list, max(K, 3)
+    long (the boost fans out on its first 3), or the raw list when K=0.
+    Both process_recall and the standalone fallback call this, so they
+    always agree on the count."""
+    k = _max_sub_queries()
+    return _ranked_entities(query_text, limit=(max(k, _ENTITY_RELATEDNESS_MAX_QUERY_ENTITIES) if k > 0 else 0))
+
+
 async def _compute_entity_relatedness_boost_map(
     *,
     query_text: str,
@@ -823,8 +847,7 @@ async def _compute_entity_relatedness_boost_map(
         # whatever order a set() happened to iterate in, and not all 266
         # capitalized words of a 30k-char prompt as degree/mention targets.
         if query_entities is None:
-            k = _max_sub_queries()
-            query_entities = _ranked_entities(query_text, limit=(max(k, _ENTITY_RELATEDNESS_MAX_QUERY_ENTITIES) if k > 0 else 0))
+            query_entities = _boost_query_entities(query_text)
         query_entities = list(dict.fromkeys(str(e).lower() for e in query_entities if str(e).strip()))
         if not query_entities:
             return {}, []
@@ -1184,10 +1207,29 @@ async def _fetch_anchor_candidates(
     profile: Dict[str, Any],
     diagnostic: bool = False,
     exclusion: Dict[str, Any] | None = None,
+    sink: List[Dict[str, Any]] | None = None,
+    sink_key: Any = "anchor",
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """Exact-token anchor rail. Each sub-fetch appends its result to ``sink``
+    as it lands (same contract as _query_backends' units), so a deadline
+    cancel keeps the SQL half even if the RDF half is still running."""
     tokens = _anchor_tokens(query_text)
     if not tokens:
         return [], {}
+
+    def _to_sink(idx: int, name: str, cands: List[Dict[str, Any]], unit_counts: Dict[str, int], started: float) -> None:
+        if sink is not None:
+            sink.append(
+                {
+                    "key": sink_key,
+                    "idx": idx,
+                    "name": name,
+                    "kind": _UNIT_RETRIEVER,
+                    "candidates": list(cands),
+                    "counts": dict(unit_counts),
+                    "elapsed_ms": int((time.perf_counter() - started) * 1000),
+                }
+            )
 
     candidates: List[Dict[str, Any]] = []
     counts: Dict[str, int] = {}
@@ -1195,6 +1237,7 @@ async def _fetch_anchor_candidates(
     exclusion = exclusion or {}
     since_minutes = int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES))
 
+    sql_started = time.perf_counter()
     try:
         sql_items = await fetch_exact_fragments(
             tokens=tokens,
@@ -1222,12 +1265,18 @@ async def _fetch_anchor_candidates(
             )
     except Exception as exc:
         logger.debug(f"sql anchor fetch skipped: {exc}")
-
     counts["vector_anchor"] = 0
+    _to_sink(0, "sql_timeline_anchor", candidates, counts, sql_started)
 
     if _rdf_enabled(profile) and settings.RECALL_RDF_ENDPOINT_URL:
+        rdf_started = time.perf_counter()
+        rdf_cands: List[Dict[str, Any]] = []
         try:
-            rdf = fetch_rdf_chatturn_exact_matches(
+            # Synchronous requests.post (up to 5s): off the event loop, or it
+            # stalls every concurrent backend unit, the deadline timer and
+            # every other in-flight recall (code review, PR #2416).
+            rdf = await asyncio.to_thread(
+                fetch_rdf_chatturn_exact_matches,
                 tokens=tokens,
                 session_id=session_id,
                 max_items=limit,
@@ -1237,9 +1286,11 @@ async def _fetch_anchor_candidates(
                 item = dict(item)
                 item["tags"] = list(item.get("tags") or []) + ["anchor_exact"]
                 item["score"] = max(0.9, float(item.get("score") or 0.0))
-                candidates.append(item)
+                rdf_cands.append(item)
         except Exception as exc:
             logger.debug(f"rdf anchor fetch skipped: {exc}")
+        candidates.extend(rdf_cands)
+        _to_sink(1, "rdf_chat_anchor", rdf_cands, {"rdf_chat_anchor": len(rdf_cands)}, rdf_started)
 
     if diagnostic:
         logger.info(
@@ -1268,8 +1319,21 @@ def _cards_fetch_enabled(profile: Dict[str, Any]) -> bool:
     return topk > 0 or wt > 0.0
 
 
-# Per-recall concurrency bound for backend units (all sub-queries share it).
-_FETCH_CONCURRENCY = 8
+# Per-recall concurrency bound for backend units and the anchor rail (all
+# sub-queries share it). Several units each open their own Postgres
+# connection, so this is also the per-recall connection ceiling for the
+# fetch stage. RECALL_FETCH_CONCURRENCY, default 4.
+_FETCH_CONCURRENCY_DEFAULT = 4
+
+
+def _fetch_concurrency() -> int:
+    raw = getattr(settings, "RECALL_FETCH_CONCURRENCY", None)
+    if raw is None:
+        return _FETCH_CONCURRENCY_DEFAULT
+    try:
+        return max(1, int(raw))
+    except Exception:
+        return _FETCH_CONCURRENCY_DEFAULT
 
 # Unit kinds. A "feed" answers "what is going on" and ignores the query text,
 # so process_recall runs it once per recall; a "retriever" answers "what
@@ -1332,7 +1396,7 @@ async def _query_backends(
         falkor_chat_since_minutes=falkor_chat_since_minutes,
         allow_empty_query_feeds=allow_empty_query_feeds,
     )
-    sem = semaphore or asyncio.Semaphore(_FETCH_CONCURRENCY)
+    sem = semaphore or asyncio.Semaphore(_fetch_concurrency())
     results: List[Tuple[List[Dict[str, Any]], Dict[str, int]] | None] = [None] * len(units)
 
     async def _run(idx: int, name: str, kind: str, factory) -> None:
@@ -1724,6 +1788,11 @@ def _backend_units(
 
 _telemetry_table_ready = False
 _telemetry_failure_warned = False
+# Names of the bounded-retrieval columns this process has confirmed exist
+# (found in information_schema, or added by our own ALTER). The insert only
+# writes these, so a failed/timed-out DDL degrades to the pre-2026-09-29 row.
+_telemetry_present_columns: set = set()
+
 _TELEMETRY_BOUNDED_RETRIEVAL_COLUMNS = (
     "query_chars integer",
     "retrieval_query_source text",
@@ -1733,6 +1802,67 @@ _TELEMETRY_BOUNDED_RETRIEVAL_COLUMNS = (
     "deadline_hit boolean",
     "timings_ms jsonb",
 )
+
+
+_TELEMETRY_BOUNDED_RETRIEVAL_COLUMN_NAMES = tuple(c.split()[0] for c in _TELEMETRY_BOUNDED_RETRIEVAL_COLUMNS)
+
+
+def _ensure_telemetry_schema(cur: Any) -> None:
+    """CREATE TABLE if missing, then ALTER only the columns that are missing.
+
+    Code review, PR #2416: `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` takes
+    ACCESS EXCLUSIVE even when the column already exists, so running it on
+    every boot queues behind a backup's lock and every later INSERT queues
+    behind the ALTER (the 09-xx boot-hang pattern). So: read
+    information_schema first (no table lock), ALTER only what is absent, and
+    bound the DDL with lock_timeout/statement_timeout. Any failure is logged
+    once and swallowed; the caller's insert then writes only confirmed
+    columns.
+    """
+    global _telemetry_present_columns
+    try:
+        cur.execute("SET lock_timeout = '2s'")
+        cur.execute("SET statement_timeout = '5s'")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recall_telemetry (
+                id uuid primary key,
+                corr_id text,
+                session_id text,
+                node_id text,
+                verb text,
+                profile text,
+                query text,
+                selected_ids jsonb,
+                backend_counts jsonb,
+                latency_ms integer,
+                created_at timestamptz default now()
+            )
+            """
+        )
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = 'recall_telemetry'"
+        )
+        existing = {str(r[0]) for r in (cur.fetchall() or [])}
+        present = {c for c in _TELEMETRY_BOUNDED_RETRIEVAL_COLUMN_NAMES if c in existing}
+        _telemetry_present_columns = set(present)
+        # Bounded-retrieval columns (2026-09-29). Nullable and additive.
+        # Kept in sync with sql/recall_telemetry.sql.
+        for column_ddl in _TELEMETRY_BOUNDED_RETRIEVAL_COLUMNS:
+            name = column_ddl.split()[0]
+            if name in present:
+                continue
+            cur.execute(f"ALTER TABLE recall_telemetry ADD COLUMN IF NOT EXISTS {column_ddl}")
+            _telemetry_present_columns.add(name)
+    except Exception as exc:
+        logger.warning(
+            "recall_telemetry_schema_ddl_failed (not retried this process; inserting confirmed columns only: %s): %s",
+            sorted(_telemetry_present_columns),
+            exc,
+        )
+    # The timeouts stay set for this (per-call) connection, so the insert
+    # that follows is bounded the same way.
 
 
 def _persist_decision(decision: RecallDecisionV1) -> None:
@@ -1761,58 +1891,45 @@ def _persist_decision(decision: RecallDecisionV1) -> None:
         conn.autocommit = True
         with conn.cursor() as cur:
             if not _telemetry_table_ready:
-                cur.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS recall_telemetry (
-                        id uuid primary key,
-                        corr_id text,
-                        session_id text,
-                        node_id text,
-                        verb text,
-                        profile text,
-                        query text,
-                        selected_ids jsonb,
-                        backend_counts jsonb,
-                        latency_ms integer,
-                        created_at timestamptz default now()
-                    )
-                    """
-                )
-                # Bounded-retrieval columns (2026-09-29). Nullable and additive,
-                # so rows written before this deploy and rows from an older
-                # writer both stay valid. Kept in sync with
-                # sql/recall_telemetry.sql.
-                for column_ddl in _TELEMETRY_BOUNDED_RETRIEVAL_COLUMNS:
-                    cur.execute(f"ALTER TABLE recall_telemetry ADD COLUMN IF NOT EXISTS {column_ddl}")
+                # Once per process, success or failure: a failed DDL is never
+                # retried per request, and never blocks the insert below.
                 _telemetry_table_ready = True
+                _ensure_telemetry_schema(cur)
+            new_cols = [c for c in _TELEMETRY_BOUNDED_RETRIEVAL_COLUMN_NAMES if c in _telemetry_present_columns]
+            values_by_col = {
+                "query_chars": decision.query_chars,
+                "retrieval_query_source": decision.retrieval_query_source,
+                "sub_query_count": decision.sub_query_count,
+                "candidates_fetched": decision.candidates_fetched,
+                "candidates_kept": decision.candidates_kept,
+                "deadline_hit": decision.deadline_hit,
+                "timings_ms": Json(dict(decision.timings_ms or {})),
+            }
+            base_cols = [
+                "id", "corr_id", "session_id", "node_id", "verb", "profile", "query",
+                "selected_ids", "backend_counts", "latency_ms",
+            ]
+            params = [
+                decision.id,
+                decision.corr_id,
+                decision.session_id,
+                decision.node_id,
+                decision.verb,
+                decision.profile,
+                decision.query,
+                Json(decision.selected_ids),
+                Json(decision.backend_counts),
+                decision.latency_ms,
+            ] + [values_by_col[c] for c in new_cols]
+            cols = base_cols + new_cols
             cur.execute(
-                """
+                f"""
                 INSERT INTO recall_telemetry
-                (id, corr_id, session_id, node_id, verb, profile, query, selected_ids, backend_counts, latency_ms,
-                 query_chars, retrieval_query_source, sub_query_count, candidates_fetched, candidates_kept,
-                 deadline_hit, timings_ms)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ({", ".join(cols)})
+                VALUES ({",".join(["%s"] * len(cols))})
                 ON CONFLICT (id) DO NOTHING
                 """,
-                (
-                    decision.id,
-                    decision.corr_id,
-                    decision.session_id,
-                    decision.node_id,
-                    decision.verb,
-                    decision.profile,
-                    decision.query,
-                    Json(decision.selected_ids),
-                    Json(decision.backend_counts),
-                    decision.latency_ms,
-                    decision.query_chars,
-                    decision.retrieval_query_source,
-                    decision.sub_query_count,
-                    decision.candidates_fetched,
-                    decision.candidates_kept,
-                    decision.deadline_hit,
-                    Json(dict(decision.timings_ms or {})),
-                ),
+                tuple(params),
             )
     except Exception as exc:
         if not _telemetry_failure_warned:
@@ -2131,7 +2248,7 @@ async def process_recall(
         return None if deadline_at is None else deadline_at - time.perf_counter()
 
     fetch_started = time.perf_counter()
-    semaphore = asyncio.Semaphore(_FETCH_CONCURRENCY)
+    semaphore = asyncio.Semaphore(_fetch_concurrency())
     sink: List[Dict[str, Any]] = []
     jobs: List[Tuple[Any, Any]] = []
     anchor_elapsed_ms: List[int] = []
@@ -2139,18 +2256,23 @@ async def process_recall(
     if not context_only and bool(profile.get("enable_anchor_candidates", True)):
 
         async def _anchor_job():
-            started = time.perf_counter()
-            try:
-                return await _fetch_anchor_candidates(
-                    query_text=query_fragment,
-                    session_id=effective_session_id,
-                    node_id=q.node_id,
-                    profile=profile,
-                    diagnostic=diagnostic,
-                    exclusion=exclusion,
-                )
-            finally:
-                anchor_elapsed_ms.append(int((time.perf_counter() - started) * 1000))
+            # Same semaphore as the backend units: it opens Postgres (and
+            # possibly RDF) connections too.
+            async with semaphore:
+                started = time.perf_counter()
+                try:
+                    return await _fetch_anchor_candidates(
+                        query_text=query_fragment,
+                        session_id=effective_session_id,
+                        node_id=q.node_id,
+                        profile=profile,
+                        diagnostic=diagnostic,
+                        exclusion=exclusion,
+                        sink=sink,
+                        sink_key="anchor",
+                    )
+                finally:
+                    anchor_elapsed_ms.append(int((time.perf_counter() - started) * 1000))
 
         jobs.append(("anchor", _anchor_job))
     elif diagnostic:
@@ -2241,11 +2363,15 @@ async def process_recall(
         elif task.done() and not task.cancelled() and task.exception() is not None:
             logger.debug("recall fetch job %s failed: %s", key, task.exception())
         if key == "anchor":
-            if result:
-                anchor_candidates, anchor_counts = result
-                candidates.extend(anchor_candidates)
-                for ck, cv in anchor_counts.items():
-                    backend_counts_total[ck] = cv
+            if result is None:
+                partial = sorted((e for e in sink if e.get("key") == "anchor"), key=lambda e: e["idx"])
+                result = _merge_unit_results(
+                    [(e["candidates"], e["counts"]) for e in partial], include_retrievers=False, profile=profile
+                )
+            anchor_candidates, anchor_counts = result
+            candidates.extend(anchor_candidates)
+            for ck, cv in anchor_counts.items():
+                backend_counts_total[ck] = cv
             continue
         if result is None:
             # Cancelled at the deadline (or crashed): keep the units that
@@ -2261,7 +2387,9 @@ async def process_recall(
 
     fetch_ms = int((time.perf_counter() - fetch_started) * 1000)
     feed_elapsed = [e["elapsed_ms"] for e in sink if e.get("kind") == _UNIT_FEED]
-    retriever_elapsed = [e["elapsed_ms"] for e in sink if e.get("kind") == _UNIT_RETRIEVER] + anchor_elapsed_ms
+    retriever_elapsed = [
+        e["elapsed_ms"] for e in sink if e.get("kind") == _UNIT_RETRIEVER and e.get("key") != "anchor"
+    ] + anchor_elapsed_ms
     # Units overlap, so these are each group's critical path (slowest unit),
     # not sums; "fetch" is the wall time of the whole concurrent stage.
     timings_ms["feeds"] = max(feed_elapsed) if feed_elapsed else 0
@@ -2401,7 +2529,9 @@ async def process_recall(
             try:
                 entity_boost_map, entity_injected_candidates = await asyncio.wait_for(
                     _compute_entity_relatedness_boost_map(
-                        query_text=query_fragment, candidates=candidates, query_entities=bounded_entities
+                        query_text=query_fragment,
+                        candidates=candidates,
+                        query_entities=_boost_query_entities(query_fragment),
                     ),
                     timeout=boost_remaining,
                 )
@@ -2527,14 +2657,16 @@ async def process_recall(
     compare_summary: Dict[str, Any] = {}
     anchor_plan_summary: Dict[str, Any] = {}
     selected_cards: list[Dict[str, Any]] = []
+    # Main's effective triggers only: empty bundle or vector-topped. Main
+    # also listed "query has anchor tokens", but _anchor_tokens was dead
+    # there, so that branch never fired; fixing the regex must not start
+    # running this inline diagnostic (extra Postgres + RDF round trips before
+    # the reply) on every anchor-bearing query (code review, PR #2416).
     should_shadow_compare = bool(
         not context_only
         and (
             not bundle.items
             or any(str(item.source or "") == "vector" for item in bundle.items[:2])
-            # Anchor tokens are read from the searched text: before
-            # 2026-09-29 _anchor_tokens was dead, so this branch never fired.
-            or bool(_anchor_tokens(query_fragment, max_tokens=6))
         )
     )
     shadow_remaining = _remaining_s()

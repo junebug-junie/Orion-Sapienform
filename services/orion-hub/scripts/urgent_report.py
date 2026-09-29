@@ -172,8 +172,25 @@ URGENT_STATE_SQL = (
 URGENT_PROGRESS_EVENTS_SQL = (
     "SELECT 1 AS one FROM durable_resource_events WHERE run_id = $1 AND event = ANY($2::text[]) LIMIT 1"
 )
+# The terminal outbox event (orion/durable_admission/store.py finish_projection) carries the
+# same detail the run-state event does, committed with `terminal` in one transaction.
+URGENT_TERMINAL_EVENT_SQL = "SELECT payload->'detail' AS detail FROM durable_resource_events WHERE entry_id = $1"
 PAST_RESOURCE_WAIT_EVENTS = ("run.resource_granted", "run.admitted", "run.running", "run.started")
+# A completed run whose detail cannot be read yet is re-read once after this long.
+MISSED_DETAIL_RETRY_SEC = 60.0
 _TERMINAL_STATUSES = ("completed", "failed", "cancelled")
+
+
+def _json_dict(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _state_terminal(state: Any) -> Optional[str]:
@@ -203,17 +220,15 @@ async def read_urgent_run_progress(pool: Any, run_id: str) -> Optional[dict[str,
         if admission is None and state is None:
             return None
         progressed = await conn.fetchrow(URGENT_PROGRESS_EVENTS_SQL, run_id, list(PAST_RESOURCE_WAIT_EVENTS))
-    terminal = _state_terminal(state)
-    if terminal is None and admission is not None:
-        admitted_terminal = str(admission["terminal"] or "")
-        terminal = admitted_terminal if admitted_terminal in _TERMINAL_STATUSES else None
-    detail: dict[str, Any] = {}
-    if state is not None and state["detail"]:
-        try:
-            parsed = json.loads(state["detail"])
-            detail = parsed if isinstance(parsed, dict) else {}
-        except (TypeError, ValueError):
-            detail = {}
+        terminal = _state_terminal(state)
+        detail = _json_dict(state["detail"]) if terminal is not None else {}
+        if terminal is None and admission is not None:
+            admitted_terminal = str(admission["terminal"] or "")
+            terminal = admitted_terminal if admitted_terminal in _TERMINAL_STATUSES else None
+            if terminal is not None:
+                # The bridge row lags (sql-writer) or never landed: the outbox event has the detail.
+                event = await conn.fetchrow(URGENT_TERMINAL_EVENT_SQL, f"{run_id}:terminal:{terminal}")
+                detail = _json_dict(event["detail"]) if event is not None else {}
     past = bool(
         terminal
         or progressed is not None
@@ -345,6 +360,14 @@ class UrgentReporter:
 
     # --- entry points from CuriosityInvestigation.start_urgent ---------------------
 
+    async def close(self) -> None:
+        """Cancel the timers and background deliveries (Hub shutdown)."""
+        tasks = list(self._tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+
     def _spawn(self, coro: Awaitable[Any]) -> asyncio.Task:
         task = asyncio.ensure_future(coro)
         self._tasks.add(task)
@@ -412,14 +435,29 @@ class UrgentReporter:
             return
         progress, error = await self._progress(run_id)
         terminal = (progress or {}).get("terminal")
+        if terminal == "completed" and not (progress or {}).get("detail"):
+            # Completed, but its result is not readable yet. A "no structured verdict"
+            # final now would dedupe-block the real one: read once more later.
+            await self._sleep(MISSED_DETAIL_RETRY_SEC)
+            if run_id in self._terminal:
+                return
+            progress, error = await self._progress(run_id)
+            terminal = (progress or {}).get("terminal")
         if terminal:
             # Ended, but this process never saw the run-state event. Report it
             # from the run store; the sent key stops a later duplicate.
             kind: ReportKind = "final" if terminal == "completed" else "failed"
             detail = (progress or {}).get("detail") or {}
-            reason = str(detail.get("error") or terminal)
-            request = compose_urgent_report(incident, kind=kind, detail=detail, reason=reason)
-            await self.deliver(incident, request, kind=kind)
+            if kind == "final" and not detail:
+                logger.error(
+                    "urgent_report_missed_terminal_unreadable incident_id=%s run=%s -- final left to the run-state event",
+                    incident.get("incident_id"), run_id,
+                )
+            else:
+                reason = str(detail.get("error") or terminal)
+                request = compose_urgent_report(incident, kind=kind, detail=detail, reason=reason)
+                await self.deliver(incident, request, kind=kind)
+            await self._release(incident)
             return
         reason = f"no result after {self.timeout_sec:.0f} s"
         if error:

@@ -331,9 +331,85 @@ def test_incident_hash_keeps_only_the_newest() -> None:
     for i in range(URGENT_INCIDENTS_MAX + 3):
         seed = _seed(incident_id=f"{i:032x}", requested_at=NOW.replace(minute=i % 60, second=i // 60))
         assert asyncio.run(loop.start_urgent(seed))["ok"] is True
+        del bus.redis.values[urgent_open_key(seed.incident_id)]  # that run has ended
     kept = bus.redis.hashes[URGENT_INCIDENTS_KEY]
     assert len(kept) == URGENT_INCIDENTS_MAX
     assert f"{0:032x}" not in kept and f"{URGENT_INCIDENTS_MAX + 2:032x}" in kept
+
+
+def _full_incident_hash(bus, oldest: dict[str, str]) -> None:
+    rows = bus.redis.hashes.setdefault(URGENT_INCIDENTS_KEY, {})
+    for i in range(URGENT_INCIDENTS_MAX - len(oldest)):
+        rows[f"f{i:031x}"] = json.dumps({"requested_at": "2026-09-29T20:00:00+00:00"})
+    for field, requested_at in oldest.items():
+        rows[field] = json.dumps({"requested_at": requested_at})
+
+
+def test_incident_eviction_orders_by_time_not_by_text() -> None:
+    bus = _Bus()
+    # 20:00+02:00 is 18:00Z, older than 19:00Z although it sorts later as text.
+    offset, utc = "e1" * 16, "e2" * 16
+    _full_incident_hash(bus, {offset: "2026-09-28T20:00:00+02:00", utc: "2026-09-28T19:00:00+00:00"})
+    assert asyncio.run(_loop(bus).start_urgent(_seed()))["ok"] is True
+    kept = bus.redis.hashes[URGENT_INCIDENTS_KEY]
+    assert offset not in kept and utc in kept and INCIDENT in kept
+
+
+def test_incident_eviction_never_drops_an_incident_whose_run_is_open() -> None:
+    bus = _Bus()
+    held = "e3" * 16
+    _full_incident_hash(bus, {held: "2026-09-27T00:00:00"})
+    bus.redis.values[urgent_open_key(held)] = "0123456789ab"
+    assert asyncio.run(_loop(bus).start_urgent(_seed()))["ok"] is True
+    assert held in bus.redis.hashes[URGENT_INCIDENTS_KEY]
+
+
+class _RoleMissingPool:
+    def acquire(self):
+        class _Ctx:
+            async def __aenter__(self_inner):
+                class _Conn:
+                    async def fetchval(self, sql, *args):
+                        return None  # pg_roles has no such role
+
+                return _Conn()
+
+            async def __aexit__(self_inner, *exc):
+                return False
+
+        return _Ctx()
+
+
+def test_urgent_prompt_offers_no_psql_when_the_readonly_role_is_missing() -> None:
+    bus = _Bus()
+    loop = _loop(bus, pool_provider=lambda: _RoleMissingPool(), pg_readonly_role="orion_readonly")
+    result = asyncio.run(loop.start_urgent(_seed()))
+    assert result["ok"] is True
+    [request] = bus.dispatched()
+    assert "psql" not in request.brief.prompt
+    assert "no Postgres history this run" in request.brief.prompt
+
+
+def test_stop_cancels_urgent_deliveries_and_closes_the_reporter() -> None:
+    bus = _Bus()
+    loop = _loop(bus)
+    closed: list[bool] = []
+
+    async def _close():
+        closed.append(True)
+
+    loop.urgent_reporter.close = _close
+
+    async def scenario():
+        delivery = asyncio.ensure_future(asyncio.sleep(3600))
+        loop._urgent_report_tasks.add(delivery)
+        await loop.stop()
+        return delivery
+
+    delivery = asyncio.run(scenario())
+    assert delivery.cancelled()
+    assert loop._urgent_report_tasks == set()
+    assert closed == [True]
 
 
 def test_ordinary_dispatch_keeps_background_priority() -> None:

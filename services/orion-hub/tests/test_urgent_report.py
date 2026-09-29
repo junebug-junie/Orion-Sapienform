@@ -24,6 +24,7 @@ from scripts.curiosity_investigation import (
     urgent_open_key,
 )
 from scripts.urgent_report import (
+    MISSED_DETAIL_RETRY_SEC,
     UrgentReporter,
     compose_urgent_report,
     read_urgent_run_progress,
@@ -563,13 +564,93 @@ def test_terminal_in_the_run_store_but_missed_on_the_bus_still_reports() -> None
     assert notify.sent[0].title == "URGENT: real / critical — athena"
 
 
+def test_missed_completed_run_without_detail_is_reread_before_the_final() -> None:
+    """A "no structured verdict" final now would dedupe-block the real one."""
+    notify, clock = _Notify(), _Clock()
+    loop, redis = _released_loop(RUN.encode())
+    reads = iter([_progress(past=True), _progress(past=True, terminal="completed"),
+                  _progress(past=True, terminal="completed", detail=_detail())])
+
+    async def reader(run_id):
+        return next(reads)
+
+    reporter = UrgentReporter(
+        notify=notify, redis=redis, settings=SETTINGS, run_state_reader=reader,
+        sleep=clock.sleep, clock=clock.clock, release_open_key=loop.release_urgent_open_key_for,
+    )
+    _run_watch(reporter, _incident())
+    [final] = notify.sent
+    assert final.dedupe_key == f"urgent:{INCIDENT}:final"
+    assert final.title == "URGENT: real / critical — athena"
+    assert MISSED_DETAIL_RETRY_SEC in clock.slept
+    assert urgent_open_key(INCIDENT) not in redis.values
+
+
+def test_missed_completed_run_still_unreadable_sends_no_empty_final(caplog) -> None:
+    notify, clock = _Notify(), _Clock()
+    loop, redis = _released_loop(RUN.encode())
+    reads = iter([_progress(past=True)] + [_progress(past=True, terminal="completed")] * 2)
+
+    async def reader(run_id):
+        return next(reads)
+
+    reporter = UrgentReporter(
+        notify=notify, redis=redis, settings=SETTINGS, run_state_reader=reader,
+        sleep=clock.sleep, clock=clock.clock, release_open_key=loop.release_urgent_open_key_for,
+    )
+    with caplog.at_level(logging.ERROR):
+        _run_watch(reporter, _incident())
+    assert notify.sent == []
+    assert "urgent_report_missed_terminal_unreadable" in caplog.text
+    assert urgent_open_key(INCIDENT) not in redis.values
+
+
+def test_missed_failed_run_reports_and_frees_the_incident() -> None:
+    notify = _Notify()
+    loop, redis = _released_loop(RUN.encode())
+    reads = iter([_progress(past=True), _progress(past=True, terminal="failed", detail={"error": "workflow_deadline"})])
+
+    async def reader(run_id):
+        return next(reads)
+
+    reporter = UrgentReporter(
+        notify=notify, redis=redis, settings=SETTINGS, run_state_reader=reader,
+        sleep=_Clock().sleep, release_open_key=loop.release_urgent_open_key_for,
+    )
+    _run_watch(reporter, _incident())
+    [failed] = notify.sent
+    assert failed.dedupe_key == f"urgent:{INCIDENT}:failed"
+    assert "workflow_deadline" in failed.body_text
+    assert urgent_open_key(INCIDENT) not in redis.values
+
+
+def test_close_cancels_the_pending_timers() -> None:
+    clock = _Clock()
+    reporter = _reporter(clock=clock)
+
+    async def scenario():
+        clock.gates[120.0] = asyncio.Event()  # never released
+        reporter.watch(_incident())
+        await asyncio.sleep(0)
+        tasks = list(reporter._tasks)
+        assert tasks
+        await reporter.close()
+        return tasks
+
+    tasks = asyncio.run(scenario())
+    assert all(task.cancelled() for task in tasks)
+    assert reporter._tasks == set()
+
+
 # --- run-state reader ---------------------------------------------------------
 
 
 class _Conn:
-    def __init__(self, *, admission=None, state=None, progressed=False) -> None:
+    def __init__(self, *, admission=None, state=None, progressed=False, terminal_event=None) -> None:
         self.admission, self.state, self.progressed = admission, state, progressed
+        self.terminal_event = terminal_event
         self.queries: list[str] = []
+        self.entry_ids: list[str] = []
 
     async def fetchrow(self, sql, *args):
         self.queries.append(sql)
@@ -577,6 +658,9 @@ class _Conn:
             return self.admission
         if "substrate_durable_run_state" in sql:
             return self.state
+        if "entry_id" in sql:
+            self.entry_ids.append(args[0])
+            return self.terminal_event
         if "durable_resource_events" in sql:
             return {"one": 1} if self.progressed else None
         raise AssertionError(sql)
@@ -622,6 +706,29 @@ def test_reader_terminal_state_row_carries_its_detail() -> None:
     got = asyncio.run(read_urgent_run_progress(_Pool(conn), RUN))
     assert got["terminal"] == "completed" and got["past_resource_wait"] is True
     assert got["detail"]["incident_report"]["is_real"] == "real"
+    assert conn.entry_ids == []
+
+
+def test_reader_terminal_without_a_state_row_takes_detail_from_the_terminal_event() -> None:
+    conn = _Conn(
+        admission={"terminal": "completed", "control": None},
+        terminal_event={"detail": json.dumps(_detail())},
+    )
+    got = asyncio.run(read_urgent_run_progress(_Pool(conn), RUN))
+    assert got["terminal"] == "completed"
+    assert got["detail"]["incident_report"]["is_real"] == "real"
+    assert conn.entry_ids == [f"{RUN}:terminal:completed"]
+
+
+def test_reader_terminal_with_a_lagging_state_row_takes_detail_from_the_terminal_event() -> None:
+    conn = _Conn(
+        admission={"terminal": "failed", "control": None},
+        state={"node": "admitted_turn", "status": "running", "detail": json.dumps({"stale": True})},
+        terminal_event={"detail": {"error": "workflow_deadline"}},
+    )
+    got = asyncio.run(read_urgent_run_progress(_Pool(conn), RUN))
+    assert got["terminal"] == "failed"
+    assert got["detail"] == {"error": "workflow_deadline"}
 
 
 def test_reader_without_a_pool_raises() -> None:

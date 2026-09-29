@@ -274,6 +274,17 @@ URGENT_OPEN_KEY_GRACE_SEC = 600
 def urgent_open_key(incident_id: str) -> str:
     return f"{URGENT_OPEN_KEY_PREFIX}{incident_id}"
 
+
+def _urgent_requested_ts(value: Any) -> float:
+    """Epoch seconds for an incident's `requested_at` (naive = UTC); -inf when unreadable."""
+    try:
+        stamp = datetime.fromisoformat(str(value or ""))
+    except ValueError:
+        return float("-inf")
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return stamp.timestamp()
+
 # The self-inquiry line (orion/curiosity/self_inquiry.py) keeps ITS OWN
 # cooldown, daily counter and continuation key, so its budget is separate
 # from the investigation budget and neither line's run consumes the other's
@@ -898,6 +909,14 @@ class CuriosityInvestigation:
             task.cancel()
         await asyncio.gather(*self._turn_tasks, return_exceptions=True)
         self._turn_tasks.clear()
+        # Urgent report deliveries (they retry for up to 30 min) and the reporter's timers.
+        for task in self._urgent_report_tasks:
+            task.cancel()
+        await asyncio.gather(*self._urgent_report_tasks, return_exceptions=True)
+        self._urgent_report_tasks.clear()
+        close_reporter = getattr(self.urgent_reporter, "close", None)
+        if close_reporter is not None:
+            await close_reporter()
         if self._task is not None:
             self._task.cancel()
             try:
@@ -1970,12 +1989,16 @@ class CuriosityInvestigation:
 
         correlation_id = str(uuid5(NAMESPACE_URL, f"{INVESTIGATION_TAG}:{run_id}"))
         incident = self._urgent_incident(seed, run_id=run_id, status="dispatched")
+        # A missing role does not refuse an urgent run (the HTTP readings still
+        # work); it only drops the psql history from the prompt.
+        pg_available = not (self.pg_readonly_role and await self._pg_role_missing())
         prompt = build_urgent_prompt(
             seed,
             run_id=run_id,
             own_graph=self.graph_own,
             hub_url=self.hub_url,
             graph_enabled=self._reader is not None,
+            pg_available=pg_available,
         )
         self._mind_appraisal_by_run_id[run_id] = seed.question
         logger.info(
@@ -2131,12 +2154,17 @@ class CuriosityInvestigation:
             by_age = []
             for field, raw in rows.items():
                 try:
-                    requested_at = str(json.loads(raw).get("requested_at") or "")
+                    requested_at = _urgent_requested_ts(json.loads(raw).get("requested_at"))
                 except Exception:  # noqa: BLE001 -- an unreadable row is the first to go
-                    requested_at = ""
+                    requested_at = float("-inf")
                 by_age.append((requested_at, field))
-            by_age.sort()
-            stale = [field for _, field in by_age[: len(by_age) - URGENT_INCIDENTS_MAX]]
+            by_age.sort(key=lambda item: item[0])
+            stale = []
+            for _, field in by_age[: len(by_age) - URGENT_INCIDENTS_MAX]:
+                name = field.decode() if isinstance(field, bytes) else str(field)
+                # An incident whose run is still open keeps its record: the reporter reads it.
+                if await redis.get(urgent_open_key(name)) is None:
+                    stale.append(field)
             if stale:
                 await redis.hdel(URGENT_INCIDENTS_KEY, *stale)
         except Exception:  # noqa: BLE001

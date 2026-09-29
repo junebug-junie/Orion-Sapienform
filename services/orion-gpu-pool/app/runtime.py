@@ -52,6 +52,17 @@ _EVENT_FOR = {Grant: "grant", Recall: "recall", Abort: "abort", Expire: "expire"
 _PUBLIC = {"granted": "granted", "recalling": "recalled", "backlogged": "backlogged",
            "unavailable": "unavailable", "dead_letter": "dead_lettered", "released": "released",
            "retry_wait": "retried", "queued": "queued"}
+
+
+def event_envelope_correlation(event: GpuPoolEventV1) -> uuid.UUID:
+    """The bus envelope correlation id for one pool event: its own ``event_id`` (a uuid4 hex),
+    fresh per event and joinable to gpu_pool_events.event_id. Never the turn's id (see ``_emit``)."""
+    try:
+        return uuid.UUID(hex=str(event.event_id))
+    except ValueError:
+        return uuid.uuid4()
+
+
 # Grammar carries the EXCEPTIONS only. Routine grants would add one grammar row per LLM call once
 # the gateway leases (stage 3) to a ~475k/day, 3-day-retention table, for a fact gpu_pool_events
 # already holds. Every event still goes to gpu_pool_events via orion:gpu_pool:event.
@@ -1137,10 +1148,16 @@ class PoolRuntime:
                 self.bus.record_hop_timeout(hop, None)
 
     async def _emit(self, event: GpuPoolEventV1) -> None:
+        """Pool events travel on their OWN envelope correlation id (derived from ``event_id``), never
+        the turn's. bus-mirror turns every shared envelope correlation_id into CAUSALLY_FOLLOWED_BY
+        edges, so publishing on the turn's id put orion-gpu-pool inside turn causal chains (36 live
+        pool edges on 2026-09-29, feeding bus_synaptic_prediction_error). Spec 2026-09-24-gpu-pool-design.md,
+        "Transport-metric and reader impacts" item 1. The turn stays joinable through the payload's
+        ``turn_correlation_id``, which is the only field every consumer reads."""
         if self.bus is None:
             return
         await self._publish(GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND, event.model_dump(mode="json"),
-                            event.turn_correlation_id)
+                            event_envelope_correlation(event))
         if event.event in _GRAMMAR_EVENTS:
             await self._grammar(event)
 
@@ -1185,6 +1202,6 @@ class PoolRuntime:
                 dimensions=dims, atom=atom,
                 provenance=GrammarProvenanceV1(source_service=self.service_name, source_component="lease_graph",
                                                source_event_id=event.event_id, source_trace_id=trace_id)),
-                source_name=self.service_name)
+                source_name=self.service_name, correlation_id=event_envelope_correlation(event))
         except Exception:  # noqa: BLE001
             logger.warning("gpu_pool_grammar_failed event=%s", event.event, exc_info=True)

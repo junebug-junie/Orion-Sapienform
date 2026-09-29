@@ -1,12 +1,14 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 683,
+  "metric_count": 682,
   "_last_change": {
-    "base": "merge base bee8ddd97 (origin/main)",
-    "change_count": 1,
-    "high_severity_count": 0,
+    "base": "merge base 69dd8902e (origin/main)",
+    "change_count": 3,
+    "high_severity_count": 2,
     "changes": [
-      "medium added metric://bus_channel/orion-hardware-watch/orion:curiosity:urgent:request"
+      "high   removed metric://bus_channel/orion-hub/orion:gpu_pool:state:request",
+      "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:state:reply:* (declared_consumers: ['orion-hub', 'orion-llm-gateway'] -> ['orion-harness-governor', 'orion-hub', 'orion-llm-gateway'])",
+      "medium added metric://bus_channel/orion-harness-governor/orion:gpu_pool:state:request"
     ]
   },
   "definitions": {
@@ -1654,6 +1656,7 @@
         "orion-gpu-pool"
       ],
       "declared_consumers": [
+        "orion-harness-governor",
         "orion-hub",
         "orion-llm-gateway"
       ],
@@ -1690,14 +1693,15 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-hardware-watch/orion:curiosity:urgent:request": {
-      "schema_id": "CuriosityUrgentRequestV1",
+    "metric://bus_channel/orion-harness-governor/orion:gpu_pool:state:request": {
+      "schema_id": "GpuPoolStateRequestV1",
       "all_producers": [
-        "orion-hardware-watch",
-        "orion-hub"
+        "orion-harness-governor",
+        "orion-hub",
+        "orion-llm-gateway"
       ],
       "declared_consumers": [
-        "orion-hub"
+        "orion-gpu-pool"
       ],
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -1955,18 +1959,6 @@
       "schema_id": "GpuPoolControlV1",
       "all_producers": [
         "orion-hub"
-      ],
-      "declared_consumers": [
-        "orion-gpu-pool"
-      ],
-      "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-hub/orion:gpu_pool:state:request": {
-      "schema_id": "GpuPoolStateRequestV1",
-      "all_producers": [
-        "orion-hub",
-        "orion-llm-gateway"
       ],
       "declared_consumers": [
         "orion-gpu-pool"

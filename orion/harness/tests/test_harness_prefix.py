@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from orion.gpu_pool.placement import ServingPlacement, placement_from_route_default
 from orion.harness.operator_brief import HARNESS_MOTOR_MAX_READ_LINES, HARNESS_RESPOND_TO_TASK, is_relational_motor_stance
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
 from orion.harness.tests.fixtures import make_grounding_capsule, make_thought
@@ -47,15 +48,35 @@ def test_compile_harness_prefix_omits_prior_tool_fetch_line_when_none() -> None:
     assert "Last turn you fetched content via tool" not in prompt
 
 
-def test_compile_harness_prefix_includes_current_served_model_line() -> None:
+def test_compile_harness_prefix_route_default_is_stated_as_a_default() -> None:
+    # No lease: the gateway route's model is only a default -- the pool may spill a call.
     thought = make_thought(imperative="Inspect the module.", tone="direct")
     prompt = compile_harness_prefix(
         thought,
         repair_overlay=HarnessRepairOverlayV1(),
         user_message="hello",
-        current_served_model="Qwen3.6-35B-A3B-UD-Q5_K_M12",
+        serving_placement=placement_from_route_default("agent", "/models/gguf/Qwen3.8-27B.gguf"),
     )
-    assert "Backend model currently serving this turn: Qwen3.6-35B-A3B-UD-Q5_K_M12" in prompt
+    assert "Default backend model for route agent: Qwen3.8-27B.gguf" in prompt
+    assert "not a confirmed one" in prompt
+    assert "serving this turn" not in prompt
+
+
+def test_compile_harness_prefix_spilled_lease_names_the_granted_role_model() -> None:
+    # Held turn granted agent-gpu2 (spill): the line names agent-gpu2's discovered model.
+    thought = make_thought(imperative="Inspect the module.", tone="direct")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message="hello",
+        serving_placement=ServingPlacement(
+            source="from_lease", role="agent-gpu2", model="Qwen3.8-27B-gpu2.gguf", profile="p-gpu2"
+        ),
+    )
+    assert (
+        "Backend model serving this turn: Qwen3.8-27B-gpu2.gguf (GPU pool role agent-gpu2, profile p-gpu2;"
+        in prompt
+    )
 
 
 def test_compile_harness_prefix_omits_served_model_line_when_none() -> None:
@@ -65,7 +86,7 @@ def test_compile_harness_prefix_omits_served_model_line_when_none() -> None:
         repair_overlay=HarnessRepairOverlayV1(),
         user_message="hello",
     )
-    assert "Backend model currently serving this turn" not in prompt
+    assert "Backend model" not in prompt
 
 
 def test_compile_harness_prefix_includes_situation_prompt_fragment_when_present() -> None:

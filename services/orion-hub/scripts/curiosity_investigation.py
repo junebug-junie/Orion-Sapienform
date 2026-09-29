@@ -2848,6 +2848,7 @@ class CuriosityInvestigation:
         resource_lease: ResourceLeaseV1 | None = None,
         session_id: str | None = None,
         gpu_lease: GpuLeaseRefV1 | None = None,
+        urgent: bool = False,
     ) -> Tuple[str, dict]:
         """Real unified-turn generation. Returns ("", debug) on any failure,
         defer, or degraded run -- same "never fabricate, silence over a false
@@ -2871,7 +2872,12 @@ class CuriosityInvestigation:
         self-sense eval line does, so its scheduled runs match the host
         script's `orion/evals/self_sense_runner.SESSION_ID` instead of
         picking up unrelated curiosity-loop history as context. Review
-        finding, 2026-09-19."""
+        finding, 2026-09-19.
+
+        `urgent=True` (an urgent run's typed seed was on the turn request)
+        makes `execute_unified_turn` proceed past a stance defer/refuse and
+        fail -- not defer -- when stance is unavailable; that turn_error's
+        reason becomes `debug["error"]` so the run says why it failed."""
         if self._bus is None:
             return "", {"error": "no_bus"}
         from orion.cognition.cortex_payload_extract import looks_like_error_text
@@ -2940,6 +2946,7 @@ class CuriosityInvestigation:
                         self._step_relay_provider() if self._step_relay_provider else None
                     ),
                     harness_step_queue=None,
+                    urgent=urgent,
                 ),
                 timeout=turn_timeout,
             )
@@ -2970,9 +2977,13 @@ class CuriosityInvestigation:
             # turn_deferred / turn_error / turn_degraded. Thought declining an
             # unsolicited turn is a legitimate outcome, not an error to alarm on.
             other = frames[-1] if frames else {}
+            frame_type = other.get("type") if isinstance(other, dict) else None
+            error = "no_final_frame"
+            if urgent and frame_type == "turn_error" and other.get("error"):
+                error = str(other["error"])
             return "", {
-                "error": "no_final_frame",
-                "frame_type": other.get("type") if isinstance(other, dict) else None,
+                "error": error,
+                "frame_type": frame_type,
                 "elapsed_sec": elapsed,
             }
         if final.get("context_overflow"):
@@ -3606,6 +3617,7 @@ class CuriosityInvestigation:
                         "timeout_sec": request.timeout_sec}
                        if request.gpu_lease is not None and request.lease is None else {}),
                     **({"gpu_lease": request.gpu_lease} if request.gpu_lease is not None else {}),
+                    **({"urgent": True} if request.urgent is not None else {}),
                 )
                 if measured:
                     await self._spend_turn_ended(request.run_id, turn_ok=bool(text))

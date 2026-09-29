@@ -867,6 +867,7 @@ async def execute_unified_turn(
     utterance_origin: str | None = None,
     mind_appraisal_text: str | None = None,
     client_meta: dict[str, Any] | None = None,
+    urgent: bool = False,
 ) -> list[dict[str, Any]]:
     """Orion capability: unified Hub chat turn.
 
@@ -882,6 +883,12 @@ async def execute_unified_turn(
     unified-turn chat envelopes. Start here when an Orion-mode turn never
     reached the governor (harness_rpc_timeout) or a finalized result was not
     handed back or persisted.
+
+    `urgent=True` is an operator-assigned run (a typed `CuriosityUrgentSeedV1`
+    on the turn request, never inferred from message text): a stance
+    defer/refuse is overridden to proceed with an `urgent_override:<original>`
+    reason, and an unavailable stance is a `turn_error` (the run fails), never
+    a deferral.
     """
     from scripts.settings import settings as hub_settings
 
@@ -1186,6 +1193,17 @@ async def execute_unified_turn(
             reasons=[timeout_reason],
             close=True,
         )
+        if urgent:
+            return [
+                {
+                    "type": "turn_error",
+                    "phase": "stance",
+                    "correlation_id": correlation_id,
+                    "finalize_ran": False,
+                    "error": "urgent_stance_unavailable",
+                    "stance_failure_reason": timeout_reason,
+                }
+            ]
         return [
             {
                 "type": "turn_deferred",
@@ -1193,6 +1211,17 @@ async def execute_unified_turn(
                 "reason": timeout_reason,
             }
         ]
+    if urgent and thought.disposition in ("defer", "refuse"):
+        original = thought.disposition
+        logger.info(
+            "urgent_stance_override correlation_id=%s original=%s", correlation_id, original
+        )
+        thought = thought.model_copy(
+            update={
+                "disposition": "proceed",
+                "disposition_reasons": [*thought.disposition_reasons, f"urgent_override:{original}"],
+            }
+        )
     if thought.disposition in ("defer", "refuse"):
         await _publish_unified_turn_chat_grammar(
             bus=bus,

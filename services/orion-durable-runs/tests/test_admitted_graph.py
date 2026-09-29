@@ -107,10 +107,11 @@ class World:
     async def keep(self, state):
         self.events.append(("kept_for_outreach", state["lease"]))
 
-    def graph(self, saver):
+    def graph(self, saver, max_takebacks=0):
         return build_admitted_graph(Deps(self.turn, self.read, self.row, self.journal),
             AdmissionDeps(self.register, self.lease, self.execute, self.release, self.event,
-                          now=lambda: self.now, max_attempts=2, guard=self.guard, keep_for_outreach=self.keep), saver)
+                          now=lambda: self.now, max_attempts=2, guard=self.guard, keep_for_outreach=self.keep,
+                          max_takebacks=max_takebacks), saver)
 
 
 def initial():

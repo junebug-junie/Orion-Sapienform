@@ -77,6 +77,7 @@ class ReflectRunState(TypedDict, total=False):
     workflow: str
     brief: dict[str, Any]  # CuriosityRunBriefV1.model_dump(), reflect shape
     attempt: int
+    hold_takebacks: int   # times the pool took the hold back mid-node (never an attempt)
     # llm_call
     findings: list[dict[str, Any]]
     llm_call_ok: bool

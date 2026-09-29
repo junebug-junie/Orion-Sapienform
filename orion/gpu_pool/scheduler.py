@@ -40,7 +40,8 @@ Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-de
      its priority (system as well as background, even if a background hold elsewhere could be
      paused instead): that is its pause (urgent_preempt, short grace), not owner_waiting with the
      hold grace
-  U2 the paused hold's abort re-queues it in place without spending an attempt (lease_graph)
+  U2 the paused hold's abort re-queues it in place without spending an attempt (lease_graph); so does
+     the abort of any other recalled retryable hold (H4 max_hold, owner reclaim, unlend, drain)
   U3 urgent holds are exempt from H1 (bounded by slots and urgent_max_concurrent) and skip a
      swap seat's after_wait_sec when no pause serves them (guards still apply). On a role it
      borrows, an urgent hold's gaps stay open to that role's owners (rule 5)

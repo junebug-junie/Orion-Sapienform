@@ -98,9 +98,15 @@ def transition(state: LeaseState, event: dict[str, Any], cfg: PoolConfig) -> dic
         raise InvalidTransition(f"{status} -/-> {kind}")
     # U2: a hold paused for urgent work goes back in line in its original place (created_at kept);
     # that is not a failed attempt. A caller that would not use a re-grant ends like any abort.
-    preempted = kind == "abort" and event.get("reason") == URGENT_PREEMPT \
-        and bool(state["request"].get("retryable"))
-    if preempted:
+    # The same holds for ANY recall of a retryable hold that ran out its grace (max_hold seat limit,
+    # owner reclaim, unlend, drain): the pool took the seat back, the run did nothing wrong
+    # (stage 4.3: "then it is aborted and re-queued under the same lease id"). Spending an attempt
+    # here dead-lettered a durable run's hold on its third recall (live 2026-09-26..28: every run
+    # longer than gpu2's max_hold_sec). A one-inference request lease still spends one.
+    retryable = bool(state["request"].get("retryable"))
+    requeue_in_place = kind == "abort" and retryable \
+        and (event.get("reason") == URGENT_PREEMPT or state["request"].get("kind") == "hold")
+    if requeue_in_place:
         nxt = "queued"
 
     upd: dict[str, Any] = {"status": nxt, "reason": event.get("reason")}
@@ -121,7 +127,7 @@ def transition(state: LeaseState, event: dict[str, Any], cfg: PoolConfig) -> dic
         upd.update(queued_since=now.isoformat(), not_before=None, role=None)
         if kind == "replay":
             upd.update(attempt=1, replays=int(state.get("replays") or 0) + 1)
-    elif preempted:
+    elif requeue_in_place:
         upd.update(queued_since=now.isoformat(), not_before=None, role=None, recall_by=None,
                    expires_at=None)
 

@@ -54,6 +54,7 @@ class CuriosityRunState(TypedDict, total=False):
     workflow: str
     brief: dict[str, Any]  # CuriosityRunBriefV1.model_dump()
     attempt: int
+    hold_takebacks: int   # times the pool took the hold back mid-node (never an attempt)
     # harness_turn
     text: str
     debug: dict[str, Any]

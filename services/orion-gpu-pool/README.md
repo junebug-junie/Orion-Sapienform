@@ -86,7 +86,10 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
 - **Recall**: a hold borrowing another class's role is recalled as soon as that owner has demand
   there; a swap seat with `max_hold_sec` (agent-gpu2: 3600 s) drains after being loaded that long.
   A recalled hold gets `hold_clawback_grace_sec` (600 s) to finish its current node, then is
-  aborted and re-queued. No cap on a hold on its home role in stage 4.
+  aborted and re-queued **in its original place, without spending an attempt** (2026-09-29; the
+  same path as an urgent pause. Before, each abort spent one of `retry.max_attempts` and the third
+  recall dead-lettered the hold -- `unavailable:recall_grace_exceeded`). A request lease's abort
+  and a hold's lost heartbeat still spend one. No cap on a hold on its home role in stage 4.
 - **`status`** is a read with no side effect: resume after restart, Door-A validation
   (`client.validate_hold_ref`).
 - Client for durable-runs (4.5): `acquire_hold`, `heartbeat_lease`, `lease_status`, `release_lease`,

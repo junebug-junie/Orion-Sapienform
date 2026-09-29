@@ -242,7 +242,10 @@ hold ──(interrupt; heartbeats/release resume it)──┬─► release(outc
                                                   │        ─► retry_wait ─► place   (attempt<max)
                                                   │        ─► dead_letter           (attempt=max)
                                                   ├─► recalled ─► grace ─┬─► released (finished)
-                                                  │                      └─► aborted ─► retry_wait
+                                                  │                      └─► aborted ─┬─► place, original spot,
+                                                  │                                   │   no attempt (retryable hold;
+                                                  │                                   │   2026-09-29, and urgent U2)
+                                                  │                                   └─► retry_wait (request lease)
                                                   └─► heartbeat lost ─► expired ─► retry_wait
 
 dead_letter ──(operator replay)──► place   (new attempt series, same lease_id, audit kept)

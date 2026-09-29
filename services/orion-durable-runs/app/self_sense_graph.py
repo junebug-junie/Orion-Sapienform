@@ -53,6 +53,7 @@ class SelfSenseRunState(TypedDict, total=False):
     workflow: str
     brief: dict[str, Any]  # CuriosityRunBriefV1.model_dump(), self_sense_eval shape
     attempt: int
+    hold_takebacks: int   # times the pool took the hold back mid-node (never an attempt)
     # ask_questions
     answers: dict[str, dict[str, Any]]  # question_key -> {"text": str, "debug": dict}
     # publish

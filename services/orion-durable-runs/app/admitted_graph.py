@@ -226,9 +226,11 @@ def build_admitted_graph(deps: Deps, admission: AdmissionDeps, checkpointer: Any
         # Door-A (2026-09-22): when Orion asked to share, keep the run's pool hold through Hub's
         # composition turn. finish_detail carries the hold's ref (``gpu_lease``); Hub releases it
         # via /runs/{id}/release-outreach-lease, and durable-runs heartbeats it until then.
+        # Urgent runs end in a report, never in Hub's Door-A composition, so nothing would ever
+        # release a kept hold: always hand it back here.
         outcome = state.get("outcome") or {}
         lease = state.get("lease")
-        if bool(outcome.get("reach_out")) and lease:
+        if bool(outcome.get("reach_out")) and lease and not is_urgent(state):
             if admission.guard is not None:
                 try:
                     lease = await admission.guard(dict(state))

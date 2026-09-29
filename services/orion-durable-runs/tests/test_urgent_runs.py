@@ -358,6 +358,61 @@ def test_ordinary_tail_node_budget_unchanged():
     assert world.journals == 3 and end["status"] == "failed"
 
 
+class ReachOutWorld(RetryWorld):
+    """The turn succeeds and Orion asks to share; records releases and Door-A keeps."""
+
+    def __init__(self):
+        super().__init__(fail_turn=False)
+        self.releases: list[str] = []
+        self.kept: list[dict] = []
+
+    async def read(self, run_id, **kwargs):
+        return {"graph_readable": True, "outcome": {"reach_out": True, "reach_out_why": "worth saying"}}
+
+    async def release(self, state, reason, keep_requeued=False):
+        if state.get("lease"):
+            self.releases.append(reason)
+        return {"lease": None, "hold": None}
+
+    async def guard(self, state):
+        return state.get("lease")
+
+    async def keep(self, state):
+        self.kept.append(state["lease"])
+
+    def graph(self, saver):
+        return build_admitted_graph(
+            Deps(self.turn, self.read, self.row, self.journal),
+            AdmissionDeps(self.register, self.lease, self.execute, self.release, self.event,
+                          now=lambda: self.now, guard=self.guard, keep_for_outreach=self.keep),
+            saver,
+        )
+
+
+def _finish(world: ReachOutWorld, *, urgent: bool) -> dict[str, Any]:
+    async def scenario():
+        graph = world.graph(InMemorySaver())
+        return await graph.ainvoke(_admitted_initial(urgent=urgent), CFG)
+
+    return asyncio.run(scenario())
+
+
+def test_urgent_run_never_keeps_the_outreach_hold_even_when_orion_asks_to_share():
+    """Hub never composes Door-A for an urgent run, so nothing would release a kept hold."""
+    world = ReachOutWorld()
+    end = _finish(world, urgent=True)
+    assert end["status"] == "completed"
+    assert world.releases == ["completed"] and world.kept == []
+    assert "gpu_lease" not in finish_detail(end)
+
+
+def test_ordinary_reach_out_still_keeps_the_hold_for_door_a():
+    world = ReachOutWorld()
+    end = _finish(world, urgent=False)
+    assert world.releases == [] and len(world.kept) == 1
+    assert finish_detail(end)["gpu_lease"]["lease_id"] == "hold-1"
+
+
 def test_failed_urgent_run_detail_carries_the_error():
     """What Hub's must-deliver report reads off a failed admitted run (Task 6)."""
     from app.admission_runtime import AdmissionRuntime

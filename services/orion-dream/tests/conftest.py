@@ -23,6 +23,10 @@ def _ensure_dream_paths() -> None:
     sys.path.insert(0, str(_DREAM_ROOT))
 
 
+# Module-level ``from app import ...`` in test files runs at collection, before any fixture.
+_ensure_dream_paths()
+
+
 @pytest.fixture(autouse=True)
 def _dream_service_isolation() -> None:
     _ensure_dream_paths()

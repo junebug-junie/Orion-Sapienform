@@ -143,5 +143,8 @@ def test_brief_covers_dreams_as_experiences_not_facts():
     binding = IntrospectToolBindingV1(
         invocation_context="unified_chat", parent_run_id="r", parent_trace_id="t", memory_allowed=False,
     )
-    text = " ".join(introspect_brief_lines(binding))
-    assert "dreams" in text and "not facts" in text and "unknown" in text
+    [dreams_line] = [line for line in introspect_brief_lines(binding) if line.startswith("dreams ")]
+    assert "not facts" in dreams_line
+    assert "items=[] means no dream matched" in dreams_line
+    assert "a tool error means the answer is unknown" in dreams_line
+    assert "never report it as not having dreamed" in dreams_line

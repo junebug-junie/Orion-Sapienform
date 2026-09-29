@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
 from orion.introspect.tools import RPC_TIMEOUT_SEC, IntrospectTools, IntrospectUnknownError
+from orion.introspect.transport import DREAM_REQUEST_CHANNEL, REQUEST_KIND, RESULT_KIND, RESULT_PREFIX
 from orion.schemas.introspect import IntrospectResultV1, IntrospectToolBindingV1
 from orion.schemas.reading import ReadingToolResultV1
 from orion.world_pulse_read.events import TOOL_CHANNEL, TOOL_RESULT_PREFIX
@@ -127,10 +128,6 @@ def test_description_leads_with_semantic_query():
     assert "query" in spec.description and "similarity" in spec.description
     assert "query" in spec.arguments.model_json_schema()["properties"]
 
-
-from orion.introspect.transport import DREAM_REQUEST_CHANNEL, REQUEST_KIND, RESULT_KIND, RESULT_PREFIX  # noqa: E402
-
-
 class DreamBus(ReplyBus):
     def __init__(self, payload=None, *, kind=RESULT_KIND, **kw):
         super().__init__(payload, **kw)
@@ -186,3 +183,11 @@ def test_dreams_rejects_bad_args_before_transport():
 def test_dreams_failures_are_unknown_never_empty(bus):
     with pytest.raises(IntrospectUnknownError, match="dreams: answer unknown"):
         _invoke(bus, "dreams", {})
+
+
+def test_dreams_corrupt_reply_bytes_are_unknown():
+    bus = CorruptDataBus()
+    with pytest.raises(IntrospectUnknownError, match="dreams: answer unknown"):
+        _invoke(bus, "dreams", {})
+    [(channel, _, _, _)] = bus.sent
+    assert channel == DREAM_REQUEST_CHANNEL

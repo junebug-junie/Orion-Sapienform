@@ -635,6 +635,7 @@ from orion.schemas.attention_schema import AttentionSchemaV1
 # deploy peer consumers before Hub producers (docs/peer-ask-episodes.md).
 from orion.schemas.curiosity_peer import HelpRequestV1, PeerBriefConsumedV1, PeerBriefV1
 from orion.schemas.curiosity_supervisor import READING_KIND, HopReadingV1
+from orion.schemas.curiosity_urgent import URGENT_REQUEST_KIND, CuriosityUrgentRequestV1
 from orion.schemas.durable_run import (
     CuriosityTurnRequestV1,
     CuriosityTurnResultV1,
@@ -1006,6 +1007,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ReverieVisualStepRequestV1": ReverieVisualStepRequestV1,
     "ReverieVisualStepResultV1": ReverieVisualStepResultV1,
     "CuriosityTurnResultV1": CuriosityTurnResultV1,
+    "CuriosityUrgentRequestV1": CuriosityUrgentRequestV1,
     "HelpRequestV1": HelpRequestV1,
     "PeerBriefV1": PeerBriefV1,
     "PeerBriefConsumedV1": PeerBriefConsumedV1,
@@ -1871,6 +1873,7 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "ReverieVisualStepRequestV1": SchemaRegistration(model=ReverieVisualStepRequestV1, kind="reverie.visual.step.request.v1"),
     "ReverieVisualStepResultV1": SchemaRegistration(model=ReverieVisualStepResultV1, kind="reverie.visual.step.result.v1"),
     "CuriosityTurnResultV1": SchemaRegistration(model=CuriosityTurnResultV1, kind="curiosity.turn.result.v1"),
+    "CuriosityUrgentRequestV1": SchemaRegistration(model=CuriosityUrgentRequestV1, kind=URGENT_REQUEST_KIND),
     "HelpRequestV1": SchemaRegistration(
         model=HelpRequestV1,
         kind="curiosity.help.request.v1",

@@ -4,6 +4,7 @@ import os
 
 from orion.fcc.github_repo_context import append_github_mcp_harness_brief
 from orion.fcc.self_index_brief import append_self_index_harness_brief
+from orion.gpu_pool.placement import ServingPlacement
 from orion.harness.operator_brief import (
     HARNESS_UNIFIED_OPERATOR_BRIEF,
     harness_motor_instruction as _stance_motor_instruction,
@@ -159,7 +160,7 @@ def compile_harness_prefix(
     answer_contract: AnswerContract | None = None,
     workspace: str | None = None,
     prior_tool_fetch_names: list[str] | None = None,
-    current_served_model: str | None = None,
+    serving_placement: ServingPlacement | None = None,
     recent_turns: list[TurnWindowMessageV1] | None = None,
     situation_prompt_fragment: str | None = None,
     reading_binding: ReadingToolBindingV1 | None = None,
@@ -190,26 +191,24 @@ def compile_harness_prefix(
     if thought.grounding_capsule is not None and thought.grounding_capsule.identity_summary:
         parts.extend(_format_grounding_self_block(thought.grounding_capsule))
 
-    if current_served_model:
-        # Answers "which real backend am I running on right now" -- a fact
-        # that exists (chat_history_log.response_identity, see
-        # orion/harness/fcc_motor.py's probe_current_served_model) but was
-        # previously invisible to Orion itself: no consumer read it back
-        # into a prompt, recall digest, or the 5a substrate appraisal.
-        # Resolved by the caller BEFORE this function runs (compile_harness_
-        # prefix stays a pure/deterministic formatter given its inputs, per
-        # its own docstring above -- the live /routes probe is a network
-        # call and does not belong inside a "deterministically materializes"
-        # function) and passed straight through here. Omitted entirely when
-        # None (discovery/probe failed, or a non-llamacpp backend like
-        # MODEL_HAIKU's route) rather than shown as a placeholder -- an
-        # unknown backend is not the same claim as a known one.
-        parts.append(f"Backend model currently serving this turn: {current_served_model}")
+    serving_line = serving_placement.self_line() if serving_placement is not None else None
+    if serving_line:
+        # Answers "which real backend am I running on right now". Resolved by
+        # the caller BEFORE this function runs (runner.py: the turn's GPU pool
+        # lease role -> the pool's discovered profile for that role, else the
+        # route's default model) so this stays a pure formatter. Never the
+        # gateway's /routes default stated as fact: under the GPU pool a call
+        # can be served by another role (agent -> agent-gpu2 or chat), and the
+        # old "currently serving this turn" line was then false about Orion
+        # itself (docs/superpowers/specs/2026-09-24-gpu-pool-design.md,
+        # "Transport-metric and reader impacts" item 5). Omitted entirely when
+        # nothing true is known, rather than shown as a placeholder.
+        parts.append(serving_line)
 
     if situation_prompt_fragment:
         # Resolved by orion-hub BEFORE this function runs (turn_orchestrator.py::
         # execute_unified_turn calls orion.situational.context.build_situation_for_ctx),
-        # same treatment as current_served_model above -- this stays a pure
+        # same treatment as serving_placement above -- this stays a pure
         # formatter, no network/DB calls of its own. Omitted entirely when falsy
         # (situation context disabled or failed to build) rather than shown as a
         # placeholder, so a turn with no situation data renders byte-identical to

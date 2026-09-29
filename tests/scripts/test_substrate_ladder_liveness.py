@@ -572,10 +572,7 @@ def test_a_failed_rung_query_is_cannot_check_not_fresh():
 
 
 class _RaisingClient:
-    calls = 0
-
     def attention_request(self, **kw):
-        type(self).calls += 1
         raise ConnectionError("orion-notify: connection refused")
 
 
@@ -680,17 +677,6 @@ def test_red_already_carded_is_plain_red_not_escalation_failure(tmp_path, monkey
     assert len(ok.calls) == 1
 
 
-def test_unexpected_notify_crash_is_escalation_failure(monkeypatch):
-    cli = _load_cli()
-    monkeypatch.setattr(cli, "build_report", lambda args: _red_report())
-
-    def crash(*a, **k):
-        raise ValueError("bug")
-
-    monkeypatch.setattr(cli, "notify", crash)
-    assert cli.main(["--notify"]) == cli.EXIT_ESCALATION_FAILED
-
-
 def test_test_escalation_sends_exactly_one_labelled_card(monkeypatch, capsys):
     cli = _load_cli()
     ok = _FakeClient()
@@ -704,3 +690,60 @@ def test_test_escalation_sends_exactly_one_labelled_card(monkeypatch, capsys):
     bad = _FakeClient(ok=False)
     monkeypatch.setattr(cli, "send_test_card", lambda **kw: real(**{**kw, "client": bad}))
     assert cli.main(["--test-escalation"]) == cli.EXIT_ESCALATION_FAILED
+
+
+@pytest.mark.parametrize("bad", ['{"notified_keys": 5}', '{"notified_keys": [1, 2]}', '[1]', 'not json'])
+def test_malformed_state_still_cards_the_red_and_is_rewritten(tmp_path, bad):
+    """Review finding: {"notified_keys": 5} raised TypeError before any send, every tick."""
+    cli = _load_cli()
+    state = tmp_path / "state.json"
+    state.write_text(bad)
+    ok = _FakeClient()
+    esc = cli.notify(_red_report(), state_file=str(state), base_url="x", token=None, client=ok)
+    assert esc.sent is True and len(ok.calls) == 1
+    assert json.loads(state.read_text())["notified_keys"] == ["rung:attention"]
+
+
+def test_non_contention_flock_error_cards_instead_of_skipping(tmp_path, monkeypatch):
+    import errno as _errno
+
+    cli = _load_cli()
+
+    def nolck(*a, **k):
+        raise OSError(_errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(cli.fcntl, "flock", nolck)
+    ok = _FakeClient()
+    esc = cli.notify(_red_report(), state_file=str(tmp_path / "s.json"), base_url="x", token=None, client=ok)
+    assert not esc.skipped_locked and esc.failed and esc.sent is True
+    assert len(ok.calls) == 1
+
+
+def test_contention_is_a_quiet_skip(tmp_path, monkeypatch):
+    import errno as _errno
+
+    cli = _load_cli()
+
+    def busy(*a, **k):
+        raise BlockingIOError(_errno.EWOULDBLOCK, "busy")
+
+    monkeypatch.setattr(cli.fcntl, "flock", busy)
+    ok = _FakeClient()
+    esc = cli.notify(_red_report(), state_file=str(tmp_path / "s.json"), base_url="x", token=None, client=ok)
+    assert esc.skipped_locked and not esc.failed and ok.calls == []
+
+
+def test_a_crash_inside_the_dedupe_path_still_cards_the_red(monkeypatch, capsys):
+    cli = _load_cli()
+    ok = _FakeClient()
+    monkeypatch.setattr(cli, "build_report", lambda args: _red_report())
+
+    def crash(*a, **k):
+        raise ValueError("bug")
+
+    monkeypatch.setattr(cli, "notify", crash)
+    real_stateless = cli._notify_stateless
+    monkeypatch.setattr(cli, "_notify_stateless", lambda r, e, **kw: real_stateless(r, e, **{**kw, "client": ok}))
+    assert cli.main(["--notify"]) == cli.EXIT_ESCALATION_FAILED
+    assert len(ok.calls) == 1
+    assert "dedupe state unusable (unexpected ValueError: bug)" in capsys.readouterr().err

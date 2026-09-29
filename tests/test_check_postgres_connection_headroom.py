@@ -612,6 +612,30 @@ def test_a_confirmed_card_is_a_plain_alarm(monkeypatch, tmp_path):
     assert _run(monkeypatch, _alarming_conn(), recorder, state, extra=["--notify"]) == EXIT_ALARM
 
 
+def test_a_malformed_state_file_still_cards_the_alarm(monkeypatch, tmp_path):
+    """Review finding: a non-numeric episode_rank raised inside the dedupe path
+    and the card was never attempted, every tick."""
+    recorder = {}
+    state = tmp_path / "s.json"
+    state.write_text('{"episode_rank": "high", "notified": true}')
+    assert _run(monkeypatch, _alarming_conn(), recorder, state, extra=["--notify"]) == EXIT_ALARM
+    assert len(recorder["calls"]) == 1
+
+
+def test_a_crash_in_the_dedupe_path_still_cards_the_alarm(monkeypatch, tmp_path):
+    import scripts.check_postgres_connection_headroom as mod
+
+    def crash(*a, **k):
+        raise ValueError("bug")
+
+    monkeypatch.setattr(mod, "_load_state", crash)
+    recorder = {}
+    rc = _run(monkeypatch, _alarming_conn(), recorder, tmp_path / "s.json", extra=["--notify"])
+    assert rc == EXIT_ESCALATION_FAILED
+    assert len(recorder["calls"]) == 1
+    assert recorder["calls"][0]["context"]["dedupe_state_error"].startswith("ValueError")
+
+
 def test_the_notify_client_is_importable_when_run_as_a_script(tmp_path):
     """Regression: the escalation path shipped dead on arrival.
 

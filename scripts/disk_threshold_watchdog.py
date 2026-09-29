@@ -70,8 +70,9 @@ Usage:
 Exit codes: 0 = all monitored paths under threshold (also returned if this
                 run was skipped because another run already holds the lock).
             1 = at least one monitored path is at/over threshold, or could
-                not be statted, at check time (regardless of whether a new
-                notification fired this tick -- mirrors
+                not be statted, at check time, and escalation did not fail
+                (regardless of whether a new notification fired this tick;
+                a refused card is exit 4 instead -- mirrors
                 bus_core_health_watchdog.py's exit-code contract so a
                 monitoring wrapper keying off exit code behaves the same
                 way across both scripts).
@@ -79,7 +80,7 @@ Exit codes: 0 = all monitored paths under threshold (also returned if this
                 is now exit 4, and the paths are still measured and carded.
             3 = the watchdog itself broke on an unexpected/unhandled
                 exception (a bug in this script). Deliberately distinct
-                from both exit 1 and exit 2, same convention as
+                from exits 1 and 4, same convention as
                 bus_core_health_watchdog.py.
             4 = escalation failed: orion-notify did not accept a card, or
                 the debounce state could not be used (bad paths are then
@@ -91,6 +92,7 @@ Exit codes: 0 = all monitored paths under threshold (also returned if this
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import json
 import os
@@ -153,8 +155,11 @@ def load_state(path: Path) -> dict[str, Any]:
             data = json.load(fh)
         if not isinstance(data, dict) or not isinstance(data.get("paths"), dict):
             raise ValueError("state file did not contain the expected {'paths': {...}} shape")
+        # A wrong-shaped per-path entry would TypeError inside evaluate_path and
+        # kill every tick's card; drop it so that path re-cards instead.
+        data["paths"] = {k: v for k, v in data["paths"].items() if isinstance(v, dict)}
         return data
-    except (json.JSONDecodeError, ValueError, OSError) as exc:
+    except (json.JSONDecodeError, ValueError, OSError, UnicodeDecodeError) as exc:
         print(
             f"disk_threshold_watchdog: WARNING -- state file {path} unreadable/corrupt "
             f"({exc}), starting from a fresh state.",
@@ -261,6 +266,8 @@ class _StateLock:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             fh.close()
+            if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
+                raise  # not contention: run() takes the stateless path, never a quiet skip
             raise WatchdogLockedError(
                 f"lock {self._lock_path} already held -- another watchdog run is in progress, skipping"
             ) from exc

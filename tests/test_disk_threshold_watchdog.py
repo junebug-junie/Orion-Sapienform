@@ -495,3 +495,30 @@ def test_default_paths_include_all_eight_host_mounts():
 def test_default_state_file_lives_under_telemetry_root():
     path = watchdog.default_state_file("/mnt/telemetry", "orion-athena")
     assert str(path) == "/mnt/telemetry/orion-athena/disk-watchdog/state.json"
+
+
+def test_wrong_shaped_path_entry_does_not_kill_the_card(tmp_path, monkeypatch):
+    small_dir = tmp_path / "mount"
+    small_dir.mkdir()
+    state_file = tmp_path / "s.json"
+    state_file.write_text(json.dumps({"paths": {str(small_dir): "garbage"}}))
+    notify = _fake_notify()
+    monkeypatch.setattr(watchdog, "NotifyClient", lambda **kw: notify)
+    rc = watchdog.main(["--paths", str(small_dir), "--threshold-pct", "0", "--state-file", str(state_file)])
+    assert rc == 1
+    assert notify.attention_request.call_count == 1
+
+
+def test_non_contention_flock_error_takes_the_stateless_path(tmp_path, monkeypatch):
+    import errno as _errno
+
+    small_dir = tmp_path / "mount"
+    small_dir.mkdir()
+    notify = _fake_notify()
+
+    def nolck(*a, **k):
+        raise OSError(_errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(watchdog.fcntl, "flock", nolck)
+    state, any_bad, failures = watchdog.run([str(small_dir)], 0.0, tmp_path / "s.json", notify, now=_now())
+    assert any_bad and failures and notify.attention_request.call_count == 1

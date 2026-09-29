@@ -55,6 +55,7 @@ failure can never be mistaken for a pass.
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import json
 import os
@@ -270,10 +271,12 @@ class _StateLock:
         self._fh = open(self._path, "w")
         try:
             fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        except OSError as exc:
             self._fh.close()
             self._fh = None
-            return False
+            if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+                return False
+            raise  # not contention: surfaces as unusable state, never a quiet skip
         return True
 
     def __exit__(self, *exc: object) -> None:
@@ -284,12 +287,18 @@ class _StateLock:
 
 
 def _load_state(state_file: str) -> dict[str, Any]:
+    """Missing, unparseable, or wrong-shaped reads as empty (re-card, rewrite)."""
     try:
         with open(state_file, encoding="utf-8") as fh:
             loaded = json.load(fh)
-        return loaded if isinstance(loaded, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return {}
+    if not isinstance(loaded, dict):
+        return {}
+    rank = loaded.get("episode_rank")
+    if rank is not None and (isinstance(rank, bool) or not isinstance(rank, int)):
+        return {}
+    return loaded
 
 
 def _save_state(state_file: str, state: dict[str, Any]) -> None:
@@ -342,11 +351,9 @@ def notify_alarm(args, *, reason: str, message: str, severity: str) -> bool:
     try:
         return _notify_alarm_locked(args, reason=reason, message=message, severity=severity)
     except Exception as exc:  # noqa: BLE001 - escalation must never mask the alarm
-        print(
-            f"  ESCALATION FAILED: unexpected {exc.__class__.__name__}: {exc}; "
-            "the alarm itself is still reported",
-            file=sys.stderr,
-        )
+        # A bug in the dedupe path is treated like unusable state: still card it.
+        err = _state_failure(exc)
+        _send_card(args, reason=reason, message=message, severity=severity, state_error=err)
         return True
 
 

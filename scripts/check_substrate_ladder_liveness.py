@@ -46,6 +46,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import hashlib
 import json
@@ -305,12 +306,20 @@ def default_state_file() -> str:
 
 
 def _load_state(path: str) -> dict[str, Any]:
+    """A missing, unparseable, or wrong-shaped file reads as empty: the red is
+    re-carded and the file is rewritten, rather than a TypeError killing the
+    send every tick."""
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return {}
+    if not isinstance(data, dict):
+        return {}
+    keys = data.get("notified_keys", [])
+    if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):
+        data["notified_keys"] = []
+    return data
 
 
 def _save_state(path: str, state: dict[str, Any]) -> None:
@@ -414,8 +423,11 @@ def notify(report: ll.LadderReport, *, state_file: str, base_url: str, token: Op
     with lock:
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return Escalation(skipped_locked=True)
+        except OSError as exc:
+            if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+                return Escalation(skipped_locked=True)
+            # Not contention (ENOLCK, NFS...): skipping would be silent every tick.
+            return _notify_stateless(report, f"flock {exc.__class__.__name__}: {exc}", base_url=base_url, token=token, client=client)
         state = _load_state(state_file)
         red = report.red_keys()
         # Forget keys that verifiably recovered, so a recurrence alerts again.
@@ -473,7 +485,7 @@ def send_test_card(*, base_url: str, token: Optional[str], client=None) -> tuple
             require_ack=True,
             context={
                 "source_service": "check_substrate_ladder_liveness",
-                "reason": "substrate_ladder_liveness_test",
+                "reason": "TEST substrate_ladder_liveness escalation check (safe to dismiss)",
                 "test": True,
             },
         )
@@ -698,7 +710,11 @@ def main(argv: Optional[list[str]] = None) -> int:
                 token=args.notify_api_token,
             )
         except Exception as exc:  # noqa: BLE001 - escalation must never mask the result
-            esc = Escalation(sent=False, notify_error=f"unexpected {exc.__class__.__name__}: {exc}")
+            # A bug in the dedupe path is treated like unusable state: still card the red.
+            esc = _notify_stateless(
+                report, f"unexpected {exc.__class__.__name__}: {exc}",
+                base_url=args.notify_base_url, token=args.notify_api_token, client=None,
+            )
         escalation_failed = report_escalation(esc, red=report.red)
 
     if escalation_failed:

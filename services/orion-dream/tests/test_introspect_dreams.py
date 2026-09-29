@@ -99,6 +99,11 @@ def test_every_hypothesis_statement_is_offered_only_and_never_selects_arm_or_ref
             assert not re.search(rf"\b{column}\b", selected), (column, sql)
 
 
+def test_no_hypothesis_statement_escapes_the_pin():
+    module_sql = [v for v in vars(dq).values() if isinstance(v, str) and "FROM dream_hypothesis" in v]
+    assert module_sql and all(sql in dq.HYPOTHESIS_SQL for sql in module_sql)
+
+
 def test_by_ids_keeps_rank_order_attaches_similarity_and_drops_missing():
     conn = FakeConn([narrative(19, 5)], [hypothesis("dh-aaa111", 1)])
     scored = [("dh-aaa111", 0.81), ("dream:7", 0.8), ("dream:19", 0.7)]

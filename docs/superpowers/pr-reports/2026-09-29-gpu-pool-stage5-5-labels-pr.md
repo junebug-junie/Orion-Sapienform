@@ -261,6 +261,6 @@ Restarting diffusion-host drops the loaded model while it reloads. Do it when gp
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2411
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

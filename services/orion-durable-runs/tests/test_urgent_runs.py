@@ -12,6 +12,7 @@ import asyncio
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -365,3 +366,68 @@ def test_failed_urgent_run_detail_carries_the_error():
     _delays, end = _retry_delays(world, urgent=True)
     detail = AdmissionRuntime._terminal_detail_for("curiosity.investigate", "failed", end)
     assert detail["error"].startswith("HarnessTurnFailed")
+
+
+# --- terminal detail: failed and cancelled urgent runs say they were urgent --------
+
+
+def _terminal_detail(status: str, *, urgent: bool, **extra: Any) -> dict[str, Any]:
+    from app.admission_runtime import AdmissionRuntime
+
+    state = {**_state(urgent=urgent), **extra}
+    return AdmissionRuntime._terminal_detail_for("curiosity.investigate", status, state)
+
+
+URGENT_SUMMARY = {
+    "incident_id": "0123456789abcdef", "trigger": "manual", "subject": "athena",
+    "question": "Is athena actually overheating?", "requested_at": "2026-09-28T12:00:00Z",
+}
+
+
+def test_urgent_failed_detail_names_the_incident_and_the_error():
+    detail = _terminal_detail("failed", urgent=True, last_error="workflow_deadline")
+    assert detail == {"error": "workflow_deadline", "urgent": URGENT_SUMMARY}
+
+
+def test_urgent_cancelled_detail_names_the_incident_and_says_cancelled():
+    detail = _terminal_detail("cancelled", urgent=True)
+    assert detail == {"error": "cancelled", "urgent": URGENT_SUMMARY}
+
+
+def test_ordinary_failed_and_cancelled_details_unchanged():
+    assert _terminal_detail("failed", urgent=False, last_error="workflow_deadline") == {"error": "workflow_deadline"}
+    assert _terminal_detail("cancelled", urgent=False) == {}
+
+
+def _projection_runtime(seen: list):
+    from app.admission_runtime import AdmissionRuntime
+
+    runtime = object.__new__(AdmissionRuntime)
+
+    async def finish_projection(run_id, status, detail, **kwargs):
+        seen.append((status, detail, kwargs))
+        return status
+
+    runtime.store = SimpleNamespace(finish_projection=finish_projection)
+    runtime._wake = asyncio.Event()
+    runtime.outreach, runtime._hints, runtime._checked = {}, set(), {}
+    return runtime
+
+
+def test_urgent_terminal_hands_the_store_an_urgent_cancel_detail():
+    """A cancel that wins the race against completion publishes `cancelled_detail`, so an urgent
+    run's must carry the incident too."""
+    seen: list = []
+    state = {**_state(urgent=True), "text": "done", "status": "completed"}
+    asyncio.run(_projection_runtime(seen)._terminal(RUN_ID, "completed", state))
+    [(status, _detail, kwargs)] = seen
+    assert status == "completed"
+    assert kwargs == {"cancelled_detail": {"error": "cancelled", "urgent": URGENT_SUMMARY}}
+
+
+def test_ordinary_terminal_projection_call_unchanged():
+    seen: list = []
+    state = {**_state(urgent=False), "text": "done", "status": "completed"}
+    asyncio.run(_projection_runtime(seen)._terminal(RUN_ID, "completed", state))
+    [(status, _detail, kwargs)] = seen
+    assert status == "completed" and kwargs == {}

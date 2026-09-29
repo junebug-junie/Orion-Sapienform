@@ -262,6 +262,9 @@ absent on every ordinary run:
 The seed also rides the Hub turn request (`CuriosityTurnRequestV1.urgent`), and an urgent
 admitted run gets at most `min(DURABLE_RUNS_RETRY_MAX_ATTEMPTS, 2)` attempts per node with
 `10 s·2^n` backoff (capped by `DURABLE_RUNS_RETRY_MAX_SEC`) instead of the service budget.
+An urgent admitted run's terminal `failed` detail also carries `urgent`, and its `cancelled`
+detail is `{"error": "cancelled", "urgent": {...}}` (ordinary cancels stay `{}`), including
+when a cancel wins the race against completion.
 
 **`self_sense_eval`** (`app/self_sense_graph.py::finish_detail`): `line`, `published`,
 `failed`, `empty`, `attempts`, `turns` -- a `{question_key: {turn_correlation_id,

@@ -30,7 +30,7 @@ from orion.gpu_pool.discovery import Probe, resolve_roles
 from orion.gpu_pool.lease_graph import FINAL, InvalidTransition, initial_state
 from orion.gpu_pool.scheduler import (
     Abort, Backlog, CardLive, DeadLetter, Expire, Grant, LeaseView, Recall, Requeue, RoleLive,
-    SwapBlocked, SwapLoad, SwapUnload, Unavailable, schedule,
+    Serialized, SwapBlocked, SwapLoad, SwapUnload, Unavailable, schedule,
 )
 from orion.gpu_pool.config import SWAP_GUARDS
 from orion.schemas.gpu_pool import (
@@ -160,6 +160,7 @@ class PoolRuntime:
         self._last_probe: datetime | None = None
         self._last_state: datetime | None = None
         self._swap_requested: set[tuple] = set()
+        self._serialized_reported: set[tuple] = set()   # (lease_id, reason) already reported
         self._ctx_seen: dict[str, int] = {}
         self.actuate_roles = validate_actuate_roles(cfg, actuate_roles)
         # Swap-load guards (app/guards.py fills these outside the lock). Every guard starts failing
@@ -528,8 +529,14 @@ class PoolRuntime:
         self._phase("schedule", t)
         self._phases["decisions"] = self._phases.get("decisions", 0) + len(decisions)
         swaps: set[tuple] = set()
+        serialized: set[tuple] = set()
+        by_id = {r["lease_id"]: r for r in rows}
         for d in decisions:
             try:
+                if isinstance(d, Serialized):
+                    serialized.add((d.lease_id, d.reason))
+                    await self._report_serialized(d, by_id.get(d.lease_id))
+                    continue
                 if isinstance(d, (SwapLoad, SwapUnload, SwapBlocked)):
                     swaps.add(self._swap_key(d))
                     await self._swap(d)
@@ -544,7 +551,21 @@ class PoolRuntime:
                 logger.exception("gpu_pool_decision_failed decision=%s", d)
         # Edge-triggered: a swap decision is reported when it starts, and again if it recurs later.
         self._swap_requested &= swaps
+        self._serialized_reported &= serialized
         await self._touch_swap_seats(rows)
+
+    async def _report_serialized(self, d: Serialized, row: dict | None) -> None:
+        """serialize_with (stage 5 Z1): a ``queued`` event naming the blocking role, once per lease
+        and blocker while it lasts. Not a lease transition: the row stays queued."""
+        key = (d.lease_id, d.reason)
+        if key in self._serialized_reported or row is None:
+            return
+        self._serialized_reported.add(key)
+        await self._emit(GpuPoolEventV1(
+            event="queued", lease_id=d.lease_id, holder=row.get("holder"), work_class=row.get("work_class"),
+            priority=row.get("priority"), role=d.role, cards=list(self.cfg.roles[d.role].cards),
+            turn_correlation_id=row.get("turn_correlation_id"), attempt=row.get("attempt"),
+            reason=d.reason, detail={"serialized": True}))
 
     @staticmethod
     def _swap_key(d: SwapLoad | SwapUnload | SwapBlocked) -> tuple:

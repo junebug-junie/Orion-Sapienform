@@ -273,7 +273,7 @@ def _set_env(svc, key, value):
     (lambda s, c: _set_env(s, "LLM_ANNOUNCE_PORT", "${SOME_UNSET_PORT_VAR:-8017}"), "announces port 8017"),
     (lambda s, c: s.update(profiles=["burst"]), "compose_profile agent-burst"),
     (lambda s, c: _set_env(s, "CUDA_VISIBLE_DEVICES_OVERRIDE", "1"), "CUDA_VISIBLE_DEVICES_OVERRIDE=1"),
-    (lambda s, c: s.update(environment=[e for e in s["environment"] if "CUDA" not in e]), "does not set"),
+    (lambda s, c: s.update(environment=[e for e in s["environment"] if "CUDA" not in e]), "sets none of"),
     (lambda s, c: c["services"].pop("atlas-agent-burst"), "is not a service"),
 ])
 def test_gate_catches_compose_drift(tmp_path, edit, match):
@@ -331,26 +331,26 @@ GPU4_COMPOSE = textwrap.dedent("""
         environment:
           - LLM_ROLE=fast2
           - LLM_ANNOUNCE_PORT=${ATLAS_FAST2_HOST_PORT:-8017}
-          - CUDA_VISIBLE_DEVICES_OVERRIDE=4
+          - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_FAST2_CUDA_VISIBLE_DEVICES:-4}
       atlas-vision4:
         profiles: ["vision4"]
         environment:
           - LLM_ROLE=vision4
           - LLM_ANNOUNCE_PORT=${ATLAS_VISION4_HOST_PORT:-8018}
-          - CUDA_VISIBLE_DEVICES_OVERRIDE=4
+          - CUDA_VISIBLE_DEVICES_OVERRIDE=${ATLAS_VISION4_CUDA_VISIBLE_DEVICES:-4}
 """)
 
 
 def _gpu4(data: dict, *, list_fast2_in_metacog: bool) -> dict:
     launch = {"actuator": "circe", "compose": "services/orion-llamacpp-host/docker-compose.atlas-workers.yml",
-              "env_file": "services/orion-llamacpp-host/.env", "cuda_env": "CUDA_VISIBLE_DEVICES_OVERRIDE",
-              "ready": "/health"}
+              "env_file": "services/orion-llamacpp-host/.env", "ready": "/health"}
     data["cards"]["gpu4"] = {"vram_gb": 32, "index": 4}
     data["roles"]["fast2"] = {"kind": "llm", "cards": ["gpu4"], "owner": ["metacog", "fast"], "port": 8017,
-                              "launch": {**launch, "service": "atlas-fast2", "timeout_sec": 300}}
+                              "launch": {**launch, "service": "atlas-fast2", "timeout_sec": 300,
+                                         "cuda_env": "ATLAS_FAST2_CUDA_VISIBLE_DEVICES"}}
     data["roles"]["vision4"] = {"kind": "llm", "cards": ["gpu4"], "owner": "vision", "port": 8018,
                                 "launch": {**launch, "service": "atlas-vision4", "compose_profile": "vision4",
-                                           "timeout_sec": 600},
+                                           "timeout_sec": 600, "cuda_env": "ATLAS_VISION4_CUDA_VISIBLE_DEVICES"},
                                 "swap": {"evicts": ["fast2"], "guards": ["thermal"]}}
     data["classes"]["fast"] = {"roles": ["fast", "metacog", "fast2", "agent", "agent-gpu2", "chat"],
                                "on_unavailable": "wait"}

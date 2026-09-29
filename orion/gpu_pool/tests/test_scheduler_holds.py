@@ -153,8 +153,8 @@ def test_a_long_hold_on_the_home_seat_is_never_capped():
 
 
 def test_seat_loaded_past_max_hold_drains_recalls_then_unloads():
-    assert CFG.roles["agent-gpu2"].max_hold_sec == 3600
-    loaded = cards(gpu2=CardLive("gpu2", swapped_in={"agent-gpu2"}, loaded_at=T0 - timedelta(seconds=3600)))
+    assert CFG.roles["agent-gpu2"].max_hold_sec == 9000   # ~2.5 h, Juniper 2026-09-29 (stage 5)
+    loaded = cards(gpu2=CardLive("gpu2", swapped_in={"agent-gpu2"}, loaded_at=T0 - timedelta(seconds=9000)))
     h = hold("granted", "agent-gpu2", lease_id="h")
     q = hold(lease_id="q")
     decisions = run([hold("granted", "agent", lease_id="home"), h, q], crds=loaded)

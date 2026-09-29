@@ -115,6 +115,12 @@ yet -- read `observed`.
 - **Bridge mapping** (stage 4 only; stage 5 builds the compose call from the role's `launch`):
   `agent-gpu2 load` -> `transition(target="agent-burst")`, `agent-gpu2 unload` ->
   `transition(target="diffusion")`, via the role's `swap.load`/`swap.unload` verbs.
+- **Checkout and image move together.** The controller re-reads `config/gpu_pool.yaml` from the
+  bind-mounted host checkout on every request, but parses it with the `orion/` code baked into its
+  image. A `git pull` that adds YAML keys (stage 5.1: `serialize_with`, `launch.profile_var`) without
+  rebuilding the image makes every action refuse `config_unloadable:*` (safe, but nothing loads).
+  Pull, then `scripts/safe_docker_build.sh orion-gpu-lane-controller up -d --build`, at the same
+  commit athena's pool runs (the `launch_digest` fence).
 - **Refusals** (`reason`): `gpu2_disabled`, `invalid_request:<field>`,
   `unknown_role`, `role_not_on_this_actuator`, `cards_mismatch`, `launch_digest_mismatch`,
   `not_a_bridge_role`, `bridge_verb_unsupported`, `profile_unsupported`, `deadline_passed`,

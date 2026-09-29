@@ -2,7 +2,7 @@
 
 Spec: `docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md` (PR #2404),
 including "Corrections from building 5.1" and "5.2". PRs: 5.1 #2408 (merged), 5.2 #2409 (merged), 5.3 #2415
-#2415. PR report: `docs/superpowers/pr-reports/2026-09-29-gpu-pool-stage5-3-cutover-pr.md`.
+PR report: `docs/superpowers/pr-reports/2026-09-29-gpu-pool-stage5-3-cutover-pr.md`.
 
 ## What this changes, in plain words
 

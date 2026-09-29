@@ -544,21 +544,7 @@ class Settings(BaseSettings):
         gt=0,
         alias="BIOMETRICS_INDUCTION_FETCH_TIMEOUT_SEC",
     )
-    # GPU index -> Orion model-routing lane label, per node. nvidia-smi itself
-    # has no lane concept -- this is a small, hand-maintained join against
-    # scattered CUDA_VISIBLE_DEVICES* env keys across several services'
-    # .env_example/docker-compose files (no central registry exists). An
-    # index absent from the map renders "unassigned" in the API response,
-    # never guessed. Ship as an honestly-partial, easily-edited blob -- do
-    # not try to reconcile every index at once; the mapping already churns.
-    GPU_LANE_MAP_ATHENA_JSON: str = Field(
-        default="{}",
-        alias="GPU_LANE_MAP_ATHENA_JSON",
-    )
-    GPU_LANE_MAP_CIRCE_JSON: str = Field(
-        default="{}",
-        alias="GPU_LANE_MAP_CIRCE_JSON",
-    )
+    # GPU lane labels: derived from the GPU pool's live state (stage 5.5), no env keys.
 
     # --- Organ signal gateway inspect (Phase 2b Hub) ---
     SIGNALS_INSPECT_ENABLED: bool = Field(default=True, alias="SIGNALS_INSPECT_ENABLED")

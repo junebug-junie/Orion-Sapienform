@@ -30,7 +30,6 @@ from orion.schemas.gpu_pool import (
     GpuActuateResultV1,
     GpuActuateV1,
 )
-from orion.schemas.gpu_slot import GpuSlotRequestV1
 
 from . import gpu2, launch_exec, pool_fence
 from .settings import settings
@@ -203,8 +202,8 @@ async def _run(req: GpuActuateV1, target: str | pool_fence.LaunchPlan, started: 
             outcome = await launch_exec.execute(target, req.action,
                                                 launch_exec.Intent(req.action_id, req.generation))
         else:
-            outcome = await gpu2.transition(GpuSlotRequestV1(
-                slot="circe-gpu2", target=target, operation_id=req.action_id, generation=req.generation))
+            outcome = await gpu2.transition(gpu2.Transition(
+                target=target, operation_id=req.action_id, generation=req.generation))
     except Exception as exc:  # noqa: BLE001 -- both catch their own; this is belt and braces
         outcome = {"status": "failed", "error": f"transition_crashed:{type(exc).__name__}"}
     finally:

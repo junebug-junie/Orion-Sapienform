@@ -2,7 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const biometricsView = require("./biometrics-view.js");
 
-const { shouldPoll } = biometricsView;
+const { shouldPoll, laneBadge } = biometricsView;
 
 // A backgrounded tab keeps running setInterval (throttled, not stopped), so
 // without this gate a Hub left open in a background tab polled
@@ -31,4 +31,27 @@ test("only a literal boolean true counts as hidden", () => {
   assert.equal(shouldPoll({ hidden: "true" }), true);
   assert.equal(shouldPoll({ hidden: 1 }), true);
   assert.equal(shouldPoll({ hidden: undefined }), true);
+});
+
+// Stage 5.5: the GPU lane badge shows what the pool says is on the card, and
+// greys out only when the server says the card is not labelled (not by string
+// match -- "no pool state" is unknown, and must not render as a live lane).
+test("a pool-derived lane renders as an assigned badge", () => {
+  const b = laneBadge({ lane: "world, diffusion", lane_assigned: true });
+  assert.equal(b.text, "world, diffusion");
+  assert.equal(b.assigned, true);
+  assert.match(b.className, /indigo/);
+});
+
+test("no pool state renders greyed, not as a live lane", () => {
+  const b = laneBadge({ lane: "no pool state", lane_assigned: false });
+  assert.equal(b.text, "no pool state");
+  assert.equal(b.assigned, false);
+  assert.match(b.className, /gray/);
+});
+
+test("a response without lane_assigned falls back to the unassigned string", () => {
+  assert.equal(laneBadge({ lane: "unassigned" }).assigned, false);
+  assert.equal(laneBadge({ lane: "chat" }).assigned, true);
+  assert.equal(laneBadge({}).text, "unassigned");
 });

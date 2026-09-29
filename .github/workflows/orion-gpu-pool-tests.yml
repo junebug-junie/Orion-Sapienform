@@ -28,6 +28,13 @@ on:
       - "services/orion-hub/templates/gpu_pool.html"
       - "services/orion-hub/static/js/gpu_pool*.js"
       - "services/orion-hub/tests/test_gpu_pool_*.py"
+      # stage 5.5: Hub biometrics GPU labels derived from pool state
+      - "services/orion-hub/scripts/biometrics_preview_routes.py"
+      - "services/orion-hub/scripts/urgent_evidence.py"
+      - "services/orion-hub/static/js/biometrics-view*.js"
+      - "services/orion-hub/tests/test_biometrics_preview_api.py"
+      - "services/orion-hub/tests/test_biometrics_view_ui.py"
+      - "services/orion-hub/tests/test_urgent_evidence.py"
       - ".github/workflows/orion-gpu-pool-tests.yml"
       # stage 4.4: consumers of the GPU lease ref (the "consumers" job below)
       - "orion/harness/fcc_motor.py"
@@ -155,6 +162,14 @@ jobs:
           python -m pip install fastapi==0.111.0 httpx==0.27.2 pydantic==2.11.5 pydantic-settings==2.5.2 \
             SQLAlchemy==2.0.43 psycopg2-binary aiohttp==3.12.15 python-multipart
           cd services/orion-hub && python -m pytest tests/test_gpu_pool_routes.py -q -p no:cacheprovider
+      # Relies on the Hub pins installed by the previous step. Skips the pre-existing router-registration
+      # test: it imports scripts.api_routes, which needs spacy (not installed in this job).
+      - name: Hub biometrics GPU labels from pool state (stage 5.5)
+        run: |
+          cd services/orion-hub
+          python -m pytest tests/test_biometrics_preview_api.py tests/test_urgent_evidence.py -q -p no:cacheprovider \
+            -k "not router_registered"
+          python -m pytest tests/test_biometrics_view_ui.py -k lane_badge -q -p no:cacheprovider
       - name: Policy eval (owner starvation, lost leases, spill-down violations)
         run: python services/orion-gpu-pool/evals/run_pool_day_eval.py
 

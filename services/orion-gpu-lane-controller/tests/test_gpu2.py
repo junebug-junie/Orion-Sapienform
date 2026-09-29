@@ -8,7 +8,7 @@ from orion.schemas.gpu_slot import GpuSlotRequestV1
 gpu = main_module.gpu2
 
 def req(target="agent-burst"):
-    return GpuSlotRequestV1(slot="circe-gpu2", target=target,operation_id="test:1",generation=1)
+    return gpu.Transition(target=target, operation_id="test:1", generation=1)
 
 def snapshot(active="diffusion", state="running"):
     return {"active":active,"targets":{key:{"state":state if key == active else "exited",
@@ -21,7 +21,22 @@ def test_fixed_pair_contract(slot,target):
 
 def test_unknown_command_fields_forbidden():
     with pytest.raises(ValidationError):
-        GpuSlotRequestV1(**req().model_dump(),compose_service="atlas-chat")
+        GpuSlotRequestV1(slot="circe-gpu2", target="agent-burst", operation_id="x", generation=1,
+                         compose_service="atlas-chat")
+
+
+def test_transition_accepts_only_the_fixed_targets():
+    """Stage 5.5: the pool path no longer builds GpuSlotRequestV1; its own request still refuses
+    anything but the two fixed targets (no caller-controlled Docker surface)."""
+    with pytest.raises(ValueError, match="unknown_target"):
+        gpu.Transition(target="atlas-chat", operation_id="x", generation=1)
+    with pytest.raises(TypeError):
+        gpu.Transition(target="diffusion", operation_id="x", generation=1, compose_service="atlas-chat")
+
+
+def test_pool_path_does_not_use_the_fixed_slot_contract():
+    import inspect
+    assert "gpu_slot" not in inspect.getsource(main_module.actuator_bus)
 
 def test_drain_before_stop_before_model_ready(monkeypatch):
     calls=[]

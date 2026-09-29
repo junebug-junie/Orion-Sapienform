@@ -1125,7 +1125,9 @@ class PoolRuntime:
                 backlog[r["work_class"]] = backlog.get(r["work_class"], 0) + 1
         return GpuPoolStateV1(
             mode="enforce" if self.mode == "enforce" else "observe", config_digest=self.cfg.digest,
+            host=self.cfg.host.name,
             cards=[GpuCardStateV1(card=c.card, vram_gb=self.cfg.cards[c.card].vram_gb,
+                                  index=self.cfg.cards[c.card].index,
                                   lendable=self.cfg.cards[c.card].lendable, lent=c.lent,
                                   swapped_in=sorted(c.swapped_in), swap_state=c.swap_state,
                                   cooldown_until=c.cooldown_until, swap_role=c.swap_role,

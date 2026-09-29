@@ -158,6 +158,13 @@ check-metric-lineage-gate:
 #   make check-definition-drift GATE=1       # exit 1 on drift (what CI runs)
 #   make check-definition-drift UPDATE=1     # re-lock and print the deltas
 #
+# Re-lock ONLY when your branch changes a metric definition. A branch that
+# changes none never needs to touch the lock, and does not fail the gate just
+# because main moved (even if main recorded another PR's change): the gate
+# accepts the lock exactly as the merge base committed it, and UPDATE=1 on such
+# a branch leaves the file byte-identical. The lock holds no merge-base commit
+# hash, so two no-change PRs can never conflict on it.
+#
 # GATE/UPDATE use the same explicit-true matching as UPDATE_BASELINE above,
 # for the same reason: UPDATE=0 must not rewrite the lock.
 #

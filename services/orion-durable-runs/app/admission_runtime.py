@@ -39,7 +39,7 @@ from app.admitted_self_sense_graph import build_admitted_self_sense_graph
 from app.graph import failed_turn_meta, finish_detail, recorded_turn_correlation_id, turn_correlation_id, urgent_detail
 from app.pool_hold import (
     HELD, URGENT_PREEMPT, WAITING as POOL_WAITING, PoolHolds, UnknownRoute, is_hold_ref, is_pool_trouble,
-    ref_dict, refusal_is_terminal,
+    hold_placement, ref_dict, refusal_is_terminal,
 )
 from app.reflect_graph import finish_detail as reflect_finish_detail
 from app.reading_graph import build_reading_graph, finish_detail as reading_finish_detail
@@ -109,6 +109,10 @@ def _without_backoff(hold: dict) -> dict:
 
 from app.admitted_graph import HoldLost
 
+# release() reasons of a pool take-back (HoldLost / HoldPreempted): the node goes straight back to
+# resource_wait, so a hold the pool already re-granted is kept for it.
+TAKEBACK_RELEASE_REASONS = frozenset({HoldLost.release_reason, URGENT_PREEMPT})
+
 
 class AdmissionRuntime:
     def __init__(self, settings, runner, pool, *, store=None, clock=None, holds=None):
@@ -125,7 +129,8 @@ class AdmissionRuntime:
             self.register, self.lease, self.execute, self.release, self.event,
             now=self.now, max_attempts=settings.retry_max_attempts,
             retry_base_seconds=settings.retry_base_sec, retry_max_seconds=settings.retry_max_sec,
-            guard=self.guard, keep_for_outreach=self.keep_for_outreach, preempted=self.preempted)
+            guard=self.guard, keep_for_outreach=self.keep_for_outreach, requeued=self.requeued,
+            max_takebacks=settings.hold_max_takebacks)
         self.deps = admission_deps
         # One compiled graph per workflow. Before 2026-09-22 every admitted run shared the
         # curiosity graph; before 4.5 an admitted reflect run still did.
@@ -357,10 +362,10 @@ class AdmissionRuntime:
         error = "workflow_deadline" if reason == "deadline" else f"gpu_pool_unavailable:{reason}"
         return REFUSED, {"status": "failed", "last_error": error, "lease": None, "hold": None}
 
-    async def _beat(self, lease: dict) -> GpuLeaseReplyV1 | None:
+    async def _beat(self, lease: dict, admission: dict | None = None) -> GpuLeaseReplyV1 | None:
         """Heartbeat a granted hold: the pool's granted/recall reply (None when unanswered). Raise
-        HoldLost when the pool no longer holds it at our generation. A failed RPC is tolerated: the
-        TTL is at least two beats."""
+        HoldLost when the pool no longer holds it at our generation (``_taken_back``). A failed RPC
+        is tolerated: the TTL is at least two beats."""
         try:
             reply = await self.holds.heartbeat(lease["lease_id"])
         except Exception as exc:  # noqa: BLE001
@@ -377,9 +382,36 @@ class AdmissionRuntime:
                 logger.info("durable_hold_recalled lease=%s recall_by=%s reason=%s", lease["lease_id"],
                             reply.recall_by, reply.reason)
             return reply
+        raise self._taken_back(lease, reply, admission)
+
+    def _taken_back(self, lease: dict, reply: GpuLeaseReplyV1, admission: dict | None = None) -> Exception:
+        """What a mid-node pool answer that is no longer "yours at this generation" means for the node.
+
+        * re-queued for an urgent run -> HoldPreempted;
+        * re-queued for any other reason (a recall past its grace: max_hold, owner reclaim, unlend;
+          a lost heartbeat), or already re-granted at a newer generation -> HoldLost: same hold,
+          the run waits for it again. Not an attempt;
+        * ended by the pool (dead-lettered, released, unknown) -> HoldLost as well unless the pool's
+          reason is a property of the run itself (``refusal_is_terminal``: deadline, a class nothing
+          serves, ...): the run asks afresh, as ``lease`` does for the same answer before a node.
+          A terminal reason is a plain error: the node's own failure handling decides.
+        """
+        detail = f"{reply.status}" + (f":{reply.reason}" if reply.reason else "")
         if reply.status in POOL_WAITING and reply.reason == URGENT_PREEMPT:
-            raise HoldPreempted(f"gpu_hold_preempted:{lease['lease_id']}")
-        raise HoldLost(f"gpu_hold_lost:{reply.status}" + (f":{reply.reason}" if reply.reason else ""))
+            return HoldPreempted(f"gpu_hold_preempted:{lease['lease_id']}")
+        if reply.status in POOL_WAITING or reply.status in HELD:
+            return HoldLost(f"gpu_hold_lost:{detail}")
+        reason = str(reply.reason or reply.status)
+        if reason == "deadline":
+            return WorkflowDeadline("workflow_deadline")
+        work_class = ""
+        try:
+            work_class = hold_placement(self.holds.cfg, admission or {})[0]
+        except UnknownRoute:
+            pass
+        if refusal_is_terminal(self.holds.cfg, reason, work_class):
+            return RuntimeError(f"gpu_pool_unavailable:{reason}")
+        return HoldLost(f"gpu_hold_lost:{detail}")
 
     async def execute(self, state, node):
         lease = state.get("lease")
@@ -388,7 +420,7 @@ class AdmissionRuntime:
         row = await self.store.get_run(state["run_id"])
         if row.get("control"):
             raise RunControlPending(row["control"])
-        beat = await self._beat(lease)
+        beat = await self._beat(lease, state.get("admission"))
         if beat is not None and beat.status == "recall":
             # Already being recalled: never start a long turn on it. Not a failed attempt either way.
             if beat.reason == URGENT_PREEMPT and await self._await_requeue(lease["lease_id"], beat):
@@ -428,7 +460,7 @@ class AdmissionRuntime:
                     row = await self.store.get_run(state["run_id"])
                     if row.get("control"):
                         raise RuntimeError(f"run_control:{row['control']}")
-                    beat = await self._beat(lease)
+                    beat = await self._beat(lease, state.get("admission"))
                     if beat is not None:
                         wait = min(PREEMPT_POLL_SEC, steady) \
                             if beat.status == "recall" and beat.reason == URGENT_PREEMPT \
@@ -447,7 +479,7 @@ class AdmissionRuntime:
                 await asyncio.gather(work, return_exceptions=True)
         # Outside the turn's time budget: a slow preempt check must not replace the work's own error.
         try:
-            return await self._settled(work, lease)
+            return await self._settled(work, lease, state.get("admission"))
         except TimeoutError as exc:
             if deadline and self.now() >= datetime.fromisoformat(deadline):
                 raise WorkflowDeadline("workflow_deadline") from exc
@@ -495,31 +527,48 @@ class AdmissionRuntime:
             "pool_status": reply.status, "position": reply.position},
             event_id=f"preempted:{lease_id}:{generation}")
 
-    async def _settled(self, work: asyncio.Task, lease: dict):
-        """The finished work's result. A work failure is checked against the pool once: the victim of
-        an urgent preemption often fails on its own before the next heartbeat sees the re-queue (its
-        next LLM call cannot attach to the aborted hold) -- that is the preemption, not an attempt."""
+    async def _settled(self, work: asyncio.Task, lease: dict, admission: dict | None = None):
+        """The finished work's result. A work failure is checked against the pool once: a turn whose
+        hold the pool took back (urgent pause, recall past its grace) often fails on its own before
+        the next heartbeat sees it (its next LLM call cannot attach to the aborted hold) -- that is
+        the pool's doing, not an attempt."""
         try:
             return work.result()
-        except (HoldPreempted, RunControlPending, WorkflowDeadline):
+        except (HoldLost, RunControlPending, WorkflowDeadline):
             raise
         except Exception as exc:
-            if await self._hold_preempted(lease):
-                raise HoldPreempted(f"gpu_hold_preempted:{lease['lease_id']}") from exc
+            reply = await self._requeued_reply(lease)
+            if reply is not None:
+                raise self._taken_back(lease, reply, admission) from exc
             raise
 
-    async def _hold_preempted(self, lease: dict) -> bool:
+    async def _requeued_reply(self, lease: dict) -> GpuLeaseReplyV1 | None:
+        """The pool's status reply when it re-queued this hold (still ours, but no longer granted at
+        this generation); None when it still grants it, ended it, or cannot be read."""
         try:
             reply = await self.holds.status(lease["lease_id"])
         except Exception as exc:  # noqa: BLE001 -- cannot tell: the failure stands as it is
             logger.warning("durable_hold_status_failed lease=%s err=%s", lease["lease_id"], exc)
-            return False
-        return reply.status in POOL_WAITING and reply.reason == URGENT_PREEMPT
+            return None
+        if is_pool_trouble(reply):
+            return None
+        if reply.status in POOL_WAITING:
+            return reply
+        if reply.status in HELD and reply.grant is not None and reply.grant.generation != lease["generation"]:
+            return reply
+        return None
 
-    async def preempted(self, state) -> bool:
-        """AdmissionDeps.preempted: for a node whose failed turn is a returned result."""
+    async def requeued(self, state) -> str | None:
+        """AdmissionDeps.requeued: for a node whose failed turn is a returned result -- the release
+        reason when the pool took the hold back, else None."""
         lease = state.get("lease")
-        return is_hold_ref(lease) and await self._hold_preempted(lease)
+        if not is_hold_ref(lease):
+            return None
+        reply = await self._requeued_reply(lease)
+        if reply is None:
+            return None
+        return getattr(self._taken_back(lease, reply, state.get("admission")), "release_reason",
+                       HoldLost.release_reason)
 
     async def guard(self, state):
         """Node boundary: deadline and operator control, then the hold. Returns the lease while
@@ -570,8 +619,15 @@ class AdmissionRuntime:
                 reply = await self.holds.status(lease_id)
             except Exception:  # noqa: BLE001 -- unknown: hand it back rather than strand a slot
                 reply = None
-            if reply is not None and reply.status in POOL_WAITING and not is_pool_trouble(reply):
-                if lease and reply.reason == URGENT_PREEMPT:
+            # Also a hold the pool already re-granted at a newer generation (re-queued and granted
+            # again before this node noticed), but only on a take-back, which goes straight back to
+            # resource_wait: ending it would lose the grant resource_wait is about to read. After a
+            # failed attempt a backoff follows with nothing heartbeating it, so it is handed back.
+            regranted = reason in TAKEBACK_RELEASE_REASONS and reply is not None \
+                and reply.status in HELD and reply.grant is not None \
+                and lease is not None and reply.grant.generation != lease["generation"]
+            if reply is not None and (reply.status in POOL_WAITING or regranted) and not is_pool_trouble(reply):
+                if lease and reply.status in POOL_WAITING and reply.reason == URGENT_PREEMPT:
                     await self._record_preempted(state, lease_id, lease["generation"], lease.get("role"), reply)
                 elif lease:
                     await self._record_lost(state, lease, reply.status, reply.reason)
@@ -655,9 +711,9 @@ class AdmissionRuntime:
             entry["beat"] = time.monotonic()
             try:
                 await self._beat(lease)
-            except HoldLost as exc:
+            except (HoldLost, WorkflowDeadline, RuntimeError) as exc:  # a take-back or a refusal: gone either way
                 logger.warning("durable_outreach_hold_lost run=%s lease=%s %s", run_id, lease["lease_id"], exc)
-                await self._record_lost(state, lease, str(exc), None)
+                await self._record_lost(state, lease, type(exc).__name__, str(exc)[:200])
                 # Re-queued holds would be granted to a finished run: end it.
                 await self._end_hold(state, lease["lease_id"], lease, "lost")
 

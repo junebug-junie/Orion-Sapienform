@@ -266,14 +266,15 @@ def test_lost_heartbeat_mid_turn_cancels_the_turn_and_waits_for_the_same_lease()
         assert rt.runner.cancels(), "a turn under a lost hold must be stopped"
         snap = await rt.graph.aget_state(rt.config(req.run_id))
         assert snap.values["hold"]["lease_id"] == hold["lease_id"]       # kept: same lease, same place
-        assert snap.values["lease"] is None and snap.values["status"] == "retrying"
+        # Not a failed attempt: straight back in line for the same hold, no backoff (2026-09-29).
+        assert snap.values["lease"] is None and snap.values["status"] == "waiting_resource"
+        assert snap.values["attempt"] == 0 and snap.next == ("resource_wait",)
         history = [e["event"] for e in await store.history(req.run_id)]
         assert "resource.lease_expired" in history and "resource.lease_released" not in history
         block.set()
         await gpu.later(60)                                               # retry delay: re-queued, re-granted
         row = await gpu.lease(hold["lease_id"])
         assert row["status"] == "granted" and row["generation"] == 2
-        await asyncio.sleep(0.06)                                         # durable retry backoff
         await rt.on_pool_event({"holder": "durable-runs:expire-001", "event": "granted"})
         await rt._drive(await store.get_run(req.run_id))
         await rt._drive(await store.get_run(req.run_id))

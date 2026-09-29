@@ -189,7 +189,9 @@ def test_recall_gives_the_hold_grace_then_aborts_and_requeues_the_same_lease():
         assert (await rt.store.lease(borrowed.lease_id))["status"] == "recalling"   # still inside the grace
         await step(rt, clock, 60, beat=[home.lease_id, borrowed.lease_id])
         names = [e["event"] for e in rt.bus.events() if e.get("lease_id") == borrowed.lease_id]
-        assert names.index("aborted") < len(names) - 1 and "queued" in names[names.index("aborted"):]
+        assert "aborted" in names and "retried" not in names and "dead_lettered" not in names
+        row = await rt.store.lease(borrowed.lease_id)
+        assert row["attempt"] == 1                        # the pool took its seat back: not an attempt
         st = await rt.status(borrowed.lease_id)
         assert st.status in ("queued", "granted") and st.lease_id == borrowed.lease_id   # same lease id
     run(go())
@@ -455,6 +457,62 @@ def test_idle_unload_then_min_residency_blocks_reload():
         await step(rt, clock, CFG.defaults.swap_min_residency_sec - 60, beat=[home.lease_id])
         # demand needs after_wait (1200s) > residency (600s): residency is over first
         assert len(actuations(rt)) == 2
+    run(go())
+
+
+def test_max_hold_recall_past_its_grace_requeues_the_hold_in_place_without_spending_an_attempt():
+    """Live 2026-09-26..28: a durable run on the gpu2 27B seat was recalled once the seat had been
+    loaded max_hold_sec (3600 s), aborted after the 600 s grace, and the abort spent a pool attempt
+    (retry_wait). Three of those dead-lettered the hold: ``unavailable:recall_grace_exceeded``. The
+    pool took its seat back; the hold must go back in line in its original place, attempt untouched,
+    and be re-granted (any eligible role) under the same lease id."""
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        home, waiting = await demand_gpu2(rt, clock)
+        [load] = actuations(rt)
+        await result(rt, load, "accepted")
+        rt._world.up.add(SEAT)
+        rt._world.up.discard("diffusion")
+        await result(rt, load, "succeeded", observed={SEAT: "running", "diffusion": "exited"})
+        await step(rt, clock, 30, beat=[home.lease_id, waiting.lease_id])
+        row = await rt.store.lease(waiting.lease_id)
+        assert row["role"] == SEAT and row["generation"] == 1
+        await step(rt, clock, CFG.roles[SEAT].max_hold_sec, beat=[home.lease_id, waiting.lease_id])
+        row = await rt.store.lease(waiting.lease_id)
+        assert row["status"] == "recalling" and row["reason"] == "max_hold"
+        await step(rt, clock, CFG.defaults.hold_clawback_grace_sec + 30, beat=[home.lease_id, waiting.lease_id])
+        row = await rt.store.lease(waiting.lease_id)
+        assert row["status"] == "queued" and row["attempt"] == 1 and row["reason"] == "recall_grace_exceeded"
+        st = await rt.status(waiting.lease_id)
+        assert st.status == "queued" and st.reason == "recall_grace_exceeded" and st.lease_id == waiting.lease_id
+        await rt.release(home.lease_id, "ok")             # the home card frees up: re-granted there
+        await step(rt, clock, 30, beat=[waiting.lease_id])
+        row = await rt.store.lease(waiting.lease_id)
+        assert (row["status"], row["role"], row["generation"], row["attempt"]) == ("granted", "agent", 2, 1)
+    run(go())
+
+
+def test_three_owner_recalls_past_grace_never_dead_letter_a_hold():
+    async def go():
+        rt, clock = make(actuate=())
+        await boot(rt)
+        await rt.control(GpuPoolControlV1(verb="lend", card="gpu0"))
+        home = await rt.acquire(hold("run-home:1"))
+        borrowed = await rt.acquire(hold("run-b:1"))
+        assert borrowed.grant.role == "chat"
+        for cycle in range(1, 4):
+            owner = await rt.acquire(acq("chat", priority="interactive", deadline_at=clock() + timedelta(hours=2)))
+            assert owner.status == "granted"
+            await step(rt, clock, CFG.defaults.hold_clawback_grace_sec + 30,
+                       beat=[home.lease_id, borrowed.lease_id, owner.lease_id])
+            st = await rt.status(borrowed.lease_id)
+            assert st.status == "queued" and st.reason == "recall_grace_exceeded", (cycle, st)
+            assert (await rt.store.lease(borrowed.lease_id))["attempt"] == 1
+            await rt.release(owner.lease_id, "ok")
+            await step(rt, clock, 30, beat=[home.lease_id, borrowed.lease_id])
+            row = await rt.store.lease(borrowed.lease_id)
+            assert (row["status"], row["role"], row["generation"]) == ("granted", "chat", cycle + 1), cycle
     run(go())
 
 

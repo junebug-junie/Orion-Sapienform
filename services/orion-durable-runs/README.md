@@ -372,7 +372,17 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
   behind the run. The hold's role (e.g. `agent-gpu2`) is never sent as a route or `assigned_lane`:
   held calls name the `agent` route.
 - **Recall** (the pool wants the seat back) is honoured at the next node boundary, inside
-  `hold_clawback_grace_sec`; the tail nodes need no GPU and continue without it.
+  `hold_clawback_grace_sec`; the tail nodes need no GPU and continue without it. A work node still
+  running when the grace runs out (gpu2's `max_hold_sec` seat limit, chat's owner reclaiming lent
+  gpu0) is stopped when the pool aborts the hold: `HoldLost`, harness cancel, and the run waits for
+  the SAME hold (any eligible role) and replays the node. **No `HoldLost` spends an attempt** in any
+  admitted graph (2026-09-29; before, curiosity/reflect spent one of three per recall and self-sense
+  failed on the first -- 19 live failures in three days). If the pool ended the hold instead
+  (dead-lettered, released), the run asks afresh under a new request id. Only a refusal that is a
+  property of the run (`deadline`, `pool_hold.refusal_is_terminal`) takes the failure path.
+  `resource.lease_expired` records each take-back (reason `recall_grace_exceeded`). State
+  `hold_takebacks` counts them; past `DURABLE_RUNS_HOLD_MAX_TAKEBACKS` (default 12, 0 = unbounded)
+  the run fails with `hold_takeback_limit:<n>` so a step that never fits cannot replay forever.
 - **Urgent preemption** (Plan 2, `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-2-pool-urgent.md`).
   The pool pauses a background/system hold for a waiting urgent run: recall, 5 s grace, then it
   puts the hold back in line in its original place (`queued`, reason `urgent_preempt`). The work
@@ -380,7 +390,7 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
   on the next grant under the same lease_id -- never a failed attempt. A turn that fails on its
   own first (its next LLM call cannot attach to the aborted hold) is checked against the pool once:
   an exception in `execute`, a failed *result* in the reading / reflect / self-sense node
-  (`AdmissionDeps.preempted`). A hold recalled for urgent work *before* its step starts (execute's
+  (`AdmissionDeps.requeued`, which now covers any pool take-back, not only urgent). A hold recalled for urgent work *before* its step starts (execute's
   first beat, or `resource_wait`) is not released -- that would forfeit its place: the driver polls
   the pool (1 s) until the abort re-queues it, for at most grace + 3 s, then falls back to releasing
   it. Other recall reasons are released at once as before. `list_pending()` pages urgent rows

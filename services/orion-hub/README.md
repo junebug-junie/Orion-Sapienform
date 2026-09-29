@@ -3203,8 +3203,11 @@ turns get it, truth rules, search pattern, how to add a tool), see the
     `read_evidence` that the source was actually fetched.
   - The item's text is the Stage 2 summary, falling back to Stage 1's
     `what_i_learned`.
-  - An unread or unfinished row reports `learned=false` and empty text,
-    never model prose.
+  - The SQL filter only requires non-empty `read_evidence`; the
+    same-source check runs per row (`_source_read`). A recent or single
+    lookup whose evidence does not match its source, or an unfinished row,
+    reports `learned=false` and empty text, never model prose. Search drops
+    such rows.
   - Code: `orion/world_pulse_read/introspect.py` (`_VERIFIED_WHERE`,
     `_learned`).
 - **Label.** Every item is `epistemic_status="unsettled"`: source-attributed
@@ -3214,9 +3217,12 @@ turns get it, truth rules, search pattern, how to add a tool), see the
     mode=recent|lookup|query`.
   - Failure: `reading_tool_failed correlation_id=<id>
     category=reading_result_failure|reading_search_failure|connection_failure|no_pool|...`.
-  - The model sees only `reading_queue_unavailable` or
-    `reading_search_unavailable; answer unknown`, which the MCP turns into an
-    "answer unknown" tool error.
+  - The model gets a generic error, never SQL or exception text. The MCP
+    wraps it as a tool error, e.g. `reading_results: answer unknown
+    (reading_search_unavailable; answer unknown)`. Non-search failures reuse
+    the reading queue's `reading_queue_unavailable; acceptance unknown, retry
+    the same request` text; its retry hint is harmless for a read-only
+    lookup.
 
 **Reading search (orion-introspect `reading_results query=...`).** A loop in `ReadingListener` embeds each verified reading once (title + learned text, via vector-host HTTP `/embedding`) and publishes `VectorUpsertV1` on `orion:vector:semantic:upsert`; orion-vector-writer stores it in Chroma `HUB_READING_SEARCH_COLLECTION`. The loop is hash-aware, so a Stage 2 summary replacing Stage 1 text is re-indexed, and it doubles as the backfill (`reading_search_index indexed=N pending=M` every `HUB_READING_SEARCH_INDEX_INTERVAL_SEC`). A query embeds only the question, keeps Chroma hits at or above `HUB_READING_SEARCH_MIN_SIMILARITY`, and re-reads each hit from Postgres through the same verified-reading gate. Embedder/Chroma failure or a not-yet-built index is logged as `reading_search_failure` and reported to the model as "answer unknown", never as no results. Recalibrate the floor with `python services/orion-hub/evals/run_reading_search_calibration.py`.
 

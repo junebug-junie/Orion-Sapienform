@@ -264,7 +264,9 @@ ship undocumented.
   curiosity turns do. Reading stages (`reading_only`) never get it, because
   their job is to read the source, not to recall.
 - **Binding.** Built by the server from runtime facts
-  (`orion/introspect/binding.py`); the model can never set or see it.
+  (`orion/introspect/binding.py`). It is never part of tool arguments, so
+  the model cannot set it. It holds no secrets: it sits in the MCP
+  subprocess environment and the per-turn MCP config file.
   - It carries the parent run/trace IDs and `memory_allowed`, which is
     `not HARNESS_AITOWN_ENABLED`.
   - `orion/fcc/mcp_config.py` refuses to render a config with both an
@@ -294,7 +296,9 @@ claude -p (FCC motor)
 - **Read-only.** SELECTs only. Nothing is queued, retried, charged or written.
 - **Bounded.** At most 5 items, 900-char text per item, `truncated` set when
   cut. Five full items stay under the 12,000-char MCP result budget
-  (`ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS`); a test pins the worst case.
+  (`ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS`); a test pins the worst case. The
+  proxy that enforces that budget does not wrap this server today; the
+  bound keeps wrapping it later safe.
 - **Scaled.** Every success carries `as_of` and `total_available`, so "5 of
   40" is distinguishable from "all 5".
 - **Empty is not unknown.**
@@ -376,7 +380,13 @@ Responders can keep running; nothing calls them.
 5. The row in the table above; the coverage test enforces this.
 6. A smoke mode in `scripts/smoke_introspect.py`; a calibration eval if it
    has `query=`.
-7. The owning service's path in the `orion-reading-tests.yml` trigger list.
+7. `.github/workflows/orion-reading-tests.yml`: the owning service's path in
+   the trigger list, and its responder tests in the `pytest` command.
+
+Steps 1–5 land in the same PR. The coverage test fails if a request channel
+exists without a Live row, a responder section and a listed tool, so a
+contract-only PR ahead of the responder is refused on purpose: a channel with
+no responder would read as "unknown" on every call.
 
 ## Broker-admitted turns
 

@@ -22,7 +22,6 @@ from .chat_turn_metacog_gate import (
 from .transport_metacog_gate import (
     build_transport_metacog_trigger_from_bus_synaptic,
     build_transport_metacog_trigger_from_grammar_atom,
-    build_transport_metacog_trigger_from_snapshot,
 )
 from .insight_metacog_gate import build_insight_metacog_trigger
 from .flow_metacog_gate import build_flow_metacog_trigger
@@ -31,6 +30,9 @@ from .transport_baseline_gate import (
     gate_from_settings as transport_baseline_gate_from_settings,
     log_fold_result as log_transport_baseline_fold,
 )
+from .transport_timeout_owner import PendingAtom, TimeoutAtomOwner
+from .transport_baseline_hourly import TransportBaselineHourly
+from orion.schemas.telemetry.transport_baseline_hourly import TRANSPORT_BASELINE_HOURLY_KIND
 from .repair_pressure_trend_gate import (
     evaluate_repair_pressure_trend,
     state_from_dict,
@@ -86,11 +88,28 @@ def _node_age_sec(observed_at: str | None) -> float | None:
     return (datetime.now(timezone.utc) - parsed).total_seconds()
 
 
-# The legacy pooled-timeout branch keeps exactly the coverage it had before
-# the per-hop rollout (PR #2312 and its stacked coverage PR add many new
-# publishers). New publishers feed only the log-only baseline gate until EMIT
-# flips, so the log-only week does not add a flood of legacy timeout rows.
-LEGACY_TIMEOUT_SERVICES = frozenset({"cortex-exec", "cortex-orch"})
+def _parse_ts(value: Any) -> float | None:
+    """ISO string / datetime / epoch -> epoch seconds (UTC if naive), else None."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str) and value:
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+# Housekeeping cadence for the timeout-owner grace expiry and the hourly flush.
+_TRANSPORT_HOUSEKEEPING_SEC: float = 10.0
+# Unpublished hourly rows kept for retry after a bus publish failure.
+_HOURLY_OUTBOX_MAX: int = 5000
 
 
 class EquilibriumService(BaseChassis):
@@ -175,6 +194,23 @@ class EquilibriumService(BaseChassis):
             if settings.transport_baseline_enable
             else None
         )
+        # EMIT only: the gate owns the timeouts it saw; the atom for the same
+        # timeout is dropped (app/transport_timeout_owner.py). None while
+        # log-only -- then the rpc_transport_timeout atom is the sole owner.
+        self._timeout_owner: TimeoutAtomOwner | None = (
+            TimeoutAtomOwner(grace_s=float(settings.transport_timeout_atom_grace_sec))
+            if self._transport_baseline_gate is not None
+            and settings.transport_baseline_emit_effective()
+            else None
+        )
+        # Durable hourly per-hop readings (acceptance check 1's evidence).
+        self._transport_hourly: TransportBaselineHourly | None = (
+            TransportBaselineHourly(config_fingerprint=self._transport_baseline_gate.config.fingerprint())
+            if self._transport_baseline_gate is not None
+            and settings.transport_baseline_hourly_publish_enable
+            else None
+        )
+        self._hourly_outbox: list[Any] = []
 
     def _trace_meta(
         self,
@@ -267,12 +303,14 @@ class EquilibriumService(BaseChassis):
     async def _handle_rpc_health_snapshot(
         self, payload_dict: Dict[str, Any], *, zen: float, distress: float
     ) -> None:
-        """Both transport consumers of one RpcHealthSnapshotV1 window.
+        """The per-hop baseline gate's consumer of one RpcHealthSnapshotV1 window.
 
-        - baseline gate (per-hop EWMA): always folds when enabled; publishes
-          only when EQUILIBRIUM_TRANSPORT_BASELINE_EMIT is effective.
-        - legacy timeout branch: runs only while the baseline gate is NOT
-          emitting, so one timeout never produces two triggers.
+        Always folds when enabled; publishes only when
+        EQUILIBRIUM_TRANSPORT_BASELINE_EMIT is effective. Every folded window
+        also feeds the hourly summary and, while emitting, the timeout owner
+        (so the rpc_transport_timeout atom for a timeout this window saw is
+        dropped). The pooled "legacy" timeout branch that also lived here was
+        retired 2026-09-29: it was a coarser copy of the atom.
         """
         zen_state = "zen" if zen > 0.5 else "not_zen"
         emit = settings.transport_baseline_emit_effective()
@@ -294,6 +332,20 @@ class EquilibriumService(BaseChassis):
             if result is not None and result.skipped_reason is None:
                 log_transport_baseline_fold(result, emit=emit)
                 await self._persist_transport_baseline_state()
+                window_end_ts = _parse_ts(payload_dict.get("window_end"))
+                if window_end_ts is not None:
+                    if self._transport_hourly is not None:
+                        try:
+                            self._transport_hourly.observe(result, window_end_ts=window_end_ts)
+                        except Exception:
+                            logger.exception("transport_baseline_hourly observe failed")
+                    if self._timeout_owner is not None:
+                        self._timeout_owner.add_credits(
+                            result.observations,
+                            window_start_ts=_parse_ts(payload_dict.get("window_start")),
+                            window_end_ts=window_end_ts,
+                            now=datetime.now().timestamp(),
+                        )
             if emit:
                 for trigger in triggers:
                     # Episodes are rate-limited by construction (open/escalate/
@@ -309,19 +361,116 @@ class EquilibriumService(BaseChassis):
                         continue
                     await self._publish_metacog_trigger(trigger, bypass_cooldown=True)
 
-        if (
-            settings.metacog_transport_trigger_enable
-            and not emit
-            and payload_dict.get("service") in LEGACY_TIMEOUT_SERVICES
-        ):
-            trigger = build_transport_metacog_trigger_from_snapshot(
-                payload_dict,
+    async def _handle_rpc_timeout_atom(
+        self, atom: Dict[str, Any], payload_dict: Dict[str, Any], *, zen: float, distress: float
+    ) -> None:
+        """One ``rpc_transport_timeout`` atom -> at most one transport trigger.
+
+        Log-only gate (EMIT off): the atom is the single owner and fires now.
+        EMIT effective: offered to the timeout owner first. If a gate-folded
+        snapshot window already saw this timeout, the gate's episode owns it
+        and the atom is dropped; otherwise it is held for the grace period and
+        fires from the housekeeping loop if no window claims it.
+        """
+        correlation_id = str(payload_dict.get("correlation_id") or "")
+        zen_state = "zen" if zen > 0.5 else "not_zen"
+        owner = self._timeout_owner
+        if owner is not None:
+            now = datetime.now().timestamp()
+            emitted = _parse_ts(payload_dict.get("emitted_at"))
+            pending = PendingAtom(
+                atom=dict(atom),
+                correlation_id=correlation_id,
+                request_channel=str(atom.get("text_value") or ""),
+                emitted_ts=emitted if emitted is not None else now,
+                received_ts=now,
                 zen_state=zen_state,
                 pressure=distress,
-                recall_enabled=settings.metacog_recall_enabled,
             )
-            if trigger is not None:
-                await self._publish_metacog_trigger(trigger)
+            owner.offer_atom(pending)
+            return
+        await self._fire_rpc_timeout_atom(atom, correlation_id, zen_state=zen_state, pressure=distress)
+
+    async def _fire_rpc_timeout_atom(
+        self, atom: Dict[str, Any], correlation_id: str, *, zen_state: str, pressure: float
+    ) -> None:
+        trigger = build_transport_metacog_trigger_from_grammar_atom(
+            atom,
+            correlation_id=correlation_id,
+            zen_state=zen_state,
+            pressure=pressure,
+            recall_enabled=settings.metacog_recall_enabled,
+        )
+        if trigger is not None:
+            await self._publish_metacog_trigger(trigger)
+
+    async def _publish_transport_hourly(self, rows: List[Any]) -> None:
+        """Publish hourly rows; anything that fails to publish stays in a
+        bounded outbox and is retried on the next housekeeping tick."""
+        pending = self._hourly_outbox + list(rows)
+        self._hourly_outbox = []
+        for i, row in enumerate(pending):
+            env = BaseEnvelope(
+                kind=TRANSPORT_BASELINE_HOURLY_KIND,
+                source=self._source(),
+                payload=row.model_dump(mode="json"),
+            )
+            try:
+                await self.bus.publish(settings.channel_transport_baseline_hourly, env)
+            except Exception as e:
+                rest = pending[i:]
+                dropped = max(0, len(rest) - _HOURLY_OUTBOX_MAX)
+                self._hourly_outbox = rest[dropped:]
+                logger.warning(
+                    "transport_baseline_hourly publish failed (%s); %d row(s) queued for retry, %d dropped",
+                    e, len(self._hourly_outbox), dropped,
+                )
+                return
+        if pending:
+            logger.info(
+                "transport_baseline_hourly published rows=%d channel=%s",
+                len(pending), settings.channel_transport_baseline_hourly,
+            )
+
+    async def _transport_housekeeping_once(self, now: float) -> None:
+        owner = self._timeout_owner
+        if owner is not None:
+            for p in owner.expire(now):
+                await self._fire_rpc_timeout_atom(
+                    p.atom, p.correlation_id, zen_state=p.zen_state, pressure=p.pressure
+                )
+        if self._transport_hourly is not None:
+            rows = self._transport_hourly.flush_due(
+                now, emit_effective=settings.transport_baseline_emit_effective()
+            )
+            if rows or self._hourly_outbox:
+                await self._publish_transport_hourly(rows)
+
+    async def _transport_housekeeping_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await self._transport_housekeeping_once(datetime.now().timestamp())
+            except Exception:
+                logger.exception("transport housekeeping failed")
+            await asyncio.sleep(_TRANSPORT_HOUSEKEEPING_SEC)
+
+    async def _transport_shutdown_flush(self) -> None:
+        """Best effort: held atoms fire, partial hourly buckets publish."""
+        now = datetime.now().timestamp()
+        try:
+            if self._timeout_owner is not None:
+                for p in self._timeout_owner.drain():
+                    await self._fire_rpc_timeout_atom(
+                        p.atom, p.correlation_id, zen_state=p.zen_state, pressure=p.pressure
+                    )
+            if self._transport_hourly is not None:
+                rows = self._transport_hourly.flush_all(
+                    now, emit_effective=settings.transport_baseline_emit_effective()
+                )
+                if rows or self._hourly_outbox:
+                    await self._publish_transport_hourly(rows)
+        except Exception:
+            logger.exception("transport shutdown flush failed")
 
     def _service_key(self, payload: SystemHealthV1) -> str:
         node = payload.node or "unknown"
@@ -1193,6 +1342,11 @@ class EquilibriumService(BaseChassis):
             heartbeat_task = asyncio.create_task(self._spark_heartbeat_loop())
         bus_synaptic_poll_task = asyncio.create_task(self._bus_synaptic_poll_loop())
         generative_poll_task = asyncio.create_task(self._generative_metacog_poll_loop())
+        transport_housekeeping_task = (
+            asyncio.create_task(self._transport_housekeeping_loop())
+            if (self._timeout_owner is not None or self._transport_hourly is not None)
+            else None
+        )
 
         # Build list of channels to subscribe to
         channels = [settings.health_channel]
@@ -1402,17 +1556,14 @@ class EquilibriumService(BaseChassis):
                                         timeout_reason=timeout_reason,
                                     )
 
-                            if settings.metacog_transport_trigger_enable and semantic_role == "rpc_transport_timeout":
-                                correlation_id = str(payload_dict.get("correlation_id") or "")
-                                trigger = build_transport_metacog_trigger_from_grammar_atom(
-                                    atom,
-                                    correlation_id=correlation_id,
-                                    zen_state="zen" if zen > 0.5 else "not_zen",
-                                    pressure=distress,
-                                    recall_enabled=settings.metacog_recall_enabled,
+                            if (
+                                settings.metacog_transport_trigger_enable
+                                and semantic_role == "rpc_transport_timeout"
+                                and isinstance(atom, dict)
+                            ):
+                                await self._handle_rpc_timeout_atom(
+                                    atom, payload_dict, zen=zen, distress=distress
                                 )
-                                if trigger is not None:
-                                    await self._publish_metacog_trigger(trigger)
 
                         elif channel == settings.channel_rpc_health_snapshot:
                             # Real RpcHealthSnapshotV1, published every
@@ -1432,6 +1583,8 @@ class EquilibriumService(BaseChassis):
             heartbeat_task.cancel()
         bus_synaptic_poll_task.cancel()
         generative_poll_task.cancel()
+        if transport_housekeeping_task:
+            transport_housekeeping_task.cancel()
 
         await asyncio.gather(
             publisher,
@@ -1439,8 +1592,10 @@ class EquilibriumService(BaseChassis):
             *( [heartbeat_task] if heartbeat_task else [] ),
             bus_synaptic_poll_task,
             generative_poll_task,
+            *( [transport_housekeeping_task] if transport_housekeeping_task else [] ),
             return_exceptions=True,
         )
+        await self._transport_shutdown_flush()
 
         # Release the Postgres connection the generative gates cached, if any --
         # the FalkorDB client above is Redis-backed and pooled, this one holds a

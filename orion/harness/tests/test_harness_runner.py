@@ -308,6 +308,30 @@ async def test_harness_runner_spilled_held_turn_names_granted_role_not_route_def
 
 
 @pytest.mark.asyncio
+async def test_harness_runner_resolves_route_or_backend_for_the_hop_key(monkeypatch, tmp_path) -> None:
+    """Unheld: a llamacpp label keys by route; a non-pool backend by backend; no label falls
+    back to the motor's own default label for BOTH the hop key and the route-default probe."""
+    env_file = tmp_path / "fcc.env"
+    env_file.write_text("MODEL_SONNET=llamacpp/harness\nMODEL_HAIKU=nvidia_nim/z-ai/glm-5.2\n")
+    monkeypatch.setenv("HARNESS_FCC_ENV_PATH", str(env_file))
+
+    async def _runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "final", "llm_response": "answer", "metadata": {"exit_code": 0}}
+
+    def _req(label):
+        return HarnessRunRequestV1(correlation_id="c-route", thought_event=make_thought(), user_message="hi",
+                                   permissions=ContextExecPermissionV1(), answer_contract=AnswerContract(),
+                                   fcc_model_label=label)
+
+    probe = AsyncMock(return_value=None)
+    unlabeled = await HarnessRunner(AsyncMock(), fcc_runner=_runner, served_model_probe=probe).run(_req(None))
+    assert (unlabeled.fcc_route, unlabeled.fcc_backend) == ("harness", None)
+    probe.assert_awaited_once_with("MODEL_SONNET")
+    haiku = await HarnessRunner(AsyncMock(), fcc_runner=_runner, served_model_probe=probe).run(_req("MODEL_HAIKU"))
+    assert (haiku.fcc_route, haiku.fcc_backend) == (None, "nvidia-nim")
+
+
+@pytest.mark.asyncio
 async def test_harness_runner_held_turn_pool_unreadable_names_role_without_model() -> None:
     captured_kwargs: dict[str, Any] = {}
 

@@ -21,6 +21,7 @@ from orion.thought.stance_react import (
     IMPERATIVE_MAX_LEN,
     TONE_MAX_LEN,
     apply_stance_react_pipeline,
+    normalize_stance_react_raw,
     parse_stance_react_payload,
 )
 
@@ -138,11 +139,19 @@ def test_parse_stance_react_payload_coerces_false_interaction_regime() -> None:
     assert parsed.stance_harness_slice.interaction_regime is None
 
 
-def test_parse_stance_react_payload_coerces_null_event_id() -> None:
+def test_parse_stance_react_payload_drops_model_null_event_id() -> None:
     raw = _thought().model_dump(mode="json")
     raw["event_id"] = None
     parsed = parse_stance_react_payload(raw)
     assert parsed.event_id
+
+
+def test_normalize_stance_react_raw_coerces_null_event_id() -> None:
+    raw = _thought().model_dump(mode="json")
+    raw["event_id"] = None
+    normalized = normalize_stance_react_raw(raw)
+    assert normalized["event_id"]
+    uuid.UUID(normalized["event_id"])
 
 
 def test_stance_react_clamp_lens_match_schema_max_length() -> None:

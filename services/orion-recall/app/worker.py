@@ -1354,41 +1354,54 @@ async def _query_backends(
     return candidates, backend_counts
 
 
+_telemetry_table_ready = False
+_telemetry_failure_warned = False
+
+
 def _persist_decision(decision: RecallDecisionV1) -> None:
     """
-    Durable log to Postgres if available. Best-effort.
+    Durable log to Postgres if available. Best-effort, blocking (psycopg2):
+    callers on the event loop go through ``persist_decision_async``.
+
+    jsonb columns take ``psycopg2.extras.Json``: psycopg2 cannot adapt a raw
+    dict, so before 2026-09-29 every insert raised "can't adapt type 'dict'"
+    and the failure was logged at debug level -- recall_telemetry had zero
+    rows ever. The first failure per process is now a warning.
     """
+    global _telemetry_table_ready, _telemetry_failure_warned
     dsn = settings.RECALL_PG_DSN
     if not dsn:
         return
     if psycopg2 is None:
         return
-    try:
-        conn = psycopg2.connect(dsn)
-        conn.autocommit = True
-    except Exception as exc:
-        logger.debug(f"recall telemetry pg connect failed: {exc}")
-        return
+    from psycopg2.extras import Json  # type: ignore
 
+    conn = None
     try:
+        # Bounded: the bus handler awaits this before replying, so a hung
+        # connect must not hold a recall reply hostage.
+        conn = psycopg2.connect(dsn, connect_timeout=3)
+        conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS recall_telemetry (
-                    id uuid primary key,
-                    corr_id text,
-                    session_id text,
-                    node_id text,
-                    verb text,
-                    profile text,
-                    query text,
-                    selected_ids jsonb,
-                    backend_counts jsonb,
-                    latency_ms integer,
-                    created_at timestamptz default now()
+            if not _telemetry_table_ready:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS recall_telemetry (
+                        id uuid primary key,
+                        corr_id text,
+                        session_id text,
+                        node_id text,
+                        verb text,
+                        profile text,
+                        query text,
+                        selected_ids jsonb,
+                        backend_counts jsonb,
+                        latency_ms integer,
+                        created_at timestamptz default now()
+                    )
+                    """
                 )
-                """
-            )
+                _telemetry_table_ready = True
             cur.execute(
                 """
                 INSERT INTO recall_telemetry
@@ -1404,18 +1417,29 @@ def _persist_decision(decision: RecallDecisionV1) -> None:
                     decision.verb,
                     decision.profile,
                     decision.query,
-                    decision.selected_ids,
-                    decision.backend_counts,
+                    Json(decision.selected_ids),
+                    Json(decision.backend_counts),
                     decision.latency_ms,
                 ),
             )
     except Exception as exc:
-        logger.debug(f"recall telemetry persist failed: {exc}")
+        if not _telemetry_failure_warned:
+            _telemetry_failure_warned = True
+            logger.warning("recall_telemetry_persist_failed (further failures at debug): %s", exc)
+        else:
+            logger.debug("recall_telemetry_persist_failed: %s", exc)
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+async def persist_decision_async(decision: RecallDecisionV1) -> None:
+    """Run the blocking psycopg2 write off the event loop, so one recall's
+    telemetry connect+insert never stalls every other in-flight request."""
+    await asyncio.to_thread(_persist_decision, decision)
 
 
 def _log_debug_dump(
@@ -2072,7 +2096,7 @@ async def handle_recall(env: BaseEnvelope, *, bus) -> BaseEnvelope:
     except Exception as exc:
         logger.debug(f"telemetry publish failed: {exc}")
 
-    _persist_decision(decision)
+    await persist_decision_async(decision)
 
     debug_payload: Dict[str, Any] | None = None
     if diagnostic:

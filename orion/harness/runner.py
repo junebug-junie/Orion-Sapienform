@@ -16,6 +16,7 @@ from orion.fcc.context_budget import (
     measure_step_payload_chars,
 )
 from orion.harness.fcc_motor import (
+    _ROUTE_PROBE_BACKENDS as _POOL_BACKENDS,
     DEFAULT_FCC_MODEL_LABEL,
     _extract_tool_name,
     _extract_tool_result_errors,
@@ -25,7 +26,7 @@ from orion.harness.fcc_motor import (
     load_fcc_env,
     probe_current_served_model,
     resolve_auth_token,
-    resolve_fcc_route_key,
+    resolve_fcc_backend,
     run_fcc_turn,
     summarize_harness_step,
 )
@@ -100,6 +101,9 @@ class HarnessMotorResult:
     # the subprocess starts, so an early timeout keys the same as a success.
     serving_role: str | None = None
     fcc_route: str | None = None
+    # A non-pool backend (e.g. MODEL_HAIKU -> nvidia_nim): its own latency population, keyed
+    # `fcc:backend:<backend>`, never folded into `fcc:unknown`.
+    fcc_backend: str | None = None
     # Verbosity/stuck-loop signals (see runner.py's step loop for how these accumulate).
     # Carried on the result object -- not just recorded into grammar_collector -- because
     # services/orion-harness-governor/app/bus_listener.py's _emit_finalize_lifecycle_grammar
@@ -345,13 +349,21 @@ class HarnessRunner:
 
         gpu_lease = getattr(request, "gpu_lease", None)
         serving_role = gpu_lease.role if gpu_lease is not None else None
+        # Same default the motor applies (run_fcc_turn), so the hop key and the
+        # route-default probe name the route the subprocess actually asks for.
+        fcc_label = request.fcc_model_label or DEFAULT_FCC_MODEL_LABEL
+        fcc_route: str | None = None
+        fcc_backend: str | None = None
         try:
-            # Same default the motor applies (run_fcc_turn), so the hop key names
-            # the route the subprocess actually asked for.
-            fcc_route = resolve_fcc_route_key(request.fcc_model_label or DEFAULT_FCC_MODEL_LABEL)
+            parsed = resolve_fcc_backend(fcc_label)
         except Exception:
             logger.warning("fcc_route_resolve failed corr=%s", request.correlation_id, exc_info=True)
-            fcc_route = None
+            parsed = None
+        if parsed is not None:
+            if parsed[0] in _POOL_BACKENDS:
+                fcc_route = parsed[1]
+            else:
+                fcc_backend = parsed[0]
 
         async def _probe_serving_placement() -> ServingPlacement | None:
             # Best-effort self-context: which real backend serves this turn.
@@ -365,7 +377,7 @@ class HarnessRunner:
                 if serving_role:
                     state = await self.pool_state_probe()
                     return placement_from_lease(serving_role, discovered_role(state, serving_role))
-                model = await self.served_model_probe(request.fcc_model_label)
+                model = await self.served_model_probe(fcc_label)
                 return placement_from_route_default(fcc_route, model) if model else None
             except Exception:
                 logger.warning(
@@ -686,6 +698,7 @@ class HarnessRunner:
                 fcc_served_model=fcc_served_model,
                 serving_role=serving_role,
                 fcc_route=fcc_route,
+                fcc_backend=fcc_backend,
                 reading_receipts=reading_receipts,
                 source_fetches=reading_tracker.source_fetches(),
             )
@@ -749,6 +762,7 @@ class HarnessRunner:
             fcc_served_model=fcc_served_model,
             serving_role=serving_role,
             fcc_route=fcc_route,
+            fcc_backend=fcc_backend,
             reading_receipts=reading_receipts,
             source_fetches=reading_tracker.source_fetches(),
         )

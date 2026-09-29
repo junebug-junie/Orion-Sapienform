@@ -449,6 +449,26 @@ def _route_key_from_fcc_env_value(raw_value: str) -> Optional[Tuple[str, str]]:
     return backend, route_key
 
 
+def resolve_fcc_backend(
+    fcc_model_label: str | None, *, env: Dict[str, str] | None = None
+) -> Optional[Tuple[str, str]]:
+    """``(backend, route)`` a turn's FCC label resolves to (``("llamacpp", "agent")``,
+    ``("nvidia-nim", "z-ai/glm-5.2")``), any backend, or None. Same two label shapes and order as
+    `label_to_claude_model_id`."""
+    label = str(fcc_model_label or "").strip()
+    if not label:
+        return None
+    parsed = _route_key_from_fcc_env_value(label)
+    if parsed is None:
+        resolved_env = (
+            env
+            if env is not None
+            else load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
+        )
+        parsed = _route_key_from_fcc_env_value(resolved_env.get(label, ""))
+    return parsed
+
+
 def resolve_fcc_route_key(
     fcc_model_label: str | None, *, env: Dict[str, str] | None = None
 ) -> Optional[str]:
@@ -462,17 +482,7 @@ def resolve_fcc_route_key(
     on" self-context on exactly the lane where it differs most from the
     default. None for a non-llamacpp backend (not a gateway pool route).
     """
-    label = str(fcc_model_label or "").strip()
-    if not label:
-        return None
-    parsed = _route_key_from_fcc_env_value(label)
-    if parsed is None:
-        resolved_env = (
-            env
-            if env is not None
-            else load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
-        )
-        parsed = _route_key_from_fcc_env_value(resolved_env.get(label, ""))
+    parsed = resolve_fcc_backend(fcc_model_label, env=env)
     if parsed is None:
         return None
     backend, route_key = parsed

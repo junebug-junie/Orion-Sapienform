@@ -68,7 +68,7 @@ def _rows(conn: Any, sql: str, **params: Any) -> list[dict[str, Any]]:
 
 
 def _aware(value: datetime) -> datetime:
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc) if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 def doc_id(kind: Kind, row: dict[str, Any]) -> str:
@@ -80,7 +80,7 @@ def split_ids(ids: Iterable[str]) -> tuple[list[int], list[str]]:
     for item_id in ids:
         if item_id.startswith(NARRATIVE_PREFIX):
             tail = item_id[len(NARRATIVE_PREFIX):]
-            if tail.isdigit():
+            if tail.isascii() and tail.isdigit():
                 narratives.append(int(tail))
         elif item_id.startswith("dh-"):
             hypotheses.append(item_id)

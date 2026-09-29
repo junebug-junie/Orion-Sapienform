@@ -1,4 +1,5 @@
 """Dream lookups: both kinds, blind-experiment rules, empty vs counts, caps."""
+import inspect
 import re
 from datetime import date, datetime, timedelta, timezone
 
@@ -78,9 +79,19 @@ def test_narrative_item_shape_and_utc():
     row = narrative(19, 5, themes=["x" * 200] + [f"t{i}" for i in range(12)])
     row["occurred_at"] = row["occurred_at"].replace(tzinfo=None)
     [item] = dq.recent(FakeConn([row]), kind=None, since=None, limit=5, now=NOW).items
-    assert item.text == "A dream.\n\nIt went on." and item.occurred_at.tzinfo is not None
+    assert item.text == "A dream.\n\nIt went on." and item.occurred_at.utcoffset() == timedelta(0)
+    assert item.occurred_at == (NOW - timedelta(hours=5))
     assert item.extra["dream_date"] == "2026-09-28"
     assert len(item.extra["themes"]) == 8 and len(item.extra["themes"][0]) == 80
+
+
+def test_non_utc_aware_timestamps_normalize_to_utc():
+    denver = timezone(timedelta(hours=-6))
+    row = hypothesis("dh-aaa111", 1)
+    row["occurred_at"] = datetime(2026, 9, 29, 0, 30, tzinfo=denver)
+    [item] = dq.recent(FakeConn([], [row]), kind=None, since=None, limit=5, now=NOW).items
+    assert item.occurred_at.utcoffset() == timedelta(0)
+    assert item.occurred_at == datetime(2026, 9, 29, 6, 30, tzinfo=timezone.utc)
 
 
 def test_hypothesis_item_has_no_arm_or_refs_and_flags_expiry():
@@ -99,9 +110,35 @@ def test_every_hypothesis_statement_is_offered_only_and_never_selects_arm_or_ref
             assert not re.search(rf"\b{column}\b", selected), (column, sql)
 
 
+_READS_HYPOTHESES = re.compile(r"\b(?:from|join)\s+dream_hypothesis\b", re.IGNORECASE)
+
+
 def test_no_hypothesis_statement_escapes_the_pin():
-    module_sql = [v for v in vars(dq).values() if isinstance(v, str) and "FROM dream_hypothesis" in v]
+    module_sql = [v for v in vars(dq).values() if isinstance(v, str) and _READS_HYPOTHESES.search(v)]
     assert module_sql and all(sql in dq.HYPOTHESIS_SQL for sql in module_sql)
+    assert len(_READS_HYPOTHESES.findall(inspect.getsource(dq))) == len(dq.HYPOTHESIS_SQL)
+
+
+_N_SINCE = "(CAST(:since AS timestamptz) IS NULL OR (d.created_at AT TIME ZONE 'UTC') >= CAST(:since AS timestamptz))"
+_H_SINCE = "(CAST(:since AS timestamptz) IS NULL OR h.offered_at >= CAST(:since AS timestamptz))"
+
+
+def test_every_recent_and_by_ids_statement_filters_on_since():
+    pins = {
+        "NARRATIVE_RECENT_SQL": _N_SINCE, "NARRATIVE_BY_IDS_SQL": _N_SINCE,
+        "HYPOTHESIS_RECENT_SQL": _H_SINCE, "HYPOTHESIS_BY_IDS_SQL": _H_SINCE,
+    }
+    for name, predicate in pins.items():
+        assert predicate in getattr(dq, name), name
+
+
+def test_recent_and_by_ids_pass_the_callers_since_to_every_query():
+    since = NOW - timedelta(hours=12)
+    conn = FakeConn([narrative(19, 5)], [hypothesis("dh-aaa111", 1)])
+    dq.recent(conn, kind=None, since=since, limit=5, now=NOW)
+    dq.by_ids(conn, [("dream:19", 0.9), ("dh-aaa111", 0.8)], kind=None, since=since, limit=5, now=NOW)
+    assert len(conn.calls) == 4
+    assert all(params["since"] == since for _, params in conn.calls)
 
 
 def test_by_ids_keeps_rank_order_attaches_similarity_and_drops_missing():
@@ -139,4 +176,10 @@ def test_index_rows_pairs_kinds_and_scans_offered_hypotheses_only():
     conn = FakeConn([narrative(19, 5)], [hypothesis("dh-aaa111", 1)])
     pairs = dq.index_rows(conn)
     assert [(k, dq.doc_id(k, r)) for k, r in pairs] == [("narrative", "dream:19"), ("hypothesis", "dh-aaa111")]
-    assert dq.split_ids(["dream:3", "dh-abc123", "dream:x"]) == ([3], ["dh-abc123"])
+    hypothesis_sql = [sql for sql, _ in conn.calls if _READS_HYPOTHESES.search(sql)]
+    assert hypothesis_sql and all(sql in dq.HYPOTHESIS_SQL for sql in hypothesis_sql)
+    assert all("h.offered_at IS NOT NULL" in sql for sql in hypothesis_sql)
+
+
+def test_split_ids_ignores_malformed_and_non_ascii_digit_ids():
+    assert dq.split_ids(["dream:3", "dh-abc123", "dream:x", "dream:²", "dream:"]) == ([3], ["dh-abc123"])

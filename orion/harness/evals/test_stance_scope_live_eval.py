@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 
 import httpx
+import pytest
 
 from orion.harness.evals import stance_scope_live_eval as module
 from orion.harness.evals.stance_scope_live_eval import (
@@ -69,15 +71,78 @@ def test_hunt_tripwire_is_exclusive() -> None:
     assert score_run(["Bash"] * (HUNT_TRIPWIRE + 1), finished=True, reply_text="x")["hunt"] is True
 
 
-def test_run_once_connect_error_returns_result_with_error(monkeypatch) -> None:
+def test_run_once_connect_error_skips_lookup_and_cancel(monkeypatch) -> None:
     def raise_connect(*_args, **_kwargs):
         raise httpx.ConnectError("connection refused")
 
+    lookups: list[str] = []
+    cancels: list[str] = []
+
+    def mock_lookup(sid: str) -> str:
+        lookups.append(sid)
+        return "c-1"
+
     monkeypatch.setattr(module.httpx, "post", raise_connect)
+    monkeypatch.setattr(module, "_corr_for_session", mock_lookup)
+    monkeypatch.setattr(module, "_cancel", cancels.append)
     monkeypatch.setattr(module, "_governor_log", lambda _since: "")
     result = run_once("http://127.0.0.1:8080", 30.0)
-    assert result["error"] is not None
+    assert "ConnectError" in str(result["error"])
+    assert result["corr_lookup"] is None
+    assert result["hunt"] is None
     assert result["passed"] is False
+    assert lookups == []
+    assert cancels == []
+
+
+def test_run_once_remote_protocol_error_looks_up_and_cancels(monkeypatch) -> None:
+    def raise_protocol(*_args, **_kwargs):
+        raise httpx.RemoteProtocolError(
+            "peer closed connection", request=httpx.Request("POST", "http://127.0.0.1:8080/api/chat")
+        )
+
+    cancels: list[str] = []
+    monkeypatch.setattr(module.httpx, "post", raise_protocol)
+    monkeypatch.setattr(module, "_corr_for_session", lambda _sid: "c-1")
+    monkeypatch.setattr(module, "_cancel", cancels.append)
+    monkeypatch.setattr(module, "_governor_log", lambda _since: "")
+    result = run_once("http://127.0.0.1:8080", 30.0)
+    assert "RemoteProtocolError" in str(result["error"])
+    assert result["corr_lookup"] == "ok"
+    assert result["correlation_id"] == "c-1"
+    assert cancels == ["c-1"]
+    assert result["passed"] is False
+
+
+def test_run_once_successful_turn_has_no_lookup(monkeypatch) -> None:
+    class _Resp:
+        status_code = 200
+
+        def json(self) -> dict[str, object]:
+            return {"correlation_id": "c-1", "llm_response": "I read three GPU pieces.", "type": "final"}
+
+    monkeypatch.setattr(module.httpx, "post", lambda *_a, **_k: _Resp())
+    monkeypatch.setattr(
+        module,
+        "_governor_log",
+        lambda _since: _line("c-1", 1, "mcp__orion-introspect__reading_results"),
+    )
+    result = run_once("http://127.0.0.1:8080", 30.0)
+    assert result["corr_lookup"] is None
+    assert result["error"] is None
+    assert result["hunt"] is False
+    assert result["passed"] is True
+
+
+def test_main_rejects_zero_runs(monkeypatch) -> None:
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("run_once must not be called")
+
+    monkeypatch.setattr(module, "run_once", fail_run)
+    monkeypatch.setattr(sys, "argv", ["stance_scope_live_eval", "--runs", "0"])
+    with pytest.raises(SystemExit) as excinfo:
+        module.main()
+    assert excinfo.value.code == 2
 
 
 def test_run_once_timeout_missing_corr(monkeypatch) -> None:
@@ -115,5 +180,6 @@ def test_run_once_timeout_cancel_failure(monkeypatch) -> None:
     monkeypatch.setattr(module, "_cancel", mock_cancel)
     monkeypatch.setattr(module, "_governor_log", lambda _since: "")
     result = run_once("http://127.0.0.1:8080", 30.0)
-    assert result["error"] is not None
+    assert "CalledProcessError" in str(result["error"])
+    assert result["corr_lookup"] == "ok"
     assert cancel_called == ["c-1"]

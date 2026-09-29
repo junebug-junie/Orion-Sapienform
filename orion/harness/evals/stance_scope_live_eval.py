@@ -132,20 +132,22 @@ def run_once(hub: str, turn_timeout: float) -> dict[str, object]:
             corr = body.get("correlation_id")
             reply = str(body.get("llm_response") or "")
             finished = body.get("type") == "final"
-    except httpx.TimeoutException:
+    except httpx.ConnectError as exc:
+        error = _record_error(error, exc)
+    except Exception as exc:
+        if not isinstance(exc, httpx.TimeoutException):
+            error = _record_error(error, exc)
         try:
             corr = _corr_for_session(session_id)
             corr_lookup = "ok" if corr else "missing"
-        except Exception as exc:
-            error = _record_error(error, exc)
+        except Exception as lookup_exc:
+            error = _record_error(error, lookup_exc)
             corr_lookup = "missing"
         if corr:
             try:
                 _cancel(corr)
-            except Exception as exc:
-                error = _record_error(error, exc)
-    except Exception as exc:
-        error = _record_error(error, exc)
+            except Exception as cancel_exc:
+                error = _record_error(error, cancel_exc)
     elapsed = round(time.monotonic() - t0, 1)
     tools: list[str] = []
     if corr:
@@ -156,11 +158,10 @@ def run_once(hub: str, turn_timeout: float) -> dict[str, object]:
     result: dict[str, object] = {
         "session_id": session_id, "correlation_id": corr, "elapsed_sec": elapsed,
         "http_status": http_status, "error": error, "tools": tools, "reply_excerpt": reply[:400],
+        "corr_lookup": corr_lookup,
         **score_run(tools, finished=finished, reply_text=reply),
     }
-    if corr_lookup is not None:
-        result["corr_lookup"] = corr_lookup
-    if corr_lookup == "missing":
+    if corr is None:
         result["hunt"] = None
         result["passed"] = False
     return result
@@ -173,6 +174,8 @@ def main() -> int:
     parser.add_argument("--turn-timeout", type=float, default=900.0)
     parser.add_argument("--out", type=Path, default=Path("/tmp/stance-scope-eval/report.json"))
     args = parser.parse_args()
+    if args.runs < 1:
+        parser.error("--runs must be at least 1")
     runs: list[dict[str, object]] = []
     args.out.parent.mkdir(parents=True, exist_ok=True)
     for _ in range(args.runs):

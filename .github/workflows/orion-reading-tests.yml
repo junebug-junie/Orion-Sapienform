@@ -8,6 +8,7 @@ on:
       - "orion/bus/channels.yaml"
       - "orion/fcc/**"
       - "orion/introspect/**"
+      - "orion/core/bus/**"
       - "orion/harness/**"
       - "orion/hub/**"
       - "orion/cognition/prompts/stance_react.j2"

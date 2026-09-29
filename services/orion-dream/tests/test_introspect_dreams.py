@@ -183,3 +183,25 @@ def test_index_rows_pairs_kinds_and_scans_offered_hypotheses_only():
 
 def test_split_ids_ignores_malformed_and_non_ascii_digit_ids():
     assert dq.split_ids(["dream:3", "dh-abc123", "dream:x", "dream:²", "dream:"]) == ([3], ["dh-abc123"])
+
+
+MCP_TOOL_RESULT_MAX_CHARS = 12000
+
+
+def test_worst_case_dream_results_fit_the_mcp_tool_result_budget():
+    import json
+
+    accent = "é" * 10_000
+    big_narratives = [narrative(i, i, tldr=accent, story=accent, themes=[accent] * 20) for i in range(1, 6)]
+    big_hypotheses = [
+        {**hypothesis(f"dh-{i:06x}", i), "claim": accent, "why": accent, "cycle_id": accent} for i in range(1, 6)
+    ]
+    conn = FakeConn(big_narratives, big_hypotheses)
+    results = [
+        dq.recent(conn, kind="narrative", since=None, limit=5, now=NOW),
+        dq.recent(conn, kind="hypothesis", since=None, limit=5, now=NOW),
+        dq.one(conn, "dream:1", now=NOW),
+    ]
+    for result in results:
+        assert result.items
+        assert len(json.dumps(result.model_dump(mode="json"), ensure_ascii=False)) < MCP_TOOL_RESULT_MAX_CHARS

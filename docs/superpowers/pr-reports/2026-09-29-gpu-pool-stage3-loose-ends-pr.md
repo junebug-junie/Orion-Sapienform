@@ -215,4 +215,5 @@ Live check after the restart:
 
 ## PR link
 
-https://github.com/junebug-junie/Orion-Sapienform/pull/2395
+- https://github.com/junebug-junie/Orion-Sapienform/pull/2395 (merged 2026-09-29 06:03 UTC, before the review fixes landed)
+- Review fixes (the "Review findings fixed" section above): follow-up PR on branch `fix/gpu-pool-stage3-review-followups`

@@ -67,18 +67,7 @@ class Settings(BaseSettings):
 
     # Metacognition
     metacog_enable: bool = Field(False, alias="EQUILIBRIUM_METACOG_ENABLE")
-    metacog_baseline_interval_sec: float = Field(3600.0, alias="EQUILIBRIUM_METACOG_BASELINE_INTERVAL_SEC")
-    metacog_baseline_max_skips: int = Field(3, alias="EQUILIBRIUM_METACOG_BASELINE_MAX_SKIPS")
     metacog_cooldown_sec: float = Field(30.0, alias="EQUILIBRIUM_METACOG_COOLDOWN_SEC")
-    metacog_substrate_trigger_enable: bool = Field(
-        True, alias="EQUILIBRIUM_METACOG_SUBSTRATE_TRIGGER_ENABLE"
-    )
-    metacog_substrate_dense_threshold: float = Field(
-        0.55, alias="EQUILIBRIUM_METACOG_SUBSTRATE_DENSE_THRESHOLD"
-    )
-    metacog_substrate_pulse_threshold: float = Field(
-        0.30, alias="EQUILIBRIUM_METACOG_SUBSTRATE_PULSE_THRESHOLD"
-    )
     metacog_recall_enabled: bool = Field(
         False,
         alias="EQUILIBRIUM_METACOG_RECALL_ENABLED",
@@ -388,9 +377,8 @@ class Settings(BaseSettings):
     # Staleness guard. The tick that writes these rows is itself flag-gated
     # (SUBSTRATE_ATTENTION_SELF_MODEL_TICK_ENABLED), so it can simply stop --
     # and a frozen window still satisfies both gate conditions forever.
-    # Reproduced pre-fix: 20 rows all 3 days old fired the flow gate. Same
-    # convention as this service's existing SUBSTRATE_FELT_STATE_MAX_AGE_SEC
-    # (120s): a few multiples of the write cadence, not a tight bound.
+    # Reproduced pre-fix: 20 rows all 3 days old fired the flow gate. 120s:
+    # a few multiples of the write cadence, not a tight bound.
     metacog_generative_max_age_sec: float = Field(
         120.0, alias="EQUILIBRIUM_METACOG_GENERATIVE_MAX_AGE_SEC"
     )

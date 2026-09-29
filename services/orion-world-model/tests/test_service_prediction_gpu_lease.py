@@ -140,6 +140,40 @@ def test_unreachable_pool_refuses_with_its_own_code_never_ungated(monkeypatch, e
     assert (result.ok, result.error_code) == (False, "gpu_pool_unreachable")
 
 
+def test_short_pool_rpc_timeout_is_contention_not_a_dead_pool(monkeypatch):
+    """With a 2 s deadline the lease RPC timeout is always the shortened one (full=False), which
+    says nothing about the pool's health (client.PoolRpcTimeout docstring): report contention."""
+    monkeypatch.setattr(main, "gpu_lease", FakePool(PoolRpcTimeout(full=False)))
+    service, payload = _service(device="cuda:0")
+    _stub_forward(service)
+
+    result = asyncio.run(service.run_prediction_task(payload))
+
+    assert (result.ok, result.error_code) == (False, "gpu_contended")
+
+
+def test_timed_out_forward_keeps_the_lease_while_it_still_runs(monkeypatch):
+    """wait_for cannot kill the forward-pass thread. On the card, the lease must stay held while that
+    work is still computing (up to one more WM_TIMEOUT_S), or diffusion could be granted on top."""
+    pool = FakePool()
+    monkeypatch.setattr(main, "gpu_lease", pool)
+    monkeypatch.setattr(main.settings, "WM_TIMEOUT_S", 0.05)
+    service, payload = _service(device="cuda:0")
+    finished: list = []
+
+    async def slow(payload):
+        await asyncio.sleep(0.08)          # past WM_TIMEOUT_S, inside the second window
+        finished.append(pool.held)
+        return torch.zeros(1, 4), torch.zeros(1, 4)
+    service._run_forward = slow  # type: ignore[method-assign]
+
+    result = asyncio.run(service.run_prediction_task(payload))
+
+    assert (result.ok, result.error_code) == (False, "timeout")
+    assert finished == [True], "the lease was released while the forward pass was still running"
+    assert pool.released[0].release_outcome == "upstream_error"
+
+
 def test_no_bus_on_cuda_refuses_instead_of_running_ungated(monkeypatch):
     pool = FakePool()
     monkeypatch.setattr(main, "gpu_lease", pool)

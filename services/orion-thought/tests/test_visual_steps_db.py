@@ -92,7 +92,7 @@ def _req(step, dispatch_id="dispatch-1", attempt_id=None):
 
 
 async def _step(db, step, *, at=NOW, **kw):
-    return await db.steps.run_visual_step(None, _req(step, **kw), now_fn=lambda: at)
+    return await db.steps.run_visual_step(AsyncMock(), _req(step, **kw), now_fn=lambda: at)
 
 
 def _attempt(engine, attempt_id):

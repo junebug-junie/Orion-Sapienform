@@ -22,7 +22,7 @@ import os
 import pytest
 
 from orion.gpu_pool.client import (
-    LeaseUnavailable, acquire_hold, durable_run_holder, gpu_lease, lease_status, release_lease,
+    LeaseUnavailable, acquire_hold, durable_run_holder, gpu_lease, hold_ref, lease_status, release_lease,
 )
 from orion.schemas.gpu_pool import GPU_POOL_EVENT_CHANNEL
 
@@ -128,6 +128,44 @@ def test_world_and_diffusion_never_compute_together_on_gpu2(backend):
                 assert status.status == "granted" and status.grant.role == "diffusion"
                 _assert_never_both(await _granted_roles(rt))
                 await release_lease(bus, second.lease_id, source=HOLDER)
+        finally:
+            if pg is not None:
+                await pg.close()
+    asyncio.run(go())
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_a_render_outlives_its_released_hold_and_still_keeps_world_off(backend):
+    """Review finding (stage 5.4): the durable run gives its hold back on a step deadline or recall
+    while the diffusion thread is still rendering. The generate's attached child lease must keep
+    world off gpu2 until the render really ends -- releasing the hold alone must not free the card."""
+    async def go():
+        bus = WiredBus()
+        rt, pg = await _runtime(bus, backend)
+        try:
+            hold = await acquire_hold(bus, holder=HOLDER, work_class="diffusion", request_id="rv:9")
+            ref = hold_ref(hold, HOLDER)
+            render_done = asyncio.Event()
+
+            async def render():   # what orion-thought's generate_visual_bytes does under a hold
+                async with gpu_lease(bus, work_class="diffusion", holder="orion-thought", hold=ref,
+                                     deadline_sec=5) as child:
+                    assert child.grant.role == "diffusion"
+                    await render_done.wait()
+
+            renderer = asyncio.create_task(render())
+            await asyncio.sleep(0.1)
+            await release_lease(bus, hold.lease_id, source=HOLDER, outcome="cancelled")   # run gives up (step deadline)
+            await rt.tick()
+
+            with pytest.raises(LeaseUnavailable):
+                async with gpu_lease(bus, work_class="world", holder="world-model", deadline_sec=0.3):
+                    raise AssertionError("world granted while the render (child lease) still runs")
+
+            render_done.set()
+            await asyncio.wait_for(renderer, 5)
+            async with gpu_lease(bus, work_class="world", holder="world-model", deadline_sec=2) as lease:
+                assert lease.grant.role == "world"
         finally:
             if pg is not None:
                 await pg.close()

@@ -24,7 +24,9 @@ Hard targets (exit 1 if missed; spec acceptance check 4 + stage 4 checks 2/3):
   - run call wait above one interleaved inference: 0  (gaps are shared, but a run's next call
     waits at most for the one higher-priority call that used its gap)
   - interleaved grants: > 0  (a system agent call used a run's tool gap)
-  - world/diffusion overlap: 0s  (a world lease and a diffusion lease granted together on gpu2 --
+  - world/diffusion grant overlap: 0s  (a world lease and a diffusion lease GRANTED together on gpu2;
+    a scheduler property, not proof of physical non-overlap -- that needs callers to hold their lease
+    for as long as their GPU work runs, which the world-model/thought tests pin --
     the mutex the durable-runs /capacity permit gave, kept by serialize_with since stage 5.4), and
     serialize_with actually exercised (some serialized:<role> report)
 
@@ -334,7 +336,7 @@ def simulate(seed: int = 7) -> dict:
                                   "max": round(max(child_waits), 1) if child_waits else None},
             "interleaved_grants": interleaved,
             "owner_starvation_sec": starvation, "leases_lost": lost, "small_role_violations": violations,
-            "world_diffusion_overlap_sec": gpu2_overlap,
+            "world_diffusion_grant_overlap_sec": gpu2_overlap,
             "run_blocked_behind_itself_sec": self_block, "run_call_waits_over_one_inference": over_one_inference}
 
 
@@ -501,7 +503,7 @@ def main() -> int:
     import json
 
     print(json.dumps(report, indent=2))
-    failures = [k for k in ("owner_starvation_sec", "leases_lost", "small_role_violations", "world_diffusion_overlap_sec",
+    failures = [k for k in ("owner_starvation_sec", "leases_lost", "small_role_violations", "world_diffusion_grant_overlap_sec",
                             "run_blocked_behind_itself_sec", "run_call_waits_over_one_inference") if report[k]]
     failures += urgent_failures(report["urgent_scenario"], rollback)
     if not report["interleaved_grants"]:

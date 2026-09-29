@@ -1105,32 +1105,51 @@ async def compute_visual_plan(
     )
 
 
-# The lease a generate with no durable-run hold takes (gpu_pool.yaml class `diffusion`).
+# The lease every generate takes (gpu_pool.yaml class `diffusion`): attached under the run's hold, or its own.
 GPU_LEASE_WORK_CLASS = "diffusion"
 GPU_LEASE_PRIORITY = "background"
 
 
 async def _diffusion_call(prompt: str) -> bytes:
-    return await asyncio.to_thread(
+    """The diffusion POST in a thread, awaited so the GPU lease around it stays held until that
+    thread has really exited. A cancelled caller (step or run deadline) cannot stop the thread,
+    and releasing the lease early would let the pool place a world lease on gpu2 while diffusion
+    is still computing (the 2026-09-24 CUDA-busy overlap). After a cancel it keeps waiting at
+    most one more diffusion timeout (+10 s), then gives the lease back and re-raises."""
+    work = asyncio.ensure_future(asyncio.to_thread(
         call_diffusion_generate,
         prompt,
         base_url=settings.diffusion_host_base_url,
         timeout_sec=settings.visual_chain_diffusion_timeout_sec,
-    )
+    ))
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        loop = asyncio.get_running_loop()
+        until = loop.time() + float(settings.visual_chain_diffusion_timeout_sec) + 10.0
+        while not work.done() and loop.time() < until:
+            try:
+                await asyncio.wait({work}, timeout=until - loop.time())
+            except asyncio.CancelledError:
+                continue
+        if not work.done():
+            logger.error("visual chain: diffusion thread outlived its grace; releasing the GPU lease anyway")
+        work.add_done_callback(lambda t: t.cancelled() or t.exception())
+        raise
 
 
 async def generate_visual_bytes(
     prompt: str, *, correlation_id: str, bus: Any = None, hold: GpuLeaseRefV1 | None = None,
 ) -> bytes:
-    """Diffusion under a GPU pool grant. Raises `DiffusionResourceDeferred` for every
+    """Diffusion inside a GPU pool lease. Raises `DiffusionResourceDeferred` for every
     capacity/resource deferral; any other exception is a generation failure.
 
-    ``hold``: the durable run's diffusion hold, already validated by the caller
-    (visual_steps.generate_step). It IS the grant -- no second gate.
-    No hold (run-once route, legacy worker): take a `diffusion` request lease for
-    the call. Refused, late, or pool unreachable -> deferred, never an ungated call."""
-    if hold is not None:
-        return await _diffusion_call(prompt)
+    ``hold``: the durable run's diffusion hold (already validated by visual_steps.generate_step).
+    The call ATTACHES under it: a child lease that runs in the hold's own slot and jumps its queue,
+    so it is not a second wait -- but it is a lease of its own that lives exactly as long as the
+    diffusion thread, even when the run gives the hold back mid-generate (step deadline, recall).
+    No hold (run-once route, legacy worker): a plain `diffusion` request lease.
+    Refused, late, or pool unreachable -> deferred, never an ungated call."""
     if bus is None:
         raise DiffusionResourceDeferred("gpu_pool_unreachable:no_bus")
     acquired = False
@@ -1138,7 +1157,7 @@ async def generate_visual_bytes(
         async with gpu_pool_client.gpu_lease(
             bus, work_class=GPU_LEASE_WORK_CLASS, holder=settings.service_name,
             priority=GPU_LEASE_PRIORITY, deadline_sec=float(settings.visual_chain_gpu_lease_deadline_sec),
-            turn_correlation_id=correlation_id,
+            turn_correlation_id=correlation_id, hold=hold,
         ):
             acquired = True
             return await _diffusion_call(prompt)

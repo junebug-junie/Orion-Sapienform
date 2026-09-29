@@ -64,7 +64,7 @@ services:
       # earlier draft overclaimed this as a complete isolation fix.
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
 
-      - WM_GPU_LEASE_DEADLINE_SEC=${WM_GPU_LEASE_DEADLINE_SEC}
+      - WM_GPU_LEASE_DEADLINE_SEC=${WM_GPU_LEASE_DEADLINE_SEC:-2.0}
 
     volumes:
       - /mnt/storage-warm/models/world-model:/mnt/storage-warm/models/world-model

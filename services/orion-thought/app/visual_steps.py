@@ -284,9 +284,10 @@ async def prepare_step(bus, req: ReverieVisualStepRequestV1, *,
 # ── generate ────────────────────────────────────────────────────────────────
 
 
-async def _generate_and_store(prompt: str, attempt_id: str, hold: GpuLeaseRefV1) -> StoredVisualArtifact:
-    # The run's validated diffusion hold is the grant (GPU pool stage 5.4): no second gate.
-    png_bytes = await vc.generate_visual_bytes(prompt, correlation_id=attempt_id, hold=hold)
+async def _generate_and_store(prompt: str, attempt_id: str, hold: GpuLeaseRefV1, bus: Any) -> StoredVisualArtifact:
+    # Attached under the run's validated diffusion hold (GPU pool stage 5.4): no second wait, and
+    # the child lease outlives a hold the run gives back while diffusion is still running.
+    png_bytes = await vc.generate_visual_bytes(prompt, correlation_id=attempt_id, hold=hold, bus=bus)
     return await asyncio.to_thread(
         store_visual_artifact, png_bytes, base_dir=settings.visual_chain_storage_dir
     )
@@ -323,7 +324,7 @@ def _mark_generating(observed: dict, started_at: datetime):
     return mutate
 
 
-async def _generate_work(attempt_id: str, plan: vc.VisualPlan, observed: dict, hold: GpuLeaseRefV1,
+async def _generate_work(attempt_id: str, plan: vc.VisualPlan, observed: dict, hold: GpuLeaseRefV1, bus: Any,
                          thermal_gate: dict, now_fn: Any) -> tuple[str, Any, float | None]:
     """("generated", StoredVisualArtifact, work_sec) or ("retry", reason, work_sec|None)."""
     async with vc.visual_chain_single_flight(deadline_sec=_in_flight_window_sec()) as held:
@@ -341,7 +342,7 @@ async def _generate_work(attempt_id: str, plan: vc.VisualPlan, observed: dict, h
             # Hard ceiling, the same bound past which a claim treats the attempt's GPU
             # work as gone: a diffusion hop can outlive its socket timeout, and an
             # unbounded wait here would wedge the single-flight lock until restart.
-            stored = await asyncio.wait_for(_generate_and_store(plan.prompt, attempt_id, hold),
+            stored = await asyncio.wait_for(_generate_and_store(plan.prompt, attempt_id, hold, bus),
                                             timeout=_in_flight_window_sec())
         except asyncio.TimeoutError:
             logger.error("visual step generate wedged attempt=%s: no diffusion exit after %.0fs",
@@ -490,7 +491,7 @@ async def generate_step(bus, req: ReverieVisualStepRequestV1, *, now_fn: Any = _
         return step.retry("thermal_refused", retry_after_sec=_THERMAL_RETRY_AFTER_SEC)
 
     observed = {"stage": stage.get("stage"), "generating_started_at": stage.get("generating_started_at")}
-    task = asyncio.create_task(_generate_work(attempt_id, plan, observed, req.gpu_lease, thermal_gate, now_fn))
+    task = asyncio.create_task(_generate_work(attempt_id, plan, observed, req.gpu_lease, bus, thermal_gate, now_fn))
     _generate_tasks.add(task)
     task.add_done_callback(_generate_task_done)
     done, _ = await asyncio.wait({task}, timeout=visual_step_generate_deadline_sec())

@@ -278,7 +278,7 @@ class WorldModelService:
         # fallback -- no shared hardware to arbitrate there. There is no ungated GPU path: no bus
         # means no lease means no forward pass on the card.
         if not self.device.startswith("cuda:"):
-            return await self._forward_result(payload, t0)
+            return await self._forward_result(payload, t0, on_gpu=False)
         if self.bus is None:
             return self._gpu_refused(payload, "gpu_pool_unreachable", "gpu pool unreachable: bus not connected")
         try:
@@ -286,12 +286,16 @@ class WorldModelService:
                 self.bus, work_class=GPU_LEASE_WORK_CLASS, holder=settings.SERVICE_NAME,
                 priority=GPU_LEASE_PRIORITY, deadline_sec=float(settings.WM_GPU_LEASE_DEADLINE_SEC),
             ) as lease:
-                result = await self._forward_result(payload, t0)
-                if result.error_code == "forward_failed":
+                result = await self._forward_result(payload, t0, on_gpu=True)
+                if result.error_code in ("forward_failed", "timeout"):
                     lease.release_outcome, lease.release_detail = "upstream_error", result.error
                 return result
-        except PoolRpcTimeout:
-            return self._gpu_refused(payload, "gpu_pool_unreachable", "gpu pool unreachable: lease RPC timed out")
+        except PoolRpcTimeout as exc:
+            # The lease RPC timeout is bounded by our own 2 s deadline, so a short one (full=False)
+            # says nothing about the pool's health (orion.gpu_pool.client.PoolRpcTimeout): contended.
+            if exc.full:
+                return self._gpu_refused(payload, "gpu_pool_unreachable", "gpu pool unreachable: lease RPC timed out")
+            return self._gpu_refused(payload, "gpu_contended", "gpu2 contended: pool rpc slower than deadline")
         except LeaseUnavailable as exc:
             # reason=deadline: still queued when the short deadline passed (typically behind
             # diffusion, pool event reason=serialized:diffusion). Same code/text as the old permit.
@@ -305,12 +309,25 @@ class WorldModelService:
             ok=False, task_type=payload.task_type, device=self.device, error=error, error_code=code,
         )
 
-    async def _forward_result(self, payload: WorldModelTaskRequestPayload, t0: float) -> WorldModelPredictionPayload:
+    async def _forward_result(
+        self, payload: WorldModelTaskRequestPayload, t0: float, *, on_gpu: bool,
+    ) -> WorldModelPredictionPayload:
         async with self._inflight_sem:  # type: ignore[union-attr]
+            work = asyncio.ensure_future(self._run_forward(payload))
             try:
-                mean, log_var = await asyncio.wait_for(
-                    self._run_forward(payload), timeout=float(settings.WM_TIMEOUT_S)
-                )
+                done, _ = await asyncio.wait({work}, timeout=float(settings.WM_TIMEOUT_S))
+                if not done:
+                    if on_gpu:
+                        # The forward pass runs in a thread nothing can kill. On the card, keep the
+                        # caller's lease (we are inside it) for up to one more WM_TIMEOUT_S so
+                        # diffusion is not granted on top of work that is still computing.
+                        await asyncio.wait({work}, timeout=float(settings.WM_TIMEOUT_S))
+                    if not work.done():
+                        logger.warning("[GPU] forward pass still running past 2x WM_TIMEOUT_S; releasing")
+                    work.cancel()
+                    work.add_done_callback(lambda t: t.cancelled() or t.exception())
+                    raise asyncio.TimeoutError
+                mean, log_var = work.result()
             except asyncio.TimeoutError:
                 return WorldModelPredictionPayload(
                     ok=False,

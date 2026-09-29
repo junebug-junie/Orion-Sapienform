@@ -274,16 +274,19 @@ class ThoughtSettings(BaseSettings):
     # GPU2 MUTEX WITH orion-world-model, via orion-gpu-pool (stage 5.4; replaced the durable-runs
     # /capacity permit). The two share circe's gpu2 with no OS-level arbitration (two "CUDA-capable
     # device(s) is/are busy or unavailable" failures, 2026-09-24).
-    # - The durable reverie-visual run already holds a pool `diffusion` hold; that hold IS the grant
-    #   (the generate step validates it first). No second gate.
+    # - The durable reverie-visual run already holds a pool `diffusion` hold; the generate step
+    #   validates it, then ATTACHES a child lease under it (runs in the hold's slot, jumps its
+    #   queue: no second wait). The child lives as long as the diffusion thread, so world stays off
+    #   gpu2 even if the run gives the hold back mid-generate.
     # - A generate outside a durable run (the /visual-chain/run-once route, the legacy worker) has no
-    #   hold, so it takes a `diffusion` request lease for the call and waits at most this long.
-    # Either way the pool never places a `world` lease while diffusion is held (gpu_pool.yaml
-    # serialize_with). Long: a deferral here is a normal outcome (resource_deferred), so diffusion
-    # can wait out a world-model burst; world-model's own 2 s deadline is what gives diffusion
-    # practical precedence on its native card.
+    #   hold, so it takes a plain `diffusion` request lease and waits at most this long.
+    # The pool never places a `world` lease while either is active (gpu_pool.yaml serialize_with).
+    # 90 s, not the old permit's 180: run-once's whole-run deadline (ORION_VISUAL_CHAIN_RUN_DEADLINE_SEC,
+    # 300) must fit this wait + diffusion (120) + prompt/caption, or a long queue ends as a run-deadline
+    # abandon instead of a clean resource_deferred. A deferral is a normal outcome; world-model's own
+    # 2 s deadline still gives diffusion practical precedence on its native card.
     visual_chain_gpu_lease_deadline_sec: float = Field(
-        180.0, alias="ORION_VISUAL_CHAIN_GPU_LEASE_DEADLINE_SEC"
+        90.0, alias="ORION_VISUAL_CHAIN_GPU_LEASE_DEADLINE_SEC"
     )
 
     # AMBIENT THERMAL GATE. GPU work heats the room Juniper sits in, and this is

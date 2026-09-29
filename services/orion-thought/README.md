@@ -686,8 +686,10 @@ both paths write identical chain rows through the same `visual_chain.py` pieces.
   (`holder == durable-runs:<run_id>`), then thermal gate, single-flight lock and
   diffusion under its own deadline (`ORION_VISUAL_CHAIN_STEP_GENERATE_DEADLINE_SEC`,
   default 330, never below `ORION_VISUAL_CHAIN_GPU_LEASE_DEADLINE_SEC` + diffusion timeout + 10).
-  The validated hold is the GPU grant (GPU pool stage 5.4): no second gate, no durable-runs
-  `/capacity` permit. world-model cannot take gpu2 while the hold is held
+  GPU pool stage 5.4: the diffusion call attaches a child lease under the validated hold (runs
+  in the hold's slot, no second wait; no durable-runs `/capacity` permit). The child lives as
+  long as the diffusion thread -- even past a cancelled step, for up to one more diffusion
+  timeout -- so world-model cannot take gpu2 mid-render even if the run gives its hold back
   (`config/gpu_pool.yaml` `world.serialize_with: [diffusion]`). A generate outside a durable
   run (`/visual-chain/run-once`, the legacy worker) has no hold, so it takes a pool `diffusion`
   lease for the call; refused, late or pool unreachable is `resource_deferred:gpu_pool...`, never

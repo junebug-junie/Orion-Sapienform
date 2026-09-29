@@ -100,15 +100,20 @@ Spec: `docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic
   `queued reason=serialized:diffusion` when a diffusion lease/hold is why. Unreachable pool ->
   `gpu_pool_unreachable`. Class `world` is `on_unavailable: wait` (5.1).
 - **Image generation**: a reverie-visual durable run's `diffusion` hold (`hold_routes.diffusion`)
-  is the grant. orion-thought's generate step validates it and takes no second gate. A generate
-  outside a durable run (run-once route, legacy worker) takes a `diffusion` request lease.
+  is the grant; orion-thought's generate step validates it and attaches a child lease for the
+  diffusion call itself (no second wait). The child outlives a hold the run gives back mid-render,
+  so world stays off the card until the render ends. A generate outside a durable run (run-once
+  route, legacy worker) takes a `diffusion` request lease. world-model likewise keeps its lease for
+  up to one more `WM_TIMEOUT_S` when a forward pass times out but is still running.
+- **Rollback is image-only, never a YAML-only revert**: `SwapGuard` no longer accepts
+  `visual_baseline`, so a pre-5.4 `gpu_pool.yaml` fails to load under 5.4 code.
 - **Nothing calls durable-runs `/capacity` any more** (gate:
   `orion/gpu_pool/tests/test_stage5_4_no_capacity_callers.py`). Deleted in 5.6.
 - **`visual_baseline` swap guard deleted**, with `GPU_POOL_VISUAL_ACTIVITY_URL` and the image's
   copy of `config/proposals/visual_baseline.v1.yaml`. The 27B load is guarded by `thermal` only; an
   overdue image baseline reclaims gpu2 through the queue (a diffusion hold, owner reclaim).
 - Eval: `run_pool_day_eval.py` now fails on any second where a world and a diffusion lease are
-  granted together (`world_diffusion_overlap_sec`), or if `serialize_with` never came up.
+  granted together (`world_diffusion_grant_overlap_sec`), or if `serialize_with` never came up.
 
 ## Durable-run holds (stage 4.3)
 

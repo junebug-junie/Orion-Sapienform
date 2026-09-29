@@ -145,7 +145,8 @@ def _req(step, *, attempt_id=None, holder=None, request=REQUEST, correlation_id=
 
 
 async def _run(env, req, **kw):
-    return await env.steps.run_visual_step(None, req, now_fn=lambda: NOW, **kw)
+    # A bus: generate attaches its diffusion lease through it (conftest's granting fake pool).
+    return await env.steps.run_visual_step(AsyncMock(), req, now_fn=lambda: NOW, **kw)
 
 
 async def _prepared(env):
@@ -356,13 +357,15 @@ async def test_missing_stage_column_is_a_retry_never_a_recompute(env, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_generate_under_the_runs_hold_takes_no_second_gpu_gate(env, gpu_pool):
-    """GPU pool stage 5.4: the run's validated diffusion hold is the grant. The generate step
-    never asks the pool again (and never asks durable-runs /capacity, which is gone)."""
+async def test_generate_attaches_under_the_runs_hold(env, gpu_pool):
+    """GPU pool stage 5.4: the diffusion call attaches under the run's validated hold (no second
+    wait, never durable-runs /capacity) and the child lease covers exactly the diffusion call."""
     attempt_id, result = await _generated(env)
     assert result.status == "done"
-    assert gpu_pool.calls == []
-    assert len(env.holds) >= 1 and len(env.generate_calls) == 1
+    [call] = gpu_pool.calls
+    [(ref, _)] = env.holds[-1:]
+    assert call["hold"] == ref and call["work_class"] == "diffusion"
+    assert len(env.generate_calls) == 1
 
 
 @pytest.mark.asyncio

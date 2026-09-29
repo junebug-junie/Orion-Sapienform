@@ -1378,7 +1378,9 @@ def _persist_decision(decision: RecallDecisionV1) -> None:
 
     conn = None
     try:
-        conn = psycopg2.connect(dsn)
+        # Bounded: the bus handler awaits this before replying, so a hung
+        # connect must not hold a recall reply hostage.
+        conn = psycopg2.connect(dsn, connect_timeout=3)
         conn.autocommit = True
         with conn.cursor() as cur:
             if not _telemetry_table_ready:

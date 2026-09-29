@@ -48,7 +48,7 @@ class _FakeConn:
 def _install(monkeypatch):
     log: list = []
     monkeypatch.setattr(worker.settings, "RECALL_PG_DSN", "postgresql://fake/db")
-    monkeypatch.setattr(worker.psycopg2, "connect", lambda dsn: _FakeConn(log))
+    monkeypatch.setattr(worker.psycopg2, "connect", lambda dsn, **kw: (log.append(("CONNECT", kw, None)), _FakeConn(log))[1])
     monkeypatch.setattr(worker, "_telemetry_table_ready", False)
     monkeypatch.setattr(worker, "_telemetry_failure_warned", False)
     return log
@@ -89,7 +89,7 @@ def test_async_wrapper_writes_off_the_event_loop_thread(monkeypatch) -> None:
 def test_first_failure_is_a_warning(monkeypatch, caplog) -> None:
     _install(monkeypatch)
 
-    def _boom(dsn):
+    def _boom(dsn, **kw):
         raise RuntimeError("db down")
 
     monkeypatch.setattr(worker.psycopg2, "connect", _boom)
@@ -98,3 +98,9 @@ def test_first_failure_is_a_warning(monkeypatch, caplog) -> None:
         worker._persist_decision(_decision())
     levels = [r.levelname for r in caplog.records if "recall_telemetry_persist_failed" in r.getMessage()]
     assert levels == ["WARNING", "DEBUG"]
+
+
+def test_connect_is_time_bounded(monkeypatch) -> None:
+    log = _install(monkeypatch)
+    worker._persist_decision(_decision())
+    assert log[0] == ("CONNECT", {"connect_timeout": 3}, None)

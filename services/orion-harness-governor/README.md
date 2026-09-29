@@ -98,7 +98,7 @@ docker compose \
 
 When `HARNESS_FCC_MCP_ENABLED=true`, harness turns spawn ephemeral MCP config (GitHub + Firecrawl; optional AI Town when `HARNESS_AITOWN_ENABLED=true`; optional GitNexus/Context Mode, below). The container image includes `docker`, Node 22, `npx`, the orion-aitown MCP package, and pinned `gitnexus@1.6.9` + `context-mode@1.0.169`.
 
-`HARNESS_FCC_INTROSPECT_ENABLED=true` adds `orion-introspect`, a read-only MCP that lets Orion look up their own recorded activity over the bus. Slice 1 exposes `reading_results` (what was learned from a reading; answered by orion-hub on `orion:reading:tool:request`). It is attached only on turns with a reading binding, never on `reading_only` turns. Design: `docs/superpowers/specs/2026-09-28-orion-introspect-mcp-design.md`.
+`HARNESS_FCC_INTROSPECT_ENABLED=true` adds `orion-introspect`, a read-only MCP that lets Orion look up their own recorded activity. See [orion-introspect](#orion-introspect-orion-reading-back-their-own-records) below.
 
 ### Semantic self-indexing (GitNexus + Context Mode)
 
@@ -224,6 +224,159 @@ Reading acceptance is transcript-grounded, not inferred from the draft. The moto
 Stage 1/2 reading turns instead set the trusted `reading_only` flag. Their actual process receives `--tools WebFetch,WebSearch --strict-mcp-config --setting-sources ''` and an explicit empty MCP config. This prevents source content from reaching shell, mutable graph tools or plugin execution while the server-owned queue/journal/Concept Atlas path retains responsibility for persistence. During finalization, 5b reflection still runs on the `agent` lane, but the structured motor response is deterministically parsed and canonicalized rather than passed through prose-oriented 5c. Invalid JSON fails the turn instead of masquerading as a successful empty-shell result. Ordinary turns retain the existing 5c voice pass. The general chat/curiosity tool configuration is unchanged apart from the new narrow entry.
 
 Rebuild this service and Hub after applying the additive queue migration. See the [reading implementation report](../../docs/superpowers/pr-reports/2026-09-10-general-reading-pr.md) for exact tests, restart commands and unverified production behavior.
+
+## orion-introspect: Orion reading back their own records
+
+**What it is.** A read-only tool server Orion gets during a harness turn. With
+it, Orion can look up what actually happened to them instead of reconstructing
+it from impression.
+- Today it covers what they learned from reading.
+- As later slices land it will cover their dreams, reveries, curiosity runs
+  and memories.
+
+Every answer comes from the service that owns the data, over the bus, under a
+correlation ID, so any claim Orion makes from it can be traced back to a stored
+record.
+
+Design: [`2026-09-28-orion-introspect-mcp-design.md`](../../docs/superpowers/specs/2026-09-28-orion-introspect-mcp-design.md).
+Search by meaning: [`2026-09-28-orion-introspect-slice1b-semantic-search.md`](../../docs/superpowers/specs/2026-09-28-orion-introspect-slice1b-semantic-search.md).
+
+### Tools
+
+| Tool | What Orion can ask | Answered by | Request channel | Status |
+|---|---|---|---|---|
+| `reading_results` | What a reading actually taught them: recent finished reads, one read by `url`/`request_id`, or `query=` by meaning | orion-hub ([responder](../orion-hub/README.md#introspect-responder-reading_results)) | `orion:reading:tool:request`, operation `reading_result` | Live (slices 1 + 1b) |
+| `dreams` | Narrative dreams and the sleep-cycle hypotheses they have already been offered, recent / one / by meaning | orion-dream | `orion:introspect:dream:request` | Designed (slice 2) |
+| `reveries` | Their spontaneous-thought chains | orion-thought | `orion:introspect:reverie:request` | Planned |
+| `curiosity` | What their curiosity runs set out to do and what came of it | orion-substrate-runtime | `orion:introspect:curiosity:request` | Planned |
+| `memories` | Memory cards by meaning, with sensitivity labels | orion-recall | `orion:introspect:memory:request` | Planned; never listed when an outward-facing tool is attached |
+
+`orion/introspect/tests/test_readme_coverage.py` fails when a tool the server
+lists is missing from this table, or when a live request channel is not
+documented in the README of the service that answers it. A new tool cannot
+ship undocumented.
+
+### Which turns get it
+
+- **Flags.** `HARNESS_FCC_MCP_ENABLED` and `HARNESS_FCC_INTROSPECT_ENABLED`
+  must both be true.
+- **Turn type.** The turn must carry a reading binding: Unified Chat and
+  curiosity turns do. Reading stages (`reading_only`) never get it, because
+  their job is to read the source, not to recall.
+- **Binding.** Built by the server from runtime facts
+  (`orion/introspect/binding.py`); the model can never set or see it.
+  - It carries the parent run/trace IDs and `memory_allowed`, which is
+    `not HARNESS_AITOWN_ENABLED`.
+  - `orion/fcc/mcp_config.py` refuses to render a config with both an
+    outward-facing tool and memory access (`fcc_introspect_outward_memory`),
+    or without `ORION_BUS_URL` (`fcc_introspect_bus_missing`).
+- **Launch.** Per turn, over stdio:
+  `python3 -P -m orion.introspect.mcp_server`, with `ORION_BUS_URL` and
+  `ORION_INTROSPECT_BINDING` in its environment.
+- **Brief.** When attached, `orion/introspect/brief.py` adds usage lines to
+  the harness prefix. The lines say when to call it, and that an error means
+  unknown.
+- **Motor accounting.** Its calls count as context-gathering in the motor's
+  `context_gathering_ratio` (`orion/harness/fcc_motor.py`).
+
+### Request path
+
+```text
+claude -p (FCC motor)
+  -> orion-introspect (stdio, one per turn; validates arguments, rejects extra fields)
+  -> bus RPC, 15 s timeout, reply on a channel derived from a fresh correlation ID
+  -> owning service: Postgres read (+ Chroma for query=), re-gated
+  -> IntrospectResultV1 -> tool result JSON
+```
+
+### Truth rules (every tool)
+
+- **Read-only.** SELECTs only. Nothing is queued, retried, charged or written.
+- **Bounded.** At most 5 items, 900-char text per item, `truncated` set when
+  cut. Five full items stay under the 12,000-char MCP result budget
+  (`ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS`); a test pins the worst case.
+- **Scaled.** Every success carries `as_of` and `total_available`, so "5 of
+  40" is distinguishable from "all 5".
+- **Empty is not unknown.**
+  - `items=[]` with `total_available=0` means nothing matched.
+  - A timeout, malformed or mismatched reply, owner error, or search outage
+    becomes an MCP tool error saying the answer is unknown. It never becomes
+    an empty list.
+  - The brief tells Orion to say "unknown", never "nothing happened".
+- **Labeled.** Each item's `epistemic_status` is `record` (it happened, e.g.
+  a memory card or a run outcome) or `unsettled` (something Orion had or read,
+  not a settled fact: readings, dreams, reveries).
+- **Trusted reply path.** Responders answer only when `reply_to` is exactly
+  the channel derived from the request's correlation ID and the message kind
+  matches. They never reply to a model-supplied subject.
+
+### Search by meaning
+
+Same pattern for every domain that supports `query=`:
+
+- **Indexing.**
+  - Each record is embedded once via vector-host `/embedding` (bge-large,
+    1024-dim).
+  - It is upserted through orion-vector-writer
+    (`orion:vector:semantic:upsert`) into that domain's own Chroma
+    collection, keyed by record ID with a `content_hash`.
+- **Index loop.** A hash-aware loop in the owning service re-embeds changed
+  text and doubles as the backfill.
+- **Querying.**
+  - A query embeds only the question and keeps hits at or above the
+    domain's similarity floor.
+  - Each hit is re-read from Postgres through the same gate as the recent
+    view. The index is never the record.
+- **Failure.** An embedder or Chroma failure, or an unbuilt or empty index,
+  means unknown.
+- **Floor.** Set per domain by a calibration eval on real data. Readings:
+  `services/orion-hub/evals/run_reading_search_calibration.py`.
+- **Code.** Reading search today: `orion/world_pulse_read/search.py`.
+
+### Verify it live
+
+- **Responder log.** `introspect op=<op> corr=<id> items=<n> total=<n> mode=<...>`
+  on success. Readings: `introspect op=reading_result`, failures
+  `reading_tool_failed ... category=...`.
+- **Governor log.** `harness_grammar_step_published corr=<turn> ... tool=mcp__orion-introspect__<tool>`.
+- **Smoke (read-only).**
+
+  ```bash
+  ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --limit 3
+  ORION_BUS_URL=redis://100.92.216.81:6379/0 python scripts/smoke_introspect.py --query "graphics cards"
+  ```
+
+  Exit 0 means a coherent answer, 1 a degenerate one, 2 an unknown one.
+- **Tests.** `orion/introspect/tests`, run in CI by
+  `.github/workflows/orion-reading-tests.yml`.
+
+### Turn it off
+
+Set `HARNESS_FCC_INTROSPECT_ENABLED=false` in
+`services/orion-harness-governor/.env`, then recreate the governor from a
+worktree that has the `.env` files:
+
+```bash
+scripts/safe_docker_build.sh orion-harness-governor up -d --no-build
+```
+
+Responders can keep running; nothing calls them.
+
+### Adding a tool (one domain per PR)
+
+1. `orion/schemas/introspect.py`: the operation plus an arguments model
+   (`extra="forbid"`); register new models in `orion/schemas/registry.py`.
+2. `orion/bus/channels.yaml`: request channel and result channel entries.
+3. The owning service's responder, and an **"Introspect responder:
+   `<tool>`"** section in that service's README. It must cover what it
+   answers, which tables, the gate, the epistemic label, log lines and
+   failure modes.
+4. `orion/introspect/tools.py` (spec + description) and
+   `orion/introspect/brief.py`.
+5. The row in the table above; the coverage test enforces this.
+6. A smoke mode in `scripts/smoke_introspect.py`; a calibration eval if it
+   has `query=`.
+7. The owning service's path in the `orion-reading-tests.yml` trigger list.
 
 ## Broker-admitted turns
 

@@ -3162,8 +3162,6 @@ The MCP response preserves the full `{ok, result, error}` envelope. Only `ok=tru
 
 Hub logs `reading_tool_failed` with the RPC correlation ID, operation phase, exception type, SQLSTATE and one of `no_pool`, `connection_failure`, `schema_incompatible`, `enqueue_failure`, `status_failure`, `reading_result_failure`, or `reading_search_failure`. Exception detail is bounded and credential-bearing Postgres URLs/password parameters are redacted. The model-visible failure remains intentionally generic.
 
-**Reading search (orion-introspect `reading_results query=...`).** A loop in `ReadingListener` embeds each verified reading once (title + learned text, via vector-host HTTP `/embedding`) and publishes `VectorUpsertV1` on `orion:vector:semantic:upsert`; orion-vector-writer stores it in Chroma `HUB_READING_SEARCH_COLLECTION`. The loop is hash-aware, so a Stage 2 summary replacing Stage 1 text is re-indexed, and it doubles as the backfill (`reading_search_index indexed=N pending=M` every `HUB_READING_SEARCH_INDEX_INTERVAL_SEC`). A query embeds only the question, keeps Chroma hits at or above `HUB_READING_SEARCH_MIN_SIMILARITY`, and re-reads each hit from Postgres through the same verified-reading gate. Embedder/Chroma failure or a not-yet-built index is logged as `reading_search_failure` and reported to the model as "answer unknown", never as no results. Recalibrate the floor with `python services/orion-hub/evals/run_reading_search_calibration.py`.
-
 Apply `services/orion-sql-db/manual_migration_general_reading_v1.sql` after the two existing World Pulse read migrations, then rebuild/restart Hub and harness governor from a worktree. No new operator env keys or HTTP submission endpoints are required. Existing reading enable flags stop consumption; queued state remains inspectable. Rolling back the code can leave the additive columns in place; pause the workers first if general `reading` rows remain, because the older seed model cannot parse that new kind.
 
 A completed source can be reread in a later turn. Concurrent requests for an active URL retain their own provenance as aliases without another active read. Final `completed` requires the existing SQL journal rows; missed journal commands are replayed from saved artifacts without another model call or wallet debit. Reading stages have only WebFetch/WebSearch and produce attributed candidates through the existing server-owned adapter.
@@ -3179,6 +3177,48 @@ See [implementation, exact checks and runtime limits](../../docs/superpowers/pr-
 - `POST /api/reads/{seed_id}/retry` `{stage: 1|2}` -- terminal (`failed`/`skipped`) stages only, not aliases, no open binding; Stage 1 also refuses a URL already active elsewhere and any digest item older than `HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS` (the stale sweep would skip it again next tick; the tab's **Read this URL again** button queues it as a new read instead); Stage 2 needs Stage 1 `done` with read evidence. Both refuse `already_read` when another row already finished that stage for the same URL. Resets that stage's attempts. The **Read this URL again** button is hidden once Stage 1 is done (a new request would be blocked as a duplicate).
 
 Controls require `X-Requested-With: orion-hub` with a JSON body (same cross-site guard as the GPU pool panel); there is no operator token. Refusals return a short code (for example `url_already_active`) that the tab explains in plain words. Logs: `reading_operator_submit`, `reading_operator_cancel`, `reading_operator_retry`. Query/control code: `orion/world_pulse_read/operator.py`.
+
+### Introspect responder: `reading_results`
+
+**What it does.** Answers Orion's question "what did I actually learn from
+reading?" for the orion-introspect `reading_results` tool. It returns only
+what the reading pipeline really produced. For the whole tool family (which
+turns get it, truth rules, search pattern, how to add a tool), see the
+[harness-governor overview](../orion-harness-governor/README.md#orion-introspect-orion-reading-back-their-own-records).
+
+- **Transport.**
+  - The request arrives on the existing reading RPC channel
+    `orion:reading:tool:request`, operation `reading_result`, from
+    orion-harness-governor.
+  - `ReadingListener` replies on `orion:reading:tool:result:<correlation_id>`
+    with an `IntrospectResultV1` inside `ReadingToolResultV1.result`.
+- **Modes.**
+  - Recent finished reads (optional `since`, `limit` ≤ 5).
+  - One read by `request_id` or `url`, even an unfinished one, so its
+    status can be reported.
+  - `query=` by meaning (below).
+- **The gate: only verified reads count.**
+  - A reading appears in recent or search results only when it is not a
+    duplicate alias, Stage 1 is `done`, and its handoff carries tool-trace
+    `read_evidence` that the source was actually fetched.
+  - The item's text is the Stage 2 summary, falling back to Stage 1's
+    `what_i_learned`.
+  - An unread or unfinished row reports `learned=false` and empty text,
+    never model prose.
+  - Code: `orion/world_pulse_read/introspect.py` (`_VERIFIED_WHERE`,
+    `_learned`).
+- **Label.** Every item is `epistemic_status="unsettled"`: source-attributed
+  candidates, not settled beliefs.
+- **Logs.**
+  - Success: `introspect op=reading_result corr=<id> items=<n> total=<n>
+    mode=recent|lookup|query`.
+  - Failure: `reading_tool_failed correlation_id=<id>
+    category=reading_result_failure|reading_search_failure|connection_failure|no_pool|...`.
+  - The model sees only `reading_queue_unavailable` or
+    `reading_search_unavailable; answer unknown`, which the MCP turns into an
+    "answer unknown" tool error.
+
+**Reading search (orion-introspect `reading_results query=...`).** A loop in `ReadingListener` embeds each verified reading once (title + learned text, via vector-host HTTP `/embedding`) and publishes `VectorUpsertV1` on `orion:vector:semantic:upsert`; orion-vector-writer stores it in Chroma `HUB_READING_SEARCH_COLLECTION`. The loop is hash-aware, so a Stage 2 summary replacing Stage 1 text is re-indexed, and it doubles as the backfill (`reading_search_index indexed=N pending=M` every `HUB_READING_SEARCH_INDEX_INTERVAL_SEC`). A query embeds only the question, keeps Chroma hits at or above `HUB_READING_SEARCH_MIN_SIMILARITY`, and re-reads each hit from Postgres through the same verified-reading gate. Embedder/Chroma failure or a not-yet-built index is logged as `reading_search_failure` and reported to the model as "answer unknown", never as no results. Recalibrate the floor with `python services/orion-hub/evals/run_reading_search_calibration.py`.
 
 ## Curiosity resource admission
 

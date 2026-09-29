@@ -586,7 +586,7 @@ def test_missed_completed_run_without_detail_is_reread_before_the_final() -> Non
     assert urgent_open_key(INCIDENT) not in redis.values
 
 
-def test_missed_completed_run_still_unreadable_sends_no_empty_final(caplog) -> None:
+def test_missed_completed_run_still_unreadable_reports_failed_not_an_empty_final(caplog) -> None:
     notify, clock = _Notify(), _Clock()
     loop, redis = _released_loop(RUN.encode())
     reads = iter([_progress(past=True)] + [_progress(past=True, terminal="completed")] * 2)
@@ -600,7 +600,10 @@ def test_missed_completed_run_still_unreadable_sends_no_empty_final(caplog) -> N
     )
     with caplog.at_level(logging.ERROR):
         _run_watch(reporter, _incident())
-    assert notify.sent == []
+    [failed] = notify.sent
+    assert failed.dedupe_key == f"urgent:{INCIDENT}:failed"
+    assert failed.severity == "critical"
+    assert "could not be read" in failed.body_text
     assert "urgent_report_missed_terminal_unreadable" in caplog.text
     assert urgent_open_key(INCIDENT) not in redis.values
 

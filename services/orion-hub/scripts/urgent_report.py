@@ -449,10 +449,14 @@ class UrgentReporter:
             kind: ReportKind = "final" if terminal == "completed" else "failed"
             detail = (progress or {}).get("detail") or {}
             if kind == "final" and not detail:
+                # Still unreadable: say so as "failed", which dedupes separately
+                # from "final", so a late real verdict can still go out.
                 logger.error(
-                    "urgent_report_missed_terminal_unreadable incident_id=%s run=%s -- final left to the run-state event",
+                    "urgent_report_missed_terminal_unreadable incident_id=%s run=%s",
                     incident.get("incident_id"), run_id,
                 )
+                reason = f"run {run_id} completed but its result could not be read; check it in the curiosity atlas"
+                await self.deliver(incident, compose_urgent_report(incident, kind="failed", reason=reason), kind="failed")
             else:
                 reason = str(detail.get("error") or terminal)
                 request = compose_urgent_report(incident, kind=kind, detail=detail, reason=reason)

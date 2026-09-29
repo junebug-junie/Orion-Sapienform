@@ -322,8 +322,10 @@ The durable graph `curiosity.investigate` is reused; everything below is keyed o
   store shows the run ended but Hub missed the event, the deadline check sends it from the store,
   reading the detail from the run-state row or, if that lags, the terminal outbox event. A
   completed run whose detail is still unreadable is re-read once 60 s later; if still unreadable
-  it logs `urgent_report_missed_terminal_unreadable` and sends no empty final (that would
-  dedupe-block the real one). Any terminal found frees the incident's open key.
+  it logs `urgent_report_missed_terminal_unreadable` and sends a critical *failed* notice
+  ("completed but its result could not be read"), never an empty final: failed and final
+  dedupe separately, so a late real verdict still goes out. Any terminal found frees the
+  incident's open key.
 - notify accepting means queued, not emailed: Hub cannot see an SMTP failure.
 - Eval: `services/orion-hub/evals/run_urgent_report_eval.py` replays every outcome through the
   real reader, run-state handler, watchdog and composer.

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import subprocess
+
+import httpx
+
+from orion.harness.evals import stance_scope_live_eval as module
 from orion.harness.evals.stance_scope_live_eval import (
     HUNT_TRIPWIRE,
     parse_tool_steps,
+    run_once,
     score_run,
 )
 
@@ -61,3 +67,53 @@ def test_score_run_fails_when_the_tool_was_never_called() -> None:
 def test_hunt_tripwire_is_exclusive() -> None:
     assert score_run(["Bash"] * HUNT_TRIPWIRE, finished=True, reply_text="x")["hunt"] is False
     assert score_run(["Bash"] * (HUNT_TRIPWIRE + 1), finished=True, reply_text="x")["hunt"] is True
+
+
+def test_run_once_connect_error_returns_result_with_error(monkeypatch) -> None:
+    def raise_connect(*_args, **_kwargs):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(module.httpx, "post", raise_connect)
+    monkeypatch.setattr(module, "_governor_log", lambda _since: "")
+    result = run_once("http://127.0.0.1:8080", 30.0)
+    assert result["error"] is not None
+    assert result["passed"] is False
+
+
+def test_run_once_timeout_missing_corr(monkeypatch) -> None:
+    def raise_timeout(*_args, **_kwargs):
+        raise httpx.TimeoutException("timed out")
+
+    cancel_called: list[str] = []
+
+    def mock_cancel(corr: str) -> None:
+        cancel_called.append(corr)
+
+    monkeypatch.setattr(module.httpx, "post", raise_timeout)
+    monkeypatch.setattr(module, "_corr_for_session", lambda _sid: None)
+    monkeypatch.setattr(module, "_cancel", mock_cancel)
+    monkeypatch.setattr(module, "_governor_log", lambda _since: "")
+    result = run_once("http://127.0.0.1:8080", 30.0)
+    assert result["corr_lookup"] == "missing"
+    assert result["hunt"] is None
+    assert result["passed"] is False
+    assert cancel_called == []
+
+
+def test_run_once_timeout_cancel_failure(monkeypatch) -> None:
+    def raise_timeout(*_args, **_kwargs):
+        raise httpx.TimeoutException("timed out")
+
+    cancel_called: list[str] = []
+
+    def mock_cancel(corr: str) -> None:
+        cancel_called.append(corr)
+        raise subprocess.CalledProcessError(1, "x")
+
+    monkeypatch.setattr(module.httpx, "post", raise_timeout)
+    monkeypatch.setattr(module, "_corr_for_session", lambda _sid: "c-1")
+    monkeypatch.setattr(module, "_cancel", mock_cancel)
+    monkeypatch.setattr(module, "_governor_log", lambda _since: "")
+    result = run_once("http://127.0.0.1:8080", 30.0)
+    assert result["error"] is not None
+    assert cancel_called == ["c-1"]

@@ -99,11 +99,19 @@ def _governor_log(since_iso: str) -> str:
     return done.stdout + done.stderr
 
 
+def _record_error(existing: str | None, exc: BaseException) -> str:
+    msg = f"{type(exc).__name__}: {exc}"
+    return f"{existing}; {msg}" if existing else msg
+
+
 def run_once(hub: str, turn_timeout: float) -> dict[str, object]:
     session_id = f"stance-scope-eval-{uuid.uuid4()}"
     started = datetime.now(timezone.utc)
     t0 = time.monotonic()
     finished, corr, reply = False, None, ""
+    http_status: int | None = None
+    error: str | None = None
+    corr_lookup: str | None = None
     try:
         resp = httpx.post(
             f"{hub}/api/chat",
@@ -114,21 +122,48 @@ def run_once(hub: str, turn_timeout: float) -> dict[str, object]:
             },
             timeout=turn_timeout,
         )
-        body = resp.json()
-        corr = body.get("correlation_id")
-        reply = str(body.get("llm_response") or "")
-        finished = body.get("type") == "final"
+        http_status = resp.status_code
+        try:
+            body = resp.json()
+        except Exception as exc:
+            error = _record_error(error, exc)
+            body = {}
+        if not error:
+            corr = body.get("correlation_id")
+            reply = str(body.get("llm_response") or "")
+            finished = body.get("type") == "final"
     except httpx.TimeoutException:
-        corr = _corr_for_session(session_id)
+        try:
+            corr = _corr_for_session(session_id)
+            corr_lookup = "ok" if corr else "missing"
+        except Exception as exc:
+            error = _record_error(error, exc)
+            corr_lookup = "missing"
         if corr:
-            _cancel(corr)
+            try:
+                _cancel(corr)
+            except Exception as exc:
+                error = _record_error(error, exc)
+    except Exception as exc:
+        error = _record_error(error, exc)
     elapsed = round(time.monotonic() - t0, 1)
-    tools = parse_tool_steps(_governor_log(started.isoformat()), corr) if corr else []
-    return {
+    tools: list[str] = []
+    if corr:
+        try:
+            tools = parse_tool_steps(_governor_log(started.isoformat()), corr)
+        except Exception as exc:
+            error = _record_error(error, exc)
+    result: dict[str, object] = {
         "session_id": session_id, "correlation_id": corr, "elapsed_sec": elapsed,
-        "tools": tools, "reply_excerpt": reply[:400],
+        "http_status": http_status, "error": error, "tools": tools, "reply_excerpt": reply[:400],
         **score_run(tools, finished=finished, reply_text=reply),
     }
+    if corr_lookup is not None:
+        result["corr_lookup"] = corr_lookup
+    if corr_lookup == "missing":
+        result["hunt"] = None
+        result["passed"] = False
+    return result
 
 
 def main() -> int:
@@ -138,11 +173,13 @@ def main() -> int:
     parser.add_argument("--turn-timeout", type=float, default=900.0)
     parser.add_argument("--out", type=Path, default=Path("/tmp/stance-scope-eval/report.json"))
     args = parser.parse_args()
-    runs = [run_once(args.hub, args.turn_timeout) for _ in range(args.runs)]
-    report = {"question": QUESTION, "hunt_tripwire": HUNT_TRIPWIRE, "runs": runs,
-              "passed": all(r["passed"] for r in runs)}
+    runs: list[dict[str, object]] = []
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    for _ in range(args.runs):
+        runs.append(run_once(args.hub, args.turn_timeout))
+        report = {"question": QUESTION, "hunt_tripwire": HUNT_TRIPWIRE, "runs": runs,
+                  "passed": all(r["passed"] for r in runs)}
+        args.out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     for r in runs:
         print(f"corr={r['correlation_id']} finished={r['finished']} elapsed={r['elapsed_sec']}s "
               f"introspect={r['introspect_calls']} other={r['other_tool_calls']} hunt={r['hunt']} passed={r['passed']}")

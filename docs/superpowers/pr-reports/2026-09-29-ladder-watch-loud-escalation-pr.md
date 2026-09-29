@@ -145,6 +145,6 @@ No restart required. Cron runs the scripts from the primary checkout; `git pull`
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2392
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

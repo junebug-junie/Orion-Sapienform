@@ -281,12 +281,47 @@ return unknown. Local `.env` is synced with
 - `orion/introspect/brief.py`
 - `orion/introspect/tests/…`
 - `services/orion-dream/app/{introspect_dreams,dream_search,introspect_listener,main,settings}.py`
-- `services/orion-dream/{.env_example,docker-compose.yml,README.md}`
+- `services/orion-dream/{.env_example,docker-compose.yml}`
+- `services/orion-dream/README.md`: new "### Introspect responder: `dreams`"
+  section (see § Documentation)
+- `services/orion-harness-governor/README.md`: flip the `dreams` row in the
+  orion-introspect overview to Live, and update its search paragraph to point
+  at `orion/introspect/semantic_index.py`
+- `.github/workflows/orion-reading-tests.yml`: add `services/orion-dream/**`
+  to the trigger paths, and the new orion-dream introspect tests to the run
 - `services/orion-dream/tests/test_introspect_dreams.py`
 - `services/orion-dream/tests/test_dream_search.py`
 - `services/orion-dream/tests/test_introspect_listener.py`
 - `services/orion-dream/evals/run_dream_search_calibration.py`
 - `scripts/smoke_introspect.py` (`--tool dreams`)
+
+## Documentation
+
+The orion-introspect design overview lives in
+`services/orion-harness-governor/README.md` ("orion-introspect: Orion reading
+back their own records"). It covers which turns get the server, the truth
+rules, the search pattern, how to verify it live and how to add a tool.
+`orion/introspect/tests/test_readme_coverage.py` fails the build unless:
+
+- every tool the server lists is a Live row in that table;
+- each Live row's request channel is in `channels.yaml` with the answering
+  service as a consumer;
+- that service's README has an "### Introspect responder: `<tool>`" section
+  naming the channel;
+- every `orion:introspect:*:request` channel is a Live row.
+
+This slice therefore adds `services/orion-dream/README.md` → "### Introspect
+responder: `dreams`", written plain-English first. It covers:
+
+- what Orion can ask (recent / one / by meaning), and the two record kinds
+  with their fields;
+- the blind-experiment rule: offered hypotheses only, both arms, no arm or
+  refs, and why;
+- the `unsettled` label, and empty vs unknown;
+- the index loop, the `orion_dreams` collection, the calibrated floor and how
+  to recalibrate;
+- env keys, log lines, failure categories and the smoke command;
+- how to turn it off (`DREAM_INTROSPECT_ENABLED=false`).
 
 ## Non-goals
 
@@ -313,6 +348,9 @@ return unknown. Local `.env` is synced with
 - `orion/introspect/tests` pass: the `dreams` spec is listed, bad args are
   rejected before transport, and timeout / malformed / mismatched replies
   raise unknown.
+- `orion/introspect/tests/test_readme_coverage.py` passes with `dreams` Live
+  (requires the docs PR `docs/introspect-readmes` on main first; this branch
+  merges main before implementation).
 - `python scripts/check_schema_registry.py`,
   `python scripts/check_bus_channels.py` and
   `python scripts/check_env_template_parity.py` pass.

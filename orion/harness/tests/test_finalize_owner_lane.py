@@ -1,28 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
 import pytest
 
 from orion.harness.finalize import resolve_finalize_llm_lane
+from orion.llm.resource_lease import GPU_LEASE_ROUTE
 from orion.llm.routes import AGENT_ROUTE_FCC_MODEL_LABEL
-from orion.schemas.resource_admission import ResourceLeaseV1
-
-
-def _lease(lane: str) -> ResourceLeaseV1:
-    now = datetime.now(timezone.utc)
-    return ResourceLeaseV1(
-        run_id="r1",
-        demand_id="d1",
-        lease_id="L1",
-        resource_key=f"llm.route.{lane}",
-        lane=lane,
-        backend_key="http://worker:8000",
-        generation=1,
-        granted_at=now,
-        heartbeat_at=now,
-        expires_at=now + timedelta(seconds=60),
-    )
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 
 
 def test_no_lease_chat_owned_model_sonnet_resolves_chat() -> None:
@@ -39,13 +22,9 @@ def test_no_lease_agent_fcc_label_resolves_agent() -> None:
     )
 
 
-@pytest.mark.parametrize("lane", ["chat", "agent", "metacog"])
-def test_lease_lane_wins_over_conflicting_model_label(lane: str) -> None:
-    # Agent FCC label must not override an admitted chat (or other) lease.
-    assert (
-        resolve_finalize_llm_lane(
-            resource_lease=_lease(lane),
-            fcc_model_label=AGENT_ROUTE_FCC_MODEL_LABEL,
-        )
-        == lane
-    )
+@pytest.mark.parametrize("label", ["MODEL_SONNET", None, AGENT_ROUTE_FCC_MODEL_LABEL])
+def test_hold_wins_over_any_model_label(label) -> None:
+    # A held turn's calls attach to the hold whatever route they name; the route names the hold's
+    # work class, never the hold's role (agent-gpu2 is not a route) and never the chat label.
+    hold = GpuLeaseRefV1(lease_id="L1", generation=1, role="agent-gpu2", holder="durable-runs:r1")
+    assert resolve_finalize_llm_lane(gpu_lease=hold, fcc_model_label=label) == GPU_LEASE_ROUTE == "agent"

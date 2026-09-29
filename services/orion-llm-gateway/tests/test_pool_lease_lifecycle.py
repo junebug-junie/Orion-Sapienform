@@ -405,7 +405,7 @@ async def test_queued_passthrough_is_withdrawn_when_the_client_leaves(fake_pool,
     started = time.monotonic()
     response = await passthrough_proxy.proxy_on_pool(
         request=request, route_key="quick", forward_body={"model": "quick"}, path="/v1/chat/completions",
-        holder=pool_placement.HOLDER_OPENAI, guard=None, correlation_id=None, min_ctx_tokens=10, anthropic=False)
+        holder=pool_placement.HOLDER_OPENAI, correlation_id=None, min_ctx_tokens=10, anthropic=False)
     assert response.status_code == passthrough_proxy.CLIENT_CLOSED_STATUS
     assert time.monotonic() - started < 1
     assert fake_pool.withdrawn == 1 and fake_pool.releases == []
@@ -417,7 +417,7 @@ async def test_queued_passthrough_times_out_on_its_own_wait(fake_pool, monkeypat
     fake_pool.max_wait_sec = 0.05
     response = await passthrough_proxy.proxy_on_pool(
         request=_Request(disconnect_after=10**6), route_key="quick", forward_body={"model": "quick"},
-        path="/v1/chat/completions", holder=pool_placement.HOLDER_OPENAI, guard=None, correlation_id=None,
+        path="/v1/chat/completions", holder=pool_placement.HOLDER_OPENAI, correlation_id=None,
         min_ctx_tokens=10, anthropic=False)
     assert response.status_code == 503
     assert b'"reason":"deadline"' in response.body

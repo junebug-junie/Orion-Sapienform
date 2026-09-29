@@ -133,7 +133,7 @@ def test_admitted_self_sense_waits_then_asks_all_four_and_publishes():
         assert len(world.published) == 4
         # Every question attached to the run's hold; the hold's role is never a route label.
         assert all(c.gpu_lease is not None and c.gpu_lease.model_dump() == REF for c in world.turn_calls)
-        assert all(c.assigned_lane is None and c.lease is None for c in world.turn_calls)
+        assert all(c.assigned_lane is None for c in world.turn_calls)
         assert world.releases == ["completed"]
         assert (await world.graph(saver).aget_state(CFG)).next == ()
         # Curiosity-only nodes must never appear on this path.

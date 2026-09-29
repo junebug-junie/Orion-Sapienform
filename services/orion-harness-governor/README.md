@@ -388,34 +388,31 @@ exists without a Live row, a responder section and a listed tool, so a
 contract-only PR ahead of the responder is refused on purpose: a channel with
 no responder would read as "unknown" on every call.
 
-## Broker-admitted turns
+## Admitted turns (GPU pool hold)
 
-`HarnessRunRequestV1.resource_lease` and `inference_timeout_sec` are optional.
-Admitted requests can execute concurrently on independently leased backends even
-when they share an intake channel; legacy requests retain one executing turn per
-channel. Intake owns and cancels its tasks on shutdown, and duplicate in-flight
-requests for the same correlation and lease generation do not start a second
-motor. The FCC subprocess receives only its own encoded lease in
-`ANTHROPIC_CUSTOM_HEADERS`; inherited resource-lease headers are removed while
-unrelated custom headers survive. Gateway lease validation must be enabled before
-Hub's admission flag is enabled. Stance and finalization carry the same owning
-lease through their Cortex requests and use its assigned lane. See
-`docs/architecture/durable-resource-admission.md`.
+`HarnessRunRequestV1.gpu_lease` (a durable run's GPU pool hold ref, `GpuLeaseRefV1`) and
+`inference_timeout_sec` are optional. Admitted requests can execute concurrently even when they
+share an intake channel; legacy requests retain one executing turn per channel. Intake owns and
+cancels its tasks on shutdown, and duplicate in-flight requests for the same correlation and hold
+generation do not start a second motor. The FCC subprocess receives only its own encoded hold ref
+(`X-Orion-Gpu-Lease`) in `ANTHROPIC_CUSTOM_HEADERS`; an inherited one is removed while unrelated
+custom headers survive. Finalization carries the same hold through its Cortex requests
+(`options.gpu_lease`), so every call attaches to the hold. The older durable token
+(`resource_lease` / `X-Orion-Resource-Lease`) was deleted in GPU pool stage 4.6.
 
-For leased turns only, `ANTHROPIC_BASE_URL` targets the existing
+For held turns only, `ANTHROPIC_BASE_URL` targets the existing
 `HARNESS_LLM_GATEWAY_URL` directly (default `http://llm-gateway:8210`). The external
 FCC proxy has no repository-controlled guarantee that it forwards lease headers.
 Direct Gateway delivery makes fencing inspectable and leaves the legacy FCC proxy
 path unchanged. A leased subprocess uses a nonsecret CLI placeholder token and
 removes the inherited Anthropic API key; the FCC proxy credential is not sent to
-Gateway. The broker fence is the protected request's admission authority.
+Gateway. The pool (via the gateway's `attach`) is the held request's fencing authority.
 
 ## Durable admission owner
 
-Admitted harness turns carry the same resource lease through the FCC motor,
-reflection, optional re-reflection, and conditional response repair. These LLM calls use
-the lease's assigned lane and generation, so a continuation does not wait behind
-its own reservation. Unleashed finalization uses the turn owner lane: chat for non-agent FCC
-labels (default Hub chat / `MODEL_SONNET`), agent for the agent FCC model
-label. Admitted leases still force their assigned lane for every finalize
-LLM hop.
+Admitted harness turns carry the same GPU pool hold through the FCC motor,
+reflection, optional re-reflection, and conditional response repair. These LLM calls attach to
+the hold, so a continuation does not wait behind its own reservation; they name route `agent`
+(the hold's work class, never the hold's role). Unheld finalization uses the turn owner lane:
+chat for non-agent FCC labels (default Hub chat / `MODEL_SONNET`), agent for the agent FCC
+model label.

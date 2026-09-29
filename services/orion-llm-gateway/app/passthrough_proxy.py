@@ -38,7 +38,6 @@ from .pool_placement import (
     stream_cleanup,
     wait_lease_revoked,
 )
-from .resource_lease import LeaseGuard, ResourceLeaseRejected, lease_error
 
 logger = logging.getLogger("orion-llm-gateway.passthrough")
 
@@ -80,10 +79,6 @@ def _plain_response(content: bytes, upstream: httpx.Response) -> Response:
     content_type = headers.pop("content-type", None) or headers.pop("Content-Type", None)
     return Response(content=content, status_code=upstream.status_code, headers=headers,
                     media_type=content_type or "application/json")
-
-
-async def _guarded(guard: Optional[LeaseGuard], operation):
-    return await (guard.run(operation) if guard is not None else operation)
 
 
 # How often a queued passthrough checks whether its HTTP client is still there.
@@ -150,7 +145,6 @@ async def proxy_on_pool(
     forward_body: Dict[str, Any],
     path: str,
     holder: str,
-    guard: Optional[LeaseGuard],
     correlation_id: Optional[str],
     min_ctx_tokens: int,
     anthropic: bool,
@@ -176,13 +170,6 @@ async def proxy_on_pool(
     # rule 3), minutes on a 27B: the 60s passthrough budget would turn interleave into a mid-turn
     # 503. It gets the class's bus wait budget instead (LLM_GATEWAY_POOL_[BACKGROUND_]WAIT_SEC).
     wait_s = wait_budget_sec(spec.priority or "system") if hold is not None else passthrough_wait_sec()
-    if guard is not None:
-        # A stale durable token never takes a GPU lease.
-        try:
-            await guard.check()
-        except ResourceLeaseRejected as exc:
-            return JSONResponse(lease_error(str(exc)), status_code=409)
-
     for _ in range(3):
         handle = PoolLease(route=route_key, spec=spec, holder=holder, turn_correlation_id=correlation_id,
                            min_ctx_tokens=min_ctx, deadline_sec=wait_s, hold=hold)
@@ -219,13 +206,13 @@ async def proxy_on_pool(
                 client = httpx.AsyncClient(timeout=timeout)
                 try:
                     upstream_request = client.build_request("POST", upstream_url, headers=headers, json=forward_body)
-                    upstream = await _race(_guarded(guard, client.send(upstream_request, stream=True)), watch)
+                    upstream = await _race(client.send(upstream_request, stream=True), watch)
                 except BaseException:
                     await client.aclose()
                     raise
                 if upstream.status_code >= 400:
                     try:
-                        content = await _guarded(guard, upstream.aread())
+                        content = await upstream.aread()
                     finally:
                         await upstream.aclose()
                         await client.aclose()
@@ -252,8 +239,6 @@ async def proxy_on_pool(
                 async def _body() -> AsyncIterator[bytes]:
                     try:
                         chunks = upstream.aiter_bytes()
-                        if guard is not None:
-                            chunks = guard.chunks(chunks)
                         iterator = chunks.__aiter__()
                         while True:
                             try:
@@ -266,8 +251,6 @@ async def proxy_on_pool(
                         logger.warning("passthrough_lease_revoked_mid_stream route=%s lease_id=%s reason=%s corr=%s",
                                        route_key, lease.lease_id, exc.reason, correlation_id or "-")
                         yield _sse_error(_recalled_body(exc.reason, route_key), anthropic=anthropic)
-                    except ResourceLeaseRejected as exc:
-                        yield _sse_error(lease_error(str(exc)), anthropic=anthropic)
                     except httpx.HTTPError as exc:
                         await close(exc)
                         raise
@@ -284,8 +267,7 @@ async def proxy_on_pool(
                 )
 
             async with httpx.AsyncClient(timeout=timeout) as client:
-                upstream = await _race(_guarded(guard, client.post(upstream_url, headers=headers, json=forward_body)),
-                                       watch)
+                upstream = await _race(client.post(upstream_url, headers=headers, json=forward_body), watch)
             response = _plain_response(upstream.content, upstream)
             if upstream.status_code >= 400:
                 failure = _UpstreamStatus(f"http_{upstream.status_code}")
@@ -307,9 +289,6 @@ async def proxy_on_pool(
             logger.warning("passthrough_lease_revoked route=%s lease_id=%s reason=%s corr=%s",
                            route_key, lease.lease_id, exc.reason, correlation_id or "-")
             return JSONResponse(_recalled_body(exc.reason, route_key), status_code=503)
-        except ResourceLeaseRejected as exc:
-            await handle.release()
-            return JSONResponse(lease_error(str(exc)), status_code=409)
         except httpx.TimeoutException as exc:
             await handle.release(exc)
             logger.error("passthrough_timeout route=%s upstream=%s corr=%s", route_key, upstream_url, correlation_id)

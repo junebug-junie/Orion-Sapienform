@@ -21,11 +21,7 @@ class ResourceRequirementV1(BaseModel):
     lease_scope: Literal["run"] = "run"
     priority: Literal["background", "urgent"] = "background"
     preferred_lane: str = "agent"
-    allow_elastic_activation: bool = False
-    alternatives: list[str] = Field(default_factory=list)
     requirements: dict[str, Any] = Field(default_factory=dict)
-    operator_override: str | None = None
-    pinned_lane: str | None = None
     deadline_at: datetime | None = None
 
     @model_validator(mode="after")
@@ -41,22 +37,6 @@ class ResourceRequirementV1(BaseModel):
             ):
                 raise ValueError("minimum capability requirements must be finite nonnegative numbers")
         return self
-
-
-class ResourceLeaseV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    run_id: str
-    demand_id: str
-    lease_id: str
-    resource_key: str
-    lane: str
-    backend_key: str
-    generation: int = Field(ge=1)
-    granted_at: datetime
-    expires_at: datetime
-    heartbeat_at: datetime
-    status: Literal["active", "released", "expired"] = "active"
 
 
 class ResourceEventV1(BaseModel):
@@ -82,7 +62,10 @@ class CapacityAcquireV1(BaseModel):
     backend_key: str = Field(min_length=1, max_length=2048)
     max_inflight: int = Field(ge=1, le=128)
     budget_sec: float = Field(gt=0, le=86400)
-    lease: ResourceLeaseV1 | None = None
+    # The durable run lease token (ResourceLeaseV1) was deleted in GPU pool stage 4.6; no caller
+    # sends one. The field stays, always None, only because capacity.py (frozen until stage 5
+    # deletes it and this model) still reads ``request.lease``. A sent value is refused.
+    lease: None = None
 
 
 class CapacityTokenV1(BaseModel):

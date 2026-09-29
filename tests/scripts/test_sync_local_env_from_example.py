@@ -26,8 +26,8 @@ def test_default_sync_reaches_admission_templates_and_preserves_overrides(tmp_pa
     prefixes = {
         "orion-durable-runs": ("DURABLE_RUNS_",),
         "orion-cortex-orch": ("CORTEX_DURABLE_",),
-        "orion-hub": ("HUB_CURIOSITY_DURABLE_", "HUB_CURIOSITY_LEASE_"),
-        "orion-llm-gateway": ("LLM_GATEWAY_LEASE_", "LLM_GATEWAY_CAPACITY_"),
+        "orion-hub": ("HUB_CURIOSITY_DURABLE_",),
+        "orion-llm-gateway": ("GPU_POOL_", "LLM_GATEWAY_POOL_"),
     }
     branch = tmp_path / "branch"
     primary = tmp_path / "primary"

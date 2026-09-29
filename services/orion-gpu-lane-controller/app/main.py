@@ -14,7 +14,6 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hun
 from orion.schemas.gpu_pool import GPU_POOL_ACTUATE_REQUEST_CHANNEL
 
 from . import actuator_bus, lane_control, gpu2, pool_fence
-from orion.schemas.gpu_slot import GpuSlotRequestV1
 from .settings import settings
 
 heartbeat_chassis: HeartbeatOnly | None = None
@@ -53,19 +52,17 @@ def build_actuator_chassis() -> Hunter:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global heartbeat_chassis, actuator_chassis
-    if gpu2.pool_authority():
-        try:
-            interrupted = await asyncio.to_thread(pool_fence.recover_interrupted)
-            if interrupted:
-                logger.warning(f"[HOST] gpu2_pool_action_interrupted action_id={interrupted['action_id']}")
-        except Exception as exc:  # noqa: BLE001 -- the fence re-reads (and fails closed) per request
-            logger.error(f"[HOST] gpu2_pool_fence_recover_failed error={exc}")
+    try:
+        interrupted = await asyncio.to_thread(pool_fence.recover_interrupted)
+        if interrupted:
+            logger.warning(f"[HOST] gpu2_pool_action_interrupted action_id={interrupted['action_id']}")
+    except Exception as exc:  # noqa: BLE001 -- the fence re-reads (and fails closed) per request
+        logger.error(f"[HOST] gpu2_pool_fence_recover_failed error={exc}")
     if settings.ORION_BUS_ENABLED:
         try:
             actuator_chassis = build_actuator_chassis()
             await actuator_chassis.start_background()
-            logger.info(f"[HOST] gpu_pool_actuator_started authority={settings.GPU2_AUTHORITY} "
-                        f"actuator={settings.GPU_POOL_ACTUATOR_NAME}")
+            logger.info(f"[HOST] gpu_pool_actuator_started actuator={settings.GPU_POOL_ACTUATOR_NAME}")
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[HOST] gpu_pool_actuator_start_failed error={exc}")
             actuator_chassis = None
@@ -154,17 +151,3 @@ async def slot_status(slot: str):
     if slot == "circe-gpu2":
         return await gpu2.status()
     return JSONResponse({"error": "unknown_slot"}, status_code=404)
-
-
-@app.post("/v1/gpu-slots/activate")
-async def activate_slot(req: GpuSlotRequestV1, authorization: Optional[str] = Header(default=None)):
-    # GPU2 uses the deployment network boundary and durable ownership fencing.
-    # Preserve the existing GPU1 authentication contract.
-    if req.slot == "circe-gpu1":
-        if not settings.GPU_LANE_CONTROLLER_TOKEN:
-            return JSONResponse({"error": "mutation_disabled"}, status_code=503)
-        if not str(authorization or "").lower().startswith("bearer ") or not _authorized(authorization):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-    result = await lane_control.flip(req.target) if req.slot == "circe-gpu1" else await gpu2.flip(req)
-    return JSONResponse(result, status_code=200 if result.get("status") in {"success", "noop"} else
-                        409 if result.get("status") == "busy" else 503)

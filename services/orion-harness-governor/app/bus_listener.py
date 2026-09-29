@@ -390,7 +390,6 @@ async def handle_harness_run_request(
             grammar_receipts=motor.grammar_receipts,
             reading_receipts=motor.reading_receipts,
             preserve_structured_output=bool(request.reading_only),
-            resource_lease=request.resource_lease,
             gpu_lease=request.gpu_lease,
             fcc_model_label=request.fcc_model_label,
             repair_overlay=repair_overlay,
@@ -720,16 +719,15 @@ async def run_bus_worker(
                     decoded = bus.codec.decode(msg.get("data"))
                     payload = decoded.envelope.payload if decoded.ok else {}
                     body = payload if isinstance(payload, dict) else {}
-                    # A turn under a durable lease (old token) or a GPU pool hold (stage 4) is
-                    # admitted: it runs outside the legacy lock, or it would queue behind
-                    # unrelated turns while its own card sits reserved for it.
-                    admitted = isinstance(body.get("resource_lease"), dict) or isinstance(body.get("gpu_lease"), dict)
+                    # A turn under a GPU pool hold is admitted: it runs outside the legacy lock,
+                    # or it would queue behind unrelated turns while its own card sits reserved for it.
+                    admitted = isinstance(body.get("gpu_lease"), dict)
                     key = None
                     if admitted:
                         # One outstanding motor per fenced turn. Duplicate
                         # pub/sub delivery shares the original reply channel.
                         request = HarnessRunRequestV1.model_validate(payload)
-                        fence = request.resource_lease or request.gpu_lease
+                        fence = request.gpu_lease
                         key = f"{request.correlation_id}:{fence.lease_id}:{fence.generation}"
                         if key in admitted_inflight:
                             continue

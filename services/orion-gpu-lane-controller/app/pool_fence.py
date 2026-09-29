@@ -1,7 +1,6 @@
-"""Stage 4.2: the pool-generation fence for gpu2 (GPU2_AUTHORITY=pool).
+"""Stage 4.2: the pool-generation fence for gpu2 -- the only gpu2 authority since stage 4.6.
 
-Replaces the durable-runs ``/elastic/status`` callback as the thing that says "this transition is
-still the current intent". Two checks, both local to circe:
+The thing that says "this transition is still the current intent". Two checks, both local to circe:
 
 - **generation**: the pool issues a generation per card set; the controller refuses anything
   <= the last one it accepted, and persists the accepted one *before* touching a container, so a
@@ -143,12 +142,12 @@ def recover_interrupted() -> dict[str, Any] | None:
 async def authority(req, *, require_drained=True):
     # require_drained=False is the pre-flight and the rollback check. Rollback returns the card to
     # its previous residents, so a checkout edited mid-load must not block it: identity and
-    # generation only. (The durable admissions require_drained guarded do not exist under pool.)
+    # generation only.
     return await asyncio.to_thread(_authority, req, require_drained)
 
 
 def _authority(req, check_digest=True):
-    """Pool-mode replacement for gpu2.authority(): the transition in progress must still be the
+    """gpu2.authority(): the transition in progress must still be the
     newest generation accepted for gpu2, and the checkout must still match the digest it was
     accepted under. Drain/idle *safety* stays in gpu2.transition; whether-to-act (thermal, visual
     baseline, lease recall) is pool policy and is not re-asked here."""

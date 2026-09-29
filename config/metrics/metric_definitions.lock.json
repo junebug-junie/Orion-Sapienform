@@ -2,11 +2,11 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 683,
   "_last_change": {
-    "base": "merge base 613996821 (origin/main)",
-    "change_count": 1,
-    "high_severity_count": 1,
+    "base": "merge base 8de13b688 (origin/main)",
+    "change_count": 0,
+    "high_severity_count": 0,
     "changes": [
-      "high   semantics_changed metric://field_channel/orion-field-digester/inference_failure_pressure (meaning: \u2026TTP error), per gateway window. Reported by the gateway its\u2026 -> \u2026TTP error), over the node's last 10 minutes of gateway wind\u2026)"
+      "no definition changes relative to the merge base"
     ]
   },
   "definitions": {

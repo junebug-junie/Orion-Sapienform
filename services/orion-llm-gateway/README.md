@@ -314,28 +314,17 @@ recorded in the projection for inspection and never reach the field. Replay what
 channel would read from existing logs with
 `evals/run_inference_outcome_eval.py`.
 
-## Optional durable resource leases
+## Calls under a durable run's GPU pool hold
 
-`LLM_GATEWAY_LEASE_VALIDATION_ENABLED=true` is the operator-template default.
-Requests carrying a typed `resource_lease` (bus) or the bounded
-`X-Orion-Resource-Lease` header (Anthropic HTTP) must validate against
-`LLM_GATEWAY_LEASE_VALIDATION_URL` (default
-`http://durable-runs:8121/leases/validate`). Checks occur before dispatch,
-periodically during execution/streaming, and before accepting the final result.
-The interval defaults to 5 seconds and validation timeout to 2 seconds. Missing
-tokens remain valid for existing synchronous traffic; malformed or stale tokens
-are rejected. Tokens never reach the model prompt or backend headers.
+A durable run holds one GPU pool lease for its whole life. Every LLM call it makes carries that
+hold's ref -- bus `options.gpu_lease`, HTTP `X-Orion-Gpu-Lease` (a base64 `GpuLeaseRefV1`) -- and
+the gateway `attach`es the call to the hold instead of taking a lease of its own, so a run never
+queues behind itself. The pool is the fencing authority: a stale or unknown hold makes `attach`
+refuse (`gpu_pool_unavailable`); a malformed ref is refused `resource_lease_rejected`
+(`malformed_gpu_lease`). A call under a hold keeps its caller's route (lane routing does not move it).
 
-Since the GPU pool cutover the durable lease is an **admission token only**:
-the lane must match and the broker must still consider the generation current,
-but placement always comes from a GPU pool lease (a burst route is agent work:
-`agent-burst`/`chat-burst` -> class `agent`). The lease's `backend_key` is not
-compared with the granted URL, because the pool may legitimately place the call
-on another role. A cancelled blocking Python HTTP thread keeps its pool lease
-until the thread exits; stale results are rejected, but physical inference
-cannot be forcibly stopped by cancelling that thread.
-
-See [resource admission ownership and rollout](../../docs/architecture/durable-resource-admission.md).
+The older durable-run lease token (`options.resource_lease`, `X-Orion-Resource-Lease`) and its
+broker validation (`LLM_GATEWAY_LEASE_VALIDATION_*`) were deleted in GPU pool stage 4.6.
 
 ## Lending chat's card
 
@@ -344,12 +333,3 @@ Juniper's chat card is the GPU pool's `lent` flag on `gpu0` (Hub GPU pool panel 
 Until durable-runs reads pool state (stage 4), `GET /routes` still reports `chat-burst` as
 `operator_closed` (with `gate_open: false`) unless gpu0 is lent, and `agent-burst` as `up` only
 while the `agent-gpu2` swap seat is confirmed.
-
-## Optional GPU2 elastic admission
-
-GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
-[ownership ADR](../../docs/architecture/gpu2-elastic-admission.md),
-[pre-edit repository/live evidence](../../docs/architecture/gpu2-elastic-evidence.md),
-and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
-for this service's exact flags, HTTP contracts and operator commands.
-No production env sync, migration, GPU transition or deployment was performed.

@@ -253,12 +253,11 @@ async def test_shared_bus_is_used_directly_and_never_closed_by_the_worker(monkey
 
 @pytest.mark.asyncio
 async def test_admitted_lanes_share_intake_without_serializing_execution(monkeypatch):
-    from datetime import datetime, timedelta, timezone
     from orion.harness.tests.fixtures import make_thought
     from orion.schemas.cognition.answer_contract import AnswerContract
     from orion.schemas.context_exec import ContextExecPermissionV1
+    from orion.schemas.gpu_pool import GpuLeaseRefV1
     from orion.schemas.harness_finalize import HarnessRunRequestV1
-    from orion.schemas.resource_admission import ResourceLeaseV1
     queue = asyncio.Queue()
     bus = _FakeBus({"agent:channel": queue})
     monkeypatch.setattr(bus_listener.settings, "orion_bus_enabled", True)
@@ -272,13 +271,10 @@ async def test_admitted_lanes_share_intake_without_serializing_execution(monkeyp
             both.set()
         await release.wait()
     monkeypatch.setattr(bus_listener, "_handle_bus_message", handle)
-    now = datetime.now(timezone.utc)
-    for name, lane in (("one", "agent"), ("two", "chat")):
-        lease = ResourceLeaseV1(run_id=name, demand_id=name, lease_id=name, resource_key=f"llm.route.{lane}",
-            lane=lane, backend_key=f"http://{lane}:8000", generation=1,
-            granted_at=now, heartbeat_at=now, expires_at=now + timedelta(seconds=60))
+    for name, role in (("one", "agent"), ("two", "agent-gpu2")):
+        hold = GpuLeaseRefV1(lease_id=name, generation=1, role=role, holder=f"durable-runs:{name}")
         request = HarnessRunRequestV1(correlation_id=name, thought_event=make_thought(), user_message="study",
-            permissions=ContextExecPermissionV1(), answer_contract=AnswerContract(), resource_lease=lease)
+            permissions=ContextExecPermissionV1(), answer_contract=AnswerContract(), gpu_lease=hold)
         await queue.put({"type": "message", "data": request.model_dump(mode="json")})
     stop = asyncio.Event()
     task = asyncio.create_task(bus_listener.run_bus_worker("agent:channel", stop, lane="agent", bus=bus))

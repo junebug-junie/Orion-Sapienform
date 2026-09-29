@@ -1,8 +1,8 @@
 # Runbook: GPU pool stage 5.3 cutover — agent-gpu2 moves from the gpu2 bridge onto the generic launch executor
 
 Spec: `docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md` (PR #2404),
-including "Corrections from building 5.1" and "5.2". PRs: 5.1 #2408 (merged), 5.2 #2409 (merged), 5.3
-(this one). PR report: `docs/superpowers/pr-reports/2026-09-29-gpu-pool-stage5-3-cutover-pr.md`.
+including "Corrections from building 5.1" and "5.2". PRs: 5.1 #2408 (merged), 5.2 #2409 (merged), 5.3 #2415
+#2415. PR report: `docs/superpowers/pr-reports/2026-09-29-gpu-pool-stage5-3-cutover-pr.md`.
 
 ## What this changes, in plain words
 
@@ -152,7 +152,7 @@ controller image" from "new code path" before step 3.
 
 ```bash
 # [GO] merge this PR (base main) once CI is green, then record the merge commit
-gh pr merge <5.3 PR> --merge
+gh pr merge 2415 --merge
 SHA=$(git -C /mnt/scripts/Orion-Sapienform ls-remote origin refs/heads/main | cut -f1); echo $SHA
 ```
 

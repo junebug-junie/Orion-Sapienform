@@ -355,6 +355,9 @@ def test_state_snapshot_shows_cards_roles_and_queue():
         assert {c.card for c in state.cards} == set(CFG.cards)
         assert state.queue_depth == {"chat": 1} and state.mode == "observe"
         assert state.config_digest == CFG.digest
+        # Stage 5.5: Hub's biometrics labels join nvidia-smi on the card index, for the pool's host.
+        assert state.host == CFG.host.name
+        assert {c.card: c.index for c in state.cards} == {c: spec.index for c, spec in CFG.cards.items()}
     run(go())
 
 

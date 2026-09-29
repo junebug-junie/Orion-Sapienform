@@ -49,6 +49,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import io
+import os
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 import time
@@ -81,6 +83,51 @@ _generation_future: asyncio.Future | None = None
 _heartbeat_chassis: Optional[HeartbeatOnly] = None
 # One-shot latch so the no-bus error below cannot spam once per generation.
 _power_intent_no_bus_warned: bool = False
+
+
+
+def resolve_power_intent_gpu_index(
+    cuda_visible_devices: Optional[str], cuda_device_order: Optional[str]
+) -> tuple[Optional[int], Optional[str]]:
+    """The PHYSICAL nvidia-smi index this container generates on, or (None, why).
+
+    Stage 5.5 (docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md,
+    Decision 4): derived from this process's own ``CUDA_VISIBLE_DEVICES`` -- the variable the GPU pool's
+    actuator sets from ``config/gpu_pool.yaml`` ``cards.<card>.index`` (launch ``cuda_env``), and the
+    same one torch reads to pick the card -- instead of the deleted hand-set
+    ``DIFFUSION_POWER_INTENT_GPU_INDEX``. The settler runs on the host and only knows nvidia-smi
+    (PCI bus) indices, so the value is only a physical index when ``CUDA_DEVICE_ORDER=PCI_BUS_ID``
+    (baked into this image, Dockerfile). Anything else -- unset, several devices, a GPU UUID, or a
+    different device order -- is refused, never guessed: an intent on the wrong card settles the wrong
+    card's watts.
+    """
+    raw = (cuda_visible_devices or "").strip()
+    if not raw:
+        return None, "CUDA_VISIBLE_DEVICES is unset"
+    if not re.fullmatch(r"[0-9]+", raw):
+        return None, f"CUDA_VISIBLE_DEVICES={raw!r} is not exactly one numeric device"
+    if (cuda_device_order or "").strip() != "PCI_BUS_ID":
+        return None, f"CUDA_DEVICE_ORDER={cuda_device_order!r}, not PCI_BUS_ID (index would not be nvidia-smi's)"
+    return int(raw), None
+
+
+# Resolved once from the process env (it cannot change for the life of the process).
+_power_intent_gpu_index, _power_intent_gpu_index_why = resolve_power_intent_gpu_index(
+    os.environ.get("CUDA_VISIBLE_DEVICES"), os.environ.get("CUDA_DEVICE_ORDER")
+)
+# One-shot latch for the unresolved-index error at publish time.
+_power_intent_gpu_index_warned: bool = False
+
+
+def warn_on_unresolved_power_intent_gpu_index() -> None:
+    """Boot-time: say so if intents will be withheld because the card cannot be named."""
+    if settings.DIFFUSION_POWER_INTENT_ENABLED and _power_intent_gpu_index is None:
+        logger.error(
+            "power_intent_gpu_index_unresolved: {}. No power intent will be declared for the "
+            "life of this container (it never guesses a card).",
+            _power_intent_gpu_index_why,
+        )
+
 
 # What this workload has actually cost, learned from its own settlements. In
 # memory on purpose: a restart declares None again rather than a stale guess,
@@ -300,6 +347,7 @@ async def lifespan(app: FastAPI):
         _heartbeat_chassis = None
 
     warn_on_contradictory_power_intent_config()
+    warn_on_unresolved_power_intent_gpu_index()
 
     # Subscribe to our OWN settlements so the prior can learn. Without this
     # edge the producer never finds out what its workload actually drew, which
@@ -574,6 +622,17 @@ async def _publish_power_intent() -> None:
     """
     if not settings.DIFFUSION_POWER_INTENT_ENABLED:
         return
+    gpu_index = _power_intent_gpu_index
+    if gpu_index is None:
+        # Logged at boot too; latched here so the loop's silence is never unexplained.
+        global _power_intent_gpu_index_warned
+        if not _power_intent_gpu_index_warned:
+            _power_intent_gpu_index_warned = True
+            logger.error(
+                "power_intent_gpu_index_unresolved: {}. Intent withheld (logged once).",
+                _power_intent_gpu_index_why,
+            )
+        return
     chassis = _heartbeat_chassis
     bus = getattr(chassis, "bus", None) if chassis is not None else None
     if bus is None:
@@ -599,7 +658,7 @@ async def _publish_power_intent() -> None:
             intent_id=str(uuid.uuid4()),
             workload_kind="reverie_diffusion",
             node=settings.NODE_NAME,
-            gpu_index=settings.DIFFUSION_POWER_INTENT_GPU_INDEX,
+            gpu_index=gpu_index,
             expected_duration_sec=settings.DIFFUSION_POWER_INTENT_DURATION_SEC,
             # The prior, or None while this workload is still unmeasured.
             # None means UNKNOWN, never zero -- PowerIntentV1's docstring is
@@ -608,7 +667,7 @@ async def _publish_power_intent() -> None:
             expected_watts=get_power_prior().expected_watts(
                 workload_kind="reverie_diffusion",
                 node=settings.NODE_NAME,
-                gpu_index=settings.DIFFUSION_POWER_INTENT_GPU_INDEX,
+                gpu_index=gpu_index,
             ),
             deadline=now
             + timedelta(seconds=settings.DIFFUSION_POWER_INTENT_DEADLINE_MARGIN_SEC),

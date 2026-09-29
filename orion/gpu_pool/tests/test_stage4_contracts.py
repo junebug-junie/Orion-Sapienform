@@ -117,6 +117,9 @@ def test_new_swap_events(event):
 
 def test_card_fault_state():
     assert GpuCardStateV1(card="gpu2", vram_gb=32, swap_state="fault").swap_state == "fault"
+    # Stage 5.5: additive, optional -- a pre-5.5 payload (no index) still validates.
+    assert GpuCardStateV1(card="gpu2", vram_gb=32).index is None
+    assert GpuCardStateV1(card="gpu2", vram_gb=32, index=2).index == 2
 
 
 # --- actuation --------------------------------------------------------------------------------

@@ -16,7 +16,6 @@ from fastapi.testclient import TestClient
 from test_api import REPO_ROOT, main_module
 from orion.gpu_pool.config import launch_digest, load_pool_config
 from orion.schemas.gpu_pool import GpuActuateResultV1
-from orion.schemas.gpu_slot import GpuSlotRequestV1
 
 gpu = main_module.gpu2
 bus = main_module.actuator_bus
@@ -140,7 +139,7 @@ def test_authority_is_the_pool_fence(repo, monkeypatch):
     monkeypatch.setattr(fence, "authority", pool)
     request = AsyncMock()
     monkeypatch.setattr(gpu, "request", request)
-    req = GpuSlotRequestV1(slot="circe-gpu2", target="agent-burst", operation_id="d:1", generation=1)
+    req = gpu.Transition(target="agent-burst", operation_id="d:1", generation=1)
     assert asyncio.run(gpu.authority(req, require_drained=False))["can_transition"] is True
     pool.assert_awaited_once_with(req, require_drained=False)
     request.assert_not_called()  # no /elastic/status callback to durable-runs
@@ -276,9 +275,9 @@ def test_pool_fence_rejects_superseded_in_flight(repo):
     state["in_flight"] = {"action_id": "a7", "generation": 7, "role": "agent-gpu2", "action": "load",
                           "cards": ["gpu2"], "launch_digest": digest(repo)}
     fence.write_state(state)
-    ok = GpuSlotRequestV1(slot="circe-gpu2", target="agent-burst", operation_id="a7", generation=7)
+    ok = gpu.Transition(target="agent-burst", operation_id="a7", generation=7)
     assert asyncio.run(gpu.authority(ok))["can_transition"] is True
-    old = GpuSlotRequestV1(slot="circe-gpu2", target="agent-burst", operation_id="a6", generation=6)
+    old = gpu.Transition(target="agent-burst", operation_id="a6", generation=6)
     with pytest.raises(RuntimeError, match="stale_or_unknown_intent"):
         asyncio.run(gpu.authority(old))
     path = repo / "config" / "gpu_pool.yaml"

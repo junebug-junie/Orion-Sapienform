@@ -3267,7 +3267,7 @@ channels:
     consumer_services: ["orion-hub"]
     stability: "experimental"
     since: "2026-09-24"
-    description: "Whole-pool snapshot every few seconds: cards, discovered roles (profile, model file, slots, ctx/slot, confirmed|mismatch|silent|down), unclaimed servers, live leases, queue and backlog depth."
+    description: "Whole-pool snapshot every few seconds: host (the pool's node), cards (with index = the card's nvidia-smi device number on that host, when the YAML sets it), discovered roles (profile, model file, slots, ctx/slot, confirmed|static|mismatch|silent|down|evicted|unloaded), unclaimed servers, live leases, queue and backlog depth. Hub's biometrics GPU labels join nvidia-smi on host + card index (stage 5.5)."
 
   - name: "orion:gpu_pool:state:request"
     kind: "request"

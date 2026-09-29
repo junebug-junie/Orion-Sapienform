@@ -34,11 +34,15 @@ actuators:
 
 priorities: [urgent, interactive, system, background]   # highest first
 
+# index = the card's CUDA / nvidia-smi device number on circe (CUDA_DEVICE_ORDER=PCI_BUS_ID). Hub's
+# biometrics GPU labels join nvidia-smi on it (stage 5.5). gpu0/1/3 verified live 2026-09-29 against
+# circe's running containers (atlas chat/agent/metacog+fast CUDA_VISIBLE_DEVICES_OVERRIDE=0/1/3); those
+# roles have no launch block, so CI cannot check them against compose -- re-verify if a card moves.
 cards:
-  gpu0: {vram_gb: 32, lendable: true}   # chat's card; others only while Juniper has it lent
-  gpu1: {vram_gb: 32}
-  gpu2: {vram_gb: 32, index: 2}         # PG500-216 (a V100); index = CUDA device on circe
-  gpu3: {vram_gb: 32}
+  gpu0: {vram_gb: 32, lendable: true, index: 0}   # chat's card; others only while Juniper has it lent
+  gpu1: {vram_gb: 32, index: 1}
+  gpu2: {vram_gb: 32, index: 2}         # PG500-216 (a V100); the actuator sets the launch roles' device from it
+  gpu3: {vram_gb: 32, index: 3}
 
 roles:
   chat:       {kind: llm, cards: [gpu0], owner: chat, port: 8011}

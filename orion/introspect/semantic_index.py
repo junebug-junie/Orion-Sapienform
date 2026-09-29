@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 from uuid import uuid4
 
 import httpx
@@ -156,3 +156,33 @@ async def publish_upsert(
     await bus.publish(UPSERT_CHANNEL, BaseEnvelope(
         kind=UPSERT_KIND, source=source, payload=payload.model_dump(mode="json"),
     ))
+
+
+async def index_docs(
+    docs: Sequence[tuple[str, str, dict[str, Any]]],
+    cfg: SearchConfig,
+    *,
+    client: httpx.AsyncClient,
+    bus: Any,
+    source: Any,
+    doc_prefix: str,
+    batch: int | None = None,
+) -> IndexPass:
+    """Embed and upsert (doc_id, text, meta) docs the index lacks or holds stale text for.
+
+    meta gains content_hash; pending counts stale docs left past this batch.
+    """
+    if not docs:
+        return IndexPass(indexed=0, pending=0)
+    hashed = [(did, text, meta, content_hash(text)) for did, text, meta in docs]
+    stored = await stored_hashes(client, cfg, [d[0] for d in hashed])
+    stale = [d for d in hashed if stored.get(d[0]) != d[3]]
+    batch = cfg.index_batch if batch is None else batch
+    for did, text, meta, digest in stale[:batch]:
+        vector, model = await embed(client, cfg, text, doc_prefix=doc_prefix)
+        await publish_upsert(
+            bus, source, cfg, doc_id=did, text=text, vector=vector, model=model,
+            meta={**meta, "content_hash": digest},
+        )
+    done = min(len(stale), batch)
+    return IndexPass(indexed=done, pending=len(stale) - done)

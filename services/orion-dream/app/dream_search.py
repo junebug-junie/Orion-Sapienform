@@ -13,11 +13,9 @@ from app.introspect_dreams import doc_id
 from orion.introspect.semantic_index import (
     IndexPass,
     SearchConfig,
-    content_hash,
     embed,
+    index_docs,
     nearest,
-    publish_upsert,
-    stored_hashes,
 )
 from orion.schemas.introspect import clip_text
 
@@ -58,21 +56,13 @@ async def index_missing(
     for kind, row in pairs:
         text = document_text(kind, row)
         if text:
-            docs.append((kind, row, doc_id(kind, row), text, content_hash(text)))
-    if not docs:
-        return IndexPass(indexed=0, pending=0)
-    stored = await stored_hashes(client, cfg, [d[2] for d in docs])
-    stale = [d for d in docs if stored.get(d[2]) != d[4]]
-    batch = cfg.index_batch if batch is None else batch
-    for kind, row, did, text, digest in stale[:batch]:
-        vector, model = await embed(client, cfg, text, doc_prefix=_DOC_PREFIX)
-        occurred = row.get("occurred_at")
-        await publish_upsert(
-            bus, source, cfg, doc_id=did, text=text, vector=vector, model=model,
-            meta={"kind": kind, "content_hash": digest, "occurred_at": occurred.isoformat() if occurred else ""},
-        )
-    done = min(len(stale), batch)
-    return IndexPass(indexed=done, pending=len(stale) - done)
+            occurred = row.get("occurred_at")
+            docs.append((doc_id(kind, row), text, {
+                "kind": kind, "occurred_at": occurred.isoformat() if occurred else "",
+            }))
+    return await index_docs(
+        docs, cfg, client=client, bus=bus, source=source, doc_prefix=_DOC_PREFIX, batch=batch,
+    )
 
 
 async def rank(client: httpx.AsyncClient, cfg: SearchConfig, query: str) -> list[tuple[str, float]]:

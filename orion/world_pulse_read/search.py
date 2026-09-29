@@ -20,9 +20,8 @@ from orion.introspect.semantic_index import (
     SearchConfig,
     SearchUnavailableError,
     content_hash,
-    publish_upsert,
+    index_docs,
     similarity,
-    stored_hashes,
 )
 from orion.introspect.semantic_index import embed as _embed
 from orion.introspect.semantic_index import nearest as _nearest
@@ -46,6 +45,7 @@ __all__ = [
 CANDIDATES = 20
 INDEX_TEXT_CHARS = 1800
 INDEX_SCAN_LIMIT = 1000
+_DOC_PREFIX = "reading-search"
 
 ReadingSearchConfig = SearchConfig
 
@@ -73,7 +73,7 @@ def document_text(row: Any) -> str | None:
 
 
 async def embed(client: httpx.AsyncClient, cfg: SearchConfig, text: str) -> tuple[list[float], str | None]:
-    return await _embed(client, cfg, text, doc_prefix="reading-search")
+    return await _embed(client, cfg, text, doc_prefix=_DOC_PREFIX)
 
 
 async def nearest(
@@ -145,24 +145,14 @@ async def index_missing_readings(
     docs = []
     for row in rows:
         text = document_text(row)
-        if text:
-            docs.append((row, text, content_hash(text)))
-    if not docs:
-        return IndexPass(indexed=0, pending=0)
-    stored = await stored_hashes(client, cfg, [str(row["seed_id"]) for row, _, _ in docs])
-    stale = [d for d in docs if stored.get(str(d[0]["seed_id"])) != d[2]]
-    batch = cfg.index_batch if batch is None else batch
-    for row, text, digest in stale[:batch]:
-        vector, model = await embed(client, cfg, text)
+        if not text:
+            continue
         occurred = row["landing_at"] or row["stage2_completed_at"] or row["handoff_at"] or row["created_at"]
-        await publish_upsert(
-            bus, source, cfg, doc_id=str(row["seed_id"]), text=text, vector=vector, model=model,
-            meta={
-                "content_hash": digest,
-                "url": clip_text(row["url"], URL_CAP)[0],
-                "request_id": str(row["request_id"] or ""),
-                "occurred_at": occurred.isoformat() if occurred else "",
-            },
-        )
-    done = min(len(stale), batch)
-    return IndexPass(indexed=done, pending=len(stale) - done)
+        docs.append((str(row["seed_id"]), text, {
+            "url": clip_text(row["url"], URL_CAP)[0],
+            "request_id": str(row["request_id"] or ""),
+            "occurred_at": occurred.isoformat() if occurred else "",
+        }))
+    return await index_docs(
+        docs, cfg, client=client, bus=bus, source=source, doc_prefix=_DOC_PREFIX, batch=batch,
+    )

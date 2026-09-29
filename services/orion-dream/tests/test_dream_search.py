@@ -118,3 +118,15 @@ def test_rank_keeps_hits_at_or_above_floor_best_first():
     assert _rank(client) == [("dream:19", 0.75)]
     embeds = [r for r in seen if r.url.host == "embed.test"]
     assert len(embeds) == 1 and json.loads(embeds[0].content)["text"] == "vision"
+
+
+def test_rank_orders_multiple_hits_best_first_and_keeps_exact_floor():
+    # metadata None -> l2 space: similarity = 1 - d/2; floor 0.6 == d 0.8.
+    client, _ = _client(query=[("dream:19", 0.8), ("dh-aaa111", 0.2), ("dream:20", 0.4), ("dh-bbb222", 1.0)])
+    assert _rank(client) == [("dh-aaa111", 0.9), ("dream:20", 0.8), ("dream:19", 0.6)]
+
+
+def test_rank_on_existing_but_empty_collection_is_unknown_not_empty():
+    client, _ = _client(query=())
+    with pytest.raises(SearchUnavailableError):
+        _rank(client)

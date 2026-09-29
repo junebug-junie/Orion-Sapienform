@@ -11,7 +11,9 @@ from orion.introspect.semantic_index import (
     UPSERT_KIND,
     SearchConfig,
     SearchUnavailableError,
+    content_hash,
     embed,
+    index_docs,
     nearest,
     publish_upsert,
     stored_hashes,
@@ -24,7 +26,7 @@ CFG = SearchConfig(
 )
 
 
-def _client(*, missing=False, query=(), stored=None):
+def _client(*, missing=False, query=(), stored=None, get_status=200):
     seen = []
 
     def handler(request):
@@ -40,6 +42,8 @@ def _client(*, missing=False, query=(), stored=None):
             ids, dists = zip(*query) if query else ((), ())
             return httpx.Response(200, json={"ids": [list(ids)], "distances": [list(dists)]})
         if request.url.path == "/api/v1/collections/cid/get":
+            if get_status != 200:
+                return httpx.Response(get_status, json={"error": "boom"})
             wanted = json.loads(request.content)["ids"]
             have = [i for i in wanted if i in (stored or {})]
             return httpx.Response(200, json={"ids": have, "metadatas": [{"content_hash": stored[i]} for i in have]})
@@ -93,3 +97,60 @@ def test_publish_upsert_sends_a_semantic_vector_upsert():
     payload = VectorUpsertV1.model_validate(envelope.payload)
     assert payload.collection == "orion_things" and payload.embedding_dim == 2
     assert payload.embedding_kind == "semantic" and payload.meta == {"kind": "narrative"}
+
+
+class _Bus:
+    def __init__(self):
+        self.published = []
+
+    async def publish(self, channel, envelope):
+        self.published.append((channel, envelope))
+
+
+def _index(docs, client, batch=None):
+    bus = _Bus()
+    result = _run(lambda c: index_docs(
+        docs, CFG, client=c, bus=bus, source=ServiceRef(name="orion-dream"),
+        doc_prefix="dream-search", batch=batch,
+    ), client)
+    return result, bus
+
+
+DOCS = [("a", "alpha", {"kind": "narrative"}), ("b", "beta", {"kind": "hypothesis"}), ("c", "gamma", {})]
+
+
+def test_index_docs_publishes_only_new_and_changed_with_content_hash():
+    client, seen = _client(stored={"a": content_hash("alpha"), "b": "stale"})
+    result, bus = _index(DOCS, client)
+    assert (result.indexed, result.pending) == (2, 0)
+    payloads = [VectorUpsertV1.model_validate(e.payload) for _, e in bus.published]
+    assert [p.doc_id for p in payloads] == ["b", "c"]
+    assert payloads[0].meta == {"kind": "hypothesis", "content_hash": content_hash("beta")}
+    assert payloads[1].meta == {"content_hash": content_hash("gamma")} and payloads[1].text == "gamma"
+    embeds = [json.loads(r.content) for r in seen if r.url.host == "embed.test"]
+    assert all(e["doc_id"].startswith("dream-search-") for e in embeds) and len(embeds) == 2
+
+
+def test_index_docs_batch_leaves_the_rest_pending():
+    client, _ = _client(missing=True)
+    result, bus = _index(DOCS, client, batch=1)
+    assert (result.indexed, result.pending) == (1, 2) and len(bus.published) == 1
+    client, _ = _client(stored={})
+    result, _ = _index(DOCS, client)
+    assert (result.indexed, result.pending) == (3, 0)
+
+
+def test_index_docs_empty_makes_no_http_call():
+    client, seen = _client()
+    result, bus = _index([], client)
+    assert (result.indexed, result.pending) == (0, 0) and seen == [] and bus.published == []
+
+
+def test_index_docs_stored_hashes_failure_raises_and_publishes_nothing():
+    client, seen = _client(get_status=500)
+    bus = _Bus()
+    with pytest.raises(SearchUnavailableError):
+        _run(lambda c: index_docs(
+            DOCS, CFG, client=c, bus=bus, source=ServiceRef(name="orion-dream"), doc_prefix="x",
+        ), client)
+    assert bus.published == [] and not any(r.url.host == "embed.test" for r in seen)

@@ -390,6 +390,19 @@ These override the recommendations above.
 4. **The new `ATLAS_` keys need `sync_local_env_from_example.py orion-llamacpp-host --all-keys`**, because the default sync skips that prefix.
 5. **The experiment `not_actuatable` marker has no consumer before 5.7.** 5.1 ships only the validator exemption. Its operator lease still drains everything it evicts; that is unreachable while the pool is in observe mode, and gets fixed in 5.7.
 
+## Corrections from building 5.2 (PR #2409)
+
+1. **Loading a resident role directly (diffusion, fast2) is refused with `not_a_swap_seat`.** Only swap seats load. A direct load could land a resident on a card that a loaded seat still holds.
+2. **`bridge_verb_unsupported` stays reachable until 5.6.** Added `bridge_cannot_set_profile`, so a profile sent to a bridged seat is refused, not silently ignored.
+3. **`launch.drain` has no timeout key**, so the new path uses `GPU2_DRAIN_TIMEOUT_SEC`. 5.6 must rename it or make it a YAML key, and delete the now-dead `GPU2_MODEL_READY_TIMEOUT_SEC`, `GPU2_DIFFUSION_URL` and `GPU2_AGENT_URL`.
+4. **"Ready" means a 2xx carrying `{"ready": true}` or `{"status": "ok"}`.** Every new service's ready endpoint must return one of those; a 503 while not ready is correct.
+5. **Unloading a seat with a drain block drains it before the stop**, and un-drains it if the stop fails.
+6. **5.3 behaviour changes on agent-gpu2:**
+   - The ready wait goes from 600 s to 900 s (`launch.timeout_sec`).
+   - Failure reasons gain a `:<role>` suffix; `burst_upstream_not_idle` becomes `upstream_not_idle:agent-gpu2`.
+   - `GET /v1/gpu-slots/circe-gpu2/status` stops showing progress. The pool reads the bus results instead.
+   - The pool must start sending `profile` for roles that have `launch.profiles`. Choosing a profile by vision, ctx or VRAM is not built.
+
 ## Proposed schema / API changes
 
 - `orion/gpu_pool/config.py`:

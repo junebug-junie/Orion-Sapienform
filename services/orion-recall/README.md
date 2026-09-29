@@ -179,6 +179,25 @@ already deleted in May 2026 -- see `app/source_policy.py`
 Kept here only because the remaining knobs (`RECALL_VECTOR_BASE_URL`, etc.)
 are still recognized settings, not because vector retrieval is live.
 
+### Bounded retrieval (query intake, capped expansion, deadline)
+
+Design: `docs/superpowers/specs/2026-09-29-recall-retrieval-query-architecture-design.md`. Recall used to search the whole prompt: a 30,663-char self-inquiry prompt became 268 sub-queries, each re-running every backend in sequence, and took 72s. Now:
+
+- **What gets searched.** `RecallQueryV1.retrieval_query` if the caller sends it (`retrieval_query_source=caller`); otherwise a fragment longer than `RECALL_MAX_QUERY_CHARS` is condensed deterministically (question clauses first, then the most informative clauses, hard cap; `condensed`); otherwise the fragment as-is (`fragment`). `fragment` itself stays the turn text for self-hit exclusion.
+- **How many searches.** At most `RECALL_MAX_SUB_QUERIES` extracted entities become sub-queries (so at most K+2 including the search text and verb), stopword-filtered and ranked most specific first. The same bounded list feeds `sql_timeline`'s `related_by_entities` and the entity boost.
+- **Feeds vs retrievers.** Query-independent context feeds (bus anomalies, recent Falkor chat, SQL chat pairs/messages, SQL timeline recent + related) run **once** per recall. Query-dependent retrievers (Falkor neighborhood, RDF, cards on the first sub-query, graph compression, anchor rail) run per sub-query. All of it runs concurrently (semaphore of 8).
+- **Deadline.** One budget for the fetch: 80% of the caller's `deadline_ms`, else `RECALL_DEADLINE_MS_DEFAULT`. On expiry, pending backends are cancelled, completed ones are kept, and the decision says `deadline_hit=true`. The entity boost and v2 shadow compare only use what is left of the budget.
+- **`mode=context_only`.** Feeds only: no retrievers, no expansion, no boost (for verbs with no user text, e.g. reverie).
+- **Telemetry.** `recall.decision.v1` and `recall_telemetry` carry `query_chars`, `retrieval_query_source`, `sub_query_count`, `candidates_fetched`, `candidates_kept`, `deadline_hit`, `timings_ms` (`intake`, `feeds`, `retrievers`, `fetch`, `windowing`, `boost`, `fusion`, `total`; feeds/retrievers are the slowest unit in each group since units overlap). `latency_ms` is now end-to-end.
+
+| Variable | Default | Notes |
+| :--- | :--- | :--- |
+| `RECALL_MAX_QUERY_CHARS` | `600` | Condense fragments longer than this (no caller `retrieval_query`). `<=0` disables. |
+| `RECALL_MAX_SUB_QUERIES` | `4` | Entity sub-query cap. `0` = uncapped and unfiltered (the old fan-out; rollback lever). |
+| `RECALL_DEADLINE_MS_DEFAULT` | `60000` | Fetch deadline when the caller sends no `deadline_ms`. Keep below the 90s caller timeout. `<=0` disables. |
+
+Eval: `python services/orion-recall/evals/run_recall_bounded_retrieval_eval.py` (stubbed backends over real `recall_telemetry` queries; see its docstring for what it cannot measure).
+
 ### SQL / Postgres
 
 | Variable | Default | Notes |

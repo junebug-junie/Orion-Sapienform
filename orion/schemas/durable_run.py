@@ -35,6 +35,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
 from orion.schemas.reading_turn import ReadingRunBriefV1, READING_WORKFLOW
 from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW, ReverieVisualRunBriefV1
 from orion.schemas.gpu_pool import GpuLeaseRefV1
@@ -153,6 +154,9 @@ class CuriosityRunBriefV1(BaseModel):
     # rest itself, same as it always has.
     self_study_reflect_input: dict[str, Any] | None = None
     llm_route: str | None = None
+    # Additive, investigate only: set for an urgent run (orion/schemas/curiosity_urgent.py).
+    # Producers dump with exclude_none=True, so an unset seed never reaches an old runner.
+    urgent: CuriosityUrgentSeedV1 | None = None
 
 
 class DurableRunRequestV1(BaseModel):
@@ -246,6 +250,9 @@ class CuriosityTurnRequestV1(BaseModel):
     # behavior unchanged -- Hub's `_turn_result_for` falls back to its own
     # shared session when this is absent.
     session_id: str | None = None
+    # Additive: the run brief's urgent seed, forwarded so Hub runs the investigation turn.
+    # Omitted on the wire when None (runner dumps with exclude_none=True).
+    urgent: CuriosityUrgentSeedV1 | None = None
 
 
 class CuriosityTurnResultV1(BaseModel):

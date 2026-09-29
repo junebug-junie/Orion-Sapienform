@@ -61,6 +61,12 @@ from orion.curiosity.worldview import TurnOutcome, WorldviewSnapshot, _clip, nex
 
 DEFAULT_MAX_HOPS = 5
 
+# Expanded by the sandbox shell, not here: the harness stamps these env vars.
+GRAPH_URI = (
+    'redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD'
+    '@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT'
+)
+
 _HEADER = (
     "This is your own time. Nobody asked you anything, and there is no task "
     "here -- this is you looking at what you have been forming, and following "
@@ -318,10 +324,7 @@ def _access_section(
     write-capable only on Orion's own graph -- so every line here is something
     that works, not something that would work if someone built it.
     """
-    graph_uri = (
-        'redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD'
-        '@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT'
-    )
+    graph_uri = GRAPH_URI
     # EVERY LINE BELOW MUST BE SOMETHING THAT ACTUALLY WORKS THIS RUN. A review
     # finding, not a hypothetical: this section used to be emitted whole even
     # when no graph was configured, handing Orion `redis-cli` commands whose env

@@ -86,6 +86,14 @@ disk_threshold_watchdog: OK -- all paths under threshold.
 ```
 Note `/mnt/docker` runs closest to the default 90% threshold on this host of the eight monitored mounts -- expect it to be first in line for a real Pending Attention card.
 
+**Escalation failures are exit 4, never silent.** The disk, postgres-headroom
+and substrate-ladder watches share one contract: exit 4 means the check ran
+but a human may not have been told -- orion-notify refused the card, or the
+debounce state could not be read/written. With an unusable state they still
+card every bad path/red key on every tick, undeduped (repeated cards beat
+silence; on 2026-09-26 a root-owned state dir hid 204 red ladder runs for
+~34h behind exit 1 and one log line). Look for `ESCALATION FAILED` in the log.
+
 **One-time prerequisite** (the default state-file directory is `root:root`
 755 on this host, same class of gotcha documented for the bus-core
 watchdog above):
@@ -113,7 +121,8 @@ crontab -e
 ```bash
 make substrate-ladder-check            # human-readable; exit 1 = red, 2 = could not check
 make substrate-ladder-check JSON=1     # machine-readable
-make substrate-ladder-watch            # same, plus a debounced Hub Pending Attention card
+make substrate-ladder-watch            # same, plus a debounced Hub Pending Attention card; exit 4 = could not escalate
+python scripts/check_substrate_ladder_liveness.py --test-escalation   # ONE labelled test card, proves the card path
 python scripts/check_substrate_ladder_liveness.py --list-candidates   # every (file, writer, reader) pair
 python scripts/check_substrate_ladder_liveness.py --skip-db --verbose  # skew only, every row
 ```

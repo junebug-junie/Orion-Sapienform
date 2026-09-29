@@ -876,6 +876,152 @@ async def test_turn_orchestrator_turn_deferred_on_stance_defer() -> None:
     harness_run.assert_not_awaited()
 
 
+# --- urgent turns: an operator-assigned run proceeds past a stance deferral ---
+
+
+def _ok_harness_run() -> HarnessRunV1:
+    return HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="looked",
+        finalize_ran=True,
+        step_count=4,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("original", ["defer", "refuse"])
+async def test_urgent_turn_overrides_stance_deferral_and_reaches_harness(original, caplog) -> None:
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=_ok_harness_run())
+    patches = _hub_client_patches(thought=_thought(disposition=original), harness_run=harness_client_run)
+    with patches[0], patches[1], patches[2], caplog.at_level("INFO", logger="orion.hub.turn_orchestrator"):
+        frames = await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            emit_observation_fn=lambda **_kwargs: None,
+            urgent=True,
+        )
+
+    assert not any(f.get("type") == "turn_deferred" for f in frames)
+    harness_client_run.assert_awaited_once()
+    thought_event = harness_client_run.await_args.args[0].thought_event
+    assert thought_event.disposition == "proceed"
+    assert thought_event.disposition_reasons == [
+        "stale_broadcast_no_evidence",
+        f"urgent_override:{original}",
+    ]
+    assert any(
+        "urgent_stance_override" in r.getMessage()
+        and _CORR_ID in r.getMessage()
+        and f"original={original}" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_urgent_turn_stance_unavailable_is_a_turn_error_not_a_deferral() -> None:
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=_ok_harness_run())
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    import scripts.thought_client as thought_client
+
+    unavailable = AsyncMock(
+        return_value=thought_client.ThoughtReactResult(thought=None, failure_reason="stance_react_timeout")
+    )
+    with patches[0], patches[1], patches[2], patch.object(thought_client.ThoughtClient, "react", unavailable):
+        frames = await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            emit_observation_fn=lambda **_kwargs: None,
+            urgent=True,
+        )
+
+    assert frames == [
+        {
+            "type": "turn_error",
+            "phase": "stance",
+            "correlation_id": _CORR_ID,
+            "finalize_ran": False,
+            "error": "urgent_stance_unavailable",
+            "stance_failure_reason": "stance_react_timeout",
+        }
+    ]
+    harness_client_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_non_urgent_stance_unavailable_still_defers() -> None:
+    bus = MagicMock()
+    harness_client_run = AsyncMock()
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    import scripts.thought_client as thought_client
+
+    unavailable = AsyncMock(
+        return_value=thought_client.ThoughtReactResult(thought=None, failure_reason="stance_react_timeout")
+    )
+    with patches[0], patches[1], patches[2], patch.object(thought_client.ThoughtClient, "react", unavailable):
+        frames = await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    assert frames == [
+        {"type": "turn_deferred", "correlation_id": _CORR_ID, "reason": "stance_react_timeout"}
+    ]
+    harness_client_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_non_urgent_refuse_still_defers_explicit_false() -> None:
+    bus = MagicMock()
+    harness_run = AsyncMock()
+    patches = _hub_client_patches(thought=_thought(disposition="refuse"), harness_run=harness_run)
+    with patches[0], patches[1], patches[2]:
+        frames = await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            emit_observation_fn=lambda **_kwargs: None,
+            urgent=False,
+        )
+
+    assert frames == [
+        {"type": "turn_deferred", "correlation_id": _CORR_ID, "reason": "stale_broadcast_no_evidence"}
+    ]
+    harness_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_urgent_proceed_thought_is_passed_through_untouched() -> None:
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=_ok_harness_run())
+    thought = _thought()
+    patches = _hub_client_patches(thought=thought, harness_run=harness_client_run)
+    with patches[0], patches[1], patches[2]:
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            emit_observation_fn=lambda **_kwargs: None,
+            urgent=True,
+        )
+
+    sent = harness_client_run.await_args.args[0].thought_event
+    assert sent.disposition == "proceed"
+    assert sent.disposition_reasons == []
+
+
 @pytest.mark.asyncio
 async def test_turn_orchestrator_passes_empty_answer_contract_not_heuristic() -> None:
     harness_run = HarnessRunV1(

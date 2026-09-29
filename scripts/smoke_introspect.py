@@ -41,7 +41,11 @@ async def main() -> int:
     else:
         arguments = {"limit": args.limit}
     bus = OrionBusAsync(bus_url)
-    await bus.connect()
+    try:
+        await bus.connect()
+    except Exception as exc:
+        print(f"UNKNOWN: bus unreachable ({type(exc).__name__})", file=sys.stderr)
+        return 2
     try:
         result = await IntrospectTools(bus, binding).invoke("reading_results", arguments)
     except IntrospectUnknownError as exc:

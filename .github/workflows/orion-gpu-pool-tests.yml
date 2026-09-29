@@ -47,6 +47,15 @@ on:
       - "services/orion-hub/scripts/curiosity_investigation.py"
       - "services/orion-hub/scripts/thought_client.py"
       - "services/orion-hub/tests/test_curiosity_gpu_lease.py"
+      # stage 3 loose ends: self-knowledge + fcc hop key follow the granted role
+      - "orion/harness/prefix.py"
+      - "orion/situational/context.py"
+      - "orion/schemas/situation.py"
+      - "orion/harness/tests/test_harness_runner.py"
+      - "orion/harness/tests/test_harness_prefix.py"
+      - "services/orion-harness-governor/tests/test_rpc_health_publish.py"
+      - "services/orion-hub/tests/test_unified_turn_gpu_placement.py"
+      - "services/orion-cortex-exec/tests/test_situation_provider.py"
   push:
     branches: [main]
     paths:
@@ -185,3 +194,9 @@ jobs:
         run: |
           cd services/orion-hub && python -m pytest tests/test_curiosity_gpu_lease.py tests/test_thought_client.py \
             tests/test_turn_orchestrator_ws_frames.py -q -p no:cacheprovider
+      - name: Self-knowledge and the fcc hop key follow the granted role, not the route default
+        run: |
+          python -m pytest orion/harness/tests/test_harness_runner.py orion/harness/tests/test_harness_prefix.py -q -p no:cacheprovider
+          (cd services/orion-harness-governor && python -m pytest tests/test_rpc_health_publish.py -q -p no:cacheprovider)
+          (cd services/orion-cortex-exec && python -m pytest tests/test_situation_provider.py -q -p no:cacheprovider)
+          (cd services/orion-hub && python -m pytest tests/test_unified_turn_gpu_placement.py -q -p no:cacheprovider)

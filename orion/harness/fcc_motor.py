@@ -449,6 +449,38 @@ def _route_key_from_fcc_env_value(raw_value: str) -> Optional[Tuple[str, str]]:
     return backend, route_key
 
 
+def resolve_fcc_route_key(
+    fcc_model_label: str | None, *, env: Dict[str, str] | None = None
+) -> Optional[str]:
+    """The orion-llm-gateway route a turn's FCC label asks for (``"agent"``), or None.
+
+    Same two label shapes `label_to_claude_model_id` accepts, in the same
+    order: an already-resolved "<backend>/<route>" spec is itself the answer,
+    otherwise the label is an env key to look up. Without the first branch a
+    COMPUTE-lane turn ("llamacpp/agent") misses the env lookup and fails open
+    to None -- costing the harness prompt its "what model am I about to run
+    on" self-context on exactly the lane where it differs most from the
+    default. None for a non-llamacpp backend (not a gateway pool route).
+    """
+    label = str(fcc_model_label or "").strip()
+    if not label:
+        return None
+    parsed = _route_key_from_fcc_env_value(label)
+    if parsed is None:
+        resolved_env = (
+            env
+            if env is not None
+            else load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
+        )
+        parsed = _route_key_from_fcc_env_value(resolved_env.get(label, ""))
+    if parsed is None:
+        return None
+    backend, route_key = parsed
+    if backend not in _ROUTE_PROBE_BACKENDS:
+        return None
+    return route_key
+
+
 async def probe_route_runtime(
     fcc_model_label: str | None,
     *,
@@ -477,27 +509,8 @@ async def probe_route_runtime(
     fact about itself.
     """
     label = str(fcc_model_label or "").strip()
-    if not label:
-        return None, None
-    resolved_env = (
-        env
-        if env is not None
-        else load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
-    )
-    # Same two label shapes `label_to_claude_model_id` accepts, in the same
-    # order: an already-resolved "<backend>/<route>" spec is itself the answer,
-    # otherwise the label is an env key to look up. Without the first branch a
-    # COMPUTE-lane turn ("llamacpp/agent") misses the env lookup and this probe
-    # fails open to None -- costing the harness prompt its "what model am I
-    # about to run on" self-context on exactly the lane where it differs most
-    # from the default.
-    parsed = _route_key_from_fcc_env_value(label) or _route_key_from_fcc_env_value(
-        resolved_env.get(label, "")
-    )
-    if parsed is None:
-        return None, None
-    backend, route_key = parsed
-    if backend not in _ROUTE_PROBE_BACKENDS:
+    route_key = resolve_fcc_route_key(label, env=env)
+    if route_key is None:
         return None, None
 
     url = str(

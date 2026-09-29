@@ -3162,8 +3162,6 @@ The MCP response preserves the full `{ok, result, error}` envelope. Only `ok=tru
 
 Hub logs `reading_tool_failed` with the RPC correlation ID, operation phase, exception type, SQLSTATE and one of `no_pool`, `connection_failure`, `schema_incompatible`, `enqueue_failure`, `status_failure`, `reading_result_failure`, or `reading_search_failure`. Exception detail is bounded and credential-bearing Postgres URLs/password parameters are redacted. The model-visible failure remains intentionally generic.
 
-**Reading search (orion-introspect `reading_results query=...`).** A loop in `ReadingListener` embeds each verified reading once (title + learned text, via vector-host HTTP `/embedding`) and publishes `VectorUpsertV1` on `orion:vector:semantic:upsert`; orion-vector-writer stores it in Chroma `HUB_READING_SEARCH_COLLECTION`. The loop is hash-aware, so a Stage 2 summary replacing Stage 1 text is re-indexed, and it doubles as the backfill (`reading_search_index indexed=N pending=M` every `HUB_READING_SEARCH_INDEX_INTERVAL_SEC`). A query embeds only the question, keeps Chroma hits at or above `HUB_READING_SEARCH_MIN_SIMILARITY`, and re-reads each hit from Postgres through the same verified-reading gate. Embedder/Chroma failure or a not-yet-built index is logged as `reading_search_failure` and reported to the model as "answer unknown", never as no results. Recalibrate the floor with `python services/orion-hub/evals/run_reading_search_calibration.py`.
-
 Apply `services/orion-sql-db/manual_migration_general_reading_v1.sql` after the two existing World Pulse read migrations, then rebuild/restart Hub and harness governor from a worktree. No new operator env keys or HTTP submission endpoints are required. Existing reading enable flags stop consumption; queued state remains inspectable. Rolling back the code can leave the additive columns in place; pause the workers first if general `reading` rows remain, because the older seed model cannot parse that new kind.
 
 A completed source can be reread in a later turn. Concurrent requests for an active URL retain their own provenance as aliases without another active read. Final `completed` requires the existing SQL journal rows; missed journal commands are replayed from saved artifacts without another model call or wallet debit. Reading stages have only WebFetch/WebSearch and produce attributed candidates through the existing server-owned adapter.
@@ -3179,6 +3177,54 @@ See [implementation, exact checks and runtime limits](../../docs/superpowers/pr-
 - `POST /api/reads/{seed_id}/retry` `{stage: 1|2}` -- terminal (`failed`/`skipped`) stages only, not aliases, no open binding; Stage 1 also refuses a URL already active elsewhere and any digest item older than `HUB_WORLD_PULSE_READ_DIGEST_ITEM_MAX_AGE_DAYS` (the stale sweep would skip it again next tick; the tab's **Read this URL again** button queues it as a new read instead); Stage 2 needs Stage 1 `done` with read evidence. Both refuse `already_read` when another row already finished that stage for the same URL. Resets that stage's attempts. The **Read this URL again** button is hidden once Stage 1 is done (a new request would be blocked as a duplicate).
 
 Controls require `X-Requested-With: orion-hub` with a JSON body (same cross-site guard as the GPU pool panel); there is no operator token. Refusals return a short code (for example `url_already_active`) that the tab explains in plain words. Logs: `reading_operator_submit`, `reading_operator_cancel`, `reading_operator_retry`. Query/control code: `orion/world_pulse_read/operator.py`.
+
+### Introspect responder: `reading_results`
+
+**What it does.** Answers Orion's question "what did I actually learn from
+reading?" for the orion-introspect `reading_results` tool. It returns only
+what the reading pipeline really produced. For the whole tool family (which
+turns get it, truth rules, search pattern, how to add a tool), see the
+[harness-governor overview](../orion-harness-governor/README.md#orion-introspect-orion-reading-back-their-own-records).
+
+- **Transport.**
+  - The request arrives on the existing reading RPC channel
+    `orion:reading:tool:request`, operation `reading_result`, from
+    orion-harness-governor.
+  - `ReadingListener` replies on `orion:reading:tool:result:<correlation_id>`
+    with an `IntrospectResultV1` inside `ReadingToolResultV1.result`.
+- **Modes.**
+  - Recent finished reads (optional `since`, `limit` ≤ 5).
+  - One read by `request_id` or `url`, even an unfinished one, so its
+    status can be reported.
+  - `query=` by meaning (below).
+- **The gate: only verified reads count.**
+  - A reading appears in recent or search results only when it is not a
+    duplicate alias, Stage 1 is `done`, and its handoff carries tool-trace
+    `read_evidence` that the source was actually fetched.
+  - The item's text is the Stage 2 summary, falling back to Stage 1's
+    `what_i_learned`.
+  - The SQL filter only requires non-empty `read_evidence`; the
+    same-source check runs per row (`_source_read`). A recent or single
+    lookup whose evidence does not match its source, or an unfinished row,
+    reports `learned=false` and empty text, never model prose. Search drops
+    such rows.
+  - Code: `orion/world_pulse_read/introspect.py` (`_VERIFIED_WHERE`,
+    `_learned`).
+- **Label.** Every item is `epistemic_status="unsettled"`: source-attributed
+  candidates, not settled beliefs.
+- **Logs.**
+  - Success: `introspect op=reading_result corr=<id> items=<n> total=<n>
+    mode=recent|lookup|query`.
+  - Failure: `reading_tool_failed correlation_id=<id>
+    category=reading_result_failure|reading_search_failure|connection_failure|no_pool|...`.
+  - The model gets a generic error, never SQL or exception text. The MCP
+    wraps it as a tool error, e.g. `reading_results: answer unknown
+    (reading_search_unavailable; answer unknown)`. Non-search failures reuse
+    the reading queue's `reading_queue_unavailable; acceptance unknown, retry
+    the same request` text; its retry hint is harmless for a read-only
+    lookup.
+
+**Reading search (orion-introspect `reading_results query=...`).** A loop in `ReadingListener` embeds each verified reading once (title + learned text, via vector-host HTTP `/embedding`) and publishes `VectorUpsertV1` on `orion:vector:semantic:upsert`; orion-vector-writer stores it in Chroma `HUB_READING_SEARCH_COLLECTION`. The loop is hash-aware, so a Stage 2 summary replacing Stage 1 text is re-indexed, and it doubles as the backfill (`reading_search_index indexed=N pending=M` every `HUB_READING_SEARCH_INDEX_INTERVAL_SEC`). A query embeds only the question, keeps Chroma hits at or above `HUB_READING_SEARCH_MIN_SIMILARITY`, and re-reads each hit from Postgres through the same verified-reading gate. Embedder/Chroma failure or a not-yet-built index is logged as `reading_search_failure` and reported to the model as "answer unknown", never as no results. Recalibrate the floor with `python services/orion-hub/evals/run_reading_search_calibration.py`.
 
 ## Curiosity resource admission
 
@@ -3198,6 +3244,96 @@ then posts `/runs/{id}/release-outreach-lease` to `HUB_CURIOSITY_DURABLE_RUNS_UR
 base URL, default `http://127.0.0.1:8124`). The old durable lease token (`X-Orion-Resource-Lease`,
 `HUB_CURIOSITY_LEASE_VALIDATION_URL`) was deleted in stage 4.6.
 Full ownership and activation: `docs/architecture/durable-resource-admission.md`.
+
+## Urgent curiosity runs
+
+An urgent run is an investigation someone asked for right now, instead of one Orion
+picked. Requests arrive on `orion:curiosity:urgent:request` (`CuriosityUrgentRequestV1`,
+`orion/schemas/curiosity_urgent.py`); the Hub button and the hardware watcher both
+publish there. `scripts/curiosity_urgent.py` validates each one (an invalid payload is
+logged as `urgent_request_invalid`; when it still names a usable incident id it also gets a
+`failed` notice, `refused: invalid_request`) and calls
+`CuriosityInvestigation.start_urgent`, which:
+
+- refuses with `urgent_disabled`, `curiosity_disabled`, `durable_admission_disabled`
+  (an urgent run never runs at background priority), `redis_unavailable` or `incident_already_open`
+  (Redis NX key `orion:curiosity:urgent:open:{incident_id}` holding the run id, TTL
+  `HUB_CURIOSITY_URGENT_TIMEOUT_SEC + 2 × HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC + 610`).
+  Every refusal except `incident_already_open` (the open run reports) sends one `failed`
+  notice and records a `refused:<reason>` stub, never over a still-open run's record;
+- builds the urgent prompt (`orion/curiosity/urgent_prompt.py`) and dispatches the
+  curiosity durable run with the seed on the brief, `timeout_sec =
+  HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC`, and GPU admission `priority: urgent` with
+  `deadline_at = now + HUB_CURIOSITY_URGENT_TIMEOUT_SEC` (durable-runs fails the run with
+  `workflow_deadline` there, queued or mid-turn). The prompt offers `psql` history only when
+  the `HUB_CURIOSITY_PG_READONLY_ROLE` role exists (or the check is off);
+- skips the run lock, cooldown, daily cap and waking window, and spends none of them;
+- records the incident in the Redis hash `orion:curiosity:urgent:incidents` (newest 50 by
+  `requested_at`; an incident whose open key is held is never evicted);
+- hands the incident to the urgent reporter: `watch` after dispatch, `dispatch_failed`
+  only when dispatch raised (that also releases the NX key so the incident can be
+  retried). When cortex did not confirm (rejected, timed out, receipt lost) the run may
+  still have registered, so the key is kept, the incident is `dispatch_unconfirmed`, the
+  run is watched, and the result carries `"unconfirmed": true`. If there is still no run
+  record at the grant wait, that is one `failed` notice ("cortex never registered the run")
+  and the key is released (only while it still holds this run id).
+
+Every urgent run ends in a critical Hub + email notice (`scripts/urgent_report.py`,
+`event_kind=curiosity.urgent.report`, channels `in_app` + `email`):
+
+- `final` on `completed`: verdict / operator action / likely cause / cited evidence
+  from the run's `:IncidentReport`, then Orion's prose. No usable report shows the
+  `no_structured_verdict` flag with the prose and the evidence bundle.
+- `failed` on a terminal `failed` or `cancelled` state (reason = `detail.error`), when
+  dispatch raised, on a refusal, or when an unconfirmed run never registered: the reason
+  plus the evidence bundle.
+- `no_gpu` when the run has not got past resource wait by
+  `HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC` (no grant/admit/start event in
+  `durable_resource_events`, or no run record at all): "not investigated".
+- `timeout` when no terminal state by `HUB_CURIOSITY_URGENT_TIMEOUT_SEC`: INCOMPLETE; the
+  run is being stopped at its admission deadline and its final/failed notice follows. If the
+  run store shows it already ended but Hub missed the bus event, the final/failed notice is
+  sent from the store instead (detail from the run-state row, or the terminal outbox event
+  when that lags; a completed run with unreadable detail is re-read once after 60 s, and if
+  still unreadable logs `urgent_report_missed_terminal_unreadable` rather than send an empty
+  final). Either way the incident's open key is released.
+
+orion-notify never enforces `dedupe_key`, so Hub dedupes itself with
+`orion:curiosity:urgent:sent:{incident_id}:{kind}` (7 days; the value is the run id, so a
+retried run for the same incident is still reported) and retries a refused send
+(2, 4, 8, 16, 32, 60, 60 … s) for up to 30 minutes, then logs `urgent_report_undelivered`
+and sets the incident status `report_undelivered`. Urgent runs never go through
+reach-out. The two watchdog timers are in-process: a Hub restart mid-run loses them, but
+the final/failed notice still rides the durable run-state event.
+
+The evidence bundle (`scripts/urgent_evidence.py`, `collect_evidence()`) is hardware
+and GPU-pool state only, read with the same readers the Hub panels use: cabinet AC plug
+latest sample, the last hour of `cabinet_temp_c`, each node's biometrics measurements,
+per-GPU cards, and active/queued pool leases. Each section has its own timeout; a failing
+section becomes `{"error": ...}`. The bundle is trimmed (oldest trend points first) to fit
+the seed's 32 000-byte cap.
+
+The Curiosity panel's "Run urgent" box (`templates/curiosity_atlas.html`) posts
+`{"question": ...}` to `POST /curiosity/api/urgent`, which collects the bundle and publishes
+a `manual` request (`requested_by="juniper"`, incident id `uuid4().hex`) on the channel
+above; it returns `{"ok": true, "incident_id"}`. It refuses up front with 400
+`question_required` / `question_too_long` (over 2000 chars) and 503 `loop_not_running`,
+`urgent_disabled`, `durable_admission_disabled`, `urgent_listener_not_running`,
+`bus_unavailable` or `redis_unavailable` -- a request with no
+consumer would read as started and never run. `GET /curiosity/api/urgent` lists the newest
+20 incidents from the hash, without their evidence bundles.
+
+Orion's sandbox reads the hardware tables through `orion_readonly`; the grant is
+`scripts/sql/2026-09-28_grant_orion_readonly_hardware.sql` (an operator step, apply
+command in the file).
+
+Env: `HUB_CURIOSITY_URGENT_ENABLED` (default true), `HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC`
+(900), `HUB_CURIOSITY_URGENT_TIMEOUT_SEC` (1200), `HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC` (120).
+Rollback: `HUB_CURIOSITY_URGENT_ENABLED=false` and restart Hub (the button refuses, the
+listener does not start). Eval: `python services/orion-hub/evals/run_urgent_report_eval.py`
+replays every outcome (valid / malformed / evidence-less report, failed, cancelled, timeout,
+no GPU, unconfirmed dispatch) through the real reader, run-state handler and composer.
+Plan: `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md`.
 
 
 ## GPU2 (agent-gpu2)

@@ -248,6 +248,27 @@ done, resumed after deploy) finishes with them absent -- not null, not an error.
 leased pre-key checkpoint still yields `turn_correlation_id` from the older
 `debug.turn_correlation_id` breadcrumb.
 
+Urgent runs (`brief.urgent` set, Plan 3 of the urgent-curiosity spec) add three keys,
+absent on every ordinary run:
+
+- `urgent`: `{incident_id, trigger, subject, question, requested_at}` from the seed (the
+  evidence bundle stays in the brief).
+- `incident_report`: the run's newest valid `:IncidentReport`
+  (`orion/curiosity/incident_report.py`) as `{incident_id, is_real, likely_cause,
+  evidence: [...], severity, operator_action, confidence}`, or `null`.
+- `report_flag`: `null` with a report; `"no_structured_verdict"` whenever
+  `incident_report` is `null` (missing/malformed node, unreadable graph).
+
+The seed also rides the Hub turn request (`CuriosityTurnRequestV1.urgent`), and an urgent
+admitted run gets at most `min(DURABLE_RUNS_RETRY_MAX_ATTEMPTS, 2)` attempts per node with
+`10 s·2^n` backoff (capped by `DURABLE_RUNS_RETRY_MAX_SEC`) instead of the service budget.
+An urgent admitted run's terminal `failed` detail also carries `urgent`, and its `cancelled`
+detail is `{"error": "cancelled", "urgent": {...}}` (ordinary cancels stay `{}`), including
+when a cancel wins the race against completion. Hub gives an urgent admission `deadline_at` (its overall urgent timeout); a run still
+queued or mid-turn at that moment fails with `workflow_deadline` and the `urgent` detail.
+An urgent run never keeps the outreach hold, even when the turn asks to reach out: its
+report replaces reach-out.
+
 **`self_sense_eval`** (`app/self_sense_graph.py::finish_detail`): `line`, `published`,
 `failed`, `empty`, `attempts`, `turns` -- a `{question_key: {turn_correlation_id,
 harness_elapsed_sec, harness_started_at, harness_finished_at}}` map, one entry per

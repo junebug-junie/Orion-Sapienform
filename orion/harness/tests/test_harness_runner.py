@@ -12,6 +12,7 @@ from orion.harness.tests.fixtures import make_thought
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.context_exec import ContextExecPermissionV1
 from orion.schemas.harness_finalize import GrammarReceiptV1, HarnessRunRequestV1
+from orion.schemas.gpu_pool import GpuLeaseRefV1
 
 
 async def _mock_fcc_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
@@ -225,10 +226,10 @@ async def test_harness_runner_threads_served_model_probe_into_prompt() -> None:
     await runner.run(request)
 
     probe.assert_awaited_once_with("MODEL_SONNET")
-    assert (
-        "Backend model currently serving this turn: Qwen3.6-35B-A3B-UD-Q5_K_M12"
-        in captured_kwargs["prompt"]
-    )
+    # No lease: the route's model is stated as its default, never as "serving this turn".
+    assert "Qwen3.6-35B-A3B-UD-Q5_K_M12" in captured_kwargs["prompt"]
+    assert "Default backend model" in captured_kwargs["prompt"]
+    assert "serving this turn" not in captured_kwargs["prompt"]
 
 
 @pytest.mark.asyncio
@@ -257,7 +258,80 @@ async def test_harness_runner_omits_served_model_line_when_probe_fails() -> None
     result = await runner.run(request)
 
     assert result.compliance_verdict == "completed"
-    assert "Backend model currently serving this turn" not in captured_kwargs["prompt"]
+    assert "Backend model" not in captured_kwargs["prompt"]
+
+
+def _pool_state(role: str, model_file: str, profile: str) -> dict[str, Any]:
+    return {"roles": [
+        {"role": "agent", "kind": "llm", "cards": ["gpu1"], "url": "http://x:8015", "status": "confirmed",
+         "profile_name": "agent-default", "model_file": "Route-Default-27B.gguf"},
+        {"role": role, "kind": "llm", "cards": ["gpu2"], "url": "http://x:8016", "status": "confirmed",
+         "profile_name": profile, "model_file": model_file},
+    ]}
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_spilled_held_turn_names_granted_role_not_route_default() -> None:
+    """A durable run's hold on the agent class, granted agent-gpu2 (spill): the prompt must name
+    the model discovered on agent-gpu2, never the /routes default for `agent`; and the hop key
+    inputs carry the granted role."""
+    captured_kwargs: dict[str, Any] = {}
+
+    async def _capturing_fcc_runner(**kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+        captured_kwargs.update(kwargs)
+        yield {"type": "final", "llm_response": "answer", "metadata": {"exit_code": 0}}
+
+    route_probe = AsyncMock(return_value="Route-Default-27B.gguf")
+    pool_probe = AsyncMock(return_value=_pool_state("agent-gpu2", "Spilled-Gpu2-27B.gguf", "gpu2-flex"))
+    request = HarnessRunRequestV1(
+        correlation_id="c-spilled-held",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+        fcc_model_label="llamacpp/agent",
+        gpu_lease=GpuLeaseRefV1(lease_id="L1", generation=1, role="agent-gpu2", holder="durable-runs:r1"),
+    )
+    runner = HarnessRunner(
+        AsyncMock(), fcc_runner=_capturing_fcc_runner, served_model_probe=route_probe,
+        pool_state_probe=pool_probe,
+    )
+    result = await runner.run(request)
+
+    route_probe.assert_not_awaited()
+    pool_probe.assert_awaited_once()
+    prompt = captured_kwargs["prompt"]
+    assert "Backend model serving this turn: Spilled-Gpu2-27B.gguf (GPU pool role agent-gpu2, profile gpu2-flex;" in prompt
+    assert "Route-Default-27B" not in prompt
+    assert result.serving_role == "agent-gpu2"
+    assert result.fcc_route == "agent"
+
+
+@pytest.mark.asyncio
+async def test_harness_runner_held_turn_pool_unreadable_names_role_without_model() -> None:
+    captured_kwargs: dict[str, Any] = {}
+
+    async def _capturing_fcc_runner(**kwargs: Any) -> AsyncIterator[dict[str, Any]]:
+        captured_kwargs.update(kwargs)
+        yield {"type": "final", "llm_response": "answer", "metadata": {"exit_code": 0}}
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-held-pool-down",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+        gpu_lease=GpuLeaseRefV1(lease_id="L2", generation=1, role="chat", holder="durable-runs:r2"),
+    )
+    runner = HarnessRunner(
+        AsyncMock(), fcc_runner=_capturing_fcc_runner,
+        pool_state_probe=AsyncMock(side_effect=RuntimeError("pool down")),
+    )
+    result = await runner.run(request)
+
+    assert result.compliance_verdict == "completed"
+    assert "holds the GPU pool's chat role" in captured_kwargs["prompt"]
+    assert "do not name one" in captured_kwargs["prompt"]
 
 
 @pytest.mark.asyncio

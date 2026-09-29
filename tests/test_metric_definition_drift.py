@@ -747,6 +747,12 @@ def git_drift(tmp_path, monkeypatch):
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    # If pytest ever runs inside a git hook these would point git -- ours and
+    # the script's own subprocesses -- at the REAL repo's index.
+    for var in ("GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     repo = tmp_path / "repo"
     repo.mkdir()
     monkeypatch.setattr(mod, "REPO_ROOT", repo)
@@ -929,6 +935,25 @@ def test_committed_zero_change_block_naming_any_base_is_accepted(
                            "change_count": 0, "high_severity_count": 0,
                            "changes": [NO_CHANGES_SENTENCE]})
     assert mod.main(["--gate"]) == 0
+
+
+def test_untouched_lock_inheriting_the_base_block_is_accepted(drift_cli, monkeypatch):
+    """Pins acceptance route 2 directly: the branch changes nothing and its lock
+    still holds the block main committed for ANOTHER PR's high-severity change.
+    The recomputed block ("no definition changes") does not match it, so only
+    the inherit path can pass this -- and it did not exist before the fix."""
+    mod = drift_cli
+    _stub_graph(mod, monkeypatch, [_node("x", producer_service="p", meaning="m")])
+    defs = mod.build_lock(mod.build_graph())
+    main_block = {"change_count": 1, "high_severity_count": 1,
+                  "changes": ["high   removed metric://field_channel/p/y"]}
+    _stub_base(mod, monkeypatch, defs, base_last_change=main_block)
+    mod._write_lock(defs, dict(main_block))
+    assert mod.main(["--gate"]) == 0
+
+    # ...but not with its counts hand-zeroed behind the same sentences.
+    mod._write_lock(defs, {**main_block, "high_severity_count": 0})
+    assert mod.main(["--gate"]) == 1
 
 
 def test_this_repos_lock_carries_no_merge_base_hash():

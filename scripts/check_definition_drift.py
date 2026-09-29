@@ -175,8 +175,10 @@ def _base_lock() -> tuple[dict | None, str]:
 
     Returns (lock, note). `None` means the base could not be resolved at all;
     `{}` means the base genuinely predates this lock file (the commit that
-    introduces it). Cached per process: `--gate` and `--update` both read it
-    for the definitions AND for the inherited `_last_change` block.
+    introduces it). Cached for ONE `main()` run (reset at its top): `--gate`
+    and `--update` both read it for the definitions AND the inherited
+    `_last_change` block. Not valid across calls outside `main()` -- the cache
+    is not keyed on HEAD.
     """
     global _BASE_LOCK_CACHE
     if _BASE_LOCK_CACHE is not None:
@@ -432,19 +434,24 @@ def main(argv: list[str] | None = None) -> int:
     if lock_exists and base is not None and not on_base_branch:
         expected = _last_change_block(base, locked)
         committed = whole.get("_last_change") or {}
-        accepted = [expected["changes"]]
+        # Whole block minus any legacy `base` line, so the counts cannot be
+        # hand-edited to 0 behind an unchanged sentence list.
+        accepted = [_inheritable(expected)]
         if (
             base
             and not diff_locks(base, locked).changes
             and inherited is not None
-            and isinstance(inherited.get("changes"), list)
         ):
-            accepted.append(inherited["changes"])
-        if committed.get("changes") not in accepted:
+            accepted.append(inherited)
+        if _inheritable(committed) not in accepted:
             stale_alert = (
                 "committed _last_change does not match the merge-base diff\n"
                 f"    committed: {committed.get('changes')}\n"
-                f"    expected : {expected['changes']}"
+                + "".join(
+                    f"    {'expected' if i == 0 else 'or (merge base block)'}: "
+                    f"{block.get('changes')}\n"
+                    for i, block in enumerate(accepted)
+                ).rstrip("\n")
             )
 
     if args.json:

@@ -33,7 +33,7 @@ HARNESS_STANCE_GUIDANCE_HEADER = (
     "pose is not extra work, so ask it after answering):"
 )
 HARNESS_TURN_RULES_HEADER = (
-    "TURN RULES AND TOOLS (apply to the task above; not optional guidance):"
+    "TURN RULES AND TOOLS (binding for the task above; each tool note says when it applies):"
 )
 
 

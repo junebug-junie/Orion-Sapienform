@@ -194,6 +194,6 @@ circe's gpu-lane-controller: no pull/rebuild needed (no `launch` change, `launch
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2414
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

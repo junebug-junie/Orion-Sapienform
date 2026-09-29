@@ -160,7 +160,13 @@ def _handle(env, cfg, dispatch, audit, store, now=_T0):
 def _drain(store, cfg, dispatch, audit, now):
     return asyncio.run(
         drain_pending_world_pulse_journals(
-            store=store, settings=cfg, dispatch_journal=dispatch, audit=audit, source=_SRC, now=now
+            store=store,
+            settings=cfg,
+            dispatch_journal=dispatch,
+            audit=audit,
+            source=_SRC,
+            now=now,
+            now_after_dispatch=lambda: now,
         )
     )
 
@@ -170,6 +176,9 @@ def test_retryable_error_classification() -> None:
     assert is_retryable_journal_error(TimeoutError("RPC timeout waiting on x"))
     assert is_retryable_journal_error(ValueError("cortex_orch_missing_final_text"))
     assert is_retryable_journal_error(RuntimeError("cortex_orch_decode_failed:bad"))
+    assert is_retryable_journal_error(RuntimeError("journal_compose_failed:{'message': 'gpu_pool_recalled:lease'}"))
+    assert is_retryable_journal_error(RuntimeError("pool_unreachable:connect"))
+    assert is_retryable_journal_error(RuntimeError("gateway_capacity_rejected:busy"))
     assert not is_retryable_journal_error(RuntimeError("journal_compose_failed:unknown_verb"))
 
 
@@ -277,3 +286,89 @@ def test_retry_settings_defaults() -> None:
     cfg = Settings()
     assert cfg.actions_world_pulse_journal_retry_enabled is True
     assert cfg.actions_world_pulse_journal_retry_max_age_hours == 12.0
+
+
+def test_gives_up_when_retry_would_cross_local_day(tmp_path) -> None:
+    """A retry after local midnight would spend tomorrow's one world_pulse email."""
+    store = PendingJournalStore(tmp_path / "pending_journals.json")
+    cfg = _retry_settings(ACTIONS_DAILY_TIMEZONE="America/Denver", ACTIONS_WORLD_PULSE_JOURNAL_RETRY_MAX_AGE_HOURS=48)
+    late = datetime(2026, 9, 30, 5, 0, tzinfo=timezone.utc)  # 23:00 Denver, Sep 29
+    _handle(_env_for(_result()), cfg, _FakeDispatch([_GPU_ERR]), _Audit(), store, now=late)
+    dispatch = _FakeDispatch(["ok"])
+    audit = _Audit()
+    out = _drain(store, cfg, dispatch, audit, late + timedelta(hours=1, minutes=5))  # 00:05 Denver, Sep 30
+    assert out == [("wp-1", "gave_up")]
+    assert dispatch.calls == 0
+    assert audit.calls[-1]["reason"].startswith("crossed_local_day")
+
+
+def test_reschedule_emits_audit(tmp_path) -> None:
+    store = PendingJournalStore(tmp_path / "pending_journals.json")
+    cfg = _retry_settings()
+    _handle(_env_for(_result()), cfg, _FakeDispatch([_GPU_ERR]), _Audit(), store)
+    audit = _Audit()
+    _drain(store, cfg, _FakeDispatch([_GPU_ERR]), audit, _T0 + timedelta(minutes=5))
+    assert audit.calls[-1]["status"] == "retry_scheduled"
+    assert audit.calls[-1]["extra"]["attempts"] == 2
+
+
+def test_store_write_failure_does_not_escape_handler(tmp_path) -> None:
+    store = PendingJournalStore(tmp_path / "pending_journals.json")
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    store.record_failure = boom  # type: ignore[method-assign]
+    store.mark_completed = boom  # type: ignore[method-assign]
+    assert _handle(_env_for(_result()), _retry_settings(), _FakeDispatch([_GPU_ERR]), _Audit(), store) is True
+    assert _handle(_env_for(_result()), _retry_settings(), _FakeDispatch(["ok"]), _Audit(), store) is True
+
+
+def test_corrupt_store_is_quarantined_not_overwritten(tmp_path) -> None:
+    path = tmp_path / "pending_journals.json"
+    path.write_text("{not json")
+    store = PendingJournalStore(path)
+    assert store.pending() == []
+    assert list(tmp_path.glob("pending_journals.json.corrupt-*"))
+
+
+def test_start_drain_runs_one_at_a_time() -> None:
+    from app.world_pulse_journal import start_world_pulse_retry_drain
+
+    async def scenario() -> None:
+        gate = asyncio.Event()
+        started = []
+
+        async def drain():
+            started.append(1)
+            await gate.wait()
+
+        t1 = start_world_pulse_retry_drain(None, drain, enabled=True, has_due=lambda: True)
+        await asyncio.sleep(0)
+        t2 = start_world_pulse_retry_drain(t1, drain, enabled=True, has_due=lambda: True)
+        assert t2 is t1 and started == [1]
+        gate.set()
+        await t1
+        assert start_world_pulse_retry_drain(t1, drain, enabled=True, has_due=lambda: False) is None
+        assert start_world_pulse_retry_drain(None, drain, enabled=False, has_due=lambda: True) is None
+
+    asyncio.run(scenario())
+
+
+def test_scheduler_loop_starts_world_pulse_retry_drain() -> None:
+    """Static guard: deleting the drain call from _scheduler_loop would leave failed
+    composes queued forever with every other test still green."""
+    import ast
+    import inspect
+
+    from app import main as actions_main
+
+    tree = ast.parse(inspect.getsource(actions_main))
+    loops = [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_scheduler_loop"]
+    assert len(loops) == 1
+    called = {
+        n.func.id
+        for n in ast.walk(loops[0])
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+    assert {"start_world_pulse_retry_drain", "drain_pending_world_pulse_journals"} <= called

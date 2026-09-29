@@ -99,10 +99,21 @@ class PendingJournalStore:
         try:
             raw = json.loads(self._path.read_text() or "{}")
         except (OSError, json.JSONDecodeError) as exc:
+            # Keep the unreadable file for inspection rather than letting the next
+            # _persist silently overwrite it (it holds the completed-run_id list
+            # that prevents duplicate journals).
+            quarantine = self._path.with_name(
+                f"{self._path.name}.corrupt-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+            )
+            try:
+                self._path.replace(quarantine)
+            except OSError:
+                quarantine = None
             logger.warning(
-                "pending_journal_store_load_failed path=%s error=%s",
+                "pending_journal_store_load_failed path=%s error=%s quarantined=%s",
                 self._path,
                 exc.__class__.__name__,
+                quarantine,
             )
             return
         if not isinstance(raw, dict):

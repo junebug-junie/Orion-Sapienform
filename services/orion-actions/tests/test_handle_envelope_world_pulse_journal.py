@@ -240,3 +240,69 @@ async def test_real_dispatch_journal_reports_compose_error_and_enqueues_retry(tm
                     retry_store=store,
                 )
             assert store.get("wp-real-2") is None
+
+            # Compose succeeds but the journal write publish raises a timeout (redis
+            # can deliver, then time out on the reply). The write may have landed, so
+            # this must NOT be queued for retry -- a retry could duplicate the entry.
+            class _OkDecoded:
+                ok = True
+                error = None
+                envelope = MagicMock(
+                    payload={
+                        "ok": True,
+                        "status": "success",
+                        "final_text": '{"mode":"digest","title":"Pulse","body":"World news today."}',
+                    }
+                )
+
+            class _OkBus:
+                codec = MagicMock()
+
+                async def rpc_request(self, *a, **kw):
+                    return {"data": b"x"}
+
+                async def close(self) -> None:
+                    return None
+
+            _OkBus.codec.decode.return_value = _OkDecoded()
+            actions_main._actions_rpc_bus = _OkBus()
+            publish_calls: list = []
+
+            async def _publish_timeout(channel, env):
+                publish_calls.append(channel)
+                raise TimeoutError("Timeout reading from socket")
+
+            with patch.object(actions_main.settings, "actions_journal_write_channel", "orion:journal:write:test"):
+                bus_obj = _find_hunter_bus(real_dispatch)
+                bus_obj.publish = _publish_timeout
+                await handle_world_pulse_run_result_journal(
+                    _envelope(run_id="wp-real-3"),
+                    settings=cfg,
+                    dispatch_journal=real_dispatch,
+                    audit=AsyncMock(),
+                    retry_store=store,
+                )
+            assert "orion:journal:write:test" in publish_calls
+            assert store.get("wp-real-3") is None
+
+
+def _find_hunter_bus(dispatch_fn):
+    """Walk _dispatch_journal's closure to the Hunter instance's bus (the object whose
+    publish() sends the journal write)."""
+    seen: set[int] = set()
+    stack = [dispatch_fn]
+    while stack:
+        fn = stack.pop()
+        if id(fn) in seen or not hasattr(fn, "__closure__"):
+            continue
+        seen.add(id(fn))
+        for cell in fn.__closure__ or ():
+            try:
+                val = cell.cell_contents
+            except ValueError:
+                continue
+            if val.__class__.__name__ == "_NoopHunter":
+                return val.bus
+            if callable(val) and hasattr(val, "__closure__"):
+                stack.append(val)
+    raise AssertionError("hunter bus not found in _dispatch_journal closure")

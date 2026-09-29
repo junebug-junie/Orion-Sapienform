@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any
+from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -17,14 +20,22 @@ logger = logging.getLogger("orion-actions.world_pulse_journal")
 DispatchJournalFn = Callable[..., Awaitable[bool]]
 AuditFn = Callable[..., Awaitable[None]]
 AUDIT_ACTION = "journal.world_pulse_digest"
+GAVE_UP_AUDIT_ACTION = "world_pulse_journal_gave_up"
+WORLD_PULSE_RUN_RESULT_KIND = "world.pulse.run.result.v1"
 
 # Substrings of a compose failure that mean "try again later", not "this can never
 # work". gpu_pool_unavailable:* is the live 2026-09-25..29 failure (fast GPU lane
 # congested at 06:00 local). Timeouts and empty/unparseable LLM output are also
 # transient. Anything else (bad trigger, disabled journaling, schema errors) is not
 # retried -- retrying a deterministic failure just burns GPU time.
+# An error raised during/after the journal write publish is never reported here at
+# all (main._dispatch_journal suppresses on_failure once publish was attempted), so a
+# broad "timeout" match cannot turn a landed write into a duplicate.
 _RETRYABLE_ERROR_MARKERS: tuple[str, ...] = (
     "gpu_pool_unavailable",
+    "gpu_pool_recalled",
+    "pool_unreachable",
+    "gateway_capacity_rejected",
     "timeout",
     "timed out",
     "cortex_orch_decode_failed",
@@ -136,16 +147,23 @@ async def handle_world_pulse_run_result_journal(
     if not retry_on:
         return True
     if ok:
-        retry_store.mark_completed(run_id, now=now())
+        try:
+            retry_store.mark_completed(run_id, now=now())
+        except Exception:
+            logger.exception("world_pulse_journal_retry_store_write_failed run_id=%s op=mark_completed", run_id)
         return True
     if failure and is_retryable_journal_error(failure[0]):
-        entry = retry_store.record_failure(
-            run_id=run_id,
-            payload=result.model_dump(mode="json"),
-            correlation_id=str(env.correlation_id),
-            error=str(failure[0]),
-            now=now(),
-        )
+        try:
+            entry = retry_store.record_failure(
+                run_id=run_id,
+                payload=result.model_dump(mode="json"),
+                correlation_id=str(env.correlation_id),
+                error=str(failure[0]),
+                now=now(),
+            )
+        except Exception:
+            logger.exception("world_pulse_journal_retry_store_write_failed run_id=%s op=record_failure", run_id)
+            return True
         if entry is not None:
             logger.warning(
                 "world_pulse_journal_retry_enqueued run_id=%s attempts=%s next_at=%s error=%s",
@@ -173,6 +191,7 @@ async def drain_pending_world_pulse_journals(
     audit: AuditFn,
     source: ServiceRef,
     now: datetime,
+    now_after_dispatch: Callable[[], datetime] | None = None,
 ) -> list[tuple[str, str]]:
     """Retry due pending world_pulse_digest composes. Returns [(run_id, outcome)].
 
@@ -184,8 +203,13 @@ async def drain_pending_world_pulse_journals(
     if not settings.actions_world_pulse_journal_retry_enabled:
         return outcomes
     max_age = timedelta(hours=float(settings.actions_world_pulse_journal_retry_max_age_hours))
+    tz = ZoneInfo(settings.actions_daily_timezone)
     for entry in store.due(now):
         run_id = entry.run_id
+        if store.is_completed(run_id):
+            store.remove(run_id)
+            outcomes.append((run_id, "dropped_already_written"))
+            continue
         # Reuse the original correlation_id so retries join the first attempt's trace.
         env_kwargs: dict = {}
         try:
@@ -193,21 +217,23 @@ async def drain_pending_world_pulse_journals(
         except (TypeError, ValueError):
             pass
         env = BaseEnvelope(
-            kind="world.pulse.run.result.v1",
+            kind=WORLD_PULSE_RUN_RESULT_KIND,
             source=source,
             payload=entry.payload,
             **env_kwargs,
         )
-        if store.is_completed(run_id):
-            store.remove(run_id)
-            outcomes.append((run_id, "dropped_already_written"))
-            continue
         age = now - entry.first_failed_at_dt
-        if age > max_age:
+        # The world_pulse_digest email cap is one per *local* day, keyed at persist
+        # time. A retry landing after local midnight would spend tomorrow's slot and
+        # silence tomorrow's real digest, so a stale run is abandoned instead.
+        crossed_day = now.astimezone(tz).date() != entry.first_failed_at_dt.astimezone(tz).date()
+        if age > max_age or crossed_day:
             store.remove(run_id)
+            give_up_reason = "max_age_exceeded" if age > max_age else "crossed_local_day"
             logger.warning(
-                "world_pulse_journal_gave_up run_id=%s attempts=%s age_hours=%.2f last_error=%s",
+                "world_pulse_journal_gave_up run_id=%s reason=%s attempts=%s age_hours=%.2f last_error=%s",
                 run_id,
+                give_up_reason,
                 entry.attempts,
                 age.total_seconds() / 3600.0,
                 entry.last_error,
@@ -216,8 +242,8 @@ async def drain_pending_world_pulse_journals(
                 env,
                 status="failed",
                 event_id=run_id,
-                action_name="world_pulse_journal_gave_up",
-                reason=entry.last_error or "max_age_exceeded",
+                action_name=GAVE_UP_AUDIT_ACTION,
+                reason=f"{give_up_reason}:{entry.last_error}",
                 extra={"attempts": entry.attempts, "first_failed_at": entry.first_failed_at},
             )
             outcomes.append((run_id, "gave_up"))
@@ -244,8 +270,9 @@ async def drain_pending_world_pulse_journals(
             world_pulse_result=result,
             on_failure=_on_failure,
         )
+        done_at = datetime.now(timezone.utc) if now_after_dispatch is None else now_after_dispatch()
         if ok:
-            store.mark_completed(run_id, now=now)
+            store.mark_completed(run_id, now=done_at)
             logger.info(
                 "world_pulse_journal_retry_succeeded run_id=%s attempts=%s",
                 run_id,
@@ -264,7 +291,18 @@ async def drain_pending_world_pulse_journals(
                 payload=entry.payload,
                 correlation_id=entry.correlation_id,
                 error=str(failure[0]),
-                now=now,
+                now=done_at,
+            )
+            await audit(
+                env,
+                status="retry_scheduled",
+                event_id=run_id,
+                action_name=AUDIT_ACTION,
+                reason=str(failure[0])[:500],
+                extra={
+                    "attempts": bumped.attempts if bumped else entry.attempts,
+                    "next_at": bumped.next_at if bumped else "",
+                },
             )
             logger.warning(
                 "world_pulse_journal_retry_rescheduled run_id=%s attempts=%s next_at=%s error=%s",
@@ -286,9 +324,30 @@ async def drain_pending_world_pulse_journals(
                 env,
                 status="failed",
                 event_id=run_id,
-                action_name="world_pulse_journal_gave_up",
-                reason=str(failure[0])[:500],
+                action_name=GAVE_UP_AUDIT_ACTION,
+                reason=f"non_retryable:{str(failure[0])[:500]}",
                 extra={"attempts": entry.attempts + 1, "non_retryable": True},
             )
             outcomes.append((run_id, "gave_up_non_retryable"))
     return outcomes
+
+
+def start_world_pulse_retry_drain(
+    current: "asyncio.Task[Any] | None",
+    make_drain: Callable[[], Coroutine[Any, Any, Any]],
+    *,
+    enabled: bool,
+    has_due: Callable[[], bool],
+) -> "asyncio.Task[Any] | None":
+    """Called once per scheduler tick. Starts one background drain when retry is
+    enabled, something is due, and no drain is already running; returns the task to
+    keep tracking (the running one, a new one, or None)."""
+    if current is not None and not current.done():
+        return current
+    if current is not None:
+        exc = None if current.cancelled() else current.exception()
+        if exc is not None:
+            logger.error("world_pulse_journal_retry_drain_failed error=%r", exc)
+    if not enabled or not has_due():
+        return None
+    return asyncio.create_task(make_drain(), name="orion-actions-world-pulse-journal-retry")

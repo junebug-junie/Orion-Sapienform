@@ -50,7 +50,11 @@ from orion.schemas.world_pulse import WorldPulseRunResultV1
 from .capability_gap_journal import build_daily_seed_payload, collect_capability_gaps
 from .perception_gap_journal import collect_perception_gaps
 from .walkway_forecast import collect_walkway_jobs, run_walkway_tick
-from .world_pulse_journal import drain_pending_world_pulse_journals, handle_world_pulse_run_result_journal
+from .world_pulse_journal import (
+    drain_pending_world_pulse_journals,
+    handle_world_pulse_run_result_journal,
+    start_world_pulse_retry_drain,
+)
 from .pending_journal_store import PendingJournalStore, pending_journal_store_path_for
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
@@ -1222,6 +1226,7 @@ async def lifespan(app: FastAPI):
         *,
         trigger,
         world_pulse_result: WorldPulseRunResultV1 | None = None,
+        progress: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         journal_llm_route = _normalized_llm_route(settings.actions_journal_llm_route, settings.actions_llm_route)
         tk = str(getattr(trigger, "trigger_kind", "") or "")
@@ -1279,6 +1284,11 @@ async def lifespan(app: FastAPI):
             author=settings.actions_journal_author,
         )
         write_env = parent.derive_child(kind=JOURNAL_WRITE_KIND, source=src, payload=write.model_dump(mode="json"), reply_to=None)
+        if progress is not None:
+            # Past this point the write may have landed even if publish raises
+            # (e.g. redis delivered, then timed out reading the reply). Callers
+            # that retry must not treat an error from here on as "nothing written".
+            progress["write_publish_attempted"] = True
         await hunter.bus.publish(settings.actions_journal_write_channel, write_env)
         return {
             "draft": draft.model_dump(mode="json"),
@@ -1301,7 +1311,9 @@ async def lifespan(app: FastAPI):
         False covers three different outcomes (journaling disabled, cooldown/in-flight
         dedupe, compose error). Callers that need to tell a compose *error* apart --
         the world_pulse retry path -- pass `on_failure`, which is awaited with the
-        exception only on the error branch. Other callers are unaffected."""
+        exception only when compose failed *before* the write publish was attempted
+        (an error during/after publish is ambiguous and not reported, so a retry can
+        never duplicate a written entry). Other callers are unaffected."""
         if not settings.actions_journaling_enabled:
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action, reason="journaling_disabled")
             return False
@@ -1311,6 +1323,7 @@ async def lifespan(app: FastAPI):
 
         acquired = False
         t0 = time.monotonic()
+        progress: dict[str, Any] = {}
         try:
             await sem.acquire()
             acquired = True
@@ -1318,6 +1331,7 @@ async def lifespan(app: FastAPI):
                 parent,
                 trigger=trigger,
                 world_pulse_result=world_pulse_result,
+                progress=progress,
             )
             # Notification dispatch (email/in-app) happens exactly once, from the
             # post-persist consumer (_handle_journal_created) after the SQL write is
@@ -1351,7 +1365,15 @@ async def lifespan(app: FastAPI):
                 extra={"duration_ms": dt_ms},
             )
             logger.exception("Journal dispatch failed action=%s corr=%s", audit_action, parent.correlation_id)
-            if on_failure is not None:
+            if on_failure is not None and progress.get("write_publish_attempted"):
+                # Ambiguous: the journal write may already be persisted. Retrying
+                # could write a second entry, so do not report this as retryable.
+                logger.warning(
+                    "journal_write_publish_error_not_retried action=%s corr=%s",
+                    audit_action,
+                    parent.correlation_id,
+                )
+            elif on_failure is not None:
                 try:
                     await on_failure(exc)
                 except Exception:
@@ -1955,6 +1977,7 @@ async def lifespan(app: FastAPI):
 
     async def _scheduler_loop() -> None:
         nonlocal last_skill_run_monotonic, last_journal_run
+        world_pulse_retry_task: asyncio.Task | None = None
         while True:
             try:
                 now_utc = datetime.now(timezone.utc)
@@ -2334,18 +2357,22 @@ async def lifespan(app: FastAPI):
                             restart_dedupe_source="durable" if SCHEDULER_CURSOR_JOURNAL_KEY in cursor_keys_at_startup else "memory",
                         )
 
-                if settings.actions_world_pulse_journal_retry_enabled:
-                    try:
-                        await drain_pending_world_pulse_journals(
-                            store=pending_journal_store,
-                            settings=settings,
-                            dispatch_journal=_dispatch_journal,
-                            audit=_audit,
-                            source=src,
-                            now=now_utc,
-                        )
-                    except Exception:
-                        logger.exception("world_pulse_journal_retry_drain_failed")
+                # Retry failed world_pulse_digest composes in a background task (at
+                # most one in flight) so a slow compose on a congested GPU lane does
+                # not stall this tick's workflow claims / attention signals.
+                world_pulse_retry_task = start_world_pulse_retry_drain(
+                    world_pulse_retry_task,
+                    lambda: drain_pending_world_pulse_journals(
+                        store=pending_journal_store,
+                        settings=settings,
+                        dispatch_journal=_dispatch_journal,
+                        audit=_audit,
+                        source=src,
+                        now=datetime.now(timezone.utc),
+                    ),
+                    enabled=settings.actions_world_pulse_journal_retry_enabled,
+                    has_due=lambda: bool(pending_journal_store.due(datetime.now(timezone.utc))),
+                )
 
                 for claimed in workflow_schedule_store.claim_due(now_utc=now_utc, limit=settings.actions_workflow_schedule_claim_batch_size):
                     dispatch_env = BaseEnvelope(kind=WORKFLOW_TRIGGER_KIND, source=src, correlation_id=str(uuid4()), payload={})

@@ -153,3 +153,10 @@ def test_historical_records_are_not_rewritten_by_config_changes(gate) -> None:
     """PR reports and design specs state what was true when written."""
     assert "docs/superpowers/pr-reports/" in gate.EXCLUDED_PREFIXES
     assert "docs/superpowers/specs/" in gate.EXCLUDED_PREFIXES
+
+
+def test_gitignored_agent_scratch_is_not_scanned(gate) -> None:
+    """`.superpowers/` briefs are frozen agent scratch; the local `.env` stays scanned."""
+    assert ".superpowers/" in gate.EXCLUDED_PREFIXES
+    assert ".env" in gate.SCANNED_NAMES
+    assert ".superpowers/sdd/task-5-brief.md".startswith(gate.EXCLUDED_PREFIXES)

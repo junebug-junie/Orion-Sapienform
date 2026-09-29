@@ -65,7 +65,11 @@ tool family (which turns get it, truth rules, search pattern), see the
 
 - **What Orion can ask.** Their most recent dreams, one dream in full
   (`dream_id`, up to 4,000 chars), or dreams by meaning (`query=`). Optional
-  `kind=narrative|hypothesis`, `since`, `limit` ≤ 5.
+  `kind=narrative|hypothesis`, `since`, `limit` ≤ 5. The tool text asks for
+  the topic only in `query` ("pull requests", not "a dream about pull
+  requests"): the word "dream" lifts every narrative's score, so off-topic
+  dream-worded questions can clear the floor (measured by the calibration
+  eval's `KNOWN_WEAKNESS` line).
 - **Two kinds, labeled.**
   - `dream_narrative` (id `dream:<n>`): the nightly story from `dreams`
     (written by orion-sql-writer). Text is tldr + narrative; `extra` carries
@@ -120,7 +124,7 @@ tool family (which turns get it, truth rules, search pattern), see the
   - Recalibrate the floor, read-only, from the host:
 
     ```bash
-    POSTGRES_URI=postgresql://postgres:postgres@127.0.0.1:55432/conjourney \
+    POSTGRES_URI=postgresql+psycopg2://postgres:postgres@127.0.0.1:55432/conjourney \
     DREAM_SEARCH_EMBED_URL=http://127.0.0.1:8320/embedding \
     python services/orion-dream/evals/run_dream_search_calibration.py
     ```

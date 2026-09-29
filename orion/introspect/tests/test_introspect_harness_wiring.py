@@ -148,3 +148,4 @@ def test_brief_covers_dreams_as_experiences_not_facts():
     assert "items=[] means no dream matched" in dreams_line
     assert "a tool error means the answer is unknown" in dreams_line
     assert "never report it as not having dreamed" in dreams_line
+    assert "'pull requests', not 'a dream about pull requests'" in dreams_line

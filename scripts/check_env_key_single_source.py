@@ -65,6 +65,8 @@ EXCLUDED_PREFIXES = (
     "graphify-out/",
     ".worktrees/",
     ".claude/worktrees/",
+    # Gitignored agent scratch (task briefs quoting values as of when written).
+    ".superpowers/",
 )
 
 

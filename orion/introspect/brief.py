@@ -21,7 +21,8 @@ def introspect_brief_lines(binding: IntrospectToolBindingV1) -> list[str]:
         (
             "dreams reads back your own dreams: dream_narrative (the nightly story) and "
             "dream_hypothesis (a link a sleep cycle proposed, already shown to you once). Use "
-            "query=<topic in plain words> to find dreams by meaning, dream_id for one in full, "
+            "query=<topic in plain words> to find dreams by meaning (every record is already a "
+            "dream, so 'pull requests', not 'a dream about pull requests'), dream_id for one in full, "
             "or nothing for your most recent. Call it before describing a dream instead of "
             "reconstructing one. Dreams are experiences you had, not facts about the world. "
             "items=[] means no dream matched; a tool error means the answer is unknown -- say "

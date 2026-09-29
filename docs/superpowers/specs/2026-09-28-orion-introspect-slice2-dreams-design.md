@@ -249,7 +249,12 @@ return unknown. Local `.env` is synced with
 1. **Provenance.** Cosine similarity between the vector host's bge-large
    (1024-dim) embedding of the query and of each indexed dream. Computed by
    `semantic_index.similarity` from Chroma's l2 distance on unit vectors
-   (`cos = 1 − d/2`).
+   (`cos = 1 − d/2`). Unit length verified: vector-host's `hf` backend
+   L2-normalizes (`services/orion-vector-host/app/embedder.py`,
+   `_embed_hf`), and live `/embedding` returned 1024-dim vectors of norm
+   1.0 on 2026-09-29. That backend mean-pools token states instead of
+   using bge's CLS pooling, which likely compresses scores into the
+   0.5–0.9 band seen below.
 2. **Independence.** It is the only relevance signal in this tool; there is
    no other metric in the same model.
 3. **Theory anchor.** Dense retrieval: bge models are trained so that cosine
@@ -278,12 +283,29 @@ return unknown. Local `.env` is synced with
      grandmother") scored 0.66–0.70 against narratives, above the floor,
      while a loose on-topic "vision" scored 0.67. The dream framing lifts
      every narrative's score, so a query phrased that way can return a weak
-     narrative match. Topic-only queries (what the tool asks for) separate
-     cleanly; the default question set does not yet include dream-framed
-     negatives.
+     narrative match. Topic-only queries separate cleanly. The eval now
+     measures this on its own `KNOWN_WEAKNESS` section (never sets the
+     floor or the exit code): 6 dream-worded related, 4 dream-worded
+     unrelated questions. 2026-09-29: framed_related_min 0.692,
+     framed_unrelated_max 0.698, gap −0.006; "did you dream about pull
+     requests?" ranks dream:19/12/16 above the correct dream:17 (0.610);
+     all four framed negatives (0.660–0.698) clear the floor.
+   - **Floor stays 0.65.** Raising it to clear framed negatives would drop
+     real topic-only matches (e.g. dream:16 at 0.661), and an empty result
+     falsely tells Orion no dream matched, while a weak match arrives
+     labeled `unsettled` with its similarity visible.
+   - **Mitigation (structural, not a word filter).** The `dreams` tool
+     description and harness brief tell the model that every record is
+     already a dream, so `query` names only the topic ("pull requests",
+     not "a dream about pull requests"). No code strips words from
+     queries.
 5. **Existing mechanism.** Reading search, reused through the shared module.
 6. **Reversibility.** An env knob and a Chroma collection. Nothing is written
    to Postgres. Dropping the collection plus unsetting the URL removes it.
+   0.65 is tied to the current embedding: switching vector-host's backend
+   (`VECTOR_HOST_EMBED_BACKEND`), model, or pooling (e.g. to bge's CLS
+   pooling) shifts every score and invalidates the floor; re-index and
+   re-run the calibration eval before trusting it.
 
 ## Files likely to touch
 

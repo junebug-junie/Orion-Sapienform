@@ -128,6 +128,18 @@ def test_description_leads_with_semantic_query():
     assert "query" in spec.description and "similarity" in spec.description
     assert "query" in spec.arguments.model_json_schema()["properties"]
 
+
+def test_dreams_description_asks_for_topic_only_query():
+    """Dream-worded queries lift every narrative's similarity (task-8 calibration, framed set)."""
+    [spec] = [s for s in IntrospectTools(ReplyBus(), BINDING).tool_specs() if s.name == "dreams"]
+    assert (
+        "Every record here is already a dream, so put only the topic in query -- "
+        "'pull requests', not 'a dream about pull requests'."
+    ) in spec.description
+    assert "similarity" in spec.description and "dream_id=<id>" in spec.description
+    assert "items=[] means no dream matched" in spec.description
+
+
 class DreamBus(ReplyBus):
     def __init__(self, payload=None, *, kind=RESULT_KIND, **kw):
         super().__init__(payload, **kw)

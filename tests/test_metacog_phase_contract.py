@@ -201,7 +201,8 @@ def test_metacog_draft_overrides_fallback_summary_with_patch():
     ctx = {"trigger_kind": "heartbeat", "trigger": {"trigger_kind": "heartbeat"}}
     base_entry = executor_module._fallback_metacog_draft(ctx).model_dump(mode="json")
     base_entry = executor_module._apply_metacog_system_fields(base_entry, ctx)
-    patch = MetacogDraftTextPatchV1(what_changed={"summary": "clarity↑, overload↓"})
+    # The draft authors summary only; what_changed_summary follows it.
+    patch = MetacogDraftTextPatchV1(summary="clarity↑, overload↓")
     executor_module._apply_draft_patch(base_entry, patch)
     executor_module._postprocess_metacog_draft_summary(base_entry, draft_mode="llm")
     entry = executor_module.normalize_collapse_entry(base_entry)
@@ -238,11 +239,10 @@ def test_metacog_patch_sanitizer_handles_nested_keys_and_unknown_fields():
         model=MetacogDraftTextPatchV1,
     )
     assert "tag_scores" in stripped
-    assert "what_changed.new_state" in stripped
-    patch = MetacogDraftTextPatchV1.model_validate(sanitized)
-    assert patch.what_changed
-    assert patch.what_changed.summary == "shift"
-    assert patch.what_changed.evidence == ["cue"]
+    # what_changed is publish-computed from evidence, never LLM-authored: stripped.
+    assert "what_changed" in stripped
+    assert "what_changed" not in sanitized
+    MetacogDraftTextPatchV1.model_validate(sanitized)
 
 
 def test_metacog_patch_sanitizer_parses_code_fences():
@@ -254,6 +254,6 @@ def test_metacog_patch_sanitizer_parses_code_fences():
         raw,
         model=MetacogDraftTextPatchV1,
     )
-    assert stripped == []
+    assert stripped == ["what_changed"]
     patch = MetacogDraftTextPatchV1.model_validate(sanitized)
     assert patch.summary == "delta"

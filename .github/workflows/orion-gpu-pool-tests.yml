@@ -94,6 +94,9 @@ on:
       - "services/orion-hub/scripts/curiosity_investigation.py"
       - "services/orion-hub/scripts/thought_client.py"
       - "services/orion-hub/tests/test_curiosity_gpu_lease.py"
+      - "orion/harness/prefix.py"
+      - "orion/situational/context.py"
+      - "orion/schemas/situation.py"
 
 jobs:
   pool:

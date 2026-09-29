@@ -53,7 +53,7 @@ _FCC_PRESPAWN_CODES = frozenset({"fcc_bad_model_label", "fcc_lane_context_too_sm
 _FCC_SELF_KILL_CODES = frozenset({"fcc_stream_line_limit", "fcc_draft_length_ceiling_exceeded"})
 
 
-def fcc_hop_key(serving_role: str | None, fcc_route: str | None = None) -> str:
+def fcc_hop_key(serving_role: str | None, fcc_route: str | None = None, fcc_backend: str | None = None) -> str:
     """RPC-health hop key for the FCC motor leg (orion/core/bus/rpc_health.py conventions).
 
     - ``fcc:<role>``: the turn held a GPU pool lease (a durable run's hold), so every call ran on
@@ -61,7 +61,9 @@ def fcc_hop_key(serving_role: str | None, fcc_route: str | None = None) -> str:
     - ``fcc:route:<route>``: no hold. Each call was placed by the pool on its own and the harness
       never sees those grants, so only the requested gateway route is known. The ``route:`` prefix
       keeps "asked for agent" from sharing a baseline with "ran on agent".
-    - ``fcc:unknown``: neither is known.
+    - ``fcc:backend:<backend>``: a non-pool backend (e.g. ``MODEL_HAIKU`` -> ``nvidia_nim``), a
+      remote API with its own latency population.
+    - ``fcc:unknown``: none is known.
 
     Replaces ``fcc:<served_model>`` (retired 2026-09-29): the model name the CLI echoed split one
     lane into several keys whenever the pool spilled a call to another card, and also minted
@@ -74,6 +76,9 @@ def fcc_hop_key(serving_role: str | None, fcc_route: str | None = None) -> str:
     route = str(fcc_route or "").strip()
     if route:
         return f"fcc:route:{route}"
+    backend = str(fcc_backend or "").strip()
+    if backend:
+        return f"fcc:backend:{backend}"
     return "fcc:unknown"
 
 
@@ -97,7 +102,11 @@ def record_fcc_hop(bus: Any, motor: Any) -> None:
         if elapsed_sec is None:
             return
         code = str(getattr(motor, "grounding_status", "") or "")
-        hop = fcc_hop_key(getattr(motor, "serving_role", None), getattr(motor, "fcc_route", None))
+        hop = fcc_hop_key(
+            getattr(motor, "serving_role", None),
+            getattr(motor, "fcc_route", None),
+            getattr(motor, "fcc_backend", None),
+        )
         elapsed_ms = float(elapsed_sec) * 1000.0
         if code in _FCC_TIMEOUT_CODES:
             bus.record_hop_timeout(hop, elapsed_ms)

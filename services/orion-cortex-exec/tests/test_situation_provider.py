@@ -438,6 +438,7 @@ async def test_runtime_context_spilled_lease_names_granted_role_not_route_defaul
     assert (rt["placement"], rt["granted_role"], rt["model_id"], rt["profile_name"]) == (
         "lease", "agent-gpu2", "Spilled-Gpu2-27B.gguf", "gpu2-flex"
     )
+    assert rt["route"] == "agent"  # the lease route, never the configured runtime_route "chat"
     assert rt["source"] == "gpu_pool_lease"
     text = fragment["compact_text"]
     assert "You are running on model: Spilled-Gpu2-27B.gguf (GPU pool role agent-gpu2, profile gpu2-flex" in text
@@ -460,6 +461,33 @@ async def test_runtime_context_lease_without_discovered_model_does_not_guess(mon
     assert brief["runtime"]["granted_role"] == "chat"
     assert "holds the GPU pool's chat role" in fragment["compact_text"]
     assert "do not infer or guess a name" in fragment["compact_text"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_context_mismatch_role_says_why_it_names_no_model(monkeypatch):
+    monkeypatch.setattr(situation, "urlopen", lambda url, timeout=None: (_ for _ in ()).throw(AssertionError))
+    ctx = {"session_id": "sid-runtime-mismatch", "raw_user_text": "hello",
+           "gpu_placement": {"role": "fast", "model": None, "profile": None, "status": "mismatch"}}
+    _, fragment = await build_situation_for_ctx(
+        ctx, _settings(orion_situation_runtime_enabled=True,
+                       orion_situation_prompt_max_chars=situation._DEFAULT_PROMPT_MAX_CHARS))
+    assert "the pool reports that role as mismatch" in fragment["compact_text"]
+    assert "could not be read" not in fragment["compact_text"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_line_is_omitted_when_the_harness_owns_it(monkeypatch):
+    """Unheld unified turn: the harness prompt names its own route's default, so the brief states
+    neither a second route default nor an 'unavailable' placeholder -- and does not ask /routes."""
+    monkeypatch.setattr(situation, "urlopen", lambda url, timeout=None: (_ for _ in ()).throw(AssertionError))
+    ctx = {"session_id": "sid-runtime-harness", "raw_user_text": "hello", "runtime_line_owner": "harness"}
+    brief, fragment = await build_situation_for_ctx(
+        ctx, _settings(orion_situation_runtime_enabled=True,
+                       orion_situation_prompt_max_chars=situation._DEFAULT_PROMPT_MAX_CHARS))
+    assert brief["runtime"]["placement"] == "harness"
+    text = fragment["compact_text"]
+    assert "Default model for route" not in text
+    assert "Current model:" not in text
 
 
 @pytest.mark.asyncio

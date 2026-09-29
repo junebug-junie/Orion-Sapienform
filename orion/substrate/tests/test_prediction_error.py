@@ -486,7 +486,9 @@ def test_chat_prediction_error_conversation_load_key_contributes_to_baseline_see
     assert curr_proj.prediction_error_baseline_ewma == pytest.approx(0.30 / 2)
 
 
-def test_chat_prediction_error_averages_across_multiple_turns() -> None:
+def test_chat_prediction_error_averages_only_touched_turns() -> None:
+    """Definition v3 (2026-09-29): a turn the batch did not touch is identical in
+    prev/curr and is left out, instead of adding two 0.0 deltas to the mean."""
     prev = _chat_projection(
         {
             "t1": _chat_turn("t1", repair_pressure_level=0.0),
@@ -495,13 +497,46 @@ def test_chat_prediction_error_averages_across_multiple_turns() -> None:
     )
     curr = _chat_projection(
         {
-            "t1": _chat_turn("t1", repair_pressure_level=0.30),  # non-zero delta alone
-            "t2": _chat_turn("t2", repair_pressure_level=0.0),  # zero delta
+            "t1": _chat_turn("t1", repair_pressure_level=0.30),  # touched
+            "t2": _chat_turn("t2", repair_pressure_level=0.0),  # untouched, identical
         }
     )
-    deltas = [0.0, 0.30, 0.0, 0.0]  # t1: cl/rp, t2: cl/rp
     assert chat_prediction_error(prev, curr) == 0.0  # cold start
-    assert curr.prediction_error_baseline_ewma == pytest.approx(sum(deltas) / len(deltas))
+    # t1 only: mean(d_load=0.0, d_repair=0.30) = 0.15. v2 read mean(0, .30, 0, 0) = 0.075.
+    assert curr.prediction_error_baseline_ewma == pytest.approx(0.15)
+
+
+def test_chat_prediction_error_is_not_diluted_by_stored_history() -> None:
+    """The live projection keeps every turn (~1,700 on 2026-09-29). The same new turn
+    must read the same raw delta whether 1 or 1,000 older turns sit beside it -- v2
+    divided it by the whole history."""
+
+    def seed(n_history: int) -> float:
+        old = {
+            f"h{i}": _chat_turn(f"h{i}", last_updated_at=_NOW - timedelta(minutes=10 + i))
+            for i in range(n_history)
+        }
+        prev = _chat_projection(dict(old))
+        curr = _chat_projection({**old, "new": _chat_turn("new", repair_pressure_level=0.4)})
+        chat_prediction_error(prev, curr)
+        return curr.prediction_error_baseline_ewma
+
+    assert seed(1) == pytest.approx(0.2)
+    assert seed(1000) == pytest.approx(0.2)
+
+
+def test_chat_prediction_error_no_touched_turns_leaves_baseline_alone() -> None:
+    turns = {"t1": _chat_turn("t1", repair_pressure_level=0.2)}
+    prev = _chat_projection(dict(turns), baseline_ewma=0.1, baseline_ewma_var=0.01, baseline_ewma_n=7)
+    curr = _chat_projection(dict(turns), baseline_ewma=0.1, baseline_ewma_var=0.01, baseline_ewma_n=7)
+    assert chat_prediction_error(prev, curr) == 0.0
+    assert curr.prediction_error_baseline_ewma_n == 7
+
+
+def test_chat_definition_version_is_three() -> None:
+    from orion.schemas.prediction_error_definitions import prediction_error_definition_version
+
+    assert prediction_error_definition_version("chat_session") == 3
 
 
 def test_chat_prediction_error_scores_deviation_from_established_baseline() -> None:
@@ -540,29 +575,25 @@ def test_chat_prediction_error_clamps_below_baseline_tick_to_zero() -> None:
 
 
 def test_chat_prediction_error_uses_domain_specific_variance_floor() -> None:
-    """Regression guard for the 2026-08-19 floor fix: live-confirmed 2026-08-19 that
-    chat's real derived raw-delta variance (~5.24e-7, from a 7-day/19,425-tick window)
-    is close to, but below, orion.bus.ewma's shared default ``_MIN_VARIANCE`` (1e-6,
-    calibrated for a different domain) -- close enough that the shared default would
-    still meaningfully flatten real z-scores, the same class of bug fixed harder for
-    execution_prediction_error on 2026-07-28. This locks in that chat_prediction_error
-    passes its own smaller floor (``_CHAT_PREDICTION_ERROR_MIN_VARIANCE`` = 5e-8), not
-    the shared default."""
+    """The floor was re-derived for definition v3 (2026-09-29): touched-only raw
+    deltas are ~300x larger than v2's diluted ones, so v2's 5e-8 floor was a
+    leftover. Replayed warmed-up v3 variance bottomed out at 2.9e-4; the floor sits
+    one order below (3e-5). A variance under it is floored, not trusted."""
+    from orion.substrate import prediction_error as pe
+
+    assert pe._CHAT_PREDICTION_ERROR_MIN_VARIANCE == pytest.approx(3e-5)
     prev = _chat_projection(
         {"t1": _chat_turn("t1", repair_pressure_level=0.0)},
         baseline_ewma=0.0,
-        baseline_ewma_var=1e-7,  # below shared default (1e-6), above the domain floor (5e-8)
+        baseline_ewma_var=1e-7,  # below the v3 floor
         baseline_ewma_n=5,
     )
-    curr = _chat_projection({"t1": _chat_turn("t1", repair_pressure_level=0.002)})
-    # repair_pressure delta 0.002, conversation_load delta 0.0 -> raw_mean_delta = 0.001
+    curr = _chat_projection({"t1": _chat_turn("t1", repair_pressure_level=0.02)})
+    # raw_mean_delta = mean(0, 0.02) = 0.01; z = 0.01 / sqrt(3e-5) ~= 1.826 -> 0.609
     result = chat_prediction_error(prev, curr)
-    # Domain floor (5e-8) loses to the real variance (1e-7): zscore = 0.001 /
-    # sqrt(1e-7) ~= 3.162 -> saturates at 1.0.
-    assert result == pytest.approx(1.0)
-    # Under the shared default floor (1e-6, which would win over 1e-7 instead):
-    # zscore = 0.001 / sqrt(1e-6) = 1.0 -> error 1.0/3.0 ~= 0.333, nowhere near 1.0.
-    assert result != pytest.approx(1.0 / 3.0)
+    assert result == pytest.approx((0.01 / math.sqrt(3e-5)) / 3.0)
+    # Under v2's 5e-8 floor the tracked 1e-7 would have been used: z ~= 31.6 -> 1.0.
+    assert result < 1.0
 
 
 def test_chat_prediction_error_weights_repair_and_load_evenly() -> None:

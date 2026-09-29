@@ -1335,6 +1335,23 @@ question became moot once both sides were deleted instead. `orion/autonomy/
 signal_drive_map.py` (the shared taxonomy config both used to import) is also
 deleted.
 
+## Chat prediction error v3, gateway failure floor (2026-09-29)
+
+- `chat_prediction_error()` averages over only the turns a batch touched (definition v3,
+  same fix route got in v2). v2 averaged over every stored turn (~1,700, never evicted),
+  so a new turn's change was divided by the whole history and the variance floor set the
+  score on 55% of turns. `_CHAT_PREDICTION_ERROR_MIN_VARIANCE` re-derived for the v3 scale
+  (3e-5). Deploy step: zero the projection's EWMA fields with
+  `services/orion-sql-db/manual_migration_chat_projection_pe_baseline_v3_reset.sql`.
+- `llm_inference` reducer: `inference_failure_pressure` is a rolling 600 s reading with the
+  RPC delivery bridge's floor (failures / max(attempts, 10), 0 below 2 failures), worst of
+  node-pooled and per-worker; the per-window history lives on
+  `LlmInferenceProjectionV1.recent_windows`, and each receipt's `after.failure_window`
+  names the counts and scope behind the number.
+- Replays: `scripts/analysis/replay_route_chat_prediction_error_definitions.py`,
+  `scripts/analysis/replay_llm_inference_failure_window.py`; numbers in
+  `docs/superpowers/pr-reports/2026-09-29-attention-input-honesty-pr.md`.
+
 ## Prediction-error definition v2 for route and chat (2026-09-25)
 
 - `route_prediction_error()` averages its decision-mismatch rate over only the runs a batch

@@ -58,7 +58,7 @@ def build_attention_frame(
     generated_at = now or datetime.now(timezone.utc)
 
     node_targets = select_node_targets(
-        field, policy, prediction_error_baselines or {}
+        field, policy, prediction_error_baselines or {}, now=generated_at
     ) + select_host_targets(field, policy, previous_frame)
     capability_targets = select_capability_targets(field, policy, previous_frame)
     system_targets = select_system_targets(field, policy)

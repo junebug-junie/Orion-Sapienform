@@ -524,3 +524,44 @@ def test_advance_failure_forces_a_column_re_probe() -> None:
     store._engine = fake_engine
     _advance(store, "node:substrate.route", "route_arbitration")
     assert store._definition_version_column is None
+
+
+def test_advance_stamps_when_the_last_folded_receipt_was_written() -> None:
+    """2026-09-29 staleness fade: the baseline carries the receipt time behind
+    `last_value`; the fade is read-side, so the persisted row is unchanged in shape."""
+    store = AttentionRuntimeStore("postgresql://test:test@localhost/test")
+    t1 = datetime(2026, 9, 29, 11, 0, tzinfo=timezone.utc)
+    t2 = datetime(2026, 9, 29, 11, 5, tzinfo=timezone.utc)
+    t3 = datetime(2026, 9, 29, 11, 6, tzinfo=timezone.utc)
+    fake_engine, _conn, _calls = _mock_engine_for_baseline(
+        existing_row=None,
+        new_rows=[
+            {"error": "0.1", "created_at": t1},
+            {"error": "0.3", "created_at": t2},
+            {"error": "not-a-number", "created_at": t3},  # skipped, cursor still moves
+        ],
+    )
+    store._engine = fake_engine
+    baseline = store.advance_node_prediction_error_baseline(
+        target_id="node:substrate.chat", reducer_key="chat_session",
+        alpha=0.2, min_variance=1e-5, fetch_limit=200,
+    )
+    assert baseline.last_value == pytest.approx(0.3)
+    assert baseline.last_observed_at == t2
+
+
+def test_no_new_rows_reads_the_observed_time_from_the_persisted_cursor() -> None:
+    store = AttentionRuntimeStore("postgresql://test:test@localhost/test")
+    cursor = datetime(2026, 9, 29, 9, 0, tzinfo=timezone.utc)
+    existing = {
+        "ewma": 0.1, "variance": 0.02, "observation_count": 10, "last_value": 0.4,
+        "last_receipt_created_at": cursor,
+    }
+    fake_engine, _conn, _calls = _mock_engine_for_baseline(existing_row=existing, new_rows=[])
+    store._engine = fake_engine
+    baseline = store.advance_node_prediction_error_baseline(
+        target_id="node:substrate.chat", reducer_key="chat_session",
+        alpha=0.2, min_variance=1e-5, fetch_limit=200,
+    )
+    assert baseline.last_value == pytest.approx(0.4)
+    assert baseline.last_observed_at == cursor

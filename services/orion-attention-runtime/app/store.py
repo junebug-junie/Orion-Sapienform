@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from psycopg2.extras import Json
@@ -348,6 +349,7 @@ class AttentionRuntimeStore:
                             if existing["last_value"] is not None
                             else None
                         ),
+                        last_observed_at=existing["last_receipt_created_at"],
                     )
                     cursor = existing["last_receipt_created_at"]
 
@@ -409,6 +411,7 @@ class AttentionRuntimeStore:
 
                 new_values: list[float] = []
                 newest_created_at = cursor
+                last_folded_at = None
                 version_skipped = 0
                 for row in new_rows:
                     newest_created_at = row["created_at"]
@@ -424,6 +427,7 @@ class AttentionRuntimeStore:
                         new_values.append(float(raw))
                     except (TypeError, ValueError):
                         continue
+                    last_folded_at = row["created_at"]
 
                 if version_skipped:
                     # Receipts from a producer running a different formula version
@@ -442,6 +446,13 @@ class AttentionRuntimeStore:
                 advanced = advance_precision_baseline(
                     baseline, new_values, alpha=alpha, min_variance=min_variance
                 )
+                if last_folded_at is not None:
+                    # When the receipt behind `last_value` was written -- the
+                    # staleness fade's clock (read-side only, never enters the
+                    # EWMA). On later ticks it is re-read from the persisted cursor,
+                    # which can sit slightly later than this if skipped rows
+                    # (malformed / other definition version) followed it.
+                    advanced = replace(advanced, last_observed_at=last_folded_at)
 
                 conn.execute(
                     text(_UPSERT_BASELINE_VERSIONED_SQL if versioned else _UPSERT_BASELINE_SQL),

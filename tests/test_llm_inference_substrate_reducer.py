@@ -26,10 +26,16 @@ from orion.substrate.llm_inference_loop.constants import (
     LLM_INFERENCE_TARGET_KIND,
 )
 from orion.substrate.llm_inference_loop.extract import (
-    inference_failure_pressure,
     known_field_node,
     parse_llm_inference_trace_id,
 )
+from orion.substrate.llm_inference_loop.failure_window import (
+    FAILURE_MIN_COUNT,
+    FAILURE_MIN_DENOMINATOR,
+    FAILURE_WINDOW_SEC,
+    failure_reading,
+)
+from orion.schemas.llm_inference_projection import LlmInferenceWindowCountV1
 from orion.substrate.llm_inference_loop.pipeline import (
     empty_llm_inference_projection,
     process_llm_inference_grammar_events,
@@ -57,8 +63,13 @@ TIMEOUT = {"text": "[Error: llamacpp timed out after waiting]", "raw": {}}
 REFUSED = {"text": "", "raw": {"error": "gateway_overloaded"}}
 
 
-def _window(calls: list[tuple[dict, str | None]], *, gateway: str = "athena") -> list[GrammarEventV1]:
-    rec = EMIT.InferenceWindowRecorder(clock=lambda: 1_758_801_600.0)
+T0 = 1_758_801_600.0
+
+
+def _window(
+    calls: list[tuple[dict, str | None]], *, gateway: str = "athena", start: float = T0
+) -> list[GrammarEventV1]:
+    rec = EMIT.InferenceWindowRecorder(clock=lambda: start)
     for result, served_by in calls:
         rec.record(result, served_by=served_by, elapsed_s=0.4)
     start, _end, buckets = rec.drain()
@@ -82,7 +93,10 @@ def test_round_trip_failure_share_reaches_the_delta():
     assert delta.target_kind == LLM_INFERENCE_TARGET_KIND
     assert delta.target_id == "llm_node:circe"
     assert delta.after["node_id"] == "circe"
-    assert delta.after["pressure_hints"] == {"inference_failure_pressure": 0.25}
+    # One upstream failure is below the 2-failure minimum: 0.0, not 0.25.
+    assert delta.after["pressure_hints"] == {"inference_failure_pressure": 0.0}
+    assert delta.after["failure_window"]["attempted"] == 4
+    assert delta.after["failure_window"]["failed"] == 1
     assert delta.after["served_by_labels"] == ["circe-worker-2", "circe-worker-fast-1"]
     assert delta.after["outcome_classes"] == {"served": 3, "upstream_timeout": 1}
     assert delta.after["window_sec"] == 60.0
@@ -110,8 +124,10 @@ def test_refusals_alone_are_not_measured_as_calm():
 
 
 def test_refusals_do_not_dilute_or_inflate_the_failure_share():
-    _, receipt = _reduce(_window([(OK, "circe-worker-2"), (TIMEOUT, "circe-worker-2")] + [(REFUSED, "circe-worker-2")] * 8))
-    assert receipt.state_deltas[0].after["pressure_hints"] == {"inference_failure_pressure": 0.5}
+    calls = [(OK, "circe-worker-2")] * 2 + [(TIMEOUT, "circe-worker-2")] * 2 + [(REFUSED, "circe-worker-2")] * 8
+    _, receipt = _reduce(_window(calls))
+    # 2 failures of 4 upstream attempts, floored denominator 10 -> 0.2 (refusals ignored).
+    assert receipt.state_deltas[0].after["pressure_hints"] == {"inference_failure_pressure": 0.2}
 
 
 def test_upstream_4xx_is_a_bad_request_not_a_node_failure():
@@ -137,12 +153,94 @@ def test_empty_window_is_accepted_with_no_deltas():
 
 
 def test_second_window_replaces_first_and_records_before():
-    projection, _ = _reduce(_window([(TIMEOUT, "circe-worker-2")]))
-    projection, receipt = _reduce(_window([(OK, "circe-worker-2")]), projection)
+    projection, _ = _reduce(_window([(TIMEOUT, "circe-worker-2")] * 2))
+    projection, receipt = _reduce(_window([(OK, "circe-worker-2")], start=T0 + 60), projection)
     delta = receipt.state_deltas[0]
     assert delta.operation == "update"
-    assert delta.before["inference_failure_pressure"] == 1.0
-    assert delta.after["pressure_hints"] == {"inference_failure_pressure": 0.0}
+    assert delta.before["inference_failure_pressure"] == 0.2
+    assert delta.before["upstream_failed"] == 2
+    assert delta.after["upstream_failed"] == 0
+    # Window counts are replaced; the failure reading still spans both windows.
+    assert delta.after["pressure_hints"] == {"inference_failure_pressure": 0.2}
+
+
+def test_single_timeout_on_a_quiet_minute_is_not_full_failure():
+    """The live incident (2026-09-25..29): one agent-lane timeout, one call in the
+    window, read 1.0 and held for hundreds of field ticks."""
+    _, receipt = _reduce(_window([(TIMEOUT, "circe-worker-agent")]))
+    after = receipt.state_deltas[0].after
+    assert after["pressure_hints"] == {"inference_failure_pressure": 0.0}
+    assert after["failure_window"]["failed"] == 1
+
+
+def test_failures_in_separate_windows_add_up_then_age_out():
+    projection, _ = _reduce(_window([(TIMEOUT, "circe-worker-agent")]))
+    projection, receipt = _reduce(_window([(TIMEOUT, "circe-worker-agent")], start=T0 + 180), projection)
+    fw = receipt.state_deltas[0].after["failure_window"]
+    assert receipt.state_deltas[0].after["pressure_hints"] == {"inference_failure_pressure": 0.2}
+    assert (fw["failed"], fw["attempted"], fw["windows"]) == (2, 2, 2)
+    # 11 minutes after the second failure both have left the 600 s span.
+    projection, receipt = _reduce(
+        _window([(OK, "circe-worker-agent")], start=T0 + 180 + FAILURE_WINDOW_SEC + 60), projection
+    )
+    assert receipt.state_deltas[0].after["pressure_hints"] == {"inference_failure_pressure": 0.0}
+    assert len(projection.recent_windows["llm_node:circe"]) == 1
+
+
+def test_worst_worker_is_not_diluted_by_a_busy_healthy_one():
+    calls = [(OK, "circe-worker-chat")] * 30 + [(TIMEOUT, "circe-worker-agent")] * 2
+    _, receipt = _reduce(_window(calls))
+    fw = receipt.state_deltas[0].after["failure_window"]
+    # pooled: 2 / 32 = 0.0625; the agent worker alone: 2 / max(2, 10) = 0.2
+    assert receipt.state_deltas[0].after["pressure_hints"] == {"inference_failure_pressure": 0.2}
+    assert fw["scope"] == "circe-worker-agent"
+    assert (fw["scope_failed"], fw["scope_attempted"]) == (2, 2)
+
+
+def test_failures_spread_across_workers_still_count_pooled():
+    calls = [(TIMEOUT, "circe-worker-agent"), (TIMEOUT, "circe-worker-chat"), (OK, "circe-worker-chat")]
+    _, receipt = _reduce(_window(calls))
+    fw = receipt.state_deltas[0].after["failure_window"]
+    assert receipt.state_deltas[0].after["pressure_hints"] == {"inference_failure_pressure": 0.2}
+    assert fw["scope"] == "node"
+
+
+def test_replayed_window_is_not_counted_twice():
+    events = _window([(TIMEOUT, "circe-worker-agent")])
+    projection, _ = _reduce(events)
+    projection, receipt = _reduce(events, projection)
+    assert receipt.state_deltas[0].after["failure_window"]["failed"] == 1
+    assert receipt.state_deltas[0].after["pressure_hints"] == {"inference_failure_pressure": 0.0}
+
+
+def test_summary_from_an_older_gateway_without_worker_counts_reads_pooled():
+    trace = "llm_gateway.inference:athena:w1"
+    ev = GrammarEventV1(
+        event_id="e1",
+        event_kind="atom_emitted",
+        trace_id=trace,
+        emitted_at=NOW,
+        atom=GrammarAtomV1(
+            atom_id="e1",
+            trace_id=trace,
+            atom_type="observation",
+            semantic_role=ROLE_NODE_WINDOW,
+            layer="inference",
+            summary="node=circe calls=4 served=1 upstream_failed=3 workers=circe-worker-agent classes=served:1|upstream_timeout:3",
+        ),
+        provenance=GrammarProvenanceV1(source_service=LLM_INFERENCE_SOURCE_SERVICE),
+    )
+    _, receipt = _reduce([ev])
+    after = receipt.state_deltas[0].after
+    assert after["pressure_hints"] == {"inference_failure_pressure": 0.3}
+    assert after["failure_window"]["scope"] == "node"
+
+
+def test_gateway_summary_carries_per_worker_counts():
+    events = _window([(OK, "circe-worker-chat"), (TIMEOUT, "circe-worker-agent"), (REFUSED, "circe-worker-chat")])
+    summary = events[0].atom.summary
+    assert "worker_attempted=circe-worker-agent:1|circe-worker-chat:1" in summary
+    assert "worker_failed=circe-worker-agent:1" in summary
 
 
 def test_duplicate_node_atom_is_not_double_counted():
@@ -199,8 +297,15 @@ def test_parse_trace(trace, expected):
 
 
 def test_failure_share_edges():
-    assert inference_failure_pressure(served=0, upstream_failed=0) is None
-    assert inference_failure_pressure(served=0, upstream_failed=4) == 1.0
+    def w(served: int, failed: int, wid: str = "w") -> LlmInferenceWindowCountV1:
+        return LlmInferenceWindowCountV1(window_id=wid, window_end=NOW, served=served, upstream_failed=failed)
+
+    assert failure_reading([]).pressure is None
+    assert failure_reading([w(0, 0)]).pressure is None  # nothing sent upstream
+    assert failure_reading([w(0, FAILURE_MIN_COUNT - 1)]).pressure == 0.0
+    assert failure_reading([w(0, 4)]).pressure == 4 / FAILURE_MIN_DENOMINATOR
+    assert failure_reading([w(0, 40)]).pressure == 1.0
+    assert (FAILURE_WINDOW_SEC, FAILURE_MIN_DENOMINATOR, FAILURE_MIN_COUNT) == (600.0, 10, 2)
     assert known_field_node("CIRCE") == "circe"
     assert known_field_node("atlas") is None  # decommissioned 2026-08-21
     assert known_field_node(None) is None

@@ -128,6 +128,13 @@ def _percentile(sorted_vals: list[int], q: float) -> int | None:
     return sorted_vals[idx]
 
 
+_OTHER_WORKER = "other"
+
+
+def _counts(counts: dict[str, int]) -> str:
+    return "|".join(f"{k}:{v}" for k, v in sorted(counts.items()) if v > 0) or "none"
+
+
 @dataclass
 class _NodeBucket:
     calls: int = 0
@@ -136,6 +143,11 @@ class _NodeBucket:
     served_latency_ms: list[int] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Per worker label: calls sent upstream (served + upstream failure) and upstream
+    # failures (2026-09-29), so the substrate can say which lane is failing. Bounded
+    # to _MAX_LABELS labels; the rest are counted under _OTHER_WORKER.
+    worker_attempted: dict[str, int] = field(default_factory=dict)
+    worker_failed: dict[str, int] = field(default_factory=dict)
 
     def add(self, *, outcome: str, served_by: str | None, elapsed_ms: int, tokens: tuple[int, int]) -> None:
         self.calls += 1
@@ -143,6 +155,12 @@ class _NodeBucket:
         label = str(served_by or "").strip()
         if label and label not in self.labels and len(self.labels) < _MAX_LABELS:
             self.labels.append(label)
+        upstream_failed = outcome in UPSTREAM_FAILURE_CLASSES
+        if label and (outcome == OUTCOME_SERVED or upstream_failed):
+            key = label if (label in self.worker_attempted or len(self.worker_attempted) < _MAX_LABELS) else _OTHER_WORKER
+            self.worker_attempted[key] = self.worker_attempted.get(key, 0) + 1
+            if upstream_failed:
+                self.worker_failed[key] = self.worker_failed.get(key, 0) + 1
         if outcome == OUTCOME_SERVED:
             if len(self.served_latency_ms) >= _MAX_LATENCY_SAMPLES:
                 self.served_latency_ms.pop(0)
@@ -163,7 +181,9 @@ class _NodeBucket:
             f"refused={self.count(REFUSAL_CLASSES)} request_invalid={self.count(REQUEST_INVALID_CLASSES)} "
             f"p50_ms={_percentile(lat, 0.5)} p95_ms={_percentile(lat, 0.95)} "
             f"prompt_tokens={self.prompt_tokens} completion_tokens={self.completion_tokens} "
-            f"workers={labels} classes={classes}"
+            f"workers={labels} classes={classes} "
+            f"worker_attempted={_counts(self.worker_attempted)} "
+            f"worker_failed={_counts(self.worker_failed)}"
         )
 
 

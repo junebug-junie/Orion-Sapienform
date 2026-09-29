@@ -77,7 +77,10 @@ The truth eval ships as the next PR (§ Follow-up PR), not this one.
    - No `arm`, no `ref_a`/`ref_b` (the offer never shows them, and control
      refs come from a different pool).
    - Item timestamp is `offered_at`.
-   - Never-offered hypotheses are never indexed or returned.
+   - Never-offered hypotheses are never returned or counted. Only offered
+     ones are indexed, but the index never deletes: a hypothesis released
+     by a cancelled curiosity run (`offered_at` reset to NULL) may linger
+     in the index and is filtered out on the Postgres re-read.
 3. **Search by meaning from the start,** same approach as readings.
 4. **Extract, don't copy.** The shared search plumbing moves to
    `orion/introspect/semantic_index.py`; reading search keeps its behavior
@@ -138,8 +141,11 @@ class DreamsArguments(BaseModel):
 - **Search** (`query`).
   - The query is embedded once and the 20 nearest are taken from
     `orion_dreams`, keeping those `>= DREAM_SEARCH_MIN_SIMILARITY`.
+    `kind`/`since` filter inside Chroma first (metadata `kind`,
+    `occurred_ts` UTC epoch seconds), so the more numerous hypotheses
+    cannot crowd narratives out of the 20.
   - Each hit is re-read from Postgres and re-gated (hypotheses must still be
-    offered; `kind`/`since` applied), then trimmed to `limit`.
+    offered; `kind`/`since` applied again), then trimmed to `limit`.
   - `total_available` = surviving hits.
 - **One** (`dream_id`). The single row, or `ok=True, items=[],
   total_available=0` if it doesn't exist or is a never-offered hypothesis.
@@ -147,8 +153,9 @@ class DreamsArguments(BaseModel):
 
 ### Empty ≠ unknown
 
-- **Empty.** Nothing in the window, or no hit over the floor:
-  `ok=True, items=[], total_available=0`.
+- **Empty.** Nothing in the window, no hit over the floor, or a
+  `kind`/`since` filter that matches nothing in a non-empty index (checked
+  with Chroma's count endpoint): `ok=True, items=[], total_available=0`.
 - **Unknown.** A Postgres error, an embedder/Chroma failure, search not
   configured, a missing or empty collection, or a malformed request:
   `ok=False` with a safe error. The MCP tool then raises "answer unknown".

@@ -140,6 +140,12 @@ def test_dreams_description_asks_for_topic_only_query():
     assert "items=[] means no dream matched" in spec.description
 
 
+def test_dreams_description_says_what_each_kind_returns():
+    [spec] = [s for s in IntrospectTools(ReplyBus(), BINDING).tool_specs() if s.name == "dreams"]
+    assert "kind=narrative returns only the nightly dream narratives" in spec.description
+    assert "kind=hypothesis only the sleep-cycle hypotheses already offered to you" in spec.description
+
+
 class DreamBus(ReplyBus):
     def __init__(self, payload=None, *, kind=RESULT_KIND, **kw):
         super().__init__(payload, **kw)

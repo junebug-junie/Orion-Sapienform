@@ -9,6 +9,14 @@ def test_dsn_password_is_redacted_but_host_kept():
     assert "postgresql://[REDACTED]@db:5432/conjourney" in detail
 
 
+def test_driver_suffixed_dsn_is_redacted():
+    exc = RuntimeError("engine postgresql+psycopg2://postgres:secret@db:5432/conjourney refused")
+    detail = safe_exception_detail(exc)
+    assert "secret" not in detail
+    assert "postgresql+psycopg2://[REDACTED]@db:5432/conjourney" in detail
+    assert "postgres+asyncpg://[REDACTED]@h/db" in safe_exception_detail(RuntimeError("postgres+asyncpg://u:p@h/db"))
+
+
 def test_password_kv_forms_are_redacted():
     exc = RuntimeError("host=db password=hunter2 PWD='quoted pass' passwd=\"dq\" user=orion")
     detail = safe_exception_detail(exc)

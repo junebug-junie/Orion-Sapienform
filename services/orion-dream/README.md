@@ -85,8 +85,13 @@ tool family (which turns get it, truth rules, search pattern), see the
     arms**.
   - It never selects `arm`, `ref_a` or `ref_b` (the offer never shows them,
     and control refs come from a different pool).
-  - Never-offered hypotheses are never indexed, returned or counted. A test
-    pins every statement (`app/introspect_dreams.py`).
+  - Never-offered hypotheses are never returned or counted. A test pins
+    every statement (`app/introspect_dreams.py`).
+  - The index loop only embeds offered hypotheses, but it never deletes. A
+    hypothesis claimed by a curiosity run that is later cancelled gets its
+    `offered_at` reset to NULL; if an index pass ran during the claim, its
+    text may linger in the search index. It is filtered out when every hit
+    is re-read from Postgres, so it is never returned.
 - **Label.** Every item is `epistemic_status="unsettled"`: something Orion
   had, not a fact about the world.
 - **Transport and trust.**
@@ -112,15 +117,22 @@ tool family (which turns get it, truth rules, search pattern), see the
   - Indexing is batched: at most `DREAM_SEARCH_INDEX_BATCH` docs per pass,
     and the log's `pending=` counts what is left. A first deploy works
     through the whole backlog a batch at a time. On 2026-09-29 that was 65
-    docs (19 narratives + 46 offered hypotheses), so 7 passes, about 35
-    minutes at the defaults. After that a new dream is picked up on the next
-    pass.
+    docs (19 narratives + 46 offered hypotheses), so 7 passes: the first at
+    startup, then one every 300 s, about 30 minutes at the defaults. After
+    that a new dream is picked up on the next pass.
   - Upserts land asynchronously: the loop publishes to orion-vector-writer,
     which writes to Chroma on its own schedule, so a doc becomes searchable
     shortly after its pass, not during it.
   - A query embeds only the question, keeps hits ≥
     `DREAM_SEARCH_MIN_SIMILARITY`, and re-reads each hit from Postgres
     through the same rules.
+  - `kind` and `since` filter inside Chroma before the 20 nearest are
+    taken (index metadata `kind` and `occurred_ts`, UTC epoch seconds), so
+    a narrative search is not crowded out by more numerous hypotheses.
+    Postgres re-checks both. A filter that matches nothing in a non-empty
+    index is `items=[]`; an empty or missing index is still unknown.
+  - The index hash covers the text plus `kind` and `occurred_ts`, so a
+    re-offered hypothesis (same text, new `offered_at`) is re-upserted.
   - Recalibrate the floor, read-only, from the host:
 
     ```bash
@@ -143,8 +155,11 @@ tool family (which turns get it, truth rules, search pattern), see the
   - `DREAM_SEARCH_COLLECTION` (default `orion_dreams`).
   - `DREAM_SEARCH_MIN_SIMILARITY`: the value is owned by `.env_example`,
     which also records the last calibration's numbers. The calibration eval
-    above sets it to the midpoint between the weakest related match and the
-    strongest unrelated one.
+    above reports the gap between the strongest unrelated match and the
+    weakest related one; the floor is picked inside that gap. 0.65 sits
+    below the midpoint on purpose, to favor recall: an empty result falsely
+    says "no dream matched", while a weak hit still arrives labeled
+    unsettled.
   - `DREAM_SEARCH_INDEX_INTERVAL_SEC` (default 300 s between passes) and
     `DREAM_SEARCH_INDEX_BATCH` (default 10 docs per pass).
 - **Logs.**

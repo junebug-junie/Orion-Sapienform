@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 
-_DSN_USERINFO = re.compile(r"(?i)(postgres(?:ql)?://)[^\s/@:]+(?::[^\s/@]*)?@")
+_DSN_USERINFO = re.compile(r"(?i)(postgres(?:ql)?(?:\+\w+)?://)[^\s/@:]+(?::[^\s/@]*)?@")
 _PASSWORD_KV = re.compile(r"(?i)\b(password|passwd|pwd)\s*=\s*(?:'[^']*'|\"[^\"]*\"|[^\s]+)")
 
 

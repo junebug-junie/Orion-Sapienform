@@ -76,7 +76,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, Awaitable, Callable, Mapping, Optional, Tuple
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -1918,6 +1918,11 @@ class CuriosityInvestigation:
             "status": status,
         }
 
+    def urgent_open_key_ttl_sec(self) -> int:
+        """Outlives every way the run can still end: the admission deadline, then
+        up to two turn attempts and the 10 s urgent retry backoff past it, plus grace."""
+        return int(self.urgent_timeout_sec + 2 * self.urgent_turn_timeout_sec + 10 + URGENT_OPEN_KEY_GRACE_SEC)
+
     async def _refuse_urgent(self, seed: CuriosityUrgentSeedV1, reason: str) -> dict[str, Any]:
         """A refused urgent request still ends in a failed report (Hub + email) --
         the requester is never left believing it started."""
@@ -1958,8 +1963,7 @@ class CuriosityInvestigation:
 
         run_id = uuid4().hex[:12]
         open_key = urgent_open_key(incident_id)
-        ttl = int(self.urgent_timeout_sec) + URGENT_OPEN_KEY_GRACE_SEC
-        if not await redis.set(open_key, run_id, nx=True, ex=ttl):
+        if not await redis.set(open_key, run_id, nx=True, ex=self.urgent_open_key_ttl_sec()):
             # The open run reports for this incident; a second notice would be a duplicate.
             logger.info("curiosity_urgent_refused incident_id=%s reason=incident_already_open", incident_id)
             return {"ok": False, "reason": "incident_already_open", "incident_id": incident_id}
@@ -3683,6 +3687,13 @@ class CuriosityInvestigation:
                 preferred_lane=self.llm_route or "agent",
                 resource=f"llm.route.{self.llm_route or 'agent'}",
                 priority=priority,
+                # Urgent runs end by the overall urgent deadline: durable-runs fails
+                # the run (queued or running) with `workflow_deadline` and its
+                # urgent detail, so Hub sends the failed report and frees the incident.
+                deadline_at=(
+                    datetime.now(timezone.utc) + timedelta(seconds=self.urgent_timeout_sec)
+                    if urgent is not None else None
+                ),
             ) if self.durable_admission_enabled else None),
         )
         return await self._dispatch_via_cortex(

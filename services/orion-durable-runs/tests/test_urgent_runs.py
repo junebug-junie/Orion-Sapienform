@@ -413,6 +413,115 @@ def test_ordinary_reach_out_still_keeps_the_hold_for_door_a():
     assert finish_detail(end)["gpu_lease"]["lease_id"] == "hold-1"
 
 
+# --- the urgent deadline (Hub sets admission.deadline_at = now + urgent timeout) ------------
+
+
+class QueuedWorld(RetryWorld):
+    """The pool never grants: the run sits at resource_wait."""
+
+    async def lease(self, state):
+        from app.admitted_graph import WAITING
+
+        return WAITING, {"status": "waiting_resource", "lease": None}
+
+
+class _DeadlineStore:
+    def __init__(self, request: dict[str, Any]):
+        self.row = {"run_id": RUN_ID, "request": request, "terminal": None, "control": None}
+        self.projections: list[tuple[str, dict]] = []
+        self.events: list[str] = []
+
+    async def touch(self, run_id):
+        return None
+
+    async def get_run(self, run_id):
+        return dict(self.row)
+
+    async def record_event(self, run_id, name, detail, **kwargs):
+        self.events.append(name)
+
+    async def finish_projection(self, run_id, status, detail, **kwargs):
+        self.projections.append((status, detail))
+        self.row["terminal"] = status
+        return status
+
+
+def _deadline_runtime(world: RetryWorld, *, deadline: datetime):
+    """The real AdmissionRuntime._drive / _terminal over an in-memory graph and store."""
+    from contextlib import asynccontextmanager
+
+    from app.admission_runtime import DEFAULT_WORKFLOW, AdmissionRuntime
+
+    request = {"run_id": RUN_ID, "correlation_id": "trace-urgent", "workflow": DEFAULT_WORKFLOW,
+               "brief": _brief(urgent=True), "requested_at": NOW.isoformat(),
+               "admission": {"resource": "llm.route.agent", "priority": "urgent",
+                             "deadline_at": deadline.isoformat()}}
+    rt = object.__new__(AdmissionRuntime)
+    rt.store = _DeadlineStore(request)
+    rt.graphs = {DEFAULT_WORKFLOW: world.graph(InMemorySaver())}
+    rt.now = lambda: world.now
+    rt.outreach, rt._hints, rt._checked = {}, set(), {}
+    rt._wake = asyncio.Event()
+    rt.released = []
+
+    async def release(state, reason, keep_requeued=False):
+        rt.released.append(reason)
+        return {"lease": None, "hold": None}
+
+    async def event(state, name, detail):
+        rt.store.events.append(name)
+
+    async def hold_ready(run_id, state):
+        return False
+
+    @asynccontextmanager
+    async def claim(run_id):
+        yield True
+
+    rt.release, rt.event, rt._hold_ready, rt.claim = release, event, hold_ready, claim
+    return rt
+
+
+def test_urgent_run_still_queued_at_its_deadline_fails_with_the_urgent_detail():
+    """Never granted a GPU: the deadline still ends the run with a terminal `failed` that
+    names the incident, which the outbox publishes as the run-state event Hub reports on."""
+    world = QueuedWorld()
+    rt = _deadline_runtime(world, deadline=NOW + timedelta(seconds=1200))
+
+    async def scenario():
+        await rt._drive(rt.store.row)
+        snap = await rt.graphs["curiosity.investigate"].aget_state(CFG)
+        assert snap.next == ("resource_wait",) and rt.store.projections == []
+        world.now = NOW + timedelta(seconds=1201)
+        await rt._drive(rt.store.row)
+
+    asyncio.run(scenario())
+    [(status, detail)] = rt.store.projections
+    assert status == "failed"
+    assert detail == {"error": "workflow_deadline", "urgent": URGENT_SUMMARY}
+    assert rt.released == ["deadline"]
+    from app.admission_runtime import TERMINAL_STATE_NODE
+
+    assert TERMINAL_STATE_NODE["failed"] == "failed"  # the node Hub treats as terminal
+
+
+def test_urgent_turn_running_at_its_deadline_fails_with_the_urgent_detail():
+    """The deadline fires inside the turn (AdmissionRuntime.execute raises WorkflowDeadline)."""
+    from app.admission_runtime import AdmissionRuntime
+    from app.admitted_graph import WorkflowDeadline
+
+    world = RetryWorld(fail_turn=False)
+
+    async def execute(state, node):
+        raise WorkflowDeadline("workflow_deadline")
+
+    world.execute = execute  # type: ignore[method-assign]
+    _delays, end = _retry_delays(world, urgent=True)
+    assert end["status"] == "failed" and world.turns == 0
+    detail = AdmissionRuntime._terminal_detail_for("curiosity.investigate", "failed", end)
+    assert detail["error"] == "workflow_deadline" and detail["urgent"] == URGENT_SUMMARY
+
+
 def test_failed_urgent_run_detail_carries_the_error():
     """What Hub's must-deliver report reads off a failed admitted run (Task 6)."""
     from app.admission_runtime import AdmissionRuntime

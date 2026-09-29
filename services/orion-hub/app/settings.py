@@ -1007,7 +1007,8 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC: float = Field(
         default=900.0, gt=0.0, alias="HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC"
     )
-    # No terminal run state by then -> an INCOMPLETE report goes out (the run keeps going).
+    # The run's admission deadline_at: durable-runs fails a run still queued or running
+    # by then, so a failed report follows. No terminal run state by then -> INCOMPLETE too.
     HUB_CURIOSITY_URGENT_TIMEOUT_SEC: float = Field(
         default=1200.0, gt=0.0, alias="HUB_CURIOSITY_URGENT_TIMEOUT_SEC"
     )

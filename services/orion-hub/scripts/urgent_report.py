@@ -104,8 +104,8 @@ def compose_urgent_report(
     elif kind == "timeout":
         title = f"URGENT: incomplete — {label}"
         flags.append(
-            f"INCOMPLETE: {reason or 'no result yet'}. The investigation is still running; "
-            "its final report will follow when it ends."
+            f"INCOMPLETE: {reason or 'no result yet'}. The run is being stopped at its deadline; "
+            "its final report (or its failure) will follow when it ends."
         )
     else:
         title = f"URGENT: not investigated — {label}"

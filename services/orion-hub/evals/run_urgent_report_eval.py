@@ -288,7 +288,7 @@ CASES: list[tuple[str, Any, str, Optional[str], bool, tuple[str, ...]]] = [
     (
         "timeout",
         lambda: _watched({"past_resource_wait": True, "terminal": None, "detail": {}}, "timeout"),
-        "timeout", "INCOMPLETE: no result after 1200 s", True, ("still running",),
+        "timeout", "INCOMPLETE: no result after 1200 s", True, ("stopped at its deadline",),
     ),
     (
         "no_gpu",
@@ -297,9 +297,10 @@ CASES: list[tuple[str, Any, str, Optional[str], bool, tuple[str, ...]]] = [
     ),
     (
         "dispatch_unconfirmed",
-        lambda: _watched(None, "no_gpu", status="dispatch_unconfirmed"),
-        "no_gpu", "not investigated: no run record found after 120 s", True,
-        ("Dispatch was unconfirmed",),
+        # Cortex never registered it: a failed report, never "still queued".
+        lambda: _watched(None, "failed", status="dispatch_unconfirmed"),
+        "failed", "investigation failed: cortex never registered the run (no run record after 120 s)", True,
+        (),
     ),
 ]
 

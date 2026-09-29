@@ -166,7 +166,8 @@ def test_urgent_run_holds_one_open_key_and_records_the_incident() -> None:
     result = asyncio.run(loop.start_urgent(_seed()))
 
     assert bus.redis.values[urgent_open_key(INCIDENT)] == result["run_id"]
-    assert bus.redis.ttls[urgent_open_key(INCIDENT)] == 1200 + 600
+    # The admission deadline, two turn attempts and the 10 s retry past it, plus grace.
+    assert bus.redis.ttls[urgent_open_key(INCIDENT)] == 1200 + 2 * 900 + 10 + 600
     stored = json.loads(bus.redis.hashes[URGENT_INCIDENTS_KEY][INCIDENT])
     assert stored["run_id"] == result["run_id"] and stored["status"] == "dispatched"
     assert stored["question"] == "Why is athena at 88C?" and stored["trigger"] == "manual"
@@ -347,8 +348,23 @@ def test_ordinary_dispatch_keeps_background_priority() -> None:
     [request] = bus.dispatched()
     assert request.admission.priority == "background"
     assert request.brief.urgent is None and request.brief.timeout_sec == 8840.0
+    assert request.admission.deadline_at is None
     durable = bus.rpc_calls[0][1].payload["context"]["metadata"]["durable_run"]
     assert "urgent" not in durable["brief"]
+    assert "deadline_at" not in durable["admission"]
+
+
+def test_urgent_admission_carries_the_overall_urgent_deadline() -> None:
+    """durable-runs fails a run still queued or running at deadline_at, so an urgent
+    run cannot outlive its report window."""
+    bus = _Bus()
+    before = datetime.now(timezone.utc)
+    asyncio.run(_loop(bus, urgent_timeout_sec=1200.0).start_urgent(_seed()))
+    after = datetime.now(timezone.utc)
+    [request] = bus.dispatched()
+    deadline = request.admission.deadline_at
+    assert deadline is not None and deadline.tzinfo is not None
+    assert before.timestamp() + 1200 <= deadline.timestamp() <= after.timestamp() + 1200
 
 
 # --- the bus consumer --------------------------------------------------------

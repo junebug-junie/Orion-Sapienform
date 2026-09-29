@@ -3382,6 +3382,17 @@ channels:
     since: "2026-09-06"
     description: "Missing from the initial patch (2026-09-06): Hub's ORION_BUS_ENFORCE_CATALOG=true made every reply publish here raise ValueError, so no harness turn could ever complete -- the runner retried the same run for a full RPC timeout, forever, wasting a real generation each cycle. See orion:curiosity:turn:request above."
 
+  - name: "orion:curiosity:urgent:request"
+    kind: "request"
+    schema_id: "CuriosityUrgentRequestV1"
+    message_kind: "curiosity.urgent.request.v1"
+    producer_services: ["orion-hub", "orion-hardware-watch"]
+    consumer_services: ["orion-hub"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-09-28"
+    description: "Start an urgent, seeded curiosity run (manual from Hub, heat/cooling from the hardware watcher); Hub dispatches it at priority urgent, at most one open run per incident_id. docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md"
+
   - name: "orion:curiosity:help:request"
     kind: "event"
     schema_id: "HelpRequestV1"

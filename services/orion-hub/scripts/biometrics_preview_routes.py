@@ -586,13 +586,20 @@ async def api_biometrics_preview_induction(node: str = Query(...)) -> Dict[str, 
 @router.get("/gpu")
 async def api_biometrics_preview_gpu(node: str = Query(...), limit: int = Query(40, ge=1, le=60)) -> Dict[str, Any]:
     nid = _validate_node(node)
-    lane_map = _parse_lane_map(nid)
     try:
         payload = await biometrics_node_client.fetch_raw_recent(nid, limit=limit)
     except BiometricsNodeClientError as exc:
         logger.warning("biometrics preview gpu unavailable for %s: %s", nid, exc)
         return {"ok": False, "node": nid, "gpus": [], "error": "node_unreachable"}
 
+    cards = gpu_cards_from_raw_recent(payload, _parse_lane_map(nid))
+    return {"ok": bool(cards), "node": nid, "gpus": cards}
+
+
+def gpu_cards_from_raw_recent(payload: Any, lane_map: Mapping[str, str]) -> list[dict[str, Any]]:
+    """Per-GPU cards (newest sample + utilization trend) from a node's `/raw/recent` payload.
+
+    Shared with the urgent-curiosity evidence bundle (scripts/urgent_evidence.py)."""
     items = payload.get("items") or [] if isinstance(payload, dict) else []
     # orion-biometrics' /raw/recent iterates reversed(_RAW_RECENT) -- items[0]
     # is the newest sample, items[-1] the oldest.
@@ -629,5 +636,4 @@ async def api_biometrics_preview_gpu(node: str = Query(...), limit: int = Query(
                 "trend": list(reversed(trend_by_index.get(idx, []))),
             }
         )
-
-    return {"ok": bool(cards), "node": nid, "gpus": cards}
+    return cards

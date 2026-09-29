@@ -37,7 +37,8 @@ _IDS = ["updated", "banners", "tiles", "strip", "strip-range", "strip-note", "le
         "self-lived", "self-history-wrap", "self-history-summary", "self-history",
         "priors", "priors-note", "toggle-closed", "prior-filter", "briefs-summary",
         "peer-briefs-table", "refresh", "run-now", "run-now-msg", "self-run-now",
-        "self-run-now-msg"]
+        "self-run-now-msg", "urgent-question", "urgent-run", "urgent-run-msg", "urgent-list",
+        "urgent-note"]
 
 _HARNESS = """
 const ELS = {};
@@ -67,6 +68,7 @@ if (fx.atlas) { applyAtlas(fx.atlas); if (fx.show_closed) { state.showClosed = t
     for (const id of fx.toggles) { togglePriorClaim(id); out.toggled.push(ELS.priors.innerHTML); }
     if (fx.atlas_changed) { applyAtlas(fx.atlas_changed); out.toggled.push(ELS.priors.innerHTML); } } }
 if (fx.story) renderStory(fx.story);
+if (fx.urgent) renderUrgent(fx.urgent);
 for (const k of Object.keys(ELS)) out[k] = ELS[k].innerHTML || ELS[k].textContent;
 console.log(JSON.stringify(out));
 """
@@ -541,6 +543,57 @@ def test_orion_prose_in_the_story_is_escaped(tmp_path) -> None:
                            "note": '<img src=x onerror="alert(1)"> a & b < c', "readings": []}]}
     out = _render({"story": story}, tmp_path)
     assert "<img" not in out["story"] and "&lt;img" in out["story"] and "a &amp; b &lt; c" in out["story"]
+
+
+# --- urgent runs (Plan 3 Task 7) -------------------------------------------
+
+
+def test_the_page_has_the_run_urgent_box_and_posts_json() -> None:
+    page = TEMPLATE.read_text(encoding="utf-8")
+    assert '<textarea id="urgent-question"' in page
+    assert 'maxlength="2000"' in page.split('<textarea id="urgent-question"', 1)[1].split(">", 1)[0]
+    assert 'id="urgent-run"' in page and "Run urgent" in page
+    assert 'fetch("/curiosity/api/urgent"' in page
+    block = page.split('fetch("/curiosity/api/urgent"', 1)[1][:400]
+    assert '"Content-Type": "application/json"' in block
+    assert "JSON.stringify({ question" in block
+    assert 'id="urgent-list"' in page
+    assert "incident ${" in page and "started" in page
+    assert "Refused: ${" in page
+
+
+def test_the_urgent_list_is_refreshed_on_load() -> None:
+    page = TEMPLATE.read_text(encoding="utf-8")
+    body = page.split("async function load(", 1)[1].split("\n}\n", 1)[0]
+    assert "loadUrgent(" in body
+    assert "/curiosity/api/urgent" in page.split("async function loadUrgent", 1)[1][:300]
+
+
+def test_urgent_list_renders_newest_first_escaped_and_links_the_run(tmp_path) -> None:
+    urgent = {"available": True, "incidents": [
+        {"incident_id": "b" * 32, "run_id": "abc123", "question": '<img src=x onerror="alert(1)"> hot?',
+         "trigger": "manual", "subject": "", "requested_at": "2026-09-28T21:30:00+00:00",
+         "requested_by": "juniper", "status": "reported_final"},
+        {"incident_id": "a" * 32, "run_id": None, "question": "second",
+         "trigger": "heat", "subject": "circe/gpu2", "requested_at": "2026-09-28T20:00:00+00:00",
+         "requested_by": "hardware-watch", "status": "dispatch_failed"},
+    ]}
+    out = _render({"urgent": urgent}, tmp_path)
+    s = out["urgent-list"]
+    assert "<img" not in s and "&lt;img" in s
+    assert s.index("hot?") < s.index("second")
+    assert 'data-run="abc123"' in s
+    assert s.count("data-run=") == 1, "no run id, no link"
+    assert "reported_final" in s and "dispatch_failed" in s
+    assert "manual" in s and "heat" in s and "circe/gpu2" in s
+
+
+def test_urgent_list_empty_and_unreadable_read_differently(tmp_path) -> None:
+    empty = _render({"urgent": {"available": True, "incidents": []}}, tmp_path)
+    broken = _render({"urgent": {"available": False, "reason": "RuntimeError: <redis> down", "incidents": []}}, tmp_path)
+    assert "No urgent runs yet" in empty["urgent-list"]
+    assert "could not be read" in broken["urgent-list"]
+    assert "&lt;redis&gt;" in broken["urgent-list"] and "<redis>" not in broken["urgent-list"]
 
 
 def test_an_unreadable_store_and_an_unconfigured_graph_read_differently(tmp_path) -> None:

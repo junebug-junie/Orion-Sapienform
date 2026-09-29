@@ -3249,6 +3249,19 @@ per-GPU cards, and active/queued pool leases. Each section has its own timeout; 
 section becomes `{"error": ...}`. The bundle is trimmed (oldest trend points first) to fit
 the seed's 32 000-byte cap.
 
+The Curiosity panel's "Run urgent" box (`templates/curiosity_atlas.html`) posts
+`{"question": ...}` to `POST /curiosity/api/urgent`, which collects the bundle and publishes
+a `manual` request (`requested_by="juniper"`, incident id `uuid4().hex`) on the channel
+above; it returns `{"ok": true, "incident_id"}`. It refuses up front with 400
+`question_required` / `question_too_long` (over 2000 chars) and 503 `loop_not_running`,
+`urgent_disabled`, `urgent_listener_not_running` or `bus_unavailable` -- a request with no
+consumer would read as started and never run. `GET /curiosity/api/urgent` lists the newest
+20 incidents from the hash, without their evidence bundles.
+
+Orion's sandbox reads the hardware tables through `orion_readonly`; the grant is
+`scripts/sql/2026-09-28_grant_orion_readonly_hardware.sql` (an operator step, apply
+command in the file).
+
 Env: `HUB_CURIOSITY_URGENT_ENABLED` (default true), `HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC`
 (900), `HUB_CURIOSITY_URGENT_TIMEOUT_SEC` (1200), `HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC` (120).
 Plan: `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md`.

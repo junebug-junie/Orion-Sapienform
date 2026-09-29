@@ -179,8 +179,8 @@ def test_gpu2_disabled_refuses(repo, monkeypatch):
     ({"role": "agent"}, "role_not_on_this_actuator"),
     ({"launch_digest": "0" * 64}, "launch_digest_mismatch"),
     ({"cards": ["gpu1"]}, "cards_mismatch"),
-    ({"profile": "qwen27b"}, "profile_unsupported"),
-    ({"role": "diffusion"}, "not_a_bridge_role"),
+    ({"profile": "qwen27b"}, "profile_not_allowed"),   # stage 5.2: was profile_unsupported
+    ({"role": "diffusion"}, "not_a_swap_seat"),        # stage 5.2: was not_a_bridge_role
 ])
 def test_refusals(repo, monkeypatch, over, reason):
     if over.get("role") == "diffusion":
@@ -453,7 +453,7 @@ def test_real_config_launch_blocks_resolve_to_bridge_targets():
     cfg = load_pool_config(REPO_ROOT / "config" / "gpu_pool.yaml")
     assert fence.resolve(cfg, role="agent-gpu2", action="load", cards=["gpu2"], digest=None) == "agent-burst"
     assert fence.resolve(cfg, role="agent-gpu2", action="unload", cards=["gpu2"], digest=None) == "diffusion"
-    with pytest.raises(fence.Refusal, match="not_a_bridge_role"):
+    with pytest.raises(fence.Refusal, match="not_a_swap_seat"):
         fence.resolve(cfg, role="diffusion", action="load", cards=["gpu2"], digest=None)
 
 

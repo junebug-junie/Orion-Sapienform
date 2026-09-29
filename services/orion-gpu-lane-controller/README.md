@@ -102,13 +102,15 @@ Spec: [`docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actua
 The controller listens on the bus for the GPU pool asking it to load or unload a model on gpu2,
 and does it with the drain / stop / start / readiness-wait / rollback steps of `app/gpu2.py`
 `transition()`, fenced by the pool generation (persisted) + `launch_digest` vs this checkout's
-`config/gpu_pool.yaml` (`app/pool_fence.py`). GPU1's flip is unaffected.
+`config/gpu_pool.yaml` (`app/pool_fence.py`). GPU1's flip is unaffected. Since stage 5.2 any swap
+seat *without* bridge verbs runs through the generic launch actuator instead (next section).
 
 **Bus contract** (`orion/schemas/gpu_pool.py`). Requests for another `actuator` name are ignored.
 For ours the controller publishes on `orion:gpu_pool:actuate:result`: `accepted`, then one
 `progress` per phase (`draining`, `stopping`, `starting`, `ready_wait`, `rolling_back`), then one
-terminal `succeeded` | `failed` | `refused`, with `observed` = container state of `agent-gpu2` and
-`diffusion` after the action. A failed load carries `restored` (were diffusion's containers put
+terminal `succeeded` | `failed` | `refused`, with `observed` = container state
+(`running|exited|absent|unknown`) of every role whose `launch` names this actuator (stage 5.2; today
+`agent-gpu2` and `diffusion`). A failed load carries `restored` (were diffusion's containers put
 back); `restored` absent on a failed load means no rollback ran because nothing had been evicted
 yet -- read `observed`.
 
@@ -123,9 +125,11 @@ yet -- read `observed`.
   commit athena's pool runs (the `launch_digest` fence).
 - **Refusals** (`reason`): `gpu2_disabled`, `invalid_request:<field>`,
   `unknown_role`, `role_not_on_this_actuator`, `cards_mismatch`, `launch_digest_mismatch`,
-  `not_a_bridge_role`, `bridge_verb_unsupported`, `profile_unsupported`, `deadline_passed`,
+  `profile_not_allowed`, `not_a_swap_seat`, `no_launch_block:<evicted role>`,
+  `bridge_cannot_set_profile`, `bridge_verb_unsupported`, `deadline_passed`,
   `stale_generation`, `busy`, `fence_state_unreadable:*`, `fence_state_unwritable:*`,
-  `config_unloadable:*`. A refusal never advances the generation.
+  `config_unloadable:*`. A refusal never advances the generation. (Stage 5.2 renamed
+  `not_a_bridge_role` -> `not_a_swap_seat` and `profile_unsupported` -> `profile_not_allowed`.)
 - **Generation fence.** The accepted generation is written (fsync + atomic rename) to
   `GPU2_POOL_FENCE_STATE_PATH` on the `gpu-lane-controller-state` volume *before* any container is
   touched; anything `<=` it is refused. `transition()`'s own authority checkpoints re-check that the
@@ -144,6 +148,40 @@ yet -- read `observed`.
   upstream-idle-before-stop stay here.
 
 Keys: `GPU_POOL_ACTUATOR_NAME`, `GPU2_POOL_FENCE_STATE_PATH` (see `.env_example`).
+
+## Generic launch actuator (stage 5.2)
+
+Spec: [`docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md`](../../docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md)
+(Decision 2). `app/launch_exec.py` runs any swap seat's `launch:` block, so a new card or a new model
+option on a card is YAML + compose only.
+
+- **What the bus message can choose:** a role and (for `load`) a profile. The profile must be in the
+  role's `launch.profiles`, else `profile_not_allowed`. Compose file, service, compose profile, env
+  file and env var *names* all come from this checkout's YAML (fenced by `launch_digest`). The only
+  values the controller sets, as compose interpolation variables in the `docker compose` process
+  env: `launch.cuda_env` = the role's card `index`es joined by commas, and `launch.profile_var` =
+  the chosen profile (when none, the variable is removed from the process env so compose's own
+  default applies, never a value inherited from the controller's environment).
+- **load:** each evicted role that is running is drained (if it has `launch.drain`) and stopped;
+  the seat is `up -d --no-build --no-deps`'d with its env, un-drained if it has `drain`, and waited on
+  for `launch.ready` up to `launch.timeout_sec` (one budget covering resume + ready). On a failure after an evicted role was touched: stop
+  the seat, restart the stopped evicted roles in reverse order (each waits for ready), un-drain any
+  drained but not stopped -> `failed restored=true|false`.
+- **unload:** a running `kind: llm` seat must have every llama.cpp `/slots` idle
+  (`upstream_not_idle:<role>`); drain (if any) -> stop the seat, then start every evicted role.
+- **Ready** means the `ready` path answers `{"ready": true}` (diffusion-host `/ready`) or
+  `{"status": "ok"}` (llama.cpp `/health`). A new service's ready endpoint must return one of those.
+- **Failure reasons** carry the role: `container_state_not_safe:<role>`, `drain_timeout:<role>`
+  (`GPU2_DRAIN_TIMEOUT_SEC`), `stop_failed|stop_unconfirmed|startup_failed:<role>`,
+  `model_readiness_timeout:<role>`, `seat_and_evicted_both_running`, plus `:restoration_failed`.
+- **`observed` fallback:** if this checkout's YAML cannot be parsed, `observed` falls back to the
+  fixed bridge pair (`agent-gpu2`, `diffusion`) so a `status` reconcile still sees real containers
+  (deleted with the bridge in 5.6).
+- Residents (`swap: null`) are never loaded directly (`not_a_swap_seat`): they come back only as a
+  seat's evictions.
+- **Which path runs:** `agent-gpu2` still carries `swap.load/unload` in the committed YAML, so it
+  still goes through the stage-4 bridge (`gpu2.transition`). Stage 5.3 removes those two YAML keys to
+  cut it over (revert = revert the YAML); 5.6 deletes the bridge.
 
 **Fence file operations.** It lives on the pinned volume `orion-gpu-lane-controller-state`
 (`docker compose down -v` deletes it and resets the accepted generation to 0 -- don't). If it is

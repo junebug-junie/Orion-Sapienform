@@ -160,6 +160,48 @@ def test_queue_then_release_hands_the_slot_on_and_records_wait_outside_transport
     run(go())
 
 
+TURN = "0f1e2d3c-4b5a-4968-8776-655443322110"
+
+
+def test_pool_events_travel_on_their_own_correlation_id_not_the_turns():
+    """Spec "Transport-metric and reader impacts" item 1: bus-mirror chains every shared envelope
+    correlation_id into CAUSALLY_FOLLOWED_BY edges, so a pool event on the turn's id put the pool
+    inside the turn's causal chain. Envelope id = the event's own id; the turn rides in the payload."""
+    import uuid
+
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        first = await rt.acquire(acq("chat", priority="interactive", turn_correlation_id=TURN))
+        second = await rt.acquire(acq("chat", priority="interactive", turn_correlation_id=TURN,
+                                      deadline_at=rt.now() + timedelta(seconds=2)))
+        assert first.status == "granted" and second.status == "queued"
+        await later(rt, clock, 5)                       # second's deadline passes: an "unavailable" exception
+        pool = [e for c, e in rt.bus.published if c == "orion:gpu_pool:event"
+                and e.payload.get("turn_correlation_id") == TURN]
+        assert {e.payload["event"] for e in pool} >= {"admitted", "granted", "unavailable"}
+        for env in pool:
+            assert str(env.correlation_id) != TURN
+            assert env.correlation_id == uuid.UUID(hex=env.payload["event_id"])
+        assert len({e.correlation_id for e in pool}) == len(pool)   # fresh per event, no shared chain
+        grammar = [e for c, e in rt.bus.published if c == "orion:grammar:event"
+                   and e.payload.get("correlation_id") == TURN]
+        assert grammar, "the unavailable exception must still reach grammar with the turn in its payload"
+        for env in grammar:
+            assert str(env.correlation_id) != TURN
+            assert env.correlation_id == uuid.UUID(hex=env.payload["provenance"]["source_event_id"])
+    run(go())
+
+
+def test_event_envelope_correlation_falls_back_to_fresh_uuid_for_a_non_hex_event_id():
+    from app.runtime import event_envelope_correlation
+    from orion.schemas.gpu_pool import GpuPoolEventV1
+
+    ev = GpuPoolEventV1(event="granted", event_id="not-a-uuid", turn_correlation_id=TURN)
+    a, b = event_envelope_correlation(ev), event_envelope_correlation(ev)
+    assert str(a) != TURN and a != b
+
+
 def test_acquire_is_idempotent_on_request_id():
     async def go():
         rt, _ = make()

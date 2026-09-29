@@ -137,7 +137,7 @@ def test_search_not_configured_is_unknown():
 
 
 def test_search_backend_failure_is_unknown(monkeypatch):
-    async def down(client, cfg, query):
+    async def down(client, cfg, query, **filters):
         raise SearchUnavailableError("chroma unreachable")
     monkeypatch.setattr(il, "rank", down)
     engine = FakeEngine([NARR])
@@ -148,7 +148,7 @@ def test_search_backend_failure_is_unknown(monkeypatch):
 
 
 def test_search_hits_then_database_failure_is_query_unknown(monkeypatch):
-    async def hits(client, cfg, query):
+    async def hits(client, cfg, query, **filters):
         return [("dream:19", 0.8)]
     monkeypatch.setattr(il, "rank", hits)
     engine = FakeEngine(fail=True)
@@ -159,7 +159,7 @@ def test_search_hits_then_database_failure_is_query_unknown(monkeypatch):
 
 
 def test_search_with_no_hits_is_empty_and_skips_postgres(monkeypatch):
-    async def no_hits(client, cfg, query):
+    async def no_hits(client, cfg, query, **filters):
         return []
     monkeypatch.setattr(il, "rank", no_hits)
     engine = FakeEngine([NARR])
@@ -170,7 +170,7 @@ def test_search_with_no_hits_is_empty_and_skips_postgres(monkeypatch):
 
 
 def test_search_hits_are_regated_with_similarity(monkeypatch):
-    async def hits(client, cfg, query):
+    async def hits(client, cfg, query, **filters):
         return [("dream:19", 0.8)]
     monkeypatch.setattr(il, "rank", hits)
 
@@ -185,6 +185,81 @@ def test_search_hits_are_regated_with_similarity(monkeypatch):
     [(_, reply)] = _handle(_listener(engine), _envelope({"query": "vision"}))
     [item] = IntrospectResultV1.model_validate(reply.payload).items
     assert item.id == "dream:19" and item.extra["similarity"] == 0.8
+
+
+def test_search_passes_kind_and_since_to_rank(monkeypatch):
+    seen = {}
+
+    async def spy(client, cfg, query, **filters):
+        seen.update(filters)
+        return []
+    monkeypatch.setattr(il, "rank", spy)
+    _handle(_listener(), _envelope({"query": "vision", "kind": "narrative", "since": "2026-09-20T00:00:00Z"}))
+    assert seen == {"kind": "narrative", "since": datetime(2026, 9, 20, tzinfo=timezone.utc)}
+
+
+def _chroma_search(monkeypatch, indexed):
+    """Real rank over a fake vector-db that filters then takes the n nearest, like Chroma."""
+    import json
+
+    import httpx
+
+    sent = []
+
+    def handler(request):
+        if request.url.host == "e":
+            body = json.loads(request.content)
+            return httpx.Response(200, json={"doc_id": body["doc_id"], "embedding": [1.0, 0.0]})
+        if request.url.path.endswith("/orion_dreams"):
+            return httpx.Response(200, json={"id": "cid", "metadata": None})
+        if request.url.path.endswith("/cid/count"):
+            return httpx.Response(200, json=len(indexed))
+        body = json.loads(request.content)
+        sent.append(body.get("where"))
+        kind = (body.get("where") or {}).get("kind")
+        hits = sorted((d for d in indexed if kind in (None, d[2])), key=lambda d: d[1])[:body["n_results"]]
+        return httpx.Response(200, json={"ids": [[h[0] for h in hits]], "distances": [[h[1] for h in hits]]})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    return sent
+
+
+class ByIdConn(FakeConn):
+    def execute(self, clause, params=None):
+        sql = str(clause)
+        self.calls.append(sql)
+        if "ANY(:ids)" in sql and "FROM dreams" in sql:
+            return _Result([r for r in self.rows if r["id"] in params["ids"]])
+        return _Result([])
+
+
+def test_kind_filtered_search_finds_narrative_behind_20_nearer_hypotheses(monkeypatch):
+    indexed = [(f"dh-{n:06d}", 0.1, "hypothesis") for n in range(21)] + [("dream:19", 0.6, "narrative")]
+    sent = _chroma_search(monkeypatch, indexed)
+    engine = FakeEngine()
+    engine.conn = ByIdConn([NARR])
+    [(_, reply)] = _handle(_listener(engine), _envelope({"query": "vision", "kind": "narrative"}))
+    result = IntrospectResultV1.model_validate(reply.payload)
+    assert result.ok and [i.id for i in result.items] == ["dream:19"]
+    assert result.items[0].extra["similarity"] == 0.7
+    assert sent == [{"kind": "narrative"}]
+
+
+def test_kind_filtered_search_with_no_such_kind_is_empty_not_unknown(monkeypatch):
+    sent = _chroma_search(monkeypatch, [(f"dh-{n:06d}", 0.1, "hypothesis") for n in range(3)])
+    engine = FakeEngine([NARR])
+    [(_, reply)] = _handle(_listener(engine), _envelope({"query": "vision", "kind": "narrative"}))
+    result = IntrospectResultV1.model_validate(reply.payload)
+    assert result.ok and result.items == [] and result.total_available == 0
+    assert sent == [{"kind": "narrative"}] and engine.conn.calls == []
+
+
+def test_kind_filtered_search_on_empty_index_is_unknown(monkeypatch):
+    _chroma_search(monkeypatch, [])
+    [(_, reply)] = _handle(_listener(), _envelope({"query": "vision", "kind": "narrative"}))
+    result = IntrospectResultV1.model_validate(reply.payload)
+    assert not result.ok and result.error == il.SEARCH_UNAVAILABLE
 
 
 def test_one_mode():

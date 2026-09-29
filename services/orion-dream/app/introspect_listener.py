@@ -74,7 +74,7 @@ class DreamIntrospectListener:
                 if self.search is None or not self.search.enabled:
                     raise SearchUnavailableError("dream search is not configured")
                 async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC) as client:
-                    scored = await rank(client, self.search, args.query)
+                    scored = await rank(client, self.search, args.query, kind=args.kind, since=args.since)
                 if not scored:
                     result = IntrospectResultV1(ok=True, operation="dreams", as_of=now, total_available=0)
                 else:

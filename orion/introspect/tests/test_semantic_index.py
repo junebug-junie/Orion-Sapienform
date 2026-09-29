@@ -26,7 +26,7 @@ CFG = SearchConfig(
 )
 
 
-def _client(*, missing=False, query=(), stored=None, get_status=200):
+def _client(*, missing=False, query=(), stored=None, get_status=200, count=0):
     seen = []
 
     def handler(request):
@@ -41,6 +41,8 @@ def _client(*, missing=False, query=(), stored=None, get_status=200):
         if request.url.path == "/api/v1/collections/cid/query":
             ids, dists = zip(*query) if query else ((), ())
             return httpx.Response(200, json={"ids": [list(ids)], "distances": [list(dists)]})
+        if request.url.path == "/api/v1/collections/cid/count":
+            return httpx.Response(200, json=count)
         if request.url.path == "/api/v1/collections/cid/get":
             if get_status != 200:
                 return httpx.Response(get_status, json={"error": "boom"})
@@ -72,6 +74,45 @@ def test_nearest_sorts_by_similarity_and_names_the_collection_when_unbuilt():
     client, _ = _client(missing=True)
     with pytest.raises(SearchUnavailableError, match="orion_things"):
         _run(lambda c: nearest(c, CFG, [1.0, 0.0], 20), client)
+
+
+def _queries(seen):
+    return [json.loads(r.content) for r in seen if r.url.path.endswith("/query")]
+
+
+def test_nearest_without_where_sends_no_filter_and_empty_is_unknown():
+    client, seen = _client(query=[("a", 0.4)])
+    _run(lambda c: nearest(c, CFG, [1.0, 0.0], 20), client)
+    assert "where" not in _queries(seen)[0]
+    client, seen = _client(query=(), count=5)
+    with pytest.raises(SearchUnavailableError, match="empty"):
+        _run(lambda c: nearest(c, CFG, [1.0, 0.0], 20), client)
+    assert not any(r.url.path.endswith("/count") for r in seen)
+
+
+def test_nearest_sends_where_to_chroma():
+    where = {"$and": [{"kind": "narrative"}, {"occurred_ts": {"$gte": 1.5}}]}
+    client, seen = _client(query=[("a", 0.4)])
+    assert _run(lambda c: nearest(c, CFG, [1.0, 0.0], 20, where=where), client) == [("a", 0.6)]
+    assert _queries(seen)[0]["where"] == where
+
+
+def test_filtered_zero_hits_in_non_empty_collection_is_no_match():
+    client, seen = _client(query=(), count=7)
+    assert _run(lambda c: nearest(c, CFG, [1.0, 0.0], 20, where={"kind": "narrative"}), client) == []
+    assert [r.method for r in seen if r.url.path.endswith("/count")] == ["GET"]
+
+
+def test_filtered_zero_hits_in_empty_or_unreadable_collection_is_unknown():
+    client, _ = _client(query=(), count=0)
+    with pytest.raises(SearchUnavailableError, match="orion_things is empty"):
+        _run(lambda c: nearest(c, CFG, [1.0, 0.0], 20, where={"kind": "narrative"}), client)
+    client, _ = _client(query=(), count="nope")
+    with pytest.raises(SearchUnavailableError, match="count"):
+        _run(lambda c: nearest(c, CFG, [1.0, 0.0], 20, where={"kind": "narrative"}), client)
+    client, _ = _client(missing=True)
+    with pytest.raises(SearchUnavailableError, match="not built"):
+        _run(lambda c: nearest(c, CFG, [1.0, 0.0], 20, where={"kind": "narrative"}), client)
 
 
 def test_stored_hashes_of_missing_collection_is_empty():
@@ -129,6 +170,26 @@ def test_index_docs_publishes_only_new_and_changed_with_content_hash():
     assert payloads[1].meta == {"content_hash": content_hash("gamma")} and payloads[1].text == "gamma"
     embeds = [json.loads(r.content) for r in seen if r.url.host == "embed.test"]
     assert all(e["doc_id"].startswith("dream-search-") for e in embeds) and len(embeds) == 2
+
+
+def test_index_docs_hash_keys_fold_meta_into_the_hash():
+    docs = [("a", "alpha", {"kind": "narrative", "occurred_ts": 2.0})]
+    client, _ = _client(stored={"a": content_hash("alpha")})
+    bus = _Bus()
+    result = _run(lambda c: index_docs(
+        docs, CFG, client=c, bus=bus, source=ServiceRef(name="orion-dream"),
+        doc_prefix="x", hash_keys=("occurred_ts",),
+    ), client)
+    assert (result.indexed, result.pending) == (1, 0)
+    [(_, envelope)] = bus.published
+    folded = envelope.payload["meta"]["content_hash"]
+    assert folded != content_hash("alpha")
+    client, _ = _client(stored={"a": folded})
+    again = _run(lambda c: index_docs(
+        docs, CFG, client=c, bus=_Bus(), source=ServiceRef(name="orion-dream"),
+        doc_prefix="x", hash_keys=("occurred_ts",),
+    ), client)
+    assert (again.indexed, again.pending) == (0, 0)
 
 
 def test_index_docs_batch_leaves_the_rest_pending():

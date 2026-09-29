@@ -8,6 +8,7 @@ caller re-reads each hit from its own tables and re-gates it.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any, Sequence
 from uuid import uuid4
@@ -54,6 +55,13 @@ class _Collection:
 
 def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def doc_hash(text: str, meta: dict[str, Any], hash_keys: Sequence[str] = ()) -> str:
+    """content_hash of the text, plus the named meta fields when any are given."""
+    if not hash_keys:
+        return content_hash(text)
+    return content_hash(text + "\n" + json.dumps({k: meta.get(k) for k in hash_keys}, sort_keys=True))
 
 
 def similarity(distance: float, space: str) -> float:
@@ -103,30 +111,42 @@ async def _collection(client: httpx.AsyncClient, cfg: SearchConfig) -> _Collecti
     raise SearchUnavailableError(f"chroma collection lookup failed: HTTP {status}")
 
 
+async def _count(client: httpx.AsyncClient, cfg: SearchConfig, coll: _Collection) -> int:
+    status, body = await _json(client, "GET", f"{_base(cfg)}/{coll.id}/count")
+    if status != 200 or isinstance(body, bool) or not isinstance(body, int):
+        raise SearchUnavailableError(f"chroma count failed: HTTP {status}")
+    return body
+
+
 async def nearest(
     client: httpx.AsyncClient, cfg: SearchConfig, vector: list[float], n: int,
+    *, where: dict[str, Any] | None = None,
 ) -> list[tuple[str, float]]:
-    """(doc_id, similarity) for the n nearest indexed records, best first."""
+    """(doc_id, similarity) for the n nearest indexed records, best first.
+
+    ``where`` is a Chroma metadata filter applied before the n nearest are taken.
+    """
     coll = await _collection(client, cfg)
     if coll is None:
         raise SearchUnavailableError(f"search index {cfg.collection} not built yet")
-    status, body = await _json(
-        client, "POST", f"{_base(cfg)}/{coll.id}/query",
-        json={"query_embeddings": [vector], "n_results": n, "include": ["distances"]},
-    )
+    query: dict[str, Any] = {"query_embeddings": [vector], "n_results": n, "include": ["distances"]}
+    if where:
+        query["where"] = where
+    status, body = await _json(client, "POST", f"{_base(cfg)}/{coll.id}/query", json=query)
     if status != 200:
         raise SearchUnavailableError(f"chroma query failed: HTTP {status}")
     try:
         ids, distances = body["ids"][0], body["distances"][0]
         if len(ids) != len(distances) or any(not isinstance(i, str) for i in ids):
             raise ValueError("ids/distances mismatch")
-        if not ids:
-            # Chroma clamps n_results to the index size, so an existing collection
-            # answering nothing holds no vectors: unbuilt, not "no match".
-            raise ValueError(f"search index {cfg.collection} is empty")
         scored = [(i, similarity(float(d), coll.space)) for i, d in zip(ids, distances)]
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise SearchUnavailableError("malformed chroma query reply") from exc
+    # Chroma clamps n_results to the index size, so an unfiltered query answering
+    # nothing means no vectors: unbuilt, not "no match". A filtered one may
+    # legitimately match nothing, so ask whether the collection holds anything.
+    if not scored and (not where or await _count(client, cfg, coll) == 0):
+        raise SearchUnavailableError(f"search index {cfg.collection} is empty")
     return sorted(scored, key=lambda s: -s[1])
 
 
@@ -167,14 +187,17 @@ async def index_docs(
     source: Any,
     doc_prefix: str,
     batch: int | None = None,
+    hash_keys: Sequence[str] = (),
 ) -> IndexPass:
     """Embed and upsert (doc_id, text, meta) docs the index lacks or holds stale text for.
 
     meta gains content_hash; pending counts stale docs left past this batch.
+    ``hash_keys`` names meta fields folded into the hash, so a change to one
+    (e.g. a timestamp a search filters on) re-upserts the doc like a text edit.
     """
     if not docs:
         return IndexPass(indexed=0, pending=0)
-    hashed = [(did, text, meta, content_hash(text)) for did, text, meta in docs]
+    hashed = [(did, text, meta, doc_hash(text, meta, hash_keys)) for did, text, meta in docs]
     stored = await stored_hashes(client, cfg, [d[0] for d in hashed])
     stale = [d for d in hashed if stored.get(d[0]) != d[3]]
     batch = cfg.index_batch if batch is None else batch

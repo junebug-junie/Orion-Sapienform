@@ -227,10 +227,13 @@ def parse_stance_react_payload(
     # drive/tension state, assembled deterministically in cortex-exec and mapped on
     # from result metadata — never authored by the stance LLM.
     raw.pop("autonomy_slice", None)
+    # Record identity is owned by the transport, never the stance LLM: it has no
+    # clock and no id source, and invents plausible values when asked.
+    raw.pop("event_id", None)
+    raw.pop("created_at", None)
     if correlation_id:
-        raw.setdefault("correlation_id", correlation_id)
-    if session_id is not None:
-        raw.setdefault("session_id", session_id)
+        raw["correlation_id"] = correlation_id
+    raw["session_id"] = session_id
     return ThoughtEventV1.model_validate(normalize_stance_react_raw(raw))
 
 

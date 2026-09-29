@@ -39,3 +39,9 @@ def test_stance_react_self_signal_line_renders_without_prior_self_signal_marker(
     assert self_signal < attention
     assert "PRIOR SELF-SIGNAL" not in rendered
     assert "Mind coloring and autonomy recent_actions blocks" not in rendered
+
+
+def test_stance_react_prompt_does_not_ask_model_for_record_identity() -> None:
+    text = (REPO_ROOT / "orion/cognition/prompts/stance_react.j2").read_text(encoding="utf-8")
+    for field in ("event_id", "session_id", "created_at"):
+        assert field not in text, field

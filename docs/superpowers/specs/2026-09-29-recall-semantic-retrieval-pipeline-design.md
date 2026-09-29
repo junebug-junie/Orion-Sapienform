@@ -1,247 +1,287 @@
-# Recall semantic retrieval pipeline: hybrid + graph + rerank, measured first
+# Recall by referent, not by resemblance
 
-Status: PROPOSAL (design mode + proposal mode). Nothing here is implemented.
+Status: PROPOSAL, revision 2 (design mode + proposal mode). Nothing here is implemented.
 Date: 2026-09-29
-Builds on: `docs/superpowers/specs/2026-09-29-recall-retrieval-query-architecture-design.md` (APPROVED, in progress on `docs/recall-retrieval-architecture`). That spec fixes *what* recall searches for (`retrieval_query`), bounds the fan-out, adds a deadline, and puts provenance on every candidate. This spec is about *how well* recall ranks once the query is sane. It does not redo any of that work and assumes it has landed.
+Revision 2 replaces revision 1, a generic dense + BM25 + rerank pipeline, which Juniper rejected. What changed and why is at the bottom.
+Builds on: `docs/superpowers/specs/2026-09-29-recall-retrieval-query-architecture-design.md` (APPROVED, in progress). That spec fixes *what* recall searches for (`retrieval_query`), bounds the fan-out, adds a deadline and puts provenance on candidates. This spec decides *what counts as a match*. It assumes the companion spec has landed and does not redo it.
 
-Evidence base: read-only live queries against Postgres (`conjourney`), FalkorDB, Chroma (`localhost:8500`), container env/logs, and main @ 38d65a36e. All numbers below were pulled 2026-09-29 between 22:00 and 23:40 UTC unless marked otherwise.
+Evidence base: read-only live queries against Postgres (`conjourney`), FalkorDB, Chroma (`localhost:8500`), `nvidia-smi` on athena, the published graphify bundle, and container env/logs. Main is at 38d65a36e. Numbers were pulled 2026-09-29 between 22:00 and 23:59 UTC. The analysis scripts ran on exported CSVs and are reproduced in Phase 0.
 
 ## Arsonist summary
 
-Recall today does not search by meaning. It picks from whatever is newest, and adjusts that list with a word-overlap tie-breaker. The live evidence is blunt:
+Recall should bring back the things a turn is **about**: the same PR, the same service, the same person, the same question, the same article, the same claim. It should not bring back things that merely **sound like** the turn. Today it does neither. It brings back whatever is newest.
 
-- **The same few memories win almost every recall, whatever was asked.** Across all 401 `recall_telemetry` rows, recall selected 5,003 items but only **106 distinct ones**. One chat turn ("Unwinding after a long day of travel and team socializing. You?", 2026-09-29 04:11) was selected in **343 of 401** recalls. The next seven most-selected items appear in 291–362 recalls each. They are simply the most recent chat turns.
-- **Bus-anomaly background noise is 30% of everything recall hands back.** 1,484 of 5,003 selected items are `bus_synaptic_publish:*` fragments. They do not depend on the query at all.
-- **There is no dense (embedding) retrieval anywhere in recall, and it was switched off on purpose.** It was deleted in May 2026 (PR report `2026-05-29-orion-recall-vector-amputation-pr.md`). The one leftover semantic rail, in the active-packet collector, still embeds the query on every call (160 calls to vector-host in 24h) and then throws the vector away, because `chromadb` is not installed in the recall image. That is the "chromadb not installed" log line: 29 of them in the last 4h. The Chroma collection it would have searched does not exist either.
-- **The "score" in fusion is mostly a per-backend constant.** Every adapter hard-codes a base score (falkor_chat 0.50, sql_chat 0.75, sql_timeline 0.7–0.95). Fusion multiplies that by 0.7, while query-dependent text overlap gets 0.15 and recency 0.1. The candidate *set* itself is chosen by `ORDER BY ts DESC`. So the ranking is: which backend it came from, then how new it is, with word overlap breaking ties.
+- **Today recall ignores the query.** 411 recalls selected 5,095 items, and only **107** were distinct. The most recent chat turn was selected in **369 of 411** recalls. When `journal.compose` asked about `transport:rpc_timeout:orion:exec:request:LLMGatewayService`, recall answered with "Unwinding after a long day of travel and team socializing. You?". Of the text-bearing items recall selected for queries that contain a distinctive term, **98.4% (1,222 of 1,242) share no distinctive term with the query**.
+- **Embeddings would swap "unrelated" for "cousins".** An embedding says two texts are near. It does not say they are about the same thing. In Orion's own bge vectors, a NASA Starliner update's nearest neighbour is a NASA Armstrong anniversary (cosine 0.80). Orion's own design doc on reading internal documents lands nearest a sensor paper (0.76). A real same-referent match (two GGUF quantization docs) scores 0.87. No threshold separates those two cases, and some neighbour always comes back, even when nothing in the store is related.
+- **Orion already has what referent-based recall needs; none of it is wired into recall.** It has:
+  - its own vocabulary, which makes rarity measurable: "p4" appears in 3 of 4,046 documents, "stance_react" in 7, "memory" in 275, "feel" in 652;
+  - typed links: curiosity findings are `ABOUT` priors, world-pulse claims point to their article, crystallizations point to their source turns, Falkor turns point to entities;
+  - the graphify graph of the codebase and PR reports: 77,966 nodes, 530 PR-report files.
 
-The fix is not a smarter formula on top of a recency-selected set. The fix is standard hybrid retrieval: several independent retrievers that each *search* (by meaning, by keywords, by linked entities, by time), fused by rank, reranked by a cross-encoder, then diversified. Orion already has most of the ingredients: a running embedding model, a spaCy entity graph, Postgres full-text search, and GPUs. They are just not wired into recall. And we will measure before we build. Phase 0 is a labeled eval set plus today's baseline number, because today nobody can say how bad recall is, only that it is recency.
+The proposal:
+1. Pull the **referents** out of the query: explicit identifiers, plus terms that are rare in Orion's own corpus.
+2. Look them up in a small **referent index** built at write time.
+3. Follow **one hop of real, typed links**.
+4. Rank by how many distinctive referents an item shares with the query, not by a similarity score.
+5. Attach **why** each item was recalled and **whose words** it is.
 
-What I am **not** recommending: GraphRAG global/community summaries, graphiti, HyDE, LLM query rewriting, or a vector database migration. Reasons are below.
+When the query names nothing distinctive, recall says so and returns the boxed "what's going on" context, instead of eight confident-looking strangers.
+
+Vectors are out of recall entirely. The evidence and the reasoning are in "Vectors: the verdict" below.
 
 ## Current architecture
 
+### What "shitty cousins" means, precisely
+
+A **cousin** is a retrieved item that resembles the query through genre, register, topic area or template, while the thing it is *about* (its referent) is different: same vibe, different referent.
+
+- **Operational test** (used in the eval below): an item is a cousin if it shares **no referent key** with the query. Referent keys are explicit identifiers (PR number, file, service, channel, URL), linked entities, and terms that are rare in Orion's corpus.
+- **Not a cousin**: an item that shares the referent in different words. That is a legitimate match, and this design must not lose it. The known limit of that goal is discussed under the vector verdict.
+
+**Live examples.** These come from Orion's own `bge-large-en-v1.5` vectors in Chroma `orion_reading_results` (29 docs, read-only nearest-neighbour queries using the stored embeddings; cosine = 1 − d/2).
+
+| Query document | Nearest neighbour | Cosine | Same referent? |
+|---|---|---|---|
+| NASA/Boeing Starliner development update | NASA Armstrong celebrates 80 years of flight | 0.80 | **No**: same publisher and genre (NASA press release) |
+| WHO statement on US withdrawal (2026-01-24) | WHO tribute to David Nabarro | 0.73 | **No**: same publisher |
+| Orion's own spec `2026-09-28-reading-internal-documents-design.md` | MDPI Sensors paper; Bonsai-2 27B model card | 0.76; 0.74 | **No**: "technical document" vibe |
+| Anti-trans attack ads article | Utah governor's weekly schedule | 0.57 | **No**: nothing related exists, but a neighbour still comes back |
+| HF blog "transformers + llama.cpp quants" | HF docs "GGUF quantization" | 0.87 | **Yes**: same referent (GGUF) |
+
+Two properties matter:
+- The true match (0.87) and the worst cousin (0.80) sit 0.07 apart, and there is no calm "nothing matched" state.
+- This is a 29-document sample. How the gap behaves at scale is **UNVERIFIED**. The mechanism (similarity measures resemblance, not identity) is not.
+
 ### Semantic asset inventory (live-verified unless marked)
 
-| Asset | What it is | State | Evidence (2026-09-29) |
-|---|---|---|---|
-| **Embedding model** `BAAI/bge-large-en-v1.5` (1024-dim) in `orion-athena-vector-host` | Turns text into vectors, on **CPU** (`VECTOR_HOST_EMBEDDING_DEVICE=cpu`). Bus RPC on `orion:embedding:generate`, HTTP `POST :8320/embedding` | **LIVE**, busy | Container up 8 days. Bus log: received→published 170–250 ms per ~450-char text. 86,677 HTTP `/embedding` calls in 24h from topic-foundry (172.18.0.51), 160 from recall (172.18.0.30) |
-| Chat embeddings | vector-host embeds every chat message/turn (`orion:chat:history:log`/`:turn`) and feeds only OrionTissue | **Computed then discarded** | vector-host README "Dead pipeline killed (2026-08-14)": the vector upsert to `orion_chat`/`orion_chat_turns` was removed because recall had no reader |
-| **Chroma** 0.4.24 `orion-athena-vector-db` (`:8500`) | Vector store | **LIVE but not a usable memory index** | `orion_main_store` 6,612 rows, all `original_channel=orion:embedding:generate`, 6,608 from `llm-gateway`: JSON blobs of LLM outputs, not memories. Oldest row 2026-09-29 04:44:17, which is 3 s after the container started (`StartedAt 04:44:14`), despite a bind mount (`/mnt/postgres/collapse-mirrors/chroma`). Why earlier rows are gone is **UNVERIFIED**. `orion_chat` 4 rows. `orion_reading_results` 29 rows. `doc_semantic_drift` 85 rows. **`orion_memory_crystallizations` does not exist** |
-| Recall dense path | `source=vector` in recall | **DEAD by design** | Amputated in commit 710c7bfc3 (2026-05-30). `RECALL_ENABLE_VECTOR=false`. `backend_counts.vector` is 0 in all 401 rows. `test_recall_vector_amputation.py` guards the removal |
-| Active-packet Chroma rail (`orion/memory/crystallization/retriever.py`) | Embeds the query, then queries `orion_memory_crystallizations` in Chroma | **DEAD, wastes a call** | Recall container: `ModuleNotFoundError: No module named 'chromadb'`. 29 "chromadb not installed" in 4h. Even if it returned hits, `extra_crystallization_ids` is computed but never merged into the packet (code read, `retriever.py:121-164`) |
-| Memory cards (`memory_cards`) | Self-authored cards, ranked by Postgres full-text search (`ts_rank_cd` over a weighted, GIN-indexed `search_vector` tsvector) × confidence | **LIVE, lexical only** | 1,166 cards, 436 active, newest 2026-09-29 12:01. Cards appear in 16/401 recalls (71 candidates). The cosine path was tried in July and deleted: embedding cards *at query time* on CPU took 5.9 s for 40 cards (commit abd0d841f) |
-| **pgvector** | Postgres vector type | **ABSENT** | `pg_extension`: plpgsql, pgcrypto, pg_stat_statements only. The only vector-ish column in the DB is `memory_cards.search_vector` (tsvector) |
-| Falkor `orion_recall` | Chat/social turn graph | **LIVE, partly stale, mostly textless** | 12,157 `ChatTurn` (10,241 `social.turn.stored.v1` up to 09-17 23:45, 1,916 `chat.history` up to **09-29 04:11**, while Postgres has newer turns), 1,615 `ChatSession`, 318 `Entity`, 3 `CollapseEvent`. Edges: `HAS_TURN` 12,157, `MENTIONS_ENTITY` 3,975. **No entity–entity edges.** ChatTurn keys: `turn_id, correlation_id, sentiment, source_kind, ts` (no text). **Only 324 of 1,916 chat.history turn_ids resolve to a Postgres row with text** (`chat_history_log` id/correlation_id; `chat_message` matches 0). Cause **UNVERIFIED** |
-| Entity extraction | spaCy NER (`en_core_web_trf`) in `orion-meta-tags` → `falkor_recall_writer.py` writes `MENTIONS_ENTITY` | **LIVE, entities only, no relations** | 720 of 1,916 chat.history turns mention ≥1 entity (279 distinct). Top: orion 307, tessa 135, nico 134, juniper 85, sofia 70. Several are AI Town agent names. No relation extraction exists for chat, journal or reading |
-| Entity relatedness boost (`storage/falkor_entity_relatedness.py`) | Co-occurrence over `MENTIONS_ENTITY` with degree discounting, added to the composite score | LIVE | In fusion. The first 3 query entities come from set order (companion spec) |
-| Falkor neighborhood (`falkor_neighborhood_adapter.py`) | Turns around query entities | LIVE, rare | Non-zero in 70/401 recalls, 349 candidates total |
-| Falkor `orion_worldview` | Curiosity/investigation graph: Hop 548, TurnOutcome 175, Finding 171, Prior 120, Concept 13 … Edges SUPPORTS 165, ABOUT 56, CONTRADICTS 25 | LIVE, **not read by recall** | Label and edge counts above. Concepts are investigation titles, not an entity ontology |
-| Falkor `graphiti_temporal` | graphiti temporal KG | **STALE, not a KG** | 25 `Entity` nodes whose `name` is a raw user message ("how are things going over at AI Town?"), 25 `RELATES_TO`, newest 2026-09-04 04:55. graphiti-adapter log shows a startup failure against Postgres recovery before its current run |
-| Falkor `orion_substrate*`, `orion_kg` | Substrate self-model nodes; `orion_kg` empty | Not retrieval corpora | `SubstrateNode` 4,510 / 9,245; `orion_kg` returns no labels |
-| **Fuseki / RDF** | SPARQL store the recall RDF adapter targets | **DOWN: no container** | `docker ps -a` shows no fuseki container, `localhost:3030` refuses, yet `RECALL_ENABLE_RDF=true` in the live env |
-| Community detection / summaries | GraphRAG-style | **ABSENT** | Nothing in Falkor. `topic_foundry` clusters text segments (994,423 segments, newest 18:37 today, topic −1 = outliers dominate) but stores no embeddings and recall does not read it |
-| Crystallizations (`memory_crystallizations`) | Distilled memories: stance 701, reflection 356, semantic 344, open_loop 6 | LIVE | 1,407 rows, newest 04:11 today. `memory_crystallization_sources` links 1,051 of them to 2,280 chat turns (544 resolve to `chat_history_log`). Many summaries are verbatim copies of the source turn |
-| Corpus sizes (Postgres canonical text) | | | `chat_history_log` 531 (07-24 → 09-29 17:31). `journal_entries` 101,014, of which 98,428 are `metacog/digest`, ~2,600 other. `evidence_units` 113,592 (101,013 journal, 12,526 notify). `world_pulse_article` 929 |
-| Existing recall eval | `app/recall_eval.py` + `recall_eval_corpus.json` | Exists, too weak to decide anything | 5 hand-written cases that score *term coverage* (expected words appear in snippets). No gold document ids. A lexical system scores well by construction. No `services/orion-recall/evals/` directory |
-
-### What fusion actually rewards (`services/orion-recall/app/fusion.py:504-520`)
-
-```
-composite = backend_weight * (0.7*base_score + 0.15*text_similarity + 0.1*recency) + tag + turn_effect + entity_boost
-```
-
-(weights from `reflect.v1`/`chat.general.v1`; `chat.continuity.v1` uses recency 0.4)
-
-- `base_score` is a constant chosen per adapter (`worker.py:732, 1010, 1217, 1237, 1287, 1613`; `falkor_chat_adapter.py:118`). It is a prior on the backend, not a relevance score.
-- `text_similarity` is `max(token-overlap fraction, any rare token ≥6 chars appears)`. That is bag-of-words with no IDF, no stemming and no synonyms.
-- The candidates were already fetched by `ORDER BY ts DESC` (falkor_chat, sql_chat, sql_timeline recent, cards always-inject). Anything older than the fetch window can never be ranked.
-
-### Where recall spends its selections (all 401 telemetry rows, 18:14–22:14 UTC)
-
-| backend | candidates fetched | recalls where non-zero |
+| Asset | State | Evidence |
 |---|---|---|
-| sql_timeline | 37,171 | 340 |
-| falkor_chat | 16,238 | 401 |
-| bus_synaptic_anomaly | 12,490 | 401 |
-| sql_chat_pairs | 7,071 | 359 |
-| falkor_neighborhood | 349 | 70 |
-| concept_region | 274 | 6 |
-| active_packet | 180 | 30 |
-| cards | 71 | 16 |
-| vector / graph_compression / sql_chat_msgs | 0 | 0 |
+| Recall ranking (`services/orion-recall/app/fusion.py:504-520`) | LIVE, effectively recency | `composite = backend_weight*(0.7*base_score + 0.15*overlap + 0.1*recency) + boosts`. `base_score` is a constant per adapter (`worker.py:732,1010,1217,1237,1287,1613`; `falkor_chat_adapter.py:118`). Candidates are fetched `ORDER BY ts DESC` |
+| Recall dense path | DEAD by design | Removed in commit 710c7bfc3 (2026-05-30). `backend_counts.vector` is 0 in every row. Guarded by `tests/test_recall_vector_amputation.py` |
+| Active-packet Chroma rail (`orion/memory/crystallization/retriever.py`) | DEAD, and it wastes a call | Embeds the query (160 recall→vector-host calls in 24h), then `chromadb` is missing (`ModuleNotFoundError` in the container; 29 "chromadb not installed" logs in 4h). Target collection `orion_memory_crystallizations` does not exist. Its hits would never be merged anyway (`extra_crystallization_ids` is unused, `retriever.py:121-164`) |
+| Fuseki / RDF | DOWN | No container exists (`docker ps -a`), `:3030` refuses, yet `RECALL_ENABLE_RDF=true` in the live env |
+| graphiti_temporal (Falkor) | STALE, not a knowledge graph | 25 `Entity` nodes whose names are raw user messages. Newest 2026-09-04 |
+| Embedding model (vector-host, bge-large, CPU) | LIVE | ~200 ms/text. Used by topic-foundry (86,677 calls/24h) and OrionTissue. Recall does not need it under this design |
+| Chroma 0.4.24 | LIVE, not a memory store | `orion_main_store` 6,612 rows of llm-gateway output JSON, oldest 3 s after today's 04:44 container start despite a bind mount (why is **UNVERIFIED**) |
+| Memory cards | LIVE | Postgres full-text search over a weighted tsvector. 1,166 cards (436 active). Appear in 16/401 recalls |
+| Falkor `orion_recall` | LIVE, partly stale | 12,157 ChatTurn (10,241 AI Town `social.turn.stored.v1`, 1,916 `chat.history`, newest 09-29 04:11), 318 Entity, `MENTIONS_ENTITY` 3,975 (spaCy NER via `orion-meta-tags`). No entity–entity edges. Only **324 of 1,916** chat.history turn ids resolve to Postgres text (cause **UNVERIFIED**) |
+| Falkor `orion_worldview` (curiosity) | LIVE, not read by recall | Hop 548, Finding 171, Prior 120, Concept 13 … Typed edges: `SUPPORTS` 165, `ABOUT` 56 (Finding→Prior 19, HelpRequest→Prior 25, Finding→Concept 10), `CONTRADICTS` 25, `ANSWERS` 19 |
+| graphify graph | LIVE on disk, **18 days stale**, not usable in the request path | Published bundle at `/mnt/storage-warm/orion-graphify/published/graphify-out/graph.json`: 108 MB, 77,966 nodes, 169,111 edges, built at aff23fac0 (2026-09-10). Node types: code 46,110, document 19,919 (8,107 from 530 PR-report files), rationale 10,752, concept 1,174. Edges: contains, calls, references, imports, rationale_for … `graphify query` took **10.1 s and 0.98 GB RSS** for one query, and there is no importable Python API. Precedent: `services/orion-cortex-exec/app/self_study.py:872` reads `graph.json` directly as JSON, mounted read-only at `/graphify` |
+| Orion's own corpus for rarity | Available | Juniper–Orion chat 531 turns + non-metacog journals 2,586 + world-pulse claims 929 = 4,046 docs. Document frequencies: p4 3, t10 6, stance_react 7, v100 17, falkordb 18, circe 68, recall 33, memory 275, orion 339, think 432, feel 652, the 3,157. 5,555 terms appear in 2–5 docs (the raw material for the automatic eval) |
+| Explicit identifiers in chat | Sparse but real | 15 chat turns cite PR numbers. 24 distinct `orion-*` service names. File names (finalize.py 11, test_finalize_reflect_llm_fallback.py 9, executor.py 3) |
+| Existing eval | Too weak | `app/recall_eval.py` with 5 term-coverage cases and no gold ids |
 
-Latency (p50 / p95 ms): reverie_narrate 417 / 529, journal.compose 959 / 2,047, stance_react 896–1,432 / 19,880–25,103 (the query-length bug the companion spec fixes).
+### Where selections go today (411 telemetry rows)
 
-### Hardware that retrieval models can use
+- 5,095 selections: 1,524 bus-anomaly feed items (30%) and 1,899 for verbs that send an empty query (reverie). Of the rest, 1,222 items share no distinctive term with a query that has one, and **20 share one**.
+- By verb, for short queries (≤500 chars) with distinctive terms: `journal.compose` 1,204 no-share vs 19 share.
+- `harness_finalize_reflect` and `orion_response_repair` queries mostly contain **no** distinctive term (181 and 66 items). For those, "no referent" is the honest answer.
 
-- **athena** (where recall runs): 96 cores, 566 GB RAM. Tesla P4 (8 GB, 4.9 GB used) and Tesla T10 (16 GB, 10.7 GB used), each hosting other processes today. Whether the T10's ~5.7 GB is reliably free is **UNVERIFIED**; it needs a week of `orion_biometrics` GPU samples.
-- **circe**: seven GPUs (V100s, P100, PG500) managed by the GPU pool (`gpu_pool_cards` gpu0–gpu3 with `chat`/`agent`/`fast`/`metacog` roles). Pool leases load and unload models on demand. A cold load inside a recall request would blow the p95 budget, so **recall models must be resident and must not lease**.
+### Hardware (for the reranker question)
 
-## Target pipeline (best practice, mapped to Orion, with verdicts)
+`nvidia-smi` on athena, measured now:
+
+| GPU | Used / total | Used by |
+|---|---|---|
+| P4 | 4,927 / 7,680 MiB | vision-host (4,924) |
+| T10 | 10,693 / 16,384 MiB | vision-host-qwen 6,522 · kev-0.8b 3,884 · vision-edge 284 |
+
+Seven days of `orion_biometrics` for the T10 (21,955 samples): peak 10,693 MiB, mean 9,001, min 4,947, and utilization peaks at **100%**. Worst-case free VRAM is **5.69 GB**. That is enough memory for a small cross-encoder (bge-reranker-base needs roughly 1 GB in fp16, **UNVERIFIED** until loaded). But the card is shared with vision at full utilization, so rerank latency would be at vision's mercy.
+
+Verdict: a reranker is **not** in this plan. It is another resemblance judge, and ranking by shared referents does not need one. Revisit only if Phase 2's eval shows ordering failures *among* referent-matched items.
+
+## Sources and their epistemic status
+
+Recall must say **whose words** an item is and **how settled** it is. "Careful on which we'd use" is concrete here: some sources are Orion's guesses about Juniper.
+
+| Source | What it is | Epistemic status | Use in recall |
+|---|---|---|---|
+| Juniper–Orion chat (`chat_history_log`, 531 turns) | The conversation | prompt = **Juniper's words**; response = **Orion's words in conversation** (speculative) | Primary grounding for "what was said". Always label the speaker |
+| Journals, non-metacog (`journal_entries`: embodiment 1,982, self_study 312, world_pulse 124, manual 83, scheduler 54, notify 25, self_reflection 6) | Orion's own writing, and sensor digests | **Orion's reflection**; embodiment = sensor-derived summary | Allowed, labelled "Orion's journal". **Metacog digests (98,428) excluded** (Juniper, 2026-09-29) |
+| Curiosity self-questions (`curiosity_self_questions`, 13 open) | Questions Orion minted | **Open question**, not a claim | Allowed as a referent (a query can be "about" a question). Never grounding |
+| Curiosity findings / hops (Falkor `Finding` 171, `Hop` 548) | Orion's investigation notes | **Orion's speculation**, with evidence attached | Allowed only via a direct referent match, labelled "Orion's investigation note" |
+| Curiosity priors (Falkor `Prior` 120: open 57, supported 24, revised 24, refuted 13, active 1, confirmed 1) | Orion's hypotheses with confidence | **Orion's hypothesis**. Only `confirmed`/`supported` are conclusions | Label with status + confidence + times tested. **Refuted priors excluded.** Open priors average confidence 0.80 after 1.9 tests, so their confidence is not evidence. Example of why: a `supported` prior (0.95) asserts that Juniper personally approves stances by hand. That is Orion's guess about Juniper and must never be recalled as fact |
+| Reading / world pulse (`world_pulse_article` 929, `world_pulse_claim` 929: 833 `candidate`, 96 `observed`, caveats like `requires_corroboration`; `reading_durable_turn` 98) | External articles, claims extracted from them, and Orion's reading turns | Article = **external source**. Claim = **external claim**, unverified unless `observed`. Reading turn = Orion's interpretation | Allowed, labelled with source URL/title and claim status |
+| Crystallized beliefs (`memory_crystallizations` 1,407: stance 701, reflection 356, semantic 344, open_loop 6) | Orion's distilled conclusions | **Orion's conclusion**. Many `reflection` rows are machine lines ("Belief revision: same between crys_… and …") | Allowed only when the crystallization's source turn resolves to `chat_history_log` (544 of 2,280 source links). Some sources are AI Town role-play ("What's behind the door?"); that share is **UNVERIFIED**, which is why the filter is by source. Reflection machine lines excluded |
+| graphify graph (published bundle) | Code, docs, PR reports as of aff23fac0 | **Code/document artifact.** Rationale nodes are LLM-extracted and so derived | Allowed for code, PR and spec referents, labelled with the build commit/date. Not a claim about current runtime |
+| Memory cards | Self-authored cards | Existing path, existing labels | Unchanged |
+| **AI Town** (social turns, AI Town-sourced crystallizations, town-resident entity names) | Role-play | n/a | **Excluded** from personal recall (Juniper, 2026-09-29) |
+| Bus anomalies, recent timeline | "What's going on right now" | Context feed, not memory | Boxed separately, capped, never ranked against memories |
+
+## Target design
 
 ```
-RecallQueryV1{retrieval_query, deadline_ms, mode}        ← companion spec
+retrieval_query (companion spec)
  │
- 1. understand   deterministic: temporal scope, entity links, intent (existing intent.py)
+ 1. referent extraction (deterministic, in-process, <5 ms)
+ │     explicit ids: PR #N, file paths/*.py, orion-* services, orion:* channels, env KEYS, snake_case symbols, URLs/domains
+ │     rare terms and bigrams: IDF over Orion's own corpus, df ≤ 0.5% (≤ 20 of 4,046 today)
+ │     alias dictionary hits: graphify artifacts, Falkor entities (non-AI-Town), curiosity question/prior ids, article titles
+ │     ──► if none: ABSTAIN → return boxed context feeds + "no referent in query"
  │
- 2. retrieve     independent ranked lists, each with provenance, concurrently, under the deadline
- │   ├─ dense    bge-large query embedding (one call) × in-memory matrix of doc embeddings
- │   ├─ sparse   Postgres full-text search over chat / journal(non-metacog) / cards / crystallizations
- │   ├─ graph    entity-linked personalized PageRank over the MENTIONS_ENTITY graph (Phase 4, gated)
- │   ├─ recency  "what happened lately" list (today's feeds), now one list among several
- │   └─ feeds    bus anomalies etc. are context feeds, excluded from ranking (companion spec)
+ 2. direct lookup in the referent index (Postgres, btree, one query)
+ │     postings: referent_key → (doc_kind, doc_id, ts, speaker, epistemic_status)
  │
- 3. fuse         weighted reciprocal rank fusion (RRF, k=60) over the lists
- 4. rerank       cross-encoder on the top ~40, hard latency budget, skip-on-timeout recorded
- 5. diversify    MMR over embeddings (λ≈0.7) + existing transcript dedupe
- 6. assemble     existing render budget; best first; each line keeps its source
- 7. trace        per-list ranks, RRF score, rerank score, and which stage cut each item → recall_telemetry
+ 3. one hop along typed links (bounded: ≤ 10 per referent)
+ │     crystallization → source turn            (memory_crystallization_sources)
+ │     claim → article                           (world_pulse_claim.article_id)
+ │     finding/help-request → prior → concept    (orion_worldview ABOUT/SUPPORTS)
+ │     PR # → PR report → files touched          (git merge log + graphify source_file)
+ │     file/service → PR reports that touched it (graphify)
+ │     entity → chat turns                       (MENTIONS_ENTITY, chat.history only)
+ │
+ 4. rank: Σ idf(matched referents) × hop factor (direct 1.0, one hop 0.5);
+ │        explicit time scope = hard filter; recency = tie-breaker only
+ │
+ 5. diversity: ≤ 2 items per referent; ≤ 1 per chat session window; no item repeated from
+ │        the previous recall for the same session unless it is the only match
+ │
+ 6. render: memories block (best first), each line tagged
+ │        "[recalled: mentions PR #2287 · chat 09-22 · Juniper's words]"
+ │        then a separate capped context block (≤ 3 feed items)
+ │
+ 7. telemetry: query referents, per-item {referents, via, hop, epistemic_status}, abstained, timings
 ```
 
-### Stage by stage
+### Stage notes
 
-**1. Query understanding. ADOPT, deterministic only.**
-- *Temporal scope*: a small regex/date parser ("yesterday", "last week", "in August", "this morning", ISO dates) produces a `[since, until]` window. When present it is a **hard filter** pushed into every retriever's query. When absent there is no filter, and recency is only one voice in the fusion. This is the fix for recency-as-winner.
-- *Entity linking*: match query tokens and bigrams against the Falkor `Entity` name set (318 names, cached in-process and refreshed every few minutes). Exact and case-folded matching, nothing fuzzy. Entities are ranked by specificity (inverse degree, data the boost already fetches).
-- *Intent*: keep `intent.py`. Do not add a model.
-- REJECT: LLM query rewriting, HyDE (hypothetical-document embeddings), multi-query expansion. Each costs an LLM call (seconds on this mesh) inside a request that must finish in a few seconds. The companion spec already moved query formation to the caller, where the intent is actually known.
+**Referent extraction.** Every piece is deterministic: regex for identifiers, a term→df table for rarity, and an in-memory alias dictionary loaded from the referent index, refreshed every 5 minutes.
+- Rarity is computed over **Orion's own corpus**, not a general-English list. That is why "circe" (df 68) counts and "memory" (df 275) barely does.
+- Pure numbers are ignored unless they appear as `#N` or `PR N`.
+- The threshold (df ≤ 0.5%) is a starting knob, not a finding. Phase 0 reports the known-item hit rate at 0.25%, 0.5% and 1%.
 
-**2a. Dense retrieval. ADOPT, and store embeddings at write time.**
-- The July lesson (commit abd0d841f): embedding documents inside a recall request on CPU is too slow (0.15 s per card). So documents are embedded **when they are written**, and a query costs one embedding call (~200 ms on the current CPU host).
-- Producer: vector-host already embeds every chat message and turn for OrionTissue and then drops the vector. Add a persist step there, plus a small backfill job for journals (non-metacog), cards, crystallizations and world_pulse claims.
-- Store: a new Postgres table `recall_doc_embedding` (below), with the vector stored as `real[]`. **Not Chroma**, because its main collection lost everything older than today's container start despite a bind mount (cause UNVERIFIED), it is pinned at 0.4.24, and recall deliberately dropped the client dependency. **Not pgvector**, because the production DB runs stock `postgres:15` without the extension, and swapping the image of the primary database is a large risk for a corpus this small.
-- Search: recall loads the matrix into memory at boot and refreshes it incrementally by `created_at` cursor. Brute-force cosine over about 10k × 1024 float32 vectors is about 40 MB and a few milliseconds of numpy. No approximate-nearest-neighbour index is needed below roughly 1M vectors. Revisit only if the eval shows metacog digests (98k) belong in the corpus. My prior is that they do not.
-- Model: keep `bge-large-en-v1.5`. It is already running, and changing it invalidates every stored vector. Query embeddings need the bge query instruction prefix ("Represent this sentence for searching relevant passages: "), and vector-host must support it. **UNVERIFIED** whether it does today.
-- Latency risk: topic-foundry sends ~1 embedding per second to the same CPU host. The query embed therefore needs its own timeout (500 ms). If it misses, dense is skipped for that request and `dense_skipped=timeout` is recorded, never silently.
+**Referent index** (`recall_referent`, `recall_referent_posting`, below). It is built **at write time** by a cursor-based catch-up loop inside orion-recall that reads new rows from Postgres every 60 s. It does not depend on the bus, and it restarts from its cursor. That makes it robust, restartable and single-source-of-truth.
+- Sources: chat, non-metacog journals, world-pulse claims/articles, reading turns, crystallizations (filtered by source).
+- Curiosity nodes come from Falkor. graphify artifacts and PR numbers come from an **offline builder** that runs at graphify publish time and on a nightly git-log pass. It reads the published `graph.json` and never calls `graphify query` (10 s, 1 GB).
+- Size: postings grow with the number of distinct rare terms per document. For about 4k documents that is tens of thousands of rows. Estimate **UNVERIFIED**; Phase 2 measures it.
 
-**2b. Sparse / keyword retrieval. ADOPT via Postgres full-text search.**
-- It is already proven in production for cards. Add expression GIN indexes (`CREATE INDEX CONCURRENTLY … USING gin (to_tsvector('english', …))`) on `chat_history_log(prompt||response)` and on `journal_entries(title||body) WHERE source_kind <> 'metacog'`. No table rewrite and no new columns.
-- `ts_rank_cd` is not true BM25 (no term-frequency saturation, weak IDF). That matters little at this corpus size. Switch to an in-process BM25 (`bm25s`) only if the Phase 0 eval shows lexical queries losing. Dense retrieval reliably misses exact identifiers ("p4", "v100", "PR #2398"), so this list is not optional.
+**Typed links.** They are real edges that already exist, with the reason attached. No link is inferred from similarity. PR→files comes from the merge commit's diff (`git log --merges`, offline) and from graphify `source_file`, not from an LLM.
 
-**2c. Graph retrieval**
-- *GraphRAG local search over entity neighborhoods*: **ADOPT in its Orion-sized form.** This is `falkor_neighborhood` fed by the new entity linker, emitting its own ranked list rather than a score boost.
-- *HippoRAG-style personalized PageRank (PPR)*: **ADOPT CONDITIONALLY (Phase 4).** Seed PPR at the linked entities, run it over the bipartite turn–entity graph (~3k turns, 318 entities, 3,975 edges; numpy power iteration in-process, <10 ms), and rank turns by stationary mass. This is the principled version of what the entity-relatedness boost approximates by hand. Gate: build it only if Phase 0 shows entity-anchored queries are ≥20% of the eval set and Phase 2 still misses them. If built, it **replaces** `_entity_relatedness_boost` (no parallel boost left ticking). Known limit: only 324 of 1,916 chat.history graph turns resolve to text, and AI Town names dominate the entity set. Fix the join or filter by `source_kind` before trusting it.
-- *GraphRAG global search / community summaries*: **REJECT.** It needs an LLM-written summary per community, over a graph with no relations whose biggest entities are "orion" and AI Town agents. No consumer asks global sense-making questions of recall. Crystallizations and topic_foundry already play the "distilled themes" role. This is the keyword-cathedral pattern: a producer with no consumer and no eval.
-- *graphiti_temporal*: **REJECT and retire from the recall path.** 25 nodes of raw message text, stale since 09-04. The active-packet graphiti rail should be killed together with the dead Chroma rail (Phase 1), per the "retire completely" rule.
-- *orion_worldview*: **NOT NOW.** It is a curiosity-investigation graph. It could become a retriever for self-inquiry turns later, but only once a labeled self-inquiry slice exists to prove it helps.
+**Ranking.** Items sharing more, and rarer, referents with the query come first. That is the whole ranking. There is no fusion across independent retrievers any more, because there is one kind of evidence: shared referents, found directly or one hop away. Reciprocal rank fusion was right for revision 1's multiple similarity lists and is unneeded here.
 
-**3. Temporal handling. ADOPT: a filter when asked, a prior otherwise, never the sort.**
-- With a temporal scope, every retriever filters at the source. Without one, the recency list is one RRF input with a modest weight (start at 0.5 against 1.0 for dense and sparse), so a relevant month-old turn can beat an irrelevant one from an hour ago. `chat.continuity.v1` ("what were we just talking about") keeps a higher recency weight. That is its job, and the eval checks it with its own slice.
+**Abstention.** If the query has no referent (e.g. "how are you feeling tonight"), recall returns the boxed context feeds plus at most 3 most-recent Juniper turns, labelled "recent, not matched", and sets `abstained=true`. This is the honest version of today's behaviour: recency is presented as recency, not as relevance.
 
-**4. Fusion. ADOPT weighted RRF.**
-- `score(d) = Σ_lists w_list / (60 + rank_list(d))`. Rank-based fusion needs no score calibration across backends. That matters here because today's base scores are hand-set constants that cannot be compared with each other.
-- The companion spec's provenance (`backend`, `sub_query`) supplies the list membership. Tag and turn-effect boosts either become lists or get dropped, decided by ablation in the eval. They are not kept by default.
-- The old composite runs **in shadow** for one phase: both rankings are computed and both are logged to telemetry. Then it is deleted.
+**Diversity.** The caps above directly target "one turn won 369 of 411 recalls". Per-referent and per-session caps keep one chatty turn from filling every slot.
 
-**5. Reranking. ADOPT, with a hard budget, after fusion shows a gap.**
-- Model: `BAAI/bge-reranker-v2-m3` (568M params, multilingual) or `bge-reranker-base` (278M). Score the top 40 fused candidates, with each passage truncated to 256 tokens.
-- Where it runs: resident on athena, as a new `/rerank` verb in **vector-host** (the existing semantic model host), not a new service. It is reached over a bus RPC channel `orion:rerank:request` with a reply prefix, registered in `orion/bus/channels.yaml`. Device: the T10 if a week of biometrics shows ≥3 GB free headroom. Otherwise CPU with `bge-reranker-base`.
-- Budget: 400 ms p95 on GPU, 1,200 ms on CPU. Both are **UNVERIFIED** estimates that Phase 3 must measure. On timeout, recall keeps the RRF order and records `rerank_skipped=timeout`.
-- Not through the GPU pool: pool leases load models on demand, and a cold load inside a recall is a multi-second stall.
-- Why it is worth it: a cross-encoder reads query and passage together, which is the single biggest precision gain in standard RAG benchmarks. But Orion's gain is **UNVERIFIED** until the eval says so, which is why it comes after Phase 2.
+### Vectors: the verdict
 
-**6. Diversity. ADOPT MMR, which is cheap.** Maximal marginal relevance over the doc embeddings already in memory (λ=0.7), on top of the existing transcript dedupe. It directly targets the "same seven turns every time" failure.
+**Drop vectors from recall.** "Vectors propose, referents dispose" does not survive a closer look.
 
-**7. Context assembly. KEEP, small changes.** Keep the existing per-profile `render_budget_tokens`, `max_per_source` and `max_total_items`. Order the output by final score, best first. Every rendered line keeps its source tag so the model and the debug surface can tell a memory from a feed. Context feeds (bus anomalies, recent timeline) render in their own labelled block **after** retrieved memories, with a separate small cap (e.g. ≤3), so they can never again take 30% of the slots.
+- If a vector hit must share a referent or rare term with the query to be admitted, the referent index already finds it directly: the same item, cheaper, with a reason attached.
+- What vectors add is the items that share **no** referent. Those are exactly the cousins, or the paraphrase matches.
+- The paraphrase case (Juniper says "the camera by the door" about something Orion knows as "walkway camera") is real. Vectors cannot tell it apart from a cousin: 0.80 for a cousin vs 0.87 for a true match in the sample above.
+- The fix for paraphrase is an **alias** on the referent ("walkway camera" ↔ "front door cam"). Aliases can be added by Juniper, by Orion when it notices a correction, or from Falkor entity names. This spec does not build an alias proposer. It only leaves `aliases text[]` in the schema.
 
-## Evaluation plan (Phase 0 is built first)
+Production cost of keeping them: a second store, an embedding call on a CPU shared with topic-foundry, a model version pinned to every stored vector, and a failure mode ("some neighbour always returns") that no threshold fixes. The active-packet rail shows the typical result: it has quietly done nothing for weeks.
 
-### The labeled set: three slices, built cheaply and honestly
+What would change this verdict: Phase 2's abstention data shows many queries that name a referent in words the index has never seen, and aliases cannot keep up. Then revisit with that evidence, not before.
 
-1. **Real back-reference turns (the primary slice, n≈60–100).** Take `chat_history_log` prompts that refer back to something ("remember", "last time", "you said", "I told you", "we talked", "last week"; 31 match today) plus a hand-picked sample of other real Juniper turns. Add the self-inquiry and reading `retrieval_query` strings once the companion spec's Phase 3 records them in `recall_telemetry`. Label by **pooling**: for each query, take the union of the top-20 from every candidate system (today's recall, sparse, dense, graph) and grade each pooled item 0/1/2. An LLM judge drafts the grades, and **Juniper audits a random 25%**. Report the judge–Juniper agreement (Cohen's κ). If κ < 0.6, the judge grades are not used.
-2. **Known-item paraphrase slice (synthetic, labeled as such, n≈100).** Use `memory_crystallization_sources` rows whose source turn resolves in Postgres (544). The query is a paraphrase of the crystallization summary, and the gold answer is the linked source turn(s). Drop pairs where the summary is a near-verbatim copy of the source (many are). Paraphrases are written by one LLM and filtered by a second check. Caveat: LLM paraphrases lean away from the original wording, which favours dense retrieval. Report this slice separately and never average it into slice 1.
-3. **Continuity slice (n≈30).** "What were we just talking about" turns, where the gold is the previous 1–3 turns of the same session. This protects the one case where recency *is* right, so the new pipeline cannot regress it silently.
+## Evaluation without human labels (Phase 0)
 
-Storage: `services/orion-recall/evals/retrieval_set/v1.jsonl` (query, slice, gold doc ids with grades, pool provenance, created_by, audited_by). The set is frozen and versioned. Private chat text stays out of git: the file stores **doc ids only**, and the harness resolves text from Postgres at run time.
+No human labeling and no LLM-judged gate. Human-graded relevance and answer groundedness are **explicitly deferred**. Every check below is computed automatically from Orion's own data.
 
-### Metrics
+1. **Automatic known-item test.**
+   - Draw terms and identifiers that appear in 2–5 documents (5,555 candidates today, excluding pure numbers; a stratified sample of 200 across chat, journal and claim). The query is the term, optionally wrapped in a fixed template ("what did we say about X"; the template adds no rare terms). The gold set is every document containing it, which is known exactly by construction.
+   - Second variant: build the query from the 2–3 rarest terms of one document; the gold answer is that document.
+   - Metrics: hit@8, recall@8, MRR.
+   - *Honest caveat:* this test measures "does recall find the thing a named referent points to". That is the requirement. It is biased toward lexical/referent systems by construction and says nothing about paraphrase recall. The report must say so.
+2. **Cousin rate.**
+   - Over replayed `recall_telemetry` queries that contain ≥1 distinctive term: the share of selected, text-bearing, non-feed items that share no referent with the query.
+   - Today: **98.4%** (1,222/1,242). That figure is dominated by `journal.compose` (1,204/1,223).
+3. **Distinctness.** Distinct selected ids ÷ total selections on a telemetry replay. Today: **107 / 5,095 (2.1%)**. The top item was selected in 369 of 411 recalls.
+4. **Abstention honesty.**
+   - Share of queries with no referent for which recall abstains instead of filling slots.
+   - The share of queries that *do* name a referent but still abstain: this is the "index doesn't know the words" signal that the vector verdict watches.
+5. **Feed share.** Feed items per recall (today about 3.7 on average, 30% of selections).
+6. **Epistemic label coverage.** 100% of rendered items carry speaker/status. AI Town items and metacog digests in default profiles: 0.
+7. **Latency.** Per-stage timings from the companion spec. Referent stages must add ≤ 100 ms p95.
 
-- **Recall@k (k=8, 20)**: did the relevant memories make it into the candidates? Measured before the reranker to judge first-stage retrieval.
-- **nDCG@8**: is the best material at the top? Measured on the final selected list, which is what reaches the model.
-- **MRR** on the known-item slice.
-- **Distinctness**: distinct selected ids ÷ total selections over a replay of real telemetry queries. Today it is **106 / 5,003 = 2.1%**. A healthy value is not a target by itself, but a number that stays near 2% after the change means the change did nothing.
-- **Groundedness (periodic eval, not a gate)**: for 30 slice-1 queries, generate the final answer with the recalled context and have a judge label each factual claim about the past as supported / unsupported by the recalled items. Juniper audits 10. Reported, not gated, because it depends on the chat model too.
-- **Latency**: p50/p95 per stage from the telemetry `timings_ms` the companion spec adds.
+**Baseline.** The harness calls `process_recall` in-process against the live read-only stores, so today's pipeline is scored on the same sets. Recall has write side effects during retrieval: active-packet retrieval events, recall-boost persistence, and telemetry writes. The harness must run with these disabled, and Phase 0 must **prove** they are disabled by counting rows before and after a run. Whether the existing flags gate all of them is **UNVERIFIED**; a dry-run flag has missed side effects in this repo before.
 
-### Baseline comparison
-
-The harness calls `process_recall` in-process against live read-only stores, with the pipeline selected by a profile flag, so **today's pipeline is the baseline run on the same set**. Each phase reports the baseline and the new numbers side by side, per slice, with a paired bootstrap 95% CI on nDCG@8. A phase ships only if slice 1 nDCG@8 improves with a CI excluding 0, and slices 1 and 3 do not regress beyond −0.02.
-
-### Metric quality gate (CLAUDE.md), applied to every new retrieval signal
-
-Each new ranked list (dense, sparse, graph-PPR, rerank score) must, before it gets a fusion weight:
-1. **Provenance**: name the producing function and line (e.g. `dense_rank` comes from `retrievers/dense.py::search`, cosine against `recall_doc_embedding` rows written by vector-host `persist_embedding`).
-2. **Independence**: dense and rerank both read text semantics. Reranking a dense list is a refinement, not an independent vote, so rerank never enters RRF as a list. PPR and the old entity boost read the same `MENTIONS_ENTITY` edges, so PPR replaces the boost. It is never added next to it.
-3. **Theory anchor**: dense = semantic similarity via contrastive bi-encoder (bge). Sparse = lexical exact match (BM25 family). PPR = HippoRAG associativity from seed entities. Cross-encoder = joint query–passage relevance. RRF = Cormack et al. 2009. MMR = Carbonell & Goldstein 1998.
-4. **Live-data sanity**: on the eval set and on a telemetry replay, check the list is not degenerate. It must not return the same top items for every query (the exact failure recency has today). Similarity must spread (report the cosine distribution, not just its mean). There must be a real "no good match" state: a nonsense query must produce low top-1 similarity, not a confident hit. Dense lists always return *something*, so record top-1 similarity and let context assembly drop items below a calibrated floor.
-5. **Existing mechanism**: sparse reuses the cards FTS pattern. Dense reuses vector-host and bge. Graph reuses `falkor_neighborhood` and the entity names. Nothing new where something exists.
-6. **Reversibility**: every list has a fusion weight in the profile YAML. Weight 0 removes it with no schema unwinding. The `recall_doc_embedding` table is additive and droppable.
-
-Findings from this gate are recorded in each phase's PR report.
+**Metric quality gate** (CLAUDE.md), applied to the new ranking signal "Σ idf of shared referents":
+1. **Provenance**: `recall_term_stats` is produced by the indexer's df pass, and postings by the indexer's extraction. Both are named in each phase's PR.
+2. **Independence**: it replaces the overlap, rare-token and entity-boost terms, which read the same text. It does not sit beside them. The old terms are deleted when it goes primary.
+3. **Theory anchor**: inverse document frequency (Spärck Jones 1972) measures how much a term identifies a document within a collection. Here the collection is Orion's own.
+4. **Live data**: the df distribution printed above is not flat, and "the"/"feel" sit near zero. The rest state is real: a query with no rare term yields zero, and recall abstains.
+5. **Existing mechanism**: this reuses spaCy entities, Falkor edges, worldview edges and the graphify bundle. There is no new model.
+6. **Reversibility**: tables are additive, and `RECALL_RANKING_MODE=composite` restores today's ranking.
 
 ## Phased plan
 
 | Phase | What | Acceptance checks | Rollback | Cost |
 |---|---|---|---|---|
-| **0: Eval set + baseline** | Build `evals/retrieval_set/v1.jsonl` (3 slices), the harness `evals/run_retrieval_eval.py`, and a telemetry replay (distinctness). Run today's pipeline. Commit the baseline report | Set exists with ≥60 slice-1 queries and judge κ ≥ 0.6 on the audited 25%. Baseline numbers for recall@8/20, nDCG@8, MRR, distinctness and latency committed in a report. Re-running is deterministic (same numbers twice) | Delete the eval dir; nothing in runtime changes | No GPU. LLM-judge calls for ~2k pooled pairs, one-off, on the agent lane. ~Half a day of Juniper audit |
-| **1: Kill the dead rails, fix the feeds** | Remove the active-packet Chroma rail and the query embed that feeds it (and its graphiti rail). Set `RECALL_ENABLE_RDF=false` (Fuseki is gone). Render context feeds in their own capped block. Log `candidates_per_list` | Zero "chromadb not installed" logs over 24h. Zero recall `POST /embedding` calls until Phase 2. Bus-anomaly share of selected items drops from 30% to ≤3 per recall. Eval: no regression on any slice | Revert the PR. Env flags restore RDF | Saves ~160 embed calls/day and one wasted HTTP round trip per active_packet recall |
-| **2: Hybrid first stage + RRF** | Postgres FTS retriever (expression GIN indexes). Write-time embeddings (`recall_doc_embedding`, vector-host persist, backfill). In-memory dense retriever. Entity linker. Weighted RRF in shadow for one week, then primary. MMR | Metric gate passed per list. Slice-1 nDCG@8 better than baseline with CI excluding 0. Slice 3 no worse than −0.02. Distinctness on replay ≥5× baseline. Recall p95 (non-stance) < 2.5 s. Embedding freshness: newest `chat_history_log` row embedded within 60 s (query) | Profile weight 0 for dense/sparse restores today's ranking. Shadow mode means the old path stays live during the trial | Query embed ~200 ms CPU. Backfill ~10k docs × ~0.2 s ≈ 35 min CPU, off-peak. ~40 MB RAM in recall. Index build `CONCURRENTLY` |
-| **3: Cross-encoder rerank** | `/rerank` verb in vector-host, bus RPC, top-40, deadline, `rerank_skipped` telemetry | Slice-1 nDCG@8 improves over Phase 2 with CI excluding 0 (if not, **do not ship**). Rerank p95 ≤ 400 ms on GPU or ≤ 1.2 s on CPU, measured live. `rerank_skipped` < 5% of recalls | `RECALL_RERANK_ENABLED=false` | ~1–2 GB VRAM on the athena T10 (headroom UNVERIFIED), or 2–4 CPU cores |
-| **4: Graph PPR (gated)** | Only if Phase 0 shows ≥20% entity-anchored queries and Phase 2/3 still miss them. PPR list replaces `_entity_relatedness_boost` | Entity slice recall@20 improves. The old boost code is deleted in the same PR. PPR latency < 50 ms | Fusion weight 0, then revert | CPU only, in-process |
+| **0: Automatic eval + baseline** | `services/orion-recall/evals/`: known-item generator (seeded, deterministic), cousin-rate + distinctness + abstention replay over `recall_telemetry`, side-effect-free harness mode with a before/after row-count proof, baseline report | Same numbers on two runs. Baseline report committed with hit@8/recall@8/MRR, cousin rate (≈98%), distinctness (≈2%), feed share, latency. Row counts of `memory_crystallization_retrieval_events`, `recall_telemetry` and the recall-boost target unchanged by a harness run | Delete the eval dir | CPU only, minutes per run. No GPU. No human time |
+| **1: Clean the path** | Kill the active-packet Chroma rail and its query embed, and its graphiti rail. Set `RECALL_ENABLE_RDF=false`. Box the context feeds (≤3, separate render block). Exclude AI Town and metacog digests from default profiles. Render speaker/status labels on existing items | 24h live: 0 "chromadb not installed". 0 recall→vector-host calls. Feed items ≤3 per recall. 0 AI Town/metacog items in default-profile telemetry. Eval: known-item not worse than baseline | Revert, plus env flags | Removes ~160 wasted embed calls/day |
+| **2: Referent index + direct lookup** | `recall_referent`, `recall_referent_posting`, `recall_term_stats`. Cursor-based indexer (chat, journals, claims/articles, reading turns, filtered crystallizations). Query referent extraction, ranking, abstention, diversity caps, reasons in telemetry. Shadow for 3 days, then primary | Metric gate recorded. Known-item hit@8 ≥ 0.9. Cousin rate ≤ 20% on replay. Distinctness ≥ 10× baseline. Abstain-with-referent rate reported. Indexer lag < 120 s p95. Referent stages ≤ 100 ms p95 | `RECALL_RANKING_MODE=composite` | Postgres rows (tens of thousands, **UNVERIFIED**). No GPU |
+| **3: Typed links + artifact referents** | Offline builder from the published graphify bundle + git merge log (PR# → report → files). Curiosity (questions, findings, priors with status rules) from `orion_worldview`. One-hop expansion with `via` reasons | Known-item over PR numbers and file names (auto-generated from git log) hit@8 ≥ 0.8. Every one-hop item carries `via`. Refuted priors: 0 selected. Latency budget held | Disable link expansion flag | Offline build minutes/night. A 108 MB JSON read once per publish, never per request |
+
+No Phase 4. A reranker, vectors and community summaries are all out. Each has a stated condition for being reconsidered (above).
 
 ## Missing questions
 
-1. **Should Orion's own metacog digests (98,428 journal rows) be retrievable memories?** They are 97% of the journal corpus. Including them multiplies the embedding cost ~10× and probably floods results with self-telemetry. My recommendation: exclude them from dense/sparse indexing. Metacog has its own paths.
-2. **Should AI Town social turns (10,241 ChatTurns) be in Orion's personal recall corpus?** They dominate the entity graph. Recommendation: exclude them from the default profile, and allow them only in the AI Town-aware profiles, consistent with the existing source-tagging work.
-3. **Is the athena T10 available for a resident reranker, or should reranking be CPU-only?** This needs Juniper's call on GPU ownership, plus a week of biometrics.
-4. **Who audits the eval labels?** The plan assumes Juniper audits ~25% of LLM-judged grades (roughly 2–3 hours). If that is too much, the fallback is a smaller slice 1 (n≈40) that is fully Juniper-graded.
+1. **Aliases:** who may add them? Proposal: Juniper, directly or via a chat correction ("I mean the walkway camera"), and Orion only as a suggestion that shows up in telemetry. Aliases change what Orion recalls, so the default is that they are not self-authored.
+2. **graphify staleness:** the published bundle is 18 days old. Should recall's artifact referents follow the published bundle (reviewed, stale) or main's working bundle (fresh, unreviewed)? Recommendation: published, labelled with the build date, plus a note to Juniper that publishing more often directly improves recall.
+3. **Orion's own responses as grounding:** Orion's past words in chat are "Orion said X", not "X is true". Should they be rendered with that framing (recommended), or excluded when the query asks about facts?
 
 ## Proposed schema / API changes
 
-- **New Postgres table** `recall_doc_embedding` (created by the writer's idempotent DDL, `CREATE TABLE IF NOT EXISTS`):
-  `doc_kind text, doc_id text, model text, dim int, embedding real[], text_hash text, source_ts timestamptz, created_at timestamptz default now(), PRIMARY KEY (doc_kind, doc_id, model)`.
-- **New indexes** (`CREATE INDEX CONCURRENTLY`): FTS expression GIN on `chat_history_log`, and on `journal_entries` filtered to `source_kind <> 'metacog'`.
-- **Bus**: `orion:rerank:request` plus a reply prefix `orion:rerank:result:*` (with the catalog wildcard, per the dynamic-reply-channel memory). New schemas `RerankRequestV1{query, passages[{id,text}], top_n, deadline_ms}` and `RerankResultV1{scores[{id,score}], model, elapsed_ms}` in `orion/schemas/vector/`, registered in `orion/schemas/registry.py`. Embedding persistence rides the existing `orion:embedding:generate` / chat-history consumers inside vector-host, with no new channel.
-- **`recall_telemetry`** (nullable columns, `ADD COLUMN IF NOT EXISTS`): `list_counts jsonb` (candidates per retriever), `fusion_mode text` (`composite`|`rrf`|`rrf_shadow`), `rerank_ms int`, `rerank_skipped text`, `dense_top1_sim real`, `selected_provenance jsonb` (per selected id: which lists had it and at what rank).
-- **Recall profile YAML** gains `retrieval.lists: {dense: w, sparse: w, graph: w, recency: w}`, `retrieval.rrf_k`, `retrieval.mmr_lambda`, `rerank.enabled`, `rerank.top_n`, `feeds.max_items`.
-- **Env** (orion-recall `.env_example`, then sync local `.env`): `RECALL_DENSE_ENABLED`, `RECALL_DENSE_QUERY_TIMEOUT_MS`, `RECALL_RERANK_ENABLED`, `RECALL_RERANK_TIMEOUT_MS`, `RECALL_FUSION_MODE`. Vector-host: `VECTOR_HOST_PERSIST_EMBEDDINGS`, `VECTOR_HOST_RERANK_MODEL`, `VECTOR_HOST_RERANK_DEVICE`.
-- No change to `RecallQueryV1` beyond the companion spec.
+- `recall_referent(referent_key text primary key, kind text, display text, aliases text[], source text, df int, idf real, updated_at timestamptz)`. `kind` ∈ {pr, file, service, channel, symbol, url, entity, question, prior, article, term}.
+- `recall_referent_posting(referent_key text, doc_kind text, doc_id text, ts timestamptz, speaker text, epistemic_status text, via text, primary key (referent_key, doc_kind, doc_id, via))`, with an index on `(doc_kind, doc_id)`.
+- `recall_term_stats(term text primary key, df int, n_docs int, snapshot_at timestamptz)` and `recall_indexer_cursor(source text primary key, last_ts timestamptz, last_id text)`.
+- `epistemic_status` values: `juniper_words`, `orion_conversation`, `orion_reflection`, `orion_investigation_note`, `orion_hypothesis`, `orion_conclusion`, `external_source`, `external_claim_unverified`, `external_claim_observed`, `code_artifact`, `sensor_summary`, `context_feed`. Each value has a producer (the indexer) and a consumer (the renderer), so none is a free-floating label.
+- `MemoryItemV1` (`orion/core/contracts/recall.py`, `extra="forbid"`): optional `recall_reason {referents: [str], via: str, hop: int}` and `epistemic_status: str`. The rollout must be **consumer-first**. Registry update.
+- `recall_telemetry` (nullable, `ADD COLUMN IF NOT EXISTS`): `query_referents jsonb`, `abstained bool`, `selected_reasons jsonb`, `ranking_mode text`.
+- Env (orion-recall `.env_example`, then run the env sync): `RECALL_RANKING_MODE` (`composite`|`referent_shadow`|`referent`), `RECALL_RARE_TERM_MAX_DF_FRAC`, `RECALL_REFERENT_LINK_HOPS` (0|1), `RECALL_FEEDS_MAX_ITEMS`, `RECALL_EXCLUDE_AITOWN`, `RECALL_EXCLUDE_METACOG_DIGESTS`, `RECALL_REFERENT_GRAPHIFY_PATH` (default `/graphify/published/graphify-out/graph.json`, mounted read-only like cortex-exec).
+- No new bus channels, no new services, no new stores outside Postgres.
 
 ## Files likely to touch
 
-- Phase 0: `services/orion-recall/evals/` (new: `retrieval_set/v1.jsonl`, `run_retrieval_eval.py`, `build_pool.py`, `replay_distinctness.py`, README). Retire `app/recall_eval.py` + `recall_eval_corpus.json` or fold them in.
-- Phase 1: `orion/memory/crystallization/retriever.py`, `services/orion-recall/app/collectors/active_packet.py`, `services/orion-recall/app/fusion.py` / `render.py` (feeds block), `services/orion-recall/.env_example`, `settings.py`.
-- Phase 2: `services/orion-recall/app/retrievers/` (new: `dense.py`, `sparse.py`, `entity_link.py`, `temporal_scope.py`), `app/fusion.py` (RRF + MMR), `app/worker.py` (lists wiring), `orion/recall/profiles/*.yaml`, `services/orion-vector-host/app/` (persist), `scripts/backfill_recall_doc_embeddings.py` (backfill protocol, snapshot under `/tmp/`), `services/orion-sql-writer` or recall's DDL for the table, tests in both services.
-- Phase 3: `services/orion-vector-host/app/rerank.py`, `orion/schemas/vector/schemas.py`, `orion/schemas/registry.py`, `orion/bus/channels.yaml`, vector-host `requirements.txt` / `.env_example` / `docker-compose.yml` (GPU device reservation if the T10 is used), `services/orion-recall/app/rerank_client.py`.
-- Phase 4: `services/orion-recall/app/retrievers/graph_ppr.py`. Delete `_entity_relatedness_boost` and `storage/falkor_entity_relatedness.py`'s boost-map path.
+- Phase 0: `services/orion-recall/evals/` (new: `known_item.py`, `replay_telemetry.py`, `harness.py`, `README.md`, `baseline-2026-09-xx.md`). Fold in or retire `app/recall_eval.py` and `recall_eval_corpus.json`.
+- Phase 1: `orion/memory/crystallization/retriever.py`, `services/orion-recall/app/collectors/active_packet.py`, `app/render.py`, `app/fusion.py` (feed box), `orion/recall/profiles/*.yaml`, `services/orion-recall/.env_example`, `settings.py`.
+- Phase 2: `services/orion-recall/app/referents/` (new: `extract.py`, `index_store.py`, `indexer.py`, `rank.py`), `app/worker.py` (wiring + abstention), `orion/core/contracts/recall.py`, `orion/schemas/registry.py`, tests.
+- Phase 3: `services/orion-recall/app/referents/links.py`, `scripts/build_recall_artifact_referents.py` (graphify + git log, offline), `services/orion-recall/docker-compose.yml` (read-only `/graphify` mount), the worldview reader. Delete `_entity_relatedness_boost` and the overlap/rare-token terms once referent ranking is primary.
 
 ## Non-goals
 
-- Query formation, fan-out caps and the deadline: the companion spec owns these.
-- GraphRAG global/community summaries, graphiti, LLM query rewriting, HyDE, multi-vector (ColBERT) indexes, fine-tuning the embedder or reranker.
-- Migrating Chroma, installing pgvector, or changing the embedding model.
-- Fixing the Falkor ChatTurn writer lag, the 83% textless chat.history ChatTurns, or deciding what `orion_main_store` is for. Each gets a separate investigation ticket, because they affect Phase 4 inputs.
-- Changing what gets written to memory (cards, crystallizations). This is read-path only, plus one additive embedding table.
+- Vectors, rerankers, GraphRAG community summaries, graphiti, HyDE and LLM query rewriting. Each has a stated reconsideration condition.
+- Human-labelled relevance and groundedness evals: deferred, not replaced by LLM judges.
+- Fixing the Falkor ChatTurn text-join gap (324/1,916), the Falkor writer lag, or Chroma's lost rows. These are separate tickets; Phase 3 avoids depending on the textless turns.
+- Changing what gets written to memory. The only new writes are the derived, rebuildable referent tables and telemetry columns.
+- Query formation and fan-out (the companion spec).
 
 ## Proposal-mode disclosure
 
-- **Capability change:** recall stops returning mostly the newest turns. It returns the memories that match what the turn is about, including older ones. This changes what Orion "remembers" in every recalling verb (chat, stance_react, journal.compose, reverie). That is a cognition change, so every phase is gated by the eval and ships behind profile weights.
-- **Data touched:** reads chat_history_log, journal_entries (non-metacog), memory_cards, memory_crystallizations, world_pulse claims and the Falkor `orion_recall` graph. Writes only the new `recall_doc_embedding` table (derived, rebuildable) and new telemetry columns. Eval files store doc ids, not text.
-- **Privacy boundary:** unchanged scoping. Existing lane/visibility filters (`visibility_allows_card`, session/node scoping, AI Town source tagging) are applied **inside each retriever before ranking**, not after, so a dense hit cannot pull a private item across a boundary that the old path respected. Embeddings are derived from the same private text and live in the same Postgres. Nothing leaves the host. The reranker runs locally.
-- **Trace that proves it:** `recall_telemetry.selected_provenance` shows, for each selected memory, which retrievers found it and at what rank. Distinctness on live telemetry rises from 2.1%. The eval report shows the nDCG@8 lift with a CI. `rerank_ms` / `dense_top1_sim` are populated (not null, not constant).
-- **Dangerous failure mode:** (a) semantic retrieval confidently surfaces a *related-sounding but wrong* memory, and Orion asserts it as fact. That is worse than recency, which is at least honestly "recent". Mitigated by the top-1 similarity floor, the groundedness eval and the per-line source tags. (b) Recency regressions: "what were we just talking about" loses the last turn. Guarded by the continuity slice. (c) Retrieval crosses a privacy lane. Guarded by filtering inside retrievers, with a test per retriever.
-- **Rollback:** `RECALL_FUSION_MODE=composite` restores today's ranking in one env flip. Per-list weights go to 0. `RECALL_RERANK_ENABLED=false`. The embedding table can be dropped without affecting anything else.
+- **Capability change:** Orion recalls the specific PR, service, person, question, article or earlier conversation that a turn names, together with the reason and whose words it is. When a turn names nothing distinctive, Orion is told plainly that nothing matched. This changes what Orion "remembers" in every recalling verb.
+- **Data touched:** reads chat, non-metacog journals, world-pulse, reading turns, source-filtered crystallizations, Falkor `orion_recall` (chat.history only) and `orion_worldview`, and the published graphify bundle and git history. Writes only the new referent/posting/term-stats/cursor tables and telemetry columns.
+- **Privacy boundary:** AI Town and metacog digests are excluded at index time, so they never enter postings. Existing lane/visibility scoping is applied inside the lookup, before ranking. Orion's guesses about Juniper (priors, investigation notes) are only ever rendered with their hypothesis label, and refuted priors are never recalled. Nothing leaves the host.
+- **Trace that proves it:** in `recall_telemetry`, `query_referents` is non-empty for referent-bearing queries, `selected_reasons` names a shared referent for every non-feed item, and `abstained` is set when none exists. Cousin rate and distinctness on the replay move from 98% / 2%.
+- **Dangerous failure mode:** (a) A hypothesis recalled as fact: a 0.95-confidence prior about Juniper's behaviour gets stated as truth. Mitigated by mandatory status labels and refuted-prior exclusion, with a test per status. (b) Silent narrowing: a turn that talks around a referent without naming it now gets nothing, where before it got (irrelevant) recent turns. Mitigated by abstention being visible in telemetry and to Orion, and by the abstain-with-referent rate being tracked. (c) A stale graphify bundle makes recall confidently cite code that has changed. Mitigated by the build-date label.
+- **Rollback:** `RECALL_RANKING_MODE=composite` restores today's ranking in one env flip. `RECALL_REFERENT_LINK_HOPS=0` disables link expansion. The tables are derived and can be dropped.
 
 ## Acceptance checks
 
-1. Phase 0 report committed with baseline recall@8/20, nDCG@8, MRR, distinctness (expected ≈2%) and latency, and a judge κ ≥ 0.6 on the audited sample.
-2. Unit: each retriever applies the lane/visibility filter before ranking (a private-lane doc never appears for a public-lane query).
-3. Unit: RRF of known lists matches a hand-computed fixture. MMR drops a near-duplicate.
-4. Unit: a nonsense query yields `dense_top1_sim` below the floor and no dense items rendered.
-5. Eval (per phase, per slice) meets the gates in the phased plan, with numbers in the PR report.
-6. Live 24h after each deploy: zero "chromadb not installed" (Phase 1). `selected_provenance` populated on ≥95% of rows (Phase 2). `rerank_skipped` < 5% and rerank p95 within budget (Phase 3). Recall p95 for non-stance verbs < 2.5 s throughout.
+1. Phase 0 baseline report committed and reproducible (two identical runs), with side-effect row counts unchanged.
+2. Unit: extraction finds `#2287`, `stance_react`, `orion-recall`, `p4` in a sentence, and finds nothing in "how are you feeling".
+3. Unit: an AI Town turn and a metacog digest never produce postings.
+4. Unit: a refuted prior is never selected. A supported prior renders with status and confidence.
+5. Unit: a query with no referent returns `abstained=true`, feeds only, plus ≤3 labelled recent turns.
+6. Eval gates per phase, as in the phased plan.
+7. Live 24h after Phase 2 goes primary: cousin rate ≤ 20% and distinctness ≥ 10× on that day's telemetry. p95 latency within the companion spec's budget plus 100 ms.
 
 ## Recommended next patch
 
-**Phase 0 only**, in `services/orion-recall/evals/`: the pooled labeled set (three slices), the harness, the telemetry-replay distinctness script, and a committed baseline report. It touches no runtime path, it makes every later phase decidable, and it will put a number on "most recent N wins" (today's replay suggests ~2% distinctness). Phase 1 (killing the dead Chroma/graphiti/RDF rails and boxing the context feeds) can proceed in parallel, since it is cleanup with its own acceptance checks and no ranking change.
+**Phase 0 and Phase 1, as two small PRs in parallel.**
+- Phase 0 puts today's failure into reproducible numbers with no human labels: known-item hit rate, a 98% cousin rate, 2% distinctness. It proves the harness has no side effects.
+- Phase 1 removes the dead Chroma, graphiti and RDF paths, boxes the feeds, excludes AI Town and metacog digests, and labels whose words each item is. It is useful immediately and changes no ranking logic.
+
+Phase 2 (the referent index) follows once the baseline exists to beat.
+
+## Revision history
+
+- **r1 (earlier 2026-09-29):** a generic hybrid pipeline (dense + BM25 + RRF + cross-encoder + MMR). Rejected by Juniper: embeddings return topical cousins, not the same thing; the design ignored Orion's distinctive vocabulary and its existing typed stores; and it assigned labelling work to her.
+- **r2 (this):**
+  - Replaced similarity retrieval with referent identity: own-corpus rarity, a referent index, typed links, and reasons.
+  - Added the cousin definition with live examples, and a per-source epistemic-status table.
+  - Applied Juniper's answers: metacog excluded, AI Town excluded, the T10 measured (5.69 GB worst-case free, 100% utilization peaks, so no reranker), labels deferred.
+  - Replaced the LLM-judged eval with automatic known-item, cousin-rate, distinctness and abstention checks.
+  - Kept feed boxing, diversity caps, provenance and dead-path removal from r1.

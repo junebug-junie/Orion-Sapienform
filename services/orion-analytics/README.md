@@ -89,7 +89,9 @@ unknown rather than becoming zeroes.
 - `fct_reverie_chains`: one row per persisted reverie chain. Primary key
   `reverie_chain_id`; foreign keys `outcome_key` and `event_date`.
 - `dim_reverie_outcomes`: one row per stop reason declared in
-  `ReverieChainV1`.
+  `ReverieChainV1` and `ReverieVisualChainV1` (`VisualTerminalReason`, including
+  `resource_deferred`; `tests/test_dim_reverie_outcomes_covers_terminal_reasons.py`
+  fails when a new visual reason has no row).
 - `dim_reverie_dates`: one row per UTC date from the first persisted chain
   through today.
 - `stg_visual_reverie_chains`: one row per persisted visual chain; derives only

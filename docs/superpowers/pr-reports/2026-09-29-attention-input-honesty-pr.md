@@ -43,6 +43,7 @@ Three places where Orion's attention was being handed a number that did not mean
 - `services/orion-sql-db/manual_migration_chat_projection_pe_baseline_v3_reset.sql`: one-shot zeroing of the chat projection's EWMA fields.
 - `scripts/analysis/replay_candidate_a_staleness_fade.py`, `replay_llm_inference_failure_window.py` (new), `replay_route_chat_prediction_error_definitions.py` (chat v2 frozen, v3 live, v2->v3 switchover probe).
 - Tests: `tests/test_attention_candidate_precision_weighted.py`, `tests/test_attention_field_selectors.py`, `tests/test_attention_runtime_store.py`, `orion/substrate/tests/test_prediction_error.py`, `tests/test_llm_inference_substrate_reducer.py`, `tests/test_replay_attention_input_honesty.py` (new), `tests/test_replay_route_chat_prediction_error_definitions.py`, `services/orion-substrate-runtime/tests/test_worker_llm_inference_tick.py`, `.../test_prediction_error_receipt_not_gated.py`.
+- `config/field/field_channel_glossary.v1.yaml`, `config/metrics/metric_definitions.lock.json`: `inference_failure_pressure`'s meaning said "per gateway window", which stopped being true; corrected, and the lock regenerated after merging main so it records the change.
 - Docs: READMEs for `orion-attention-runtime`, `orion-substrate-runtime`, and `orion-llm-gateway`, plus a note in `orion-llm-gateway/evals/run_inference_outcome_eval.py`.
 
 ## Schema / bus / API changes
@@ -117,6 +118,11 @@ live field, same 72 h: node:circe inference_failure_pressure nonzero on 1,167 of
 ```
 
 Dump commands are in each script's docstring.
+
+Spot-check against live data (2026-09-29, after the draft, fixed span `created_at` 2026-09-26 05:24 .. 09-29 05:24):
+C re-run on a fresh dump gives `new: nonzero_minutes=38 max=0.057 episodes=7 minutes_>=0.5=0` (identical to the table) and
+`old: nonzero_minutes=40 max=1.000 minutes_at_1.0=8 minutes_>=0.5=11` (41/12 in the table). The gap is retention: the fresh
+dump's first gateway event is 08:06, so the first ~2.7 h of the original span has since been pruned (7,043 events vs 7,317).
 
 Replay limits:
 - A uses the field's `node_vector_updated_at` as the reading's age. Live code uses the receipt's `created_at`, which lands a few seconds earlier.
@@ -210,7 +216,7 @@ docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "select even
 
 - Severity: medium. Concern: the `LlmInferenceProjectionV1` rollback hazard (old code rejects `recent_windows`). Mitigation: the one-line DELETE above, since the row is a cache.
 - Severity: low. Concern: when skipped receipts (malformed, or another definition version) follow the last real one, the cursor timestamp that reloads `last_observed_at` can sit slightly later than the real reading, so the reading looks a little fresher than it is. This only happens during deploy skew. Mitigation: disclosed in `store.py`.
-- Severity: low. Concern: the `check_definition_drift` lock says "no definition changes" even though two metric definitions changed. The gate does not track `PREDICTION_ERROR_DEFINITION_VERSIONS`, the same gap disclosed on 2026-09-25. Mitigation: Juniper's approval is recorded in the Summary.
+- Severity: low. Concern: the definition lock now records C (`high semantics_changed .../inference_failure_pressure`, via the corrected field-channel glossary meaning), but it cannot record B: `chat_prediction_error` is not in any registry the drift gate resolves, and the gate does not track `PREDICTION_ERROR_DEFINITION_VERSIONS` (the same gap disclosed on 2026-09-25). Mitigation: Juniper's approval is recorded in the Summary; B's version bump is the machine-readable record.
 - Severity: low. Concern: once the rolling window has no calls, the field digester holds the last written value (unchanged digester contract: "not measured" is not written as 0.0). Live cadence (~1 window with circe calls every 2 minutes) makes this rare.
 - Severity: info. Concern: the attention runtime was 3 days stale in production (missing the 09-25 D1 novelty fix). Rebuilding ships everything merged since. Mitigation: post-deploy check above.
 

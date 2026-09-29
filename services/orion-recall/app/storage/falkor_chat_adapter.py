@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
 from ..chat_source_tagging import chat_source_tags, render_quoted_chat_text
@@ -39,11 +40,27 @@ from ..sql_chat import _to_epoch, fetch_chat_turns_by_id
 logger = logging.getLogger(__name__)
 
 
+def _falkor_ts_cutoff(since_minutes: int, *, now: datetime | None = None) -> str:
+    """ISO cutoff in the exact shape the writer stores ``ChatTurn.ts``.
+
+    orion-meta-tags writes ``ts`` as ``datetime.isoformat()`` of an aware UTC
+    datetime: ``2026-09-29T04:11:00.120601+00:00`` (verified live
+    2026-09-29: all 1,916 chat.history ChatTurns are 32 chars and end in
+    ``+00:00``). Same fixed-width shape on both sides, so Cypher's string
+    ``>=`` orders them correctly, like with like.
+    """
+    base = now or datetime.now(timezone.utc)
+    cutoff = base.astimezone(timezone.utc) - timedelta(minutes=int(since_minutes))
+    return cutoff.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
+
+
 async def fetch_falkor_chatturn_fragments(
     *,
     query_text: str,
     session_id: str | None,
     max_items: int = 20,
+    since_minutes: int | None = None,
+    allow_empty_query: bool = False,
 ) -> List[Dict[str, Any]]:
     """Pull recent ChatTurns from FalkorDB's orion_recall graph, joined to
     Postgres for prompt/response text. Same return-fragment shape as
@@ -53,12 +70,28 @@ async def fetch_falkor_chatturn_fragments(
 
     Never raises: any Falkor or Postgres failure degrades to [], same
     fail-open contract as the RDF version.
+
+    ``since_minutes`` (> 0) pushes the recall time window into the Cypher
+    (``WHERE t.ts >= $cutoff``), so the LIMIT window is spent on turns the
+    caller's post-filter (worker._window_sql_chat_candidates) will keep.
+    Before this, the fetch took the newest N regardless of age and the
+    post-filter could discard all of them (1,608 fetched, 1,608 dropped on
+    the 2026-09-29 slow row). The post-filter stays as the safety net.
+
+    ``allow_empty_query``: this fetch never used the text (recency only), so
+    a context-only recall (RecallQueryV1.mode == "context_only") may call it
+    with no query and still get recent turns.
     """
-    if not query_text:
+    if not query_text and not allow_empty_query:
         return []
     client = get_recall_falkor_client()
     if client is None:
         return []
+
+    cutoff = _falkor_ts_cutoff(since_minutes) if since_minutes and int(since_minutes) > 0 else None
+    params: Dict[str, Any] = {"max_items": int(max(1, min(max_items, 100)))}
+    if cutoff is not None:
+        params["cutoff"] = cutoff
 
     try:
         rows = await asyncio.to_thread(
@@ -74,10 +107,11 @@ async def fetch_falkor_chatturn_fragments(
             # below, and crowd out real chat.history turns during a burst
             # of social-room activity.
             "MATCH (t:ChatTurn {source_kind: 'chat.history'}) "
-            "RETURN t.turn_id AS turn_id, t.ts AS ts, t.correlation_id AS correlation_id "
+            + ("WHERE t.ts >= $cutoff " if cutoff is not None else "")
+            + "RETURN t.turn_id AS turn_id, t.ts AS ts, t.correlation_id AS correlation_id "
             "ORDER BY t.ts DESC "
             "LIMIT $max_items",
-            {"max_items": int(max(1, min(max_items, 100)))},
+            params,
         )
     except Exception as exc:
         logger.debug("falkor chatturn fetch skipped: %s", exc)

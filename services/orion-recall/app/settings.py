@@ -439,6 +439,22 @@ class Settings(BaseSettings):
         default=False, validation_alias=AliasChoices("RECALL_RDF_ENABLE_SUMMARIES")
     )
 
+    # ── Bounded retrieval (2026-09-29 design, Phase 1) ─────────────────
+    # docs/superpowers/specs/2026-09-29-recall-retrieval-query-architecture-design.md.
+    # Intake: a fragment longer than this (and no caller retrieval_query) is
+    # deterministically condensed to at most this many characters before any
+    # expansion. <= 0 disables condensation (searches the fragment as-is).
+    RECALL_MAX_QUERY_CHARS: int = Field(default=600, validation_alias=AliasChoices("RECALL_MAX_QUERY_CHARS"))
+    # At most this many extracted entities become sub-queries (stopword-
+    # filtered, specificity-ranked). 0 = uncapped and unfiltered: today's
+    # fan-out, kept as the rollback lever. Read with an explicit `is None`
+    # check, never `x or DEFAULT`, so a configured 0 survives.
+    RECALL_MAX_SUB_QUERIES: int = Field(default=4, ge=0, validation_alias=AliasChoices("RECALL_MAX_SUB_QUERIES"))
+    # Overall fetch deadline when the caller sends no deadline_ms (caller
+    # deadline_ms wins, at 80%). Below the 90s caller RPC timeout so recall
+    # answers with what it has instead of timing out. <= 0 disables.
+    RECALL_DEADLINE_MS_DEFAULT: int = Field(default=60000, validation_alias=AliasChoices("RECALL_DEADLINE_MS_DEFAULT"))
+
     # ── SQL timeline knobs ────────────────────────────────────────────
     RECALL_ENABLE_SQL_TIMELINE: bool = Field(default=True, validation_alias=AliasChoices("RECALL_ENABLE_SQL_TIMELINE"))
     RECALL_SQL_SINCE_MINUTES: int = Field(default=180, validation_alias=AliasChoices("RECALL_SQL_SINCE_MINUTES"))

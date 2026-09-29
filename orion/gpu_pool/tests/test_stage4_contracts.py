@@ -215,13 +215,14 @@ def test_rejects_actuator_on_another_host():
 
 
 def test_rejects_half_a_bridge():
-    _bad(lambda d: d["roles"]["agent-gpu2"]["swap"].pop("unload"), "come as a pair")
+    # 5.3 removed the pair from the committed file; half of it must still be refused.
+    _bad(lambda d: d["roles"]["agent-gpu2"]["swap"].update(load="gpu2/agent"), "come as a pair")
 
 
 def test_rejects_unbridged_seat_whose_evicted_role_has_no_launch():
     def mutate(d):
-        d["roles"]["agent-gpu2"]["swap"].pop("load")
-        d["roles"]["agent-gpu2"]["swap"].pop("unload")
+        d["roles"]["agent-gpu2"]["swap"].pop("load", None)   # gone from the committed file since 5.3
+        d["roles"]["agent-gpu2"]["swap"].pop("unload", None)
         d["roles"]["diffusion"].pop("launch")
     _bad(mutate, r"missing on \['diffusion'\]")
 
@@ -241,7 +242,7 @@ def test_rejects_bad_launch_block(field, value):
 def test_unbridged_seat_with_launches_is_valid_and_after_wait_overrides():
     data = copy.deepcopy(RAW)
     swap = data["roles"]["agent-gpu2"]["swap"]
-    swap.pop("load"), swap.pop("unload")
+    swap.pop("load", None), swap.pop("unload", None)   # the committed shape since 5.3
     swap.update(after_wait_sec=1200, guards=["thermal", "visual_baseline"])
     cfg = PoolConfig.model_validate(data)
     assert cfg.swap_after_wait_sec("agent-gpu2") == 1200
@@ -250,8 +251,10 @@ def test_unbridged_seat_with_launches_is_valid_and_after_wait_overrides():
 
 # --- the static gate against compose ------------------------------------------------------------
 def _compose_mutation(tmp_path: Path, edit) -> list[str]:
-    """Copy the real compose + env templates into tmp, edit the agent-burst service, re-check."""
-    for rel in ("services/orion-llamacpp-host/docker-compose.atlas-workers.yml",
+    """Copy the real compose + env templates (and llm_profiles.yaml, which agent-gpu2's
+    launch.profiles is checked against since 5.3) into tmp, edit the agent-burst service, re-check."""
+    for rel in ("config/llm_profiles.yaml",
+                "services/orion-llamacpp-host/docker-compose.atlas-workers.yml",
                 "services/orion-llamacpp-host/.env_example",
                 "services/orion-diffusion-host/docker-compose.yml",
                 "services/orion-diffusion-host/.env_example"):

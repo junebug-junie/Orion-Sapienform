@@ -86,7 +86,20 @@ Spec: `docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic
   `${cuda_env:-<index>}`, and any literal `device_ids` pin.
 - **`launch.profile_var` / `launch.profiles`**: the variable the actuator sets to the chosen
   `llm_profiles.yaml` profile (the service's `LLM_PROFILE_NAME` must interpolate it) and the
-  allow-list, first = default. Parsed and gated now; nothing sends a profile until 5.3.
+  allow-list, first = default. Since 5.3 the pool sends `launch.profiles[0]` with every `load`
+  (`PoolConfig.load_profile`; `None` for unloads and for roles without `profiles`). Choosing a
+  different entry by `needs_vision` / `min_ctx_tokens` / VRAM is **not built** (future). The profile
+  is recorded on the card's `actuation` and on `swap_started`/`swapped`/`swap_failed`
+  `detail.profile`. A seat that still has bridge verbs may not list `profiles` (the bridge refuses
+  any profile, so every load would fail); the validator refuses that shape.
+- **Stage 5.3 cutover:** `agent-gpu2` has no `swap.load/unload` bridge verbs; circe's controller
+  runs its `launch` block and diffusion's through `launch_exec`. Visible differences: the seat's
+  ready wait is 900 s (was the bridge's 600 s), so the first actuation deadline is 900 + 600 =
+  1500 s and the stuck ceiling 3000 s; controller failure reasons carry the role
+  (`upstream_not_idle:agent-gpu2`, `model_readiness_timeout:agent-gpu2`, ...). The pool never
+  parses a reason -- it acts on `status`, `restored` and `observed` -- so it only records them.
+  Runbook: `docs/runbooks/2026-09-29-gpu-pool-stage5-3-cutover.md`. End-to-end test:
+  `tests/test_stage5_3_cutover_e2e.py` (real runtime -> real controller, fake docker).
 - **`experiment`** lost its dead bridge verbs; the validator exempts an operator-only seat with no
   launch and no bridge (deferred; nothing can load it, and operator holds are refused in observe).
 - **Seat limit**: `agent-gpu2 max_hold_sec: 9000` (Juniper 2026-09-29).

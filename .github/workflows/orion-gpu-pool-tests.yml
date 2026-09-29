@@ -17,6 +17,9 @@ on:
       - "services/orion-equilibrium-service/.env_example"
       - "services/orion-equilibrium-service/docker-compose.yml"
       - "scripts/check_gpu_pool_config.py"
+      # tests/test_stage5_3_cutover_e2e.py drives the real circe controller (stage 5.3)
+      - "services/orion-gpu-lane-controller/app/**"
+      - "scripts/gpu_pool_actuator_probe.py"
       # check_gpu_pool_config.py's launch-block check reads these (stage 4.1)
       - "services/orion-diffusion-host/docker-compose.yml"
       - "services/orion-diffusion-host/.env_example"
@@ -125,6 +128,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r services/orion-gpu-pool/requirements.txt
           python -m pip install -r requirements-dev.txt
+          # the circe controller's logger, for tests/test_stage5_3_cutover_e2e.py (pool -> controller)
+          python -m pip install loguru
       - name: Config gate (config/gpu_pool.yaml vs llama.cpp compose roles/ports)
         env:
           PYTHONPATH: ${{ github.workspace }}

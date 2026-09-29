@@ -49,17 +49,22 @@ roles:
                # 9000 s (~2.5 h), Juniper 2026-09-29 (stage 5 spec, "Juniper's answers" 1): curiosity and
                # self-sense holds may land here; image generation may wait up to ~2.5 h for gpu2.
                max_hold_sec: 9000,
-               # load/unload: stage-4 bridge verbs onto the controller's fixed gpu2 transitions (deleted in stage 5).
+               # No load/unload bridge verbs (stage 5.3 cutover): the controller runs this `launch` block
+               # and diffusion's through its generic executor. Rollback = restore
+               # `load: gpu2/agent, unload: gpu2/restore` and drop `profiles` (runbook 2026-09-29-gpu-pool-stage5-3-cutover).
                # after_wait_sec keeps today's 1200s elastic trigger; guards are today's elastic eligibility checks.
-               swap: {evicts: [diffusion], load: gpu2/agent, unload: gpu2/restore,
-                      after_wait_sec: 1200, guards: [thermal, visual_baseline]},
+               swap: {evicts: [diffusion], after_wait_sec: 1200, guards: [thermal, visual_baseline]},
                launch: {actuator: circe, compose: services/orion-llamacpp-host/docker-compose.atlas-workers.yml,
                         env_file: services/orion-llamacpp-host/.env, service: atlas-agent-burst,
                         compose_profile: agent-burst,
-                        # Stage 5: compose interpolation variables the actuator sets (card index /
-                        # chosen profile). No `profiles` yet -> profile=None, compose default (5.3 sends it).
+                        # Compose interpolation variables the actuator sets: the card index, and the
+                        # profile the pool sends. The pool sends the FIRST entry of `profiles` on every
+                        # load (choosing by vision/ctx/VRAM is not built). It is the profile this seat
+                        # has announced on every load (discovery_confirmed, 2026-09-29), so the cutover
+                        # does not change the model.
                         cuda_env: ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES,
                         profile_var: ATLAS_AGENT_BURST_PROFILE_NAME,
+                        profiles: [qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex],
                         ready: /health, timeout_sec: 900}}
   metacog:    {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8012}
   fast:       {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8013}

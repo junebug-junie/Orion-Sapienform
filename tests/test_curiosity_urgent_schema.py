@@ -69,6 +69,12 @@ def test_long_subject_rejected() -> None:
         CuriosityUrgentSeedV1(**_seed(subject="s" * 121))
 
 
+def test_long_requested_by_rejected() -> None:
+    assert CuriosityUrgentSeedV1(**_seed(requested_by="r" * 64)).requested_by == "r" * 64
+    with pytest.raises(ValidationError):
+        CuriosityUrgentSeedV1(**_seed(requested_by="r" * 65))
+
+
 def test_extra_field_rejected() -> None:
     with pytest.raises(ValidationError):
         CuriosityUrgentSeedV1(**_seed(unexpected=True))

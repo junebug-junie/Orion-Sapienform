@@ -40,7 +40,7 @@ class CuriosityUrgentSeedV1(BaseModel):
     subject: str = Field(default="", max_length=120)
     evidence: dict[str, Any] = Field(default_factory=dict)
     requested_at: datetime
-    requested_by: str = "hub"
+    requested_by: str = Field(default="hub", max_length=64)
 
     @field_validator("evidence")
     @classmethod

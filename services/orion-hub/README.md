@@ -3205,7 +3205,7 @@ logged as `urgent_request_invalid` and dropped) and calls
 `CuriosityInvestigation.start_urgent`, which:
 
 - refuses with `urgent_disabled`, `curiosity_disabled`, `durable_admission_disabled`
-  (an urgent run never runs at background priority) or `incident_already_open`
+  (an urgent run never runs at background priority), `redis_unavailable` or `incident_already_open`
   (Redis NX key `orion:curiosity:urgent:open:{incident_id}`, TTL
   `HUB_CURIOSITY_URGENT_TIMEOUT_SEC + 600`);
 - builds the urgent prompt (`orion/curiosity/urgent_prompt.py`) and dispatches the
@@ -3264,6 +3264,10 @@ command in the file).
 
 Env: `HUB_CURIOSITY_URGENT_ENABLED` (default true), `HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC`
 (900), `HUB_CURIOSITY_URGENT_TIMEOUT_SEC` (1200), `HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC` (120).
+Rollback: `HUB_CURIOSITY_URGENT_ENABLED=false` and restart Hub (the button refuses, the
+listener does not start). Eval: `python services/orion-hub/evals/run_urgent_report_eval.py`
+replays every outcome (valid / malformed / evidence-less report, failed, cancelled, timeout,
+no GPU, unconfirmed dispatch) through the real reader, run-state handler and composer.
 Plan: `docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md`.
 
 

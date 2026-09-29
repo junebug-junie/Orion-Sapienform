@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import json
+import os
 import time
 import urllib.request
 from typing import Any, Callable, NamedTuple
@@ -131,8 +132,8 @@ async def ready(plan: RolePlan) -> bool:
     return isinstance(body, dict) and (body.get("ready") is True or body.get("status") == "ok")
 
 
-async def wait_ready(plan: RolePlan) -> None:
-    deadline = time.monotonic() + plan.timeout_sec
+async def wait_ready(plan: RolePlan, deadline: float | None = None) -> None:
+    deadline = time.monotonic() + plan.timeout_sec if deadline is None else deadline
     while not await ready(plan):
         if time.monotonic() >= deadline:
             raise RuntimeError(f"model_readiness_timeout:{plan.role}")
@@ -142,6 +143,8 @@ async def wait_ready(plan: RolePlan) -> None:
 async def drain(plan: RolePlan) -> None:
     assert plan.drain is not None
     await request(plan.base_url + plan.drain.set_path, {"draining": True})
+    # launch.drain has no timeout key; the bridge's GPU2_DRAIN_TIMEOUT_SEC applies to every role
+    # until 5.6 renames it (the key's meaning is unchanged: max wait for in-flight work to finish).
     deadline = time.monotonic() + settings.GPU2_DRAIN_TIMEOUT_SEC
     while True:
         state = await request(plan.base_url + plan.drain.status)
@@ -152,10 +155,10 @@ async def drain(plan: RolePlan) -> None:
         await asyncio.sleep(POLL_SEC)
 
 
-async def undrain(plan: RolePlan, *, deadline_sec: float = 0.0) -> None:
-    """Resume a drained role; retried (1 s) up to ``deadline_sec`` while it is still booting."""
+async def undrain(plan: RolePlan, *, deadline: float | None = None) -> None:
+    """Resume a drained role; retried until ``deadline`` (monotonic) while it is still booting."""
     assert plan.drain is not None
-    deadline = time.monotonic() + deadline_sec
+    deadline = time.monotonic() if deadline is None else deadline
     while True:
         try:
             await request(plan.base_url + plan.drain.set_path, {"draining": False})
@@ -173,7 +176,12 @@ async def llm_idle(plan: RolePlan) -> bool:
 
 
 def _compose(plan: RolePlan, *args: str):
-    return lc._run_compose(runner(settings.GPU_LANE_COMMAND_TIMEOUT_SEC), lc._repo_root(), _target(plan), *args)
+    root = lc._repo_root()
+    target = _target(plan)
+    env = {k: v for k, v in os.environ.items() if k not in plan.unset}
+    env.update(plan.env)   # process env wins over --env-file for compose interpolation
+    cmd = [*lc._base_cmd(target, root), *args, target.compose_service]
+    return runner(settings.GPU_LANE_COMMAND_TIMEOUT_SEC).run(cmd, cwd=str(root), env=env)
 
 
 async def stop(plan: RolePlan) -> None:
@@ -190,6 +198,9 @@ async def stop(plan: RolePlan) -> None:
 
 async def start(plan: RolePlan) -> None:
     logger.info("launch_exec up role={} service={} env={}", plan.role, plan.service, plan.env_text())
+    # One readiness budget per role (resume + ready together): the pool sizes its stuck-actuator
+    # timer from launch.timeout_sec, so the two waits must not each get the full budget.
+    deadline = time.monotonic() + plan.timeout_sec
     try:
         proc = await asyncio.to_thread(_compose, plan, "up", "-d", "--no-build", "--no-deps")
     except Exception:  # noqa: BLE001
@@ -199,8 +210,8 @@ async def start(plan: RolePlan) -> None:
     await phase("ready_wait")
     if plan.drain is not None:
         # A drained service may come back still draining; resume it once it answers.
-        await undrain(plan, deadline_sec=plan.timeout_sec)
-    await wait_ready(plan)
+        await undrain(plan, deadline=deadline)
+    await wait_ready(plan, deadline)
 
 
 Authority = Callable[..., Any]
@@ -330,7 +341,7 @@ async def _unload(plan: LaunchPlan, intent: Intent, authority: Authority) -> dic
                 await phase("draining")
                 seat_drained = True
                 await drain(seat)
-                await authority(intent)
+            await authority(intent)   # still the newest generation, right before the stop
             await phase("stopping")
             await stop(seat)
             seat_stopped = True

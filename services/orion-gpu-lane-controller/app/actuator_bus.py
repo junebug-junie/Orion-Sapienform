@@ -42,15 +42,24 @@ _task: asyncio.Task | None = None
 _current: dict[str, Any] | None = None   # the in-flight request, for replays and `status`
 
 
+# Bridge-era fallback for `observed` when this checkout's YAML cannot be parsed (e.g. a pull without
+# the matching image rebuild): the fixed gpu2 pair, so a `status` reconcile still sees real
+# containers instead of nothing. Deleted with gpu2.py in 5.6.
+_BRIDGE_OBSERVE = {"agent-burst": "agent-gpu2", "diffusion": "diffusion"}
+
+
 async def observe() -> dict[str, str]:
     """Role -> container state for every launch role naming this actuator (stage 5.2: from this
-    checkout's YAML, not a fixed gpu2 pair), for the pool to reconcile from. Never raises; an
-    unloadable config yields {} (the pool reads that as "nothing observed")."""
+    checkout's YAML, not a fixed gpu2 pair), for the pool to reconcile from. Never raises."""
     try:
         plans = pool_fence.role_plans(await asyncio.to_thread(pool_fence.load_config))
     except Exception:  # noqa: BLE001
-        logger.warning("gpu_actuate_observe_config_unloadable")
-        return {}
+        logger.warning("gpu_actuate_observe_config_unloadable fallback=bridge_pair")
+        try:
+            snaps = await asyncio.to_thread(gpu2.snapshots)
+        except Exception:  # noqa: BLE001
+            return {role: "unknown" for role in _BRIDGE_OBSERVE.values()}
+        return {_BRIDGE_OBSERVE[t]: launch_exec.observed_state(s) for t, s in snaps.items() if t in _BRIDGE_OBSERVE}
     return await launch_exec.observe(plans)
 
 

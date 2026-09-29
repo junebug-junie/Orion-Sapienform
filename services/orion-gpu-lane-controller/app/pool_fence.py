@@ -69,10 +69,11 @@ class RolePlan:
     service: str
     compose_profile: str | None
     env: dict[str, str]            # compose interpolation vars: cuda_env (+ profile_var)
-    drain: DrainSpec | None
-    ready: str                     # HTTP path
-    base_url: str                  # http://<pool host address>:<role port>
-    timeout_sec: float             # readiness wait after `up`
+    unset: tuple[str, ...] = ()    # vars removed from the process env (profile_var when no profile)
+    drain: DrainSpec | None = None
+    ready: str = "/health"         # HTTP path
+    base_url: str = ""             # http://<pool host address>:<role port>
+    timeout_sec: float = 600.0     # readiness wait after `up` (one budget for resume + ready)
 
     def env_text(self) -> str:
         return " ".join(f"{k}={v}" for k, v in sorted(self.env.items()))
@@ -80,8 +81,8 @@ class RolePlan:
 
 @dataclass(frozen=True)
 class LaunchPlan:
-    """A swap seat plus the roles it evicts (drained + stopped before it starts, restarted in
-    reverse order on rollback or unload)."""
+    """A swap seat plus the roles it evicts (drained + stopped before it starts; restarted in
+    reverse stop order on a failed load's rollback, in YAML order on unload)."""
     seat: RolePlan
     evicts: tuple[RolePlan, ...] = field(default_factory=tuple)
     profile: str | None = None
@@ -95,10 +96,14 @@ def _role_plan(cfg: PoolConfig, name: str, profile: str | None) -> RolePlan:
     # Card index, never a request value: the config validator guarantees an index on every card of
     # a launch role, and the 5.1 gate that the compose device entry is ${cuda_env}.
     env = {launch.cuda_env: ",".join(str(cfg.cards[c].index) for c in spec.cards)}
+    unset: tuple[str, ...] = ()
     if profile is not None:
         env[launch.profile_var] = profile
+    elif launch.profile_var is not None:
+        # No profile -> compose's own default, never a value inherited from the controller's env.
+        unset = (launch.profile_var,)
     return RolePlan(role=name, kind=spec.kind, compose=launch.compose, env_file=launch.env_file,
-                    service=launch.service, compose_profile=launch.compose_profile, env=env,
+                    service=launch.service, compose_profile=launch.compose_profile, env=env, unset=unset,
                     drain=launch.drain, ready=launch.ready, base_url=cfg.url(name),
                     timeout_sec=float(launch.timeout_sec))
 

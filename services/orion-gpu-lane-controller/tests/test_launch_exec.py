@@ -7,6 +7,8 @@ SafeCommandRunner stand-in) and HTTP (FakeHttp) are faked, so these pin the exac
 env the controller would issue on circe.
 """
 import asyncio
+import json
+import os
 import subprocess
 from datetime import datetime, timedelta, timezone
 
@@ -76,6 +78,7 @@ class FakeDocker:
         self.state = {s: "running" for s in running}
         self.broken = set(broken)          # `ps` fails for these (unknown Docker state)
         self.never_start = set()           # `up` exits non-zero
+        self.stop_fails = set()            # `stop` exits non-zero
         self.calls: list[dict] = []
 
     def run(self, command, *, cwd=None, env=None):
@@ -91,10 +94,13 @@ class FakeDocker:
             out = "" if st is None else f'{{"ID":"{service}-id","Name":"{service}","State":"{st}"}}'
             return subprocess.CompletedProcess(command, 0, out, "")
         verb, service = rest[0], rest[-1]
-        interesting = {k: v for k, v in (env or {}).items() if k.startswith(("ATLAS_", "CUDA_"))}
+        # Only what the controller changed relative to its own process env.
+        interesting = {k: v for k, v in (env or {}).items() if os.environ.get(k) != v}
         self.calls.append({"verb": verb, "service": service, "args": rest[1:-1], "profile": profile,
-                           "compose": compose, "env": interesting})
+                           "compose": compose, "env": interesting, "full_env": dict(env or {})})
         if verb == "stop":
+            if service in self.stop_fails:
+                return subprocess.CompletedProcess(command, 1, "", "no")
             if service in self.state:
                 self.state[service] = "exited"
             return subprocess.CompletedProcess(command, 0, "", "")
@@ -119,6 +125,8 @@ class FakeHttp:
         self.busy: set[str] = set()
         self.stuck_in_flight: set[str] = set()   # drain status never reports in_flight=false
         self.on_status = None                     # called on each drain-status poll
+        self.on_ready = None                      # called on each ready poll
+        self.on_slots = None                      # called on each /slots read
         self.draining: dict[str, bool] = {}
         self.posts: list[tuple[str, str, dict]] = []
 
@@ -135,11 +143,15 @@ class FakeHttp:
         if not up:
             raise ConnectionError("down")
         if path == "/slots":
+            if self.on_slots is not None:
+                self.on_slots()
             return [{"id": 0, "is_processing": service in self.busy}]
         if path.endswith("/status"):
             if self.on_status is not None:
                 self.on_status()
             return {"draining": self.draining.get(service, False), "in_flight": service in self.stuck_in_flight}
+        if self.on_ready is not None:
+            self.on_ready()
         if service in self.never_ready:
             return {"status": "loading", "ready": False}
         return {"ready": True} if path == "/ready" else {"status": "ok"}
@@ -368,6 +380,8 @@ def test_real_config_still_uses_the_bridge(world, monkeypatch):
     sink = world.handle(world.payload("agent-gpu2", ["gpu2"]))
     assert seen == ["agent-burst"] and sink[-1].status == "succeeded"
     assert world.docker.calls == []
+    # Bridge parity of the generic observe(): the same two roles the fixed TARGET_ROLES gave.
+    assert sink[-1].observed == {"agent-gpu2": "absent", "diffusion": "absent"}
 
 
 def test_unknown_container_state_starts_nothing(world):
@@ -458,3 +472,126 @@ def test_example_b_plan_names_only_yaml_values():
                                     f"ATLAS_AGENT_BURST_PROFILE_NAME={ALT_27B}")
     assert [p.role for p in plan.evicts] == ["diffusion"] and plan.evicts[0].drain is not None
     assert plan.evicts[0].base_url == "http://100.112.254.99:8014"
+
+
+# --- review follow-ups: multi-evictee order, fence during rollback, unload edges, busy ----------
+
+def example_multi(data: dict) -> dict:
+    """gpu4: vision4 evicts two residents -- fast2 (llm) and embed4 (a service with a drain)."""
+    data = example_a(data)
+    data["roles"]["embed4"] = {
+        "kind": "service", "cards": ["gpu4"], "port": 8019, "slots": 1, "vram_gb": 2,
+        "launch": {"actuator": "circe", "compose": "services/orion-embed/docker-compose.yml",
+                   "service": "embed-host", "cuda_env": "EMBED_CUDA_VISIBLE_DEVICES",
+                   "drain": {"set": "/v1/lifecycle/drain", "status": "/v1/lifecycle/status"},
+                   "ready": "/ready", "timeout_sec": 0.05}}
+    data["roles"]["vision4"]["swap"]["evicts"] = ["fast2", "embed4"]
+    return data
+
+
+def test_multi_evictee_rollback_restarts_in_reverse_stop_order(world):
+    world.write(example_multi(real_config()))
+    world.start(running=["atlas-fast2", "embed-host"])
+    world.http.never_ready.add("atlas-vision4")
+    sink = world.handle(world.payload("vision4", ["gpu4"], profile=VISION_PROFILE))
+    assert world.docker.mutations() == [("stop", "atlas-fast2"), ("stop", "embed-host"), ("up", "atlas-vision4"),
+                                        ("stop", "atlas-vision4"), ("up", "embed-host"), ("up", "atlas-fast2")]
+    assert sink[-1].restored is True
+
+
+def test_drained_but_not_stopped_evictee_is_undrained_on_rollback(world):
+    world.write(example_multi(real_config()))
+    world.start(running=["atlas-fast2", "embed-host"])
+    world.http.stuck_in_flight.add("embed-host")
+    sink = world.handle(world.payload("vision4", ["gpu4"], profile=VISION_PROFILE))
+    assert sink[-1].reason == "drain_timeout:embed4" and sink[-1].restored is True
+    assert world.docker.mutations() == [("stop", "atlas-fast2"), ("stop", "atlas-vision4"), ("up", "atlas-fast2")]
+    assert world.http.posts[-1] == ("embed-host", "/v1/lifecycle/drain", {"draining": False})
+
+
+def test_superseded_generation_during_rollback_reports_not_restored(world):
+    world.write(example_a(real_config()))
+    world.start(running=["atlas-fast2"])
+    world.http.never_ready.add("atlas-vision4")
+    state_path = world.root.parent / "state" / "fence.json"
+
+    def supersede():   # a newer generation lands while the seat fails to come up
+        state = json.loads(state_path.read_text())
+        state["generations"]["gpu4"] = 99
+        state_path.write_text(json.dumps(state))
+    world.http.on_ready = supersede
+    sink = world.handle(world.payload("vision4", ["gpu4"], profile=VISION_PROFILE))
+    assert sink[-1].restored is False
+    assert sink[-1].reason == "model_readiness_timeout:vision4:restoration_failed"
+    assert ("up", "atlas-fast2") not in world.docker.mutations()   # the old intent may not restore
+
+
+def test_unload_evictee_start_failure_is_failed_without_rollback(world):
+    world.write(example_a(real_config()))
+    world.start(running=["atlas-vision4"])
+    world.docker.never_start.add("atlas-fast2")
+    sink = world.handle(world.payload("vision4", ["gpu4"], action="unload"))
+    assert sink[-1].status == "failed" and sink[-1].reason == "startup_failed:fast2"
+    assert sink[-1].restored is None
+    assert world.docker.mutations() == [("stop", "atlas-vision4"), ("up", "atlas-fast2")]
+
+
+def test_unload_of_a_draining_seat_undrains_it_when_the_stop_fails(world):
+    data = example_a(real_config())
+    data["roles"]["vision4"]["launch"]["drain"] = {"set": "/v1/lifecycle/drain", "status": "/v1/lifecycle/status"}
+    world.write(data)
+    world.start(running=["atlas-vision4"])
+    world.docker.stop_fails.add("atlas-vision4")
+    sink = world.handle(world.payload("vision4", ["gpu4"], action="unload"))
+    assert sink[-1].reason == "stop_failed:vision4"
+    assert world.http.posts == [("atlas-vision4", "/v1/lifecycle/drain", {"draining": True}),
+                                ("atlas-vision4", "/v1/lifecycle/drain", {"draining": False})]
+
+
+def test_busy_while_the_generic_lock_is_held(world):
+    world.write(example_a(real_config()))
+    world.start(running=["atlas-fast2"])
+
+    async def scenario():
+        sink = []
+
+        async def publish(result, corr):
+            sink.append(result)
+        async with lx.lock:
+            await bus.handle(world.payload("vision4", ["gpu4"], profile=VISION_PROFILE), publish)
+        return sink
+    sink = asyncio.run(scenario())
+    assert [(r.status, r.reason) for r in sink] == [("refused", "busy")]
+    assert world.docker.calls == []
+
+
+def test_no_profile_strips_an_inherited_profile_var(world, monkeypatch):
+    monkeypatch.setenv("ATLAS_AGENT_BURST_PROFILE_NAME", "leaked-from-controller-env")
+    world.write(example_b(real_config()))
+    world.start(running=["diffusion-host"])
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"]))
+    assert sink[-1].status == "succeeded"
+    assert "ATLAS_AGENT_BURST_PROFILE_NAME" not in world.docker.calls[-1]["full_env"]
+
+
+def test_config_unloadable_observe_falls_back_to_the_bridge_pair(world, monkeypatch):
+    (world.root / "config").mkdir(exist_ok=True)
+    (world.root / "config" / "gpu_pool.yaml").write_text("version: 1\nnot_a_key: true\n")
+    snaps = {"agent-burst": {"state": "absent", "containers": []},
+             "diffusion": {"state": "running", "containers": [{"state": "running"}]}}
+    monkeypatch.setattr(gpu, "snapshots", lambda: snaps)
+    assert asyncio.run(bus.observe()) == {"agent-gpu2": "absent", "diffusion": "running"}
+
+
+def test_unload_rechecks_the_fence_between_idle_check_and_stop(world):
+    world.write(example_a(real_config()))
+    world.start(running=["atlas-vision4"])
+    state_path = world.root.parent / "state" / "fence.json"
+
+    def supersede():
+        state = json.loads(state_path.read_text())
+        state["generations"]["gpu4"] = 99
+        state_path.write_text(json.dumps(state))
+    world.http.on_slots = supersede
+    sink = world.handle(world.payload("vision4", ["gpu4"], action="unload"))
+    assert sink[-1].reason == "stale_or_unknown_intent" and world.docker.mutations() == []

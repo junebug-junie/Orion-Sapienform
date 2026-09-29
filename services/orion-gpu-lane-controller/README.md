@@ -160,10 +160,11 @@ option on a card is YAML + compose only.
   file and env var *names* all come from this checkout's YAML (fenced by `launch_digest`). The only
   values the controller sets, as compose interpolation variables in the `docker compose` process
   env: `launch.cuda_env` = the role's card `index`es joined by commas, and `launch.profile_var` =
-  the chosen profile (omitted when none, so compose's default applies).
+  the chosen profile (when none, the variable is removed from the process env so compose's own
+  default applies, never a value inherited from the controller's environment).
 - **load:** each evicted role that is running is drained (if it has `launch.drain`) and stopped;
   the seat is `up -d --no-build --no-deps`'d with its env, un-drained if it has `drain`, and waited on
-  for `launch.ready` up to `launch.timeout_sec`. On a failure after an evicted role was touched: stop
+  for `launch.ready` up to `launch.timeout_sec` (one budget covering resume + ready). On a failure after an evicted role was touched: stop
   the seat, restart the stopped evicted roles in reverse order (each waits for ready), un-drain any
   drained but not stopped -> `failed restored=true|false`.
 - **unload:** a running `kind: llm` seat must have every llama.cpp `/slots` idle
@@ -173,6 +174,9 @@ option on a card is YAML + compose only.
 - **Failure reasons** carry the role: `container_state_not_safe:<role>`, `drain_timeout:<role>`
   (`GPU2_DRAIN_TIMEOUT_SEC`), `stop_failed|stop_unconfirmed|startup_failed:<role>`,
   `model_readiness_timeout:<role>`, `seat_and_evicted_both_running`, plus `:restoration_failed`.
+- **`observed` fallback:** if this checkout's YAML cannot be parsed, `observed` falls back to the
+  fixed bridge pair (`agent-gpu2`, `diffusion`) so a `status` reconcile still sees real containers
+  (deleted with the bridge in 5.6).
 - Residents (`swap: null`) are never loaded directly (`not_a_swap_seat`): they come back only as a
   seat's evictions.
 - **Which path runs:** `agent-gpu2` still carries `swap.load/unload` in the committed YAML, so it

@@ -118,6 +118,6 @@ docker logs --since 24h orion-athena-equilibrium 2>&1 | grep transport_baseline_
 
 ## PR link
 
-(filled in on PR creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2396
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

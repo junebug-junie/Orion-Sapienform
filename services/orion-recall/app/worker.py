@@ -274,11 +274,16 @@ def _anchor_tokens(text: str, *, max_tokens: int = 3) -> List[str]:
     # Was r"\\b...\\d+\\b" (a literal backslash inside an r-string), so it
     # could only match text containing backslashes: the anchor rail was dead
     # (_anchor_tokens("p4 v100 gpu1") == []). Fixed 2026-09-29.
+    # UUIDs first: \b treats their hyphens as word boundaries, so a run id
+    # like 1765808d-3a64-4be2-be03-... would otherwise yield "be03" as an
+    # "anchor" (seen on 12 of 80 live recall_telemetry queries once this
+    # regex was fixed). Pure-hex ids of 8+ chars (trace ids) are dropped too.
+    text = re.sub(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", " ", text)
     tokens = re.findall(r"\b[A-Za-z][A-Za-z0-9]*\d+\b", text)
     seen = set()
     anchors: List[str] = []
     for token in tokens:
-        if token in seen:
+        if token in seen or (len(token) >= 8 and re.fullmatch(r"[0-9a-fA-F]+", token)):
             continue
         seen.add(token)
         anchors.append(token)

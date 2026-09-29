@@ -280,6 +280,11 @@ def test_anchor_tokens_live() -> None:
     assert worker._anchor_tokens("p4 v100 gpu1") == ["p4", "v100", "gpu1"]
 
 
+def test_anchor_tokens_ignore_uuid_segments_and_hex_ids() -> None:
+    text = "parent_run_id 1765808d-3a64-4be2-be03-9643f3a302bd trace cb4dd9417c8d4020 on gpu1"
+    assert worker._anchor_tokens(text) == ["gpu1"]
+
+
 def test_memory_browse_regex_live() -> None:
     assert worker._is_memory_browse("show recent memories") is True
     assert worker._is_memory_browse("what is the weather") is False

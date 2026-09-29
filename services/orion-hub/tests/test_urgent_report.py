@@ -264,6 +264,10 @@ def _reporter(*, notify=None, redis=None, reader=None, clock=None) -> UrgentRepo
     )
 
 
+async def _none_async():
+    return None
+
+
 def _seed_hash(redis: _Redis, **over) -> None:
     redis.hashes.setdefault(URGENT_INCIDENTS_KEY, {})[INCIDENT] = json.dumps(_incident(**over))
 
@@ -391,6 +395,17 @@ def test_dispatch_failed_still_delivers_without_redis() -> None:
     assert "investigation failed: refused: redis_unavailable" in req.body_text
 
 
+def test_main_wires_the_reporter_before_the_loop_starts_and_gives_it_the_release() -> None:
+    """start() launches the run-state listener; a terminal it hears before the
+    reporter exists would only log `urgent_reporter_missing`."""
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[1] / "scripts" / "main.py").read_text()
+    wired = source.index("curiosity_investigation.urgent_reporter = UrgentReporter(")
+    assert wired < source.index("await curiosity_investigation.start(bus")
+    assert "release_open_key=curiosity_investigation.release_urgent_open_key_for" in source[wired:wired + 800]
+
+
 # --- watchdog -----------------------------------------------------------------
 
 
@@ -435,9 +450,57 @@ def test_run_past_resource_wait_sends_no_no_gpu() -> None:
     assert not any(r.dedupe_key.endswith(":no_gpu") for r in notify.sent)
 
 
-def test_missing_run_at_the_grant_wait_is_not_investigated() -> None:
+def test_confirmed_run_missing_at_the_grant_wait_is_not_investigated() -> None:
     notify = _Notify()
-    _run_watch(_reporter(notify=notify), _incident(status="dispatch_unconfirmed"))
+    _run_watch(_reporter(notify=notify), _incident(status="dispatched"))
+    [no_gpu] = [r for r in notify.sent if r.dedupe_key.endswith(":no_gpu")]
+    assert "no run record found" in no_gpu.body_text
+
+
+def _released_loop(held: bytes) -> tuple[CuriosityInvestigation, "_Redis"]:
+    bus = _Bus()
+    bus.redis.values[urgent_open_key(INCIDENT)] = held
+    return _loop(bus), bus.redis
+
+
+def test_unconfirmed_dispatch_with_no_run_record_is_a_failed_report_and_frees_the_incident() -> None:
+    """Cortex rejected the kickoff and nothing registered: never 'still queued'
+    or 'final report will follow' -- one failed report, then silence."""
+    notify, clock = _Notify(), _Clock()
+    loop, redis = _released_loop(RUN.encode())
+    _seed_hash(redis, status="dispatch_unconfirmed")
+    reporter = UrgentReporter(
+        notify=notify, redis=redis, settings=SETTINGS, run_state_reader=lambda r: _none_async(),
+        sleep=clock.sleep, clock=clock.clock, release_open_key=loop.release_urgent_open_key_for,
+    )
+    _run_watch(reporter, _incident(status="dispatch_unconfirmed"))
+    [failed] = notify.sent
+    assert failed.dedupe_key == f"urgent:{INCIDENT}:failed"
+    assert "cortex never registered the run" in failed.body_text
+    assert "still queued" not in failed.body_text and "final report" not in failed.body_text
+    assert urgent_open_key(INCIDENT) not in redis.values
+    assert json.loads(redis.hashes[URGENT_INCIDENTS_KEY][INCIDENT])["status"] == "reported_failed"
+    assert 1200.0 in clock.slept  # the deadline check woke and stayed quiet
+
+
+def test_the_unconfirmed_release_never_frees_another_runs_key() -> None:
+    notify = _Notify()
+    loop, redis = _released_loop(b"ffffff000000")
+    reporter = UrgentReporter(
+        notify=notify, redis=redis, settings=SETTINGS, run_state_reader=lambda r: _none_async(),
+        sleep=_Clock().sleep, release_open_key=loop.release_urgent_open_key_for,
+    )
+    _run_watch(reporter, _incident(status="dispatch_unconfirmed"))
+    assert redis.values[urgent_open_key(INCIDENT)] == b"ffffff000000"
+
+
+def test_unconfirmed_dispatch_with_unreadable_state_still_says_not_investigated() -> None:
+    notify = _Notify()
+
+    async def reader(run_id):
+        raise RuntimeError("no_postgres_pool")
+
+    _run_watch(_reporter(notify=notify, reader=reader), _incident(status="dispatch_unconfirmed"))
     [no_gpu] = [r for r in notify.sent if r.dedupe_key.endswith(":no_gpu")]
     assert "dispatch was unconfirmed" in no_gpu.body_text.lower()
 

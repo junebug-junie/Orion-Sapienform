@@ -682,9 +682,10 @@ async def startup_event():
                 urgent_turn_timeout_sec=settings.HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC,
                 urgent_timeout_sec=settings.HUB_CURIOSITY_URGENT_TIMEOUT_SEC,
             )
-            await curiosity_investigation.start(bus, harness_rpc_bus=rpc_bus)
             # Every urgent run ends in a critical Hub + email notice (final,
             # failed, INCOMPLETE, or not investigated) -- scripts/urgent_report.py.
+            # Set before start(): the run-state listener start() launches may
+            # already deliver an urgent terminal.
             curiosity_investigation.urgent_reporter = UrgentReporter(
                 notify=NotifyClient(settings.NOTIFY_BASE_URL, settings.NOTIFY_API_TOKEN or None),
                 redis=getattr(bus, "redis", None),
@@ -692,7 +693,9 @@ async def startup_event():
                 run_state_reader=lambda run_id: read_urgent_run_progress(
                     getattr(app.state, "memory_pg_pool", None), run_id
                 ),
+                release_open_key=curiosity_investigation.release_urgent_open_key_for,
             )
+            await curiosity_investigation.start(bus, harness_rpc_bus=rpc_bus)
             # Urgent runs: the Hub button and the hardware watcher both publish on
             # orion:curiosity:urgent:request. Cancelled by curiosity_investigation.stop().
             if settings.HUB_CURIOSITY_URGENT_ENABLED and curiosity_investigation.enabled:

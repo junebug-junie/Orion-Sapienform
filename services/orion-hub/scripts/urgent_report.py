@@ -232,10 +232,14 @@ class UrgentReporter:
         run_state_reader: Callable[[str], Awaitable[Optional[dict[str, Any]]]],
         sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
+        # (incident_id, run_id) -> frees the incident's open key only while it
+        # still holds that run (CuriosityInvestigation.release_urgent_open_key_for).
+        release_open_key: Optional[Callable[[str, str], Awaitable[None]]] = None,
     ) -> None:
         self._notify = notify
         self._redis = redis
         self._reader = run_state_reader
+        self._release_open_key = release_open_key
         self._sleep = sleep
         self._clock = clock
         self.grant_wait_sec = float(getattr(settings, "HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC", 120.0))
@@ -360,12 +364,32 @@ class UrgentReporter:
         except Exception as exc:  # noqa: BLE001
             return None, f"run state unreadable ({type(exc).__name__}: {str(exc)[:120]})"
 
+    async def _release(self, incident: dict) -> None:
+        if self._release_open_key is None:
+            return
+        incident_id = str(incident.get("incident_id") or "")
+        try:
+            await self._release_open_key(incident_id, str(incident.get("run_id") or ""))
+        except Exception:  # noqa: BLE001 -- the key's own TTL still frees it
+            logger.warning("urgent_report_release_failed incident_id=%s", incident_id, exc_info=True)
+
     async def _check_grant(self, incident: dict) -> None:
         await self._sleep(self.grant_wait_sec)
         run_id = str(incident.get("run_id") or "")
         if run_id in self._terminal:
             return
         progress, error = await self._progress(run_id)
+        if progress is None and not error and incident.get("status") == "dispatch_unconfirmed":
+            # durable-runs commits the admission row before it publishes the
+            # receipt (app/main.py: `await admission.submit` then publish), and the
+            # request channel is pub/sub, so no row by now means no run will ever
+            # exist. Ends the incident: failed report, the deadline check stays
+            # quiet (deliver marks the run terminal), and the incident is freed.
+            reason = f"cortex never registered the run (no run record after {self.grant_wait_sec:.0f} s)"
+            request = compose_urgent_report(incident, kind="failed", reason=reason)
+            await self.deliver(incident, request, kind="failed")
+            await self._release(incident)
+            return
         if error:
             reason = f"could not confirm a GPU grant after {self.grant_wait_sec:.0f} s: {error}"
         elif progress is None:

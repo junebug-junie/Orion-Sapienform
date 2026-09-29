@@ -2055,7 +2055,7 @@ class CuriosityInvestigation:
             incident = {**incident, "run_id": state.run_id}
         incident["status"] = state.status
         await self._record_urgent_incident(incident)
-        await self._release_urgent_open_key_for(incident_id, state.run_id)
+        await self.release_urgent_open_key_for(incident_id, state.run_id)
         self._mind_appraisal_by_run_id.pop(state.run_id, None)
         logger.info("curiosity_urgent_ended incident_id=%s run=%s status=%s", incident_id, state.run_id, state.status)
         if self.urgent_reporter is None:
@@ -2080,7 +2080,7 @@ class CuriosityInvestigation:
             return None
         return record if isinstance(record, dict) else None
 
-    async def _release_urgent_open_key_for(self, incident_id: str, run_id: str) -> None:
+    async def release_urgent_open_key_for(self, incident_id: str, run_id: str) -> None:
         """Release the open key only if it still belongs to this run."""
         redis = getattr(self._bus, "redis", None)
         if redis is None or not incident_id:

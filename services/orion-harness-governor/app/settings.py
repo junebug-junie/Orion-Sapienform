@@ -27,7 +27,7 @@ class HarnessGovernorSettings(BaseSettings):
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
     # RPC-health snapshot publish (orion:rpc_health:snapshot) from the shared dispatch
     # bus: cortex-exec :background / substrate finalize RPCs plus the FCC motor's
-    # subprocess wall time as hop fcc:<served_model>. channel_latency needs
+    # subprocess wall time as hop fcc:<role> (bus_listener.fcc_hop_key). channel_latency needs
     # orion-signal-gateway + orion-equilibrium-service on a build that knows the field
     # (RpcHealthSnapshotV1 is extra="forbid") -- rebuild those first.
     rpc_health_publish_enabled: bool = Field(True, alias="RPC_HEALTH_PUBLISH_ENABLED")
@@ -99,7 +99,8 @@ class HarnessGovernorSettings(BaseSettings):
 
     # orion-llm-gateway base URL, read directly from the environment by
     # orion.harness.fcc_motor.probe_current_served_model (the pre-turn
-    # "what backend am I about to run on" GET /routes read); mirrored here
+    # "what is this route's default backend" GET /routes read, used only when the
+    # turn holds no GPU pool lease; a held turn reads the pool's own state); mirrored here
     # so operators see the effective value. Same default as the identical
     # setting in orion-cortex-exec/.env_example -- both reach the same
     # gateway on the shared app-net bridge network.

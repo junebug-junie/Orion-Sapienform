@@ -312,6 +312,14 @@ class RuntimeContextV1(BaseModel):
     served_by: Optional[str] = None
     backend: Optional[str] = None
     source: str = "none"
+    # GPU pool (spec docs/superpowers/specs/2026-09-24-gpu-pool-design.md, reader impacts
+    # item 5). "lease": the turn holds a pool lease, so `granted_role` is where every call
+    # runs and `model_id`/`profile_name` are the pool's discovered profile for that role.
+    # "route_default": no lease was known when the brief was built, so `model_id` is only
+    # the gateway's default for `route`; the pool may place a call elsewhere.
+    placement: Literal["route_default", "lease"] = "route_default"
+    granted_role: Optional[str] = None
+    profile_name: Optional[str] = None
 
 
 class SurfaceContextV1(BaseModel):

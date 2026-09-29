@@ -53,19 +53,35 @@ _FCC_PRESPAWN_CODES = frozenset({"fcc_bad_model_label", "fcc_lane_context_too_sm
 _FCC_SELF_KILL_CODES = frozenset({"fcc_stream_line_limit", "fcc_draft_length_ceiling_exceeded"})
 
 
-def fcc_hop_key(served_model: str | None) -> str:
-    """``fcc:<served_model>`` (orion/core/bus/rpc_health.py hop conventions). served_model
-    values come from the configured lanes, so cardinality is bounded; the aggregator's
-    200-key cap backstops it."""
-    model = str(served_model or "").strip()
-    return f"fcc:{model or 'unknown'}"
+def fcc_hop_key(serving_role: str | None, fcc_route: str | None = None) -> str:
+    """RPC-health hop key for the FCC motor leg (orion/core/bus/rpc_health.py conventions).
+
+    - ``fcc:<role>``: the turn held a GPU pool lease (a durable run's hold), so every call ran on
+      that granted role -- ``fcc:agent``, ``fcc:agent-gpu2``, ``fcc:chat``.
+    - ``fcc:route:<route>``: no hold. Each call was placed by the pool on its own and the harness
+      never sees those grants, so only the requested gateway route is known. The ``route:`` prefix
+      keeps "asked for agent" from sharing a baseline with "ran on agent".
+    - ``fcc:unknown``: neither is known.
+
+    Replaces ``fcc:<served_model>`` (retired 2026-09-29): the model name the CLI echoed split one
+    lane into several keys whenever the pool spilled a call to another card, and also minted
+    junk keys such as ``fcc:<synthetic>`` (the CLI's own label for a message it made up itself,
+    e.g. an API error). Cardinality is now bounded by config/gpu_pool.yaml's roles + routes.
+    Spec: docs/superpowers/specs/2026-09-24-gpu-pool-design.md, reader impacts item 2."""
+    role = str(serving_role or "").strip()
+    if role:
+        return f"fcc:{role}"
+    route = str(fcc_route or "").strip()
+    if route:
+        return f"fcc:route:{route}"
+    return "fcc:unknown"
 
 
 def record_fcc_hop(bus: Any, motor: Any) -> None:
     """Record the FCC motor leg of one run on ``bus`` (the dispatch bus the RPC-health
-    publisher drains) as hop ``fcc:<served_model>``.
+    publisher drains) as hop ``fcc_hop_key(motor.serving_role, motor.fcc_route)``.
 
-    Measures ``fcc_elapsed_sec`` -- the motor leg's wall time (served-model probe, prior
+    Measures ``fcc_elapsed_sec`` -- the motor leg's wall time (placement probe, prior
     tool-fetch read, the claude subprocess, lifecycle grammar publish), not the bare
     subprocess. Success on a normal exit (any exit code >= 0, the round trip completed),
     timeout on the motor's own timeout-kill. Skipped: no elapsed time, pre-spawn refusal,
@@ -73,17 +89,15 @@ def record_fcc_hop(bus: Any, motor: Any) -> None:
     (negative exit code, e.g. a Hub cancel's SIGKILL -- the runner carries that exit code
     from the fcc_nonzero_exit error event).
 
-    Model: the CLI-echoed ``fcc_served_model``, else the gateway model probed before the
-    run (``probed_served_model``) -- a run that stalls before its first assistant event
-    would otherwise land in ``fcc:unknown``, split from its model's successes. Never raises."""
+    The key is known before the subprocess starts (the hold's role, else the requested
+    route), so a run that stalls before its first assistant event keys the same as its
+    successes. Never raises."""
     try:
         elapsed_sec = getattr(motor, "fcc_elapsed_sec", None)
         if elapsed_sec is None:
             return
         code = str(getattr(motor, "grounding_status", "") or "")
-        hop = fcc_hop_key(
-            getattr(motor, "fcc_served_model", None) or getattr(motor, "probed_served_model", None)
-        )
+        hop = fcc_hop_key(getattr(motor, "serving_role", None), getattr(motor, "fcc_route", None))
         elapsed_ms = float(elapsed_sec) * 1000.0
         if code in _FCC_TIMEOUT_CODES:
             bus.record_hop_timeout(hop, elapsed_ms)

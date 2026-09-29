@@ -525,3 +525,12 @@ def test_advance_never_folds_the_faded_value_or_moves_the_observed_clock() -> No
     assert advanced.last_value == 0.6
     assert advanced.ewma == pytest.approx(0.2 * 0.6 + 0.8 * 0.2)
     assert advanced.last_observed_at == stamp
+
+
+def test_normalize_across_targets_all_zero_reads_zero_not_a_tie() -> None:
+    """Review 2026-09-29: once the staleness fade takes every quiet domain to exactly
+    0, the old tie rule read the whole set as salience 1.0."""
+    assert normalize_across_targets({"a": 0.0, "b": 0.0}) == {"a": 0.0, "b": 0.0}
+    assert normalize_across_targets({"a": 0.0}) == {"a": 0.0}
+    # A nonzero tie is still a tie at the top.
+    assert normalize_across_targets({"a": 2.0, "b": 2.0}) == {"a": 1.0, "b": 1.0}

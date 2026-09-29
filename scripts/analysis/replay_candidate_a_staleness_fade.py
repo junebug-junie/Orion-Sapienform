@@ -81,6 +81,10 @@ def replay(frames, *, stale_sec: float = PREDICTION_ERROR_STALENESS_HORIZON_SEC)
         "before_stale": Counter(),
         "after_stale": Counter(),
         "changed": 0,
+        # Minutes where every competitor's raw salience is 0 (before / after the
+        # fade): normalize_across_targets reads that set as 0.0, not a 1.0 tie.
+        "before_all_zero": 0,
+        "after_all_zero": 0,
     }
     for gen, targets in sorted(frames.items()):
         if not targets:
@@ -102,6 +106,10 @@ def replay(frames, *, stale_sec: float = PREDICTION_ERROR_STALENESS_HORIZON_SEC)
             out["after_stale"][a] += 1
         if a != b:
             out["changed"] += 1
+        if max(before.values()) < 1e-12:
+            out["before_all_zero"] += 1
+        if max(after.values()) < 1e-12:
+            out["after_all_zero"] += 1
     return out
 
 
@@ -122,6 +130,7 @@ def main() -> int:
         print(
             f"{t} | {r['before'][t]} ({r['before_stale'][t]}) | {r['after'][t]} ({r['after_stale'][t]})"
         )
+    print(f"minutes with every raw salience 0: before={r['before_all_zero']} after={r['after_all_zero']}")
     return 0
 
 

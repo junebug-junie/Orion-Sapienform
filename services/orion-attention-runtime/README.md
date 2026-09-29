@@ -24,6 +24,8 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_node_prediction_error_baseline_v2_definition_version.sql
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
+  < services/orion-sql-db/manual_migration_node_prediction_error_baseline_v3_last_value_observed_at.sql
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_goal_provenance_streak_v1.sql
 ```
 
@@ -66,7 +68,9 @@ reading used to stay its "current" error for hours and win the node competition.
 current error is now faded linearly to 0 over 30 minutes
 (`PREDICTION_ERROR_STALENESS_HORIZON_SEC`, the same horizon as
 `PressureConfig.prediction_error_decay_horizon_seconds`), measured from the receipt behind
-`last_value` (`last_receipt_created_at`). Read-side only: the EWMA baseline still folds only
+`last_value`, persisted as `last_value_observed_at` (not the `last_receipt_created_at`
+cursor, which also moves over skipped receipts; the cursor is only a fallback before the
+v3 migration). Read-side only: the EWMA baseline still folds only
 real receipt values. A faded target's reasons say `stale reading: ... min old, weighted x`.
 `chat_session` moved to definition v3 the same day (touched turns only), so its baseline
 restarts once more on deploy. Replay: `scripts/analysis/replay_candidate_a_staleness_fade.py`.

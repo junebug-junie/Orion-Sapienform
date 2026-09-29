@@ -393,11 +393,17 @@ def normalize_across_targets(raw_scores: dict[str, float]) -> dict[str, float]:
       "tied for most salient" from "least salient" when every real competitor scored
       identically -- flooring to 0.0 would misrepresent a tie as "nothing here matters,"
       which is not what the data says.
+    - Every raw score zero -> every target gets ``0.0`` (2026-09-29). That is not a
+      tie among salient targets, it is "nothing is surprising right now" -- reachable
+      routinely once the staleness fade takes a quiet domain's reading to exactly 0.
+      Reading it as 1.0 would hand a fully faded set the highest salience.
     """
     if not raw_scores:
         return {}
     values = list(raw_scores.values())
     lo, hi = min(values), max(values)
+    if hi < 1e-12:
+        return {target_id: 0.0 for target_id in raw_scores}
     if (hi - lo) < 1e-12:
         return {target_id: 1.0 for target_id in raw_scores}
     span = hi - lo
@@ -524,8 +530,9 @@ def precision_weighted_salience_from_baseline(
     for half an hour is not "currently surprised" by what it saw back then. The
     fade is read-side only -- the persisted baseline (``ewma``/``variance``/
     ``last_value``) is untouched, so the EWMA still learns only from real receipts.
-    A fully faded target stays in the result (``n_samples`` > 0, salience 0): it
-    has history, it just has no current surprise.
+    A fully faded target stays in the result (``n_samples`` > 0, raw salience 0):
+    it has history, it just has no current surprise. Its normalized score is 0
+    unless it is tied with nonzero competitors (``normalize_across_targets``).
     """
     if baseline.observation_count == 0 or baseline.last_value is None:
         return _EMPTY_RESULT

@@ -679,3 +679,18 @@ def test_build_attention_frame_ages_readings_against_its_own_clock() -> None:
         t for t in (*frame.node_targets, *frame.suppressed_targets) if t.target_id == "node:substrate.chat"
     )
     assert chat.dominant_channels["prediction_error"] == pytest.approx(0.4)
+
+
+def test_a_fully_faded_set_reads_zero_salience_not_a_tie_at_the_top() -> None:
+    """Review 2026-09-29: every competitor faded to 0 used to normalize to 1.0."""
+    from datetime import timedelta
+
+    now = BASE
+    faded = PrecisionEwmaBaseline(
+        ewma=0.1, variance=0.02, observation_count=300, last_value=0.8,
+        last_observed_at=now - timedelta(minutes=45),
+    )
+    baselines = {"node:substrate.chat": faded, "node:substrate.execution": faded}
+    targets = select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines, now=now)
+    assert {t.target_id for t in targets} == set(baselines)
+    assert all(t.salience_score == 0.0 for t in targets)

@@ -4,7 +4,7 @@
 
 Three places where Orion's attention was being handed a number that did not mean what it looked like. Juniper approved all three ("do 1-3"). Route is left as is (her call).
 
-- **Old readings stop counting as "now" (A).** Each domain's surprise number in the attention competition is the last one its reducer wrote. Chat only writes when a turn lands, so a quiet chat's last number used to stay "current" for hours and win. It now fades to zero over 30 minutes, measured from the receipt that produced it. The running average behind it still learns only from real readings. (`prediction_error_staleness_factor`, `precision_weighted_salience_from_baseline`, `candidate_precision_weighted.py`; clock set in `AttentionRuntimeStore.advance_node_prediction_error_baseline`)
+- **Old readings stop counting as "now" (A).** Each domain's surprise number in the attention competition is the last one its reducer wrote. Chat only writes when a turn lands, so a quiet chat's last number used to stay "current" for hours and win. It now fades to zero over 30 minutes, measured from the receipt that produced it. The running average behind it still learns only from real readings. (`prediction_error_staleness_factor`, `precision_weighted_salience_from_baseline`, `candidate_precision_weighted.py`; clock set in `AttentionRuntimeStore.advance_node_prediction_error_baseline` and persisted in a new `last_value_observed_at` column, so skipped receipts cannot make an old reading look fresh)
 - **Chat surprise is no longer divided by its whole history (B).** Chat's surprise averaged a new turn's change over every turn ever stored (~1,700 on 2026-09-29, never evicted). It now averages over only the turns the batch touched, the same fix route got on 2026-09-25. Chat's formula version moves 2 -> 3, so attention's chat baseline restarts by itself. Chat's variance floor was re-derived for the new scale. (`chat_prediction_error`, `prediction_error.py`; `prediction_error_definitions.py`)
 - **One gateway timeout no longer reads as total failure (C).** The LLM gateway's failure number was one minute's failures over one minute's calls, with no floor. One timeout on a one-call minute read 1.0 and held until the next busy minute. It now uses the RPC delivery bridge's rule over a rolling 10 minutes: failures / max(calls, 10), and 0 until there are 2 failures. The reading is the worse of the whole node and the worst single worker, and the receipt names which one set it. (`orion/substrate/llm_inference_loop/failure_window.py`, reusing `rpc_delivery.hop_pressure` and `RpcDeliveryConfig` defaults)
 - The gateway now reports per-worker call and failure counts, so the substrate can name the failing lane. (`grammar_emit.py`, additive `worker_attempted=`/`worker_failed=` keys)
@@ -34,7 +34,9 @@ Three places where Orion's attention was being handed a number that did not mean
 
 - `orion/attention/field_attention/candidate_precision_weighted.py`: horizon constant, `prediction_error_staleness_factor`, `last_observed_at` on the baseline, and the fade plus result fields (`raw_error`, `staleness_factor`, `reading_age_sec`).
 - `orion/attention/field_attention/selectors.py`, `builder.py`: pass `now`, and add a "stale reading" reason.
-- `services/orion-attention-runtime/app/store.py`: stamps `last_observed_at` from the last folded receipt, or from the cursor on no-op ticks.
+- `services/orion-attention-runtime/app/store.py`: stamps `last_observed_at` from the last folded receipt and persists it in `last_value_observed_at` (probed like `definition_version`; falls back to the cursor until the column exists).
+- `services/orion-sql-db/manual_migration_node_prediction_error_baseline_v3_last_value_observed_at.sql` (new): the nullable column.
+- `orion/attention/field_attention/candidate_precision_weighted.py` `normalize_across_targets`: an all-zero set normalizes to 0.0, not a 1.0 tie.
 - `orion/substrate/prediction_error.py`: chat touched-only (v3), and the chat floor set to 3e-5.
 - `orion/schemas/prediction_error_definitions.py`: `chat_session` 2 -> 3.
 - `orion/substrate/llm_inference_loop/failure_window.py` (new), `extract.py`, `reducer.py`: the rolling floored reading. The per-window `inference_failure_pressure()` function is deleted.
@@ -48,9 +50,9 @@ Three places where Orion's attention was being handed a number that did not mean
 
 ## Schema / bus / API changes
 
-- Added: `LlmInferenceWindowCountV1`, `LlmInferenceProjectionV1.recent_windows` (default `{}`), receipt `after.failure_window`, and the gateway summary keys `worker_attempted` / `worker_failed`.
+- Added: `substrate_node_prediction_error_baseline.last_value_observed_at` (nullable timestamptz, manual migration), `LlmInferenceWindowCountV1`, `LlmInferenceProjectionV1.recent_windows` (default `{}`), receipt `after.failure_window`, and the gateway summary keys `worker_attempted` / `worker_failed`.
 - Removed: `orion.substrate.llm_inference_loop.extract.inference_failure_pressure()` (per-window ratio, only its test used it).
-- Behavior changed: `inference_failure_pressure` (rolling and floored), `chat_prediction_error` (v3), and Candidate A's current error (faded).
+- Behavior changed: `inference_failure_pressure` (rolling and floored), `chat_prediction_error` (v3), Candidate A's current error (faded), and `normalize_across_targets` on an all-zero set (0.0, was 1.0).
 - Compatibility:
   - `LlmInferenceProjectionV1` is an `extra="forbid"` singleton row, read and written only by `orion-substrate-runtime`. New code reads the old row: `scripts/check_substrate_projection_schema_drift.py` passes against live Postgres.
   - **Rollback hazard:** old code cannot read a row that has `recent_windows`. Rolling back substrate-runtime needs `DELETE FROM substrate_llm_inference_projection;` (the row is a cache and rebuilds from the next window).
@@ -125,7 +127,8 @@ C re-run on a fresh dump gives `new: nonzero_minutes=38 max=0.057 episodes=7 min
 dump's first gateway event is 08:06, so the first ~2.7 h of the original span has since been pruned (7,043 events vs 7,317).
 
 Replay limits:
-- A uses the field's `node_vector_updated_at` as the reading's age. Live code uses the receipt's `created_at`, which lands a few seconds earlier.
+- A uses the field's `node_vector_updated_at` as the reading's age. Live code uses the receipt's `created_at`, which lands a few seconds earlier. Receipts are pruned after 30 minutes, so the proxy could not be cross-checked historically; if anything rewrites the node vector's timestamp without a new receipt, the proxy under-counts age, so the replay's stale counts are lower bounds.
+- A, all-faded sets: 0 minutes in the span where every competitor's raw salience was 0, before or after the fade, so the normalization guard below does not change any replay number.
 - A cannot combine with B's new chat values, because the chat baseline restarts at deploy.
 - C cannot replay per-worker scope, because old summaries have no worker counts. Every failed window in 72 h held a single failure, so per-minute flooring alone would have read 0 always. That is why the window is rolling.
 
@@ -165,7 +168,17 @@ Not run. No compose, requirements, or Dockerfile change. Deploys are from the pr
 
 ## Review findings fixed
 
-(filled after review)
+Review: subagent code review over `git diff origin/main...HEAD` (after merging main).
+
+- Finding (material): the reading's time was re-read from the receipt cursor on every later tick, and the cursor also moves over skipped receipts (malformed, or another definition version). During a substrate-only rollback, which this report's own rollback path allows, old-version chat receipts arrive every tick, so chat's last real reading would look seconds old forever. The in-tick test asserted the right time and never checked the reload.
+  - Fix: persist the real time in a new nullable `last_value_observed_at` column (manual migration, probed the same way as `definition_version`, read via `to_jsonb` so the read works before the migration). Written only when a value was actually folded. Cursor fallback only for rows not yet re-folded or before the migration.
+  - Evidence: `test_observed_time_survives_a_skipped_receipt_across_ticks` (two ticks, skipped row after the folded one, reload keeps t2), `test_observed_time_is_not_written_without_the_column`, `test_nothing_folded_leaves_the_persisted_observed_time_alone`.
+- Finding (minor): once every competitor is faded to exactly 0, `normalize_across_targets`' tie rule read the whole set as salience 1.0.
+  - Fix: all-zero set -> 0.0. Nonzero ties still read 1.0.
+  - Evidence: `test_normalize_across_targets_all_zero_reads_zero_not_a_tie`, `test_a_fully_faded_set_reads_zero_salience_not_a_tie_at_the_top`; replay A shows 0 affected minutes in 72 h.
+- Finding (minor): replay A's age proxy. Fix: disclosed as a lower bound under Replay limits.
+- Finding (minor, not changed): `inference_failure_pressure` holds its last value when gateway traffic stops. Kept as disclosed in Risks; a down node reading its last failure share is defensible.
+- Finding (nit, not changed): the compatibility wrapper `extract_llm_inference_states_from_events` now returns no failure reading; no caller other than the reducer exists (checked).
 
 ## Restart required
 
@@ -183,7 +196,10 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
   < services/orion-sql-db/manual_migration_chat_projection_pe_baseline_v3_reset.sql
 ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh orion-substrate-runtime up -d --build
 
-# 2. attention-runtime (fade + chat v3 baseline reset; also ships the 2026-09-25 novelty fix it is missing)
+# 2. attention-runtime (fade + chat v3 baseline reset; also ships the 2026-09-25 novelty fix it is missing).
+#    Column first so the reading time is persisted from the first tick (either order is safe).
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
+  < services/orion-sql-db/manual_migration_node_prediction_error_baseline_v3_last_value_observed_at.sql
 ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh orion-attention-runtime up -d --build
 
 # 3. llm-gateway (per-worker counts; restarts the LLM serving path, pick a quiet moment)
@@ -215,7 +231,7 @@ docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "select even
 ## Risks / concerns
 
 - Severity: medium. Concern: the `LlmInferenceProjectionV1` rollback hazard (old code rejects `recent_windows`). Mitigation: the one-line DELETE above, since the row is a cache.
-- Severity: low. Concern: when skipped receipts (malformed, or another definition version) follow the last real one, the cursor timestamp that reloads `last_observed_at` can sit slightly later than the real reading, so the reading looks a little fresher than it is. This only happens during deploy skew. Mitigation: disclosed in `store.py`.
+- Severity: low. Concern: until the `last_value_observed_at` migration is applied (and for each row until its next real reading), the fade falls back to the receipt cursor, which moves over skipped receipts and can make a reading look fresher than it is. Mitigation: migration is in the deploy steps; the service logs `node_prediction_error_baseline_observed_at_column_missing` while it is absent.
 - Severity: low. Concern: the definition lock now records C (`high semantics_changed .../inference_failure_pressure`, via the corrected field-channel glossary meaning), but it cannot record B: `chat_prediction_error` is not in any registry the drift gate resolves, and the gate does not track `PREDICTION_ERROR_DEFINITION_VERSIONS` (the same gap disclosed on 2026-09-25). Mitigation: Juniper's approval is recorded in the Summary; B's version bump is the machine-readable record.
 - Severity: low. Concern: once the rolling window has no calls, the field digester holds the last written value (unchanged digester contract: "not measured" is not written as 0.0). Live cadence (~1 window with circe calls every 2 minutes) makes this rare.
 - Severity: info. Concern: the attention runtime was 3 days stale in production (missing the 09-25 D1 novelty fix). Rebuilding ships everything merged since. Mitigation: post-deploy check above.

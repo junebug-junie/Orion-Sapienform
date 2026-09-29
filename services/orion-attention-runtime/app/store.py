@@ -103,6 +103,23 @@ def _parse_definition_version(raw) -> int:
         return UNSTAMPED_DEFINITION_VERSION
 
 
+def _observed_at_from_row(row) -> datetime | None:
+    """When the reading behind a persisted ``last_value`` was written: the
+    ``last_value_observed_at`` column when present and set, else the receipt cursor
+    (rows written before the column existed, or before it is migrated in). The
+    cursor fallback can read fresher than the truth when skipped receipts followed
+    the last folded one."""
+    raw = row.get("last_value_observed_at")
+    if isinstance(raw, datetime):
+        return raw
+    if isinstance(raw, str) and raw:
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            pass
+    return row.get("last_receipt_created_at")
+
+
 class AttentionRuntimeStore:
     def __init__(self, postgres_uri: str) -> None:
         self._engine: Engine = create_engine(
@@ -113,6 +130,50 @@ class AttentionRuntimeStore:
         )
         self._definition_version_column: bool | None = None
         self._definition_version_checked_at: datetime | None = None
+        self._observed_at_column: bool | None = None
+        self._observed_at_checked_at: datetime | None = None
+
+    def _has_observed_at_column(self, conn) -> bool:
+        """Whether ``substrate_node_prediction_error_baseline.last_value_observed_at``
+        exists (services/orion-sql-db/manual_migration_node_prediction_error_
+        baseline_v3_last_value_observed_at.sql). Same caching as the
+        definition_version probe."""
+        cached = getattr(self, "_observed_at_column", None)
+        checked_at = getattr(self, "_observed_at_checked_at", None)
+        now = datetime.now(timezone.utc)
+        if cached is True:
+            return True
+        if (
+            cached is False
+            and checked_at is not None
+            and (now - checked_at).total_seconds() < _DEFINITION_VERSION_COLUMN_RECHECK_SEC
+        ):
+            return False
+        present = bool(
+            conn.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'substrate_node_prediction_error_baseline'
+                          AND column_name = 'last_value_observed_at'
+                    ) AS present
+                    """
+                )
+            ).scalar()
+        )
+        if not present:
+            logger.warning(
+                "node_prediction_error_baseline_observed_at_column_missing "
+                "apply services/orion-sql-db/manual_migration_node_prediction_error_"
+                "baseline_v3_last_value_observed_at.sql; the staleness fade ages "
+                "readings from the receipt cursor until it is applied, and the "
+                "cursor keeps moving over skipped receipts"
+            )
+        self._observed_at_column = present
+        self._observed_at_checked_at = now
+        return present
 
     def _has_definition_version_column(self, conn) -> bool:
         """Whether ``substrate_node_prediction_error_baseline.definition_version``
@@ -326,7 +387,9 @@ class AttentionRuntimeStore:
                             """
                             SELECT ewma, variance, observation_count, last_value,
                                    last_receipt_created_at,
-                                   to_jsonb(b) ->> 'definition_version' AS definition_version
+                                   to_jsonb(b) ->> 'definition_version' AS definition_version,
+                                   to_jsonb(b) ->> 'last_value_observed_at'
+                                       AS last_value_observed_at
                             FROM substrate_node_prediction_error_baseline b
                             WHERE target_id = :target_id
                             """
@@ -349,7 +412,7 @@ class AttentionRuntimeStore:
                             if existing["last_value"] is not None
                             else None
                         ),
-                        last_observed_at=existing["last_receipt_created_at"],
+                        last_observed_at=_observed_at_from_row(existing),
                     )
                     cursor = existing["last_receipt_created_at"]
 
@@ -449,9 +512,11 @@ class AttentionRuntimeStore:
                 if last_folded_at is not None:
                     # When the receipt behind `last_value` was written -- the
                     # staleness fade's clock (read-side only, never enters the
-                    # EWMA). On later ticks it is re-read from the persisted cursor,
-                    # which can sit slightly later than this if skipped rows
-                    # (malformed / other definition version) followed it.
+                    # EWMA). Persisted in its own column below, NOT re-derived from
+                    # the cursor: the cursor also advances over skipped receipts
+                    # (malformed / other definition version), so a substrate-only
+                    # rollback emitting old-version receipts every tick would keep
+                    # an old reading looking seconds old forever.
                     advanced = replace(advanced, last_observed_at=last_folded_at)
 
                 conn.execute(
@@ -468,11 +533,23 @@ class AttentionRuntimeStore:
                         "updated_at": datetime.now(timezone.utc),
                     },
                 )
+                if last_folded_at is not None and self._has_observed_at_column(conn):
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE substrate_node_prediction_error_baseline
+                            SET last_value_observed_at = :observed_at
+                            WHERE target_id = :target_id
+                            """
+                        ),
+                        {"observed_at": last_folded_at, "target_id": target_id},
+                    )
                 return advanced
         except Exception:
             # Re-probe the definition_version column next time: a dropped column
             # (migration rollback) must not wedge every advance until restart.
             self._definition_version_column = None
+            self._observed_at_column = None
             logger.exception(
                 "node_prediction_error_baseline_advance_failed target_id=%s", target_id
             )

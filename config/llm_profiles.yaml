@@ -2156,9 +2156,7 @@ profiles:
       port: 8080
 
       # llama-server splits --ctx-size across --parallel: 262144 / 4 = 65536
-      # per run. VRAM (UNVERIFIED on Volta): weights 7.21 GB + f16 KV at Prism's
-      # stated ~64 KB/token x 262144 = ~16 GiB, ~24 GiB before compute buffers.
-      # Measure per-run peak context before raising ctx or quantizing the cache.
+      # per run. VRAM measured on circe gpu0 2026-09-30: 24.1-24.3 GB (flash_attn on).
       ctx_size: 262144
       n_gpu_layers: 99
       threads: 16
@@ -2180,7 +2178,11 @@ profiles:
       n_predict: 16384
 
       no_context_shift: true
-      flash_attn: "off"
+      # Measured on circe gpu0 2026-09-30 (docs/2026-09-30-ternary-bonsai2-27b-1xv100-circe.md):
+      # on vs off -> 61K-depth decode 32.3 vs 17.6 tok/s, VRAM 24.1 vs 27.2-28.6 GB,
+      # 4 concurrent 27 vs 25 tok/s each. Cost: exactly 2 concurrent runs drop to 23 tok/s
+      # each (off: 41). The "off on Volta" rule came from other models, not this one.
+      flash_attn: "on"
 
     notes: |
       Bake-off only (2026-09-29). Runs on services/orion-llamacpp-bonsai-host,
@@ -2188,5 +2190,5 @@ profiles:
       Question: can one 32 GB V100 serve 4 concurrent curiosity runs with
       acceptable answers? Measure per run: answer sanity, tok/s, prompt tokens
       re-processed per step (prompt-cache reuse), and peak VRAM.
-      UNVERIFIED: Prism publishes no Volta numbers; CUDA support is
-      "source level, not a guarantee for every device".
+      Runs on Volta (circe gpu0, 2026-09-30); results in
+      docs/2026-09-30-ternary-bonsai2-27b-1xv100-circe.md.

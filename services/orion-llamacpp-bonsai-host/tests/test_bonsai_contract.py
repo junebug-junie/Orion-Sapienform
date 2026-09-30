@@ -98,4 +98,5 @@ def test_profile_launch_argv(monkeypatch):
     assert kwargs["reasoning_effort"] == "medium"
     assert kwargs["preserve_thinking"] is False
     assert flag("--n-predict") == "16384"
-    assert flag("--flash-attn") == "off"
+    # Measured win on circe gpu0 2026-09-30; see the field note.
+    assert flag("--flash-attn") == "on"

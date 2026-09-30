@@ -92,11 +92,13 @@ cp services/orion-llamacpp-bonsai-host/.env_example services/orion-llamacpp-bons
 
 - `ctx_size: 262144`, `n_parallel: 4`. llama-server divides the context
   across slots, so each run gets 65,536 tokens.
-- VRAM, **UNVERIFIED on Volta**: 7.21 GB of weights, plus about 16 GiB of f16
-  KV cache at Prism's stated ~64 KB per token, comes to about 24 GiB before
-  compute buffers.
-- `reasoning: auto`. Prism: `--reasoning on` overrides a client's
-  `reasoning_effort: "none"`.
+- VRAM, measured on circe gpu0: 24.1-24.3 GB with flash attention on,
+  27.2-28.6 GB with it off. That covers all four 65K slots, whether idle or
+  full.
+- `reasoning: auto`. To turn thinking off per request, send
+  `chat_template_kwargs: {"enable_thinking": false}`. This template rejects
+  `reasoning_effort: "none"` with HTTP 500, despite Prism's docs, and
+  `reasoning_budget: 0` does not stop thinking.
 - `reasoning_effort: medium`. The template accepts only `low`, `medium` and
   `xhigh`. `high` returns HTTP 500, and `low` behaves like `xhigh`.
 - `preserve_thinking: false`. Prism: re-rendering earlier reasoning into later
@@ -104,10 +106,13 @@ cp services/orion-llamacpp-bonsai-host/.env_example services/orion-llamacpp-bons
   exactly the cost four slots would multiply. **UNVERIFIED** that the Bonsai
   template honours this kwarg the way Qwen3.8's does.
 - `n_predict: 16384`. Smaller output caps end generation mid-thought.
-- `flash_attn: off`, matching the live Qwen3.8-27B agent lane on the same
-  hardware. The wrapper only emits `--flash-attn off` when the binary reports
-  a build number above b5332. That number is `git rev-list --count`, so the
-  Dockerfile uses a blobless clone, not `--depth 1`, and asserts the number.
+- `flash_attn: on`. Measured on circe: at 61K tokens of context, decode is
+  32.3 tok/s with it on against 17.6 off, and it uses about 4 GB less memory.
+  The one cost is that exactly two concurrent runs get 23 tok/s each, against
+  41 with it off. See `docs/2026-09-30-ternary-bonsai2-27b-1xv100-circe.md`.
+  The wrapper only emits `--flash-attn` for binaries it reads as newer than
+  b5332. That number is `git rev-list --count`, so the Dockerfile uses a
+  blobless clone, not `--depth 1`, and asserts the number.
 
 ## Bake-off measurements
 

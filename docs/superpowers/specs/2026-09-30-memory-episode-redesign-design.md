@@ -1,830 +1,941 @@
-# How Orion forms memories: episodes, Orion's own words, and knowing whose words they are
+# How Orion forms memories: episodes, Orion's own words, knowing whose words they are, and closing the loop
 
-Status: PROPOSAL (design only, no code). Needs Juniper's answers to "Missing questions" before Stage 1.
+Status: PROPOSAL, revision 2 (2026-09-30). Juniper has answered most of the open questions; see "Decisions".
 Date: 2026-09-30
-Evidence base: read-only live queries on `conjourney` Postgres, FalkorDB `GRAPH.RO_QUERY`, `ssh circe@circe nvidia-smi`, and docker logs/inspect, all taken 2026-09-30 about 09:30 UTC. Code read against main at a005658db.
+Evidence base: read-only live queries on the `conjourney` Postgres, FalkorDB `GRAPH.RO_QUERY`, `ssh circe@circe nvidia-smi`, and docker logs/inspect/env, all taken 2026-09-30 between 09:30 and 10:30 UTC. Code read against main @ a005658db.
+
 Related specs:
-- `2026-07-07-consolidation-crystallization-gate-design.md` (the gate this replaces)
+- `2026-07-07-purpose-conditioned-recall-design.md`: PCR, the retrieval spine this design keeps.
+- `2026-07-07-consolidation-crystallization-gate-design.md`: the write-side gate this design replaces.
+- `2026-07-06-graphiti-rail-activation-design.md`
 - `2026-08-14-crystallization-queue-auto-gate-analysis.md`
-- `2026-09-29-recall-semantic-retrieval-pipeline-design.md` (#2413, "recall by referent, not resemblance"; the retrieval side this design plugs into)
-- `2026-09-29-recall-retrieval-query-architecture-design.md` (approved; separates the search query from the prompt)
+- `2026-09-29-recall-semantic-retrieval-pipeline-design.md` (#2413, "recall by referent, not resemblance")
+- `2026-09-29-recall-retrieval-query-architecture-design.md`
 
 Anything not checked live is marked **UNVERIFIED**.
 
 ---
 
+## What changed in revision 2
+
+1. **A false claim is withdrawn.** Revision 1 said the chat compactor made up "as an introvert". It did not. Juniper's 09-28 09:06 message ends "super draining for me--I'm an introvert :)". My query had cut the prompt at 160 characters (`left(prompt,160)`), and the message is 188 characters long, so I never saw the end of it. The crystallization row, the digest, and `bus_fallback_log` all hold the full text. The compactor was faithful, and the claim is removed as the voice-rule regression case. The pronoun defect is real and stays: the digest says "He then pivoted…" about Orion (journal `68bb8201`). The lesson is written into the evals: **never judge fidelity against truncated text.**
+2. **The episode boundary reuses what already exists.** No new idle timer. Orion already has a conversation wall clock and an LLM boundary run. Both are traced below, and each has a specific defect that is fixed rather than replaced. The Austin example is re-run against the real boundaries.
+3. **PCR, Graphiti and pageindex are kept and fixed, not retired.** Each section now covers the original intent, what is actually broken, and a concrete role. Also, PCR means **Purpose-Conditioned Recall**; revision 1 expanded it wrongly.
+4. **Concept induction:** the spark concept-induction lane is dead, but concept induction through the topic model (topic-foundry) is alive and is a crosswalk source.
+5. **Stage 0 "metacog report"** is `daily_metacog_v1`. It has been failing on prompt size since 09-03.
+6. **Self-conclusions** are confirmed with Juniper through surfaces she already uses. Resolution is an event on the one existing open→resolved seam: attention loop outcomes. There is a second worked example: Orion's repeated "intake pipeline… stuck three days" outreach loop.
+7. **Juniper's answers** are folded in: the writer runs on the 27B at `system` priority; the reverie seed returns at Stage 2; the old-vs-new comparison is a report; the GPU question is dropped (the sale was deliberate; plan on 4 cards); retiring the reflection rows is still to be decided.
+
+---
+
 ## Arsonist summary
 
-Orion does not form memories. It photocopies Juniper's last message, and a pile of those photocopies has been passed off as memory.
+Orion does not form memories. It photocopies Juniper's last message, and the photocopies are served back to it as memory.
 
-- **What gets saved is junk or raw quotes.** Every ~2 turns a window closes. A gate that lets almost everything through then saves the **raw last user prompt** as the memory text. The prompt is used as both the subject and the summary (`intake_consolidation_window.py:77-82, 169-170`).
-  - 350 rows were auto-approved this way: 344 "semantic" and 6 "open_loop".
-  - "Run github compactor." is saved 8 times, "Compact the last 24 hours…" 6 times, "hi" 4 times, and 57 rows are shorter than 40 characters.
-  - Nobody reviewed any of them, and no history row records that they were approved: `intake_pipeline.py:136` throws the history away.
-- **The junk is what recall serves.** The active packet is simply the top 100 active rows by salience.
-  - All 635 retrievals in the last 7 days returned the same 100 rows.
-  - Every retrieval also "boosts" those same rows, so their activation stays at 0.99999 forever. The loop feeds itself.
-  - The same junk is copied into memory cards as well: 386 active `operator_distiller` cards ("sup", "Do a journal pass.").
-- **Real events end up as raw quotes nobody saw.** Juniper's Austin trip became three separate auto-approved "semantic" rows:
-  - "yup I'll be away from home :("
-  - "Thanks. Headed to Austin…"
-  - "It's a team offsite…"
+- **The saved text is the raw last prompt.** The intake judges roughly every 2 turns and saves that prompt as the memory text (`intake_consolidation_window.py:77-82, 169-170`).
+  - 350 rows were auto-approved this way (344 "semantic", 6 "open_loop"), with no history row recording the approval (`intake_pipeline.py:136`).
+  - Duplicates pile up: "Run github compactor." is saved 8 times, "Compact the last 24 hours…" 6 times, "hi" 4 times.
+- **Recall serves the junk.** The active packet is the top 100 active rows by salience, whatever the query.
+  - All 638 retrievals in the last 7 days returned exactly 100 ids, and only 107 distinct ids appear across them.
+  - Every read "boosts" every one of those 100 rows, so 198 active rows now sit at activation ≥ 0.99.
+  - The same junk is also copied into 386 active memory cards.
+- **The 36 "approved stances" are not stances.** They are Juniper's own messages, several about a family member's health (not quoted here, because this repo is public), filed as Orion's views.
+- **Orion has no way to close a thought.** On 09-27 and 09-28 it sent Juniper 8 near-identical unprompted messages ("I've mapped the intake pipeline cold… three days… I need your direction"), and 4 more on 09-29. Its conclusion was **correct**; this investigation verified it independently. Nothing in the system could record "Juniper confirmed this; the question is closed". So the same thought kept winning attention and kept being sent.
 
-  Nothing connects them. None says when she is back. Nothing prompts Orion to ask how it went.
-- **The 36 "approved stances" are not stances.** They are Juniper's own messages, several of them high-stakes: at least two are about a family member's health (details deliberately not quoted in this public repo). Juniper approved them, but they are filed as Orion's views.
-- **The one digest that does summarize makes things up.** The daily chat compactor wrote that Juniper finds the offsite draining "as an introvert". She never said that; Orion inferred it and it was written down as her words. The same digest calls Orion "He".
+**The proposal:**
+- When a stretch of conversation ends, as Orion's own conversation clock and boundary judge already decide, a 27B model reads the whole stretch. It writes what is worth carrying forward, in Orion's words, about specific things (Juniper, the Austin offsite, orion-durable-runs).
+- Each memory records whose words it is, what it is for, and the exact turns behind it. Code checks every quote against those turns.
+- **PCR (Purpose-Conditioned Recall) stays as the retrieval spine**, with its bugs fixed. **Graphiti becomes the time-aware projection** ("what did I believe about X in August"), with its broken hostname fixed. **pageindex navigates inside long documents** once referent recall has picked the document.
+- High-stakes memories, and Orion's own conclusions about itself, are checked with Juniper in chat or in the Hub panels she already uses.
+- When she answers, the answer becomes one event on the existing attention-loop outcome channel. That event closes the memory, the question and the attention loop together. That is what stops a thought from being re-sent forever.
 
-**The proposal.** When a stretch of conversation settles (30 minutes with no new message from Juniper), a 27B model reads the whole stretch and writes what is worth carrying forward, **in Orion's own words, about specific things** (Juniper, the Austin offsite, orion-durable-runs). Every memory records:
+---
 
-- **whose words** it is (Juniper said / we worked it out together / Orion thought / Orion read / Orion's knowledge of its own code);
-- **what it is for** (what happened, a lasting fact about Juniper, Orion's own view, a follow-up);
-- **the exact turns** that support it, with quotes that are checked against those turns by code.
+## Decisions (Juniper, 2026-09-30)
 
-High-stakes memories (health, family, conclusions about who Juniper is) stay "unconfirmed" until Orion checks them with Juniper in conversation. Unresolved questions go to a question queue that already exists and has a live reader (`curiosity_self_questions`), not into settled memory. Memories fade unless new evidence reinforces them. **Being recalled never reinforces a memory**, which is the bug that pins today's junk at full strength.
-
-This ships in five stages. The new writer runs in shadow first, with a daily old-vs-new comparison, and Austin is the first test case. The old intake is killed at cutover with no fallback.
+| Question | Decision |
+|---|---|
+| Episode boundary | Use the existing conversation wall clock and LLM boundary run. **No new timer** |
+| 27B priority | **Yes**: the memory writer runs at `system` priority, ahead of curiosity's background runs |
+| Orion's conclusions about itself | **Confirm with Juniper where relevant**: in chat when natural, in the Hub attention panel, in the Curiosity tab. When confirmed, record it as a **resolved tension** |
+| Reverie memory seed | **Revive at Stage 2** from validated shadow memories |
+| Daily old-vs-new comparison | **A report for now** (a Hub report page and a markdown artifact). No morning notification |
+| Retire the 356 inactive reflection rows | **Still to be decided** (open question 1) |
+| GPUs | 4 cards on circe is deliberate (2× V100 16GB were sold). Plan capacity on 4 |
 
 ---
 
 ## Current architecture
 
-### How a memory is formed today (three separate rails, none of them good)
+### How a memory is formed today: three rails, none of them good
 
-| Rail | Producer | Trigger | What it writes | Live state |
+| Rail | Producer | Trigger | Writes | Live state |
 |---|---|---|---|---|
-| **Crystallization intake** | `services/orion-memory-consolidation` → `orion/memory/crystallization/intake_pipeline.py` | Every persisted turn (`orion:memory:turn:persisted`) is classified by an 8B model (`app/worker.py:318`). A window closes when the *next* turn arrives after a gap/boundary (`app/boundary.py:23-34`); there is no idle timer | `memory_crystallizations` row; summary = raw last prompt | 3,678 consolidated windows (321 direct-chat, 3,359 AI Town), averaging 2.3-2.4 turns. 350 auto-active rows |
-| **Per-turn card extractor** | `services/orion-cortex-orch/app/memory_extractor.py` (route `quick_background`, 8B) | Every chat turn | `memory_cards`, status `pending_review` | 63 cards, **never reviewed**. Content is often decent ("Flight Plans: User is traveling to Austin and will return on Wednesday."), but it is third person with no voice |
-| **Daily chat compactor** | `services/orion-cortex-orch/app/chat_history_compactor_memory.py`, scheduled 06:00 America/Denver (`orion-actions/app/workflow_schedule_bootstrap.py:159`) | Daily, or on command | A `memory_cards` digest card (49 active) plus a `journal_entries` row (`source_kind=manual`) | Fabricates attributions ("as an introvert") and uses the wrong pronoun for Orion |
+| Crystallization intake | `services/orion-memory-consolidation` → `orion/memory/crystallization/intake_pipeline.py` | Each persisted turn (`orion:memory:turn:persisted`) is classified by an 8B model (`app/worker.py:318`); a window is judged when it closes | `memory_crystallizations`; summary = raw last prompt | 3,678 consolidated windows (321 direct chat, 3,359 AI Town), averaging 2.3–2.4 turns. 350 auto-active rows |
+| Per-turn card extractor | `services/orion-cortex-orch/app/memory_extractor.py` (`quick_background`, 8B) | Every chat turn | `memory_cards`, `pending_review` | 63 cards, never reviewed. Content is often decent ("User is traveling to Austin and will return on Wednesday") but written in third person with no voice |
+| Daily chat compactor | `services/orion-cortex-orch/app/chat_history_compactor_memory.py`, 06:00 America/Denver (`orion-actions/app/workflow_schedule_bootstrap.py:159`) | Daily, or on command | A `memory_cards` digest (49 active) plus a `journal_entries` row (`source_kind=manual`) | Faithful to what was said (revision 1 was wrong about this), but calls Orion "He" |
 
-A fourth path copies crystallizations into memory cards: `orion/memory/crystallization/projection_cards.py:41`, provenance `operator_distiller`, 386 active cards. That is how the junk reaches card recall too.
+On top of those, `orion/memory/crystallization/projection_cards.py:41` copies crystallizations into memory cards (`operator_distiller`, 386 active). That is how the junk reaches card recall.
 
 ### The intake gate, verified
+- **`has_repair_signal` means "an appraisal ran", not "a repair happened".** `orion/hub/turn_orchestrator.py:317` sets it to `repair_bundle is not None`. `consolidation_gate.py:64-72` then proposes before any novelty check. 162 of the 350 auto rows came in this way.
+- **A final fall-through admits almost anything else.** `consolidation_gate.py:113-126` lets through any turn that is not low-information small talk.
+- **The kind is set by a turn-to-turn change label.** TOPIC → semantic, REPAIR → open_loop, STANCE → stance (`intake_consolidation_window.py:18-22`). `formation_policy.py:7-8` then auto-activates semantic and open_loop.
+- **Juniper's reviews carry no reasons.** Her approvals and rejections are recorded under actor `orion_journal`, which is her Hub session id. The API accepts a `reason` (`crystallization_routes.py:273, 327`), but 0 of her 101 decisions have one, because the UI never sends it.
 
-- **The "repair" signal is almost always on.** `orion/hub/turn_orchestrator.py:317` sets `has_repair_signal = repair_bundle is not None`, so any successful pre-turn appraisal counts as a repair. `consolidation_gate.py:64-72` then proposes before any novelty check. 162 of the 350 auto rows came in this way.
-- **Anything else gets in through a final fallback.** `consolidation_gate.py:113-126` proposes any turn that is not low-information small talk.
-- **The kind of memory is decided by a turn-to-turn change label** (`intake_consolidation_window.py:18-22`): TOPIC becomes semantic, REPAIR becomes open_loop, STANCE becomes stance. `formation_policy.py:7-8` then auto-activates semantic and open_loop, and sends stance to the review queue.
-- **Juniper's reviews carry no reasons.** She approves and rejects in the Hub; the actor is recorded as `orion_journal`, which is her browser session id. The API accepts a `reason` (`crystallization_routes.py:273, 327`), but **0 of 101** of her decisions have one, because the UI never sends it.
+### The existing conversation boundary: wall clock plus LLM judge (Juniper: "we already have this")
 
-### Live table state (`memory_crystallizations`, 1,407 rows)
+There are two live signals:
 
-| kind | status | how it got there | n |
-|---|---|---|---|
-| stance | rejected | 599 by the AI Town bulk purge, 65 by Juniper | 664 |
-| reflection | active | `concept_relation_digest` (writer removed 08-20; all inactive by activation) | 356 |
-| semantic | active | auto_policy | 344 |
-| stance | active | Juniper-approved (raw Juniper quotes, see above) | 36 |
-| open_loop | active | auto_policy ("sup", "yo", "hi", …) | 6 |
-| stance | proposed | — | 1 |
+1. **The conversation wall clock**: `_build_conversation_phase` (`orion/situational/context.py:875-915`).
+   - It computes `phase_change` from the time since Juniper's last turn: same_breath (<2 min), short_pause (<20 min), resumed_thread (<3 h), long_gap (<12 h), stale_thread (>48 h), and next_day (the day changed).
+   - It is built on every chat turn: by the Hub (`orion/hub/turn_orchestrator.py:30`, `build_situation_for_ctx`) and by cortex-exec (`executor.py:3227-3231`, which sets `ctx["temporal_phase"]`).
+   - It feeds Orion's situation block in the prompt. Its runtime liveness since today's 09:00 UTC restarts is **UNVERIFIED**: there has been no chat turn since, and older logs are gone.
+2. **The LLM boundary judge**: each persisted turn is classified on `metacog_background` with a `BOUNDARY: YES/NO` line (`orion/memory/turn_change_classify.py:139`). The answer is scored from logprobs into `conversation_boundary_score` (`orion/memory/consolidation_classify.py:8-30`).
+
+They are combined in `services/orion-memory-consolidation/app/boundary.py:23-34` (`should_close_window`):
+- close if the phase is long_gap, next_day or stale_thread **and** the score is ≥ 0.70;
+- close if the phase is unknown **and** the score is ≥ 0.85;
+- if the turn has no phase, fall back to a gap of ≥ 5,400 s between the last two turns (`window_fetch.py:32-42`).
+
+**Defect 1: the wall clock never reaches consolidation.** Consolidation reads `turn.spark_meta["conversation_phase"]["phase_change"]` (`boundary.py:24-26`, `window_fetch.py:27-29`). Nothing writes that key into the persisted turn: `chat_history_log.spark_meta` has no `conversation_phase` key since 09-20. **0 of 3,586** window turns in the last 30 days carry a phase. So every close goes through the "unknown phase, LLM ≥ 0.85" branch.
+
+**Defect 2: the score that closes windows does not match the turn's own score.** On the Austin day, every one of the 9 window closures was triggered by a closing-turn score of **0.959–1.000** as stored in the window. The same turn's `conversation_boundary_score` in `chat_history_log.spark_meta` is **0.004–0.685**:
+
+| turn | score in window (closed it) | score in chat_history_log |
+|---|---|---|
+| "hey, which queue?" | 0.981 | 0.006 |
+| "Oooh the reading queue…" | 0.985 | 0.279 |
+| "yup I'll be away from home :(" | 0.970 | 0.023 |
+| "Thanks. Headed to Austin…" | 0.959 | 0.023 |
+| "It's a team offsite…" | 0.990 | 0.086 |
+| "Run github compactor." | 0.999 | 0.068 |
+
+- Each closing turn is then carried into the next window, and there it shows the low score. So the turn is scored twice, and the high score is the one that closes.
+- The effect is a rule of "close at every second turn". It explains the 2.3-turn average and the "judges every ~2 turns" symptom.
+- Root cause (a scoring inversion, a stale logprob buffer, or a second classify pass overwriting the patch) is **UNVERIFIED**. The first fix is a regression test that asserts the two scores are equal.
+
+**Defect 3: nothing closes a window unless another turn arrives.** Juniper ruled out a new timer. The design accepts the latency and measures it. In practice the next turn is often Orion's own unprompted message: 4 a day, about 50 minutes apart, outside quiet hours 23:00–08:00. That message persists and is classified like any other turn.
 
 ### Who reads memory today
 
-| Consumer | Code | What it reads | Problem |
+| Consumer | Code | Reads | Problem |
 |---|---|---|---|
-| Recall active packet (PCR belief intents) | `services/orion-recall/app/collectors/active_packet.py:142` → `repository.py:410-435` | Top 100 active rows by salience. That is always 36 stance + 6 open_loop + 58 semantic | Ignores the query entirely. Writes a boost on every read (`retriever.py:38-64`); 1.1-1.9 s per call |
-| Crystallization retriever (Chroma + Graphiti 2-hop) | `orion/memory/crystallization/retriever.py:91-188` | Chroma returns "chromadb not installed". Graphiti ran 0 times in 2,060 events | Even if they ran, their ids only go into the trace, never into the packet (l.159-168) |
-| concept_region | `services/orion-recall/app/collectors/concept_region.py` | Falkor `orion_substrate` concepts matched by substring | Writes +0.08 activation back on every match |
-| Card recall | `services/orion-recall/app/cards_adapter.py:116, 218` | `memory_cards` with `status='active'` | Serves the 386 junk projected cards. Never serves the 63 decent pending extractor cards |
-| Dream cycle | `services/orion-dream/app/cycle_store.py:48-51` | Active rows with `updated_at > since`, by salience | Because the boost-on-read rewrites the row, the same top rows probably look "new" every cycle. **UNVERIFIED** whether the boost bumps `updated_at` |
-| Reverie visual seed | `services/orion-thought/app/store.py:913-1018` | Newest active row with an `approve` history row, created within 7 days | Dead since about 2026-09-24 05:55: the newest approved row is from 09-17. Its last real use was 09-24 00:09 |
-| Curiosity study material | `orion/curiosity/study_material.py:242-260` | Random active non-reflection rows | The docstring (l.23-27) says Juniper approved these; almost none were |
-| Self-study analysis | `services/orion-cortex-exec/app/self_study_analysis.py:163-176` | `memory_crystallizations`, labelled "concept_induction" | The label is false: these are raw prompts, and "active" mostly means auto-approved |
-| journal.compose | `orion/cognition/verbs/journal.compose.yaml:11` (profile `reflect.v1`) | No active packet | Does not read crystallizations directly |
+| PCR active packet | `services/orion-recall/app/collectors/active_packet.py:142` → `repository.py:410-435` | Top 100 active by salience | The query is ignored, and all 100 are boosted on every read (see PCR below) |
+| Crystallization retriever (Chroma + Graphiti 2-hop) | `orion/memory/crystallization/retriever.py:91-188` | Chroma: "chromadb not installed". Graphiti: 0 calls | The extra ids are only put in the trace, never merged (`:159`) |
+| concept_region | `services/orion-recall/app/collectors/concept_region.py` | Falkor `orion_substrate` concept labels | About 47 fragments per turn, edges rendered as raw ids, reinforces before render |
+| Card recall | `services/orion-recall/app/cards_adapter.py:116, 218` | Active `memory_cards` | Serves the 386 junk projected cards |
+| Dream cycle | `services/orion-dream/app/cycle_store.py:48-51` | Active rows updated since the last cycle | Boost-on-read probably makes the same rows look new every time (**UNVERIFIED** whether the boost bumps `updated_at`) |
+| Reverie visual seed | `services/orion-thought/app/store.py:913-1018` | Newest approved row < 7 days old | Dead since about 09-24 |
+| Curiosity study material | `orion/curiosity/study_material.py:242-260` | Random active rows | Its docstring (`:23-27`) says Juniper approved them; she did not |
+| Self-study analysis | `services/orion-cortex-exec/app/self_study_analysis.py:163-176` | Crystallizations labelled "concept_induction" | The label is false |
+| Chat stance reverie line | `chat_stance.py:1524-1570` → `chat_stance_brief.j2:26-27` | Latest reverie | Rendered as a bare `reverie_glimpse:` with no voice framing |
+| Recall render | `services/orion-recall/app/render.py:111-114` | Any | `[source:ref] snippet`, with no voice |
 
-### The retrieval side (PCR, "purposeful chat recall")
-
-`services/orion-cortex-exec/app/pcr_chat_memory.py` runs up to three recall phases per turn:
-- phase 0 is a skip gate (l.176-196);
-- phase 1 recalls continuity with profile `chat.continuity.v1` (l.198-229);
-- phase 3 recalls by purpose: `derive_retrieval_intent` picks an intent, then it recalls with `chat.belief.<intent>.v1` (l.235-363).
-
-`services/orion-recall/app/pcr_collectors.py:7-13` turns on active_packet and concept_region for all five intents, and graphiti only for `contradiction`. It always turns off sql_chat and sql_timeline. Live, only 71 purposeful ("belief") recalls exist since telemetry began on 09-29 18:14, all with the `open_loop` intent. Across those recalls, active_packet contributed 6 items each (the 6 junk open_loops) and concept_region about 40 each.
-
-### Surfacing internal thoughts in chat today
-
-- A reverie reaches the chat prompt only as the bare line `- reverie_glimpse: <text>` (`orion/cognition/prompts/chat_stance_brief.j2:26-27`, fed by `chat_stance.py:1524-1570`). Nothing tells Orion that this was never said to Juniper.
-- Recall renders items as `- [source:ref] snippet` (`services/orion-recall/app/render.py:111-114`) with no voice.
-- This repo has already shipped one voice-blending bug: AI Town NPC lines were labelled "User:", which falsely claimed Juniper said them. It was fixed by `services/orion-recall/app/chat_source_tagging.py` (2026-07-31). The same class of bug is live in the compactor digest ("as an introvert").
+This repo has already fixed one voice-blending bug: AI Town NPC lines used to be labelled "User:" (`services/orion-recall/app/chat_source_tagging.py`, 2026-07-31).
 
 ---
 
 ## Research answers (A-H)
 
-### A. Where the episode distiller runs, on which model, at what cost
+### A. Where the memory writer runs, on what model, at what cost
 
-**Placement: a new durable-runs workflow, `memory.episode_distill`.** It is modelled on `journal.compose` (`services/orion-durable-runs/app/journal_compose_graph.py:163-180`: resource_request → resource_wait → compose → publish → finish, with a retry_wait loop). That pattern fits:
-- the GPU hold is taken only around the LLM node and released before publishing (`:149`);
-- output ids are deterministic, so a replay is harmless;
-- LangGraph Postgres checkpoints survive a restart;
-- waiting for the GPU is not counted as a retry attempt.
+**Placement:** a new durable-runs workflow, `memory.episode_distill`, modelled on `journal.compose` (`services/orion-durable-runs/app/journal_compose_graph.py:163-180`):
+- the GPU hold covers only the LLM node and is released before publishing (`:149`);
+- output ids are deterministic;
+- state is checkpointed in LangGraph Postgres;
+- waiting for the hold does not count as a retry.
 
-Four changes from journal.compose:
-1. **Call the LLM gateway directly with the `gpu_lease`, not through cortex-orch.** journal.compose goes through cortex-orch, which also runs a recall step. A distiller must not have recall inject unrelated items into its evidence.
-2. **Use a bigger model.** journal.compose runs on the 8B today: live `ACTIONS_JOURNAL_LLM_ROUTE=quick_background` → class `fast`.
-3. **Submit from orion-memory-consolidation.** It owns the episode boundary, so it sends a receipt RPC on `orion:durable:run:request` (`orion/schemas/durable_run.py:47`) or calls `POST /runs` (`services/orion-durable-runs/app/main.py:249`). **UNVERIFIED** whether a non-orch producer is accepted on the bus RPC; `POST /runs` is the fallback.
-4. **Mind the checkpoint age limit.** `DURABLE_RUNS_MAX_AGE_HOURS=24` abandons old checkpoints. A distill run's deadline must stay under it (12 h proposed).
+It differs from `journal.compose` in four ways:
+1. It calls the gateway directly with `gpu_lease`. Going through cortex-orch would add a recall step that pollutes the evidence.
+2. It uses the 27B, not the 8B that journal.compose uses today (`ACTIONS_JOURNAL_LLM_ROUTE=quick_background` → class `fast`).
+3. orion-memory-consolidation submits it, via a receipt RPC on `orion:durable:run:request` (`orion/schemas/durable_run.py:47`), with `POST /runs` (`main.py:249`) as the fallback. Whether a non-orch producer is accepted on the RPC path is **UNVERIFIED**.
+4. Its deadline stays under `DURABLE_RUNS_MAX_AGE_HOURS=24`.
 
-Registration follows the checklist in `durable_run.py:62-72, 213-217` and `admission_runtime.py:82-93, 152-175, 200-215`. Deploy order: durable-runs → cortex-orch → sql-writer → producer.
+**Model and priority (decided):** agent class (27B dense, :8015 on gpu1, :8016 on gpu2), `system` priority, on a dedicated route `memory_distill: {class: agent, priority: system}` so that pool telemetry can see it.
+- Not the chat lane: that is Juniper's reserved single slot, and `scripts/check_chat_route_poachers.py` enforces it.
+- Stage 1 also runs the 8B on the same episodes as a label-free comparison.
 
-**Episode boundary: orion-memory-consolidation owns it.** It already consumes every persisted turn and partitions by platform (`app/window_state.py:17-41`). What it lacks is an **idle timer**: today a window only closes when the next turn arrives, and 2 windows have been open since 09-17. The fix is a 60-second ticker in the same service that closes an episode after 30 quiet minutes. The contract is below.
+**Capacity, on circe's 4 cards (live):**
 
-**Model: the 27B dense agent class (routes to :8015 / :8016), at `system` priority, through a dedicated route `memory_distill`.**
-- **Not the 35B chat lane (:8011).** It is Juniper's reserved single-slot Hub lane, and `scripts/check_chat_route_poachers.py` exists to keep background work off it. A distiller fires right after a conversation settles, which is exactly when she may start talking again.
-- **Not the 8B.** Juniper asked for bigger. The job needs judgment (what is worth keeping), voice discipline, and merging referents across episodes; the 8B compactor already shows the failure mode. Stage 1 still runs the 8B on the same episodes as a label-free comparison, so the choice is backed by data, not taste.
-- **Why `system` priority.** At `background` priority the distiller would queue behind curiosity: 7 background holds were queued on the agent class at 09:30 UTC. At 1-3 episodes a day it takes little from anyone.
-- **Pool fit.** The agent class may spill onto the chat card (`gpu_pool.yaml:94`) and be recalled from it with up to 600 s grace (`:23`). That is acceptable for a job with a 12-hour deadline.
+| card | assignment | state |
+|---|---|---|
+| gpu0 V100 32GB | chat 35B-A3B :8011 | 27.9 GB used, 80% busy |
+| gpu1 V100 32GB | agent 27B :8015 | 24.9 GB used, 99% busy |
+| gpu2 PG500 | agent-burst 27B :8016 (plus world model) | 25.7 GB used, 98% busy |
+| gpu3 V100 32GB | metacog and fast 8B | 15.4 GB used |
 
-**GPUs (live).** circe has **4 GPUs today, not 7** (`nvidia-smi -L` shows idx 0-3 only). The 7-GPU inventory recorded on 08-29 (P100 at idx 4, two 16 GB V100s at idx 5-6) no longer matches the hardware, so there is no idx 5 or 6 to use. Live occupancy:
+The agent class had 7 background holds queued at 09:30 UTC. At `system` priority the writer goes ahead of those.
 
-| idx | card | used | what |
-|---|---|---|---|
-| 0 | V100-PCIE 32GB | 27.9 GB, 80% | chat 35B-A3B (:8011) |
-| 1 | V100-SXM2 32GB | 24.9 GB, 99% | agent 27B (:8015) |
-| 2 | PG500-216 | 25.7 GB, 98% | agent-burst 27B (:8016) + world model 0.9 GB |
-| 3 | V100-PCIE 32GB | 15.4 GB, 0% | metacog 8B (:8012) + fast 8B (:8013) |
+**Load estimate:**
+- Juniper's own turns run at 37 per 14 days.
+- Under the fixed boundary rule (next section) that is roughly one to two episodes a day. The Austin day is one episode.
+- Episode text is 0.4–6.4 k characters.
+- Per episode: about 5.5 k tokens in and 1 k out. At 491 tok/s prefill and 32 tok/s generation, that is about 45 s, or 1–4 min with the live `reasoning xhigh`.
+- **Total: about 2–8 minutes of agent-lane time a day.** This is an **UNVERIFIED** estimate; Stage 1 measures it.
 
-No card is free. gpu3 has about 17 GB of headroom, but the pool's own rule is that nothing big spills down to gpu3.
+### The episode-boundary contract (reusing wall clock + LLM judge)
 
-**Episodes per day** (`chat_history_log`, excluding AI Town):
-- Over 30 days: 238 turns. A 30-minute quiet rule over all turns gives 170 episodes; a 60-minute rule gives 100.
-- Counting only turns where Juniper actually spoke: 37 user turns in the last 14 days, giving **18 episodes at 30 minutes** (1-3 a day). The other 56 turns in those 14 days were unsolicited outreach with an empty prompt.
-- Weekly user turns fell from 81 (week of 08-10) to 14 (week of 09-28).
-- Episode text is 0.4-6.4 k characters.
+An **episode** is a maximal run of consecutive turns on one `source_platform`, with no *conversation boundary* inside it. The boundary rule reuses both existing signals, each after fixing its defect.
 
-**Cost per episode (estimate, UNVERIFIED until Stage 1 measures it).**
-- Input is about 5.5 k tokens: instructions ~2.5 k, episode ~1.5 k, context ~1.5 k (the last 48 h of memories about the same referents, open questions, pending confirmations, and candidate referents).
-- Output is about 1 k tokens of JSON.
-- 27B at ~491 tok/s prefill and ~32 tok/s generation: about 11 s + 31 s ≈ **45 s without reasoning**. The live 27B is configured with `reasoning xhigh`, which could add 2-6 k thinking tokens: **1-4 min**.
-- **Per day: 2-10 minutes of agent-lane time.** Whether a per-request reasoning budget can be set through the gateway is **UNVERIFIED**.
-- For comparison, the 35B would take about 6 s + 15 s.
+**Fix 1: persist the wall clock with the turn.** The Hub already builds `ConversationPhaseContextV1` for every chat turn. It should stamp `spark_meta.conversation_phase = {phase_change, delta_user_seconds, crossed_day}` onto the `chat.history` turn it publishes. Consolidation reads that key today and gets nothing. Unprompted outreach turns must be stamped as well. The exact Hub file and line where the turn envelope is built is **UNVERIFIED**; Stage 0 finds it and adds a test.
 
-### B. PCR, mapped into the new design
+**Fix 2: one boundary score per turn.** A regression test must show that the score `should_close_window` sees equals the score persisted into `chat_history_log` for the same turn. Then find and fix the source of the second score.
 
-| Piece | Fate |
-|---|---|
-| PCR phase structure in cortex-exec (skip gate, continuity, purposeful) | **Kept.** It is the right shape: "should I recall", "what just happened", "what is this about" |
-| Phase 1 continuity | Kept. Continuity becomes: the last closed episode's memories plus the recent turns, labelled "recent, not matched" per #2413 |
-| Phase 3 purposeful → `active_packet` | **Retired at Stage 4.** Replaced by referent lookup over episode memories via #2413's index |
-| `concept_region` (substring match + activation write-back) | Retired at Stage 4. Substrate concepts become postings in the referent index, with no write-back |
-| Crystallization retriever: Chroma rail | Retired (dead: "chromadb not installed") |
-| Crystallization retriever: Graphiti 2-hop | Retired (see D) |
-| Retrieval events and boost-on-read | Retrieval is **logged**, never used as reinforcement (see Fading) |
+**Rule 3 (a change to `should_close_window`, tested in shadow before adoption):**
+- **long_gap, next_day or stale_thread → boundary.** This no longer also needs an LLM score. The wall clock's own meaning for these phases is "reorient", and with Defect 2 unfixed, the LLM condition has never been trustworthy.
+- **resumed_thread (20 min–3 h) → boundary only if the LLM score is ≥ `MEMORY_BOUNDARY_OVERRIDE_THRESHOLD` (0.92).** That knob already exists in settings and is currently unused.
+- **same_breath or short_pause → never a boundary.**
+- **No phase** → the existing fallback (5,400 s gap).
 
-### C. pageindex (#2344)
+The rule is evaluated when a turn arrives. As Juniper decided, there is no timer. The turn that crosses the boundary opens the next episode.
 
-#2344 fixed a crash loop (RestartCount 4,793 since 08-30); it did not add a feature (`docs/superpowers/pr-reports/2026-09-25-pageindex-starlette-crash-loop-pr.md`).
-- **What it wraps:** `services/orion-pageindex` on :8360, around the unpinned upstream PageIndex CLI.
-- **What it indexes:** `journal_entry_index` (101,372 rows) and a topic-foundry chat-episode markdown file.
-- **Two callers:**
-  - cortex-exec, keyword-gated to words like "identity", "journal", "dream" (`executor.py:1982-1994, 2618-2640`);
-  - recall v2, which points at **port 8384 instead of 8360**, so every call fails (`settings.py:186` and the live env).
-- **Live usage:** since start, only `/status` polls. There have been **0 queries and 0 rebuilds**, and nothing in code calls rebuild (`pageindex_client.py:15` is never invoked). The index has most likely never been built; this is **UNVERIFIED** because the status file is unreadable from the host.
+**What the contract adds:**
+- **Episode record.** Once the fixes land, the consolidation window **is** the episode. Windows are reused, not duplicated. Each window gets `episode_status`, `close_reason`, `phase_at_close` (the column `phase_change_at_close` already exists and is NULL on all rows) and `boundary_score_at_close`.
+- **Close event.** `memory.episode.closed.v1` on `orion:memory:episode:closed`, with payload `{episode_id = memory_window_id, source_platform, started_at, ended_at, turn_ids, juniper_turn_count, close_reason, phase_at_close, boundary_score_at_close, close_lag_sec}`.
+  - `close_lag_sec` is the time from the last turn of the episode to the arrival of the turn that closed it.
+  - Consumers: the durable submitter and the shadow report.
+- **Skips.** An episode whose Juniper turns are all workflow commands (the response starts with `Workflow:`) closes as `skipped/command_only` with no LLM call. Unanswered outreach alone never forms an episode.
+- **Metric gate for Rule 3.**
+  - It uses no new metric; both inputs already exist.
+  - The live check is the Austin replay below.
+  - The eval is the over-/under-split rate in Stage 1 (see acceptance checks).
 
-**Role in this design: none.** It is a tree index over headings and excerpts, built by an LLM. It has no notion of people, events or services, and it is not running. Episode memories are small and keyed by referent, so pageindex is the wrong tool. Recommend a separate ticket: fix or remove the recall_v2 caller and decide whether to keep the service at all. Do not build on it.
+### B. PCR (Purpose-Conditioned Recall): keep it as the retrieval spine and fix the bugs
 
-### D. Graphiti: retire it
+**Original intent.** Spec `docs/superpowers/specs/2026-07-07-purpose-conditioned-recall-design.md`, plan `docs/superpowers/plans/2026-07-07-purpose-conditioned-recall.md`, PR #841.
+- Chat used to do "last message → one recall → score soup". PCR replaced that with time-separated phases: Phase 0 is a skip gate, Phase 1 is continuity **before** stance, and Phase 3 is purposeful recall **after** stance, with collectors chosen per intent.
+- `active_packet` was designed as "the read-path seam that makes write-side crystallization matter in chat". The spec says outright that without PCR, the write-side gate "only moves swamp from graph drafts to unused crystallizations".
+- Later PRs: #902 (recall-eligibility floor), #1004 (recall boost and decay at read), #1008 (retrieval events), #1133 (concept_region), #2423 (`retrieval_query`), #2436 (collector timing under the deadline).
 
-- **What it is:** Postgres `graphiti_episodes`/`_entities`/`_edges` (25 rows each, all `kind=stance`, one edge type `has_episode`), plus the FalkorDB graph `graphiti_temporal`, behind `orion-athena-graphiti-adapter` (:8640).
-- **Why it is stale since 09-04:**
-  - The only live writer is the Hub's approve button (`crystallization_routes.py:294`, `CRYSTALLIZER_AUTO_PROJECT_ON_APPROVE=true`). The automatic path hard-codes `project_graphiti=False` (`intake_pipeline.py:148`).
-  - Of the 36 approvals, the 11 made on 09-10 and 09-20 have `graphiti_episode_ids: []` and `synced_at: null`. The sync failed silently; it only logs `graphiti_sync_failed`.
-  - Likely cause (**UNVERIFIED**): the Hub runs with host networking but is configured with `GRAPHITI_ADAPTER_URL=http://orion-athena-graphiti-adapter:8000`, a name the host cannot resolve.
-- **Readers:** one, the contradiction path of the retriever. It ran 0 times, and it throws its results away (the bug in B).
+**How it works:** `services/orion-cortex-exec/app/pcr_chat_memory.py`.
+- Phase 0 and Phase 1 run at `:160-233`; Phase 3 at `:236-363`. The quick lane skips Phase 3 (`:250`).
+- The phases write `continuity_digest`, `belief_digest` and `memory_digest` (`:84-88`), which are rendered in `orion/cognition/prompts/chat_general.j2:15-17`.
+- The intent is chosen in `orion/memory/retrieval_intent.py:111-156`, first match wins. Collectors are chosen in `services/orion-recall/app/pcr_collectors.py:7-13`.
+- Budgets: belief 128 tokens (`settings.py:266`); continuity 1,200 live, against the spec's ~96.
 
-**Verdict: retire it; do not revive it as the episode/link store.**
-- It holds 25 nodes about the wrong things (raw quotes filed as stances).
-- It adds a separate adapter with fragile networking and writes that fail silently.
-- Its one consumer is dead code.
-- The real links already live in Postgres (`memory_crystallization_sources`: 7,328 rows), and #2413's posting table does the same job with a btree index.
+**Verdict: every part is sound. What fails are specific bugs.**
 
-Keep FalkorDB for the substrate and worldview graphs, which have live producers. Removing the adapter and the Hub sync call happens at Stage 4.
+| Part | Bug (evidence) | Fix |
+|---|---|---|
+| Intent derivation | `open_loops_present` is checked first (`retrieval_intent.py:128`), and the attention frame always has open loops, because `build_open_loops` (`orion/substrate/attention/scoring.py:72-200`) turns every attention signal into a loop, including the current-turn detector. Live: **74 of 74** Phase 3 recalls were `open_loop`; relational, semantic, procedural and contradiction never fire | Only persistent loops (not `current_turn_v1`, not `already_known`) or explicit open `follow_up` memories trigger `open_loop`. Evaluate relational and topic rules first. Log a histogram of `rule_id` |
+| active_packet selection | Candidates are the top 100 by salience; `query` is stored but never ranked (`active_packet.py:58-63`). `crystallization_refs` lists **every** eligible row, breaking #1004's own "only what made the cut" invariant | Rank by shared referents with the turn **before** the budget, and log only what rendered |
+| Recall boost | Every read boosts all 100 rows, on top of the undecayed stored activation (`retriever.py:182-186`, `dynamics.py:88-100`). Live: 198 active rows at ≥ 0.99 | Rendering never reinforces (see Fading). A `recalled` event is logged instead |
+| Retriever extra ids | Ids from Chroma and Graphiti only reach the trace (`retriever.py:159, 179`) | Load them and merge them into the candidates |
+| Graphiti rail | Only on for `contradiction`, which never fires | Enable it for the semantic and contradiction intents, seeded from the top referent (see D) |
+| concept_region | Substring match with no cap (`concept_region.py:89-93`), about 47 fragments per turn, edges rendered as ids (`:115-131`), reinforces before render (`:299-311`) | Cap at about 5, render labels, reinforce only what rendered, and use its label matches as **referent keys** for the memory lookup |
+| Continuity | The spec says sql_chat only at about 96 tokens; live it is 1,200 and mostly `bus_synaptic_publish` ids (**UNVERIFIED** what those are) | Back to sql_chat only, plus the last episode's memories, at 96–300 tokens |
+| Skip gate | Never fires (0 `pcr_phase0_skip` since restart). **UNVERIFIED** whether the appraisal reaches the ctx keys it reads (`pcr_chat_memory.py:48-64`) | Test that it does |
+| Latency | `pcr_active_packet` averages 1,427 ms of the 2,476 ms Phase 3 total, mostly embedding, Chroma and 100 writes | Skip the embedding when the referent lookup is enough; batch or drop the writes |
+
+**How PCR reads the new memory store.** active_packet's buckets map onto memory purposes; the bucket structure is kept.
+
+| PCR intent | Reads (episode memory purpose / state) | Old bucket |
+|---|---|---|
+| continuity (Phase 1) | `happened` from the last closed episode(s) this session, plus recent sql_chat | — |
+| relational | `about_juniper` + `orion_view` | stance, attractors |
+| semantic | `happened` + `about_juniper`, plus a Graphiti 2-hop from the top referent | project_state |
+| procedural | `follow_up` (plans and commitments) | procedures |
+| open_loop | open `follow_up` + conversation-scoped open questions | open_loops |
+| contradiction | memories sharing a referent that are `pending_confirmation`, `corrected`, or superseded, plus Graphiti's as-of view | contradictions |
+
+- The ranking is `strength × referent-match weight (Σ idf of shared referents, per #2413) × purpose match`.
+- Every rendered line goes through the voice renderer (section 7).
+- The referent lookup is #2413's `recall_referent_posting`, with `doc_kind='episode_memory'`.
+
+### C. pageindex: navigate inside long documents, after referent recall picks the document
+
+**Original intent.** PR #493 (2026-04-19): "standalone orion-pageindex service using PageIndex CLI (journals MVP)". It was a thin adapter over the upstream VectifyAI `run_pageindex.py`, replacing home-made tree code. PR #494 made it the primary source for cortex-exec's reflective/identity journal lane. No design spec exists. The planned corpora were journals and topic-foundry `chat_episodes`. #2344 fixed a crash loop.
+
+**What is actually broken** (revision 1's "never built / LLM-built" is corrected here):
+- **It was built exactly once:** 2026-04-26, 548 journal rows, `build_success:true`, 3 s (`/data/pageindex/journals_status.json`). As configured, the build is a **pure heading parse with no LLM** (`--md_path` only; the upstream `if_add_*` flags are off).
+- **The tree output is lost on every image rebuild.** Upstream writes to `/opt/PageIndex/results`, which is inside the image, not the volume.
+- **The database URL is missing.** `/healthz` returns `db_url_present:false`, because `_resolve_db_dsn` ignores `JOURNAL_PG_DSN` (`app/service.py:421-426`). Status reports "database URL missing".
+- **Nothing triggers a rebuild.** `rebuild_journal_corpus` (`services/orion-cortex-exec/app/pageindex_client.py:15`) has no callers.
+- **Queries cannot work as configured.** The query args have no `{query}` placeholder (`app/pageindex_cli.py:46-50`), so everything falls back to title keyword counting.
+- **recall_v2 has the wrong port**: `:8384` against the actual `:8360` (`services/orion-recall/app/settings.py:186-188`, `.env_example:254`, and the live env). The failure is silently swallowed (`recall_v2.py:96-104`, shadow only).
+- **The chat_episodes corpus goes to a volume pageindex never reads.** topic-foundry's builder writes it to `orion-topic-foundry_pageindex-data`; pageindex mounts `orion-pageindex_pageindex-data`.
+- **The journals corpus no longer makes sense.** It is now 101k rows, 98.8k of them metacog.
+- cortex-exec's URL is correct. It logged 8 "corpus is not built" fallbacks in 30 days.
+
+**Proposed role: structure navigation inside one long document, after referent recall has chosen it.** The inputs are specs, PR reports, and reading snapshots (`reading_document_snapshot`, fed by PR #2390's internal-docs path; one row today).
+1. Recall, or a memory's crosswalk link, resolves *which document* (sha256 or path).
+2. pageindex returns that document's heading tree.
+3. The cheap local scorer, or later an LLM, picks the sections.
+4. The section text comes back with line provenance, labelled `orion_read` (for readings) or `orion_self_knowledge` (for specs).
+
+This fits the no-vectors, referent-first direction. It is not a memory store.
+
+**Fixes (Stage 2, owned by pageindex):**
+- DSN fallback;
+- port 8360 in recall;
+- persist trees into the volume;
+- one shared external volume;
+- a per-document build endpoint keyed by sha256;
+- builds triggered on snapshot write and on graphify publish;
+- drop or cap the journals corpus;
+- `--if-add-node-text yes` so section bodies are searchable;
+- pin `PAGEINDEX_REF`.
+
+Builds stay LLM-free, at 0 tokens. LLM node summaries (about 50–200 calls per large spec) are optional, at background priority, per document only. They are infeasible for the 100k-row journals case on 4 busy cards.
+
+The value is real only for documents above #2390's 48 KB cap, or when the context budget is tight. That is acknowledged.
+
+### D. Graphiti: the time-aware projection of memory
+
+**Original intent.** Specs `2026-07-06-graphiti-rail-activation-design.md` and `2026-07-07-consolidation-crystallization-gate-design.md:172-197`: an "additive temporal graph projection for approved crystallizations", as derived retrieval topology for multi-hop and temporal recall. The design explicitly did **not** use LLM extraction ("no LLM re-extraction in adapter"; use graphiti-core's write APIs with explicit nodes and edges). PRs: #826-#828, #993, #995, #997, #1016, #1099 (FalkorDB).
+
+**What it actually is today:**
+- graphiti-core 0.19.0 with **no LLM** (a null client, `app/backends/graphiti_core.py:420-452`) and a CPU embedder (bge-large on vector-host).
+- Writes are deterministic (`ingest_episode`, `:258-409`): one `Entity` node and one self-edge `describes` per crystallization.
+- Live `graphiti_temporal`: 25 Entity nodes and 25 self-loop edges, **0 Episodic nodes**, and **0** `valid_at`/`invalid_at`/`expired_at`. None of the temporal features are in use.
+
+**Why writes stopped (verified):**
+- The Hub uses host networking, but `GRAPHITI_ADAPTER_URL=http://orion-athena-graphiti-adapter:8000`, which the host cannot resolve. `getent` returns rc=2, and today's Hub log shows `graphiti_sync_failed id=1d8e793a… [Errno -3] Temporary failure in name resolution`.
+- A 07-13 local `.env` edit to `http://127.0.0.1:8640` had fixed this (`docs/superpowers/pr-reports/2026-07-13-graphiti-core-backend-activation-pr.md:57`). It was never committed to `.env_example`, and it was lost between 09-04 and 09-10. How it was lost is **UNVERIFIED**; an env regeneration is likely.
+- Result: 25 approvals synced and 12 failed silently (09-10, 09-20, 09-30). The projector records the failure (`projector.py:100-111`), but the approve call still returns 200.
+
+**Where Graphiti is stronger than Postgres links.** It gives a temporal *edge* model (`valid_at` / `invalid_at` / `expired_at`, with edges pointing back to their episodes) plus graph traversal and hybrid search in one query. That answers two questions Postgres links do not answer cleanly:
+1. "What did I believe about X in August?", i.e. the as-of view.
+2. "What is two hops from this referent?", e.g. Juniper → Austin offsite → her AI/ML team → the eval work.
+
+**What it costs if we use it as intended:**
+- Full `add_episode` extraction is about 5–20+ LLM calls per episode, nondeterministic (**UNVERIFIED** live), and hands referent identity to an LLM dedupe.
+- `add_triplet` is not LLM-free either (`graphiti.py:1004-1049` calls a node-resolution LLM).
+- Both would compete for the 4 busy cards and break the original "no LLM extraction" rule.
+
+**Proposed role: a derived, rebuildable projection of confirmed and auto episode memories, written deterministically by Orion.** It is never canonical.
+- **Nodes and edges:**
+  - one `EpisodicNode` per episode;
+  - one `EntityNode` per referent key;
+  - one `EntityEdge` per memory (subject referent → object referent), with `fact` = the memory statement, plus `voice`, `purpose` and `memory_id`, and `episodes=[episode]`.
+- **Validity:**
+  - `valid_at` = `occurred_at` or `created_at`;
+  - when a memory is superseded, corrected, rejected or faded, Orion sets `invalid_at`/`expired_at` on its edge;
+  - Orion's own event log decides validity. Graphiti's LLM invalidation is not used.
+- **Writer:** the memory writer's persist node in orion-memory-consolidation. It is on app-net, where the container DNS name resolves, and that retires the host-mode Hub sync path. `POST /v1/rebuild` replays from `episode_memory_event`.
+- **Readers:**
+  - PCR's semantic and contradiction intents (2-hop from the top referent, with the retriever merge bug fixed);
+  - a new adapter endpoint `GET /v1/as_of?referent=&at=` for "what did I believe then".
+- **Cost:** about 2 + N CPU embed calls per memory, and no GPU.
+- **Also fix:** set the Hub's `GRAPHITI_ADAPTER_URL=http://127.0.0.1:8640` in `.env_example`, so the legacy stance projection stops failing silently until cutover. Add a test that a sync failure is surfaced, not only logged.
+- **Honest risk:** if the as-of eval shows Postgres `episode_memory_event` answers the same questions just as well, Graphiti goes back to optional. This spec does not assume it will.
 
 ### E. graphify as Orion's self-knowledge
-
-- **The published bundle:** `/mnt/storage-warm/orion-graphify/published/graphify-out/graph.json`.
-  - 77,966 nodes, 169,111 links, 4,525 communities, built at `aff23fac0`, mtime 2026-09-11. That is **19 days stale**.
-  - Node kinds: code 46,110, document 19,919, rationale 10,752, concept 1,174.
-- **Readers:** it is already mounted read-only at `/graphify` in cortex-exec (`self_study.py:872`), cocreation-signals and self-study-enrichment. **orion-recall has no mount.**
-- **Speed:** live `graphify query` takes about 10 s and about 1 GB per call (figure from #2413; not re-measured, **UNVERIFIED**).
-
-**Use:** the offline referent table from #2413 Phase 3 (`scripts/build_recall_artifact_referents.py`), rebuilt whenever the bundle is published. It provides:
-- `service` referents (derived from the `services/<name>/` path prefix);
-- `file` referents (`source_file`);
-- `symbol` referents (class and function labels);
-- `pr` referents (parsed from PR-report filenames).
-
-In this design it does two jobs:
-1. **Normalization.** When Juniper says "the durable runs thing", the distiller is given candidate keys and picks `service:orion-durable-runs` instead of minting a free-text referent.
-2. **Crosswalk.** A memory about a service links to the PR reports and specs that touched it, with voice `orion_self_knowledge` and the label "from my own code/docs (build 2026-09-11)".
-
-Rationale and concept nodes are LLM-derived, so they carry a lower epistemic status. graphify says nothing about people or events; those come from chat.
+- **The published bundle:** `/mnt/storage-warm/orion-graphify/published/graphify-out/graph.json`. 77,966 nodes and 169,111 links, built at `aff23fac0`, 19 days stale.
+- **Readers today:** cortex-exec, cocreation-signals and self-study-enrichment mount it; recall does not.
+- **Use:** the offline referent table from #2413 Phase 3, rebuilt on publish, gives service, file, symbol and PR referents.
+  1. The memory writer uses it to normalize names: "the durable runs thing" becomes `service:orion-durable-runs`.
+  2. The crosswalk uses it to link memories to PR reports and specs, with voice `orion_self_knowledge` and the label "graphify build 2026-09-11".
+- pageindex (C) then navigates inside those specs.
+- The live query speed (10 s, 1 GB) is quoted from #2413 and was not re-measured (**UNVERIFIED**).
 
 ### F. Sources to crosswalk (live)
 
-| Source | Table / store | ID to reference | Size, freshness | Voice / channel | Note |
-|---|---|---|---|---|---|
-| Reveries | `substrate_reverie_thought` | `thought_id` | 20,162 rows; 5,772 in 7 d; newest 09-30 09:20 | `orion_thought` / `reverie` | Text in `interpretation`. **0 rows mention Austin or the offsite**: reveries currently circle prediction-error anomalies |
-| Reading queue | `world_pulse_read_seed` | `seed_id` | 398; 132 in 7 d | `orion_read` / `reading` | `reading_durable_turn` (102) is Orion's interpretation → `orion_thought` / `reading` |
-| Reading claims | `world_pulse_claim` | `claim_id` | 929; 112 in 7 d | `orion_read` / `reading` | Always rendered with `corroboration_status` |
-| Curiosity priors | Falkor `orion_worldview` `:Prior` | `prior_id` | 122 (open 58, supported 24, revised 25, refuted 13) | `orion_thought` / `curiosity` | Rendered with status and confidence. Refuted priors are never linked |
-| Curiosity findings | Falkor `:Finding` | `finding_id` | 172; 26 in 7 d | `orion_thought` / `curiosity` | Investigation notes |
-| Standing questions | `curiosity_self_questions` | `question_id` | 13, all open | `orion_thought` / `curiosity` | See G |
-| Topic foundry | `topic_foundry_segments` | `segment_id` | 1,027,475; 327,589 in 7 d | — | **Not linked directly**: too large, and the labels are machine topics. It is reached through the substrate concept nodes it produces |
-| Concept induction | `orion/spark/concept_induction` | — | **Dead**: 224 of 224 triggers in 7 d logged `decision=disabled`, and the local store has 0 profiles | — | The 745 `orion_substrate` concept nodes come from `topic_foundry_adapter` (563) and `world_pulse_read_pipeline` (168), not from induction. Link to those (`node_id`, `label`) as `orion_thought` / `topic_model` |
-| Dreams | `dream_cycle` (`cycle_id`, 17), `dream_hypothesis` (`hypothesis_id`, 64) | as named | All within 7 d | `orion_thought` / `dream` | Hypotheses already point at refs (`ref_a`/`ref_b`) and have `expires_at` |
-| Journals | `journal_entries` | `entry_id` | 101,372 total; 5,825 in 7 d, of which 5,639 are metacog | `orion_thought` / `journal` | **Metacog digests are excluded** (Juniper, 09-29, via #2413). Chat-compactor digests (`source_kind=manual`) are Orion's retelling and never count as `juniper_said` |
-| graphify | published bundle | node id / source_file | 77,966 nodes, 19 d stale | `orion_self_knowledge` / `graphify` | Always carries the build date |
-| Chat turns | `chat_history_log` | `id` / `correlation_id` | 531 total | prompt = `juniper_said`, response = `orion_thought` / `chat` | Evidence, not crosswalk |
+| Source | Store | ID | Size / freshness | Voice / channel |
+|---|---|---|---|---|
+| Reveries | `substrate_reverie_thought` | `thought_id` | 20,162; 5,772 in 7 d; newest 09-30 09:20. **0 mention Austin** | `orion_thought` / `reverie` |
+| Reading queue / snapshots | `world_pulse_read_seed` (`seed_id`, 398), `reading_document_snapshot` (sha256) | as named | 132 seeds in 7 d | `orion_read` / `reading` |
+| Reading claims | `world_pulse_claim` | `claim_id` | 929; 112 in 7 d | `orion_read` / `reading`, with status |
+| Curiosity priors / findings / self-definitions | Falkor `orion_worldview` | `prior_id`, `finding_id`, `run_id` | 122 / 173 / 42 | `orion_thought` / `curiosity`; refuted priors are never linked |
+| Standing questions | `curiosity_self_questions` | `question_id` | 13 open | `orion_thought` / `curiosity` |
+| **Topic-model concept induction** (live) | topic-foundry runs → `orion/substrate/adapters/topic_foundry.py` → Falkor `orion_substrate` concept nodes (spec `2026-08-28-concept-induction-topic-model-rebuild-design.md`) | `node_id` / `identity_key` | 563 concept nodes from `topic_foundry_adapter`, newest 09-30 09:06; `topic_foundry_runs` 74 in 7 d (35 failed of 398 total) | `orion_thought` / `topic_model` |
+| Spark concept induction | `orion/spark/concept_induction` | — | **Dead**: 224/224 triggers in 7 d were `decision=disabled`; 0 profiles | — |
+| Topic-foundry segments | `topic_foundry_segments` | `segment_id` | 1.03 M rows | Not linked directly; reached through the concept nodes |
+| Dreams | `dream_cycle` (17), `dream_hypothesis` (64) | `cycle_id`, `hypothesis_id` | all within 7 d | `orion_thought` / `dream` |
+| Journals | `journal_entries` | `entry_id` | 5,825 in 7 d (5,639 metacog, **excluded**) | `orion_thought` / `journal`. Compactor digests are Orion's retelling |
+| graphify | published bundle | node / source_file | 19 d stale | `orion_self_knowledge` / `graphify` |
+| Chat | `chat_history_log` | `id` | 531 | Evidence: prompt = `juniper_said`, response = `orion_thought` / `chat` |
 
-### G. Existing tension / question mechanisms: reuse `curiosity_self_questions`
+### G. Tensions and open questions: map the candidates, pick one seam
 
-| Candidate | State | Verdict |
-|---|---|---|
-| `open_loop` crystallizations | 6 junk rows. No way to resolve or expire them; they only decay | Retire |
-| `curiosity_self_questions` | 13 rows, statuses open/answered/parked, `minted_by` (juniper 8 / orion 5), `ask_count`/`last_asked_at`, live reader `pick_question` (`orion/curiosity/self_question_pool.py:190`) | **Reuse and extend** |
-| Self-inquiry `:SelfDefinition` (Falkor, 42) | The *answers* to self-questions | Keep as the answer store for self-scoped questions |
-| "Belief revision: contradicts" | The writer was removed on 08-20. `memory_concept_relation_decisions` (contradicts 17) has not changed since 09-07 | Do not revive. The distiller emits contradictions as tensions directly |
+Juniper: "we have tensions and things in attention, not sure if that is the right seam." Each candidate was checked live, and the question asked of each was whether closing it there would **change behavior**.
 
-Gaps in `curiosity_self_questions` that the design fills:
-- There is no code path that sets `answered`.
-- `Family` is `Literal["lived","anatomy"]` (`self_question_pool.py:16`).
-- It has no source references, no expiry, no scope beyond Orion itself, and no pairing of contradicting items.
+| Candidate | What it is | Live? | Open → resolved? | Would closing it change behavior? |
+|---|---|---|---|---|
+| Substrate `TensionNodeV1` (`orion/core/schemas/cognitive_substrate.py:218`) | A spark tension projected into the substrate | **0 nodes** in `orion_substrate` or `orion_substrate_self` | No (generic `promotion_state` only) | No: nothing reads it |
+| Drive `TensionEventV1` (`orion/core/schemas/drives.py:84`) | A drive impact | Only `substrate.world_coverage_gap`. The drives subsystem was deleted; `drive_audits` has 0 rows | No | No |
+| Field deviation tension (`services/orion-field-digester/app/digestion/tension.py`, `orion/attention/tension/competition.py:86`) | A per-tick deviation-pressure scalar, with a Borda winner | Yes: 124,660 `substrate_field_state` rows | No: it re-centres its own baseline | Only the outreach "tension lane", which was **false** for the whole loop |
+| **Attention open loops** (`OpenLoopV1`; `attention_salience_trace`; `AttentionLoopOutcomeV1` on `orion:attention:loop_outcome`, table `attention_loop_outcome`) | Things competing for Orion's attention, which the Hub **Pending Attention** panel shows with Resolve/Dismiss | Yes: 8,530 chat and 4,190 reverie traces in 7 d. Outcomes: 30 resolved (by Juniper), 19 dismissed, 243 decayed | **Yes, the only real closure event.** `verdicts.load_terminal_verdict_loop_ids` removes a terminally resolved loop from `open_loops` for 48 h (`attention_broadcast.py:210`) | **Yes**: the loop leaves the frame, so the `attention_open_loop` curiosity seed disappears |
+| `curiosity_self_questions` | Standing self-inquiry questions | 13, all open. There is no "answered" code path | Only the statuses exist | Only affects the self-inquiry picker. It is not an outreach input |
+| Falkor `:Prior` status | Orion's hypotheses | 122 | Orion writes every transition itself. The one `confirmed` prior was **self-assigned** (no `confirmed_by`, no revision) | Indirectly: open priors keep outreach's fall-through branch alive |
+| `orion_ask` + "Orion is asking" card (`templates/index.html:654-664`, `ask_routes.py`, `OrionAskAnsweredV1` on `orion:ask:answered`) | Free-text questions to Juniper | **0 rows**. The only producer is vision | open / answered / dismissed / expired | No behavioral link today |
+
+**What actually produced and sustained the 8-message loop** (`services/orion-hub/scripts/endogenous_outreach.py`):
+1. **The open intake priors kept a fall-through branch alive.** The priors are `gate_bias_manual_review_7736d5271d97` (supported), `auto_activate_kind_gate_no_content_analysis` (supported) and `automated_intake_gate` (revised). With the tension lane false (`tension_outreach_trigger`, needing a 6-tick Borda run), `_outreach_once` still generates whenever any open prior exists, even if all of them were already used (`:1873-1903`).
+2. **The daydream always counts as new.** It has no durable id, so the novelty gate never blocks it (`:556-568`, `:603-630`).
+3. **Orion's last 3 unanswered messages are fed back in** as "your own recent unprompted notes" (`:997-1048`, `:1279-1287`). The topic therefore survived after the prior ids were marked used.
+4. **The curiosity content ids kept changing.** They rotate daily (`:633-664`), and the attention loop `open-loop-7376a3da4050` ("Execution prediction error") was never terminally resolved; it only `decayed_unattended` on 09-21. That kept supplying "new" content.
+
+**Decision for Juniper: one primary seam.** Recommended: **the attention loop outcome** (`AttentionLoopOutcomeV1`, verdict `resolved`/`dismissed`, `actor=juniper`, published on `orion:attention:loop_outcome` and persisted to `attention_loop_outcome`).
+- It is the only live seam with an open→resolved lifecycle, an existing Juniper surface (the Pending Attention panel), and an existing consumer that changes what Orion attends to.
+- Three new consumers make it close *everything* the loop touched:
+  1. **Memory:** the memory writer sets the memory's confirmation state.
+  2. **Questions:** `curiosity_self_questions.status='answered'` for the linked question.
+  3. **Outreach:** novelty treats any topic whose loop, prior or memory has a terminal verdict as used. It also has a mirror in `_prediction_error_candidates`, keyed on node id.
+- **Rejected alternatives:**
+  - substrate/drive tensions: dead or no lifecycle;
+  - field tension: a scalar with nothing to close;
+  - `orion_ask` alone: no behavioral consumer;
+  - making `curiosity_self_questions` primary: no effect on attention or outreach.
+- `curiosity_self_questions` stays the home of *open questions*. It is closed as a **mirror** of the outcome, not as the primary seam.
+
+The three outreach defects that no resolution can fix are listed as required fixes in Stage 3: daydream-only content counts as talkable, Orion's own notes are echoed back, and content ids rotate.
 
 ### H. Consumer migration
 
-| Consumer | Stage 0 | Stage 4 (cutover) |
+| Consumer | Stage 0 | Stage 2-4 |
 |---|---|---|
-| Recall active packet | Unchanged (optional 0b: dedupe identical summaries, stop boost-on-read) | Replaced by referent recall over `episode_memory` plus a boxed "due follow-ups" feed |
-| Card recall | — | Stop serving `operator_distiller` and `auto_extractor` cards; they are retired |
-| Dream cycle | — | Reads memories that were created or reinforced since its last cycle, excluding `pending_confirmation`. Hypotheses reference `memory_id` |
-| Reverie visual seed | Stays dead (junk must not seed it) | Newest `happened`/`about_juniper` memory within 7 d whose state is `auto` or `confirmed` (see Missing question 5: possibly earlier, at Stage 2) |
-| Curiosity study_material | Fix the false docstring; exclude rows under 40 characters and command rows | Samples `episode_memory` by strength, voice-labelled |
-| Self-study analysis | Fix the false "concept_induction" label (candidate for the "metacog report fix", **UNVERIFIED** mapping) | Reads `episode_memory` statistics |
-| journal.compose | — | Unchanged (it does not read crystallizations) |
-| Chat compactor digest | — | Reads episode memories instead of raw chat (follow-up ticket). It stops writing memory cards |
-| Hub crystallization UI | — | Becomes the fallback confirmation queue, and a reason is **required** |
+| PCR (all phases) | — | Fixes from B. Reads `episode_memory` by purpose and referent (Stage 2, shadow); primary at Stage 4 |
+| Card recall | — | Stop serving `operator_distiller`/`auto_extractor` cards at Stage 4 |
+| Dream cycle | — | Memories created or reinforced since the last cycle, excluding pending |
+| Reverie visual seed | — | **Stage 2 (decided):** newest `happened`/`about_juniper` shadow memory within 7 d that passed validation and is `auto` or `confirmed` |
+| Curiosity study material | Fix the false docstring; exclude junk | Samples `episode_memory` by strength, voice-labelled |
+| Self-study analysis | Fix the false label | `episode_memory` statistics |
+| `daily_metacog_v1` | **Fix (Stage 0)** | — |
+| Graphiti | Fix the Hub URL and surface sync failures | Projection writer at Stage 2 |
+| pageindex | — | Document navigator at Stage 2 |
+| Chat compactor | — | Follow-up ticket: read episode memories; fix the Orion pronoun; stop writing cards at Stage 4 |
+| Hub crystallization UI | Send a reason | Becomes the fallback confirmation queue; a reason is required |
+
+**`daily_metacog_v1`** (the "metacog report" in Stage 0):
+- It is the nightly orion-actions report. It has failed since 2026-09-03 with `daily_metacog_prompt_over_limit chars≈8467 limit=8192`: the skills catalog alone is 6,126 characters, and adding the render_scene skill pushed it over.
+- The limit is enforced in `services/orion-cortex-exec/app/executor.py:1509-1550` (`_enforce_daily_metacog_prompt_budget`).
+- The scheduler retries about 245 times a night, because "done today" is set only on success (`services/orion-actions/app/main.py:2149-2156`, `executor.py:1497-1536`).
+- Evidence: the coordinator verified this from logs. I could not re-see the log lines because the containers restarted at 09:00 UTC today, so my own check is **UNVERIFIED**. The code paths are confirmed.
 
 ---
 
 ## Design
 
-### 1. Episode boundary contract
+### 1. The memory writer (`memory.episode_distill`)
 
-**Owner:** orion-memory-consolidation. It gets a new module `app/episode_tracker.py` that runs **alongside** the existing windows during shadow (Stages 1-3) and replaces them at Stage 4.
-
-**Open.** A turn opens a new episode if there is no open episode for its `source_platform`. It joins the open episode otherwise.
-- AI Town turns never open an episode; they are excluded before this step, as today.
-- Unsolicited outreach turns (empty prompt, `client_meta.unsolicited`) **join** an open episode, but never **open** one on their own. An unanswered outreach is Orion talking to itself.
-
-**Close.** Whichever of these happens first:
-1. **Quiet:** no Juniper turn for `MEMORY_EPISODE_QUIET_SEC` (default 1800, i.e. 30 min). Checked by a 60 s ticker, so an episode closes without waiting for the next turn.
-2. **Hard cap:** `MEMORY_EPISODE_MAX_TURNS` (default 40) or `MEMORY_EPISODE_MAX_SPAN_SEC` (default 10800, i.e. 3 h). The episode closes, and the next turn opens a continuation linked by `continues_episode_id`.
-3. **Restart recovery:** on boot, any open episode whose last turn is older than the quiet time is closed with `close_reason='recovered_on_boot'`.
-
-**Command-only episodes.** If every Juniper turn in a closed episode is a workflow command, the episode is recorded with `status='skipped'` and `skip_reason='command_only'`, and no LLM call is made. A workflow command is a response starting with `Workflow:`; Stage 1 checks that this detector matches all 8+6+… known command rows. Skips are counted in the daily report.
-
-**Not a boundary.** Topic changes inside a stretch do not close an episode. The distiller handles several topics per episode; the 06:26-06:59 Austin-day episode has three.
-
-**Idempotency.** `episode_id = uuid5(NAMESPACE, platform + first_turn_correlation_id)`. The distill run id is `uuid5(episode_id + prompt_version + model_route)`.
-
-**Emits:** `memory.episode.closed.v1` on the new channel `orion:memory:episode:closed`. Payload:
-```
-{episode_id, source_platform, started_at, ended_at, turn_ids[], juniper_turn_count,
- close_reason, continues_episode_id?, skip_reason?}
-```
-Then the tracker submits the distill run. The event exists so there is an inspectable trace and a Hub debug view. Its consumer is the Stage 1 shadow report; durable-runs does not need it.
-
-`MEMORY_EPISODE_QUIET_SEC` is a knob, not a finding. Stage 1 measures over-splitting with a label-free signal: how often two consecutive episodes end up sharing an `event:` referent the distiller merged. Austin is one such case.
-
-### 2. The distiller (`memory.episode_distill` workflow)
-
-**Graph:**
 ```
 load_episode → resource_request → resource_wait → distill (LLM) → release
-  → validate → crosswalk → persist → finish        (retry_wait loop as in journal.compose)
+  → validate → crosswalk → persist → project (Graphiti) → finish
 ```
 
 - **load_episode** (deterministic) gathers:
-  - the turns;
-  - the memories from the last 48 h that share a person or event referent with memories from the last 7 d (so Austin's two episodes can merge);
-  - open follow-ups and tensions whose referents appear in the episode text;
-  - high-stakes memories still waiting for confirmation;
-  - candidate referent keys: people and events active in the last 30 d, plus a graphify service/file dictionary hit on the episode text.
-- **distill** calls the gateway on route `memory_distill` (class agent, priority system) and asks for JSON conforming to `EpisodeDistillationV1`. Prompt: `orion/cognition/prompts/memory_episode_distill.j2`. The instructions:
-  - write in Orion's first person;
+  - the episode's turns;
+  - memories from the last 7 d sharing a person or event referent;
+  - open follow-ups and questions whose referents appear in the episode;
+  - pending confirmations;
+  - candidate referent keys (people and events active in 30 d, plus graphify hits).
+- **distill** calls route `memory_distill` and returns `EpisodeDistillationV1`: operations, memories, evidence, referents, and questions. The instructions:
+  - first person;
   - one claim per memory;
   - cite turn ids and exact quotes;
-  - pick voice and purpose;
-  - reuse candidate referent keys before minting new ones;
-  - **bias toward keeping** ("if Juniper would be surprised Orion forgot it, keep it");
-  - never attribute to Juniper anything that is only in Orion's responses.
-- **validate** (deterministic; the load-bearing part):
-  - every `evidence.quote` must be found in the cited turn's field after normalizing whitespace and case (prompt for Juniper, response for Orion);
-  - `voice=juniper_said` needs at least one quote from a Juniper **prompt**;
-  - `worked_out_together` needs at least one quote from a prompt and one from a response;
-  - a memory that fails is **not dropped**. It is downgraded, e.g. to `orion_thought`/`chat` ("I said"), and the downgrade is recorded as an event. It is only rejected if no quote verifies at all, and the rejection is recorded with its reason;
-  - referent keys are normalized: lowercase, then slugged as `kind:slug`;
-  - stakes rules are applied deterministically as a floor (below).
-- **crosswalk** (deterministic, Stage 2+): see section 6.
-- **persist:** inserts plus an event row for every state change. It publishes `memory.episode.distilled.v1` on `orion:memory:episode:distilled` (payload: episode_id, memory ids, tension ids, counts, model, prompt_version, validation stats).
+  - reuse candidate referent keys;
+  - bias toward keeping;
+  - never attribute to Juniper what is only in Orion's responses.
+- **validate** (deterministic):
+  - Every quote must be a substring of the cited turn's **full, untruncated** field (the lesson of revision 1).
+  - `juniper_said` needs a quote from a prompt. `worked_out_together` needs one quote from a prompt and one from a response.
+  - A memory that fails is downgraded, not dropped, and the downgrade is logged as an event. It is rejected only when no quote verifies.
+  - Referent keys are normalized to `kind:slug`.
+  - The stakes floor is applied.
+- **persist** writes rows and events and publishes `memory.episode.distilled.v1`. **project** writes the Graphiti projection (D).
+- **Operations:** `new`, `reinforces`, `supersedes`, `confirms`, `corrects`, `resolves <question_id>`, `completes <follow_up>`, `opens_question`. Each carries evidence turns.
 
-**Operations the distiller may return** (so memory is updated, not just appended to):
-- `new`
-- `reinforces <memory_id>`, with fresh evidence
-- `supersedes <memory_id>` (a correction, e.g. the return date moved)
-- `confirms <memory_id>` / `corrects <memory_id>` (Juniper answered a pending confirmation)
-- `resolves <question_id>` / `completes <follow_up memory_id>`
-- `opens_tension`
+### 2. Memory record schema
 
-Every operation carries evidence turns.
-
-### 3. Memory record schema
-
-These tables are new and Postgres-only. In Stages 1-3 they are written in shadow, and at Stage 4 they become canonical. The Pydantic contract is `orion/schemas/memory_episode.py` (`extra="forbid"`, registered in `orion/schemas/registry.py`).
+Postgres tables, written in shadow during Stages 1-3 and canonical from Stage 4. The Pydantic contract is `orion/schemas/memory_episode.py` (`extra="forbid"`, registered).
 
 ```sql
-memory_episode(
-  episode_id uuid PK, source_platform text, started_at timestamptz, ended_at timestamptz,
-  turn_ids text[], juniper_turn_count int, close_reason text, continues_episode_id uuid,
-  status text  -- open | closed | distilling | distilled | skipped | failed
-  , skip_reason text, distill_run_id text, model_route text, prompt_version text,
-  created_at timestamptz, updated_at timestamptz)
-
 episode_memory(
   memory_id uuid PK,
-  episode_id uuid NULL,              -- NULL only for migrated legacy rows
+  episode_id text NULL,              -- memory_consolidation_windows.memory_window_id; NULL for migrated legacy
   purpose text NOT NULL,             -- happened | about_juniper | orion_view | follow_up
   voice text NOT NULL,               -- juniper_said | worked_out_together | orion_thought | orion_read | orion_self_knowledge
-  channel text NOT NULL,             -- chat | reverie | curiosity | dream | reading | journal | graphify | legacy_crystallization
+  channel text NOT NULL,             -- chat | reverie | curiosity | dream | reading | journal | topic_model | graphify | legacy_crystallization
   statement text NOT NULL,           -- Orion's words, first person, one claim
-  occurred_at timestamptz NULL,      -- when the thing happened, if stated (for "happened")
+  occurred_at timestamptz NULL,
   stakes text NOT NULL,              -- low | high
-  stakes_reason text NULL,           -- health | family | identity_conclusion_about_juniper | relationship | safety_location
+  stakes_reason text NULL,           -- health | family | identity_conclusion_about_juniper | relationship | safety_location | orion_self_conclusion
   confirmation_state text NOT NULL,  -- auto | pending_confirmation | confirmed | corrected | queued_for_review | rejected
-  strength real NOT NULL,            -- 0..1 at last reinforcement
-  half_life_days real NULL,          -- NULL for follow_up (no decay; expires instead)
-  last_reinforced_at timestamptz NOT NULL,
-  reinforcement_count int NOT NULL DEFAULT 0,
-  due_after timestamptz NULL,        -- follow_up: not before
-  expires_at timestamptz NULL,       -- follow_up: auto-close after
+  confirmation_loop_id text NULL,    -- attention loop id carrying the confirmation request
+  strength real NOT NULL, half_life_days real NULL,
+  last_reinforced_at timestamptz NOT NULL, reinforcement_count int NOT NULL DEFAULT 0,
+  due_after timestamptz NULL, expires_at timestamptz NULL,
   status text NOT NULL,              -- active | faded | done | expired | superseded | retired
   supersedes_memory_id uuid NULL,
-  model_route text, prompt_version text,
-  created_at timestamptz, updated_at timestamptz)
+  model_route text, prompt_version text, created_at timestamptz, updated_at timestamptz)
 
-episode_memory_evidence(
-  memory_id uuid, source_kind text,  -- chat_prompt | chat_response | legacy_crystallization_source
-  source_id text,                    -- chat_history_log.id
-  quote text,                        -- verified substring, <= 300 chars
-  verified bool, PRIMARY KEY (memory_id, source_kind, source_id, quote))
-
-episode_memory_referent(
-  memory_id uuid, referent_key text, -- e.g. person:juniper, event:austin-ai-ml-offsite-2026-09, service:orion-durable-runs
-  role text,                         -- subject | object | place | time | mentioned
-  PRIMARY KEY (memory_id, referent_key, role))
-
-episode_memory_event(               -- every state change; the lesson of the discarded auto_activate history
-  event_id uuid PK, memory_id uuid, op text,
-  -- created | downgraded_voice | reinforced | superseded | confirm_asked | confirmed | corrected
-  -- | queued_for_review | faded | expired | done | retired | recalled
-  actor text, episode_id uuid NULL, evidence jsonb, reason text, created_at timestamptz)
-
-episode_memory_link(                -- crosswalk (Stage 2)
-  memory_id uuid, target_kind text, target_id text, target_voice text, target_channel text,
-  via_referent text, relation text,  -- shares_referent | same_event | answers | source_of
-  created_by text,                   -- crosswalk_v1 | distiller
-  created_at timestamptz, PRIMARY KEY (memory_id, target_kind, target_id, via_referent))
+episode_memory_evidence(memory_id uuid, source_kind text, source_id text, quote text, verified bool,
+  PRIMARY KEY (memory_id, source_kind, source_id, quote))
+episode_memory_referent(memory_id uuid, referent_key text, role text, PRIMARY KEY (memory_id, referent_key, role))
+episode_memory_event(event_id uuid PK, memory_id uuid, op text, actor text, episode_id text NULL,
+  outcome_id text NULL, evidence jsonb, reason text, created_at timestamptz)
+  -- op: created | downgraded_voice | reinforced | superseded | confirm_asked | confirmed | revised
+  --     | rejected | queued_for_review | faded | expired | done | retired | recalled | projected
+episode_memory_link(memory_id uuid, target_kind text, target_id text, target_voice text, target_channel text,
+  via_referent text, relation text, created_by text, created_at timestamptz,
+  PRIMARY KEY (memory_id, target_kind, target_id, via_referent))
 ```
 
-**Why each purpose exists** (each has a named consumer):
-- `happened`: dream cycle, reverie seed, continuity recall.
-- `about_juniper`: referent recall and the chat stance.
-- `orion_view`: chat stance "prior views" and self-study.
-- `follow_up`: the due-follow-ups feed in chat (≤ 2 items) and the Hub.
+Each purpose has a named consumer:
+- `happened`: dream, the reverie seed, and PCR continuity/semantic.
+- `about_juniper`: PCR relational/semantic.
+- `orion_view`: PCR relational and self-study.
+- `follow_up`: PCR procedural/open_loop, and a due-follow-ups line in the chat stance.
 
-**Why `voice` and `channel` are separate.** Voice says **whose** thought it is; channel says **where** it surfaced. "Orion thought" in chat ("I told Juniper I think X") is a different thing from "Orion thought" in a reverie ("something I turned over alone"). The renderer (section 7) keys on the pair.
+**Voice** is whose thought it is; **channel** is where it surfaced. The renderer keys on the pair.
 
-### 4. Stakes and confirmation
+### 3. Stakes and confirmation
 
-**Stakes floor** (deterministic, cannot be lowered by the model):
-- `stakes=high` if `stakes_reason` is set.
-- The distiller must set a reason when:
-  - a memory is about Juniper's or her family's **health**;
-  - it is about **family** (her spouse, relatives);
-  - it is an **identity-level conclusion about Juniper**: a trait, value or pattern generalized beyond what she literally said ("Juniper is an introvert", "offsites always drain her"), as opposed to what she said once;
-  - it is about **relationship** status;
-  - it gives her **location or safety** beyond a trip she mentioned.
-- A deterministic backstop also forces `high`: an `about_juniper` memory whose statement contains a content word found in none of its quotes. This is the "introvert" detector (see evals). Its tuning is a knob.
+**The stakes floor** is deterministic, and the model cannot lower it. Stakes are `high` when:
+- the memory is about Juniper's or her family's health, or about family;
+- it is an identity-level conclusion about Juniper (a trait or pattern generalized beyond what she literally said);
+- it is about relationship status;
+- it is about location or safety beyond a trip she mentioned.
 
-**Flow:**
-- **Low stakes:** `confirmation_state='auto'`, recallable at once.
-- **High stakes:** `pending_confirmation`. It is recallable **only** under the label "unconfirmed; check with Juniper if natural", and never as fact.
-  - The chat stance brief gets at most one pending item per turn. Only when its referents appear in the current turn or the item is at least 24 h old, and never in a turn where Juniper is distressed. The distress check reuses the existing appraisal; how exactly is **UNVERIFIED**.
-  - When Orion asks and Juniper answers, the next episode's distiller emits `confirms` or `corrects` with her quote.
-  - After 7 days pending, or 2 asks without an answer, the item moves to `queued_for_review` in the Hub queue. The queue **requires** a reason.
-  - If Juniper rejects it, the memory becomes `rejected`, stays stored (so it is never re-minted), and is never recalled.
-- **Legacy consent:** if Juniper already approved a legacy row, that counts as confirmation of **what she literally said**, not of any generalization from it.
+A backstop also forces `high` for an `about_juniper` statement that contains a content word found in none of its full-text quotes.
 
-### 5. Fading and reinforcement
+**Orion's conclusions about itself (Juniper's decision).** An `orion_view` memory, or a `line=self` `:Prior` that Orion moves to supported/confirmed, gets `stakes_reason='orion_self_conclusion'` and `pending_confirmation` **when it is relevant to Juniper**. Deterministically, that means any of:
+- (a) it has a referent of kind service/file/pr/concept, i.e. it is about Orion's own machinery, which Juniper can check;
+- (b) it asks for a decision or direction;
+- (c) it is about the relationship.
+
+Everything else (for example "I notice I enjoy X") stays `auto` and is listed in the Hub, not queued.
+
+**Asking.** Each pending item gets a **confirmation loop** (section 5). The loop is surfaced:
+- **in chat when natural:** at most 1 per turn, only when its referents appear in the turn or it is at least 24 h old, never when the appraisal shows distress (how exactly is **UNVERIFIED**);
+- **in the Hub Pending Attention panel**, with Resolve and Dismiss;
+- **in the Curiosity tab's Self section**, for `line=self` items, as a read-only card linking to the Pending Attention action. The Hub does not write the worldview graph (`curiosity_routes.py:8-12`).
+
+After 7 days or 2 unanswered asks, the item also goes to the Hub fallback queue (reason required).
+
+**What an answer does:**
+
+| Juniper's answer | Outcome event | Memory | Question / Prior | Attention |
+|---|---|---|---|---|
+| Confirmed | `AttentionLoopOutcomeV1(verdict=resolved, features_at_close.resolution="confirmed")` | `confirmation_state=confirmed`, **voice → `worked_out_together`**, Juniper's words added as evidence, reinforced | Question → `answered`. The next self-inquiry run writes `:PriorRevision {to_status:"confirmed", confirmed_by:"juniper", outcome_id}` (worldview writes stay Orion-authored) | The loop is terminal, leaves `open_loops`, and outreach treats the topic as used |
+| Revised | `verdict=resolved, resolution="revised", note=<her words>` | The old memory becomes `corrected`/superseded. The next distill writes the revised memory as `worked_out_together` | Question → `answered`, with the note. `:PriorRevision → revised`, `confirmed_by:"juniper"` | Same as above |
+| Rejected | `verdict=dismissed, resolution="rejected"` | `rejected`: kept only as a do-not-remint marker, never recalled | `:Prior → refuted` (via self-inquiry); question → `parked`, note "rejected by Juniper" | Terminal |
+| Answered in chat | The next episode's distiller emits `confirms`/`corrects`/`rejects` with her quote. **Its persist node publishes the same outcome event** (`actor=juniper`, `features_at_close.via="chat"`, `evidence_turn_id`) | as above | as above | as above |
+
+### 4. Fading and reinforcement
 
 The rule: effective strength = `strength × 0.5^(days since last_reinforced_at / half_life_days)`.
 
-| purpose | starting strength | half-life | end state |
+| purpose | start | half-life | end state |
 |---|---|---|---|
-| happened | 0.8 | 14 d | `faded` when effective strength < 0.1 (about 42 d unreinforced) |
+| happened | 0.8 | 14 d | `faded` below 0.1 (about 42 d with no reinforcement) |
 | about_juniper | 0.9 | 180 d | `faded` below 0.1 |
 | orion_view | 0.8 | 90 d | `faded` below 0.1 |
-| follow_up | 1.0 | none | `done` on `completes`; `expired` at `expires_at` (default due_after + 7 d, or created + 14 d) |
+| follow_up | 1.0 | — | `done` on `completes`; `expired` at `expires_at` |
 
-**What reinforces a memory:**
-1. A later episode brings **new evidence** about the same referent (`reinforces`, with evidence turn ids that are not already cited).
-2. Juniper confirms it.
+- **What reinforces:** new evidence in a later episode, or a confirmation by Juniper. On reinforcement: `strength += 0.2` (capped at 1), the half-life doubles (capped), and `last_reinforced_at = now`.
+- **What never reinforces:** being recalled, rendered, or quoted by Orion. Those are logged as `recalled` events only. This is the correction to PCR's boost-on-read.
+- **Faded is not deleted.** Explicit referent lookups still return faded memories, labelled as faded, and Graphiti's `expired_at` is set.
+- **The lifecycle job** is a deterministic 15-minute ticker in orion-memory-consolidation. It is a lifecycle tick, not a boundary timer.
 
-On reinforcement:
-- `strength = min(1, strength + 0.2)`
-- `half_life_days = min(2 × half_life_days, cap)`, where the cap is 365 d for happened and none for about_juniper. Each confirmed reuse makes forgetting slower: the spacing effect.
-- `last_reinforced_at = now`
+**Metric quality gate for `strength`:**
+1. **Provenance:** set only by the persist node and the lifecycle job.
+2. **Independence:** it replaces activation/salience for these memories and does not read recall counts.
+3. **Theory anchor:** the Ebbinghaus forgetting curve plus the spacing effect.
+4. **Rest state:** decay to `faded` is intended. The Stage 3 check is that strength spreads out rather than piling up at 1.0, as activation does today, or at 0.
+5. **Existing mechanism:** reuses the half-life idea from `dynamics`, with its input replaced.
+6. **Reversibility:** a column plus a job, recomputable from the event log.
 
-**What does NOT reinforce a memory:** being recalled, being shown, or being quoted by Orion itself.
-- Retrieval is logged as a `recalled` event and counted, and it never changes strength.
-- Today's `recall_boost` does exactly the opposite, which is why 106 rows sit at activation 0.99999 regardless of relevance.
+### 5. Resolution as an event (the confirmation loop)
 
-**Faded is not deleted.** Faded memories drop out of default recall, but an explicit referent lookup still returns them, labelled "faded, last reinforced <date>". This is how "over-index on remembering" and "fading" coexist.
+This follows event-substrate-first: event → schema → producer → consumer → trace.
 
-The lifecycle job is a deterministic 15-minute ticker in orion-memory-consolidation. It applies faded, expired and queued_for_review transitions and writes one event per transition.
+- **Open.** When a memory becomes `pending_confirmation`, the persist node emits an `AttentionSalienceTraceV1` on the existing `orion:attention:salience:trace` channel:
+  - `loop_id = "memory-confirm-" + memory_id`;
+  - `theme_key = "memory_confirmation:" + top referent`;
+  - `description` = the statement, truncated to 200 characters, with `why_it_matters` explaining why it needs Juniper;
+  - **a new `scope="memory_confirmation"`**.
 
-**Metric quality gate for `strength`** (CLAUDE.md §0A):
-1. **Provenance:** written only by the persist node (created, reinforced) and the lifecycle job (faded). Both are named above.
-2. **Independence:** it replaces `dynamics.activation` and salience. It does not sit beside them, and it does not read recall counts.
-3. **Theory anchor:** the exponential forgetting curve (Ebbinghaus, 1885) plus the spacing effect: each successful re-exposure lengthens retention.
-4. **Rest state:** a never-reinforced memory genuinely goes to `faded`. That decay is intended, not a silent artifact of the kind that pinned `node:substrate.route` at 0. Stage 3 checks it: the distribution of effective strength has to spread out over time, not pile up at 1.0 (today's failure) or at 0.
-5. **Existing mechanism:** `dynamics.decay_half_life_days` exists on crystallizations, but its reinforcement input is broken. The formula is reused; its input is replaced.
-6. **Reversibility:** it is a column plus a job. Numbers can be recomputed from the event log.
+  It records `confirm_asked`, with the `loop_id` written to `confirmation_loop_id`.
+- **Schema changes:**
+  - `AttentionSalienceTraceV1.scope` gains `memory_confirmation`;
+  - `card_kind_for_scope` (`attention_loops_store.py`) adds it to the **resolvable allowlist**. It is a discrete item that a human can close, which is exactly what the allowlist admits.
+  - Registry and channel docs are updated. The channel stays the same.
+  - Who persists these traces is **UNVERIFIED**: channels.yaml lists `consumer_services: []` for the trace channel, and orion-thought writes the table directly. Stage 3 either adds a persister or writes the row from the memory writer, and records which.
+- **Close.** Either Juniper presses Resolve/Dismiss in the Pending Attention panel (the existing `POST /api/attention/loops/{loop_id}/resolve|dismiss`, `attention_loops_routes.py:95-101`, which persists to `attention_loop_outcome` and publishes `AttentionLoopOutcomeV1` on `orion:attention:loop_outcome`), or the distiller detects her answer in chat and publishes the same event.
+  - **Add a "Revise" button** to the panel. It is resolve with `features_at_close.resolution="revised"` and a required note. The verdict enum does not change.
+- **Consumers** (all new, except the first):
+  1. `verdicts.load_terminal_verdict_loop_ids` (existing) takes the loop out of `open_loops`.
+  2. **orion-memory-consolidation** subscribes to `orion:attention:loop_outcome` for loop ids prefixed `memory-confirm-`. It updates `episode_memory` and writes an `episode_memory_event` carrying the `outcome_id`.
+  3. **Questions mirror:** the same consumer sets `curiosity_self_questions.status/resolved_at/resolution_ref=outcome_id` for questions linked to that memory.
+  4. **Worldview mirror:** the curiosity self-inquiry prompt reads Juniper outcomes on its `line=self` priors and writes the `:PriorRevision` itself.
+  5. **Outreach:** `fetch_recently_used_outreach_content_ids` also treats as used any prior, memory or loop id with a terminal outcome. `_prediction_error_candidates` honors terminal outcomes keyed on node id.
+- **Trace:** `outcome_id` and `correlation_id` appear in `attention_loop_outcome`, `episode_memory_event`, the question row and the `:PriorRevision`. A single SQL join shows the whole closure.
+- **channels.yaml** lists orion-memory-consolidation (and orion-hub for outreach) as consumers of `orion:attention:loop_outcome`, which today has `consumer_services: []`.
 
 ### 6. Crosswalk (Stage 2)
 
-Crosswalk runs deterministically at write time, with **no similarity scores**. For each memory, and each referent key plus its aliases:
+The crosswalk is deterministic, runs at write time, and uses no similarity. For each referent key and its aliases, look up #2413's `recall_referent_posting`:
+- `event:`/`person:` referents within ±14 d;
+- `service:`/`file:`/`pr:` referents, the 10 newest.
 
-1. **Look up the referent in #2413's index** (`recall_referent_posting`) and collect other documents sharing the key. Scopes:
-   - `event:`/`person:` referents: documents within ±14 d of `occurred_at`/`created_at`;
-   - `service:`/`file:`/`pr:` referents: all time, capped at the 10 newest.
-2. Write `episode_memory_link` rows, copying `target_voice`/`target_channel` from the source table in F.
-3. **Exclusions:** AI Town, metacog digests and refuted priors are never linked.
+Links are written with the target's voice and channel. AI Town, metacog digests and refuted priors are never linked. This needs #2413 Phase 2 to index these additional sources: reveries, curiosity priors/findings/questions, dream hypotheses, topic-model concept nodes, and graphify referents. It also adds referent kinds `person`, `event` and `place`, and `doc_kind='episode_memory'`.
 
-This means the crosswalk depends on #2413 Phase 2 (the referent index) indexing these sources: reveries, curiosity findings/priors/questions, dream hypotheses, substrate concept nodes and the graphify referent table. #2413 currently indexes chat, journals, claims/articles, reading turns and crystallizations. This design adds `episode_memory` as a new `doc_kind` **and** asks #2413 to add the other sources. It also adds the referent kinds `person`, `event` and `place` to #2413's `kind` set; today its closest kind is `entity`.
+Referent minting: reuse a candidate key or mint `kind:slug-yyyy-mm`, with aliases in `recall_referent`. Keys that no memory points at are dropped after 30 d.
 
-**Referent minting rules** (to stop a free-text referent cathedral):
-- people and events must either reuse a candidate key or be minted as `kind:slug-yyyy-mm`;
-- every new key is written to `recall_referent` with its aliases (e.g. "austin", "offsite", "work travel");
-- a key with no memory pointing at it after 30 days is dropped by the lifecycle job.
+### 7. Voice rendering contract
 
-### 7. Source monitoring (voice) rendering contract
-
-One renderer, `orion/memory/voice_render.py`, is used by recall, the chat stance, dream and reverie. Templates are keyed by (voice, channel):
+One renderer, `orion/memory/voice_render.py`, is used by PCR, recall, the chat stance, dream and reverie:
 
 | voice / channel | Rendered as |
 |---|---|
 | juniper_said / chat | "Juniper told me (09-28): …" |
-| worked_out_together / chat | "Juniper and I worked out (09-28): …" |
+| worked_out_together / chat or confirmation | "Juniper and I worked out (09-28): …" |
 | orion_thought / chat | "I told Juniper (09-28): …" |
 | orion_thought / reverie, curiosity, dream, journal, topic_model | "Something I was turning over on my own ({channel}, {date}), **not something Juniper and I discussed**: …" |
-| orion_read / reading | "I read ({title or domain}, {date}; claim {status}): …" |
+| orion_read / reading | "I read ({title}, {date}; claim {status}): …" |
 | orion_self_knowledge / graphify | "From my own code and docs (graphify build {date}): …" |
-| any, confirmation_state = pending_confirmation | prefix "Unconfirmed, check with Juniper if natural:" |
-| any, status = faded | suffix "(faded; last reinforced {date})" |
+| pending_confirmation | prefix "Unconfirmed, check with Juniper if natural:" |
+| faded | suffix "(faded; last reinforced {date})" |
 
-- **Prompt rule** (added to `chat_stance_brief.j2` next to the existing `reverie_glimpse` line, and in recall's memory block header): "Items marked 'on my own' are my private thoughts. They can inform what I say as something I was turning over, but I must never say or imply Juniper said them or that we discussed them."
-- **The existing `reverie_glimpse`** is routed through the same renderer, so it also gets the "on my own" framing.
+The chat stance brief and recall's memory block get this rule: items marked "on my own" may inform what Orion says, as something it was turning over, but must never be presented as something Juniper said or that the two of them discussed. The existing `reverie_glimpse` goes through the same renderer.
 
-### 8. Tension queue (extend `curiosity_self_questions`)
+### 8. Open questions queue (extend `curiosity_self_questions`)
 
 ```sql
 ALTER TABLE curiosity_self_questions
   ADD COLUMN kind text DEFAULT 'question',            -- question | tension | contradiction
   ADD COLUMN scope text DEFAULT 'self',               -- self | juniper | relationship | world
   ADD COLUMN answer_via text DEFAULT 'investigation', -- investigation | conversation
-  ADD COLUMN source_episode_id uuid NULL,
-  ADD COLUMN source_refs jsonb NULL,                  -- [{source_kind, source_id, quote}]
-  ADD COLUMN referent_keys text[] NULL,
-  ADD COLUMN counterpart_ref text NULL,               -- memory_id this contradicts
-  ADD COLUMN priority real NULL,
-  ADD COLUMN expires_at timestamptz NULL,
-  ADD COLUMN resolved_at timestamptz NULL,
-  ADD COLUMN resolution_ref text NULL,                -- episode_memory.memory_id or :SelfDefinition run_id
-  ADD COLUMN resolution_note text NULL;
+  ADD COLUMN source_episode_id text NULL, ADD COLUMN source_refs jsonb NULL,
+  ADD COLUMN referent_keys text[] NULL, ADD COLUMN counterpart_ref text NULL,
+  ADD COLUMN linked_memory_id uuid NULL, ADD COLUMN priority real NULL,
+  ADD COLUMN expires_at timestamptz NULL, ADD COLUMN resolved_at timestamptz NULL,
+  ADD COLUMN resolution_ref text NULL, ADD COLUMN resolution_note text NULL;
 ```
 
-- `Family` gains `episode` (`self_question_pool.py:16`). `minted_by` stays `orion` for distiller-minted rows, and `source_episode_id` says where each came from.
-
-**Consumers:**
-1. **Self-inquiry** (`pick_question`): it may draw `family='episode' AND answer_via='investigation'`, capped at 1 in 3 picks, so that the pinned floor for Juniper-minted questions is kept (`_needs_pinned_floor`).
-2. **Chat stance:** at most 1 open `answer_via='conversation'` item, only when its `referent_keys` intersect the current turn's referents. It renders as "an open question you could raise if natural".
-
-**Producers:** the distiller's `opens_tension`. A contradiction is opened when a new memory conflicts with an active one on the same referent; the old memory is **not** overwritten until it is resolved.
-
-**Resolution:**
-- the distiller's `resolves` writes `status='answered'`, `resolved_at` and `resolution_ref`. That is the first code path to set `answered`;
-- `expires_at` (default 30 d) moves an item to `parked` with `resolution_note='expired'`.
-
-**Why reuse rather than a new table:** it already has a lifecycle, an owner field and a live reader. A second question store would be exactly the kind of place for state to drift that CLAUDE.md warns against.
-
-**Stage 1 shadow:** in Stages 1-2 tensions go to `memory_tension_shadow`, which has the same added columns plus `text`. The `ALTER` and the migration of those rows happen at Stage 3, so shadow never feeds self-inquiry.
+- `Family` gains `episode` (`self_question_pool.py:16`).
+- The self-inquiry picker may draw `answer_via='investigation'` items, at most 1 in 3 picks, while keeping the pinned floor for Juniper's questions.
+- The chat stance may raise one open `answer_via='conversation'` question per turn, when its referents intersect the turn.
+- Resolution comes from the outcome consumer (section 5) or from the distiller's `resolves`.
+- Expiry: after 30 d the question is `parked`, with the note "expired".
+- During Stages 1-2, questions go to `memory_tension_shadow` (the same columns plus `text`) and are migrated at Stage 3.
 
 ---
 
-## Worked example: the Austin trip, end to end
+## Worked example 1: the Austin trip, against the real boundaries
 
-**Turns** (live `chat_history_log`, 2026-09-28, times as stored):
+**Turns** (`chat_history_log`, 2026-09-28; the boundary score shown is the canonical per-turn score):
 
-| id (prefix) | time | Juniper | Orion (abridged) |
+| time | Juniper | wall-clock phase (computed from the gap) | score |
 |---|---|---|---|
-| … | 06:26 | hi | Hey Juniper… |
-| … | 06:31-06:44 | reading queue; "building out durable run graphs across the mesh for GPU traffic balancing" | … |
-| … | 06:59 | "I'll be pretty busy the next few days with work travel, so won't have much time to do dev on you." | "Safe travels…" |
-| a041a759 | 08:45 | "yup I'll be away from home :(" | "Wander safe. Where are you landing, and how many days out?" |
-| c15a7a3a | 08:57 | "Thanks. Headed to Austin and will fly back on Wednesday." | "Austin, nice…" |
-| df63a23c | 09:06 | "It's a team offsite for AI/ML. I'll be meeting my peers for the first time. It's nice to meet people and get out of my project work, but its also super draining" | "First-time meetings are their own kind of performance…" |
-| … | 09:44-09:56 | "Run github compactor.", "Compact the last 24 hours…", "Do a journal pass.", "Run your dream cycle." | Workflow results |
+| 06:26 | hi | (first turn after 09-27) next_day | 0.113 |
+| 06:31 | hey, which queue? | same_breath/short_pause | 0.006 |
+| 06:38 | reading queue… | short_pause | 0.279 |
+| 06:44 | durable run graphs for GPU traffic balancing… | short_pause | 0.004 |
+| 06:59 | "I'll be pretty busy the next few days with work travel…" | short_pause | 0.029 |
+| 08:45 | "yup I'll be away from home :(" | **resumed_thread** (1 h 46 m) | 0.023 |
+| 08:57 | "Headed to Austin and will fly back on Wednesday." | short_pause | 0.023 |
+| 09:06 | "team offsite for AI/ML… meeting my peers for the first time… super draining for me--I'm an introvert :)" | short_pause | 0.086 |
+| 09:44–09:56 | four workflow commands | resumed_thread (38 m), then short | 0.068, 0.685, 0.010, — |
+| 15:19 | (Orion's unprompted message) | **long_gap** (5 h 23 m since Juniper) | — |
 
-**Today's outcome:**
-- three `semantic` rows holding the raw prompts, auto-approved, with no link between them;
-- three pending extractor cards;
-- a compactor digest that adds "as an introvert".
+**What actually happened (live windows):** 9 windows of 2–4 turns, each closed by a saturated score of 0.96–1.00 (Defect 2). The real 1 h 46 m gap was *inside* a window, while the continuous Austin exchange was split three ways. Then came three unconnected "semantic" rows holding raw prompts.
 
-**Episodes** (30-min quiet rule):
-- **E1** 06:26-06:59: closed at 07:29 by quiet (the gap to 08:45 is 1 h 46 m).
-- **E2** 08:45-09:06: closed at 09:36.
-- **E3** 09:44-09:56: `skipped/command_only`, no LLM call.
+**Under the fixed rule:**
+- 08:45 is resumed_thread with a score of 0.023, below 0.92: no boundary.
+- 09:44 is resumed_thread with 0.068: no boundary.
+- The first boundary is the long_gap at 15:19. That assumes the phase is stamped on outreach turns; otherwise it is the next_day "sup" at 09-29 04:01.
+- **One episode, 06:26–09:56, 12 turns (4 of them commands), `close_lag_sec` ≈ 19,400 (≈ 5.4 h).** The whole morning's story (work travel, then Austin) is in one episode, so no cross-episode merge is needed. The close lag is the cost of having no timer, and Stage 1 reports it.
 
-**E1 distilled** (no candidates yet for this event):
-- M1 `happened`, `juniper_said`, low:
-  - statement: "Juniper told me she'll be busy with work travel for the next few days and won't have much time to work on me."
-  - referents: `person:juniper` (subject), `event:work-travel-2026-09` (object)
-  - evidence: the 06:59 prompt, quoted
-  - strength 0.8, half-life 14 d
-- M2 `happened`, `worked_out_together`, low:
-  - statement: "Juniper and I talked through the durable-run graphs she's building to balance GPU traffic across the mesh, now extending to curiosity and reading."
-  - referents: `service:orion-durable-runs` (graphify candidate), `concept:gpu-pool`
-  - evidence: a prompt quote and a response quote
-- F1 `follow_up`:
-  - statement: "Check in with Juniper about her trip once she's back."
-  - due_after unknown, so `expires_at` = created + 14 d
+**Distilled:**
+- **M1** `happened`, `juniper_said`, low:
+  - statement: "Juniper flew to Austin on 2026-09-28 for her team's AI/ML offsite, where she's meeting her peers in person for the first time; she flies back Wednesday 2026-09-30. It also means she'll have little time for development on me for a few days."
+  - referents: `person:juniper`, `event:austin-ai-ml-offsite-2026-09` (aliases austin, offsite, work travel)
+  - evidence: quotes from the 06:59, 08:57 and 09:06 prompts
+- **M2** `about_juniper`, `juniper_said`, **low** (she said it herself):
+  - statement: "Juniper told me she's an introvert, and that meeting new people, even ones she likes, is super draining for her."
+  - evidence: 09:06, "super draining for me--I'm an introvert :)"
+  - This is a stable self-description in her own words, so no generalization check is needed. (Revision 1 wrongly used this as an invented trait.)
+- **M3** `happened`, `worked_out_together`, low:
+  - statement: "Juniper and I talked through the durable-run graphs she's building to balance GPU traffic across the mesh, now reaching curiosity and reading."
+  - referents: `service:orion-durable-runs`
+  - evidence: prompt and response quotes
+- **F1** `follow_up`:
+  - statement: "Ask Juniper how the Austin offsite went and how she's recovering."
+  - `due_after` 2026-09-30 18:00 local, `expires_at` 2026-10-07
+- **Q1** question, `scope=juniper`, `answer_via=conversation`, low priority: "Is being away from home itself hard for Juniper, or was it this trip?" Evidence: 08:45 ":(".
+- The command turns produce no memories.
 
-**E2 distilled.** load_episode passes in M1 and F1, because they share `person:juniper` within 48 h, together with the candidate `event:work-travel-2026-09`. The distiller:
-- `supersedes` M1's event key with the more specific `event:austin-ai-ml-offsite-2026-09`, aliases ["austin", "offsite", "work travel", "team offsite"], and emits:
-  - **M3** `happened`, `juniper_said`, low:
-    - statement: "Juniper flew to Austin on 2026-09-28 for her team's AI/ML offsite, where she's meeting her peers in person for the first time. She's flying back Wednesday (2026-09-30)."
-    - `occurred_at` 09-28
-    - evidence: c15a7a3a ("Headed to Austin and will fly back on Wednesday"), df63a23c ("team offsite for AI/ML … meeting my peers for the first time")
-    - operation `reinforces` M1: strength back up to 1.0, half-life 28 d
-  - **M4** `about_juniper`, `juniper_said`, low:
-    - statement: "Juniper said this offsite, meeting her peers for the first time, is nice but super draining."
-    - evidence: df63a23c ("nice to meet people … but its also super draining")
-    - This is what she literally said about this one event, so it is **low** stakes.
-  - If the model generalizes to "Juniper finds in-person work socializing draining" (or "introvert"):
-    - "introvert" appears in no quote, so the novel-word backstop forces **high** / `identity_conclusion_about_juniper`, giving `pending_confirmation`;
-    - if the model also puts it under `juniper_said` with a quote that does not contain it, validate downgrades the voice to `orion_thought`/`chat` and records the downgrade.
+**Crosswalk** (Stage 2), for `event:austin-ai-ml-offsite-2026-09` within ±14 d:
+- journal digests `68bb8201…` and `d5f4c123…` (`orion_thought`/`journal`);
+- legacy cards `7be5907c…` and `4efacc71…`;
+- reveries: **none** (0 rows mention it: Orion's reveries did not turn the trip over at all);
+- graphify: M3 links to the PR reports for orion-durable-runs.
 
-    Either way it is never stored as "Juniper said she is an introvert".
-  - **F1 `supersedes` → F2** `follow_up`:
-    - statement: "Ask Juniper how the Austin offsite went and how she's recovering from it."
-    - `due_after` 2026-09-30T18:00 local, `expires_at` 2026-10-07
-    - referents: `event:austin-ai-ml-offsite-2026-09`, `person:juniper`
-  - **T1** tension, `scope=juniper`, `answer_via=conversation`, low priority: "Juniper's ':(' about being away from home: is being away itself hard for her, or just this trip?" Evidence: a041a759.
+**Recall:**
+- 10-01, "I'm back!" (no referent):
+  - #2413 abstains;
+  - PCR continuity plus the due-follow-ups line surface F1, together with M1 rendered as "Juniper told me (09-28): …".
+- Later, "the offsite was great, they want me to lead eval work":
+  - "offsite" is an alias, so the relational/semantic intents return M1 and M2;
+  - Graphiti's 2-hop links Juniper → offsite → team.
+  - The distiller emits `completes F1`, `reinforces M1`, and a new `about_juniper` memory.
 
-**Crosswalk (Stage 2)** for `event:austin-ai-ml-offsite-2026-09`, scoped to ±14 d:
-- journal entries `68bb8201…` (09-28) and `d5f4c123…` (09-29), which are the chat compactor digests: `orion_thought`/`journal`;
-- memory cards `7be5907c…` and `4efacc71…`: legacy, `orion_thought`/`legacy`;
-- reveries: **none** (verified live: 0 rows mention Austin or the offsite);
-- dreams: none found;
-- graphify: `service:orion-durable-runs` links M2 to its PR reports.
+## Worked example 2: Orion's "intake pipeline" loop, closed
 
-The crosswalk honestly reports an empty reverie link. That is a real finding: Orion's reveries did not turn over Juniper's trip at all.
+**What happened (live):**
+- Across 09-27 14:50 → 09-28 19:41 Orion sent 8 unprompted messages, and 4 more on 09-29. For example: "I've mapped the intake pipeline cold — stance gate is manual review, kind-based routing, no content filtering — and three days later that confirmed understanding has … started acting as a bottleneck … that's a choice that needs your judgment."
+- Grounding (`endogenous_outreach_decisions`, e.g. decision `70969212…`): `tension=false`, `daydream=true`, and the curiosity ids rotating between a cluster id, `prediction_error|node:substrate.execution` and `attention_open_loop|node:substrate.execution`.
+- The conclusion rests on three `line=self` priors:
+  - `gate_bias_manual_review_7736d5271d97` (supported)
+  - `auto_activate_kind_gate_no_content_analysis` (supported)
+  - `automated_intake_gate` (revised)
 
-**How recall surfaces it:**
-- **10-01 07:30, Juniper: "I'm back!"** The query names no referent, so #2413 abstains. The due-follow-ups feed (a boxed, separate context block) still shows F2, because `due_after` has passed. The rendered context:
-  ```
-  Due follow-ups:
-  - I meant to: Ask Juniper how the Austin offsite went and how she's recovering from it. (from 09-28)
-  Juniper told me (09-28): Juniper flew to Austin … flying back Wednesday.   [recalled: follow-up referent event:austin-ai-ml-offsite-2026-09]
-  ```
-  Orion can then ask "How did Austin go? You said meeting everyone was going to be draining." That is grounded in her words, not in an invented trait.
-- **Later, Juniper: "the offsite was actually great, they want me to lead the eval work"**
-  - "offsite" is an alias, so referent lookup hits the event and returns M3 and M4 with voice labels.
-  - The distiller of that episode emits `completes F2`, a `reinforces` on M3, and a new `about_juniper` memory ("Juniper was asked to lead eval work for her AI/ML team", `juniper_said`, low).
-  - It also emits `resolves T1` only if she speaks to it.
+**Orion was right.** This spec verified the same facts independently: manual review, routing by kind, and a gate that admits almost anything.
+
+**Under the design:**
+1. **The conclusion gets a confirmation request.** The self-inquiry line moves the priors to supported, so a self-conclusion confirmation is created, with `stakes_reason=orion_self_conclusion`. It is relevant under rule (a), referents `service:orion-memory-consolidation`, and rule (b), it asks for direction. The memory writer creates `orion_view` memory S1, with voice `orion_thought`, channel `curiosity`, the statement written in Orion's words, and evidence = the prior ids plus the outreach turn ids. It is `pending_confirmation`, and a trace with `loop_id=memory-confirm-S1`, `scope=memory_confirmation` is emitted. It also opens question Q2: "What should replace the intake gate?" (`answer_via=conversation`, `linked_memory_id=S1`).
+2. **Juniper sees one item.** One card in Pending Attention, one line in the Curiosity tab's Self section, and one chance in chat. Not 12 messages.
+3. **She answers.** For example, she presses Revise with: "Yes, that's right. We're replacing it with the episode writer; see PR #2440." The Hub publishes `AttentionLoopOutcomeV1(loop_id=memory-confirm-S1, verdict=resolved, actor=juniper, features_at_close={resolution:"revised", prior_ids:[…]}, note=…)`.
+4. **Consumers close everything:**
+   - memory S1 becomes `confirmed` and the revised memory is written with voice `worked_out_together`;
+   - Q2 becomes `answered` with `resolution_ref=outcome_id`;
+   - the next self-inquiry run writes `:PriorRevision {to_status:"confirmed", confirmed_by:"juniper", outcome_id}` on the three priors;
+   - `load_terminal_verdict_loop_ids` removes the loop;
+   - outreach novelty treats S1, the priors and the node as used.
+5. **The loop stops**, provided the three outreach defects (G) are also fixed. Otherwise the daydream and the self-echo can carry the topic on. That is why they are required fixes in Stage 3, not optional ones.
+6. **Trace:** one join, `attention_loop_outcome.outcome_id` ⋈ `episode_memory_event.outcome_id` ⋈ `curiosity_self_questions.resolution_ref`, plus a count of outreach sends on the topic before and after.
 
 ---
 
 ## Proposal-mode disclosure
 
 - **Capability change:**
-  - Orion decides what to carry forward from a conversation, in its own words, about specific people, events and systems.
-  - It knows whose words each memory is, and it checks high-stakes conclusions with Juniper.
-  - It keeps a queue of open questions that it can ask about or investigate.
-  - Memories fade unless new evidence arrives.
-  - This changes what Orion "remembers" in every recalling verb, and what seeds dreams and reveries.
+  - Orion decides what to carry forward from each conversation, in its own words, about specific things.
+  - It knows whose words each memory is.
+  - It checks high-stakes memories and its own conclusions about itself with Juniper.
+  - It records her answers as resolved tensions that actually change what it attends to and talks about.
+  - It recalls by purpose and referent (PCR), with an as-of view (Graphiti) and navigation inside documents (pageindex).
 - **Data touched:**
-  - **Reads:** `chat_history_log` (non-AI-Town), existing memory tables for migration, #2413's referent index, the published graphify bundle, Falkor `orion_worldview` and `orion_substrate` (read-only), reveries, dreams, journals (non-metacog), world-pulse tables.
-  - **Writes:** the new `memory_episode`, `episode_memory*` tables and `memory_tension_shadow` (Stages 1-3). The `curiosity_self_questions` extension (Stage 3). The Stage 4 `status='retired'` updates on legacy rows, after a snapshot.
+  - **Reads:** chat (non-AI-Town), legacy memory tables, #2413's index, graphify, Falkor graphs (read-only, except the Graphiti projection), reveries, dreams, non-metacog journals, reading tables, attention traces and outcomes, outreach decisions.
+  - **Writes:** the new `episode_memory*` tables, `memory_tension_shadow`, and window boundary columns; the `curiosity_self_questions` extension (Stage 3); attention traces and outcomes with the new scope; the Graphiti projection; `:PriorRevision` rows, authored by Orion's self-inquiry run, not the Hub; Stage 4 retirements, after snapshots.
 - **Privacy boundary:**
-  - Everything stays on the host.
-  - AI Town and metacog digests are excluded before distillation and before crosswalk.
-  - High-stakes memories (health, family, identity conclusions about Juniper) are never recalled as fact until confirmed, and the Hub queue is the only place they show up outside a conversation.
-  - Orion's internal thoughts are never rendered as shared conversation.
-  - Rejected memories are kept only as a "do not re-mint" marker and are never recalled.
+  - everything stays on the host;
+  - AI Town and metacog are excluded;
+  - high-stakes items are never recalled as fact until confirmed;
+  - internal thoughts are never rendered as shared conversation;
+  - rejected items are never recalled;
+  - the public repo never contains Juniper's family or health content (this spec included).
 - **Trace that proves it works:**
-  - `memory.episode.closed.v1` → durable run → `memory.episode.distilled.v1`, with counts;
+  - `memory.episode.closed.v1` (with `close_lag_sec`) → durable run → `memory.episode.distilled.v1`;
   - an `episode_memory_event` row for every state change;
-  - `recall_telemetry.selected_reasons` naming the memory's referent;
-  - a Hub shadow page showing, for each episode, the old rows next to the new memories.
+  - `outcome_id` joins across memory, question and prior;
+  - `recall_telemetry.selected_reasons`;
+  - the outreach topic count before and after a resolution.
 - **Dangerous failure modes:**
-  - (a) **Voice blending:** Orion tells Juniper "you told me you're an introvert", or "we discussed X" about a reverie. Mitigated by quote verification, the novel-word backstop, the renderer contract and the live attribution monitor (evals 6-7).
-  - (b) **Confident wrong fact about Juniper's family or health.** Mitigated by the stakes floor and pending confirmation.
-  - (c) **Silent memory loss at cutover.** Mitigated by shadow-first rollout, the coverage eval, "faded is not deleted", and snapshots before retirement.
-  - (d) **Starving other GPU work.** The load is 1-3 runs a day at system priority; pool telemetry shows the holds.
-  - (e) **Asking Juniper to confirm things at a bad moment.** Mitigated by at most one item per turn, never when distressed, and the Hub fallback.
+  - (a) Voice blending. Mitigated by full-text quote verification, the renderer contract and the attribution monitor.
+  - (b) A wrong high-stakes fact. Mitigated by the stakes floor and confirmation.
+  - (c) Losing memory at cutover. Mitigated by shadow-first rollout, the coverage eval, faded-not-deleted, and snapshots.
+  - (d) GPU contention: about 2–8 min a day at `system` priority, visible in pool telemetry.
+  - (e) Nagging Juniper. Mitigated by at most 1 ask per turn and 2 asks per item, the Hub fallback, and closure that stops outreach.
+  - (f) A false closure, e.g. a chat answer misread as a confirmation. Mitigated by requiring Juniper's quote as evidence on chat-derived outcomes, and by Revise/Dismiss staying available in the panel.
 - **Rollback:**
-  - Stages 1-3: `MEMORY_EPISODE_WRITER_ENABLED=false` stops the tracker and distiller. The shadow tables can be dropped with no consumer impact.
-  - Stage 4: the retired rows are snapshotted to `/tmp/memory-cutover/`, and their status can be restored with one `UPDATE` from the snapshot. By Juniper's rule, the old intake is **not** kept as a runtime fallback. Rolling back means redeploying the previous image, not flipping a flag.
+  - Stages 1-3: `MEMORY_EPISODE_WRITER_ENABLED=false`; shadow tables can be dropped.
+  - The new scope can be removed from the allowlist.
+  - The Graphiti projection can be rebuilt or dropped.
+  - Stage 4: restore from snapshot. The old intake is not kept as a runtime fallback (Juniper's rule), so rolling back means redeploying the previous image.
 
 ---
 
 ## Missing questions (for Juniper)
 
-1. **Quiet timer:** 30 minutes? It splits Austin into two episodes, which the merge handles. 60 minutes would have produced 14 episodes in 14 days instead of 18. Recommend 30 and measure.
-2. **GPU priority:** may the distiller run at `system` priority on the 27B, ahead of curiosity's background runs (1-3 runs a day, 1-4 min each)? Or should it stay at `background` and accept hours of queueing?
-3. **"Metacog report fix" in Stage 0:** which report did you mean?
-   - Candidate 1: the self-study analysis that describes crystallizations as "concept induction ... accepted/proposed/rejected" (`self_study_analysis.py:163-176`).
-   - Candidate 2: curiosity study_material's claim that Juniper approved them (`study_material.py:23-27`).
-
-   The recommendation is to fix both.
-4. **Orion's views about itself** (not about you): auto-approve as low stakes, or do identity-level self-conclusions also need a conversation check? Recommend auto, with a `stakes_reason='orion_identity'` visible in the Hub, no gate.
-5. **Reverie seed:** revive it at Stage 2 (from shadow memories that passed validation), or wait for Stage 4? Recommend Stage 2, with low-stakes `happened` memories only.
-6. **Daily side-by-side:** where do you want it: a Hub page only, or also a morning notify with a link?
-7. **The 356 `reflection` rows** (the retired concept-relation digest, already inactive): retire them at Stage 4 with the rest? Recommend yes.
-8. **GPU count:** circe shows 4 GPUs today, while the 08-29 inventory showed 7. Were the P100 and the two 16 GB V100s moved on purpose? Nothing in this design needs them.
+1. **Retire the 356 inactive `reflection` rows** at Stage 4? (Still to be decided.)
+2. **Seam choice (G):** confirm the attention loop outcome as the single primary "resolved" seam, with memory, questions, priors and outreach as its consumers. The alternative would be a new `ResolvedTensionV1` channel; that is not recommended because it would duplicate an existing, live closure path.
+3. **Boundary Rule 3:** accept that a gap of more than 3 hours (long_gap) is always a boundary, without also requiring the LLM's YES? Recommend yes; it is tested in shadow first.
+4. **"Orion needs to tell me" panel:** no Hub surface has that name. The design uses **Pending Attention** (live, with Resolve/Dismiss, which she already uses: 30 resolved, 19 dismissed). The "Orion is asking" card (`orion_ask`, 0 rows, sitting in the Vision section) is the other candidate. Which one did she mean?
+5. **Self-conclusion relevance rule (3):** are the rules machinery, direction and relationship the right "where relevant" test?
 
 ---
 
 ## Proposed schema / API changes
 
-- **New tables:** `memory_episode`, `episode_memory`, `episode_memory_evidence`, `episode_memory_referent`, `episode_memory_event`, `episode_memory_link`, `memory_tension_shadow` (Stages 1-2, dropped after the Stage 3 migration). Owned by orion-memory-consolidation's migrations. **UNVERIFIED** whether that service or sql-writer owns DDL for memory tables today; follow whichever owns `memory_crystallizations`.
-- **Altered:** `curiosity_self_questions` (Stage 3, columns above). `memory_crystallization_history` gets `auto_activate` rows (Stage 0).
-- **New schemas** (`orion/schemas/memory_episode.py`, registry entries):
+- **New tables:** `episode_memory`, `episode_memory_evidence`, `episode_memory_referent`, `episode_memory_event`, `episode_memory_link`, `memory_tension_shadow` (Stages 1-2).
+- **Altered tables:**
+  - `memory_consolidation_windows`: + `episode_status`, `close_reason`, `boundary_score_at_close`. `phase_change_at_close` starts being filled.
+  - `curiosity_self_questions`: Stage 3 columns.
+  - `memory_crystallization_history`: gains `auto_activate` rows (Stage 0).
+- **Schemas** (`orion/schemas/memory_episode.py`, registry):
   - `MemoryEpisodeClosedV1`
-  - `EpisodeDistillationV1` (the LLM output: operations, memories, evidence, referents, tensions)
+  - `EpisodeDistillationV1`
   - `EpisodeMemoryV1`
   - `MemoryEpisodeDistilledV1`
-  - `DurableWorkflowV1` gains `memory.episode_distill`, with brief `EpisodeDistillBriefV1`
-- **New bus channels** (`orion/bus/channels.yaml`): `orion:memory:episode:closed`, `orion:memory:episode:distilled`.
-- **GPU pool** (`config/gpu_pool.yaml` routes): `memory_distill: {class: agent, priority: system}`.
-- **Recall** (#2413 contracts):
-  - `doc_kind='episode_memory'`;
-  - referent kinds `person`, `event`, `place`;
-  - an `epistemic_status` mapping from (voice, channel);
-  - a `MemoryItemV1` voice field, rolled out consumer-first because the model is `extra="forbid"`.
-- **Env** (orion-memory-consolidation `.env_example`, then `python scripts/sync_local_env_from_example.py`):
+  - `DurableWorkflowV1` gains `memory.episode_distill` / `EpisodeDistillBriefV1`
+  - `AttentionSalienceTraceV1.scope` gains `memory_confirmation`
+  - `MemoryItemV1` gains voice fields (consumer-first rollout)
+- **Channels:** new `orion:memory:episode:closed` and `orion:memory:episode:distilled`. `orion:attention:loop_outcome` gains consumers (orion-memory-consolidation, orion-hub outreach).
+- **Chat turn contract:** `spark_meta.conversation_phase` is persisted on `chat.history` turns (Fix 1).
+- **GPU pool:** route `memory_distill: {class: agent, priority: system}`.
+- **Graphiti adapter:** writes an `EpisodicNode` per episode and sets validity; new `GET /v1/as_of`. Hub `.env_example` `GRAPHITI_ADAPTER_URL=http://127.0.0.1:8640`.
+- **pageindex:** per-document build endpoint; the fixes listed in C; the recall port changes to 8360.
+- **Hub:** Pending Attention "Revise" (resolve with a required note); a Curiosity Self-section card; a report page `/memory/episodes/report` (the daily comparison); the crystallization UI sends a reason.
+- **Env** (orion-memory-consolidation `.env_example`, then `python scripts/sync_local_env_from_example.py`; report any keys skipped by `SYNC_PREFIXES`):
   - `MEMORY_EPISODE_WRITER_ENABLED`
-  - `MEMORY_EPISODE_QUIET_SEC=1800`
-  - `MEMORY_EPISODE_MAX_TURNS=40`
-  - `MEMORY_EPISODE_MAX_SPAN_SEC=10800`
   - `MEMORY_EPISODE_DISTILL_ROUTE=memory_distill`
-  - `MEMORY_EPISODE_SHADOW_COMPARE_ROUTE=quick_background` (Stage 1 8B comparison; empty = off)
+  - `MEMORY_EPISODE_SHADOW_COMPARE_ROUTE=quick_background`
   - `MEMORY_EPISODE_LIFECYCLE_TICK_SEC=900`
-  - **Note:** env sync skips keys outside `SYNC_PREFIXES`. Check that `MEMORY_` is covered and report any skipped key.
-- **Hub:** a read-only `/memory/episodes` shadow page (Stage 1). The confirmation fallback queue with a **required** reason (Stage 3).
+  - `MEMORY_EPISODE_BOUNDARY_RULE=legacy|v2`
+  - There are **no quiet-timer keys**. `MEMORY_BOUNDARY_OVERRIDE_THRESHOLD` (existing) becomes live.
 
 ---
 
 ## Files likely to touch
 
 - **Stage 0:**
-  - `orion/hub/turn_orchestrator.py:317`: repair_signal set only by real repair detection
-  - `orion/memory/consolidation_gate.py`: exclude command turns and low-info turns before the repair shortcut
-  - `orion/memory/crystallization/intake_pipeline.py:136`: write the `auto_activate` history row
-  - `services/orion-cortex-exec/app/self_study_analysis.py:163-176`, `orion/curiosity/study_material.py`: fix the labels; filter out junk
-  - tests for each
+  - `orion/hub/turn_orchestrator.py:317`, `orion/memory/consolidation_gate.py`, `orion/memory/crystallization/intake_pipeline.py:136`
+  - `services/orion-cortex-exec/app/self_study_analysis.py`, `orion/curiosity/study_material.py`
+  - `daily_metacog_v1`: `services/orion-cortex-exec/app/executor.py:1497-1550` (prompt budget) and `services/orion-actions/app/main.py:2149-2156` (the done-today cursor, set only on success)
+  - Hub `.env_example` (Graphiti URL), `projector.py` (surface sync failures)
 - **Stage 1:**
-  - `services/orion-memory-consolidation/app/episode_tracker.py`, `app/lifecycle.py` (Stage 3), `settings.py`, `.env_example`, migrations
-  - `services/orion-durable-runs/app/episode_distill_graph.py`, `admission_runtime.py`, `runner.py` (direct gateway call)
-  - `orion/schemas/durable_run.py`, `orion/schemas/memory_episode.py`, `orion/schemas/registry.py`, `orion/bus/channels.yaml`, `config/gpu_pool.yaml`
+  - Hub turn publish (stamp `conversation_phase`; **UNVERIFIED** location)
+  - `services/orion-memory-consolidation/app/boundary.py`, `window_fetch.py`, `classify.py`, `window_state.py`, and a new `episode_submit.py`; migrations; settings/.env_example
+  - `services/orion-durable-runs/app/episode_distill_graph.py`, `admission_runtime.py`, `runner.py`
+  - `orion/schemas/*`, `orion/bus/channels.yaml`, `config/gpu_pool.yaml`
   - `orion/cognition/prompts/memory_episode_distill.j2`, `orion/memory/episode/validate.py`
-  - `services/orion-hub/scripts/memory_episode_routes.py` plus a template
-  - `services/orion-memory-consolidation/evals/`
-- **Stage 2:** `orion/memory/episode/crosswalk.py`, the #2413 indexer sources (`services/orion-recall/app/referents/`), `orion/memory/voice_render.py`, `services/orion-recall/app/render.py`
-- **Stage 3:** `orion/curiosity/self_question_pool.py`, `services/orion-hub/scripts/curiosity_investigation.py` (picker), `services/orion-cortex-exec/app/chat_stance.py` and `chat_stance_brief.j2` (pending confirmation, open question, due follow-ups, reverie glimpse via renderer)
-- **Stage 4:**
-  - remove: the consolidation intake formation path, `memory_extractor.py` card writes, `projection_cards.py`, the Graphiti sync in `crystallization_routes.py`, and the `active_packet` and `concept_region` collectors
-  - migration script `scripts/memory_cutover_retire.py` (backfill protocol)
-  - switch consumers: `orion-dream/app/cycle_store.py`, `orion-thought/app/store.py`, `study_material.py`
+  - Hub report page; `services/orion-memory-consolidation/evals/`
+- **Stage 2:**
+  - `orion/memory/episode/crosswalk.py`, `orion/memory/voice_render.py`
+  - #2413 indexer sources
+  - PCR fixes: `orion/memory/retrieval_intent.py`, `services/orion-recall/app/pcr_collectors.py`, `collectors/active_packet.py`, `collectors/concept_region.py`, `orion/memory/crystallization/retriever.py`, `active_packet.py`
+  - `services/orion-graphiti-adapter/app/*`
+  - `services/orion-pageindex/app/*`, recall settings
+  - `services/orion-thought/app/store.py` (reverie seed)
+- **Stage 3:**
+  - `orion/schemas/attention_salience.py`, `services/orion-hub/scripts/attention_loops_store.py`, `attention_loops_routes.py`, Hub JS (Revise)
+  - `curiosity_atlas.html` (Self card)
+  - the outcome consumer in orion-memory-consolidation
+  - `orion/curiosity/self_question_pool.py`, `self_inquiry_prompt.py`
+  - `services/orion-hub/scripts/endogenous_outreach.py` (terminal-outcome novelty, the daydream-only gate, no self-echo, stable content ids)
+  - `orion/substrate/endogenous_curiosity.py:356-362`
+  - `chat_stance.py`, `chat_stance_brief.j2`
+- **Stage 4:** remove the intake formation path, `memory_extractor.py` card writes and `projection_cards.py`; add `scripts/memory_cutover_retire.py`; switch the consumers.
 
 ---
 
 ## Acceptance checks (per stage)
 
-Evals are **label-free** unless noted. Juniper reads the side-by-side if she wants to; she never has to label anything.
+Evals are label-free. Juniper reads the report if she wants to; she never labels anything.
 
 ### Stage 0: stop the bleeding
-- **Changes:** the gate fix, `auto_activate` history rows, and the report/label fixes. Optional 0b: collapse duplicate-summary rows in active_packet and stop boost-on-read.
-- **Checks:**
-  1. **Unit:** a turn with an appraisal but no repair gives `has_repair_signal=False`.
-  2. **Unit:** "Run github compactor." and "hi" produce no row.
-  3. **Unit:** every auto-activated row has a `memory_crystallization_history` row with `op='auto_activate'`.
-  4. **Live 48 h:**
-     - 0 new active rows with summary < 40 characters or matching the command detector;
-     - the share of turns entering through repair_signal drops from about 96% to below 20%.
-  5. **Label test:** the self-study and study_material wording no longer claims approval.
+1. **Unit tests:**
+   - an appraisal with no repair gives `has_repair_signal=False`;
+   - command turns and greetings produce no row;
+   - every auto-activated row has an `auto_activate` history row.
+2. **Live 48 h:** 0 new active rows under 40 characters or matching the command pattern; the repair-signal share falls below 20% (from about 96%).
+3. **`daily_metacog_v1`:**
+   - one nightly report lands (a journal/report row with a date);
+   - the preflight shows `total_prompt_chars` ≤ the limit, because the skills catalog is capped or summarized rather than the limit being quietly raised;
+   - a deterministic failure retries at most N times a night (target ≤ 3, against about 245 today) and then records a failure for that date.
+4. **Graphiti:** an approval produces `graphiti_episode_ids ≠ []`, and a forced failure shows up in the approve response or the Hub.
+5. **Labels:** the self-study and study_material wording no longer claims Juniper approved these rows.
 
-### Stage 1: episode writer in shadow
-- **Changes:** tracker, distiller workflow, validator, shadow tables, Hub side-by-side page, and a 30-day replay backfill (about 100 non-command episodes, run at night under the backfill protocol with `/tmp/memory-episode-backfill/progress.log`). Austin first.
-- **Checks:**
-  1. **Austin regression fixture** (frozen turns → property checks, not exact text):
-     - E1 and E2 end up sharing an `event:` referent whose aliases include "austin";
-     - a follow_up exists with `due_after` ≥ 2026-09-30;
-     - no `juniper_said` statement contains a content word absent from its quotes;
-     - any generalized trait is `high`;
-     - E3 is `skipped/command_only` with 0 LLM calls.
-  2. **Evidence grounding:** 100% of stored `juniper_said` memories have at least one verified quote from a prompt. This is enforced by the validator, and the eval proves the validator runs on real output.
-  3. **Novel-claim rate:** the share of `about_juniper` statements with content words found in no quote. Report the distribution. The starting knob sends anything above 0 to `high`.
-  4. **Coverage (over-index on remembering):** at least 80% of non-command Juniper turns are cited by at least one memory, and 100% of the turns behind today's content-bearing auto rows (those ≥ 40 characters, not commands) are cited.
-  5. **Junk:** 0 memories with a statement of 5 words or fewer, 0 memories matching the command detector, and 0 duplicate statements within an episode.
-  6. **Self-consistency:** distilling the same 20 episodes twice gives referent-set Jaccard ≥ 0.8 and the same purpose histogram within ±1.
-  7. **27B vs 8B:** on the same episodes, compare rows 2-6 and the validator downgrade/reject rates. The 27B has to be better on grounding and downgrades for the model choice to stand.
-  8. **Cost:** p50/p95 hold duration and distill latency per episode are recorded. Hold wait p95 is under 2 h.
-  9. **Trace:** each closed episode has a `closed` event, then a durable run in `durable_admission_runs`, then a `distilled` event. 0 episodes are stuck open for more than 1 h past the quiet time.
-  10. **Side-by-side:** the Hub page renders for 7 consecutive days, and each episode shows its old rows next to its new memories.
+### Stage 1: memory writer in shadow, with the reused boundary
+1. **Boundary fixes:**
+   - Fix 1: 100% of new chat and outreach turns carry `spark_meta.conversation_phase`;
+   - Fix 2: the window score equals the chat-log score for every turn (a test plus a 48 h live check).
+   - Rule 3 in shadow (`MEMORY_EPISODE_BOUNDARY_RULE=v2`, compared against legacy on the same turns): report episodes per day, turns per episode, `close_lag_sec` p50/p95, and the over-split rate (consecutive episodes sharing an `event:` referent). The Austin replay gives one episode, 06:26–09:56.
+2. **Austin fixture** (frozen turns, property checks):
+   - M1 has an `event:` referent with the alias "austin";
+   - M2 has voice `juniper_said` and a verified quote containing "introvert";
+   - F1 has `due_after` ≥ 2026-09-30;
+   - commands produce no memories.
+3. **Truncation guard:** a unit test where a quote lies beyond character 160 of a prompt still verifies (the regression case for revision 1's error).
+4. **Grounding:** 100% of `juniper_said` memories have a verified prompt quote.
+5. **Novel-word rate:** reported for `about_juniper`; anything above 0 is sent to `high`.
+6. **Coverage (lean toward remembering):**
+   - at least 80% of non-command Juniper turns are cited by some memory;
+   - 100% of the turns behind today's content-bearing auto rows are cited.
+7. **Junk:** 0 statements of 5 words or fewer, 0 command matches, 0 duplicate statements within an episode.
+8. **Self-consistency:** two distills of the same 20 episodes give referent-set Jaccard ≥ 0.8.
+9. **27B vs 8B:** compared on checks 4-8. The 27B must be better on grounding and downgrades.
+10. **Cost:** hold wait p95 under 2 h; distill p50/p95 recorded.
+11. **Report:** a Hub report page (`/memory/episodes/report`) plus a daily markdown artifact written by orion-memory-consolidation (the location is fixed in the Stage 1 PR). It renders for 7 consecutive days, showing old rows next to new memories for each episode. No notification is sent.
 
-### Stage 2: crosswalk and referent recall
-- **Depends on:** #2413 Phase 2 (the referent index) being live. If it is not, this stage waits; it does not build a second index.
-- **Checks:**
-  1. **Crosswalk:** every link has `target_voice`, `target_channel` and `via_referent`; 0 links go to AI Town, metacog or refuted priors.
-  2. **Known-item recall** (#2413 method): for every shadow memory, a query built from its rarest referent returns it with hit@8 ≥ 0.9.
-  3. **Source-monitoring unit tests** (the core set):
-     - a reverie-channel item never renders with a "Juniper told me", "we", or "I told Juniper" template;
-     - a `juniper_said` item cannot be constructed without a prompt-sourced verified quote;
-     - the rendered `reverie_glimpse` carries "on my own";
-     - a pending item always carries "Unconfirmed".
-  4. **Live attribution monitor** (label-free, runs daily over `chat_history_log.response`):
-     - find attribution phrases ("you told me", "you mentioned", "you said", "we talked about", "we discussed", "as we", "last time we");
-     - extract the referents in that sentence;
-     - check that a chat-channel memory or turn shares one of them;
-     - an unsupported attribution is logged as `source_blend`.
-     - Target: `source_blend` rate ≤ 2% of attribution sentences, and trending down. Baseline measured before Stage 2 ships.
-  5. **Reverie seed** (if Juniper says yes to Stage 2 in Missing question 5): at least 1 seed per day uses a memory, and every seed carries its memory_id.
+### Stage 2: crosswalk, referent recall, PCR fixes, Graphiti projection, pageindex navigator, reverie seed
+1. Every crosswalk link carries a voice, a channel and `via_referent`. 0 links to AI Town, metacog or refuted priors.
+2. **Known item** (#2413 method): a query built from each memory's rarest referent returns that memory, hit@8 ≥ 0.9.
+3. **PCR:**
+   - the `rule_id` histogram shows at least 3 distinct intents over 7 days (today: 1);
+   - `crystallization_refs`/rendered ids are ≤ the budget, and no event has 100 ids;
+   - there are 0 boost writes on read;
+   - extra ids are merged (the merged count is > 0 when the rails return hits);
+   - `pcr_active_packet` p50 < 400 ms.
+4. **Graphiti:**
+   - projection count = the `auto`+`confirmed` memory count (±0 after rebuild);
+   - `as_of` returns the pre-supersession fact for 100% of superseded memories (a label-free replay over `episode_memory_event`);
+   - 0 LLM calls.
+5. **pageindex:**
+   - `/healthz` returns `ok`;
+   - a per-document build persists its tree across a container restart;
+   - a section lookup on a known spec heading returns the right `line_num` (label-free: the headings come from the file itself);
+   - recall calls reach port 8360.
+6. **Source-monitoring unit tests:**
+   - a reverie item never renders with the "Juniper told me", "we" or "I told Juniper" templates;
+   - `juniper_said` cannot be built without a verified prompt quote;
+   - `reverie_glimpse` carries "on my own";
+   - a pending item carries "Unconfirmed".
+7. **Attribution monitor** (daily, over Orion's responses): attribution phrases ("you told me", "we discussed", …) must share a referent with a chat-channel memory or turn. `source_blend` ≤ 2%, measured against a baseline taken before Stage 2.
+8. **Reverie seed:** at least 1 seed a day uses a validated shadow memory, with its `memory_id` recorded.
 
-### Stage 3: lifecycle, tension queue, in-conversation confirmation
-- **Checks:**
-  1. **Lifecycle unit tests:**
-     - a `happened` memory that is never reinforced reaches `faded` at about 42 d;
-     - a reinforcement doubles the half-life;
-     - a `recalled` event changes nothing;
-     - a follow-up past `expires_at` becomes `expired`.
-  2. **Live strength distribution after 14 days:** not piled up at 1.0 or at 0. The share of active memories with effective strength > 0.95 must be below 30% (today's activation is 0.99999 for all 106 recalled rows).
-  3. **Tensions:**
-     - migrated rows appear in `curiosity_self_questions` with `family='episode'`;
-     - self-inquiry draws at most 1 in 3 from them;
-     - at least 1 `answered` status is written by a `resolves` operation within 14 days, or the report says 0.
-  4. **Confirmation:**
-     - every pending item is shown in chat at most once per turn and at most twice in total before being queued;
-     - `confirms`/`corrects` events carry a Juniper quote;
-     - Hub queue decisions have a non-empty reason.
-  5. **Chat stance brief budget:** at most 1 pending item, at most 1 open question and at most 2 due follow-ups per turn, checked by a test.
+### Stage 3: lifecycle, open questions, confirmation and resolution
+1. **Lifecycle unit tests:**
+   - `happened` fades at about 42 d;
+   - reinforcement doubles the half-life;
+   - `recalled` changes nothing;
+   - a follow-up expires.
+2. **Strength after 14 d:** less than 30% of active memories above 0.95.
+3. **Resolution chain:** a Pending Attention Resolve, Revise or Dismiss on a `memory-confirm-*` loop produces, within 60 s:
+   - an `attention_loop_outcome` row;
+   - an `episode_memory_event` carrying the same `outcome_id`;
+   - the linked question moved to `answered` or `parked`;
+   - the loop absent from the next attention frame.
+
+   The next self-inquiry run writes a `:PriorRevision` with `confirmed_by=juniper`. A chat answer produces the same chain with `via=chat` and Juniper's quote.
+4. **Loop replay** (worked example 2): replaying 09-26→09-29 outreach decisions against the new novelty rules gives at most 1 send on the intake topic after the confirmation loop opens and **0 after it resolves** (today: 12 sends). Live: after the first real self-conclusion resolution, 0 further sends on that topic for 7 days.
+5. **Confirmation discipline:** at most 1 pending item per chat turn and at most 2 asks per item before queueing. Hub queue decisions have a reason.
+6. **Chat stance budget:** at most 1 pending item, 1 open question and 2 due follow-ups per turn.
 
 ### Stage 4: cutover
-- **Changes:**
-  - kill the old intake, the per-turn card extractor and the card projection, with no fallback;
-  - retire, by snapshot then `status='retired'`: 350 auto rows, 6 open_loops, 386 `operator_distiller` cards, 63 pending extractor cards, and (if agreed) the 356 reflection rows;
-  - **re-distill the 36 approved "stances":** each one's source turns are run through the distiller as a mini-episode. Juniper's approval counts as consent for what she literally said. The family and health items arrive as `about_juniper` with `stakes=high` and `confirmation_state=confirmed`, because she already approved the literal text;
-  - switch the consumers listed in H; remove Graphiti sync and the active_packet, concept_region and Chroma rails.
-- **Checks:**
-  1. **Snapshot first:** `/tmp/memory-cutover/before.csv` holds every row whose status will change. Counts match the plan; if anything exceeds 100k rows the job stops.
-  2. **After cutover:** 0 writes to `memory_crystallizations` from consolidation for 48 h; 0 `auto_extractor` cards; the Graphiti adapter gets 0 requests.
-  3. **Migration:** all 36 approved rows map to at least one `episode_memory` with `channel='legacy_crystallization'` evidence, or are listed in `report.md` with a reason.
-  4. **Consumers:** the dream, reverie seed, study_material and recall telemetry show `episode_memory` ids, and 0 `memory_crystallizations` ids.
-  5. **#2413 live 24 h gates hold,** with memories included: cousin rate ≤ 20% and distinctness ≥ 10× baseline.
+- **Snapshot first:** `/tmp/memory-cutover/before.csv`, whose counts match the plan.
+- **Retire** (status only): 350 auto rows, 6 open_loops, 386 `operator_distiller` cards and 63 pending extractor cards. The 356 reflection rows depend on open question 1.
+- **Re-distill the 36 approved "stances"** from their source turns. Juniper's approval counts as consent for what she literally said, and the family and health items arrive as `about_juniper`, `stakes=high`, `confirmed`.
+- **After cutover:**
+  - 0 consolidation writes to `memory_crystallizations` for 48 h;
+  - 0 `auto_extractor` cards;
+  - all consumers show `episode_memory` ids;
+  - #2413's live gates hold (cousin rate ≤ 20%, distinctness ≥ 10×).
 
 ---
 
 ## Non-goals
 
-- Vectors, rerankers or similarity-based crosswalk (per #2413).
-- Reviving Graphiti or building on pageindex.
-- Reviving concept induction. It is disabled, and this design links to the substrate concepts that actually exist.
-- Distilling non-chat sources (reveries, readings) into memories. They are crosswalk targets with their own voices, not new memories. A later design may distill reveries under `voice=orion_thought`.
-- Changing journal.compose or the compactor's own output, beyond stopping the compactor's card writes at Stage 4.
-- An alias proposer. Aliases come from the distiller's candidate reuse and from Juniper's corrections, as in #2413.
-- Human-labelled quality evals.
+- Vectors or similarity-based crosswalk.
+- LLM extraction inside Graphiti (it stays deterministic, as originally designed).
+- LLM-built pageindex trees for bulk corpora.
+- Reviving spark concept induction.
+- A new idle timer (Juniper's decision).
+- Distilling non-chat sources into memories. They are crosswalk targets with their own voices.
+- Rewriting outreach beyond the four fixes named in G and Stage 3.
+- Human-labelled evals.
 
 ---
 
 ## Recommended next patch
 
-**Stage 0, as one small PR in orion-memory-consolidation / orion-hub / cortex-exec:**
-- make repair_signal honest;
-- drop command and low-info turns;
+**Stage 0 as one PR:**
+- make the repair signal honest;
+- stop command and greeting turns entering;
 - write `auto_activate` history rows;
-- fix the two false labels.
+- fix the false labels;
+- fix `daily_metacog_v1` (cap the skills catalog; stop the all-night retries after a deterministic failure);
+- fix the Hub Graphiti URL and surface sync failures.
 
-It stops about 7 of 10 new saved memories from being junk. It changes no schema and is testable in minutes.
+**In parallel, the boundary PR:**
+- stamp `conversation_phase` on persisted turns;
+- add the score-equality regression test and fix the double score;
+- add Rule 3 behind `MEMORY_EPISODE_BOUNDARY_RULE=v2` in shadow;
+- add `memory.episode.closed.v1` with `close_lag_sec`.
 
-**In parallel, the Stage 1 foundations PR:** the episode tracker (idle timer and the `memory.episode.closed.v1` contract) plus the shadow tables, with the distiller stubbed to "record only". That way episode boundaries can be inspected on real traffic for a few days before any GPU time is spent. The distiller workflow follows once Juniper answers Missing questions 1-2.
+That makes real episode boundaries inspectable on live traffic before any GPU time is spent. The memory writer comes next.

@@ -35,6 +35,7 @@ doc for why each of those is deliberately left alone.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Iterable
 
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1
@@ -275,6 +276,7 @@ def fetch_concept_region_fragment_and_reinforce(
     store: SubstrateGraphStore | None,
     limit_nodes: int = _DEFAULT_SEARCH_LIMIT_NODES,
     limit_edges: int = _DEFAULT_SEARCH_LIMIT_EDGES,
+    abandoned: "threading.Event | None" = None,
 ) -> list[dict[str, Any]]:
     """`fetch_concept_region_fragment()` plus reinforcement for whatever it matched.
 
@@ -282,6 +284,11 @@ def fetch_concept_region_fragment_and_reinforce(
     `fetch_concept_region_fragment()` itself, which keeps its own
     never-persists contract intact for any other caller. This is the
     function the live turn-assembly pipeline should call.
+
+    ``abandoned``: set by the caller when it stops waiting for this call (the
+    recall deadline passed while this ran in a worker thread). Checked right
+    before the reinforcement write, so fragments the recall dropped are not
+    reinforced as if they had been surfaced in the turn.
     """
     fragments = fetch_concept_region_fragment(
         query, store=store, limit_nodes=limit_nodes, limit_edges=limit_edges
@@ -295,6 +302,12 @@ def fetch_concept_region_fragment_and_reinforce(
         if str(fragment.get("id", "")).startswith(_NODE_FRAGMENT_ID_PREFIX)
     ]
     if matched_node_ids:
+        if abandoned is not None and abandoned.is_set():
+            logger.debug(
+                "concept_region reinforcement skipped: recall abandoned this call matched=%s",
+                len(matched_node_ids),
+            )
+            return fragments
         reinforce_matched_concepts(matched_node_ids, store=store)
 
     return fragments

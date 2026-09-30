@@ -81,16 +81,35 @@ class RedisGraphQueryClient:
     # defined mode instead of raising AttributeError inside graph_query.
     _read_only: bool = False
 
-    def __init__(self, *, uri: str, graph_name: str, read_only: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        uri: str,
+        graph_name: str,
+        read_only: bool = False,
+        socket_timeout: float | None = None,
+        socket_connect_timeout: float | None = None,
+    ) -> None:
+        """``socket_timeout``/``socket_connect_timeout`` (seconds) are passed
+        to ``redis.Redis`` only when set; the default (None) keeps redis-py's
+        own default of no timeout, i.e. every existing caller is unchanged.
+        A caller on a latency-bounded path (orion-recall's substrate store)
+        opts in so a hung FalkorDB cannot pin its thread forever."""
         import redis
         from redis.commands.graph import Graph
 
         parsed = urlparse(uri or "redis://localhost:6379")
+        timeout_kwargs: dict[str, float] = {}
+        if socket_timeout is not None:
+            timeout_kwargs["socket_timeout"] = float(socket_timeout)
+        if socket_connect_timeout is not None:
+            timeout_kwargs["socket_connect_timeout"] = float(socket_connect_timeout)
         self._r = redis.Redis(
             host=parsed.hostname or "localhost",
             port=int(parsed.port or 6379),
             db=int((parsed.path or "/0").lstrip("/") or 0),
             decode_responses=True,
+            **timeout_kwargs,
         )
         self._graph = Graph(self._r, graph_name)
         self._graph_name = graph_name

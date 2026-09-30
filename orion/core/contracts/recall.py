@@ -260,7 +260,9 @@ class RecallDecisionV1(BaseModel):
     timings_ms: Dict[str, int] = Field(
         default_factory=dict,
         description=(
-            "Per-stage wall time in ms: intake, feeds, retrievers, windowing, boost, fusion, total."
+            "Per-stage wall time in ms: intake, fetch (feeds and retrievers are its "
+            "critical paths), windowing, suppression, pcr_collectors (pcr_active_packet, "
+            "pcr_concept_region), boost, fusion, eligible_count, shadow_compare, total."
         ),
     )
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -121,6 +121,12 @@ class FalkorSubstrateStoreConfig:
     # (primary + shadow), and given point (2) above, the two backends' real
     # refresh costs are not symmetric.
     snapshot_force_refresh_ceiling_sec: float = 30.0
+    # Optional redis socket timeouts (seconds) for the default
+    # RedisGraphQueryClient. None = redis-py default (no timeout), which is
+    # what every caller got before these existed. orion-recall sets them so a
+    # hung FalkorDB cannot pin a request thread (or the boot warmup) forever.
+    client_socket_timeout_s: float | None = None
+    client_socket_connect_timeout_s: float | None = None
 
 
 NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
@@ -285,9 +291,14 @@ class FalkorSubstrateStore:
         hydrate: bool = True,
     ) -> None:
         self._cfg = cfg
-        self._client: FalkorGraphClient = client or RedisGraphQueryClient(
-            uri=cfg.uri, graph_name=cfg.graph_name
-        )
+        if client is None:
+            client_kwargs: dict[str, float] = {}
+            if cfg.client_socket_timeout_s is not None:
+                client_kwargs["socket_timeout"] = cfg.client_socket_timeout_s
+            if cfg.client_socket_connect_timeout_s is not None:
+                client_kwargs["socket_connect_timeout"] = cfg.client_socket_connect_timeout_s
+            client = RedisGraphQueryClient(uri=cfg.uri, graph_name=cfg.graph_name, **client_kwargs)
+        self._client: FalkorGraphClient = client
         self._cache = InMemorySubstrateGraphStore()
         self._result_source_kind = "falkor"
         # See FalkorSubstrateStoreConfig.snapshot_force_refresh_ceiling_sec's
@@ -311,6 +322,16 @@ class FalkorSubstrateStore:
             # first fetch, not a redundant second one).
             self._last_snapshot_at = time.monotonic()
             self._last_snapshot_generation = self._write_generation
+
+    # Outcome of the most recent _hydrate_from_durable() call. None = never
+    # hydrated (hydrate=False, or an instance built with __new__). False =
+    # the durable queries raised and the cache was left untouched (empty on
+    # a first hydrate). Read by callers that cache a store handle for the
+    # process lifetime (orion-recall's substrate_store.py) so a boot-time
+    # hydrate against an unreachable FalkorDB is not mistaken for a ready
+    # store. Class-level defaults so __new__-built instances have them.
+    last_hydrate_ok: bool | None = None
+    last_hydrate_node_count: int = 0
 
     def _hydrate_from_durable(self) -> None:
         """(Re)populate the in-process cache from durable Falkor state.
@@ -348,9 +369,11 @@ class FalkorSubstrateStore:
             )
         except Exception as exc:
             logger.warning("falkor_substrate_hydrate_failed error=%s", exc)
+            self.last_hydrate_ok = False
             return
 
         fresh_cache = InMemorySubstrateGraphStore()
+        hydrated_nodes = 0
         for row in _normalize_rows(node_rows, fields=NATIVE_NODE_RETURN_FIELDS):
             try:
                 node = decode_node(row)
@@ -361,6 +384,7 @@ class FalkorSubstrateStore:
                 continue
             identity = row.get("identity_key")
             fresh_cache.upsert_node(identity_key=str(identity) if identity else None, node=node)
+            hydrated_nodes += 1
 
         for row in _normalize_rows(edge_rows, fields=NATIVE_EDGE_RETURN_FIELDS):
             try:
@@ -392,6 +416,8 @@ class FalkorSubstrateStore:
         # which is currently unbounded (see the LIMIT tradeoff noted on
         # FalkorSubstrateStoreConfig.snapshot_force_refresh_ceiling_sec).
         self._cache = fresh_cache
+        self.last_hydrate_ok = True
+        self.last_hydrate_node_count = hydrated_nodes
 
         self._migrate_legacy_payload_nodes(
             _normalize_rows(legacy_node_rows, fields=("payload_json", "identity_key"))
@@ -851,8 +877,14 @@ def build_falkor_substrate_store_from_env(
     *,
     graph_name_env: str = "FALKORDB_SUBSTRATE_GRAPH",
     graph_name_default: str = "orion_substrate",
+    client_socket_timeout_s: float | None = None,
+    client_socket_connect_timeout_s: float | None = None,
 ) -> FalkorSubstrateStore | InMemorySubstrateGraphStore:
     """Build a FalkorSubstrateStore from env, targeting a single named graph.
+
+    ``client_socket_timeout_s``/``client_socket_connect_timeout_s`` are
+    optional redis socket timeouts for the store's client (None = no timeout,
+    the prior behaviour).
 
     ``graph_name_env``/``graph_name_default`` let a second call site build a
     second, independently-named graph on the same FalkorDB instance (FalkorDB
@@ -879,6 +911,8 @@ def build_falkor_substrate_store_from_env(
             uri=uri,
             graph_name=graph_name,
             snapshot_force_refresh_ceiling_sec=_resolve_falkor_snapshot_force_refresh_ceiling_sec(),
+            client_socket_timeout_s=client_socket_timeout_s,
+            client_socket_connect_timeout_s=client_socket_connect_timeout_s,
         )
     )
 

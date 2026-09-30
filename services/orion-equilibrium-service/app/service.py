@@ -21,7 +21,6 @@ from .chat_turn_metacog_gate import (
     is_chat_turn_evidence_terminal,
 )
 from .transport_metacog_gate import (
-    build_transport_metacog_trigger_from_bus_synaptic,
     build_transport_metacog_trigger_from_grammar_atom,
 )
 from .insight_metacog_gate import build_insight_metacog_trigger
@@ -66,27 +65,6 @@ def _utcnow() -> datetime:
 # that a stopped writer stays visible in the logs, rare enough not to bury the
 # first real gate fire.
 _STALE_WINDOW_RELOG_EVERY: int = 60
-
-
-def _node_age_sec(observed_at: str | None) -> float | None:
-    """Seconds since a substrate node's `observed_at` ISO timestamp.
-
-    Returns None when absent or unparseable -- the gate treats None as "age
-    unknown" and does NOT suppress on it. Deliberate: a parsing change upstream
-    must not silently switch this evidence source off, which would be the same
-    "detector quietly stops detecting" failure this whole arc has been chasing.
-    A frozen node is the case we can actually detect, and that is the one
-    guarded.
-    """
-    if not observed_at:
-        return None
-    try:
-        parsed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - parsed).total_seconds()
 
 
 def _parse_ts(value: Any) -> float | None:
@@ -140,7 +118,6 @@ class EquilibriumService(BaseChassis):
         # baseline/manual/pulse/relational/telemetry_anomaly's own fires); transport
         # (2026-07-24) got one from day one instead of repeating that bug.
         self._last_trigger_ts_by_kind: Dict[str, float] = {}
-        self._bus_synaptic_falkor_client: Any = None
         self._chat_turn_correlator: ChatTurnCorrelator | None = None
         self._downtime_tracker = DowntimeTransitionTracker()
         self._attention_self_model_reader: AttentionSelfModelReader | None = None
@@ -185,11 +162,6 @@ class EquilibriumService(BaseChassis):
         # a restart legitimately re-enters cold-start rather than fabricating
         # history, same discipline as every other persisted-state field here.
         self._repair_pressure_trend_state: MetacogTrendStateV1 = MetacogTrendStateV1()
-        # Rising-edge state for the bus_synaptic transport branch. False at boot
-        # means an anomaly already in progress at startup fires once on the
-        # first poll -- correct ("this is news to this process") and bounded,
-        # versus the pre-2026-07-30 behavior of firing every 30s forever.
-        self._bus_synaptic_above_threshold: bool = False
         # Per-hop transport baselines (app/transport_baseline_gate.py). State is
         # restored from Redis in _run(); a config change cold-starts it.
         self._transport_baseline_gate: TransportBaselineGate | None = (
@@ -1039,133 +1011,12 @@ class EquilibriumService(BaseChassis):
 
             await asyncio.sleep(interval)
 
-    def _get_bus_synaptic_falkor_client(self):
-        """Cached read-only FalkorDB client for the durable substrate graph
-        (orion_substrate, written by orion-substrate-runtime's
-        _write_prediction_error_node -- a *different* graph from bus-mirror's
-        own orion_bus_synapse). Fail-open: returns None on init error."""
-        try:
-            client = self._bus_synaptic_falkor_client
-            if client is None:
-                from orion.graph.falkor_client import RedisGraphQueryClient
-
-                client = RedisGraphQueryClient(
-                    uri=settings.falkordb_uri,
-                    graph_name=settings.falkordb_substrate_graph,
-                )
-                self._bus_synaptic_falkor_client = client
-            return client
-        except Exception:
-            logger.exception("bus_synaptic_falkor_client_init_failed")
-            return None
-
-    async def _bus_synaptic_poll_loop(self) -> None:
-        """Third transport evidence source, polling node:substrate.bus_synaptic's
-        prediction_error directly from FalkorDB -- not message-driven like
-        Options A/C, so this needs its own timer, mirroring
-        _spark_heartbeat_loop's shape."""
-        if not (
-            settings.metacog_transport_trigger_enable
-            and settings.metacog_transport_bus_synaptic_poll_enable
-        ):
-            return
-
-        interval = float(settings.metacog_transport_bus_synaptic_poll_interval_sec)
-        while not self._stop.is_set():
-            try:
-                client = self._get_bus_synaptic_falkor_client()
-                if client is not None:
-                    # asyncio.to_thread: client.graph_query is a synchronous
-                    # blocking Redis call -- running it inline would block
-                    # this event loop (starving publish_loop/heartbeat/the
-                    # bus-message consumer) for the round-trip. Mirrors how
-                    # the sibling call in orion-substrate-runtime's
-                    # _bus_synaptic_tick is dispatched (worker.py's own tick
-                    # is offloaded via asyncio.to_thread at its call site).
-                    # observed_at is fetched for operator visibility only --
-                    # it is REPORTED into the trigger's upstream, never gated
-                    # on. See the gate's "Why there is NO staleness guard here"
-                    # note: the field is clobbered by a racing writer.
-                    rows = await asyncio.to_thread(
-                        client.graph_query,
-                        "MATCH (n:SubstrateNode) WHERE n.node_id = $node_id "
-                        "RETURN n.prediction_error AS error, n.observed_at AS observed_at",
-                        {"node_id": "node:substrate.bus_synaptic"},
-                    )
-                    error = None
-                    observed_at = None
-                    for row in rows:
-                        if not isinstance(row, dict):
-                            continue
-                        value = row.get("error")
-                        if isinstance(value, (int, float)) and not isinstance(value, bool):
-                            error = float(value)
-                        raw_observed = row.get("observed_at")
-                        if isinstance(raw_observed, str) and raw_observed:
-                            observed_at = raw_observed
-                    if error is not None:
-                        distress, zen, _ = self._calculate_metrics()
-                        trigger = build_transport_metacog_trigger_from_bus_synaptic(
-                            error,
-                            zen_state="zen" if zen > 0.5 else "not_zen",
-                            pressure=distress,
-                            recall_enabled=settings.metacog_recall_enabled,
-                            error_threshold=settings.metacog_transport_bus_synaptic_error_threshold,
-                            previously_above=self._bus_synaptic_above_threshold,
-                            node_age_sec=_node_age_sec(observed_at),
-                        )
-                        # Latch the rising edge ONLY on a real publish.
-                        #
-                        # Review finding (2026-07-30): latching from the raw
-                        # level, before publishing, converts a *transient*
-                        # cooldown collision into *permanent* event loss. The
-                        # `transport` cooldown lane is shared with the
-                        # rpc_health and rpc_timeout branches, which publish
-                        # ~859 rows/day between them -- at a 30s lane that
-                        # shadows roughly a quarter of the day. An episode start
-                        # landing in a shadowed window would have been dropped
-                        # by the lane, latched anyway, and then suppressed by
-                        # the `previously_above` check on every subsequent poll:
-                        # never published, never retried. The pre-patch level
-                        # check was lossy but self-healing here; this restores
-                        # that recovery without restoring the spam, because once
-                        # the lane clears it publishes exactly once and latches.
-                        published = True
-                        if trigger is not None:
-                            published = await self._publish_metacog_trigger(trigger)
-
-                        threshold = (
-                            settings.metacog_transport_bus_synaptic_error_threshold
-                        )
-                        clear_at = (
-                            threshold
-                            * settings.metacog_transport_bus_synaptic_clear_ratio
-                        )
-                        if error >= threshold:
-                            # `published` is True whenever no trigger was built
-                            # (already above, or below threshold) so an ongoing
-                            # episode stays latched and silent as intended.
-                            self._bus_synaptic_above_threshold = published
-                        elif error < clear_at:
-                            self._bus_synaptic_above_threshold = False
-                        # Between clear_at and threshold the previous state is
-                        # HELD -- the hysteresis band.
-            except Exception:
-                logger.exception("bus_synaptic_poll_loop_failed")
-
-            try:
-                await asyncio.wait_for(self._stop.wait(), timeout=interval)
-            except asyncio.TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                break
-
     def _get_attention_self_model_reader(self) -> AttentionSelfModelReader:
         """Cached read-only Postgres reader for `substrate_attention_self_model`
         (written by orion-substrate-runtime's _attention_self_model_tick, PR
         #1459).
 
-        Unlike _get_bus_synaptic_falkor_client this cannot fail here and so does
+        This cannot fail here and so does
         not return None: construction only stores a DSN, and the connection is
         opened lazily inside the reader, which is where the real fail-open
         (returning no samples) lives.
@@ -1246,7 +1097,7 @@ class EquilibriumService(BaseChassis):
         trailing window of `prediction_error_confidence` rows, so polling the
         same table twice would be pure waste. Not message-driven (nothing
         publishes this table to the bus), so it needs its own timer -- same
-        shape as _bus_synaptic_poll_loop.
+        shape as _spark_heartbeat_loop.
 
         See docs/superpowers/specs/2026-07-28-collapse-mirror-generative-
         triggers-design.md. Both gates ship disabled; this returns immediately
@@ -1268,7 +1119,7 @@ class EquilibriumService(BaseChassis):
                 # asyncio.to_thread: psycopg2 is a synchronous blocking driver --
                 # running the round-trip inline would stall the event loop
                 # (starving publish_loop/heartbeat/the bus consumer). Same
-                # reasoning as _bus_synaptic_poll_loop's own to_thread hop.
+                # reasoning: a blocking call must not stall the event loop.
                 samples = await asyncio.to_thread(
                     reader.fetch_recent_samples, limit=limit
                 )
@@ -1399,7 +1250,6 @@ class EquilibriumService(BaseChassis):
         heartbeat_task = None
         if settings.equilibrium_spark_heartbeat_enable:
             heartbeat_task = asyncio.create_task(self._spark_heartbeat_loop())
-        bus_synaptic_poll_task = asyncio.create_task(self._bus_synaptic_poll_loop())
         generative_poll_task = asyncio.create_task(self._generative_metacog_poll_loop())
         self._ensure_transport_housekeeping()
 
@@ -1636,20 +1486,17 @@ class EquilibriumService(BaseChassis):
         collapse_task.cancel()
         if heartbeat_task:
             heartbeat_task.cancel()
-        bus_synaptic_poll_task.cancel()
         generative_poll_task.cancel()
 
         await asyncio.gather(
             publisher,
             collapse_task,
             *( [heartbeat_task] if heartbeat_task else [] ),
-            bus_synaptic_poll_task,
             generative_poll_task,
             return_exceptions=True,
         )
 
         # Release the Postgres connection the generative gates cached, if any --
-        # the FalkorDB client above is Redis-backed and pooled, this one holds a
-        # real long-lived psycopg2 socket.
+        # it holds a real long-lived psycopg2 socket.
         if self._attention_self_model_reader is not None:
             self._attention_self_model_reader.close()

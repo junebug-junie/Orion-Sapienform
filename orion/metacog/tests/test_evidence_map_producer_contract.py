@@ -75,12 +75,6 @@ def test_transport_grammar_gate():
     _assert_mapped(t, severity="degraded")
 
 
-def test_transport_bus_synaptic_gate():
-    g = _gate("transport_metacog_gate")
-    t = g.build_transport_metacog_trigger_from_bus_synaptic(0.5, error_threshold=0.15, **COMMON)
-    _assert_mapped(t, severity="critical")
-
-
 def test_telemetry_anomaly_gate():
     g = _gate("telemetry_anomaly_metacog_gate")
     t = g.build_telemetry_anomaly_metacog_trigger(

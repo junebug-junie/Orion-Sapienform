@@ -124,6 +124,8 @@ async def main() -> int:
     print("\n== durable request")
     print(f"  run_id={request.run_id} workflow={request.workflow} resource={request.admission.resource} "
           f"priority={request.admission.priority} deadline_at={request.admission.deadline_at.isoformat()}")
+    print(f"  minimum_context_tokens={request.admission.requirements.get('minimum_context_tokens')} "
+          f"(the chat card serves 65,536; agent / agent-gpu2 serve 131,072 -- live /props 2026-09-30)")
     print(f"  request_json_bytes={len(request.model_dump_json())} material_json_bytes={len(material.model_dump_json())}")
     if args.show_digest:
         print("\n== digest\n" + view.digest_md)

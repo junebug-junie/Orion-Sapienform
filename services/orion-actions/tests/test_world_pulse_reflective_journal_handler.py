@@ -146,7 +146,7 @@ def test_request_is_deterministic_admitted_and_bounded_to_local_midnight() -> No
     assert adm.priority == "background"
     assert adm.deadline_at == datetime(2026, 10, 1, 6, 0, tzinfo=timezone.utc)   # midnight Denver (MDT)
     assert r1.brief.trigger.trigger_kind == "world_pulse_digest"
-    assert r1.brief.world_pulse_result["run"]["run_id"] == "wp-1"
+    assert r1.brief.body_appendix is None and r1.brief.body_appendix_markers == []   # no followups
     assert r1.brief.recall_profile == "journal.world_pulse.grounded.v1"
 
 
@@ -168,16 +168,39 @@ def test_eligible_result_submits_once_and_audits() -> None:
     assert audit.calls[-1]["extra"]["durable_run_id"] == "world-pulse-journal:wp-1"
 
 
-def test_redelivery_resubmits_the_same_run_id() -> None:
-    ids = []
+def _comparable(request):
+    """What durable-runs' store compares on a resubmit (orion/durable_admission/store.py submit):
+    the whole request minus requested_at and admission.deadline_at."""
+    data = request.model_dump(mode="json", exclude_none=True)
+    data.pop("requested_at", None)
+    data["admission"].pop("deadline_at", None)
+    return data
+
+
+def test_redelivery_resubmits_an_identical_request() -> None:
+    seen = []
 
     async def submit(request):
-        ids.append((request.run_id, request.brief.entry_id, request.correlation_id))
+        seen.append(_comparable(request))
         return None
 
     _handle(_env(_result()), submit=submit)
-    _handle(_env(_result()), submit=submit, now=_NOW + timedelta(hours=1))
-    assert len(ids) == 2 and ids[0] == ids[1]
+    _handle(_env(_result()), submit=submit, now=_NOW + timedelta(hours=1))   # new envelope, later clock
+    assert len(seen) == 2 and seen[0] == seen[1]
+
+
+def test_curiosity_followups_travel_as_prerendered_text() -> None:
+    from orion.schemas.world_pulse import CuriosityFollowupV1
+
+    result = _result()
+    result.digest.curiosity_followups = [CuriosityFollowupV1.model_validate({
+        "section": "science", "query": "fusion ignition", "driving_gap": "missing",
+        "articles": [{"title": "Ignition", "url": "https://example.org/ignition", "salience": 0.9}],
+    })]
+    req = build_world_pulse_journal_run_request(result, settings=_cfg(), llm_route="quick_background", now=_NOW)
+    assert "## Orion went looking" in req.brief.body_appendix
+    assert req.brief.body_appendix_markers == ["https://example.org/ignition"]
+    assert "world_pulse_result" not in req.brief.model_dump()
 
 
 def test_submit_retries_briefly_then_reports_failure() -> None:
@@ -188,7 +211,7 @@ def test_submit_retries_briefly_then_reports_failure() -> None:
         return "TimeoutError: RPC timeout"
 
     audit, slept = _handle(_env(_result()), submit=submit)
-    assert len(calls) == 3 and slept == [5.0, 15.0]
+    assert len(calls) == 5 and slept == [10.0, 30.0, 90.0, 270.0]
     assert audit.calls[-1]["status"] == "failed"
     assert audit.calls[-1]["reason"].startswith("durable_submit_failed:")
 

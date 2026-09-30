@@ -92,37 +92,54 @@ def test_busy_pool_waits_checkpointed_and_restart_resumes_without_spending_an_at
     asyncio.run(run())
 
 
-def test_compose_failure_is_a_bounded_attempt_then_succeeds():
+def _regranting_release(world):
+    async def release(state, reason, keep_requeued=False):   # the pool re-grants at once
+        world.releases.append(reason)
+        return {"lease": None, "hold": None}
+    return release
+
+
+def test_compose_failure_backs_off_in_retry_wait_then_succeeds():
     async def run():
-        world = World()
+        from datetime import datetime, timedelta
+
+        world, saver = World(), InMemorySaver()
         world.grant()
+        world.release = _regranting_release(world)
         journal = Journal(world, fail_times=1)
-
-        async def release(state, reason, keep_requeued=False):   # the pool re-grants at once
-            world.releases.append(reason)
-            return {"lease": None, "hold": None}
-
-        world.release = release
-        result = await graph(world, InMemorySaver(), journal).ainvoke(initial(), CFG)
+        await graph(world, saver, journal).ainvoke(initial(), CFG)
+        snap = await graph(world, saver, journal).aget_state(CFG)
+        assert snap.next == ("retry_wait",)                          # sleeping, not hammering
+        assert snap.values["attempt"] == 1 and snap.values["status"] == "retrying"
+        retry_at = datetime.fromisoformat(snap.values["retry_at"])
+        assert retry_at == world.now + timedelta(seconds=30)        # retry_base * 2^0
+        # The driver resumes retry_wait only once retry_at has passed (admission_runtime, same as
+        # the curiosity graph's retry_wait); the graph trusts that.
+        world.now = retry_at
+        result = await graph(world, saver, journal).ainvoke(Command(resume=True), CFG)
         assert result["status"] == "completed" and result["attempt"] == 2
         assert len(journal.composes) == 2 and len(journal.writes) == 1
 
     asyncio.run(run())
 
 
-def test_compose_fails_after_max_attempts_without_publishing():
+def test_compose_fails_after_min_attempts_without_publishing():
     async def run():
-        world = World()
+        from app.journal_compose_graph import JOURNAL_COMPOSE_MIN_ATTEMPTS
+
+        world, saver = World(), InMemorySaver()
         world.grant()
+        world.release = _regranting_release(world)
         journal = Journal(world, fail_times=99)
-
-        async def release(state, reason, keep_requeued=False):
-            world.releases.append(reason)
-            return {"lease": None, "hold": None}
-
-        world.release = release
-        result = await graph(world, InMemorySaver(), journal, max_attempts=2).ainvoke(initial(), CFG)
-        assert result["status"] == "failed" and result["attempt"] == 2
+        g = graph(world, saver, journal, max_attempts=2)             # the workflow floor wins
+        result = await g.ainvoke(initial(), CFG)
+        for _ in range(JOURNAL_COMPOSE_MIN_ATTEMPTS):
+            snap = await g.aget_state(CFG)
+            if not snap.next:
+                break
+            world.now = __import__("datetime").datetime.fromisoformat(snap.values["retry_at"])
+            result = await g.ainvoke(Command(resume=True), CFG)
+        assert result["status"] == "failed" and result["attempt"] == JOURNAL_COMPOSE_MIN_ATTEMPTS
         assert "cortex_orch_missing_final_text" in result["last_error"]
         assert journal.writes == []
 
@@ -152,10 +169,10 @@ def test_publish_failure_resumes_at_publish_with_identical_write_and_no_recompos
         world, saver = World(), InMemorySaver()
         world.grant()
         journal = Journal(world, publish_ok=False)
-        try:
+        import pytest
+
+        with pytest.raises(RuntimeError, match="journal_publish_failed"):
             await graph(world, saver, journal).ainvoke(initial(), CFG)
-        except RuntimeError as exc:
-            assert "journal_publish_failed" in str(exc)
         snap = await graph(world, saver, journal).aget_state(CFG)
         assert snap.next == ("publish",)
         journal.publish_ok = True
@@ -252,3 +269,18 @@ def test_runner_compose_raises_on_not_ok_and_on_empty_text():
         with pytest.raises(Exception):
             asyncio.run(runner._compose_journal(JournalComposeRunBriefV1.model_validate(BRIEF),
                                                 run_id="r", correlation_id="t", gpu_lease=_hold()))
+
+
+def test_runner_appends_the_prerendered_appendix_unless_already_in_the_body():
+    brief = {**BRIEF, "body_appendix": "## Orion went looking\n- x", "body_appendix_markers": ["https://ex.org/a"]}
+    runner, _ = _runner_with_reply(
+        {"ok": True, "status": "success", "final_text": '{"mode":"digest","title":"P","body":"World news."}'})
+    draft = asyncio.run(runner._compose_journal(JournalComposeRunBriefV1.model_validate(brief),
+                                                run_id="r", correlation_id="t", gpu_lease=_hold()))
+    assert draft.body.endswith("## Orion went looking\n- x")
+    runner, _ = _runner_with_reply(
+        {"ok": True, "status": "success",
+         "final_text": '{"mode":"digest","title":"P","body":"Read https://ex.org/a today."}'})
+    draft = asyncio.run(runner._compose_journal(JournalComposeRunBriefV1.model_validate(brief),
+                                                run_id="r", correlation_id="t", gpu_lease=_hold()))
+    assert "Orion went looking" not in draft.body

@@ -63,16 +63,22 @@ Admission-only (the request validator refuses it without `admission`). `compose`
 the gateway attaches the call to the hold; `llm_route` stays the brief's route (the hold's role is
 never a route). Waiting for the hold is never an attempt -- a busy pool at 06:00 local is a
 checkpointed wait bounded by `admission.deadline_at`. A failed compose (non-ok, empty or unparseable
-draft, transport) is one bounded attempt (`DURABLE_RUNS_RETRY_MAX_ATTEMPTS`). `publish` releases the
-hold, then publishes `journal.entry.write.v1` with the brief's fixed `entry_id` and the checkpointed
-`created_at`; a publish failure raises and the driver's bounded checkpoint resume retries publish
-without recomposing (same write, sql-writer upserts by entry_id). First producer: orion-actions'
+draft, transport) is an attempt: the hold is handed back and the run sleeps in `retry_wait`
+(`DURABLE_RUNS_RETRY_BASE_SEC` * 2^n, capped at `DURABLE_RUNS_RETRY_MAX_SEC`) before asking again,
+at least `JOURNAL_COMPOSE_MIN_ATTEMPTS` (6) times. `publish` releases the hold, then publishes
+`journal.entry.write.v1` with the brief's fixed `entry_id` and the checkpointed `created_at`; a
+publish failure raises and the driver's bounded checkpoint resume retries publish without
+recomposing. sql-writer's journal table is insert-only, so a replayed write with the same entry_id
+is dropped and `journal.created` is not re-emitted (no second email). The brief carries the
+curiosity section as pre-rendered text (`body_appendix` + `body_appendix_markers`), never another
+service's schema. First producer: orion-actions'
 world-pulse journal (`trigger_kind=world_pulse_digest`, run_id `world-pulse-journal:<world-pulse run_id>`,
 deadline = next local midnight). Finish detail: `line=journal`, `entry_id`, `trigger_kind`,
 `published`, `attempts`.
 
 Deploy order (additive `Literal`/brief on `extra="forbid"` models): orion-durable-runs, then
-orion-cortex-orch (it validates `DurableRunRequestV1`), then the producer.
+orion-cortex-orch (it validates `DurableRunRequestV1`) and orion-sql-writer (it validates
+`DurableRunStateV1` rows), then the producer.
 
 ### Admitted visual reverie (`reverie.visual`, 2026-09-28)
 

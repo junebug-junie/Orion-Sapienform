@@ -56,8 +56,9 @@ CURIOSITY_TURN_RESULT_KIND = "curiosity.turn.result.v1"
 
 DurableWorkflowV1 = Literal[
     "curiosity.investigate", "self_sense_eval", "self_study.reflect", "reading.turn", "reverie.visual",
-    # ADDITIVE on extra="forbid"/Literal models: deploy orion-durable-runs, then orion-cortex-orch
-    # (it validates the request), then the producer (orion-actions), or an old validator rejects it.
+    # ADDITIVE on extra="forbid"/Literal models. Deploy orion-durable-runs first, then
+    # orion-cortex-orch (validates the request) and orion-sql-writer (validates DurableRunStateV1
+    # rows for this workflow), then the producer (orion-actions); an old validator rejects it.
     "journal.compose",
 ]
 

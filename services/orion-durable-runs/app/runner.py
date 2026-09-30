@@ -335,8 +335,7 @@ class DurableRunner:
         pool hold via ``options.gpu_lease``. Raises on ANY failure -- transport, non-ok result,
         empty or unparseable draft -- so the graph counts one bounded attempt; waiting for the hold
         is never one. ``llm_route`` stays the brief's route (the hold's role is never a route)."""
-        from orion.journaler import build_compose_request, draft_from_cortex_result, merge_world_pulse_curiosity_into_draft
-        from orion.schemas.world_pulse import WorldPulseRunResultV1
+        from orion.journaler import append_unless_present, build_compose_request, draft_from_cortex_result
 
         if self._bus is None:
             raise RuntimeError("no_bus")
@@ -365,10 +364,8 @@ class DurableRunner:
         payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
         if not payload.get("ok", False):
             raise RuntimeError(f"journal_compose_failed:{payload.get('error') or payload.get('status')}")
-        draft = draft_from_cortex_result(payload)
-        if brief.world_pulse_result is not None:
-            draft = merge_world_pulse_curiosity_into_draft(
-                draft, WorldPulseRunResultV1.model_validate(brief.world_pulse_result))
+        draft = append_unless_present(draft_from_cortex_result(payload), brief.body_appendix,
+                                      brief.body_appendix_markers)
         logger.info("journal_compose_drafted run=%s trigger_kind=%s", run_id, brief.trigger.trigger_kind)
         return draft
 

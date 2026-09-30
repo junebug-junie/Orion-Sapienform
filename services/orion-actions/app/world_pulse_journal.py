@@ -24,7 +24,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.journaler import JournalTriggerV1, build_world_pulse_reflective_trigger
+from orion.journaler import JournalTriggerV1, build_world_pulse_reflective_trigger, world_pulse_curiosity_appendix
 from orion.schemas.durable_run import DurableRunRequestV1
 from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW, JournalComposeRunBriefV1
 from orion.schemas.resource_admission import ResourceRequirementV1
@@ -39,8 +39,11 @@ AuditFn = Callable[..., Awaitable[None]]
 SubmitFn = Callable[[DurableRunRequestV1], Awaitable[str | None]]
 AUDIT_ACTION = "journal.world_pulse_digest"
 RUN_ID_PREFIX = "world-pulse-journal:"
-# Submission is one short receipt RPC (no GPU); a few quick tries ride out a cortex/durable restart.
-SUBMIT_BACKOFF_SEC: tuple[float, ...] = (0.0, 5.0, 15.0)
+# Submission is one short receipt RPC (no GPU). Tries span ~6.5 minutes so a cortex-orch or
+# durable-runs rebuild does not lose the day's journal. The run result arrives over pub/sub and is
+# never redelivered, so if every try fails the journal for that run is lost -- audited as
+# status=failed reason=durable_submit_failed:<why> and logged at ERROR, never silent.
+SUBMIT_BACKOFF_SEC: tuple[float, ...] = (0.0, 10.0, 30.0, 90.0, 270.0)
 
 
 def world_pulse_journal_skip_reason(
@@ -86,6 +89,7 @@ def build_world_pulse_journal_run_request(
     wp_run_id = result.run.run_id
     trigger = build_world_pulse_journal_trigger(result)
     route = llm_route or "quick_background"
+    appendix, markers = world_pulse_curiosity_appendix(result)
     brief = JournalComposeRunBriefV1(
         trigger=trigger,
         entry_id=str(uuid5(NAMESPACE_URL, f"orion:journal:world_pulse_digest:{wp_run_id}")),
@@ -95,7 +99,8 @@ def build_world_pulse_journal_run_request(
         recall_profile=settings.actions_journal_world_pulse_recall_profile,
         llm_route=route,
         timeout_sec=float(settings.actions_exec_timeout_seconds),
-        world_pulse_result=result.model_dump(mode="json"),
+        body_appendix=appendix,
+        body_appendix_markers=markers,
     )
     return DurableRunRequestV1(
         run_id=world_pulse_journal_run_id(wp_run_id),
@@ -201,7 +206,13 @@ async def handle_world_pulse_run_result_journal(
         return True
 
     now = (now_fn or (lambda: datetime.now(timezone.utc)))()
-    request = build_world_pulse_journal_run_request(result, settings=settings, llm_route=llm_route, now=now)
+    try:
+        request = build_world_pulse_journal_run_request(result, settings=settings, llm_route=llm_route, now=now)
+    except Exception as exc:  # noqa: BLE001 -- a bad request must still leave an audit row
+        logger.exception("world_pulse_journal_request_build_failed run_id=%s", result.run.run_id)
+        await audit(env, status="failed", event_id=world_pulse_journal_run_id(result.run.run_id),
+                    action_name=AUDIT_ACTION, reason=f"request_build_failed:{type(exc).__name__}: {exc}"[:500])
+        return True
     error: str | None = None
     for delay in SUBMIT_BACKOFF_SEC:
         if delay:

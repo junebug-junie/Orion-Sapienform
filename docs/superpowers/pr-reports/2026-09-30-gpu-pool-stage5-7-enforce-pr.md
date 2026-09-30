@@ -112,9 +112,9 @@
 ## Tests run
 
 ```text
-PYTHONPATH=<wt> pytest orion/gpu_pool/tests -q                                  325 passed
-cd services/orion-gpu-pool && GPU_POOL_TEST_POSTGRES_URI=<throwaway postgres:16 on a free port> pytest tests -q
-                                                                                 125 passed (incl. Postgres store + v3 migration)
+PYTHONPATH=<wt> pytest orion/gpu_pool/tests -q                                  326 passed
+cd services/orion-gpu-pool && GPU_POOL_TEST_POSTGRES_URI=<throwaway postgres:16 on free port 59311> pytest tests -q
+                                                                                 132 passed (incl. Postgres store + v3 migration)
 cd services/orion-durable-runs && ORION_ADMISSION_TEST_DSN=<same throwaway> pytest tests -q   262 passed
 pytest services/orion-gpu-lane-controller/tests -q                               79 passed
 cd services/orion-hub && pytest tests/test_gpu_pool_routes.py tests/test_biometrics_preview_api.py tests/test_urgent_evidence.py -k "not router_registered"
@@ -147,7 +147,52 @@ Not run: this PR is not deployed (by instruction). The runbook's steps 1-7 are t
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+Code review ran in a subagent against `origin/main...HEAD`: 1 blocker, 5 should-fix, 7 nits.
+
+- Finding (blocker B1): a committed test loaded `scripts/gpu_pool_pause.py`, which was not committed yet at the commit
+  the reviewer read; same for the runbook and this report.
+  - Fix: all committed (script and runbook in 550fcc8fe, this report with the fixes).
+  - Evidence: `git ls-files scripts/gpu_pool_pause.py docs/runbooks/2026-09-30-gpu-pool-stage5-7-enforce.md` lists both.
+- Finding (S1): a reconcile that agreed still overwrote the card's action record with an unfinished `status`, so after
+  every ordinary restart the Hub would show "status agent-gpu2 ... in flight" forever, and memory disagreed with the DB.
+  - Fix: the record is replaced only when the card changes (adopt or fault).
+  - Evidence: `test_boot_reconcile_that_agrees_changes_nothing` now pins memory, store and published state to the
+    previous `unload` record.
+- Finding (S2): a pause row for a card since removed from the YAML would re-pause the pool on every restart, even after
+  Resume.
+  - Fix: boot reads only configured cards; pause/resume writes every row.
+  - Evidence: `test_a_pause_row_for_a_card_no_longer_configured_does_not_pause_and_resume_clears_every_row`.
+- Finding (S3): memory flipped before four separate row writes; a failed write mid-resume could leave rows paused.
+  - Fix: `store.set_actuation_paused` is one `UPDATE` over all rows, run before memory flips; a failure answers
+    `not_persisted:<error>` and changes nothing.
+  - Evidence: `test_a_pause_that_cannot_be_persisted_changes_nothing`; Postgres round trip in
+    `test_holds_children_and_a_mid_load_card_survive_a_restart_on_postgres`.
+- Finding (S4): while a reconcile was open, the scheduler could still drain the seat on the stored belief the
+  reconcile was checking (up to 90 s of pointless recalls after a resume).
+  - Fix: seats with an open reconcile are passed to the scheduler as `frozen`.
+  - Evidence: `test_nothing_is_drained_on_a_seat_while_its_reconcile_is_open` (fails with the fix reverted -- checked).
+- Finding (S5): the engine tests and the durable-runs acceptance test only ran in observe.
+  - Fix: both restart-mid-swap tests are parametrized over observe/enforce; the durable-runs gpu2 acceptance test runs
+    enforce with its actuator fixture answering the boot `status`.
+  - Evidence: pool 132 passed; durable-runs 262 passed.
+- Finding (N1): `in_flight=None` on a reconcile answer was read as "nothing running".
+  - Fix: keep the stored state.
+  - Evidence: `test_a_reconcile_that_cannot_say_whether_something_runs_keeps_the_card`.
+- Finding (N2): the docs said observe "restores the liveness shortcut"; for gpu2 it restores nothing, because
+  agent-gpu2 is already pool-owned (generation 79).
+  - Fix: `.env_example`, settings comment, README table, runbook rollback 1, spec corrections all say so.
+- Finding (N4): hold refusals were read outside the runtime lock.
+  - Fix: moved into `acquire` (`_operator_refusal`) under the lock.
+- Finding (N5): the runbook's inline shell snippet had a `reply::` double colon and duplicated logic.
+  - Fix: replaced by `scripts/gpu_pool_pause.py`, whose round trip through the real control path is tested.
+- Finding (N6): no Postgres pause round trip. Already present (`test_store_postgres.py`, pause -> restart -> resume ->
+  restart); the reviewer had no Postgres URI, so it was skipped for them. Ran here on a throwaway postgres:16.
+- Finding (N7): a paused, loaded operator seat would still recall its holders at max_hold.
+  - Fix: gated by `frozen`.
+  - Evidence: `test_a_frozen_operator_seat_keeps_its_holders_past_max_hold`.
+- Not fixed (N3, low): while paused, a lease whose only role is an unloaded frozen seat counts as serviceable and
+  waits instead of backlogging/failing. No class is served only by a swap seat today (agent-gpu2 is always behind
+  agent; experiment is refused at admission), so there is no live effect. Follow-up if a seat-only class appears.
 
 ## Restart required
 
@@ -179,6 +224,6 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2433
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

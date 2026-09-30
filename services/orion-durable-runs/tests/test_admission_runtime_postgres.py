@@ -497,3 +497,14 @@ def test_list_pending_pages_urgent_rows_first_so_a_long_backlog_cannot_hide_one(
         assert [r["run_id"] for r in await store.list_pending(limit=2)] == ["pending-u-1", "pending-bg-0"]
         assert [r["run_id"] for r in await store.list_pending()] == ["pending-u-1", "pending-bg-0", "pending-bg-1", "pending-bg-2", "pending-legacy-0"]
     asyncio.run(with_database(scenario))
+
+
+def test_store_setup_refuses_the_public_schema():
+    """setup() applies the stage-5.6 drop migration: on the public schema (production's) it must
+    refuse before touching anything -- the real drop goes through the snapshot script."""
+    async def scenario():
+        async with AsyncConnectionPool(DSN, min_size=1, max_size=1, open=False,
+                kwargs={"autocommit": True, "row_factory": dict_row, "options": "-c search_path=public"}) as pool:
+            with pytest.raises(RuntimeError, match="test-only"):
+                await DurableRunRegistryStore(pool).setup()
+    asyncio.run(scenario())

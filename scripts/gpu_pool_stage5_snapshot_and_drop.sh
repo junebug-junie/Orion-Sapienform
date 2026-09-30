@@ -11,7 +11,9 @@
 #
 # Usage (athena, from a worktree or the checkout -- it only reads the migration file):
 #   scripts/gpu_pool_stage5_snapshot_and_drop.sh --cutoff '2026-09-29 22:45:00+00'          # snapshot + verify only
-#   scripts/gpu_pool_stage5_snapshot_and_drop.sh --cutoff '2026-09-29 22:45:00+00' --drop   # ... then drop
+#   scripts/gpu_pool_stage5_snapshot_and_drop.sh --cutoff '2026-09-29 22:45:00+00' --accept-large-snapshot
+#   scripts/gpu_pool_stage5_snapshot_and_drop.sh --cutoff '2026-09-29 22:45:00+00' --accept-large-snapshot --drop
+# --cutoff must be 'YYYY-MM-DD HH:MM[:SS][.frac]<+HH[:MM]|Z>' (explicit timezone; nothing else is accepted).
 #
 # Refuses (exit 2, nothing dropped) when:
 #   - any row in the four tables was written after --cutoff (permit granted/heartbeated, lease
@@ -20,6 +22,23 @@
 #   - the gzipped dump's COPY row counts differ from the live counts;
 #   - at drop time, under ACCESS EXCLUSIVE locks, the counts or the newest write moved since the dump.
 # The drop is one transaction (lock -> re-check -> DROP); any failure rolls it back.
+#
+# LOCKS: dropping durable_resource_{demands,leases} removes their FK triggers on the LIVE run
+# registry, durable_admission_runs, which takes an ACCESS EXCLUSIVE lock on it. The script takes that
+# lock up front with a 3 s lock_timeout: if anything holds the registry (a backup, a long query), the
+# drop is refused (safe; rerun) instead of queueing durable-runs/Hub reads behind it. The lock is held
+# only for the DROP itself (milliseconds).
+#
+# SIZE: durable_gateway_permits is ~169k rows / ~127 MB, over AGENTS.md s.14's 100k rows / 100 MB
+# line. Juniper chose the gzipped pg_dump snapshot form (spec, "Juniper's answers" 3), so the script
+# refuses above the line unless --accept-large-snapshot is passed.
+#
+# DURABILITY: $OUT defaults to /tmp (s.14), which a reboot may clear. Copy legacy_tables.sql.gz to
+# durable storage before --drop; it is the only copy of the dropped rows.
+#
+# RESTORE: gzip -dc legacy_tables.sql.gz | docker exec -i orion-athena-sql-db psql -U postgres -d conjourney
+# The dump carries FKs into durable_admission_runs: if a referenced run row was deleted since, drop
+# those FK lines from the dump (or restore with session_replication_role=replica).
 #
 # Env overrides (tests): SQL_CONTAINER (orion-athena-sql-db), PGDATABASE_NAME (conjourney),
 # PGUSER_NAME (postgres), OUT (/tmp/gpu-pool-stage5-drop).
@@ -36,15 +55,23 @@ SEQUENCE=durable_resource_fencing_generation
 
 CUTOFF=""
 DROP=0
+LARGE=0
+ROW_LIMIT="${ROW_LIMIT_OVERRIDE:-100000}"   # override: tests only
+BYTE_LIMIT=$((100 * 1024 * 1024))
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --cutoff) CUTOFF="${2:-}"; shift 2 ;;
     --drop) DROP=1; shift ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    --accept-large-snapshot) LARGE=1; shift ;;
+    -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 64 ;;
   esac
 done
 [[ -n "$CUTOFF" ]] || { echo "--cutoff '<timestamptz>' is required (e.g. the 5.4 deploy: '2026-09-29 22:45:00+00')" >&2; exit 64; }
+# Validated before any SQL: the value is interpolated into SQL text below, so only this exact shape
+# (digits, separators, an explicit zone) may reach it.
+CUTOFF_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]{1,6})?)?([+-][0-9]{2}(:?[0-9]{2})?|Z)$'
+[[ "$CUTOFF" =~ $CUTOFF_RE ]] || { echo "--cutoff must look like '2026-09-29 22:45:00+00' (explicit timezone)" >&2; exit 64; }
 [[ -f "$MIGRATION" ]] || { echo "missing $MIGRATION" >&2; exit 1; }
 
 mkdir -p "$OUT"
@@ -57,7 +84,8 @@ log() {  # event title | percent | elapsed | detail
   line="$(date -u +%FT%TZ) | $1 | ${2}% | elapsed=$(( $(date +%s) - START ))s | ${3:-}"
   echo "$line" | tee -a "$LOG"
 }
-refuse() { log "REFUSED" "$1" "$2"; echo "REFUSED: $2 -- nothing dropped" >&2; exit 2; }
+refuse() { trap - ERR; log "REFUSED" "$1" "$2"; echo "REFUSED: $2 -- nothing dropped" >&2; exit 2; }
+trap 'log "FAILED" "-" "command failed at line $LINENO (exit $?); nothing dropped unless the drop step logged done"' ERR
 psql_q() { docker exec -i "$SQL_CONTAINER" psql -U "$PGU" -d "$DB" -v ON_ERROR_STOP=1 -X -At "$@"; }
 
 log "start" 0 "container=$SQL_CONTAINER db=$DB cutoff=$CUTOFF drop=$DROP out=$OUT"
@@ -94,6 +122,10 @@ log "cutoff_check" 10 "newest_write=${latest:-none} after_cutoff=$after live_row
 
 counts="$(psql_q -c "$COUNTS_SQL")"
 IFS=',' read -r -a before <<<"$counts"
+total=0; for n in "${before[@]}"; do total=$((total + n)); done
+if [[ "$total" -gt "$ROW_LIMIT" && "$LARGE" -ne 1 ]]; then
+  refuse 20 "$total rows is over the ${ROW_LIMIT}-row snapshot line (AGENTS.md s.14); rerun with --accept-large-snapshot on Juniper's go"
+fi
 log "counts" 20 "$(for i in "${!TABLES[@]}"; do printf '%s=%s ' "${TABLES[$i]}" "${before[$i]}"; done)"
 
 dump_args=()
@@ -102,7 +134,11 @@ dump_args+=(-t "public.$SEQUENCE")
 log "dump" 30 "pg_dump ${TABLES[*]} $SEQUENCE -> $DUMP"
 docker exec "$SQL_CONTAINER" pg_dump -U "$PGU" -d "$DB" --no-owner --no-privileges "${dump_args[@]}" | gzip -c >"$DUMP.partial"
 mv "$DUMP.partial" "$DUMP"
-log "dump_written" 60 "bytes=$(stat -c %s "$DUMP")"
+bytes="$(stat -c %s "$DUMP")"
+log "dump_written" 60 "bytes=$bytes"
+if [[ "$bytes" -gt "$BYTE_LIMIT" && "$LARGE" -ne 1 ]]; then
+  refuse 60 "dump is $bytes bytes, over the 100 MB snapshot line; rerun with --accept-large-snapshot on Juniper's go"
+fi
 
 # Verify: every table's COPY block in the dump has exactly the live row count.
 for i in "${!TABLES[@]}"; do
@@ -120,6 +156,7 @@ if [[ "$DROP" -ne 1 ]]; then
     echo "# GPU pool stage 5.6 legacy-table snapshot"
     echo; echo "- verdict: SNAPSHOT_ONLY (no --drop)"; echo "- cutoff: $CUTOFF; newest legacy write: ${latest:-none}"
     echo "- dump: $DUMP ($(stat -c %s "$DUMP") bytes); verified row counts: dump_verify.csv"
+    echo "- copy the dump to durable storage before --drop: it will be the only copy of these rows"
   } >"$OUT/report.md"
   exit 0
 fi
@@ -130,8 +167,8 @@ log "drop" 80 "locking, re-checking, applying $(basename "$MIGRATION")"
 {
   echo "\\set ON_ERROR_STOP on"
   echo "BEGIN;"
-  echo "SET LOCAL lock_timeout = '30s';"
-  echo "LOCK TABLE durable_gateway_permits, durable_resource_leases, durable_resource_demands, durable_elastic_slot IN ACCESS EXCLUSIVE MODE;"
+  echo "SET LOCAL lock_timeout = '3s';"
+  echo "LOCK TABLE durable_admission_runs, durable_gateway_permits, durable_resource_leases, durable_resource_demands, durable_elastic_slot IN ACCESS EXCLUSIVE MODE;"
   echo "DO \$\$ BEGIN"
   echo "  IF ($COUNTS_SQL) <> '$counts' THEN RAISE EXCEPTION 'legacy row counts moved since the dump'; END IF;"
   echo "  IF coalesce(($LATEST_SQL) > '$CUTOFF'::timestamptz, false) THEN RAISE EXCEPTION 'a legacy row was written after the cutoff'; END IF;"
@@ -151,7 +188,8 @@ kept="$(psql_q -c "SELECT (to_regclass('public.durable_admission_runs') IS NOT N
 {
   echo "# GPU pool stage 5.6 legacy-table drop"
   echo; echo "- verdict: DROPPED"; echo "- cutoff: $CUTOFF; newest legacy write: ${latest:-none}"
-  echo "- dump (restore with \`gzip -dc $DUMP | psql\`): $DUMP ($(stat -c %s "$DUMP") bytes)"
+  echo "- dump: $DUMP ($(stat -c %s "$DUMP") bytes). Restore: \`gzip -dc $DUMP | docker exec -i $SQL_CONTAINER psql -U $PGU -d $DB\`"
+  echo "  (FKs into durable_admission_runs: if a referenced run row was deleted since, strip those FK lines first)"
   echo "- rows: before_after.csv; dump verification: dump_verify.csv"
   echo "- durable_admission_runs / durable_resource_events: present"
   echo "- errors: 0; needs another pass: no"

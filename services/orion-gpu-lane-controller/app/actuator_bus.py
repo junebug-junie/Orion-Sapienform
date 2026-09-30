@@ -45,7 +45,8 @@ async def observe() -> dict[str, str]:
     checkout's YAML, not a fixed gpu2 pair), for the pool to reconcile from. Never raises.
 
     An unparseable checkout (e.g. a pull without the matching image rebuild) names no roles, so this
-    reports nothing: the pool then treats the card as unknown and an operator reconciles. (The
+    reports nothing: the pool then faults the card (``reconcile_ambiguous`` on a status reply, ``fault``
+    on a failed load) and an operator ``clear_fault``s it after fixing the checkout/image. (The
     stage-4 fixed gpu2 pair used to stand in here; deleted with the bridge in 5.6.)"""
     try:
         plans = pool_fence.role_plans(await asyncio.to_thread(pool_fence.load_config))

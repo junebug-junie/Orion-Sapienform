@@ -68,19 +68,25 @@ def test_pool_no_longer_reads_the_visual_chain():
 
 
 def test_the_broker_package_and_its_tables_left_the_code():
-    """5.6: the package is gone (the run registry moved to orion/durable_runs), and no durable-runs
-    code, eval or env template reads or writes the four dropped tables."""
+    """5.6: the package is gone (the run registry moved to orion/durable_runs), and no live code,
+    SQL model or metric definition anywhere reads or writes the four dropped tables. Exempt: tests,
+    evals, docs, the migrations that created/drop them, and the snapshot-and-drop script."""
     assert not (ROOT / "orion" / "durable_admission").exists()
     assert (ROOT / "orion" / "durable_runs" / "registry_store.py").is_file()
     dropped = re.compile(r"durable_gateway_permits|durable_resource_demands|durable_resource_leases|durable_elastic_slot")
     hits = []
-    for base in ("services/orion-durable-runs/app", "services/orion-durable-runs/evals", "orion/durable_runs"):
-        for path in (ROOT / base).rglob("*.py"):
+    exempt = ("services/orion-sql-db/", "scripts/gpu_pool_stage5_snapshot_and_drop.sh")
+    for base in ("orion", "services", "scripts", "config"):
+        for path in (ROOT / base).rglob("*"):
+            rel = path.relative_to(ROOT).as_posix()
+            if (path.suffix not in (".py", ".sql", ".sh", ".yaml", ".yml", ".json") or not path.is_file()
+                    or _is_test(rel) or "/node_modules/" in rel or rel.startswith(exempt)):
+                continue
             # Module docstrings may name them as deleted (registry_store's does); code and SQL must not.
             code = path.read_text(errors="ignore")
             if code.lstrip().startswith('"""'):
                 code = code.split('"""', 2)[-1]
             code = "\n".join(line for line in code.splitlines() if not line.lstrip().startswith("#"))
             if dropped.search(code):
-                hits.append(path.relative_to(ROOT).as_posix())
+                hits.append(rel)
     assert hits == [], hits

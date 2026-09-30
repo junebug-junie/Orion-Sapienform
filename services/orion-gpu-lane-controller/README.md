@@ -101,6 +101,8 @@ Keys: `GPU_POOL_ACTUATOR_NAME`, `GPU_POOL_FENCE_STATE_PATH`, `GPU_LANE_DRAIN_TIM
 - Keys: `GPU2_ENABLED`, `GPU2_DIFFUSION_URL`, `GPU2_AGENT_URL`, `GPU2_MODEL_READY_TIMEOUT_SEC`,
   `GPU_LANE_CONTROLLER_TOKEN`. Renamed: `GPU2_POOL_FENCE_STATE_PATH` -> `GPU_POOL_FENCE_STATE_PATH`
   (same file), `GPU2_DRAIN_TIMEOUT_SEC` -> `GPU_LANE_DRAIN_TIMEOUT_SEC` (same meaning, default 300).
+- No enable/disable key remains. Emergency stops: `ORION_BUS_ENABLED=false` on this service (it then
+  hears no actuation requests), stopping the container, or `GPU_POOL_ACTUATE_ROLES=` empty on the pool.
 - `launch_digest` is unchanged by the deletion (the always-null bridge fields stay in its hashed
   body), so a pool and a controller on either side of 5.6 still agree.
 

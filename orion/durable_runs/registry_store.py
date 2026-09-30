@@ -52,8 +52,18 @@ class DurableRunRegistryStore:
         self.clock = clock  # Test-only fake clock; production uses the DB clock.
 
     async def setup(self) -> None:
+        """TESTS AND EVALS ONLY: build this store's schema in a disposable, non-public schema.
+
+        It applies the stage-5.6 drop migration, so it must never touch production, where that drop
+        goes through scripts/gpu_pool_stage5_snapshot_and_drop.sh (snapshot first). Production's
+        schema is operator-managed. Refuses when the connection's current schema is ``public``."""
         directory = Path(__file__).resolve().parents[2] / "services/orion-sql-db"
         async with self.pool.connection() as conn:
+            row = await (await conn.execute("SELECT current_schema() AS s")).fetchone()
+            current = row["s"] if isinstance(row, dict) else row[0]
+            if current in (None, "public"):
+                raise RuntimeError("DurableRunRegistryStore.setup() is test-only and refuses the public schema "
+                                   f"(current_schema={current!r}); production migrations are operator-managed")
             async with conn.transaction():
                 # The drop migration last: a test schema matches production after stage 5.6 (the v1
                 # file still creates the legacy broker tables it drops).

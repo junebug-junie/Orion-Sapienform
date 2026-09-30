@@ -91,8 +91,8 @@ def test_stage5_6_gpu2_bridge_and_flip_modules_and_keys_are_gone():
     assert fields & gone == set()
     assert {"GPU_POOL_FENCE_STATE_PATH", "GPU_LANE_DRAIN_TIMEOUT_SEC"} <= fields
     # Renamed, not reset: the same file on the same volume, so the fence's last generation carries over.
-    assert type(main_module.settings)().GPU_POOL_FENCE_STATE_PATH == "/state/gpu2_pool_fence.json"
-    assert type(main_module.settings)().GPU_LANE_DRAIN_TIMEOUT_SEC == 300.0
+    assert type(main_module.settings)(_env_file=None).GPU_POOL_FENCE_STATE_PATH == "/state/gpu2_pool_fence.json"
+    assert type(main_module.settings)(_env_file=None).GPU_LANE_DRAIN_TIMEOUT_SEC == 300.0
     for rel in (".env_example", "docker-compose.yml"):
         text = (SERVICE_DIR / rel).read_text()
         live = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))

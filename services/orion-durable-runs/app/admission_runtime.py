@@ -42,6 +42,10 @@ from app.pool_hold import (
     hold_placement, ref_dict, refusal_is_terminal,
 )
 from app.reflect_graph import finish_detail as reflect_finish_detail
+from app.orion_day_graph import (
+    OrionDayDeps, build_orion_day_graph, finish_detail as orion_day_finish_detail, slim_brief as orion_day_slim_brief,
+)
+from app.orion_day_store import persist_letter as persist_orion_day_letter
 from app.reading_graph import build_reading_graph, finish_detail as reading_finish_detail
 from app.reverie_visual_graph import (
     RETRY_WINDOW_EXPIRED, abandon_request, build_reverie_visual_graph,
@@ -50,6 +54,7 @@ from app.reverie_visual_graph import (
 )
 from orion.schemas.reading_turn import READING_WORKFLOW
 from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW
+from orion.schemas.orion_day import ORION_DAY_WORKFLOW, OrionDayRunBriefV1
 from app.self_sense_graph import finish_detail as self_sense_finish_detail
 from orion.durable_runs.registry_store import (
     ABANDON_ACKED_EVENT,
@@ -74,7 +79,10 @@ WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORK
               REFLECT_WORKFLOW: {"llm_call"}, READING_WORKFLOW: {"reading_turn"},
               # Only generate holds the diffusion hold; it releases it before its result is
               # checkpointed, so a restart after generate resumes at caption with no lease.
-              REVERIE_VISUAL_WORKFLOW: {"generate"}}
+              REVERIE_VISUAL_WORKFLOW: {"generate"},
+              # Both LLM calls run under the hold; a restart replays the first one without a
+              # checkpointed text (a finished note is never regenerated). persist needs no GPU.
+              ORION_DAY_WORKFLOW: {"write_note", "write_carry_forward"}}
 # The DurableRunStateV1.node each admitted terminal is published under (the graph node it ends at).
 TERMINAL_STATE_NODE = {"completed": "finish", "failed": "failed", "cancelled": "finish"}
 # Pool events (for a durable-run holder) after which a waiting run should look at its hold now.
@@ -141,6 +149,12 @@ class AdmissionRuntime:
             REFLECT_WORKFLOW: build_admitted_reflect_graph(runner._reflect_deps(), admission_deps, runner._checkpointer),
             READING_WORKFLOW: build_reading_graph(lambda request: runner._run_reading_turn(request), admission_deps, runner._checkpointer),
             REVERIE_VISUAL_WORKFLOW: build_reverie_visual_graph(self._reverie_step, admission_deps, runner._checkpointer),
+            ORION_DAY_WORKFLOW: build_orion_day_graph(OrionDayDeps(
+                call_verb_text=runner._call_verb_text,
+                persist_letter=lambda row: persist_orion_day_letter(self.pool, row),
+                publish_journal=runner._publish_journal,
+                load_brief=self._orion_day_brief,
+            ), admission_deps, runner._checkpointer),
         }
         # Back-compat alias used by older tests that reach for `.graph`.
         self.graph = self.graphs[DEFAULT_WORKFLOW]
@@ -177,7 +191,23 @@ class AdmissionRuntime:
             return reading_finish_detail(state)
         if workflow == REVERIE_VISUAL_WORKFLOW:
             return reverie_visual_finish_detail(state)
+        if workflow == ORION_DAY_WORKFLOW:
+            return orion_day_finish_detail(state)
         return finish_detail(state)
+
+    async def _orion_day_brief(self, state) -> OrionDayRunBriefV1:
+        """The full orion_day.letter brief from the accepted request row (the checkpoint keeps
+        only ``slim_brief``)."""
+        row = await self.store.get_run(state["run_id"])
+        if row is None:
+            raise KeyError(state["run_id"])
+        return OrionDayRunBriefV1.model_validate(row["request"]["brief"])
+
+    @staticmethod
+    def _checkpoint_brief(workflow: str, brief: dict) -> dict:
+        """What the run's checkpoint carries of its brief. orion_day.letter keeps a slim copy: its
+        full brief (material + digest) stays once in durable_admission_runs.request."""
+        return orion_day_slim_brief(brief) if workflow == ORION_DAY_WORKFLOW else brief
 
     def _reverie_step(self, request, budget_sec=None):
         return self.runner._run_reverie_visual_step(request, budget_sec)
@@ -787,9 +817,10 @@ class AdmissionRuntime:
     async def _cancel_harness(self, state, reason):
         # Curiosity: hold-derived turn id. Self-sense: each question is a fresh uuid4 -- cancel
         # those from answers + any still in-flight.
-        if state.get("workflow") == REVERIE_VISUAL_WORKFLOW:
+        if state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, ORION_DAY_WORKFLOW):
             # No harness turn: generate runs in orion-thought, whose replay is idempotent (the
-            # recorded artifact, or a generate_in_flight retry).
+            # recorded artifact, or a generate_in_flight retry); orion_day.letter's calls are plain
+            # cortex verbs, never a harness run, so there is nothing to cancel by turn id.
             return
         ids: list[str] = []
         try:
@@ -879,7 +910,7 @@ class AdmissionRuntime:
                 state = {
                     "run_id": run_id,
                     "correlation_id": request["correlation_id"],
-                    "brief": request["brief"],
+                    "brief": self._checkpoint_brief(workflow, request["brief"]),
                     "admission": request["admission"],
                     "requested_at": request["requested_at"],
                     "attempt": 0,
@@ -1247,7 +1278,18 @@ class AdmissionRuntime:
                     "deadline_at": (row["request"]["admission"] or {}).get("deadline_at")},
                     "error": values.get("last_error"),
                     "work_started": await self.store.first_event_at(run_id, "run.started") is not None}
-                   if workflow == REVERIE_VISUAL_WORKFLOW else {})}
+                   if workflow == REVERIE_VISUAL_WORKFLOW else {}),
+                **({"orion_day": {
+                    "letter_date": (values.get("brief") or {}).get("letter_date"),
+                    "note_ready": bool(values.get("note_md")),
+                    "carry_forward_ready": bool(values.get("carry_forward_md")),
+                    "persisted": bool(values.get("persisted")),
+                    "persist_outcome": values.get("persist_outcome"),
+                    "llm_attempts": dict(values.get("llm_attempts") or {}),
+                    "retry_at": values.get("retry_at"),
+                    "deadline_at": (row["request"]["admission"] or {}).get("deadline_at")},
+                    "error": values.get("last_error")}
+                   if workflow == ORION_DAY_WORKFLOW else {})}
 
     async def close(self):
         # Pending abandons are durable (run.abandon_pending): the next process retries them.

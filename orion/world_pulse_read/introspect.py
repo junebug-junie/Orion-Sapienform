@@ -12,6 +12,7 @@ from uuid import UUID
 
 from orion.schemas.introspect import (
     DEFAULT_LIMIT,
+    DEFAULT_TEXT_CAP,
     SHORT_FIELD_CAP,
     URL_CAP,
     IntrospectItemV1,
@@ -53,6 +54,17 @@ ORDER BY {_OCCURRED} DESC, s.seed_id DESC
 LIMIT $1
 """
 
+# Half-open window [$1, $2) over the same verified rows, oldest first; the daily
+# letter (orion/orion_day/gather.py) reads a whole day this way.
+_WINDOW_SQL = f"""
+SELECT {_COLUMNS}
+FROM world_pulse_read_seed s
+WHERE {_VERIFIED_WHERE}
+  AND {_OCCURRED} >= $1 AND {_OCCURRED} < $2
+ORDER BY {_OCCURRED}, s.seed_id
+LIMIT $3
+"""
+
 
 def _obj(raw: Any) -> dict[str, Any]:
     return json.loads(raw) if isinstance(raw, str) else (raw or {})
@@ -72,9 +84,17 @@ def _learned(row: Any, source_read: bool) -> str:
     return str(result.get("summary") or _obj(row["handoff_json"]).get("what_i_learned") or "")
 
 
-def _item(row: Any, *, request_id: str | None, journal_excerpt: str | None = None) -> IntrospectItemV1:
+def _item(
+    row: Any,
+    *,
+    request_id: str | None,
+    journal_excerpt: str | None = None,
+    text_cap: int | None = DEFAULT_TEXT_CAP,
+) -> IntrospectItemV1:
+    """``text_cap=None`` keeps the full learned text (the daily letter's material)."""
     source_read = _source_read(row)
-    text, truncated = clip_text(_learned(row, source_read))
+    learned = _learned(row, source_read)
+    text, truncated = (learned.strip(), False) if text_cap is None else clip_text(learned, text_cap)
     url, url_truncated = clip_text(row["url"], URL_CAP)
     extra: dict[str, Any] = {
         "url": url,
@@ -109,6 +129,7 @@ async def reading_results(
     url: str | None = None,
     limit: int = DEFAULT_LIMIT,
     since: datetime | None = None,
+    text_cap: int | None = DEFAULT_TEXT_CAP,
 ) -> IntrospectResultV1:
     as_of = datetime.now(timezone.utc)
     if request_id is None and url is None:
@@ -117,7 +138,7 @@ async def reading_results(
             ok=True, operation="reading_result", as_of=as_of,
             total_available=int(rows[0]["total"]) if rows else 0,
             items=[
-                _item(r, request_id=str(r["request_id"]) if r["request_id"] else None)
+                _item(r, request_id=str(r["request_id"]) if r["request_id"] else None, text_cap=text_cap)
                 for r in rows
             ],
         )
@@ -137,5 +158,24 @@ async def reading_results(
     return IntrospectResultV1(
         ok=True, operation="reading_result", as_of=as_of,
         total_available=int(status.get("matched_request_count") or 1),
-        items=[_item(row, request_id=status.get("request_id"), journal_excerpt=excerpt)],
+        items=[_item(row, request_id=status.get("request_id"), journal_excerpt=excerpt, text_cap=text_cap)],
     )
+
+
+async def reading_items_between(
+    conn: Any,
+    *,
+    since: datetime,
+    until: datetime,
+    limit: int = 500,
+    text_cap: int | None = None,
+) -> list[IntrospectItemV1]:
+    """Verified readings that landed in ``[since, until)``, oldest first, as items.
+
+    Not wrapped in ``IntrospectResultV1`` (that caps items at MAX_ITEMS for the tool's
+    result budget); a whole day can hold more. ``text_cap=None`` keeps full text."""
+    rows = await conn.fetch(_WINDOW_SQL, since, until, limit)
+    return [
+        _item(r, request_id=str(r["request_id"]) if r["request_id"] else None, text_cap=text_cap)
+        for r in rows
+    ]

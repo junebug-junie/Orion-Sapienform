@@ -115,6 +115,9 @@ class Settings(BaseSettings):
     )
     # dream_cycle / dream_synthesis only (does not affect chat_quick / chat_general budgets)
     llm_dream_max_tokens: int = Field(32768, alias="LLM_DREAM_MAX_TOKENS")
+    # Orion's Day letter verbs (orion_day_note_v1 / orion_day_carry_forward_v1) only.
+    llm_orion_day_note_max_tokens: int = Field(12000, alias="LLM_ORION_DAY_NOTE_MAX_TOKENS")
+    llm_orion_day_carry_forward_max_tokens: int = Field(4000, alias="LLM_ORION_DAY_CARRY_FORWARD_MAX_TOKENS")
     atlas_metacog_profile_name: str | None = Field(None, alias="ATLAS_METACOG_PROFILE_NAME")
     cortex_chat_return_logprobs: bool = Field(
         False,

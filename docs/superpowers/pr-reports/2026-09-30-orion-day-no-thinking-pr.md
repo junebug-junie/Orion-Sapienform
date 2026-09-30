@@ -41,7 +41,14 @@ Live evidence of the failure above. Fix UNVERIFIED live until durable-runs is re
 
 ## Review findings fixed
 
-See PR comments.
+Review subagent (target `origin/main...fix/orion-day-no-thinking`): no MUST. Path traced durable-runs -> orch `_plan_args` (options passed verbatim) -> exec `_fwd_key` loop (runs after `lane_opts`, so nothing overrides) -> gateway `_run_on_grant` (keeps options, backend llamacpp) -> `payload["chat_template_kwargs"]`; live `/props` on :8015/:8016 confirms the Qwen template reads `enable_thinking`.
+
+- Finding (SHOULD): report lacked a review summary.
+  - Fix: this section.
+- Finding (NIT): generic helper name hardcodes thinking off.
+  - Fix: docstring now states the contract for any future caller (sole caller today is orion_day.letter).
+- Not fixed (pre-existing): `router.py:215-222` reasoning telemetry reads only top-level `chat_template_kwargs`, not `options`; value here is False so telemetry is correct.
+- Live evidence to capture after deploy: orion_day gateway corr with `reasoning_len≈0`, `finish_reason=stop`, and an `orion_day_letter` row.
 
 ## Restart required
 

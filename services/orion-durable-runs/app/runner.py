@@ -657,7 +657,8 @@ class DurableRunner:
         Thinking is OFF (``chat_template_kwargs.enable_thinking=False``, the repo's standard
         switch): these are prose verbs whose answer IS the output, and hidden reasoning counts
         against ``max_tokens``. Live 2026-09-30, the first orion_day note spent all 12000 tokens
-        (32k chars) planning and emitted no note -> ``verb_truncated_at_max`` on every attempt."""
+        (32k chars) planning and emitted no note -> ``verb_truncated_at_max`` on every attempt.
+        A future caller that needs reasoning must not reuse this helper as is."""
         request = CortexClientRequest(
             mode="brain",
             route_intent="none",

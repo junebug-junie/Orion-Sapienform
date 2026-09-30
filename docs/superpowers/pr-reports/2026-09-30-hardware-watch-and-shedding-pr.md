@@ -237,6 +237,6 @@ ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh orion-biometric
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2424
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

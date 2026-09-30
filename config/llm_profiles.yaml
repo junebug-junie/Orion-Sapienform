@@ -186,7 +186,9 @@ profiles:
       n_predict: 8192
 
       no_context_shift: true
-      flash_attn: "off"
+      # on: the wrapper dropped "off", so this lane ran llama.cpp auto (probed: auto -> on for the
+      # 27B on the same build; not probed for this model). docs/2026-09-30-flash-attention-volta-circe.md
+      flash_attn: "on"
 
     notes: |
       Balanced profile for Qwen3-8B on one V100 16GB; thinking disabled only for workers using THIS profile key.
@@ -238,7 +240,9 @@ profiles:
       reasoning_budget: 0
 
       no_context_shift: true
-      flash_attn: "off"
+      # on: the wrapper dropped "off", so this lane ran llama.cpp auto (probed: auto -> on for the
+      # 27B on the same build; not probed for this model). docs/2026-09-30-flash-attention-volta-circe.md
+      flash_attn: "on"
 
       temperature: 0.35
       top_k: 20
@@ -468,7 +472,8 @@ profiles:
       # last known-stable combination (skew weights to the primary card so
       # the second card mostly carries KV/overflow; equal "1,1" paid PCIe tax
       # without buying context). No YaRN — native 262k first.
-      flash_attn: "off"
+      # on: measured on this model, 1 card, 2026-09-30 (docs/2026-09-30-flash-attention-volta-circe.md).
+      flash_attn: "on"
 
       # Cooler than Unsloth chat defaults (0.7/0.8/1.5) for FCC tool+code stability.
       temperature: 0.48
@@ -501,7 +506,7 @@ profiles:
       - Target lane: Cortex / planner / introspection / deep repo reasoning / FCC motor.
       - Uses Unsloth dynamic GGUF UD-Q5_K_M (~25GB) — prefer over Q6 so KV headroom survives.
       - 65536 ctx (n_parallel=1) must match HARNESS_FCC_MAX_CONTEXT_TOKENS / Hub agent Claude budget.
-      - flash_attn off (Volta); sampling kept cooler than Unsloth chat card for agent stability.
+      - flash_attn on (measured 2026-09-30: 61K-depth decode 85 vs 45 tok/s off; docs/2026-09-30-flash-attention-volta-circe.md); sampling kept cooler than Unsloth chat card for agent stability.
       - If OOM at 65536 on one GPU: go back to 2 GPUs (see revert steps above), not
         further ctx reduction -- single-GPU headroom is already tighter than the
         old 2-GPU budget was.
@@ -759,6 +764,8 @@ profiles:
       - 64k ctx supports smolagents transcripts + repo snippets without YaRN (native 262k available if VRAM allows later tuning).
       - Same non-thinking launch policy as the breadth profile (reasoning_budget 0 → jinja path).
       - Circe llama-optimus (2026-07-09): flash_attn off, split_mode layer, ngl 87, batch 1175, ubatch 541, threads 18.
+      - That bench (older build, 2-GPU split) is the source of the "~20x FA collapse on Volta" rule. It did
+        not reproduce single-card on b10398 for 27B/35B/Bonsai (docs/2026-09-30-flash-attention-volta-circe.md); this profile is kept at its own measured value.
       - Use when Gate 1 smolcode live proof needs more reasoning depth; expect slower per-step latency.
       - Wire: dedicated atlas-agent worker OR swap ATLAS_AGENT_PROFILE_NAME for depth-first deployments.
       - If OOM: lower ctx_size to 49152 before falling back to qwen3-coder-next-q4km-2xv100-32gb-agent-breadth.
@@ -1186,12 +1193,12 @@ profiles:
       image_min_tokens: 256
       image_max_tokens: 1024
 
-      # V100 is Volta. Left off: qwen3-coder-next-q5km-2xv100-32gb-agent-depth's llama-optimus
-      # bench found flash_attn on collapses TG ~20x on Volta. The 1x-V100 qwen36-35b-a3b
-      # "balanced" profile sets it on anyway — untested here, treat that as an open
-      # inconsistency, not a precedent to copy without its own bench.
+      # The "~20x collapse on Volta" came from one 2026-07-09 llama-optimus bench of
+      # qwen3-coder-next split over 2 GPUs on an older build. On b10398, single card, flash
+      # attention on is ~2x faster at depth for every model re-benched (docs/2026-09-30-flash-attention-volta-circe.md).
+      # Not re-benched for this model; "on" is what the wrapper actually ran anyway.
       no_context_shift: true
-      flash_attn: "off"
+      flash_attn: "on"
 
       # Google-style sampling per Muse Glimmer model card (matches gemma4-*-it profiles).
       temperature: 1.0
@@ -1411,11 +1418,10 @@ profiles:
         preserve_thinking: true
 
       no_context_shift: true
-      # V100 is Volta -- same reasoning as muse-glimmer-30b-udq4kxl above
-      # (that profile's own bench found flash_attn on collapses TG ~20x on
-      # Volta). Off by default here for the same hardware reason, not
-      # re-benched separately for this specific model.
-      flash_attn: "off"
+      # Measured on circe gpu0 2026-09-30 (1 slot, 65K): on vs off -> 61K-depth decode
+      # 25.4 vs 12.8 tok/s, reasoning 20/20 (docs/2026-09-30-flash-attention-volta-circe.md). llama.cpp auto -> "Flash Attention
+      # enabled" for this model, which is what the live lane actually ran all along.
+      flash_attn: "on"
 
       # Unsloth's Thinking-Mode defaults (fetched 2026-09-02) -- reasoning_
       # effort defaults to xhigh above, so this lane runs in thinking mode
@@ -1651,12 +1657,10 @@ profiles:
       # 4th GPU (was "1,1,1" for 3).
       split_mode: "layer"
       tensor_split: "1,1,1,1"
-      # V100 is Volta (sm_70). Whether this brand-new architecture even runs
-      # on Volta at all is UNVERIFIED -- nothing in the sources fetched while
-      # writing this card confirms or denies it. Off by default for the same
-      # reason every other V100 profile in this file is off (Volta flash-attn
-      # regression), but this specific architecture was not itself bench-tested.
-      flash_attn: "off"
+      # V100 is Volta (sm_70). Whether this architecture runs on Volta at all is
+      # UNVERIFIED. flash_attn on: the old "Volta regression" rule did not hold for
+      # the 27B/35B/8B-class single-card lanes on b10398 (docs/2026-09-30-flash-attention-volta-circe.md); multi-GPU untested.
+      flash_attn: "on"
 
       # Unsloth's Thinking-Mode sampling (fetched from unsloth.ai/docs/models/
       # qwen3.8-next, 2026-09-03/04) -- matches reasoning_effort=xhigh above.
@@ -1830,7 +1834,8 @@ profiles:
       no_context_shift: true
       split_mode: "layer"
       tensor_split: "1,1,1,1"
-      flash_attn: "off"
+      # on: matches what actually ran (wrapper dropped "off"); multi-GPU untested (docs/2026-09-30-flash-attention-volta-circe.md).
+      flash_attn: "on"
 
       temperature: 1.0
       top_k: 20
@@ -1971,9 +1976,9 @@ profiles:
         preserve_thinking: true
 
       no_context_shift: true
-      # V100 is Volta -- same reasoning as the Q4_K_XL card, not re-benched
-      # separately for the BF16 weight format.
-      flash_attn: "off"
+      # on: the b10398 wrapper misread its build as 0, so "off" was never emitted and
+      # llama.cpp auto -> on is what actually ran. Multi-GPU split not re-benched (docs/2026-09-30-flash-attention-volta-circe.md).
+      flash_attn: "on"
       split_mode: "layer"
       tensor_split: "1,1,1,1"
 
@@ -2085,7 +2090,8 @@ profiles:
       no_context_shift: true
       split_mode: "layer"
       tensor_split: "1,1,1,1"
-      # Volta: flash-attn collapses TG elsewhere on Circe; keep off.
+      # Off as run in the 2026-09-18 soak on this fork. The general "Volta collapse" rule did
+      # not hold on stock b10398 (docs/2026-09-30-flash-attention-volta-circe.md); not re-benched on dsv41-porte.
       flash_attn: "off"
 
       temperature: 1.0

@@ -2125,3 +2125,68 @@ profiles:
       Escalation after first boot: raise ctx_size, then moe_stream_cache if
       HBM headroom exists, then try reasoning on. Do not chase Q3/Q4 until
       Q/MXFP4 load + tok/s are measured on Volta.
+
+  ternary-bonsai2-27b-pq2-v100-32gb-circe-np4:
+    display_name: "Ternary Bonsai 2 27B – PQ2_0 (PrismML llama.cpp fork, 1x V100 32GB, Circe 4-slot bake-off)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "ternary-bonsai-2-27b-pq2_0"
+
+    supports_tools: true
+    supports_embeddings: false
+    # The repo ships an mmproj, but this bake-off is text-only curiosity runs.
+    supports_vision: false
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      # Doc-only; the real pin is BONSAI_CUDA_VISIBLE_DEVICES in
+      # services/orion-llamacpp-bonsai-host/.env (default 2 = gpu2).
+      device_ids: [2]
+      max_model_len: 65536
+      max_batch_tokens: 1024
+      max_concurrent_requests: 4
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "prism-ml/Ternary-Bonsai-2-27B-gguf"
+      hf_filename: "Ternary-Bonsai-2-27B-PQ2_0.gguf"
+      host: "0.0.0.0"
+      port: 8080
+
+      # llama-server splits --ctx-size across --parallel: 262144 / 4 = 65536
+      # per run. VRAM (UNVERIFIED on Volta): weights 7.21 GB + f16 KV at Prism's
+      # stated ~64 KB/token x 262144 = ~16 GiB, ~24 GiB before compute buffers.
+      # Measure per-run peak context before raising ctx or quantizing the cache.
+      ctx_size: 262144
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 4
+      batch_size: 1024
+
+      # Prism KNOWN_ISSUES (2026-09-23): `--reasoning on` overrides a client's
+      # reasoning_effort "none", so leave the server at auto.
+      reasoning: "auto"
+      reasoning_format: "deepseek"
+      chat_template_kwargs:
+        # Template accepts low/medium/xhigh ("high" -> HTTP 500; "low" ~= xhigh).
+        # medium: four concurrent xhigh runs would be slow and hit n_predict mid-thought.
+        reasoning_effort: "medium"
+        # Prism KNOWN_ISSUES: re-rendering earlier reasoning into later turns
+        # makes the prompt cache miss in tool loops (Bonsai-demo #183).
+        preserve_thinking: false
+      # Prism KNOWN_ISSUES: small output caps end generation mid-thought.
+      n_predict: 16384
+
+      no_context_shift: true
+      flash_attn: "off"
+
+    notes: |
+      Bake-off only (2026-09-29). Runs on services/orion-llamacpp-bonsai-host,
+      never orion-llamacpp-host: stock llama.cpp rejects PQ2_0.
+      Question: can one 32 GB V100 serve 4 concurrent curiosity runs with
+      acceptable answers? Measure per run: answer sanity, tok/s, prompt tokens
+      re-processed per step (prompt-cache reuse), and peak VRAM.
+      UNVERIFIED: Prism publishes no Volta numbers; CUDA support is
+      "source level, not a guarantee for every device".

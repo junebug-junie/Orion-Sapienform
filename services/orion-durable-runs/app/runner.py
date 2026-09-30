@@ -63,7 +63,8 @@ from orion.curiosity.worldview import (
     read_run_footprint,
     read_turn_outcome,
 )
-from orion.journaler.schemas import JournalEntryWriteV1
+from orion.journaler.schemas import JournalEntryDraftV1, JournalEntryWriteV1
+from orion.schemas.journal_compose_run import JournalComposeRunBriefV1
 from orion.schemas.attention_schema import (
     ATTENTION_SCHEMA_CHANNEL,
     ATTENTION_SCHEMA_KIND,
@@ -325,6 +326,51 @@ class DurableRunner:
             logger.warning("self_study_reflect_llm_unparseable_or_bad_shape corr=%s", rpc_correlation_id)
             return None
         return findings
+
+    async def _compose_journal(
+        self, brief: "JournalComposeRunBriefV1", *, run_id: str, correlation_id: str, gpu_lease: GpuLeaseRefV1,
+    ) -> "JournalEntryDraftV1":
+        """journal.compose (admitted): the same ``journal.compose`` cortex verb orion-actions sent
+        directly before (``orion.journaler.build_compose_request``), now attached to the run's GPU
+        pool hold via ``options.gpu_lease``. Raises on ANY failure -- transport, non-ok result,
+        empty or unparseable draft -- so the graph counts one bounded attempt; waiting for the hold
+        is never one. ``llm_route`` stays the brief's route (the hold's role is never a route)."""
+        from orion.journaler import append_unless_present, build_compose_request, draft_from_cortex_result
+
+        if self._bus is None:
+            raise RuntimeError("no_bus")
+        request = build_compose_request(
+            brief.trigger,
+            session_id=brief.session_id,
+            user_id=brief.user_id,
+            trace_id=correlation_id,
+            recall_profile=brief.recall_profile,
+            options={
+                "source": self._settings.service_name,
+                "timeout_sec": float(brief.timeout_sec),
+                **({"llm_route": brief.llm_route} if brief.llm_route else {}),
+                "gpu_lease": gpu_lease.model_dump(mode="json"),
+            },
+        )
+        rpc_correlation_id = uuid4()
+        reply_channel = f"orion:cortex:result:journal-compose:{rpc_correlation_id}"
+        envelope = BaseEnvelope(kind="cortex.orch.request", source=self._source(), correlation_id=rpc_correlation_id,
+                                reply_to=reply_channel, payload=request.model_dump(mode="json"))
+        msg = await self._bus.rpc_request(self._settings.cortex_request_channel, envelope,
+                                          reply_channel=reply_channel, timeout_sec=float(brief.timeout_sec))
+        decoded = self._bus.codec.decode(msg.get("data"))
+        if not decoded.ok or decoded.envelope is None:
+            raise RuntimeError(f"cortex_orch_decode_failed:{decoded.error}")
+        payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        if not payload.get("ok", False):
+            raise RuntimeError(f"journal_compose_failed:{payload.get('error') or payload.get('status')}")
+        draft = append_unless_present(draft_from_cortex_result(payload), brief.body_appendix,
+                                      brief.body_appendix_markers)
+        logger.info("journal_compose_drafted run=%s trigger_kind=%s", run_id, brief.trigger.trigger_kind)
+        return draft
+
+    async def _publish_journal_write(self, entry: JournalEntryWriteV1) -> bool:
+        return await self._publish_journal(entry) is not None
 
     def _source(self) -> ServiceRef:
         s = self._settings

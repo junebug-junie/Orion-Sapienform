@@ -1114,9 +1114,10 @@ async def execute_unified_turn(
         # Motor/harness still sees the full prompt; stance_inputs["user_message"]
         # must match StanceReactRequestV1.user_message (Mind snapshot user_text).
         stance_inputs["harness_user_message"] = user_message
+    # Not copied into stance_inputs: stance_react.j2 renders every stance_inputs
+    # key into the stance LLM prompt as "additional context". This is recall's
+    # search text, not something stance should read (PR #2423 review).
     stance_retrieval_query = cap_retrieval_query(retrieval_query)
-    if stance_retrieval_query:
-        stance_inputs["retrieval_query"] = stance_retrieval_query
     stance_req = StanceReactRequestV1(
         correlation_id=correlation_id,
         session_id=session_id,

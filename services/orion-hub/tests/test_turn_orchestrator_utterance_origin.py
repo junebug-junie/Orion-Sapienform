@@ -269,7 +269,9 @@ async def test_execute_unified_turn_sends_caller_retrieval_query_to_stance() -> 
     stance_req = react_mock.await_args.args[0]
     assert stance_req.retrieval_query.startswith("What do I keep noticing about my own recall?")
     assert len(stance_req.retrieval_query) == 1000
-    assert stance_req.stance_inputs["retrieval_query"] == stance_req.retrieval_query
+    # Not in stance_inputs: stance_react.j2 renders those into the stance prompt.
+    assert "retrieval_query" not in stance_req.stance_inputs
+    assert "What do I keep noticing" not in str(stance_req.stance_inputs)
 
 
 @pytest.mark.asyncio

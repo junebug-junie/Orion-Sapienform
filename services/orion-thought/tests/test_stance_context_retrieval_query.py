@@ -40,11 +40,21 @@ def test_survives_cortex_exec_context_merge() -> None:
     assert ctx["retrieval_query"] == "q"
 
 
-def test_stance_inputs_copy_is_used_when_request_field_absent() -> None:
-    ctx = build_stance_react_context(
-        _request(stance_inputs={"user_message": "m", "retrieval_query": "from inputs"})
-    )
-    assert ctx["retrieval_query"] == "from inputs"
+def test_retrieval_query_never_reaches_the_stance_prompt() -> None:
+    """PR #2423 review: stance_react.j2 renders every stance_inputs key as "additional
+    context", so recall's search text must ride the top-level ctx only."""
+    from pathlib import Path
+
+    from jinja2 import Environment
+
+    query = "What am I, when nobody asks?"
+    ctx = build_stance_react_context(_request(retrieval_query=query))
+    assert "retrieval_query" not in ctx["stance_inputs"]
+    template = Path(__file__).resolve().parents[3] / "orion" / "cognition" / "prompts" / "stance_react.j2"
+    prompt = Environment().from_string(template.read_text()).render(**ctx)
+    assert "SOURCES" in prompt  # rendered the real template
+    assert query not in prompt
+    assert "retrieval_query" not in prompt
 
 
 def test_no_retrieval_query_means_no_ctx_key() -> None:

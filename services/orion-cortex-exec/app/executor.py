@@ -473,6 +473,18 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     if step.verb_name == "self_study.reflect" and step.step_name == "draft_self_study_reflection":
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_self_study_reflect"
 
+    # Orion's Day (orion/schemas/orion_day.py): a LONG freeform note (plain markdown, not
+    # structured output) and a short list of carry-forward threads, both on the agent lane.
+    # Their own budgets: LLM_CHAT_GENERAL_MAX_TOKENS is tuned for chat replies and strict-JSON
+    # verbs, and the agent-lane model spends part of its budget on reasoning before the answer
+    # (the self_study.reflect incident above), so either would truncate the note mid-sentence.
+    if step.verb_name == "orion_day_note_v1":
+        return int(settings.llm_orion_day_note_max_tokens), requested, "settings.llm_orion_day_note_max_tokens"
+
+    if step.verb_name == "orion_day_carry_forward_v1":
+        return (int(settings.llm_orion_day_carry_forward_max_tokens), requested,
+                "settings.llm_orion_day_carry_forward_max_tokens")
+
     return int(settings.llm_chat_max_tokens_default), requested, "settings.llm_chat_max_tokens_default"
 
 
@@ -2182,6 +2194,10 @@ def _default_llm_route_for_step(*, verb_name: Optional[str], step_name: Optional
     - metacog mode: METACOG lane
     """
     if verb_name in {"harness_finalize_reflect", "orion_response_repair"}:
+        return "agent"
+    # Orion's Day: the durable run always stamps llm_route="agent"; this default only keeps an
+    # unstamped caller off the quick lane, whose context a ~70k-token day digest overflows.
+    if verb_name in {"orion_day_note_v1", "orion_day_carry_forward_v1"}:
         return "agent"
     if verb_name == "stance_react":
         return "chat"

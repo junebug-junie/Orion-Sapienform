@@ -1,0 +1,32 @@
+name: orion_day_note_v1
+label: Orion's Day -- Note
+description: >-
+  Orion writes a long, freeform, first-person reflective note about one day
+  (yesterday, America/Denver), grounded only in the day's gathered record
+  (orion/orion_day/budget.py digest). Plain markdown out, no JSON. Called by the
+  orion_day.letter durable run (services/orion-durable-runs/app/orion_day_graph.py)
+  under the run's GPU pool hold. Its prompt carries NO instruction about future
+  curiosity: that is orion_day_carry_forward_v1, a separate call and a separate field.
+category: reflective
+priority: normal
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+recall_profile: null
+# Above the durable run's per-call RPC wait (OrionDayRunBriefV1.timeout_sec, default
+# 1800 s) so the caller times out first with a clean, retryable error -- same ordering
+# rule as self_study.reflect.yaml. A ~70k-token prompt plus a long note on the 27B
+# agent lane is the slowest single completion in the mesh.
+timeout_ms: 1900000
+max_recursion_depth: 0
+steps:
+  - name: draft_orion_day_note
+    description: Write Orion's reflective note about the day from the gathered record; plain markdown.
+    order: 0
+    services:
+      - LLMGatewayService
+    prompt_template: orion_day_note_v1.j2
+    requires_gpu: false
+    requires_memory: false
+    timeout_ms: 1900000

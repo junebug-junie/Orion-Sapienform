@@ -756,6 +756,9 @@ from orion.schemas.workflow_execution import (
 from orion.schemas.reading_turn import ReadingTurnRequestV1, ReadingTurnResultV1
 from orion.schemas.journal_compose_run import JournalComposeRunBriefV1
 from orion.schemas.reverie_visual_run import ReverieVisualStepRequestV1, ReverieVisualStepResultV1
+from orion.schemas.orion_day import (
+    OrionDayLetterV1, OrionDayLlmViewV1, OrionDayMaterialV1, OrionDayRunBriefV1,
+)
 from orion.schemas.reading import (
     ReadingRequestedV1, ReadingToolBindingV1, ReadingToolRequestV1, ReadingToolResultV1, ReadingLifecycleV1
 )
@@ -1013,6 +1016,12 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ReadingTurnResultV1": ReadingTurnResultV1,
     "ReverieVisualStepRequestV1": ReverieVisualStepRequestV1,
     "ReverieVisualStepResultV1": ReverieVisualStepResultV1,
+    # Orion's Day letter (orion/schemas/orion_day.py): nested payloads of
+    # DurableRunRequestV1 (brief) and the orion_day_letter row, not bus kinds.
+    "OrionDayRunBriefV1": OrionDayRunBriefV1,
+    "OrionDayMaterialV1": OrionDayMaterialV1,
+    "OrionDayLlmViewV1": OrionDayLlmViewV1,
+    "OrionDayLetterV1": OrionDayLetterV1,
     "CuriosityTurnResultV1": CuriosityTurnResultV1,
     "CuriosityUrgentRequestV1": CuriosityUrgentRequestV1,
     "HardwareWatchIncidentV1": HardwareWatchIncidentV1,

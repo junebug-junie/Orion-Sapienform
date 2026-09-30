@@ -127,6 +127,15 @@ JOURNAL_DISPATCH_REGISTRY: dict[str, JournalDispatchPolicy] = {
         in_app_enabled=False,
         recall_profile_setting="",
     ),
+    # Orion's Day: the Hub sends the letter itself as a styled email with the
+    # full material; a Journal Pass email of the same note would be a plain
+    # duplicate competing for the shared daily cap.
+    "orion_day_letter": JournalDispatchPolicy(
+        "orion_day_letter",
+        email_enabled=False,
+        in_app_enabled=False,
+        recall_profile_setting="",
+    ),
     "manual": JournalDispatchPolicy(
         "manual",
         email_enabled=True,

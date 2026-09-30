@@ -43,5 +43,8 @@ def test_scheduled_workflow_dispatch_uses_workflow_timeout() -> None:
         if isinstance(n, ast.AsyncFunctionDef) and n.name == "_dispatch_scheduled_workflow"
     )
     src = ast.unparse(fn)
-    assert "settings.actions_workflow_dispatch_timeout_seconds" in src
-    assert "settings.actions_exec_timeout_seconds" not in src
+    assert "scheduled_workflow_dispatch_timeout_sec(entry.workflow_id)" in src
+    main_src = (SERVICE / "app" / "main.py").read_text(encoding="utf-8")
+    # Only compactor passes get the long wait; claims are not reaped mid-dispatch.
+    assert 'LONG_RUNNING_SCHEDULED_WORKFLOWS = frozenset({"github_compactor_pass", "chat_history_compactor_pass"})' in main_src
+    assert "claim_ttl_seconds=int(max(300.0, settings.actions_workflow_dispatch_timeout_seconds + 60.0))" in main_src

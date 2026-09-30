@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from dataclasses import dataclass, field
@@ -25,8 +26,10 @@ from orion.cognition.chat_history_compactor.window import (
     exclude_workflow_notification_turns,
     resolve_chat_compactor_window,
 )
+from orion.cognition.compactor.chunking import json_char_len
 from orion.cognition.compactor.constants import (
     COMPACTOR_DIGEST_TOTAL_BUDGET_SEC,
+    DIGEST_INPUT_CHAR_BUDGET,
     DIGEST_LLM_ROUTES,
     DIGEST_MAX_TOKENS,
     DIGEST_MIN_CALL_SEC,
@@ -2064,6 +2067,9 @@ class _CompactorDigestRun:
     chunk_count: int
     merge_mode: str  # "single" | "llm_merge" | "concatenated"
     attempts: List[Dict[str, Any]] = field(default_factory=list)
+    # Why a multi-chunk run fell back to concatenation (merge input over
+    # budget, merge failed, or merge dropped refs the chunks had); None otherwise.
+    merge_skipped_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2078,6 +2084,7 @@ class _CompactorDigestSpec:
     fit_budget: Any
     build_merge_input: Any
     concatenate: Any
+    refs_field: str
 
 
 _GITHUB_DIGEST_SPEC = _CompactorDigestSpec(
@@ -2091,6 +2098,7 @@ _GITHUB_DIGEST_SPEC = _CompactorDigestSpec(
     fit_budget=fit_digest_within_budget,
     build_merge_input=build_github_compactor_merge_input,
     concatenate=concatenate_github_partial_digests,
+    refs_field="pr_refs",
 )
 
 _CHAT_DIGEST_SPEC = _CompactorDigestSpec(
@@ -2104,6 +2112,7 @@ _CHAT_DIGEST_SPEC = _CompactorDigestSpec(
     fit_budget=fit_chat_compactor_digest_within_budget,
     build_merge_input=build_chat_history_compactor_merge_input,
     concatenate=concatenate_chat_partial_digests,
+    refs_field="turn_refs",
 )
 
 
@@ -2223,6 +2232,7 @@ async def _run_compactor_digest(
         deadline=deadline,
         attempts=attempts,
     )
+    merge_skipped_reason: str | None = None
     if len(inputs) == 1:
         digest, route = await _call_compactor_digest_with_retry(
             **common,
@@ -2242,21 +2252,46 @@ async def _run_compactor_digest(
                 step_label=f"chunk_{index}_of_{len(inputs)}",
             )
             partials.append(partial)
-        try:
-            digest, route = await _call_compactor_digest_with_retry(
-                **common,
-                call_correlation_id=_workflow_sub_correlation_id(correlation_id, "digest_merge"),
-                input_payload=spec.build_merge_input(base_input=inputs[0], partial_digests=partials),
-                step_label="merge",
-            )
+        merge_input = spec.build_merge_input(base_input=inputs[0], partial_digests=partials)
+        partial_refs: List[str] = []
+        for partial in partials:
+            for ref in getattr(partial, spec.refs_field) or []:
+                if ref not in partial_refs:
+                    partial_refs.append(ref)
+        merge_skipped_reason: str | None = None
+        digest = None
+        if json_char_len(merge_input) > DIGEST_INPUT_CHAR_BUDGET:
+            # The chunk bodies together do not fit one call: a merge would
+            # overrun the context (or be silently truncated) and burn the pass
+            # budget first. Join the chunk digests instead.
+            merge_skipped_reason = "merge_input_over_budget"
+        else:
+            try:
+                merged, route = await _call_compactor_digest_with_retry(
+                    **common,
+                    call_correlation_id=_workflow_sub_correlation_id(correlation_id, "digest_merge"),
+                    input_payload=merge_input,
+                    step_label="merge",
+                )
+                merged_refs = set(getattr(merged, spec.refs_field) or [])
+                missing = [ref for ref in partial_refs if ref not in merged_refs]
+                if missing:
+                    # The merge dropped coverage the chunks had; the join keeps it.
+                    merge_skipped_reason = f"merge_dropped_refs:{len(missing)}"
+                    attempts.append({"step": "merge", "route": route, "ok": False, "error": f"refs_missing:{missing[:20]}"})
+                else:
+                    digest = merged
+            except WorkflowExecutionError as exc:
+                merge_skipped_reason = f"merge_failed:{str(exc)[:200]}"
+        if digest is not None:
             merge_mode = "llm_merge"
-        except WorkflowExecutionError as exc:
+        else:
             logger.warning(
-                "compactor_digest_merge_failed_concatenating corr=%s workflow_id=%s chunks=%s error=%s",
+                "compactor_digest_merge_concatenating corr=%s workflow_id=%s chunks=%s reason=%s",
                 correlation_id,
                 workflow_id,
                 len(partials),
-                exc,
+                merge_skipped_reason,
             )
             digest = spec.concatenate(partials, window_label=window_label)
             merge_mode = "concatenated"
@@ -2275,6 +2310,7 @@ async def _run_compactor_digest(
         chunk_count=len(inputs),
         merge_mode=merge_mode,
         attempts=attempts,
+        merge_skipped_reason=merge_skipped_reason if len(inputs) > 1 else None,
     )
 
 
@@ -2299,8 +2335,17 @@ async def _execute_github_compactor_pass(
     except ValueError as exc:
         raise WorkflowExecutionError(f"github_compactor_window_invalid:{exc}") from exc
     window_label = window.window_label
+    fetch_lookback_days = lookback_days
+    if window.mode == "day":
+        # An exec that predates window-bounded fetch ignores window_start_utc and
+        # fetches now - lookback_days; at 06:10 the day starts ~30h back, so a
+        # 1-day rolling fetch would silently miss yesterday's first hours.
+        fetch_lookback_days = max(
+            lookback_days,
+            math.ceil((datetime.now(timezone.utc) - window.window_start).total_seconds() / 86400.0),
+        )
     skill_args = {
-        "lookback_days": lookback_days,
+        "lookback_days": fetch_lookback_days,
         "window_start_utc": window.window_start.isoformat(),
         "window_end_utc": window.window_end.isoformat(),
     }
@@ -2371,6 +2416,7 @@ async def _execute_github_compactor_pass(
         )
     else:
         fetch_payload["items"] = list(fetch_payload.get("items") or [])
+    fetch_window_echo = fetch_payload.get("window_mode")
     fetch_payload["window_mode"] = window.mode
     fetch_payload["window_start_utc"] = window.window_start.isoformat()
     fetch_payload["window_end_utc"] = window.window_end.isoformat()
@@ -2382,6 +2428,11 @@ async def _execute_github_compactor_pass(
         # The GitHub walk stopped at GITHUB_PULLS_MAX_PAGES before reaching the
         # window start: merges may be missing, so coverage is not complete.
         coverage["input_truncated"] = True
+    if window.mode == "day" and fetch_window_echo != "window":
+        # Old exec (no window echo): single page, rolling. The widened
+        # lookback above usually covers the day, but pagination is absent.
+        coverage["input_truncated"] = True
+        coverage["fetch_window_unconfirmed"] = True
     card_id: str | None = None
     card_persist_skipped_reason: str | None = None
     digest_run: _CompactorDigestRun | None = None
@@ -2495,10 +2546,12 @@ async def _execute_github_compactor_pass(
         "covered_count": int(coverage.get("covered_count") or 0),
         "input_truncated": bool(coverage.get("input_truncated")),
         "truncated_pr_numbers": list(coverage.get("truncated_pr_numbers") or []),
+        "fetch_window_unconfirmed": bool(coverage.get("fetch_window_unconfirmed")),
         "github_pages_fetched": fetch_payload.get("pages_fetched"),
         "github_page_cap_hit": bool(fetch_payload.get("page_cap_hit")),
         "digest_chunk_count": digest_run.chunk_count if digest_run else 0,
         "digest_merge_mode": digest_run.merge_mode if digest_run else None,
+        "digest_merge_skipped_reason": digest_run.merge_skipped_reason if digest_run else None,
         "digest_llm_route": digest_run.route if digest_run else None,
         "digest_attempts": digest_run.attempts if digest_run else [],
         "journal_body_chars": len(digest.journal_body or ""),
@@ -2755,6 +2808,7 @@ async def _execute_chat_history_compactor_pass(
         "digest_llm_route": digest_run.route if digest_run else None,
         "digest_chunk_count": digest_run.chunk_count if digest_run else 0,
         "digest_merge_mode": digest_run.merge_mode if digest_run else None,
+        "digest_merge_skipped_reason": digest_run.merge_skipped_reason if digest_run else None,
         "digest_attempts": digest_run.attempts if digest_run else [],
         "total_count": int(coverage.get("total_count") or 0),
         "covered_count": int(coverage.get("covered_count") or 0),

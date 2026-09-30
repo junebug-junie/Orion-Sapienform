@@ -104,7 +104,7 @@ class Settings(BaseSettings):
     actions_daily_llm_route: str | None = Field(None, alias="ACTIONS_DAILY_LLM_ROUTE")
     actions_journal_llm_route: str | None = Field(None, alias="ACTIONS_JOURNAL_LLM_ROUTE")
     actions_exec_timeout_seconds: float = Field(240.0, alias="ACTIONS_EXEC_TIMEOUT_SECONDS")
-    # RPC wait for a SCHEDULED workflow dispatch (_dispatch_scheduled_workflow).
+    # RPC wait for a SCHEDULED compactor workflow dispatch (LONG_RUNNING_SCHEDULED_WORKFLOWS in main.py).
     # Separate from ACTIONS_EXEC_TIMEOUT_SECONDS (single skill/journal calls):
     # a compactor pass is fetch (<=300s) + map-reduce digest calls bounded by
     # COMPACTOR_DIGEST_TOTAL_BUDGET_SEC (3000s), so the old 420s wait gave up on

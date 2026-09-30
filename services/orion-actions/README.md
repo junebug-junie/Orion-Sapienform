@@ -664,7 +664,9 @@ conventions: `orion/core/bus/rpc_health.py` module docstring.
 ### Scheduled workflow dispatch timeout
 
 `ACTIONS_WORKFLOW_DISPATCH_TIMEOUT_SECONDS` (default 3600) is how long the scheduler waits for
-cortex-orch to finish a scheduled workflow (`_dispatch_scheduled_workflow`). It is separate
+cortex-orch to finish a scheduled compactor pass (`LONG_RUNNING_SCHEDULED_WORKFLOWS` in `app/main.py`;
+every other scheduled workflow keeps `ACTIONS_EXEC_TIMEOUT_SECONDS`). The workflow claim TTL is set to
+this value + 60s so a restart mid-pass does not reap and re-run a still-running dispatch. It is separate
 from `ACTIONS_EXEC_TIMEOUT_SECONDS` (single skill/journal calls) because a compactor pass is a
 GitHub fetch (<=300s) plus map-reduce digest calls bounded by
 `COMPACTOR_DIGEST_TOTAL_BUDGET_SEC` (3000s); the old 420s wait recorded still-running passes as

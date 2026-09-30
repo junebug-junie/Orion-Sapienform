@@ -320,3 +320,117 @@ def test_chat_120_turns_all_covered_and_body_untrimmed() -> None:
     assert wf["input_truncated"] is False
     assert wf["digest_merge_mode"] == "llm_merge"
     assert bus.journal_bodies() == [long_body]
+
+
+# ---------------------------------------------------------------- review follow-ups
+
+def _fixed_now(monkeypatch, now: datetime) -> None:
+    class _FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is None else now.astimezone(tz)
+
+    monkeypatch.setattr(wr, "datetime", _FixedDatetime)
+
+
+def _simple_digest(gi: dict) -> _Result:
+    refs = [f"#{item['number']}" for item in gi.get("items", [])]
+    return _Result(final_text=json.dumps({"card_summary": "c", "journal_title": "t", "journal_body": " ".join(refs) or "b", "pr_refs": refs}))
+
+
+def test_github_day_mode_widens_lookback_and_flags_old_exec(monkeypatch) -> None:
+    """New orch + old exec: the old exec ignores window args and fetches now-N days."""
+    _fixed_now(monkeypatch, datetime(2026, 9, 29, 12, 10, tzinfo=timezone.utc))
+    bus = _Bus()
+    fetch_args: dict = {}
+
+    async def fake(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.repo.github_recent_prs.v1":
+            fetch_args.update(req.context.metadata["skill_args"])
+            return _github_fetch_result(_forty_prs()[:2])  # no window_mode echo = old exec
+        return _simple_digest(req.context.metadata["github_compactor_input"])
+
+    result = _run(_req("github_compactor_pass", scheduled_dispatch={"s": 1}), fake, bus)
+    wf = result.metadata["workflow"]
+    # Day starts 2026-09-28T06:00Z, ~30h before 12:10Z: a 1-day rolling fetch would miss it.
+    assert fetch_args["lookback_days"] == 2
+    assert wf["fetch_window_unconfirmed"] is True
+    assert wf["input_truncated"] is True
+
+
+def test_github_new_exec_window_echo_and_page_cap(monkeypatch) -> None:
+    _fixed_now(monkeypatch, datetime(2026, 9, 29, 12, 10, tzinfo=timezone.utc))
+
+    async def fake_factory(page_cap_hit):
+        async def fake(*args, **kwargs):
+            req = kwargs["client_request"]
+            if req.verb == "skills.repo.github_recent_prs.v1":
+                return _github_fetch_result(_forty_prs()[:2], window_mode="window", page_cap_hit=page_cap_hit)
+            return _simple_digest(req.context.metadata["github_compactor_input"])
+        return fake
+
+    ok = _run(_req("github_compactor_pass", scheduled_dispatch={"s": 1}), asyncio.run(fake_factory(False)), _Bus())
+    assert ok.metadata["workflow"]["input_truncated"] is False
+    assert ok.metadata["workflow"]["fetch_window_unconfirmed"] is False
+    capped = _run(_req("github_compactor_pass", scheduled_dispatch={"s": 1}), asyncio.run(fake_factory(True)), _Bus())
+    assert capped.metadata["workflow"]["input_truncated"] is True
+    assert capped.metadata["workflow"]["github_page_cap_hit"] is True
+
+
+def test_github_merge_that_drops_refs_falls_back_to_concatenation() -> None:
+    bus = _Bus()
+
+    async def fake(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.repo.github_recent_prs.v1":
+            return _github_fetch_result(_forty_prs())
+        gi = req.context.metadata["github_compactor_input"]
+        if "partial_digests" in gi:
+            return _Result(final_text=json.dumps({"card_summary": "m", "journal_title": "t", "journal_body": "only #1000", "pr_refs": ["#1000"]}))
+        return _simple_digest(gi)
+
+    wf = _run(_req("github_compactor_pass"), fake, bus).metadata["workflow"]
+    assert wf["digest_merge_mode"] == "concatenated"
+    assert wf["digest_merge_skipped_reason"].startswith("merge_dropped_refs:")
+    assert all(f"#{1000 + i}" in bus.journal_bodies()[0] for i in range(40))
+
+
+def test_github_merge_input_over_budget_skips_merge_call(monkeypatch) -> None:
+    monkeypatch.setattr(wr, "DIGEST_INPUT_CHAR_BUDGET", 20_000)
+    bus = _Bus()
+    merge_calls = []
+
+    async def fake(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.repo.github_recent_prs.v1":
+            return _github_fetch_result(_forty_prs())
+        gi = req.context.metadata["github_compactor_input"]
+        if "partial_digests" in gi:
+            merge_calls.append(1)
+        refs = [f"#{item['number']}" for item in gi.get("items", [])]
+        body = " ".join(refs) + " " + ("x" * 5000)
+        return _Result(final_text=json.dumps({"card_summary": "c", "journal_title": "t", "journal_body": body, "pr_refs": refs}))
+
+    wf = _run(_req("github_compactor_pass"), fake, bus).metadata["workflow"]
+    assert merge_calls == []
+    assert wf["digest_merge_mode"] == "concatenated"
+    assert wf["digest_merge_skipped_reason"] == "merge_input_over_budget"
+
+
+def test_pass_budget_exhausted_mid_map_fails_without_journal(monkeypatch) -> None:
+    clock = {"t": 0.0}
+    monkeypatch.setattr(wr.time, "monotonic", lambda: clock["t"])
+    bus = _Bus()
+
+    async def fake(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.repo.github_recent_prs.v1":
+            return _github_fetch_result(_forty_prs())
+        clock["t"] += 2000.0  # each chunk call eats a big slice of the 3000s pass budget
+        return _simple_digest(req.context.metadata["github_compactor_input"])
+
+    with pytest.raises(Exception) as exc:
+        _run(_req("github_compactor_pass"), fake, bus)
+    assert "pass_budget_exhausted" in str(exc.value)
+    assert bus.journal_bodies() == []

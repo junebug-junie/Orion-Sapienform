@@ -222,3 +222,18 @@ def test_merge_input_and_concatenation_keep_every_ref() -> None:
     joined = concatenate_github_partial_digests(parts, window_label="2026-09-28")
     assert joined.pr_refs == ["#1", "#2", "#3"]
     assert "body a" in joined.journal_body and "body b" in joined.journal_body
+
+
+def test_chunk_budget_measures_the_rendered_prompt() -> None:
+    """Budget must count what tojson(indent=2) renders (ensure_ascii + htmlsafe escapes)."""
+    from orion.cognition.planner.prompt_renderer import PromptRenderer
+
+    body = ("It's a PR — with <b>arrows</b> → & quotes. " * 700)
+    inputs, _ = build_github_compactor_digest_inputs({"repo": "r", "items": [_pr(i, body=body) for i in range(12)]})
+    assert len(inputs) > 1
+    renderer = PromptRenderer(Path(__file__).resolve().parents[2] / "prompts")
+    empty = len(renderer.render("github_compactor_digest_v1.j2", {"metadata": {"github_compactor_input": {}}}))
+    for gi in inputs:
+        rendered = renderer.render("github_compactor_digest_v1.j2", {"metadata": {"github_compactor_input": gi}})
+        # Template text + window metadata aside, the rendered items fit the budget (10% nesting slack).
+        assert len(rendered) - empty <= DIGEST_INPUT_CHAR_BUDGET * 1.1

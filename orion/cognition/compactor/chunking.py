@@ -4,9 +4,21 @@ import json
 from typing import Any, Sequence
 
 
+_HTMLSAFE_CHARS = ("<", ">", "&", "'")
+
+
 def json_char_len(obj: Any) -> int:
-    """Serialized size of one digest input item (what the prompt pays for)."""
-    return len(json.dumps(obj, ensure_ascii=False, default=str))
+    """Rendered size of `obj` as the digest prompt actually pays for it.
+
+    The templates render input with Jinja's `tojson(indent=2)`, which uses
+    `ensure_ascii=True` (every non-ASCII char -> 6-char `\\uXXXX`) and
+    HTML-escapes `< > & '` to 6-char `\\u00XX`. Measuring compact
+    `ensure_ascii=False` JSON undercounted PR-report prose ~2x (review
+    finding, 2026-09-30). Indentation is measured at the item's own level; the
+    extra nesting indent per line is small and covered by the budget's slack.
+    """
+    text = json.dumps(obj, indent=2, sort_keys=True, default=str)
+    return len(text) + 5 * sum(text.count(ch) for ch in _HTMLSAFE_CHARS)
 
 
 def chunk_items_by_char_budget(items: Sequence[Any], *, budget_chars: int) -> list[list[Any]]:

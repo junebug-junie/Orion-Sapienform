@@ -909,6 +909,8 @@ def test_github_recent_prs_paginates_until_window_start_and_filters_merged_at(mo
     page2 = [_pr(100 + i, inside, None) for i in range(100)]
     page2[0]["merged_at"] = inside
     page2[1]["merged_at"] = "2026-09-27T12:00:00Z"
+    # PR 0 was updated between page reads and shifted onto page 2 as well.
+    page2[2] = dict(page1[0])
     # page 3: oldest updated_at before the window start -> stop after this page
     page3 = [_pr(200 + i, "2026-09-27T00:00:00Z", None) for i in range(100)]
     page3[0]["merged_at"] = "2026-09-28T07:00:00Z"

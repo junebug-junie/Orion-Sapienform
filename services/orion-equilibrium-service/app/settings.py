@@ -274,7 +274,7 @@ class Settings(BaseSettings):
     # different windowing functions -- insight looks for a low->high transition,
     # flow looks for a sustained plateau. No new producer, reducer or schema.
     #
-    # Both ship DISABLED. Matching the bus_synaptic precedent (PR #1385 ->
+    # Both ship DISABLED. Matching the (since retired) bus_synaptic precedent (PR #1385 ->
     # #1387): a gate that dispatches a real MetacogTriggerV1 into orion_metacog
     # gets flipped on by a human only after its own post-merge live-data check,
     # separately from "is the underlying signal worth reading."

@@ -232,6 +232,59 @@ req = NotificationRequest(
 client.send(req)
 ```
 
+### HTML email with inline images
+
+`POST /notify` accepts an optional `body_html`. When present the email is sent
+as `multipart/alternative`: `body_text` (or `body_md`) is the plain-text
+fallback, `body_html` is the rich part. Nothing in the notify path truncates
+either body.
+
+Images must be **inline attachments**, not URLs: Gmail and other external
+clients cannot reach tailnet-hosted hub URLs. Give an attachment a
+`content_id` and reference it from the HTML as `cid:<content_id>`; it is then
+embedded as an inline part of a `multipart/related` group next to the HTML.
+Attachments without `content_id` (or any attachment on a plain-text-only
+request) are sent as ordinary download attachments, exactly as before.
+`content_id` must match `[A-Za-z0-9._@+-]{1,200}` (a `cid:` prefix or angle
+brackets are stripped) and be unique within a request; anything else is a 422.
+An `@`-qualified id such as `reverie1@orion` is the most portable form.
+
+```python
+import base64
+from orion.notify.client import NotifyClient
+from orion.schemas.notify import NotificationAttachment, NotificationRequest
+
+png = open("reverie.png", "rb").read()
+req = NotificationRequest(
+    source_service="orion-journal",
+    event_kind="orion.day",
+    severity="info",
+    title="Orion's Day",
+    channels_requested=["email"],
+    body_text="Plain-text fallback of the letter.",
+    body_html='<h1>Orion\'s Day</h1><img src="cid:reverie1" alt="reverie">',
+    attachments=[NotificationAttachment(
+        filename="reverie.png",
+        mime_type="image/png",
+        content_base64=base64.b64encode(png).decode(),
+        content_id="reverie1",
+    )],
+)
+accepted = NotifyClient(base_url=..., timeout=30).send(req)  # big payloads: raise the timeout
+accepted.email_status  # "sent" | "failed" | "skipped" | "deferred"
+```
+
+`body_html` is email-only: it is not persisted to `notify_requests` and is
+not included in the in-app hub event.
+
+### `/notify` response: `email_status`
+
+`/notify` sends email synchronously. The response keeps `status: "queued"`
+(persistence is still async) and adds `email_status` with the real email
+outcome (same values as `EmailOutcome.status`). `detail` carries the reason
+for any non-`sent` outcome. `sent` means the SMTP server accepted the message,
+not that it reached an inbox.
+
 ## `notify_requests.status` -- what it means
 
 **Changed 2026-08-30 (PR #1991).** Before that date this column was written once

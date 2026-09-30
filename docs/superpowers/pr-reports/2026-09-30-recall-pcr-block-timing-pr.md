@@ -109,6 +109,6 @@ scripts/safe_docker_build.sh orion-recall up -d --build
 
 ## PR link
 
-(filled in on open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2436
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

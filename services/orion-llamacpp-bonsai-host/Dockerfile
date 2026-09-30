@@ -58,4 +58,10 @@ FROM ${HOST_IMAGE}
 
 # Stock wrapper looks for /app/llama-server and sibling .so files.
 COPY --from=build /src/build/bin/ /app/
+# The base image only supplies the wrapper's Python deps. Its baked wrapper and
+# profiles are as old as its last rebuild: on Circe (2026-09-30) they lacked this
+# profile (KeyError at boot) and the fork build-number parse (drops --flash-attn off).
+COPY services/orion-llamacpp-host/app /app/app
+COPY config /app/config
+COPY orion /app/orion
 ENV LD_LIBRARY_PATH=/app

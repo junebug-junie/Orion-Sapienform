@@ -2141,8 +2141,8 @@ profiles:
       num_gpus: 1
       tensor_parallel_size: 1
       # Doc-only; the real pin is BONSAI_CUDA_VISIBLE_DEVICES in
-      # services/orion-llamacpp-bonsai-host/.env (default 2 = gpu2).
-      device_ids: [2]
+      # services/orion-llamacpp-bonsai-host/.env (default 0 = gpu0, chat's card).
+      device_ids: [0]
       max_model_len: 65536
       max_batch_tokens: 1024
       max_concurrent_requests: 4

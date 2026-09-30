@@ -1,7 +1,7 @@
 # services/orion-llamacpp-bonsai-host/docker-compose.yml
 # Ternary-Bonsai-2-27B bake-off worker on Circe (PrismML llama.cpp fork).
-# NOT managed by orion-gpu-lane-controller: bring it up only while its card is
-# free (default gpu2, which the pool lends to agent-gpu2 and diffusion).
+# NOT managed by orion-gpu-lane-controller. Default card is gpu0 (chat's):
+# stop the chat worker first; the pool has no launch block for chat, so it stays down.
 #
 #   services/orion-llamacpp-bonsai-host/scripts/build-bonsai-volta.sh
 #   scripts/safe_docker_build.sh orion-llamacpp-bonsai-host up -d
@@ -27,7 +27,7 @@ services:
       - hf_token=${hf_token}
       - LLAMACPP_HOST_OVERRIDE=0.0.0.0
       - LLAMACPP_PORT_OVERRIDE=8080
-      - CUDA_VISIBLE_DEVICES_OVERRIDE=${BONSAI_CUDA_VISIBLE_DEVICES:-2}
+      - CUDA_VISIBLE_DEVICES_OVERRIDE=${BONSAI_CUDA_VISIBLE_DEVICES:-0}
     volumes:
       - "${LLM_CACHE_DIR}:/models"
     ports:

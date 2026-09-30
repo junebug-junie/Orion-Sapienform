@@ -24,6 +24,10 @@ def test_dockerfile_pins_prism_fork_for_volta():
     # Prism: CUDA 13.3 builds segfault; host nvcc 13.x dropped sm_70.
     assert "nvidia/cuda:12.8.1-devel-ubuntu24.04" in text
     assert "orion-llamacpp-host:0.1.0" in text
+    # Base image supplies deps only; its baked wrapper/profiles can predate this profile.
+    final = text.split("FROM ${HOST_IMAGE}", 1)[1]
+    for copy in ("COPY services/orion-llamacpp-host/app /app/app", "COPY config /app/config", "COPY orion /app/orion"):
+        assert copy in final
     # Build number = rev-list count; a shallow clone reports 1 and the wrapper
     # then drops --flash-attn off (main.py is_b5332_compatible).
     code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))

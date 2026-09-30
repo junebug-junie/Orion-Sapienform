@@ -26,18 +26,19 @@ Date: 2026-09-30. Data: `substrate_field_state`, 124,654 rows, 2026-09-27 06:13 
 5. **Existing mechanism.** Reuses `orion.bus.ewma.compute_ewma_update` (half-life alpha as in `orion/field/queue_contention.py`). No percentile job, no new stats module. `services/orion-field-digester/.../precision.py` state lives inside FieldStateV1, which the task forbids touching; hence a small Redis hash.
 6. **Reversibility.** One env flag (`TRANSPORT_THRESHOLDS_DERIVED_ENABLED=false`) restores pure static yaml in hub and mind; no schema, no yaml change, no persisted default. Redis key can be deleted.
 
-## Replay of the real 3.4 days (30 s samples, 2 d half-life, warm after 24 h)
+## Replay of the real 3.4 days (30 s samples, 2 d half-life, warm after 24 h and >= 2880 samples)
 
-Slow mean 0.046, slow sd 0.034. Fraction of post-warm ticks at or above the watch rung (static 0.25 fires 0.19%):
+Run through the shipped `update_state`/`effective_thresholds`. Slow mean 0.037, slow sd ~0.04 (heavy right tail). Fraction of post-warm ticks at or above the watch rung (static 0.25 fires 0.19%):
 
 | k_watch | derived watch | fires |
 |---|---|---|
-| 3 | 0.13-0.15 | 2.96% |
-| 4 | 0.16-0.18 | 1.60% |
-| 5 (default) | 0.19-0.22 | 0.77% |
-| 6 | 0.21-0.25 | 0.36% |
+| 3 | 0.15-0.17 | 2.37% |
+| 4 | 0.19-0.21 | 0.88% |
+| 5 (default) | 0.23-0.25 | 0.32% |
 
-Default k=5 (summarize k=7, propose k=9), tightening capped at 2x below static. Caveat: only 3.4 days of history exist, so a 2-day half-life is under 2 half-lives deep at the end; cold start is 24 h of samples. A weekly cycle cannot be seen yet. The constants are knobs, not findings.
+Default k=5 (summarize k=7, propose k=9), tightening capped at 2x below static. Honest read: on this history k=5 tightens the watch rung only slightly (0.23-0.25 against 0.25). k=4 is the visible-but-still-rare setting; that is Juniper's call, it is a knob not a finding. An earlier draft of this replay showed 0.19-0.22 at k=5; code review found the seeded EWMA kept ~71% of its weight on the first sample at 24 h, so the sd was underestimated. Fixed by flooring alpha at 1/n during warm-up (a plain running mean until the exponential window is deeper than the history), and a test pins first-sample independence.
+
+Caveat: only 3.4 days of history exist; a weekly cycle cannot be seen yet. Cold start needs both 2880 samples and 28,800 s of real elapsed time.
 
 ## Traps checked
 

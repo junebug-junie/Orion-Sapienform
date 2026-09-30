@@ -1218,6 +1218,7 @@ def _warm_fake_redis(monkeypatch):
             self.store[(key, field)] = value
 
     FakeRedis.store = {}
+    tt.clear_state_cache()
     monkeypatch.setattr(tt, "_client", lambda url: FakeRedis())
     monkeypatch.setenv("TRANSPORT_THRESHOLDS_DERIVED_ENABLED", "true")
     monkeypatch.setenv("TRANSPORT_THRESHOLDS_MIN_SAMPLES", "50")

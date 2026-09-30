@@ -33,6 +33,16 @@ def _feed(values, *, start=None, cfg=CFG, state=None, t0=1_000_000.0):
     return state, t
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cache():
+    tt.clear_state_cache()
+    yield
+    tt.clear_state_cache()
+
+
 def _calm(n, seed=1):
     rng = random.Random(seed)
     return [max(0.0, rng.gauss(0.046, 0.03)) for _ in range(n)]
@@ -143,7 +153,13 @@ def test_non_finite_sample_ignored():
 def test_env_flag_parsing():
     assert tt.ThresholdConfig.from_env({}).enabled is True
     assert tt.ThresholdConfig.from_env({"TRANSPORT_THRESHOLDS_DERIVED_ENABLED": "false"}).enabled is False
-    assert tt.ThresholdConfig.from_env({"TRANSPORT_THRESHOLDS_MIN_SAMPLES": "5"}).min_samples == 5
+    assert tt.ThresholdConfig.from_env({"TRANSPORT_THRESHOLDS_MIN_SAMPLES": "500"}).min_samples == 500
+    # garbage is clamped, cold start cannot be disabled by a bad value
+    bad = tt.ThresholdConfig.from_env({
+        "TRANSPORT_THRESHOLDS_MIN_SAMPLES": "0", "TRANSPORT_THRESHOLDS_K_WATCH": "-3",
+        "TRANSPORT_THRESHOLDS_SLOW_HALF_LIFE_SEC": "0",
+    })
+    assert bad.min_samples >= 100 and bad.k_watch >= 2.0 and bad.slow_half_life_sec >= 3600.0
 
 
 def test_redis_roundtrip_producer_to_reader(monkeypatch):
@@ -184,3 +200,45 @@ def test_scale_weight_matches_topology_edge():
 def test_wired_channels_exist_in_policy():
     policy = yaml.safe_load((REPO / "config/substrate-lattice/transport_lattice_policy.v1.yaml").read_text())
     assert set(tt.DERIVED_CHANNELS) <= set(policy["channels"])
+
+
+def test_derived_value_is_independent_of_the_first_sample():
+    """Review finding: with a seeded EWMA the first reading kept ~71% weight at
+    24 h, so a 0.0 first sample gave a hair-trigger and a 0.5 one gave static."""
+    outs = []
+    for first in (0.0, 0.5):
+        state, t = _feed([first] + _calm(CFG.min_samples + 20))
+        eff = _eff(state, t)
+        assert eff["_meta"]["reason"] == "derived"
+        outs.append((eff["watch_at"]["value"], state.slow_ewma))
+    assert abs(outs[0][0] - outs[1][0]) < 0.01
+    assert abs(outs[0][1] - outs[1][1]) < 0.01
+
+
+def test_cold_start_needs_elapsed_time_not_just_sample_count():
+    # 3000 samples 1 s apart: count is enough, elapsed (50 min) is not.
+    state = None
+    for i, v in enumerate(_calm(3000)):
+        state = tt.update_state(state, v, 1_000_000.0 + i, CFG)
+    eff = _eff(state, 1_000_000.0 + 3000)
+    assert eff["_meta"]["reason"] == "cold_start"
+
+
+def test_clock_skew_reads_stale_not_fresh():
+    state, t = _feed(_calm(CFG.min_samples + 100))
+    eff = _eff(state, t - 10_000)  # state is "from the future"
+    assert eff["_meta"]["reason"] == "stale_state"
+
+
+def test_reader_caches_state_within_ttl_and_failures_too(monkeypatch):
+    calls = {"n": 0}
+
+    class Counting:
+        def hget(self, k, f):
+            calls["n"] += 1
+            raise ConnectionError("down")
+
+    monkeypatch.setattr(tt, "_client", lambda url: Counting())
+    for _ in range(5):
+        tt.fetch_effective_thresholds("bus_synaptic_pressure", STATIC, "redis://x", CFG)
+    assert calls["n"] == 1  # one timeout per TTL, not one per request

@@ -404,6 +404,7 @@ def test_mind_rungs_match_shared_effective_thresholds_and_flag_rolls_back(monkey
             self.store[(key, field)] = value
 
     FakeRedis.store = {}
+    tt.clear_state_cache()
     monkeypatch.setattr(tt, "_client", lambda url: FakeRedis())
     monkeypatch.setenv("TRANSPORT_THRESHOLDS_DERIVED_ENABLED", "true")
     monkeypatch.setenv("TRANSPORT_THRESHOLDS_MIN_SAMPLES", "50")

@@ -38,6 +38,8 @@ import json
 import logging
 import math
 import os
+import functools
+import threading
 import time
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping
@@ -55,7 +57,12 @@ RUNGS = ("watch_at", "summarize_at", "propose_at")
 # test_transport_thresholds.py.
 DERIVED_CHANNELS: dict[str, float] = {"bus_synaptic_pressure": 0.85}
 
-MIN_FAST_SAMPLES = 60
+MIN_FAST_SAMPLES = 300  # ~3 fast half-lives at the 30s tick; below this the fast variance is under-warmed
+# Cold start also needs real elapsed time, not just a sample count (a fast or
+# bursty producer must not warm the baseline early). 10 s/sample is a third of
+# the 30 s tick.
+MIN_SECONDS_PER_SAMPLE = 10.0
+_STATE_CACHE_TTL_SEC = 15.0  # producer refreshes every 30 s; readers may be hit per request
 # Derived thresholds may tighten a static rung by at most 2x. Keeps a
 # near-zero-variance stretch from producing a hair-trigger.
 MAX_TIGHTEN_RATIO = 0.5
@@ -89,14 +96,16 @@ class ThresholdConfig:
                 return default
 
         enabled_raw = str(e.get("TRANSPORT_THRESHOLDS_DERIVED_ENABLED", "")).strip().lower()
+        # Sane-range clamps: a garbage value must not disable cold start or
+        # produce a hair-trigger (the static floor bounds the rest).
         return cls(
             enabled=(enabled_raw in _TRUE) if enabled_raw else d.enabled,
-            fast_half_life_sec=_f("TRANSPORT_THRESHOLDS_FAST_HALF_LIFE_SEC", d.fast_half_life_sec),
-            slow_half_life_sec=_f("TRANSPORT_THRESHOLDS_SLOW_HALF_LIFE_SEC", d.slow_half_life_sec),
-            min_samples=int(_f("TRANSPORT_THRESHOLDS_MIN_SAMPLES", d.min_samples)),
-            k_watch=_f("TRANSPORT_THRESHOLDS_K_WATCH", d.k_watch),
-            k_step=_f("TRANSPORT_THRESHOLDS_K_STEP", d.k_step),
-            max_state_age_sec=_f("TRANSPORT_THRESHOLDS_MAX_STATE_AGE_SEC", d.max_state_age_sec),
+            fast_half_life_sec=max(_f("TRANSPORT_THRESHOLDS_FAST_HALF_LIFE_SEC", d.fast_half_life_sec), 60.0),
+            slow_half_life_sec=max(_f("TRANSPORT_THRESHOLDS_SLOW_HALF_LIFE_SEC", d.slow_half_life_sec), 3600.0),
+            min_samples=max(int(_f("TRANSPORT_THRESHOLDS_MIN_SAMPLES", d.min_samples)), 100),
+            k_watch=max(_f("TRANSPORT_THRESHOLDS_K_WATCH", d.k_watch), 2.0),
+            k_step=max(_f("TRANSPORT_THRESHOLDS_K_STEP", d.k_step), 0.0),
+            max_state_age_sec=max(_f("TRANSPORT_THRESHOLDS_MAX_STATE_AGE_SEC", d.max_state_age_sec), 60.0),
             state_key=str(e.get("TRANSPORT_THRESHOLDS_STATE_KEY", "")).strip() or d.state_key,
         )
 
@@ -148,13 +157,18 @@ def update_state(
             last_z_fast=None,
         )
     dt = min(max(now_ts - prev.last_ts, 0.0), _MAX_DT_SEC)
+    # Warm-up: alpha is floored at 1/n so the first samples form a plain running
+    # mean/variance. Without this the seed value keeps ~71% of the weight after
+    # 24 h at a 2-day half-life and the "derived" threshold would depend on
+    # whichever reading happened to arrive first (review finding).
+    warm = 1.0 / (prev.n + 1)
     fast = compute_ewma_update(
         prev_ewma=prev.fast_ewma, prev_variance=prev.fast_var, prev_count=prev.n,
-        value=value, alpha=_alpha(dt, cfg.fast_half_life_sec), min_variance=_MIN_VARIANCE,
+        value=value, alpha=max(_alpha(dt, cfg.fast_half_life_sec), warm), min_variance=_MIN_VARIANCE,
     )
     slow = compute_ewma_update(
         prev_ewma=prev.slow_ewma, prev_variance=prev.slow_var, prev_count=prev.n,
-        value=value, alpha=_alpha(dt, cfg.slow_half_life_sec), min_variance=_MIN_VARIANCE,
+        value=value, alpha=max(_alpha(dt, cfg.slow_half_life_sec), warm), min_variance=_MIN_VARIANCE,
     )
     return ChannelState(
         n=prev.n + 1, first_ts=prev.first_ts, last_ts=max(now_ts, prev.last_ts),
@@ -187,9 +201,12 @@ def effective_thresholds(
         reason = "channel_not_wired"
     elif state is None or state.n == 0:
         reason = "no_state"
-    elif now_ts - state.last_ts > cfg.max_state_age_sec:
+    elif abs(now_ts - state.last_ts) > cfg.max_state_age_sec:  # abs: host clock skew reads stale too
         reason = "stale_state"
-    elif state.n < cfg.min_samples:
+    elif (
+        state.n < cfg.min_samples
+        or (state.last_ts - state.first_ts) < cfg.min_samples * MIN_SECONDS_PER_SAMPLE
+    ):
         reason = "cold_start"
 
     usable = reason == "derived"
@@ -242,7 +259,9 @@ def flat_rungs(eff: Mapping[str, Any]) -> dict[str, float | None]:
     return {r: eff[r]["value"] for r in RUNGS}
 
 
+@functools.lru_cache(maxsize=4)
 def _client(redis_url: str):
+    """One pooled client per URL (readers are hit per request)."""
     import redis  # lazy: pure functions above stay importable without it
 
     return redis.Redis.from_url(
@@ -250,14 +269,34 @@ def _client(redis_url: str):
     )
 
 
+_STATE_CACHE: dict[tuple[str, str, str], tuple[float, "ChannelState | None"]] = {}
+_STATE_CACHE_LOCK = threading.Lock()
+
+
+def clear_state_cache() -> None:
+    with _STATE_CACHE_LOCK:
+        _STATE_CACHE.clear()
+
+
 def load_state(channel_id: str, redis_url: str, cfg: ThresholdConfig) -> ChannelState | None:
+    """Reader-side load with a short TTL cache; failures are cached too so a
+    down Redis costs one timeout per TTL, not one per request."""
     if not redis_url:
         return None
+    key = (redis_url, cfg.state_key, channel_id)
+    mono = time.monotonic()
+    with _STATE_CACHE_LOCK:
+        hit = _STATE_CACHE.get(key)
+        if hit and mono - hit[0] < _STATE_CACHE_TTL_SEC:
+            return hit[1]
     try:
-        return ChannelState.from_json(_client(redis_url).hget(cfg.state_key, channel_id))
+        state = ChannelState.from_json(_client(redis_url).hget(cfg.state_key, channel_id))
     except Exception:
         logger.debug("transport_thresholds_state_load_failed channel=%s", channel_id, exc_info=True)
-        return None
+        state = None
+    with _STATE_CACHE_LOCK:
+        _STATE_CACHE[key] = (mono, state)
+    return state
 
 
 def record_sample(

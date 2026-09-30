@@ -317,8 +317,9 @@ Every LLM call leases through this pool, so a pool that will not boot is a total
 happened twice (2026-09-26 v2 `hold_lease_id`, 2026-09-30 v3 `actuation_paused_at`): the image was
 deployed before its additive migration and `check_schema` refused to start. Now, after taking the
 leader lock (single writer), the pool runs the missing `ALTER TABLE .. ADD COLUMN IF NOT EXISTS`
-statements itself -- `BOOT_ADDITIVE_COLUMNS` in `app/store.py`, one short transaction each under
-`SET LOCAL lock_timeout` (3 s at boot, 1 s on retries) and `statement_timeout` 15 s.
+statements itself -- `BOOT_ADDITIVE_COLUMNS` in `app/store.py`, one `ALTER TABLE` per table (atomic),
+stopping at the first lock failure, under `SET LOCAL lock_timeout` (3 s at boot, 300 ms on retries:
+a waiting ALTER queues the pool's own writes behind it) and `statement_timeout` 15 s.
 
 - **Lock not granted in time** (a `pg_dump`, a long transaction): the pool does **not** exit. It
   serves **degraded**: the missing columns are held in memory for this process (holds, attach

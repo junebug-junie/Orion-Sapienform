@@ -248,3 +248,87 @@ def test_lock_contention_serves_degraded_loudly_then_heals_and_writes_through():
             await store.close()
             await pool.close()
     asyncio.run(go())
+
+
+def test_heal_waits_for_a_degraded_write_in_flight_so_a_new_rows_value_is_not_lost():
+    """Review finding (reproduced before the fix): a write had put hold_lease_id in the overlay and
+    was awaiting its connection; the heal's flush ran in that gap, UPDATEd a row that did not exist
+    yet (0 rows), cleared the overlay -- then the INSERT ran without the column. The child's hold
+    link was gone from both Postgres and memory. The heal must wait for the write."""
+    from datetime import datetime, timezone
+
+    from app.store import PostgresStore
+
+    async def go():
+        await _v1_only()
+        pool = await _pool()
+        store = PostgresStore(pool, conninfo=URI)
+        dump = await _hold_dump_lock("gpu_pool_leases", "gpu_pool_cards")
+        try:
+            await store.leader()
+            assert (await store.heal_schema(lock_timeout_ms=200))["state"] == "degraded"
+            await dump.execute("COMMIT")
+            entered, gate = asyncio.Event(), asyncio.Event()
+
+            async def split_then_wait_then_insert(row):   # _upsert_lease's shape, with the gap held open
+                cols = store._split("gpu_pool_leases", row)
+                entered.set()
+                await gate.wait()
+                async with pool.connection() as conn:
+                    await conn.execute(f"INSERT INTO gpu_pool_leases ({', '.join(cols)}) "
+                                       f"VALUES ({', '.join(['%s'] * len(cols))})", [row[c] for c in cols])
+
+            store._upsert_lease = split_then_wait_then_insert
+            now = datetime.now(timezone.utc)
+            write = asyncio.create_task(store.upsert_lease({
+                "lease_id": "child", "request_id": "c1", "holder": "h", "work_class": "fast", "priority": "system",
+                "kind": "request", "status": "granted", "created_at": now, "hold_lease_id": "HOLD"}))
+            await entered.wait()
+            heal = asyncio.create_task(store.heal_schema())
+            await asyncio.sleep(0.5)
+            assert not heal.done()                         # the columns exist, but the flush waits
+            gate.set()
+            await write
+            assert (await heal)["state"] == "ok"
+            async with await _connect() as conn:
+                row = await (await conn.execute("SELECT hold_lease_id FROM gpu_pool_leases WHERE lease_id='child'")).fetchone()
+            assert row["hold_lease_id"] == "HOLD"
+        finally:
+            if not dump.closed:
+                await dump.close()
+            await store.close()
+            await pool.close()
+    asyncio.run(go())
+
+
+def test_a_background_retry_under_a_dump_stalls_lease_writes_briefly_not_per_column():
+    """While serving, a waiting ALTER queues every write to its table behind it. The retry uses
+    one ALTER per table, stops at the first lock failure, and a short lock_timeout: a lease write
+    racing it is delayed well under a second, not ~9 x lock_timeout."""
+    from datetime import datetime, timezone
+
+    from app.store import HEAL_RETRY_LOCK_TIMEOUT_MS, PostgresStore
+
+    async def go():
+        await _v1_only()
+        pool = await _pool()
+        store = PostgresStore(pool, conninfo=URI)
+        dump = await _hold_dump_lock("gpu_pool_leases", "gpu_pool_cards")
+        try:
+            await store.leader()
+            await store.heal_schema(lock_timeout_ms=200)
+            now = datetime.now(timezone.utc)
+            heal = asyncio.create_task(store.heal_schema(lock_timeout_ms=HEAL_RETRY_LOCK_TIMEOUT_MS))
+            await asyncio.sleep(0.05)                      # the ALTER is now queued on gpu_pool_leases
+            t = time.monotonic()
+            await store.upsert_lease({"lease_id": "x", "request_id": "rx", "holder": "h", "work_class": "fast",
+                                      "priority": "system", "kind": "request", "status": "queued", "created_at": now})
+            waited = time.monotonic() - t
+            status = await heal
+            assert status["state"] == "degraded" and status["last_error"].count("LockNotAvailable") == 1
+            assert waited < 1.0, waited
+        finally:
+            await dump.close()
+            await store.close()
+            await pool.close()
+    asyncio.run(go())

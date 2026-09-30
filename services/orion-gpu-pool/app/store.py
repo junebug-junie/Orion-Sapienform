@@ -62,7 +62,7 @@ _BOOT_BY_KEY = {(c.table, c.column): c for c in BOOT_ADDITIVE_COLUMNS}
 # Boot: nothing is serving yet, so a few seconds of queueing behind the ALTER costs no RPC. While
 # serving, a waiting ALTER queues the pool's own lease writes behind it, so the retry waits less.
 HEAL_LOCK_TIMEOUT_MS = 3000
-HEAL_RETRY_LOCK_TIMEOUT_MS = 1000
+HEAL_RETRY_LOCK_TIMEOUT_MS = 300
 HEAL_STATEMENT_TIMEOUT_MS = 15000
 HEAL_RETRY_BACKOFF_SEC = (5.0, 10.0, 30.0, 60.0, 120.0)
 
@@ -306,6 +306,10 @@ class PostgresStore:
                                             "attempts": 0, "last_error": None, "last_attempt_at": None,
                                             "degraded_since": None, "healed_at": None}
             self._db_missing: list[tuple[str, str]] = []
+            # Serializes every degraded-mode write (overlay update + its SQL) against the flush, so
+            # a flush can never run between a write's overlay step and its INSERT (which would
+            # UPDATE a row that does not exist yet and drop the value). Only taken while degraded.
+            self._heal_lock = asyncio.Lock()
 
     def schema_status(self) -> dict[str, Any]:
         """For /health. state: ok | degraded (serving; ``in_memory`` columns are not persisted, so
@@ -321,7 +325,7 @@ class PostgresStore:
 
     async def heal_schema(self, *, lock_timeout_ms: int = HEAL_LOCK_TIMEOUT_MS,
                           statement_timeout_ms: int = HEAL_STATEMENT_TIMEOUT_MS) -> dict[str, Any]:
-        """Add every missing BOOT_ADDITIVE_COLUMNS column, one short transaction each, under
+        """Add every missing BOOT_ADDITIVE_COLUMNS column, one ALTER per table, under
         lock_timeout + statement_timeout. Call it only as the leader (single writer). Never raises
         for a lock or DDL failure -- it records it and leaves the pool degraded; raises only
         SchemaNotHealable (and a dead database)."""
@@ -330,22 +334,31 @@ class PostgresStore:
         self._schema["attempts"] += 1
         self._schema["last_attempt_at"] = datetime.now(timezone.utc).isoformat()
         errors = []
-        for key in missing:
-            col = _BOOT_BY_KEY[key]
+        # One ALTER per table (atomic per table): under a dump each statement waits its full
+        # lock_timeout, and while it waits Postgres queues every other read/write of the table
+        # behind it -- so stop at the first failure rather than pay that once per column.
+        for table in REQUIRED_COLUMNS:
+            cols = [_BOOT_BY_KEY[k] for k in missing if k[0] == table]
+            if not cols:
+                continue
+            adds = ", ".join(f"ADD COLUMN IF NOT EXISTS {c.column} {c.ddl}" for c in cols)
             try:
                 async with self.pool.connection() as conn, conn.transaction():
                     # SET LOCAL: a plain SET would stay on this pooled connection for its next user
                     await conn.execute(f"SET LOCAL lock_timeout = '{int(lock_timeout_ms)}ms'")
                     await conn.execute(f"SET LOCAL statement_timeout = '{int(statement_timeout_ms)}ms'")
-                    await conn.execute(f"ALTER TABLE {col.table} ADD COLUMN IF NOT EXISTS {col.column} {col.ddl}")
-                self._schema["applied"].append(f"{col.table}.{col.column}")
-                logger.warning("gpu_pool_schema_healed column=%s.%s ddl=%r migration=%s",
-                               col.table, col.column, col.ddl, col.migration)
+                    # public.: check_schema reads public, and search_path puts gpu_pool first
+                    await conn.execute(f"ALTER TABLE public.{table} {adds}")
             except Exception as exc:  # noqa: BLE001 -- recorded, retried; never a crash-loop
-                errors.append(f"{col.table}.{col.column}: {type(exc).__name__}: {exc}"[:300])
+                errors.append(f"{table}: {type(exc).__name__}: {exc}"[:300])
+                break
+            for c in cols:
+                self._schema["applied"].append(f"{c.table}.{c.column}")
+                logger.warning("gpu_pool_schema_healed column=%s.%s ddl=%r migration=%s",
+                               c.table, c.column, c.ddl, c.migration)
         still = await self.check_schema()
         self._db_missing = still
-        self._missing.update(still)          # before the flush: writes during it go to the overlay
+        self._missing.update(still)
         if still:
             self._schema["last_error"] = "; ".join(errors)[:1000] or "columns still missing"
             if self._schema["state"] != "degraded":
@@ -357,7 +370,8 @@ class PostgresStore:
                 [f"{t}.{c}" for t, c in still], self._schema["last_error"],
                 sorted({_BOOT_BY_KEY[k].migration for k in still}))
         else:
-            await self._flush_overlay()
+            async with self._heal_lock:
+                await self._flush_overlay()
             if self._schema["state"] == "degraded":
                 self._schema["healed_at"] = datetime.now(timezone.utc).isoformat()
                 logger.warning("gpu_pool_schema_recovered applied=%s", self._schema["applied"])
@@ -381,22 +395,21 @@ class PostgresStore:
                 logger.exception("gpu_pool_schema_heal_retry_failed")
 
     async def _flush_overlay(self) -> None:
-        """Write the in-memory values through, then stop overlaying. Loops because a write made
-        while a flush awaits lands in the overlay; the final empty check and the clear happen with
-        no await between them, so no later write can be lost."""
+        """Write the in-memory values through, then stop overlaying. Caller holds _heal_lock, so no
+        degraded write is between its overlay step and its SQL, and none starts until _missing is
+        cleared (after which writes carry the real columns). One transaction: all or nothing."""
         from psycopg.types.json import Jsonb
 
-        while self._overlay:
-            (table, key), values = next(iter(self._overlay.items()))
-            snapshot = dict(values)
-            cols = list(snapshot)
-            sets = ", ".join(f"{c}=%s" for c in cols)
-            args = [Jsonb(snapshot[c]) if isinstance(snapshot[c], dict) else snapshot[c] for c in cols]
-            async with self.pool.connection() as conn:
-                await conn.execute(f"UPDATE {table} SET {sets} WHERE {TABLE_KEYS[table]}=%s", [*args, key])
-            current = self._overlay.get((table, key))
-            if current is not None and current == snapshot:
-                del self._overlay[(table, key)]
+        if self._overlay:
+            async with self.pool.connection() as conn, conn.transaction():
+                for (table, key), values in list(self._overlay.items()):   # prune may pop meanwhile
+                    cols = list(values)
+                    sets = ", ".join(f"{c}=%s" for c in cols)
+                    args = [Jsonb(values[c]) if isinstance(values[c], dict) else values[c] for c in cols]
+                    # 0 rows = the row was pruned meanwhile; nothing to keep
+                    await conn.execute(f"UPDATE public.{table} SET {sets} WHERE {TABLE_KEYS[table]}=%s",
+                                       [*args, key])
+        self._overlay.clear()
         self._missing.clear()
 
     def _split(self, table: str, row: dict[str, Any]) -> list[str]:
@@ -425,7 +438,19 @@ class PostgresStore:
         out.update(self._overlay.get((table, row[TABLE_KEYS[table]]), {}))
         return out
 
+    async def _degraded_write(self, fn, *args):
+        """Every projection write goes through here. Healthy: straight through. Degraded: under
+        _heal_lock (see _init_schema_state), re-checked inside it, since a flush may have healed us
+        while this write waited."""
+        if not self._missing:
+            return await fn(*args)
+        async with self._heal_lock:
+            return await fn(*args)
+
     async def upsert_lease(self, row):
+        await self._degraded_write(self._upsert_lease, row)
+
+    async def _upsert_lease(self, row):
         cols = self._split("gpu_pool_leases", row)
         sets = ", ".join(f"{c}=EXCLUDED.{c}" for c in cols if c != "lease_id")
         sql = (f"INSERT INTO gpu_pool_leases ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))}) "
@@ -475,6 +500,9 @@ class PostgresStore:
         return [self._merge("gpu_pool_cards", r) for r in rows]
 
     async def upsert_card(self, row):
+        await self._degraded_write(self._upsert_card, row)
+
+    async def _upsert_card(self, row):
         from psycopg.types.json import Jsonb
 
         cols = self._split("gpu_pool_cards", row)
@@ -489,7 +517,9 @@ class PostgresStore:
         """The emergency stop (stage 5.7), all card rows in one statement: every row agrees, or none.
         Degraded (v3 columns missing): the stop still holds for this process via the overlay, and
         is written through when the columns arrive -- it is never refused."""
-        self._init_schema_state()
+        await self._degraded_write(self._set_actuation_paused, at, by, now, actor)
+
+    async def _set_actuation_paused(self, at, by, now, actor):
         if ("gpu_pool_cards", "actuation_paused_at") in self._missing:
             async with self.pool.connection() as conn:
                 cards = [r["card"] for r in await (await conn.execute("SELECT card FROM gpu_pool_cards")).fetchall()]

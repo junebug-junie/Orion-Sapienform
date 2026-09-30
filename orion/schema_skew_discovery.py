@@ -81,6 +81,11 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
         "orion-memory-consolidation",
         "validates the LLM draft, insert_pending_draft() stores it; hub routes validate it back",
     ),
+    "orion.schemas.orion_day:OrionDayLetterV1": (
+        "orion-durable-runs",
+        "orion_day graph persist node inserts the orion_day_letter row (app/orion_day_store.py); "
+        "hub reads it back via orion.orion_day.store.fetch_letter",
+    ),
     # No cross-service writer.
     "orion/attention/field_attention/policy.py": (None, "policy YAML the reader loads itself"),
     "orion.autonomy.models:CapabilityPolicyV1": (None, "capability policy YAML the reader loads itself"),

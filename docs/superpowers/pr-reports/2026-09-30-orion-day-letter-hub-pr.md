@@ -40,6 +40,7 @@ Before this PR, #2435 could write a letter, but nothing scheduled it, emailed it
 - `services/orion-hub/tests/test_orion_day_letter.py`: 50 tests.
 - `services/orion-hub/evals/run_orion_day_email_eval.py`, `evals/test_orion_day_email_eval.py`: the full-text eval.
 - `.github/workflows/orion-day-letter-hub-tests.yml`: CI.
+- `orion/schema_skew_discovery.py`: declares orion-durable-runs as the writer of `OrionDayLetterV1` (the schema-skew gate).
 
 ## Schema / bus / API changes
 
@@ -137,6 +138,8 @@ The code-review subagent reviewed `origin/feat/orion-day-letter-core..784c56bdf`
   - Naive datetimes are read as UTC.
   - `color-scheme` is set to `light`.
   - CI paths now include `main.py`, `settings.py` and `.env_example`, and the push trigger is path-filtered.
+
+CI fix: `tests/scripts/test_schema_skew_discovery.py` flagged `OrionDayLetterV1` as read by orion-hub with no declared writer. It is now declared in `orion/schema_skew_discovery.py::DECLARED_WRITERS`, with orion-durable-runs as the writer (the persist node inserts the row).
 
 ## Restart required
 

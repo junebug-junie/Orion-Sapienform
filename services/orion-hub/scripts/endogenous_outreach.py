@@ -536,6 +536,23 @@ class OutreachContext:
         )
 
 
+def outreach_retrieval_query(ctx: OutreachContext) -> Optional[str]:
+    """What recall searches for on an outreach turn: the talkable content Orion is
+    about to speak about (open priors, curiosity summaries, daydream -- the same
+    things `has_talkable_content` gates on), not the whole self-authored prompt.
+
+    None when there is none (a forced tension-only tick): recall then condenses
+    the prompt itself. Recall retrieval design phase 3, PR #2423 review.
+    """
+    from orion.cognition.recall_query import cap_retrieval_query
+
+    parts = [str(p) for p in ctx.open_prior_previews] + [str(c) for c in ctx.curiosity_summaries]
+    if ctx.daydream:
+        parts.append(str(ctx.daydream[1]))
+    parts = [" ".join(p.split()) for p in parts]
+    return cap_retrieval_query("; ".join(p for p in parts if p))
+
+
 def has_talkable_content(ctx: OutreachContext) -> bool:
     """True when the context has something meaningful to speak *about*.
 
@@ -1932,7 +1949,11 @@ class EndogenousOutreach:
         grounding = grounding_summary(ctx)
 
         correlation_id = str(uuid4())
-        raw_text, gen_debug = await self._generate(prompt, session_id, correlation_id)
+        retrieval_query = outreach_retrieval_query(ctx)
+        raw_text, gen_debug = await self._generate(
+            prompt, session_id, correlation_id,
+            **({"retrieval_query": retrieval_query} if retrieval_query else {}),
+        )
         # _generate() may have fallen back to a SECOND attempt on a fresh
         # correlation_id (agent-lane timeout -> chat retry, see its own
         # docstring) -- gen_debug["correlation_id"] names whichever attempt
@@ -2363,7 +2384,8 @@ class EndogenousOutreach:
         )
 
     async def _generate(
-        self, prompt: str, session_id: str, correlation_id: str
+        self, prompt: str, session_id: str, correlation_id: str,
+        retrieval_query: Optional[str] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """Real unified-turn generation -- see module docstring's "THROUGH THE
         REAL UNIFIED TURN, NOT A LOOKALIKE" section. Returns ("", debug) on
@@ -2424,6 +2446,7 @@ class EndogenousOutreach:
             correlation_id=correlation_id,
             fcc_model_label=AGENT_ROUTE_FCC_MODEL_LABEL,
             timeout_sec=self.agent_lane_timeout_sec,
+            retrieval_query=retrieval_query,
         )
         debug["lane"] = "agent"
         debug["correlation_id"] = correlation_id
@@ -2453,6 +2476,7 @@ class EndogenousOutreach:
             correlation_id=fallback_correlation_id,
             fcc_model_label=None,
             timeout_sec=self.timeout_sec,
+            retrieval_query=retrieval_query,
         )
         fb_debug["lane"] = "chat_fallback"
         fb_debug["correlation_id"] = fallback_correlation_id
@@ -2517,6 +2541,7 @@ class EndogenousOutreach:
         correlation_id: str,
         fcc_model_label: Optional[str],
         timeout_sec: float,
+        retrieval_query: Optional[str] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """One execute_unified_turn attempt. Returns ("", debug) on any
         failure, defer, timeout, or degraded run -- see _generate()'s own
@@ -2543,6 +2568,7 @@ class EndogenousOutreach:
                     correlation_id=correlation_id,
                     session_id=session_id,
                     user_message=prompt,
+                    retrieval_query=retrieval_query,
                     payload=request_payload,
                     continuity_messages=None,
                     harness_rpc_bus=self._harness_rpc_bus or self._bus,

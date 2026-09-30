@@ -3235,8 +3235,12 @@ class CuriosityInvestigation:
 
         `retrieval_query` is what recall searches for: the run's standing
         question, carried durably on the run's brief / turn request. When a run
-        does not carry one, the Mind appraisal (in-memory, lost on a Hub
-        restart) is used instead, then None (recall condenses the prompt)."""
+        does not carry one it is None and recall condenses the prompt itself.
+        Never the Mind appraisal: at kickoff that is `build_investigation_subject`
+        boilerplate ("Investigation claim: not yet chosen."), and sending it would
+        label boilerplate as a caller query in recall telemetry (PR #2423 review).
+        Every real standing question -- the self-inquiry question, the urgent
+        seed's question, the continuation note -- is already on the brief."""
         if self._bus is None:
             return "", {"error": "no_bus"}
         from orion.cognition.cortex_payload_extract import looks_like_error_text
@@ -3256,7 +3260,7 @@ class CuriosityInvestigation:
             # Queue score is read inside turn_orchestrator from FieldState
             # (official digester meter — no Hub EWMA). Each hint fails open.
             await self._attach_role_teach_progress_hints(payload, parent_run_id)
-        turn_retrieval_query = cap_retrieval_query(retrieval_query) or cap_retrieval_query(appraisal)
+        turn_retrieval_query = cap_retrieval_query(retrieval_query)
         try:
             frames = await asyncio.wait_for(
                 execute_unified_turn(
@@ -3570,12 +3574,16 @@ class CuriosityInvestigation:
             reach_out_why=outcome.reach_out_why,
             hop_notes=notes,
         )
+        # Recall searches the finding Orion is composing about, not the
+        # composition prompt (recall retrieval design phase 3, PR #2423 review).
+        outreach_query = cap_retrieval_query(" ".join(str(finding_text or "").split()))
         text, debug = await self._generate(
             prompt,
             correlation_id,
             source=OUTREACH_TAG,
             require_lookup=False,
             gpu_lease=gpu_lease,
+            **({"retrieval_query": outreach_query} if outreach_query else {}),
         )
         if not text:
             logger.info("curiosity_outreach_no_text run=%s debug=%s", run_id, debug)

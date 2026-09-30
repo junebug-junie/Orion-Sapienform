@@ -127,25 +127,31 @@ def test_retrieval_query_survives_a_hub_restart() -> None:
     assert captured["mind_appraisal_text"] is None  # the dict really was empty
 
 
-def test_turn_without_brief_query_falls_back_to_the_appraisal_then_none() -> None:
+def test_turn_without_a_standing_question_sends_none_not_the_boilerplate_appraisal() -> None:
+    """PR #2423 review: a fresh kickoff's appraisal is build_investigation_subject
+    boilerplate. Sending it would read as retrieval_query_source='caller' in recall
+    telemetry while carrying no question. No standing question -> None."""
+    from orion.curiosity.investigation_subject import build_investigation_subject
+
     loop = _loop(_CortexBus(), kickoff_via_cortex=True)
-    loop._mind_appraisal_by_run_id[RUN] = "Orion investigation subject (self-authored).\nContinue note: x"
+    loop._mind_appraisal_by_run_id[RUN] = build_investigation_subject(claim=None, continue_note=None)
     captured = _real_generate_turn(
         loop,
         CuriosityTurnRequestV1(
             run_id=RUN, correlation_id="corr-a", prompt="p", timeout_sec=60.0, source_tag=INVESTIGATION_TAG
         ),
     )
-    assert captured["retrieval_query"] == loop._mind_appraisal_by_run_id[RUN]
-
-    fresh = _loop(_CortexBus(), kickoff_via_cortex=True)
-    captured = _real_generate_turn(
-        fresh,
-        CuriosityTurnRequestV1(
-            run_id=RUN, correlation_id="corr-b", prompt="p", timeout_sec=60.0, source_tag=INVESTIGATION_TAG
-        ),
-    )
     assert captured["retrieval_query"] is None
+    # The appraisal still reaches Mind/stance as before -- only recall's query changed.
+    assert captured["mind_appraisal_text"] == loop._mind_appraisal_by_run_id[RUN]
+
+
+def test_fresh_investigation_kickoff_sends_no_caller_query_end_to_end() -> None:
+    """Kickoff with no continuation note, in-process: the turn gets None."""
+    bus = _FakeBus()
+    loop = _loop(bus, kickoff_via_cortex=False)
+    assert asyncio.run(loop.tick()) is None
+    assert "retrieval_query" not in loop.seen_generate_kwargs
 
 
 def test_brief_query_wins_over_the_appraisal() -> None:

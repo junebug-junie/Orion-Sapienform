@@ -27,7 +27,7 @@ from app.services.emit_sql import build_sql_envelopes
 from app.services.pipeline import run_world_pulse
 from app.services.source_registry import load_source_registry
 from app.settings import settings
-from app.services.renderers import render_email_digest, render_hub_digest
+from app.services.renderers import render_hub_digest
 from orion.core.bus.bus_schemas import ServiceRef
 
 
@@ -73,15 +73,6 @@ def main() -> int:
     if result.digest is None:
         print("FAIL: digest missing")
         return 1
-
-    email = render_email_digest(
-        result.digest,
-        subject_prefix="Orion Daily World Pulse",
-        to=[],
-        from_email=None,
-        dry_run=True,
-    )
-    checks.append(("email_preview_rendered", bool(email.subject and email.plaintext_body)))
 
     hub = render_hub_digest(result.digest)
     checks.append(("hub_message_payload_generated", bool(hub.message_id and hub.rendered_markdown)))

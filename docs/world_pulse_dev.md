@@ -20,8 +20,6 @@ python -m pip install -r services/orion-world-pulse/requirements.txt
 WORLD_PULSE_ENABLED=true \
 WORLD_PULSE_DRY_RUN=true \
 WORLD_PULSE_FETCH_ENABLED=true \
-WORLD_PULSE_EMAIL_ENABLED=false \
-WORLD_PULSE_EMAIL_DRY_RUN=true \
 WORLD_PULSE_GRAPH_ENABLED=false \
 WORLD_PULSE_GRAPH_DRY_RUN=true \
 WORLD_PULSE_STANCE_ENABLED=false \
@@ -50,7 +48,6 @@ python scripts/world_pulse_integration_smoke.py --dry-run --approved-sources
 ## Keep side effects disabled
 
 ```bash
-WORLD_PULSE_EMAIL_ENABLED=false
 WORLD_PULSE_GRAPH_ENABLED=false
 WORLD_PULSE_STANCE_ENABLED=false
 ACTIONS_WORLD_PULSE_ENABLED=false
@@ -142,7 +139,7 @@ Browser access must continue through Hub or a Tailscale path proxy; do not expos
 
 - `articles_accepted` is the evidence layer and may be large.
 - Situation tracking consolidates articles into topic/cluster updates before human digest rendering.
-- Human-facing digest cards are curated and capped by `digest_policy` so Hub/email are readable.
+- Human-facing digest cards are curated and capped by `digest_policy` so Hub cards are readable.
 - `accepted_article_count` can be much larger than `len(digest.items)` by design.
 
 ## Curation and consolidation policy
@@ -157,7 +154,7 @@ Browser access must continue through Hub or a Tailscale path proxy; do not expos
 
 - Tune policies in `config/world_pulse/sources.yaml` under `digest_policy` / `situation_policy`.
 - Inspect `run.metrics.article_clusters`, `run.metrics.digest_items`, and `digest.section_rollups` to compare evidence volume vs curated output.
-- Keep side effects disabled during iteration (`WORLD_PULSE_EMAIL_ENABLED=false`, `WORLD_PULSE_GRAPH_ENABLED=false`, `WORLD_PULSE_STANCE_ENABLED=false`, scheduler off).
+- Keep side effects disabled during iteration (`WORLD_PULSE_GRAPH_ENABLED=false`, `WORLD_PULSE_STANCE_ENABLED=false`, scheduler off).
 
 ## Deterministic topic clustering
 
@@ -190,8 +187,6 @@ WORLD_PULSE_DRY_RUN=false
 WORLD_PULSE_FETCH_ENABLED=true
 WORLD_PULSE_SQL_ENABLED=true
 WORLD_PULSE_HUB_MESSAGES_ENABLED=true
-WORLD_PULSE_EMAIL_ENABLED=false
-WORLD_PULSE_EMAIL_DRY_RUN=true
 WORLD_PULSE_GRAPH_ENABLED=false
 WORLD_PULSE_GRAPH_DRY_RUN=true
 WORLD_PULSE_STANCE_ENABLED=false
@@ -208,12 +203,11 @@ curl -sS -X POST http://127.0.0.1:8080/api/world-pulse/run \
   -d '{"requested_by":"hub"}'
 curl -sS http://127.0.0.1:8080/api/world-pulse/latest
 curl -sS -X POST http://127.0.0.1:8080/api/world-pulse/api/world-pulse/runs/<run_id>/publish-hub-message
-curl -sS -X POST http://127.0.0.1:8080/api/world-pulse/api/world-pulse/runs/<run_id>/publish-email
 ```
 
 Expected safety behavior:
 - Hub message publish: `published` on `hub.messages.create.v1` (messages rail).
-- Email publish endpoint: `status=skipped` (preview rail remains disabled for sends).
+- There is no World Pulse email path (retired 2026-09-30; the `publish-email` route, `WORLD_PULSE_EMAIL_*` keys, and `EmailWorldPulseRenderV1` were removed). The news digest reaches Juniper by email only through orion-actions' Journal Pass (`trigger_kind=world_pulse_digest`).
 - RDF write remains off (`WORLD_PULSE_GRAPH_ENABLED=false`), with dry-run setting available for explicit graph-plan inspection.
 - Scheduler and stance remain off.
 
@@ -240,7 +234,6 @@ If you need to immediately disable durable side effects and return to safe dry m
 WORLD_PULSE_DRY_RUN=true
 WORLD_PULSE_SQL_ENABLED=false
 WORLD_PULSE_HUB_MESSAGES_ENABLED=false
-WORLD_PULSE_EMAIL_ENABLED=false
 WORLD_PULSE_GRAPH_ENABLED=false
 WORLD_PULSE_STANCE_ENABLED=false
 ACTIONS_WORLD_PULSE_ENABLED=false

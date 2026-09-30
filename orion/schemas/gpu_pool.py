@@ -145,6 +145,8 @@ class GpuPoolEventV1(BaseModel):
         "admitted", "queued", "granted", "backlogged", "recalled", "aborted", "expired",
         "retried", "dead_lettered", "replayed", "released", "unavailable", "cancelled",
         "swap_requested", "swap_started", "swapped", "swap_failed", "actuate_refused", "lent", "unlent", "discovery_mismatch", "discovery_confirmed",
+        # stage 5.7: the emergency stop (control verbs pause_actuation / resume_actuation)
+        "actuation_paused", "actuation_resumed",
     ]
     lease_id: str | None = None
     holder: str | None = None
@@ -231,7 +233,7 @@ class GpuPoolStateV1(BaseModel):
 
     schema_version: Literal["gpu_pool.state.v1"] = GPU_POOL_STATE_KIND
     generated_at: datetime = Field(default_factory=_now)
-    mode: Literal["observe", "enforce"] = "observe"
+    mode: Literal["observe", "enforce"] = "enforce"
     config_digest: str
     host: str | None = None   # config ``host.name``: the node whose cards these are (stage 5.5 labels)
     cards: list[GpuCardStateV1]
@@ -246,6 +248,9 @@ class GpuPoolStateV1(BaseModel):
     # (priority -> reason), reasons (each with precedence, blocks, active, effective, sources).
     # Empty from a pool that predates it.
     shed: dict[str, Any] = Field(default_factory=dict)
+    # Stage 5.7 emergency stop: None while the pool actuates; {"paused": true, "since", "by"} after
+    # control verb pause_actuation (persisted; survives a restart) until resume_actuation.
+    actuation_paused: dict[str, Any] | None = None
     # Filled only on request (GpuPoolStateRequestV1), never on the periodic broadcast:
     config: dict[str, Any] | None = None          # parsed config/gpu_pool.yaml (the Hub picture)
     config_yaml: str | None = None                # the file as written (the Hub "raw YAML" view)
@@ -269,7 +274,10 @@ class GpuPoolControlV1(BaseModel):
 
     # clear_fault (stage 4.3): take `card` out of swap_state=fault. The pool reconciles with the
     # actuator (`status`) and adopts what it reports; with no answer it settles from discovery.
-    verb: Literal["lend", "unlend", "replay", "cancel", "backfill", "hold", "release", "clear_fault"]
+    # pause_actuation / resume_actuation (stage 5.7): the one emergency stop for every model load and
+    # unload, persisted on gpu_pool_cards. An action already in flight finishes; nothing new starts.
+    verb: Literal["lend", "unlend", "replay", "cancel", "backfill", "hold", "release", "clear_fault",
+                  "pause_actuation", "resume_actuation"]
     card: str | None = None
     lease_id: str | None = None
     backfill: dict[str, Any] | None = None

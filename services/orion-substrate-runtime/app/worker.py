@@ -60,6 +60,10 @@ from orion.substrate.transport_loop.constants import (
     TRANSPORT_BUS_PROJECTION_ID,
     TRANSPORT_GRAMMAR_CURSOR_NAME,
 )
+from orion.field.transport_thresholds import (
+    DERIVED_CHANNELS as TRANSPORT_DERIVED_CHANNELS,
+    record_sample as record_transport_sample,
+)
 from orion.substrate.prediction_error import (
     CodebaseMassBaseline,
     biometrics_prediction_error,
@@ -1913,6 +1917,15 @@ class BiometricsSubstrateWorker:
                 error=error,
                 now=now,
                 reducer_key="bus_synaptic",
+            )
+            # Fold the reading into the transport lane's EWMA baseline (fast +
+            # slow clocks) that the hub lattice tab and recall resolver read.
+            # Stored on the channel's own scale (capability:transport.pressure).
+            # Fail-open; the tick never depends on it.
+            record_transport_sample(
+                "bus_synaptic_pressure",
+                error * TRANSPORT_DERIVED_CHANNELS["bus_synaptic_pressure"],
+                self._settings.orion_bus_url,
             )
             logger.info(
                 "substrate_bus_synaptic_tick_completed edge_count=%d error=%.3f",

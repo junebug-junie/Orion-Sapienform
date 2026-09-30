@@ -86,7 +86,8 @@ class _PoolSideBus:
 
 
 class InProcessPool:
-    def __init__(self, *, clock: Clock | None = None, down=(), live=None, actuate=()):
+    def __init__(self, *, clock: Clock | None = None, down=(), live=None, can_load: bool = False,
+                 mode: str = "observe"):
         self.clock = clock or Clock()
         self.down = set(down)
         self.live = dict(live or LIVE)
@@ -106,9 +107,12 @@ class InProcessPool:
 
         self.rt = PoolRuntime(cfg=CFG, profiles=PROFILES, store=MemoryStore(),
                               graph=build_lease_graph(lambda: CFG, MemorySaver()), bus=_PoolSideBus(self),
-                              prober=prober, now=self.clock, probe_interval_sec=0, actuate_roles=actuate)
-        if actuate:
-            # Guards read clear (cabinet cool, visual baseline not overdue): the pool may load.
+                              prober=prober, now=self.clock, probe_interval_sec=0, mode=mode)
+        # Stage 5.7: every seat with a launch block is actuated (no list). ``can_load`` reads the swap
+        # guards clear (cabinet cool); otherwise they stay unread and block every load, so a fixture
+        # without an actuator never sends one. mode=enforce (production) sends a boot `status` per seat,
+        # which a test's actuator must answer; observe (default here) sends none.
+        if can_load:
             self.rt.guard_states = {name: None for name in self.rt.guard_states}
 
     async def announce(self):

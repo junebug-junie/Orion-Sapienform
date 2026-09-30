@@ -1,8 +1,9 @@
-"""The scheduled-workflow RPC wait must outlast a full compactor pass.
+"""The scheduled-workflow RPC wait covers the synchronous part of a compactor dispatch only.
 
-Before: _dispatch_scheduled_workflow waited ACTIONS_EXEC_TIMEOUT_SECONDS (420s)
-while one github_compactor_pass could take fetch (300s) + a 660s digest call,
-so a still-running pass was recorded failed and retried.
+History: the wait was 420s (too short: fetch + a 660s digest call), then 3600s while the whole
+map-reduce digest ran inside the RPC (PR #2422), blocking the serial scheduler for up to an hour.
+Now the digest runs as a ``compactor.digest`` durable run and orch replies ``accepted`` once it is
+registered, so the wait only needs the fetch plus the durable receipts.
 """
 from __future__ import annotations
 
@@ -10,10 +11,11 @@ import ast
 import re
 from pathlib import Path
 
-from orion.cognition.compactor.constants import COMPACTOR_DIGEST_TOTAL_BUDGET_SEC
+from orion.cognition.compactor.constants import COMPACTOR_MAX_RUN_GENERATIONS
 from orion.cognition.github_compactor.constants import GITHUB_FETCH_ORCH_RPC_TIMEOUT_SEC
 
 SERVICE = Path(__file__).resolve().parents[1]
+RECEIPT_TIMEOUT_SEC = 10.0   # CORTEX_DURABLE_RECEIPT_TIMEOUT_SEC default (cortex-orch)
 
 
 def _default(alias: str) -> float:
@@ -30,10 +32,13 @@ def _env_example(key: str) -> float:
     raise AssertionError(key)
 
 
-def test_workflow_dispatch_timeout_exceeds_compactor_worst_case() -> None:
-    worst = GITHUB_FETCH_ORCH_RPC_TIMEOUT_SEC + COMPACTOR_DIGEST_TOTAL_BUDGET_SEC
-    assert _default("ACTIONS_WORKFLOW_DISPATCH_TIMEOUT_SECONDS") > worst
-    assert _env_example("ACTIONS_WORKFLOW_DISPATCH_TIMEOUT_SECONDS") > worst
+def test_workflow_dispatch_timeout_covers_fetch_and_receipts_but_not_the_digest() -> None:
+    worst_sync = GITHUB_FETCH_ORCH_RPC_TIMEOUT_SEC + COMPACTOR_MAX_RUN_GENERATIONS * RECEIPT_TIMEOUT_SEC
+    for value in (_default("ACTIONS_WORKFLOW_DISPATCH_TIMEOUT_SECONDS"),
+                  _env_example("ACTIONS_WORKFLOW_DISPATCH_TIMEOUT_SECONDS")):
+        assert value > worst_sync
+        # Not sized to the digest any more: it must not block the serial scheduler for an hour.
+        assert value <= 900
 
 
 def test_scheduled_workflow_dispatch_uses_workflow_timeout() -> None:
@@ -45,6 +50,5 @@ def test_scheduled_workflow_dispatch_uses_workflow_timeout() -> None:
     src = ast.unparse(fn)
     assert "scheduled_workflow_dispatch_timeout_sec(entry.workflow_id)" in src
     main_src = (SERVICE / "app" / "main.py").read_text(encoding="utf-8")
-    # Only compactor passes get the long wait; claims are not reaped mid-dispatch.
     assert 'LONG_RUNNING_SCHEDULED_WORKFLOWS = frozenset({"github_compactor_pass", "chat_history_compactor_pass"})' in main_src
     assert "claim_ttl_seconds=int(max(300.0, settings.actions_workflow_dispatch_timeout_seconds + 60.0))" in main_src

@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
-from app.runtime import STATUS_POLL_SEC, STATUS_REPLY_SEC, PoolRuntime, validate_actuate_roles
+from app.runtime import STATUS_POLL_SEC, STATUS_REPLY_SEC, PoolRuntime
 from app.store import MemoryStore
 from orion.gpu_pool.config import launch_digest
 from orion.gpu_pool.discovery import Probe
@@ -30,7 +30,10 @@ class World:
         self.up = set(LIVE) | {"world", "diffusion"}
 
 
-def make(actuate=(SEAT,), store=None, saver=None, clock=None, world=None, bus=None, guards=CLEAR_GUARDS):
+def make(store=None, saver=None, clock=None, world=None, bus=None, guards=CLEAR_GUARDS, mode="observe"):
+    """mode=observe by default: these tests pin the actuation engine itself, and several adopt a seat
+    "loaded by the old path" through observe's liveness shortcut. Stage 5.7's enforce behaviour (boot
+    reconcile, operator holds, the pause) is in tests/test_stage5_7_enforce.py."""
     clock = clock or Clock()
     world = world or World()
 
@@ -46,7 +49,7 @@ def make(actuate=(SEAT,), store=None, saver=None, clock=None, world=None, bus=No
 
     rt = PoolRuntime(cfg=CFG, profiles=PROFILES, store=store or MemoryStore(),
                      graph=build_lease_graph(lambda: CFG, saver or MemorySaver()), bus=bus or FakeBus(),
-                     prober=prober, now=clock, probe_interval_sec=0, actuate_roles=actuate)
+                     prober=prober, now=clock, probe_interval_sec=0, mode=mode)
     rt.guard_states = dict(guards)
     rt._world = world
     return rt, clock
@@ -100,7 +103,7 @@ async def result(rt, msg, status, **kw):
 # --- holds ------------------------------------------------------------------------------------
 def test_hold_is_granted_with_the_hold_ttl_and_status_reads_it():
     async def go():
-        rt, clock = make(actuate=())
+        rt, clock = make()
         await boot(rt)
         h = await rt.acquire(hold("run1:1"))
         assert h.status == "granted" and h.grant.role == "agent"
@@ -115,7 +118,7 @@ def test_hold_is_granted_with_the_hold_ttl_and_status_reads_it():
 
 def test_attach_runs_in_the_holds_slot_and_never_takes_a_second():
     async def go():
-        rt, _ = make(actuate=())
+        rt, _ = make()
         await boot(rt)
         h = await rt.acquire(hold("run1:1"))
         c = await rt.attach(attach(h, "call-1", turn_correlation_id="t1"))
@@ -135,7 +138,7 @@ def test_attach_runs_in_the_holds_slot_and_never_takes_a_second():
 
 def test_attach_refuses_a_stale_or_missing_hold():
     async def go():
-        rt, _ = make(actuate=())
+        rt, _ = make()
         await boot(rt)
         h = await rt.acquire(hold("run1:1"))
         stale = await rt.attach(attach(h, "c-stale", generation=h.grant.generation + 1))
@@ -155,7 +158,7 @@ def test_attach_refuses_a_stale_or_missing_hold():
 
 def test_gap_sharing_is_by_priority():
     async def go():
-        rt, _ = make(actuate=())
+        rt, _ = make()
         await boot(rt)
         h = await rt.acquire(hold("run1:1"))            # background hold, no call in flight
         bg = await rt.acquire(acq("agent", priority="background"))
@@ -173,7 +176,7 @@ def test_gap_sharing_is_by_priority():
 
 def test_recall_gives_the_hold_grace_then_aborts_and_requeues_the_same_lease():
     async def go():
-        rt, clock = make(actuate=())
+        rt, clock = make()
         await boot(rt)
         await rt.control(GpuPoolControlV1(verb="lend", card="gpu0"))
         home = await rt.acquire(hold("run-home:1"))
@@ -199,7 +202,7 @@ def test_recall_gives_the_hold_grace_then_aborts_and_requeues_the_same_lease():
 
 def test_hold_expires_after_missed_heartbeats_then_is_regranted_with_a_new_generation():
     async def go():
-        rt, clock = make(actuate=())
+        rt, clock = make()
         await boot(rt)
         h = await rt.acquire(hold("run1:1"))
         await step(rt, clock, CFG.defaults.hold_lease_ttl_sec + 1)      # durable-runs is dead
@@ -216,10 +219,10 @@ def test_hold_expires_after_missed_heartbeats_then_is_regranted_with_a_new_gener
 def test_restart_resumes_a_hold_by_lease_id():
     async def go():
         store, saver, clock = MemoryStore(), MemorySaver(), Clock()
-        rt1, _ = make(actuate=(), store=store, saver=saver, clock=clock)
+        rt1, _ = make(store=store, saver=saver, clock=clock)
         await boot(rt1)
         h = await rt1.acquire(hold("run1:1"))
-        rt2, _ = make(actuate=(), store=store, saver=saver, clock=clock)
+        rt2, _ = make(store=store, saver=saver, clock=clock)
         await boot(rt2)
         st = await rt2.status(h.lease_id)
         assert st.status == "granted" and st.grant.generation == h.grant.generation
@@ -238,22 +241,27 @@ async def demand_gpu2(rt, clock):
     return home, waiting
 
 
-def test_actuation_is_off_unless_the_role_is_listed():
+def test_paused_actuation_reports_the_load_instead_of_sending_it():
     async def go():
-        rt, clock = make(actuate=())
+        rt, clock = make()
         await boot(rt)
+        assert (await rt.control(GpuPoolControlV1(verb="pause_actuation", actor="juniper"))).ok
         await demand_gpu2(rt, clock)
         assert actuations(rt) == []
         [s] = rt.bus.events("swap_requested")
-        assert s["detail"]["actuated"] is False and rt.cards["gpu2"].swap_state == "idle"
+        assert s["reason"] == "actuation_paused" and s["detail"]["wanted"] == "demand"
+        assert s["detail"]["actuated"] is False and s["detail"]["paused"] is True
+        assert rt.cards["gpu2"].swap_state == "idle"
     run(go())
 
 
-def test_actuate_roles_are_validated_at_boot():
-    assert validate_actuate_roles(CFG, ["agent-gpu2", " "]) == frozenset({"agent-gpu2"})
-    for bad in (["agent"], ["experiment"], ["nope"]):
-        with pytest.raises(ValueError):
-            validate_actuate_roles(CFG, bad)
+def test_the_actuated_seats_come_from_launch_blocks_alone():
+    """Stage 5.7: no GPU_POOL_ACTUATE_ROLES list -- a seat is actuated iff it has a launch block."""
+    rt, _ = make()
+    assert rt.actuated == frozenset({SEAT}) == CFG.actuated_seats()
+    assert "experiment" not in rt.actuated and CFG.roles["experiment"].launch is None
+    with pytest.raises(ValueError):
+        make(mode="observ")
 
 
 def test_load_success_path_then_grant_on_the_seat():
@@ -408,16 +416,19 @@ def test_unanswered_status_faults_the_card():
     run(go())
 
 
-def test_pool_restart_mid_load_sends_status_never_a_second_transition():
+@pytest.mark.parametrize("mode", ["observe", "enforce"])
+def test_pool_restart_mid_load_sends_status_never_a_second_transition(mode):
+    """enforce too (stage 5.7): the idle-seat boot reconcile leaves a card mid-action to the pending
+    reconcile -- still exactly one status on the restart, never a second transition."""
     async def go():
         store, saver, clock = MemoryStore(), MemorySaver(), Clock()
-        rt1, _ = make(store=store, saver=saver, clock=clock)
+        rt1, _ = make(store=store, saver=saver, clock=clock, mode=mode)
         await boot(rt1)
         await demand_gpu2(rt1, clock)
-        [msg] = actuations(rt1)
+        [msg] = [m for m in actuations(rt1) if m.action == "load"]
         await result(rt1, msg, "accepted")
         bus2 = FakeBus()
-        rt2, _ = make(store=store, saver=saver, clock=clock, bus=bus2)
+        rt2, _ = make(store=store, saver=saver, clock=clock, bus=bus2, mode=mode)
         await rt2.start()
         sent = actuations(rt2)
         assert [(m.action, m.role) for m in sent] == [("status", SEAT)]
@@ -498,7 +509,7 @@ def test_max_hold_recall_past_its_grace_requeues_the_hold_in_place_without_spend
 
 def test_three_owner_recalls_past_grace_never_dead_letter_a_hold():
     async def go():
-        rt, clock = make(actuate=())
+        rt, clock = make()
         await boot(rt)
         await rt.control(GpuPoolControlV1(verb="lend", card="gpu0"))
         home = await rt.acquire(hold("run-home:1"))
@@ -662,14 +673,15 @@ async def overdue(rt, clock, home):
     return msg
 
 
-def test_restart_before_the_ack_with_a_running_actuator_is_not_unreachable():
+@pytest.mark.parametrize("mode", ["observe", "enforce"])
+def test_restart_before_the_ack_with_a_running_actuator_is_not_unreachable(mode):
     async def go():
         store, saver, clock = MemoryStore(), MemorySaver(), Clock()
-        rt1, _ = make(store=store, saver=saver, clock=clock)
+        rt1, _ = make(store=store, saver=saver, clock=clock, mode=mode)
         await boot(rt1)
         home, _ = await demand_gpu2(rt1, clock)
-        [load] = actuations(rt1)                                  # no ack before the pool dies
-        rt2, _ = make(store=store, saver=saver, clock=clock, bus=FakeBus())
+        [load] = [m for m in actuations(rt1) if m.action == "load"]   # no ack before the pool dies
+        rt2, _ = make(store=store, saver=saver, clock=clock, bus=FakeBus(), mode=mode)
         rt2._world.up.discard("diffusion")
         await rt2.start()
         [status] = actuations(rt2)
@@ -787,7 +799,7 @@ def test_operator_clear_of_a_fault_whose_seat_left_the_yaml_settles_from_discove
 
 def test_attach_never_hands_back_another_lease_and_is_never_retryable():
     async def go():
-        rt, _ = make(actuate=())
+        rt, _ = make()
         await boot(rt)
         h = await rt.acquire(hold("run1:1"))
         clash = await rt.attach(attach(h, "run1:1"))           # the hold's own request_id

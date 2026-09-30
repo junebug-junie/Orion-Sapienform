@@ -105,20 +105,20 @@ class Settings(BaseSettings):
     actions_journal_llm_route: str | None = Field(None, alias="ACTIONS_JOURNAL_LLM_ROUTE")
     actions_exec_timeout_seconds: float = Field(240.0, alias="ACTIONS_EXEC_TIMEOUT_SECONDS")
     # RPC wait for a SCHEDULED compactor workflow dispatch (LONG_RUNNING_SCHEDULED_WORKFLOWS in main.py).
-    # Separate from ACTIONS_EXEC_TIMEOUT_SECONDS (single skill/journal calls):
-    # a compactor pass is fetch (<=300s) + map-reduce digest calls bounded by
-    # COMPACTOR_DIGEST_TOTAL_BUDGET_SEC (3000s), so the old 420s wait gave up on
-    # runs that were still working and then retried them.
-    actions_workflow_dispatch_timeout_seconds: float = Field(3600.0, alias="ACTIONS_WORKFLOW_DISPATCH_TIMEOUT_SECONDS")
+    # Covers only the synchronous part: the fetch (GitHub PR walk <=300s) and registering the
+    # compactor.digest durable run (<=10s receipt per generation). The LLM digest runs in that durable
+    # run and its terminal orion:durable:run:state row settles the schedule run, so this is no longer
+    # sized to the digest (it was 3600s while the digest ran inside the RPC).
+    actions_workflow_dispatch_timeout_seconds: float = Field(600.0, alias="ACTIONS_WORKFLOW_DISPATCH_TIMEOUT_SECONDS")
     actions_daily_timezone: str = Field("America/Denver", alias="ACTIONS_DAILY_TIMEZONE")
     actions_daily_run_on_startup: bool = Field(False, alias="ACTIONS_DAILY_RUN_ON_STARTUP")
     actions_daily_run_once_date: str | None = Field(None, alias="ACTIONS_DAILY_RUN_ONCE_DATE")
 
-    actions_daily_pulse_enabled: bool = Field(True, alias="ACTIONS_DAILY_PULSE_ENABLED")
+    actions_daily_pulse_enabled: bool = Field(False, alias="ACTIONS_DAILY_PULSE_ENABLED")
     actions_daily_pulse_hour_local: int = Field(8, alias="ACTIONS_DAILY_PULSE_HOUR_LOCAL")
     actions_daily_pulse_minute_local: int = Field(30, alias="ACTIONS_DAILY_PULSE_MINUTE_LOCAL")
 
-    actions_daily_metacog_enabled: bool = Field(True, alias="ACTIONS_DAILY_METACOG_ENABLED")
+    actions_daily_metacog_enabled: bool = Field(False, alias="ACTIONS_DAILY_METACOG_ENABLED")
     actions_daily_metacog_hour_local: int = Field(20, alias="ACTIONS_DAILY_METACOG_HOUR_LOCAL")
     actions_daily_metacog_minute_local: int = Field(15, alias="ACTIONS_DAILY_METACOG_MINUTE_LOCAL")
 
@@ -130,7 +130,9 @@ class Settings(BaseSettings):
     actions_daily_goal_archive_minute_local: int = Field(15, alias="ACTIONS_DAILY_GOAL_ARCHIVE_MINUTE_LOCAL")
     actions_async_messages_enabled: bool = Field(True, alias="ACTIONS_ASYNC_MESSAGES_ENABLED")
     actions_daily_async_messages_enabled: bool = Field(True, alias="ACTIONS_DAILY_ASYNC_MESSAGES_ENABLED")
-    actions_daily_email_enabled: bool = Field(True, alias="ACTIONS_DAILY_EMAIL_ENABLED")
+    # Retired 2026-09-30: the raw-JSON "Daily Pulse"/"Daily Metacog" emails are no longer
+    # sent. Generation, self-experiment enqueue, and in-app copies are unaffected.
+    actions_daily_email_enabled: bool = Field(False, alias="ACTIONS_DAILY_EMAIL_ENABLED")
     actions_pending_attention_enabled: bool = Field(True, alias="ACTIONS_PENDING_ATTENTION_ENABLED")
     actions_preserve_generic_notify_enabled: bool = Field(True, alias="ACTIONS_PRESERVE_GENERIC_NOTIFY_ENABLED")
     actions_world_pulse_enabled: bool = Field(False, alias="ACTIONS_WORLD_PULSE_ENABLED")

@@ -239,6 +239,23 @@ def test_non_operator_swap_seat_without_launch_is_refused():
         PoolConfig.model_validate(data)
 
 
+def test_actuated_seats_are_exactly_the_swap_seats_with_a_launch_block():
+    """Stage 5.7: GPU_POOL_ACTUATE_ROLES is deleted; the YAML alone says what the pool may actuate."""
+    assert CFG.actuated_seats() == frozenset({"agent-gpu2"})
+    assert CFG.not_actuatable_reason("experiment") == "not_actuatable:experiment"
+    assert all(CFG.not_actuatable_reason(c) is None for c in CFG.classes if c != "experiment")
+    assert CFG.not_actuatable_reason("no-such-class") is None
+    # giving experiment a launch (and every resident one) would make it actuated, and holdable
+    data = copy.deepcopy(RAW)
+    launch = data["roles"]["agent-gpu2"]["launch"]
+    for role in CFG.evicted_by("experiment") + ["experiment"]:
+        data["roles"][role]["launch"] = {**launch, "service": f"svc-{role}"}
+        data["roles"][role]["launch"].pop("profiles", None)
+        data["roles"][role]["launch"].pop("profile_var", None)
+    built = PoolConfig.model_validate(data)
+    assert "experiment" in built.actuated_seats() and built.not_actuatable_reason("experiment") is None
+
+
 # --- serialize_with: scheduler (Z1) --------------------------------------------------------------
 def _live():
     return {

@@ -56,7 +56,15 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 
 ## Compactor workflows
 
-Orch executes two compactor cognition workflows in `app/workflow_runtime.py`. Both build their digest verb request through the shared `_build_compactor_digest_request` / `_compactor_digest_from_payload` helpers, and both use the shared budget/parse helpers in `orion/cognition/compactor/`.
+Orch executes two compactor cognition workflows in `app/workflow_runtime.py`. Both cover the full window (every merged PR / chat turn of the previous Denver day on a scheduled run) and store `journal_body` untrimmed. The split (2026-09-30):
+
+- **Orch, synchronous**: resolve the window, fetch (GitHub PR walk / chat discussion window), build the chunk inputs (`orion/cognition/*_compactor/digest.py`). A quiet window needs no LLM and finalizes inline.
+- **`compactor.digest` durable run** (orion-durable-runs, admitted on `llm.route.agent`, background): every chunk digest and the merge call is one checkpointed node holding a GPU pool hold (`options.gpu_lease`). Orch submits it through `durable_runs.dispatch_durable_run` and replies `status="accepted"` with `metadata.workflow.durable_run` (`run_id`, `deadline_at`, `generation`). There is no in-process digest call or retry.
+- **Orch, finalize**: the durable run calls back with `workflow_request.durable_digest` (`CompactorDigestResultV1`); the same pass function writes the memory card + journal entry (stable ids) and the workflow result, and `execute_chat_workflow` notifies then (never on `accepted`).
+- **Idempotency**: `run_id = compactor:<workflow>:<window>[:<repo>]:<sha256(brief+admission)[:12]>`, `correlation_id = uuid5(run_id)`, `deadline_at = window end + 24h` -- a re-dispatch of the same input finds the existing run. Receipt `completed` -> reported as already finalized (`status=success`, nothing re-run); `failed`/`cancelled` -> next generation `:g2`... (max `COMPACTOR_MAX_RUN_GENERATIONS`); no receipt -> the dispatch fails (`compactor_durable_submit_failed`) and the scheduler retries with backoff.
+- Requires `CORTEX_DURABLE_ADMISSION_ENABLED=true` (the compactors fail loudly without it).
+
+Result metadata evidence: `digest_chunk_count`, `digest_merge_mode`, `digest_merge_skipped_reason`, `digest_llm_route`, `digest_attempts` (call attempts; pool waits are not attempts), `digest_gpu_roles`, `durable_run_id`, coverage (`total_count`, `covered_count`, `input_truncated`), `journal_body_chars`.
 
 ### `chat_history_compactor_pass`
 
@@ -65,7 +73,7 @@ Pipeline: resolve window (`orion/cognition/chat_history_compactor/window.py`) �
 Behavior contract:
 
 - **Window bounds**: `window_mode` is `day` (yesterday, `America/Denver`, covers the full day to `time.max`) or `rolling` (default 24h). Request `lookback_hours` is capped at 14 days; unknown `window_mode` values fail loud (`chat_compactor_window_invalid`).
-- **Digest route retry**: the digest verb runs on the `chat` LLM route first, retrying once on `quick`. Over-budget digests are trimmed to their cap and persisted normally rather than failing the workflow, and do not consume the `quick` retry — the repair is logged as `compactor_digest_trimmed_to_budget` with the correlation ID. Malformed or unparseable digest output still fails loud.
+- **Digest calls**: `agent` route inside the `compactor.digest` durable run (above). Over-budget card prose is trimmed to its cap (reported in the run's `trimmed_fields`), never the journal body. A malformed digest is one bounded attempt; a chunk that exhausts its attempts fails the run.
 - **Quiet windows persist nothing**: zero turns or an empty transcript writes no card and no journal stub; the result reports the skip honestly.
 - **Card persistence degrades, never discards**: one active card per `compactor_index` via `upsert_indexed_compactor_card` (enforced by the partial unique index `idx_mc_active_compactor_index`). If the card write fails for any reason, the workflow still appends the journal entry and reports `card_persist_skipped_reason` in workflow metadata.
 - **Idempotent journal**: journal entry id is a stable UUIDv5 of `workflow_id|compactor_index`, so re-runs of the same window overwrite rather than duplicate.
@@ -74,7 +82,7 @@ Requires cortex-orch `RECALL_PG_DSN` for card writes and cortex-exec SQL access 
 
 ### `github_compactor_pass`
 
-Daily merged-PR digest: fetch via `skills.repo.github_recent_prs.v1` (up to 100 closed PRs/page), digest via `github_compactor_digest_v1` (up to 32 PR bodies into the LLM, 8k journal body, 10-minute timeout; single attempt, fail loud), supersede-slot card (`compactor_slot`), journal append. Quiet days write a journal entry noting the card was left unchanged. Sized for ~30 merges/day — chat can wait.
+Daily merged-PR digest: fetch via `skills.repo.github_recent_prs.v1` (paginated, window-bounded), digest via `github_compactor_digest_v1` in the `compactor.digest` durable run (map-reduce over every merged PR of the day), supersede-slot card (`compactor_slot`), journal append. Quiet days write a journal entry noting the card was left unchanged (inline, no durable run).
 
 ## Running & Testing
 

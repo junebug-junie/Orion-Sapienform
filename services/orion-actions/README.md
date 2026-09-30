@@ -55,6 +55,7 @@ Important clarification:
 ### What Actions owns
 
 - Durable schedule persistence (`ACTIONS_WORKFLOW_SCHEDULE_STORE_PATH`).
+- **World-pulse journal as a durable run** (2026-09-30): on `orion:world_pulse:run:result` this service no longer composes the world-news journal in-process. It submits an admitted `journal.compose` durable run through cortex-orch's durable ingress (run_id `world-pulse-journal:<world-pulse run_id>`, route `ACTIONS_JOURNAL_LLM_ROUTE` as the pool hold's route, priority background, `deadline_at` = next local midnight in `ACTIONS_DAILY_TIMEZONE`). orion-durable-runs holds a GPU pool hold, composes, and publishes the journal write with a fixed entry_id; the post-persist email path and daily cap below are unchanged. Before this, a busy fast lane at 06:00 (`gpu_pool_unavailable:deadline`) failed the compose with no retry and the daily world-news email stopped after 2026-09-24. A redelivered run result resubmits the identical request (durable-runs answers with the existing run). Submission is one receipt RPC, tried 5 times over ~6.5 minutes; the run result is pub/sub and never redelivered, so if every try fails that day's journal is lost -- audited (`status=failed`, `reason=durable_submit_failed:...`) and logged at ERROR. Requires orion-durable-runs, orion-cortex-orch and orion-sql-writer deployed first.
 - Durable **built-in daily scheduler cursors** (`ACTIONS_SCHEDULER_CURSOR_STORE_PATH`): last completed local calendar date per daily job so process restart alone does not re-eligible the same day after a successful run.
 - Schedule lifecycle state (`scheduled`, `paused`, `cancelled`, `completed`, etc.).
 - Due claiming and scheduler wakeup loop.
@@ -66,6 +67,8 @@ Important clarification:
 - Periodic **threshold** path: when `ACTIONS_SKILLS_NOTIFY_ENABLED` is true, each `ACTIONS_SKILLS_INTERVAL_SECONDS` tick waits for biometrics and GPU snapshots via Cortex and merges threshold findings into one notify. If `ACTIONS_SKILLS_DOCKER_HEALTH_ENABLED` is also true, the same tick runs `skills.docker.ps_status.v1` and appends findings for running containers whose Docker `status` includes `(unhealthy)`. When notify is off, the Docker snapshot is not requested. Docker requires the same `orion-cortex-exec` Docker engine access as manual runs of that skill.
 
 ### Daily scheduler and restarts
+
+Daily Pulse and Daily Metacog generation is **paused** as of 2026-09-30: `ACTIONS_DAILY_PULSE_ENABLED` and `ACTIONS_DAILY_METACOG_ENABLED` default to `false` until they have a real consumer (the only live one was orion-self-experiments' `skill_probe` experiments from `focus_skill_id` — 6 created in 8 days, none observed concluding). Set either back to `true` to resume; when enabled they land in-app (Hub notification + async chat message). Their raw-JSON **emails are retired** as of 2026-09-30: `ACTIONS_DAILY_EMAIL_ENABLED` defaults to `false` and gates only those two emails (not Journal Pass, `world_pulse_digest`, workflow schedule alerts, or error/critical notifies). Note: the daily journal trigger reuses `ACTIONS_DAILY_PULSE_HOUR_LOCAL`/`_MINUTE_LOCAL` rather than its own window.
 
 Built-in daily triggers (daily pulse, world pulse, daily metacog, daily journal) compare local wall time in `ACTIONS_DAILY_TIMEZONE` to configured hour/minute windows. **Before durable cursors**, in-memory `last_*` maps reset on restart; if local time is already past the cutoff, the same calendar day can be **eligible again**, which can queue duplicate downstream work and notify/email bursts. **With cursors** (default path next to the workflow schedule JSON under the mounted `/data/orion-actions/` volume), a successful completion is persisted per job; restart hydrates from disk before the first scheduler tick. `ACTIONS_DAILY_RUN_ON_STARTUP` still allows an initial run when no completion is recorded for the process session, but **does not** bypass a cursor that already marks today complete. Tune `ACTIONS_DAILY_TIMEZONE`, per-job hours, and `ACTIONS_DAILY_RUN_ONCE_DATE` for operator overrides.
 
@@ -663,12 +666,23 @@ conventions: `orion/core/bus/rpc_health.py` module docstring.
 
 ### Scheduled workflow dispatch timeout
 
-`ACTIONS_WORKFLOW_DISPATCH_TIMEOUT_SECONDS` (default 3600) is how long the scheduler waits for
-cortex-orch to finish a scheduled compactor pass (`LONG_RUNNING_SCHEDULED_WORKFLOWS` in `app/main.py`;
-every other scheduled workflow keeps `ACTIONS_EXEC_TIMEOUT_SECONDS`). The workflow claim TTL is set to
-this value + 60s so a restart mid-pass does not reap and re-run a still-running dispatch. It is separate
-from `ACTIONS_EXEC_TIMEOUT_SECONDS` (single skill/journal calls) because a compactor pass is a
-GitHub fetch (<=300s) plus map-reduce digest calls bounded by
-`COMPACTOR_DIGEST_TOTAL_BUDGET_SEC` (3000s); the old 420s wait recorded still-running passes as
-failed and retried them. The scheduler loop is serial, so this is also the longest one stuck
-workflow can delay the next due job.
+`ACTIONS_WORKFLOW_DISPATCH_TIMEOUT_SECONDS` (default 600) is how long the scheduler waits for
+cortex-orch to answer a scheduled compactor dispatch (`LONG_RUNNING_SCHEDULED_WORKFLOWS` in `app/main.py`;
+every other scheduled workflow keeps `ACTIONS_EXEC_TIMEOUT_SECONDS`). It covers only the synchronous part:
+the GitHub fetch (<=300s) or chat discussion window, then registering the `compactor.digest` durable run.
+The workflow claim TTL is this value + 60s. The scheduler loop is serial, so this is also the longest one
+stuck workflow can delay the next due job.
+
+### Scheduled compactors settle from their durable run
+
+The compactors' LLM digest calls run as an admitted `compactor.digest` durable run in
+`orion-durable-runs` (each chunk digest and the merge is a checkpointed node holding a GPU pool hold;
+a busy pool at 06:00 is a wait, not a failure). cortex-orch replies `status="accepted"` with
+`metadata.workflow.durable_run` once the run is registered, and the scheduler marks the schedule run
+awaiting that durable run (`mark_awaiting_durable`: still `dispatched`, so attention stays quiet and no
+retry is armed). orion-actions subscribes to `orion:durable:run:state`; the run's terminal row
+(`completed` / `failed` / `cancelled`) settles the schedule run through the normal success/failure
+paths (`settle_durable_run`: retry budget, attention, next occurrence). If no terminal row arrives by
+the run's admission deadline + 15 min (e.g. orion-actions was down when it was published), the reaper
+fails it as `durable_run_completion_unobserved`; the retry re-dispatches the same window, which finds the
+run by its deterministic id and reports it without re-running any LLM call.

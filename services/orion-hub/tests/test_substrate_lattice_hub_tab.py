@@ -94,3 +94,11 @@ def test_m3_card_reads_no_retired_bus_observer_fields() -> None:
     for retired in ("b.stream_backlog_pressure", "b.delivery_confidence", "b.stream_backlog_health"):
         assert retired not in js
     assert "b.reliability_pressure" in js
+
+
+def test_lattice_panel_renders_threshold_provenance() -> None:
+    js = LATTICE_JS.read_text(encoding="utf-8")
+    assert "threshold_provenance" in js
+    assert 'data-testid="threshold-provenance"' in js
+    assert "_provenanceText(ch.threshold_provenance)" in js
+    assert "z_fast" in js and "unknown" in js  # cold-start z shows "unknown", never 0

@@ -54,6 +54,32 @@ workflow. The last field comes from the existing persisted `run.started` event,
 not config or a guessed elapsed-time threshold. Failed/completed events carry
 the actual hold-fenced turn correlation. Queue cancellation is not completion.
 
+### Admitted journal compose (`journal.compose`, 2026-09-30)
+
+One journal entry, composed under a GPU pool hold (`app/journal_compose_graph.py`, contract
+`orion/schemas/journal_compose_run.py`): `resource_request -> resource_wait -> compose -> publish -> finish`.
+Admission-only (the request validator refuses it without `admission`). `compose` sends the
+`journal.compose` cortex verb (`orion.journaler.build_compose_request`) with `options.gpu_lease`, so
+the gateway attaches the call to the hold; `llm_route` stays the brief's route (the hold's role is
+never a route). Waiting for the hold is never an attempt -- a busy pool at 06:00 local is a
+checkpointed wait bounded by `admission.deadline_at`. A failed compose (non-ok, empty or unparseable
+draft, transport) is an attempt: the hold is handed back and the run sleeps in `retry_wait`
+(`DURABLE_RUNS_RETRY_BASE_SEC` * 2^n, capped at `DURABLE_RUNS_RETRY_MAX_SEC`) before asking again,
+at least `JOURNAL_COMPOSE_MIN_ATTEMPTS` (6) times. `publish` releases the hold, then publishes
+`journal.entry.write.v1` with the brief's fixed `entry_id` and the checkpointed `created_at`; a
+publish failure raises and the driver's bounded checkpoint resume retries publish without
+recomposing. sql-writer's journal table is insert-only, so a replayed write with the same entry_id
+is dropped and `journal.created` is not re-emitted (no second email). The brief carries the
+curiosity section as pre-rendered text (`body_appendix` + `body_appendix_markers`), never another
+service's schema. First producer: orion-actions'
+world-pulse journal (`trigger_kind=world_pulse_digest`, run_id `world-pulse-journal:<world-pulse run_id>`,
+deadline = next local midnight). Finish detail: `line=journal`, `entry_id`, `trigger_kind`,
+`published`, `attempts`.
+
+Deploy order (additive `Literal`/brief on `extra="forbid"` models): orion-durable-runs, then
+orion-cortex-orch (it validates `DurableRunRequestV1`) and orion-sql-writer (it validates
+`DurableRunStateV1` rows), then the producer.
+
 ### Admitted visual reverie (`reverie.visual`, 2026-09-28)
 
 One image per run, checkpointed after every stage
@@ -126,6 +152,38 @@ done steps -- dispatch's cost; never queue or hold-wait time), `started_at`,
 `error` / `last_error` and the last stage `reason`. The status API adds a
 `reverie_visual` block (attempt, outcome, retries, retry_at, elapsed, deadline),
 `error` and `work_started`.
+
+### Admitted compactor digest (`compactor.digest`, 2026-09-30)
+
+The LLM half of cortex-orch's daily `github_compactor_pass` / `chat_history_compactor_pass`
+(`app/compactor_digest_graph.py`; contract `orion/schemas/compactor_digest_run.py`). Before this
+the compactors made several digest calls in-process inside one synchronous workflow RPC, each on a
+one-inference gateway lease; at 06:00 the pool was busy and those failed with
+`gpu_pool_unavailable:deadline`, papered over by an in-process retry and a 3600 s scheduler wait.
+
+    resource_request -> resource_wait -> digest (loops) -> finalize -> finish
+
+- cortex-orch fetches the day (GitHub PRs / chat turns), builds the chunk inputs, and submits the
+  run on `llm.route.agent` background admission with `deadline_at` = window end + 24 h. The
+  `run_id` is `compactor:<workflow>:<window>[:<repo>]:<input sha256[:12]>` (plus `:g<N>` for a
+  re-submission after a failed/cancelled run), so a re-dispatch of the same window finds the
+  existing run instead of starting a second one.
+- `digest` makes ONE call per node run under `AdmissionRuntime.execute` -- a chunk digest, or the
+  merge -- with `options.gpu_lease` so the gateway attaches it to the hold, and checkpoints the
+  result before the next call. Which call is next is the pure step machine in
+  `orion/cognition/compactor/map_reduce.py`. A restart resumes at the first undigested chunk.
+  Waiting for the hold is never an attempt; a failed call (verb failure, empty / rejected / invalid
+  JSON) is one of `DURABLE_RUNS_RETRY_MAX_ATTEMPTS` for that call (reset after each success).
+  A chunk that exhausts them fails the run; a merge that exhausts them, drops a chunk's refs, or
+  whose input is over `DIGEST_INPUT_CHAR_BUDGET` falls back to the deterministic join
+  (`merge_mode=concatenated`, `merge_skipped_reason` says why).
+- `finalize` releases the hold (no GPU needed), assembles the digest (card prose fitted,
+  `journal_body` untrimmed) and sends `CompactorDigestResultV1` back to cortex-orch as
+  `workflow_request.durable_digest`; orch writes the memory card + journal entry (stable ids, so a
+  replay upserts) and notifies per the schedule's policy. A failed finalize raises and is retried by
+  the driver's bounded checkpoint-resume without re-running any LLM call.
+- `WORK_NODES["compactor.digest"] = {"digest"}`. The terminal state row settles the orion-actions
+  schedule run that submitted it.
 
 ### Every admitted terminal reaches `orion:durable:run:state` (2026-09-28)
 
@@ -331,6 +389,10 @@ id names an attempt no turn ran for, so the join returns no row -- never a wrong
 The worker-recovery fence stashes the same id before clearing an in-flight attempt's
 lease, so a later deadline/cancel terminal names the fenced generation, not an older one.
 
+**`compactor.digest`** (`app/compactor_digest_graph.py::finish_detail`): `line="compactor"`,
+`workflow_id`, `window_label`, `chunk_count`, `merge_mode`, `merge_skipped_reason`,
+`journal_entry_id`, `card_id`, `attempts` (call attempts, pool waits excluded), `gpu_roles`.
+
 ## RPC-health publish (mesh transport coverage, 2026-09-24)
 
 The long-lived `rpc_bus` (opened in `app/main.py`'s lifespan) publishes an
@@ -362,6 +424,10 @@ Stage 4.5 is a cutover: follow `docs/runbooks/2026-09-25-gpu-pool-stage4-cutover
 and the pool, then deploy this build). Consumers first: the gateway, cortex-exec, thought,
 harness-governor, Hub and field-digester must already run stage 4.4 (they carry and honour the
 hold ref); `CuriosityTurnRequestV1.gpu_lease` is `extra="forbid"` at Hub.
+
+`compactor.digest` (2026-09-30) is additive on `extra="forbid"` contracts: deploy this service
+before cortex-orch (orch submits the run and validates `DurableRunRequestV1`), and cortex-orch before
+orion-actions (which settles schedule runs from the terminal row).
 
 Set `HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=false` to retain the earlier durable
 kickoff without resource admission. To return to Hub's direct in-process path,

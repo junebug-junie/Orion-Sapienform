@@ -18,6 +18,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 
+from orion.field.transport_thresholds import (
+    RUNGS as _THRESHOLD_RUNGS,
+    fetch_effective_thresholds,
+)
+
 from .service_logs import resolve_repo_root_details
 
 router = APIRouter(prefix="/api/substrate-lattice", tags=["substrate-lattice"])
@@ -471,6 +476,26 @@ def _policy_channels() -> dict[str, dict[str, Any]]:
     return {str(k): dict(v or {}) for k, v in channels.items()}
 
 
+def _effective_channels(channels: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Policy channels with watch/summarize/propose replaced by the effective
+    (EWMA-derived, static-floor-bounded) values, plus `threshold_provenance`.
+
+    Same shared function the mind recall resolver calls, so both readers see
+    the same numbers. TRANSPORT_THRESHOLDS_DERIVED_ENABLED=false (or any Redis
+    failure) returns exactly the static YAML values.
+    """
+    redis_url = os.getenv("ORION_BUS_URL", "").strip()
+    out: dict[str, dict[str, Any]] = {}
+    for ch_id, ch_def in channels.items():
+        eff = fetch_effective_thresholds(ch_id, ch_def, redis_url)
+        merged = dict(ch_def)
+        for rung in _THRESHOLD_RUNGS:
+            merged[rung] = eff[rung]["value"]
+        merged["threshold_provenance"] = eff
+        out[ch_id] = merged
+    return out
+
+
 def _channel_value(chain: dict[str, Any], channel_id: str) -> tuple[float | None, str]:
     """Current reading for one policy channel, or None when it cannot be measured.
 
@@ -543,6 +568,7 @@ def _lattice_channel_rows(chain: dict[str, Any], channels: dict[str, dict[str, A
             "watch_at": watch_at,
             "summarize_at": ch_def.get("summarize_at"),
             "propose_at": ch_def.get("propose_at"),
+            "threshold_provenance": ch_def.get("threshold_provenance"),
             "action_ceiling": ch_def.get("action_ceiling"),
             "value": value,
             "value_source": source,
@@ -675,7 +701,7 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
     # --- pressure gate ---
-    channels = lattice_policy.get("channels", {})
+    channels = _effective_channels(lattice_policy.get("channels", {}))
     if m4_status in ("stale", "missing"):
         # Review-caught gap, 2026-07-27: the contract gate below already guards
         # on m4_status; this one didn't, and a stale/missing M4 was silently
@@ -781,7 +807,7 @@ async def transport_latest() -> dict[str, Any]:
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
     try:
-        chain["lattice_channels"] = _lattice_channel_rows(chain, _policy_channels())
+        chain["lattice_channels"] = _lattice_channel_rows(chain, _effective_channels(_policy_channels()))
     except Exception as exc:  # a bad policy file must not hide the proof chain
         chain["lattice_channels"] = []
         chain["lattice_policy_error"] = f"{type(exc).__name__}: {exc}"
@@ -815,7 +841,7 @@ async def transport_simulate(req: SimulateRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
 
     try:
-        channels = _policy_channels()
+        channels = _effective_channels(_policy_channels())
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"transport_lattice_policy_invalid: {type(exc).__name__}") from exc
     if not channels:

@@ -151,7 +151,7 @@ async def scenario_home(pool, saver, store) -> dict:
 
 
 async def scenario_gpu2(pool, saver, store) -> dict:
-    gpu = await InProcessPool(actuate=(SEAT,)).boot()
+    gpu = await InProcessPool(can_load=True).boot()
     actions: list[tuple[str, str]] = []
 
     async def actuator(channel, env):

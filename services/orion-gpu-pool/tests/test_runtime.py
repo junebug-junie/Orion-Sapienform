@@ -56,7 +56,7 @@ class FakeBus:
         return [e.payload for c, e in self.published if c == "orion:grammar:event"]
 
 
-def make(down=(), store=None, saver=None, clock=None, bus=None):
+def make(down=(), store=None, saver=None, clock=None, bus=None, mode="enforce"):
     clock = clock or Clock()
 
     async def prober(role, url, kind, health):
@@ -73,7 +73,7 @@ def make(down=(), store=None, saver=None, clock=None, bus=None):
 
     rt = PoolRuntime(cfg=CFG, profiles=PROFILES, store=store or MemoryStore(),
                      graph=build_lease_graph(lambda: CFG, saver or MemorySaver()), bus=bus or FakeBus(),
-                     prober=prober, now=clock, probe_interval_sec=0)
+                     prober=prober, now=clock, probe_interval_sec=0, mode=mode)
     return rt, clock
 
 
@@ -313,17 +313,19 @@ def test_mismatched_worker_gets_no_grants_and_is_reported():
     run(go())
 
 
-def test_observe_mode_publishes_swap_requests_without_touching_cards():
+def test_paused_pool_publishes_swap_requests_without_touching_cards():
     async def go():
         rt, clock = make()
         await boot(rt)
         rt.guard_states = dict(CLEAR_GUARDS)
+        await rt.control(GpuPoolControlV1(verb="pause_actuation"))
         h = await rt.acquire(acq("agent", kind="hold"))
         await rt.acquire(acq("agent"))
         await beating(rt, clock, SEAT_WAIT + 1, [h.lease_id])
         [s] = rt.bus.events("swap_requested")
-        assert s["role"] == "agent-gpu2" and s["detail"] == {"action": "load", "actuated": False, "mode": "observe"}
-        assert not rt.cards["gpu2"].swapped_in
+        assert s["role"] == "agent-gpu2" and s["reason"] == "actuation_paused"
+        assert s["detail"] == {"action": "load", "actuated": False, "mode": "enforce", "paused": True, "wanted": "demand"}
+        assert not rt.cards["gpu2"].swapped_in and rt.cards["gpu2"].swap_state == "idle"
     run(go())
 
 
@@ -353,7 +355,7 @@ def test_state_snapshot_shows_cards_roles_and_queue():
         await rt.acquire(acq("chat", priority="interactive"))
         state = await rt.snapshot()
         assert {c.card for c in state.cards} == set(CFG.cards)
-        assert state.queue_depth == {"chat": 1} and state.mode == "observe"
+        assert state.queue_depth == {"chat": 1} and state.mode == "enforce" and state.actuation_paused is None
         assert state.config_digest == CFG.digest
         # Stage 5.5: Hub's biometrics labels join nvidia-smi on the card index, for the pool's host.
         assert state.host == CFG.host.name
@@ -408,6 +410,7 @@ def test_swap_request_is_reported_again_when_it_recurs():
         rt, clock = make()
         await boot(rt)
         rt.guard_states = dict(CLEAR_GUARDS)
+        await rt.control(GpuPoolControlV1(verb="pause_actuation"))   # reported, never sent
         held = await rt.acquire(acq("agent", kind="hold"))
         await rt.acquire(acq("agent", deadline_at=rt.now() + timedelta(seconds=SEAT_WAIT + 40)))
         await beating(rt, clock, SEAT_WAIT + 1, [held.lease_id])
@@ -446,18 +449,17 @@ def test_projection_heals_from_checkpoint():
     run(go())
 
 
-def test_operator_hold_via_control_and_release():
+def test_operator_hold_on_a_seat_nothing_can_load_is_refused_in_every_mode():
+    """Stage 5.7: experiment has no launch block. Its hold would drain every card and load nothing."""
     async def go():
-        rt, _ = make()
-        await boot(rt)
-        refused = await rt.control(GpuPoolControlV1(verb="hold", work_class="experiment"))
-        assert not refused.ok and refused.reason == "hold_requires_swap_actuation"   # observe mode
-        rt.mode = "enforce"
-        held = await rt.control(GpuPoolControlV1(verb="hold", work_class="experiment"))
-        assert held.ok and held.detail["status"] == "queued"      # it drains every card first
-        rel = await rt.control(GpuPoolControlV1(verb="release",
-                                                lease_id=held.detail["lease_id"]))
-        assert rel.ok
+        for mode in ("enforce", "observe"):
+            rt, _ = make(mode=mode)
+            await boot(rt)
+            refused = await rt.control(GpuPoolControlV1(verb="hold", work_class="experiment"))
+            assert not refused.ok and refused.reason == "not_actuatable:experiment"
+            assert not rt.store.leases                             # nothing admitted, nothing drains
+            direct = await rt.acquire(acq("experiment", kind="hold"), operator=True)
+            assert direct.status == "unavailable" and direct.reason == "not_actuatable:experiment"
     run(go())
 
 
@@ -486,9 +488,11 @@ def test_grant_served_by_keeps_the_node_worker_shape():
     run(go())
 
 
-def test_swap_seat_counts_as_loaded_when_its_worker_is_really_up():
+def test_observe_mode_counts_a_swap_seat_loaded_when_its_worker_is_really_up():
+    """observe (the stage 5.7 rollback) keeps the liveness shortcut; enforce asks the actuator
+    instead (tests/test_stage5_7_enforce.py)."""
     async def go():
-        rt, clock = make()
+        rt, clock = make(mode="observe")
         LIVE["agent-gpu2"] = ("qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex", "Qwen3.8-27B-UD-Q4_K_XL.gguf", 1, 131072)
         try:
             await boot(rt)

@@ -119,6 +119,7 @@ def _views(leases: dict[str, dict]) -> list[LeaseView]:
         queued_since=ts(st, "queued_since"), granted_at=ts(st, "granted_at"), expires_at=ts(st, "expires_at"),
         retryable=bool(st["request"].get("retryable")),
         kind=st["request"].get("kind", "request"), hold_lease_id=st["request"].get("hold_lease_id"),
+        operator=bool(st["request"].get("operator")),
         reason=st.get("reason"),
     ) for lid, st in leases.items() if st["status"] not in ("released", "unavailable", "dead_letter")]
 
@@ -588,6 +589,115 @@ def shed_failures(s: dict) -> list[str]:
     return out
 
 
+ENFORCE_SEC = 1800
+PAUSE_FROM, PAUSE_UNTIL = 600, 1200
+
+
+def enforce_scenario(cfg=CFG) -> dict:
+    """Stage 5.7 through the real scheduler + lease table, 30 min with the 27B loaded on gpu2.
+
+    - An operator lease on ``experiment`` (no launch block: nothing can load it) sits in the queue
+      the whole time. Before 5.7 it drained every resident it evicts; it must drain nothing.
+    - Actuation is paused from PAUSE_FROM to PAUSE_UNTIL while a diffusion hold (gpu2's owner) waits:
+      the 27B must keep serving and nothing may be recalled for the swap that cannot happen. After
+      the resume the owner reclaim drains the seat as usual."""
+    leases: dict[str, dict] = {}
+    work_left: dict[str, float] = {}
+    recalls: list[tuple[int, str, str, str]] = []     # (sec, lease, reason, role)
+    grants: list[tuple[int, str, str]] = []           # (sec, lease, role)
+    swaps_while_paused: list[str] = []
+    cards = {c: CardLive(c) for c in cfg.cards}
+    cards["gpu2"] = CardLive("gpu2", swapped_in={"agent-gpu2"}, loaded_at=T0, last_active_at=T0)
+    seat = "agent-gpu2"
+
+    def add(lid: str, req: dict, now: datetime) -> None:
+        leases[lid] = dict(initial_state(lid, {"request_id": lid, **req}, now))
+
+    def apply(st: dict, ev: dict) -> None:
+        st.update(transition(st, ev, cfg), history=[])
+
+    for sec in range(ENFORCE_SEC):
+        now = T0 + timedelta(seconds=sec)
+        at = now.isoformat()
+        if sec == 0:
+            add("X-exp", {"work_class": "experiment", "kind": "hold", "priority": "interactive",
+                          "holder": "operator:eval", "operator": True}, now)
+            add("H-home", {"work_class": "agent", "kind": "hold", "priority": "background", "retryable": True,
+                           "holder": "durable-runs:home"}, now)
+            add("H-gpu2", {"work_class": "agent", "kind": "hold", "priority": "background", "retryable": True,
+                           "holder": "durable-runs:gpu2"}, now)
+        if sec == PAUSE_FROM + 60:
+            add("D-img", {"work_class": "diffusion", "kind": "hold", "priority": "background", "retryable": True,
+                          "holder": "durable-runs:img"}, now)
+        if sec % 30 == 5:
+            add(f"C{sec}", {"work_class": "chat", "kind": "request", "priority": "interactive"}, now)
+            work_left[f"C{sec}"] = 20
+        if sec % 5 == 0:
+            add(f"M{sec}", {"work_class": "metacog", "kind": "request", "priority": "system"}, now)
+            work_left[f"M{sec}"] = 4
+        for lid, st in leases.items():
+            if st["status"] not in ("granted", "recalling"):
+                continue
+            if lid in work_left:
+                work_left[lid] -= 1
+                if work_left[lid] <= 0:
+                    apply(st, {"type": "release_ok", "at": at})
+                    continue
+            elif st["status"] == "recalling" and lid.startswith("H-"):
+                apply(st, {"type": "release_ok", "at": at})       # a recalled run gives its hold back
+                continue
+            apply(st, {"type": "heartbeat", "at": at})
+            if st["role"] and cfg.roles[st["role"]].swap:
+                for c in cfg.roles[st["role"]].cards:
+                    cards[c].last_active_at = now
+        paused = PAUSE_FROM <= sec < PAUSE_UNTIL
+        for d in schedule(cfg, LIVE, cards, _views(leases), now, guards={"thermal": None},
+                          frozen=cfg.actuated_seats() if paused else ()):
+            if isinstance(d, (SwapLoad, SwapUnload, SwapBlocked)):
+                if paused and not isinstance(d, SwapBlocked):
+                    swaps_while_paused.append(type(d).__name__)
+                elif isinstance(d, SwapUnload) and d.role == seat:
+                    cards["gpu2"] = CardLive("gpu2")              # the actuator unloads at once here
+                continue
+            if isinstance(d, Serialized):
+                continue
+            st = leases[d.lease_id]
+            ev = {"type": _EV[type(d)], "at": at, "reason": getattr(d, "reason", None)}
+            if isinstance(d, Grant):
+                ev["role"] = d.role
+                grants.append((sec, d.lease_id, d.role))
+            if isinstance(d, Recall):
+                ev["recall_by"] = d.recall_by.isoformat()
+                recalls.append((sec, d.lease_id, d.reason, st["role"]))
+            apply(st, ev)
+
+    residents = set(cfg.evicted_by("experiment"))
+    return {
+        "experiment_resident_recalls": [r for r in recalls if r[3] in residents and r[3] != seat],
+        "experiment_granted": any(g[1] == "X-exp" for g in grants),
+        "resident_grants": sum(1 for g in grants if g[2] in ("chat", "metacog", "fast")),
+        "seat_recalls_while_paused": [r for r in recalls if PAUSE_FROM <= r[0] < PAUSE_UNTIL and r[3] == seat],
+        "swap_decisions_reported_while_paused": len(swaps_while_paused),
+        "seat_reclaimed_after_resume_sec": next((r[0] - PAUSE_UNTIL for r in recalls
+                                                 if r[0] >= PAUSE_UNTIL and r[3] == seat), None),
+        "diffusion_granted_at_sec": next((g[0] for g in grants if g[1] == "D-img"), None),
+    }
+
+
+def enforce_failures(e: dict) -> list[str]:
+    out = []
+    if e["experiment_resident_recalls"] or e["experiment_granted"]:
+        out.append("experiment_drained_residents")     # stage 5 "Corrections from building 5.1" item 5
+    if not e["resident_grants"]:
+        out.append("residents_starved")
+    if e["seat_recalls_while_paused"]:
+        out.append("pause_drained_the_seat")
+    if e["seat_reclaimed_after_resume_sec"] is None or e["diffusion_granted_at_sec"] is None \
+            or e["diffusion_granted_at_sec"] < PAUSE_UNTIL:
+        out.append("resume_did_not_restore_reclaim")
+    return out
+
+
 async def checkpoint_throughput(n: int = 300) -> float:
     from langgraph.checkpoint.memory import MemorySaver
 
@@ -617,6 +727,7 @@ def main() -> int:
     rollback = urgent_scenario(rollback_cfg)
     report["urgent_rollback_paused"] = rollback["paused"]
     report["shed_scenario"] = shed_scenario()
+    report["enforce_scenario"] = enforce_scenario()
     report["leases_per_sec_inmemory"] = round(asyncio.run(checkpoint_throughput()), 1)
     import json
 
@@ -625,6 +736,7 @@ def main() -> int:
                             "run_blocked_behind_itself_sec", "run_call_waits_over_one_inference") if report[k]]
     failures += urgent_failures(report["urgent_scenario"], rollback)
     failures += shed_failures(report["shed_scenario"])
+    failures += enforce_failures(report["enforce_scenario"])
     if not report["interleaved_grants"]:
         failures.append("interleaved_grants")
     if not (report["counts"].get("serialized:diffusion") or report["counts"].get("serialized:world")):

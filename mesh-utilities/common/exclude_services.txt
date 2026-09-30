@@ -9,6 +9,8 @@ orion-affectgpt-worker
 orion-diffusion-host
 orion-context-exec
 orion-llamacpp-neural-host
+orion-llamacpp-bonsai-host
+
 orion-vllm-host
 orion-rag
 orion-ollama-host

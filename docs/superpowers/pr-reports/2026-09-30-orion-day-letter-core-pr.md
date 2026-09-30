@@ -291,6 +291,6 @@ letter = await fetch_letter(conn, letter_date)              # OrionDayLetterV1 |
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2435
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

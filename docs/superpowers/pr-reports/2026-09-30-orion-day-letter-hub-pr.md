@@ -141,6 +141,8 @@ The code-review subagent reviewed `origin/feat/orion-day-letter-core..784c56bdf`
 
 CI fix: `tests/scripts/test_schema_skew_discovery.py` flagged `OrionDayLetterV1` as read by orion-hub with no declared writer. It is now declared in `orion/schema_skew_discovery.py::DECLARED_WRITERS`, with orion-durable-runs as the writer (the persist node inserts the row).
 
+Base update: merged `origin/feat/orion-day-letter-core` at e708151ec (now includes main's #2419/#2429/#2431). The only conflict was hub `.env_example`: two independent appends, both kept. The metric lock is unchanged (`check_definition_drift.py`: no definition changes). Post-merge focused run: 327 passed.
+
 ## Restart required
 
 Deploy after all of #2435's order (migration, sql-writer and actions, cortex-orch and cortex-exec, durable-runs). Hub goes last:
@@ -162,7 +164,7 @@ docker logs orion-athena-hub 2>&1 | grep curiosity_carry_forward_offered
 ## Risks / concerns
 
 - Severity: medium. Concern: **Gmail clips heavy days.** The live 2026-09-29 letter is about 265 KB of HTML (about 227 KB of it is content). Gmail hides everything past about 102 KB behind "View entire message". Nothing is lost, but it is one extra click. Mitigation today: a warning is logged. The alternative, keeping note, carry-forward and summaries in the body and attaching the full material, changes the "everything in the email body" design, so it is Juniper's call.
-- Severity: low. Concern: the 08:30 slot is shared with orion-actions' daily journal (`ACTIONS_DAILY_PULSE_*`). They do not collide in practice. The pulse goes through cortex-exec on the `metacog` route, while the letter is an admitted `agent`-lane durable run at `background` priority that queues behind whatever the GPU pool is serving. Email goes through notify synchronously per request with no shared slot. Juniper just gets two emails around 08:30. Mitigation: move `HUB_ORION_DAY_MINUTE_LOCAL` if she prefers them staggered.
+- Severity: low. Concern: the 08:30 slot is shared with orion-actions' daily journal (`ACTIONS_DAILY_PULSE_*`). They do not collide in practice. The pulse goes through cortex-exec on the `metacog` route, while the letter is an admitted `agent`-lane durable run at `background` priority that queues behind whatever the GPU pool is serving. Email goes through notify synchronously per request with no shared slot. Since #2429 (merged into the base), Daily Pulse generation is paused by default (`ACTIONS_DAILY_PULSE_ENABLED=false`), but the daily journal still fires at 08:30. If both email, Juniper gets two emails around 08:30. Mitigation: move `HUB_ORION_DAY_MINUTE_LOCAL` if she prefers them staggered.
 - Severity: low. Concern: the in-memory guards (the empty-day cache, the exhaustion notice, "outcome unknown") reset on a Hub restart. The worst case is one repeated notice, or one resend of a letter whose earlier send outcome was unknown. Every decision about what to submit and whether to email comes from Postgres and durable state.
 - Severity: low. Concern: the dream-hypothesis claim has the same "durable run never started" gap that carry-forward now closes. It was left unchanged on purpose, because changing it would move the blind scorecard's denominator.
 - Severity: low. Concern: notify also publishes an in-app copy of every email request. That is the existing notify behaviour, and it is one copy per successful send.

@@ -15,7 +15,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import yaml
 
-from cutover_config import rollback_config
 from test_api import REPO_ROOT, main_module
 from orion.gpu_pool.config import PoolConfig, launch_digest, load_pool_config
 from orion.schemas.gpu_pool import GpuActuateResultV1
@@ -24,7 +23,6 @@ bus = main_module.actuator_bus
 fence = main_module.pool_fence
 settings = main_module.settings
 lx = bus.launch_exec
-gpu = main_module.gpu2
 
 VISION_PROFILE = "qwen3-vl-8b-vision-test"
 ALT_27B = "gemma-27b-alt-test"
@@ -165,9 +163,8 @@ def world(tmp_path, monkeypatch):
     root = tmp_path / "repo"
     (root / "config").mkdir(parents=True)
     monkeypatch.setattr(settings, "GPU_LANE_REPO_ROOT", str(root))
-    monkeypatch.setattr(settings, "GPU2_POOL_FENCE_STATE_PATH", str(tmp_path / "state" / "fence.json"))
-    monkeypatch.setattr(settings, "GPU2_ENABLED", True)
-    monkeypatch.setattr(settings, "GPU2_DRAIN_TIMEOUT_SEC", 0.05)
+    monkeypatch.setattr(settings, "GPU_POOL_FENCE_STATE_PATH", str(tmp_path / "state" / "fence.json"))
+    monkeypatch.setattr(settings, "GPU_LANE_DRAIN_TIMEOUT_SEC", 0.05)
     monkeypatch.setattr(settings, "GPU_POOL_ACTUATOR_NAME", "circe")
     monkeypatch.setattr(bus, "_task", None)
     monkeypatch.setattr(bus, "_current", None)
@@ -356,43 +353,6 @@ def test_profile_outside_allow_list_refused_before_any_docker_call(world):
         assert statuses(sink) == [("refused", None)] and sink[0].reason == "profile_not_allowed"
     assert world.docker.calls == []
     assert fence.read_state()["generations"] == {}   # a refusal never spends a generation
-
-
-def test_bridged_seat_with_allowed_profile_is_refused_not_silently_ignored(world):
-    data = rollback_config()
-    data["roles"]["agent-gpu2"]["launch"]["profiles"] = [DEFAULT_27B]
-    # Since 5.3 the config validator refuses this shape outright (the pool sends profiles[0] on
-    # every load, so every load would be refused)...
-    with pytest.raises(ValueError, match="bridge cannot set a profile"):
-        PoolConfig.model_validate(data)
-    # ...so a controller checkout carrying it acts on nothing,
-    (world.root / "config" / "gpu_pool.yaml").write_text(yaml.safe_dump(data, sort_keys=False))
-    cfg = PoolConfig.model_validate(rollback_config())
-    cfg.roles["agent-gpu2"].launch.profiles = [DEFAULT_27B]
-    world.cfg = cfg
-    world.start()
-    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], profile=DEFAULT_27B))
-    assert sink[0].status == "refused" and sink[0].reason.startswith("config_unloadable:")
-    # ...and resolve() still refuses it on its own (defence in depth until 5.6 deletes the bridge).
-    with pytest.raises(fence.Refusal, match="bridge_cannot_set_profile"):
-        fence.resolve(cfg, role="agent-gpu2", action="load", cards=["gpu2"], digest=None, profile=DEFAULT_27B)
-
-
-def test_rollback_config_still_uses_the_bridge(world, monkeypatch):
-    """The 5.3 rollback (bridge verbs back on agent-gpu2) goes to gpu2.transition, never launch_exec."""
-    world.write(rollback_config())
-    world.start()
-    seen = []
-
-    async def transition(req):
-        seen.append(req.target)
-        return {"status": "success"}
-    monkeypatch.setattr(gpu, "transition", transition)
-    sink = world.handle(world.payload("agent-gpu2", ["gpu2"]))
-    assert seen == ["agent-burst"] and sink[-1].status == "succeeded"
-    assert world.docker.calls == []
-    # Bridge parity of the generic observe(): the same two roles the fixed TARGET_ROLES gave.
-    assert sink[-1].observed == {"agent-gpu2": "absent", "diffusion": "absent"}
 
 
 def test_unknown_container_state_starts_nothing(world):
@@ -585,13 +545,15 @@ def test_no_profile_strips_an_inherited_profile_var(world, monkeypatch):
     assert "ATLAS_AGENT_BURST_PROFILE_NAME" not in world.docker.calls[-1]["full_env"]
 
 
-def test_config_unloadable_observe_falls_back_to_the_bridge_pair(world, monkeypatch):
+def test_config_unloadable_observe_reports_nothing_not_a_fixed_pair(world):
+    """5.6: the fixed gpu2 pair fallback is gone with the bridge. An unparseable checkout names no
+    roles, so observe() reports none (the pool reconciles), and never touches docker."""
     (world.root / "config").mkdir(exist_ok=True)
     (world.root / "config" / "gpu_pool.yaml").write_text("version: 1\nnot_a_key: true\n")
-    snaps = {"agent-burst": {"state": "absent", "containers": []},
-             "diffusion": {"state": "running", "containers": [{"state": "running"}]}}
-    monkeypatch.setattr(gpu, "snapshots", lambda: snaps)
-    assert asyncio.run(bus.observe()) == {"agent-gpu2": "absent", "diffusion": "running"}
+    world.cfg = load_pool_config(REPO_ROOT / "config" / "gpu_pool.yaml")
+    world.start(running=["diffusion-host"])
+    assert asyncio.run(bus.observe()) == {}
+    assert world.docker.calls == []
 
 
 def test_unload_rechecks_the_fence_between_idle_check_and_stop(world):
@@ -610,17 +572,10 @@ def test_unload_rechecks_the_fence_between_idle_check_and_stop(world):
 
 # --- stage 5.3: the committed config/gpu_pool.yaml takes the generic path ------------------------
 
-def _no_bridge(monkeypatch):
-    async def transition(req):
-        raise AssertionError(f"5.3: agent-gpu2 must not reach gpu2.transition ({req.target})")
-    monkeypatch.setattr(gpu, "transition", transition)
-
-
 def test_live_config_load_is_generic_with_the_default_profile(world, monkeypatch):
     """Acceptance 1 (controller side): the committed YAML loads the 27B through launch_exec -- drain
     and stop diffusion, then `up` atlas-agent-burst with the card index and the allow-listed default
     profile as compose interpolation variables -- and never through the gpu2 bridge."""
-    _no_bridge(monkeypatch)
     world.write(real_config())
     assert world.cfg.load_profile("agent-gpu2") == DEFAULT_27B
     world.start(running=["diffusion-host"])
@@ -640,7 +595,6 @@ def test_live_config_load_is_generic_with_the_default_profile(world, monkeypatch
 def test_live_config_unload_refuses_a_busy_seat_with_the_role_suffixed_reason(world, monkeypatch):
     """The bridge's `burst_upstream_not_idle` is now `upstream_not_idle:agent-gpu2`: nothing is
     stopped, and `observed` still says the seat is up (the pool reads that, never the reason)."""
-    _no_bridge(monkeypatch)
     world.write(real_config())
     world.start(running=["atlas-agent-burst"])
     world.http.busy.add("atlas-agent-burst")
@@ -653,7 +607,6 @@ def test_live_config_unload_refuses_a_busy_seat_with_the_role_suffixed_reason(wo
 def test_live_config_unload_restores_diffusion_on_card_index_2(world, monkeypatch):
     """Acceptance 2 (controller side): unload stops the seat and starts diffusion with
     CUDA_VISIBLE_DEVICES=2 set by the actuator (the bridge hard-coded it in gpu2.targets())."""
-    _no_bridge(monkeypatch)
     world.write(real_config())
     world.start(running=["atlas-agent-burst"])
     sink = world.handle(world.payload("agent-gpu2", ["gpu2"], action="unload", reason="idle"))
@@ -666,22 +619,8 @@ def test_live_config_unload_restores_diffusion_on_card_index_2(world, monkeypatc
 def test_live_config_refuses_a_profile_outside_its_allow_list(world, monkeypatch):
     """Acceptance 4 (first half), on the committed YAML: a hand-crafted request naming another
     llm_profiles.yaml profile is refused before any docker call or generation is spent."""
-    _no_bridge(monkeypatch)
     world.write(real_config())
     world.start(running=["diffusion-host"])
     sink = world.handle(world.payload("agent-gpu2", ["gpu2"], profile="qwen3-8b-q4km-v100-16gb-balanced"))
     assert statuses(sink) == [("refused", None)] and sink[0].reason == "profile_not_allowed"
     assert world.docker.calls == [] and fence.read_state()["generations"] == {}
-
-
-def test_generic_action_resets_the_stale_bridge_state_thought_reads(world, monkeypatch):
-    """/v1/gpu-slots/circe-gpu2/status serves gpu2._state to orion-thought's pre-image check, which
-    defers every image on state=failed without restored=True. A generic action must not leave a
-    bridge-era `failed` there."""
-    _no_bridge(monkeypatch)
-    monkeypatch.setattr(gpu, "_state", {"state": "failed", "error": "burst_upstream_not_idle"})
-    world.write(real_config())
-    world.start(running=["atlas-agent-burst"])
-    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], action="unload", reason="idle"))
-    assert sink[-1].status == "succeeded"
-    assert gpu._state == {"state": "neither", "error": None}

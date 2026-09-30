@@ -38,7 +38,7 @@ from orion.schemas.attention_schema import ATTENTION_SCHEMA_KIND
 from .acceptance_bus import TypedBus
 from .acceptance_turn import build_turn_adapter, DRAFT, REPAIRED
 from .pool_fixture import CFG, LIVE, InProcessPool
-from .test_admission_runtime_postgres import DSN, legacy_rows, with_database
+from .test_admission_runtime_postgres import DSN, legacy_tables, with_database
 
 pytestmark = pytest.mark.skipif(not DSN, reason="isolated ORION_ADMISSION_TEST_DSN required")
 ROOT = Path(__file__).resolve().parents[3]
@@ -86,12 +86,12 @@ def test_curiosity_receipt_wait_restart_grant_dispatch_and_completion(monkeypatc
         gpu = InProcessPool(actuate=(SEAT,) if placement == "gpu2" else ())
         settings = Settings(_env_file=None, DURABLE_RUNS_GRAPH_HOST="", POSTGRES_URI=DSN, ORION_BUS_ENABLED=False,
             DURABLE_RUNS_ADMISSION_ENABLED=True, DURABLE_RUNS_TURN_RPC_TIMEOUT_SEC=0.05,
-            DURABLE_RUNS_LEASE_HEARTBEAT_SEC=0.1, DURABLE_RUNS_LEASE_SECONDS=90)
+            DURABLE_RUNS_LEASE_HEARTBEAT_SEC=0.1)
         runner = DurableRunner(settings, bus=bus, checkpointer=saver)
         runtime = AdmissionRuntime(settings, runner, pool, store=store)
         monkeypatch.setenv("POSTGRES_URI", DSN)
         main = importlib.import_module("app.main")
-        for name, value in {"runner": runner, "admission": runtime, "capacity": None,
+        for name, value in {"runner": runner, "admission": runtime,
                             "rpc_bus": bus, "_settings": settings}.items():
             monkeypatch.setattr(main, name, value)
         bus.handlers[DURABLE_RUN_REQUEST_CHANNEL] = main._handle_request
@@ -215,7 +215,7 @@ def test_curiosity_receipt_wait_restart_grant_dispatch_and_completion(monkeypatc
             assigned = next(e for e in history if e["event"] == "run.lane_assigned")
             assert assigned["detail"]["lane"] == expected_role    # Hub's run view: lane = the hold's role
             assert (await gpu.lease(hold["lease_id"]))["status"] == "released"
-            assert await legacy_rows(store) == (0, 0)
+            assert await legacy_tables(store) == []
             assert not bus.inflight_rpc and not bus.subscriptions
             await restarted.close()
         finally:

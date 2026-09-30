@@ -2,12 +2,14 @@
 
 Stage 4.5 (GPU pool cutover, docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md):
 the GPU pool is the only scheduler. A run's GPU is a pool *hold* (orion.gpu_pool.client), whose id
-lives in the run's LangGraph checkpoint; this store no longer writes demands, grants or leases.
+lives in the run's LangGraph checkpoint. This store keeps the run registry (``durable_admission_runs``)
+and its event history/outbox (``durable_resource_events``), which Hub's curiosity run views read.
 
-``durable_resource_demands`` / ``durable_resource_leases`` / ``durable_elastic_slot`` are FROZEN:
-nothing here inserts into them. They stay because ``capacity.py`` (world-model and visual-chain
-GPU permits, deleted in stage 5) still joins them, and ``_expire`` below is its only use of the
-lease half. The `terminal` field is solely a projection written by the graph driver.
+Stage 5.6 (docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md,
+Decision 5) moved this file here from the retired durable-admission package and deleted the legacy
+broker tables it no longer touches (``durable_resource_demands``, ``durable_resource_leases``,
+``durable_elastic_slot``, ``durable_gateway_permits``). The `terminal` field is solely a projection
+written by the graph driver.
 """
 from __future__ import annotations
 
@@ -44,16 +46,30 @@ class SubmissionConflict(ValueError):
     """An existing run id was reused for a different immutable request."""
 
 
-class PostgresAdmissionStore:
+class DurableRunRegistryStore:
     def __init__(self, pool: Any, *, clock: Callable[[], datetime] | None = None):
         self.pool = pool
         self.clock = clock  # Test-only fake clock; production uses the DB clock.
 
     async def setup(self) -> None:
+        """TESTS AND EVALS ONLY: build this store's schema in a disposable, non-public schema.
+
+        It applies the stage-5.6 drop migration, so it must never touch production, where that drop
+        goes through scripts/gpu_pool_stage5_snapshot_and_drop.sh (snapshot first). Production's
+        schema is operator-managed. Refuses when the connection's current schema is ``public``."""
         directory = Path(__file__).resolve().parents[2] / "services/orion-sql-db"
         async with self.pool.connection() as conn:
+            row = await (await conn.execute("SELECT current_schema() AS s")).fetchone()
+            current = row["s"] if isinstance(row, dict) else row[0]
+            if current in (None, "public"):
+                raise RuntimeError("DurableRunRegistryStore.setup() is test-only and refuses the public schema "
+                                   f"(current_schema={current!r}); production migrations are operator-managed")
             async with conn.transaction():
-                for name in ("manual_migration_durable_resource_admission_v1.sql", "manual_migration_gateway_capacity_v1.sql", "manual_migration_gpu2_elastic_v1.sql", "manual_migration_durable_resource_abandon_pending_v1.sql"):
+                # The drop migration last: a test schema matches production after stage 5.6 (the v1
+                # file still creates the legacy broker tables it drops).
+                for name in ("manual_migration_durable_resource_admission_v1.sql",
+                             "manual_migration_durable_resource_abandon_pending_v1.sql",
+                             "manual_migration_gpu_pool_stage5_drop_legacy_tables.sql"):
                     await conn.execute((directory / name).read_text(), prepare=False)
 
     async def now(self, conn: Any) -> datetime:
@@ -195,14 +211,6 @@ class PostgresAdmissionStore:
                 (ABANDON_PENDING_EVENT, now - timedelta(seconds=max_age_seconds), ABANDON_ACKED_EVENT,
                  limit))).fetchall()
             return list(rows)
-
-    async def _expire(self, conn: Any, now: datetime) -> list[dict[str, Any]]:
-        # Legacy (frozen) durable leases only; capacity.py's last use of this table. Stage 5 deletes it.
-        rows = await (await conn.execute("UPDATE durable_resource_leases SET status='expired' WHERE status='active' AND expires_at<=%s RETURNING *", (now,))).fetchall()
-        for row in rows:
-            await conn.execute("UPDATE durable_resource_demands SET status='suspended' WHERE demand_id=%s AND status='granted'", (row["demand_id"],))
-            await self._event(conn, row["run_id"], "resource.lease_expired", {"lease_id": row["lease_id"], "generation": row["generation"], "lane": row["lane"]}, event_id=f"expired:{row['lease_id']}", now=now)
-        return rows
 
     async def record_event(self, run_id: str, event: str, detail: dict[str, Any], event_id: str | None = None) -> dict[str, Any]:
         async with self.transaction() as conn:

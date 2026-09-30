@@ -11,7 +11,7 @@ Fails on:
   - service roles whose declared VRAM does not fit their card, alone or after a swap
   - a big-model class listing an 8B role (nothing spills down to gpu3)
   - stage 4 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md):
-    a swap seat with neither a load/unload bridge nor a launch on itself and every role it evicts;
+    a swap seat without a launch on itself and every role it evicts (stage 5.6 removed swap.load/unload);
     a launch naming an unknown actuator; a launch role on a card with no index; and a launch whose
     compose file/service/profile/LLM_ROLE/port/cuda_env does not match what it names
   - stage 5.1 (docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md):

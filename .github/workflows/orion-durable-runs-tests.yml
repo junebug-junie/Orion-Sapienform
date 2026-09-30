@@ -11,8 +11,9 @@ on:
       - "orion/schemas/durable_run.py"
       - "orion/schemas/reverie_visual_run.py"
       - "orion/schemas/resource_admission.py"
-      - "orion/durable_admission/**"
-      - "services/orion-sql-db/manual_migration_gpu2_elastic_v1.sql"
+      - "orion/durable_runs/**"
+      - "services/orion-sql-db/manual_migration_gpu_pool_stage5_drop_legacy_tables.sql"
+      - "scripts/gpu_pool_stage5_snapshot_and_drop.sh"
       - "orion/llm/resource_lease.py"
       - "orion/schemas/gpu_pool.py"
       - "orion/schemas/harness_finalize.py"
@@ -28,7 +29,7 @@ on:
       - "orion/schemas/thought.py"
       - "services/orion-thought/app/bus_listener.py"
       - "services/orion-sql-db/manual_migration_durable_resource_admission_v1.sql"
-      - "services/orion-sql-db/manual_migration_gateway_capacity_v1.sql"
+      - "services/orion-sql-db/manual_migration_durable_resource_abandon_pending_v1.sql"
       - "orion/curiosity/journal.py"
       - "orion/curiosity/attention_schema.py"
       - ".github/workflows/orion-durable-runs-tests.yml"
@@ -43,8 +44,9 @@ on:
       - "orion/schemas/durable_run.py"
       - "orion/schemas/reverie_visual_run.py"
       - "orion/schemas/resource_admission.py"
-      - "orion/durable_admission/**"
-      - "services/orion-sql-db/manual_migration_gpu2_elastic_v1.sql"
+      - "orion/durable_runs/**"
+      - "services/orion-sql-db/manual_migration_gpu_pool_stage5_drop_legacy_tables.sql"
+      - "scripts/gpu_pool_stage5_snapshot_and_drop.sh"
       - "orion/llm/resource_lease.py"
       - "orion/schemas/gpu_pool.py"
       - "orion/schemas/harness_finalize.py"
@@ -59,7 +61,7 @@ on:
       - "services/orion-cortex-exec/app/executor.py"
       - "orion/schemas/thought.py"
       - "services/orion-thought/app/bus_listener.py"
-      - "services/orion-sql-db/manual_migration_gateway_capacity_v1.sql"
+      - "services/orion-sql-db/manual_migration_durable_resource_abandon_pending_v1.sql"
 
 jobs:
   unit:
@@ -105,11 +107,6 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: python services/orion-durable-runs/evals/deploy_order_skew.py
-      - name: Gateway capacity contention eval on isolated Postgres
-        env:
-          PYTHONPATH: ${{ github.workspace }}
-          ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
-        run: python services/orion-durable-runs/evals/gateway_capacity.py
 
   gateway:
     name: Gateway — shared capacity and transport lifecycle

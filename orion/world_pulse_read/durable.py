@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS reading_durable_turn (
 # dumped with them (defaults: false / [] / null); the model is extra="forbid", so a stored row is
 # read back without them. The stored prompt/run id stay authoritative; these keys never meant
 # anything to the pool. Durable-runs' duplicate-receipt comparison ignores them too
-# (orion/durable_admission/store.py IGNORED_ADMISSION_FIELDS), so a resubmit is the same run.
+# (orion/durable_runs/registry_store.py IGNORED_ADMISSION_FIELDS), so a resubmit is the same run.
 PRE_4_6_ADMISSION_KEYS = ("allow_elastic_activation", "alternatives", "pinned_lane", "operator_override")
 
 

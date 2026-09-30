@@ -14,10 +14,6 @@ from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.schemas.durable_run import DURABLE_RUN_REQUEST_KIND, DURABLE_RUN_RECEIPT_KIND, DurableRunRequestV1, DurableRunReceiptV1
 from orion.schemas.gpu_pool import GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND
 from orion.schemas.resource_admission import RESOURCE_EVENT_CHANNEL, RESOURCE_EVENT_KIND, ResourceEventV1
-from orion.schemas.resource_admission import (
-    CapacityAcquireV1, CapacityTokenV1, CapacityAcquireResultV1,
-    CapacityRenewResultV1, CapacityReleaseResultV1,
-)
 
 from app.settings import get_settings
 
@@ -34,7 +30,6 @@ _sweep_task: asyncio.Task[None] | None = None
 _checkpointer_cm: Any = None
 admission: Any = None
 _admission_task: asyncio.Task | None = None
-capacity: Any = None
 rpc_health_publisher: RpcHealthPublisher | None = None
 
 
@@ -139,7 +134,7 @@ async def _open_checkpointer():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task, capacity
+    global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task
     global rpc_health_publisher
     from app.runner import DurableRunner
 
@@ -158,14 +153,6 @@ async def lifespan(app: FastAPI):
             rpc_health_publisher = build_rpc_health_publisher()
             rpc_health_publisher.start()
         runner = DurableRunner(_settings, bus=rpc_bus, checkpointer=saver)
-        if _settings.capacity_enabled:
-            from orion.durable_admission.capacity import PostgresCapacityStore
-            from orion.durable_admission.store import PostgresAdmissionStore
-            # reserve_waiting=False: pending durable demands are frozen since stage 4.5 (the pool
-            # places runs); no broker exists to honour a drain reservation for them any more.
-            capacity = PostgresCapacityStore(PostgresAdmissionStore(_checkpointer_cm),
-                                             ttl_seconds=_settings.lease_seconds, reserve_waiting=False)
-            await capacity.snapshot()  # Additive migration must be applied first.
         if _settings.admission_enabled:
             from app.admission_runtime import AdmissionRuntime
             admission = AdmissionRuntime(_settings, runner, _checkpointer_cm)
@@ -236,7 +223,6 @@ async def health() -> dict[str, Any]:
         "enabled": _settings.enabled,
         "active_runs": runner.active_run_ids if runner is not None else [],
         "admission_enabled": admission is not None,
-        "capacity_enabled": capacity is not None,
         "admitted_active_runs": sorted(admission.active) if admission is not None else [],
     }
 
@@ -300,34 +286,3 @@ async def release_outreach_lease(run_id: str):
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
 
-
-def _capacity():
-    if capacity is None:
-        raise HTTPException(503, "Gateway capacity authority is disabled")
-    return capacity
-
-
-@app.post("/capacity/acquire", response_model=CapacityAcquireResultV1)
-async def acquire_capacity(request: CapacityAcquireV1):
-    try:
-        return await _capacity().acquire(request)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-
-
-@app.post("/capacity/renew", response_model=CapacityRenewResultV1)
-async def renew_capacity(token: CapacityTokenV1):
-    return await _capacity().renew(token)
-
-
-@app.post("/capacity/release", response_model=CapacityReleaseResultV1)
-async def release_capacity(token: CapacityTokenV1):
-    result = await _capacity().release(token)
-    if admission is not None:
-        admission._wake.set()
-    return result
-
-
-@app.get("/capacity")
-async def capacity_snapshot():
-    return await _capacity().snapshot()

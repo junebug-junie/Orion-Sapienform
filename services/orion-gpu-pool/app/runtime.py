@@ -687,13 +687,12 @@ class PoolRuntime:
         agent-gpu2 after the stage-5.3 cutover: 900 (seat) + 600 (diffusion) = 1500 s to the first
         `status`, faulted as stuck at MAX_ACTION_TIMEOUTS x that = 3000 s. The controller's realistic
         worst case -- a failed load: two `docker ps` reads (<= 30 s each) + diffusion drain
-        (GPU2_DRAIN_TIMEOUT_SEC, 300) + seat ready wait (900) + diffusion's restore ready wait (600) +
+        (controller GPU_LANE_DRAIN_TIMEOUT_SEC, 300) + seat ready wait (900) + diffusion's restore ready wait (600) +
         four quick `docker stop`/`up` calls -- is ~1900 s: past the first deadline (the pool keeps
         polling while `status` says in_flight) and inside the ceiling. NOT inside it: docker calls
         that each run near their own GPU_LANE_COMMAND_TIMEOUT_SEC (900 s, four of them on a failed
         load, ~4100 s in all). That is a wedged actuator, and faulting the card is this ceiling's job;
-        a late result is then ignored and an operator `clear_fault` reconciles (same as the bridge,
-        whose ceiling was 300 s tighter). Both bounds pinned by tests/test_stage5_3_cutover_e2e.py."""
+        a late result is then ignored and an operator `clear_fault` reconciles. Both bounds pinned by tests/test_stage5_3_cutover_e2e.py."""
         names = [seat, *self.cfg.evicted_by(seat)]
         total = sum(self.cfg.roles[r].launch.timeout_sec for r in names if self.cfg.roles[r].launch)
         return total or 900.0

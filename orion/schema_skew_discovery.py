@@ -81,10 +81,6 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
         "orion-memory-consolidation",
         "validates the LLM draft, insert_pending_draft() stores it; hub routes validate it back",
     ),
-    "orion.schemas.resource_admission:CapacityPermitV1": (
-        "orion-durable-runs",
-        "built from a SQL row in orion.durable_admission.capacity, served by /capacity/acquire; capacity_client validates it",
-    ),
     # No cross-service writer.
     "orion/attention/field_attention/policy.py": (None, "policy YAML the reader loads itself"),
     "orion.autonomy.models:CapabilityPolicyV1": (None, "capability policy YAML the reader loads itself"),

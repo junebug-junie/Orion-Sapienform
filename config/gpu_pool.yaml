@@ -53,9 +53,8 @@ roles:
                # 9000 s (~2.5 h), Juniper 2026-09-29 (stage 5 spec, "Juniper's answers" 1): curiosity and
                # self-sense holds may land here; image generation may wait up to ~2.5 h for gpu2.
                max_hold_sec: 9000,
-               # No load/unload bridge verbs (stage 5.3 cutover): the controller runs this `launch` block
-               # and diffusion's through its generic executor. Rollback = restore
-               # `load: gpu2/agent, unload: gpu2/restore` and drop `profiles` (runbook 2026-09-29-gpu-pool-stage5-3-cutover).
+               # The controller runs this `launch` block and diffusion's through its generic executor
+               # (stage 5.3 cutover; 5.6 deleted the load/unload bridge verbs and the controller's bridge).
                # after_wait_sec keeps today's 1200s elastic trigger. guards: thermal only -- visual_baseline was
                # deleted in stage 5.4 (a reverie-visual diffusion hold reclaims gpu2 through the queue).
                swap: {evicts: [diffusion], after_wait_sec: 1200, guards: [thermal]},
@@ -84,7 +83,7 @@ roles:
                         cuda_env: CUDA_VISIBLE_DEVICES,
                         drain: {set: /v1/lifecycle/drain, status: /v1/lifecycle/status},
                         ready: /ready, timeout_sec: 600}}
-  # Deferred (stage 5 Decision 3): no launch block and no bridge, so the pool marks it
+  # Deferred (stage 5 Decision 3): no launch block, so the pool marks it
   # not_actuatable. Making it real = launch blocks here and on every role it evicts.
   experiment: {kind: llm, cards: [gpu0, gpu1, gpu2, gpu3], owner: experiment, port: 8099,
                operator_only: true, max_hold_sec: 14400,

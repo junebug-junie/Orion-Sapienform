@@ -172,7 +172,7 @@ URGENT_STATE_SQL = (
 URGENT_PROGRESS_EVENTS_SQL = (
     "SELECT 1 AS one FROM durable_resource_events WHERE run_id = $1 AND event = ANY($2::text[]) LIMIT 1"
 )
-# The terminal outbox event (orion/durable_admission/store.py finish_projection) carries the
+# The terminal outbox event (orion/durable_runs/registry_store.py finish_projection) carries the
 # same detail the run-state event does, committed with `terminal` in one transaction.
 URGENT_TERMINAL_EVENT_SQL = "SELECT payload->'detail' AS detail FROM durable_resource_events WHERE entry_id = $1"
 PAST_RESOURCE_WAIT_EVENTS = ("run.resource_granted", "run.admitted", "run.running", "run.started")

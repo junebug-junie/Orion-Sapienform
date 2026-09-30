@@ -218,15 +218,13 @@ def test_rejects_actuator_on_another_host():
     _bad(lambda d: d["actuators"].update(atlas={"host": "atlas"}), "is not the pool host")
 
 
-def test_rejects_half_a_bridge():
-    # 5.3 removed the pair from the committed file; half of it must still be refused.
-    _bad(lambda d: d["roles"]["agent-gpu2"]["swap"].update(load="gpu2/agent"), "come as a pair")
+def test_rejects_a_bridge_verb():
+    # 5.6 deleted the bridge: even half of the old pair is an unknown key.
+    _bad(lambda d: d["roles"]["agent-gpu2"]["swap"].update(load="gpu2/agent"), "Extra inputs")
 
 
-def test_rejects_unbridged_seat_whose_evicted_role_has_no_launch():
+def test_rejects_seat_whose_evicted_role_has_no_launch():
     def mutate(d):
-        d["roles"]["agent-gpu2"]["swap"].pop("load", None)   # gone from the committed file since 5.3
-        d["roles"]["agent-gpu2"]["swap"].pop("unload", None)
         d["roles"]["diffusion"].pop("launch")
     _bad(mutate, r"missing on \['diffusion'\]")
 
@@ -243,10 +241,9 @@ def test_rejects_bad_launch_block(field, value):
     _bad(lambda d: d["roles"]["agent-gpu2"]["launch"].update({field: value}), "")
 
 
-def test_unbridged_seat_with_launches_is_valid_and_after_wait_overrides():
+def test_seat_with_launches_is_valid_and_after_wait_overrides():
     data = copy.deepcopy(RAW)
     swap = data["roles"]["agent-gpu2"]["swap"]
-    swap.pop("load", None), swap.pop("unload", None)   # the committed shape since 5.3
     swap.update(after_wait_sec=1200, guards=["thermal"])
     cfg = PoolConfig.model_validate(data)
     assert cfg.swap_after_wait_sec("agent-gpu2") == 1200
@@ -378,7 +375,6 @@ def test_spec_gpu4_example_corrected_is_accepted_with_no_pool_code(tmp_path):
     cfg = PoolConfig.model_validate(_gpu4(copy.deepcopy(RAW), list_fast2_in_metacog=True))
     assert cfg.evicted_by("vision4") == ["fast2"]
     assert "fast2" in cfg.resident_roles() and "vision4" not in cfg.resident_roles()
-    assert not cfg.roles["vision4"].swap.bridged
     # The gate against a compose file that has both services (and the real gpu2 ones):
     _compose_mutation(tmp_path, lambda s, c: c["services"].update(yaml.safe_load(GPU4_COMPOSE)["services"]))
     assert check_launch(cfg, tmp_path) == []

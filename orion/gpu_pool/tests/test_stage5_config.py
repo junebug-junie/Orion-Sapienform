@@ -80,9 +80,9 @@ def test_live_config_carries_the_5_1_values():
     assert CFG.load_profile("diffusion") is None and CFG.load_profile("chat") is None
     assert launch.timeout_sec == 900
     assert CFG.roles["diffusion"].launch.cuda_env == "CUDA_VISIBLE_DEVICES"
-    # 5.3: agent-gpu2 is off the bridge; experiment lost its dead verbs in 5.1 and is not actuatable
-    assert not CFG.roles["agent-gpu2"].swap.bridged
-    assert not CFG.roles["experiment"].swap.bridged and CFG.roles["experiment"].launch is None
+    # 5.6: the bridge verbs are gone from the schema; experiment has no launch and is not actuatable
+    assert not hasattr(CFG.roles["agent-gpu2"].swap, "load") and not hasattr(CFG.roles["agent-gpu2"].swap, "bridged")
+    assert CFG.roles["experiment"].launch is None
 
 
 def test_agent_burst_compose_resolves_to_todays_device_and_profile():
@@ -232,9 +232,8 @@ def test_rejects_bad_serialize_with(names, match):
         PoolConfig.model_validate(data)
 
 
-def test_non_operator_swap_seat_without_launch_or_bridge_is_still_refused():
+def test_non_operator_swap_seat_without_launch_is_refused():
     data = copy.deepcopy(RAW)
-    data["roles"]["agent-gpu2"]["swap"].pop("load", None), data["roles"]["agent-gpu2"]["swap"].pop("unload", None)
     data["roles"]["agent-gpu2"].pop("launch")
     with pytest.raises(ValidationError, match="need a launch"):
         PoolConfig.model_validate(data)
@@ -426,7 +425,7 @@ def test_worked_example_a_add_gpu4_is_config_only(tmp_path):
     _tree(tmp_path)
     _edit_compose(tmp_path, BURST, lambda s: s.update(yaml.safe_load(GPU4_COMPOSE)["services"]))
     assert check_launch(cfg, tmp_path) == []
-    assert cfg.evicted_by("vision4") == ["fast2"] and not cfg.roles["vision4"].swap.bridged
+    assert cfg.evicted_by("vision4") == ["fast2"]
 
 
 def test_worked_example_a_with_a_literal_device_is_refused(tmp_path):
@@ -448,14 +447,39 @@ def test_swap_seat_with_only_a_launch_block_is_valid():
     assert cfg.evicted_by("agent-gpu2") == ["diffusion"]
 
 
-def test_bridged_seat_listing_profiles_is_refused():
-    """The pool sends launch.profiles[0] on every load and the bridge refuses any profile
-    (bridge_cannot_set_profile), so the half-reverted rollback -- verbs back, profiles kept -- would
-    refuse every load. The validator catches it before a deploy does."""
+@pytest.mark.parametrize("verbs", [{"load": "gpu2/agent", "unload": "gpu2/restore"}, {"load": "gpu2/agent"},
+                                   {"unload": "circe/restore"}])
+def test_stage5_6_swap_bridge_verbs_are_no_longer_accepted(verbs):
+    """5.6 deleted the stage-4 bridge: swap.load/unload are unknown keys (extra="forbid"), so a
+    YAML that still carries them -- the old 5.3 rollback shape -- fails validation instead of
+    silently meaning nothing. No role in the committed file uses them."""
+    for name, role in RAW["roles"].items():
+        assert not {"load", "unload"} & set(role.get("swap") or {}), name
     data = copy.deepcopy(RAW)
-    data["roles"]["agent-gpu2"]["swap"].update(load="gpu2/agent", unload="gpu2/restore")
-    with pytest.raises(ValidationError, match="bridge cannot set a profile"):
+    data["roles"]["agent-gpu2"]["swap"].update(verbs)
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         PoolConfig.model_validate(data)
-    data["roles"]["agent-gpu2"]["launch"].pop("profiles")      # the full rollback is valid
-    cfg = PoolConfig.model_validate(data)
-    assert cfg.roles["agent-gpu2"].swap.bridged and cfg.load_profile("agent-gpu2") is None
+
+
+def test_stage5_6_digest_is_unchanged_by_the_bridge_removal():
+    """launch_digest keeps the always-null load/unload in its hashed body, so a 5.5 pool and a 5.6
+    controller (or the reverse) agree on every role: 5.6 needs no lockstep deploy. The body is
+    re-derived here in the 5.3-5.5 formula; a "cleanup" that drops the nulls fails this."""
+    import hashlib
+    import json as _json
+
+    def one(cfg, name):
+        spec = cfg.roles[name]
+        launch = spec.launch
+        return {"kind": spec.kind, "port": spec.port, "cards": {c: cfg.cards[c].index for c in spec.cards},
+                "launch": launch.model_dump(mode="json", by_alias=True) if launch else None,
+                "actuator_host": (cfg.actuators[launch.actuator].host
+                                  if launch and launch.actuator in cfg.actuators else None)}
+
+    for role, spec in CFG.roles.items():
+        evicted = CFG.evicted_by(role)
+        body = {"role": role, **one(CFG, role),
+                "swap": ({"load": None, "unload": None, "evicts": sorted(evicted)} if spec.swap else None),
+                "evicted": {r: one(CFG, r) for r in sorted(evicted)}}
+        old = hashlib.sha256(_json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        assert launch_digest(CFG, role) == old, role

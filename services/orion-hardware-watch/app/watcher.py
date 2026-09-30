@@ -18,7 +18,8 @@ from typing import Any, Awaitable, Callable
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.hardware_watch.rules import (
-    Baseline, CoolingRuleConfig, HeatRuleConfig, ShedRuleConfig, cooling_verdict, heat_verdict, shed_verdict,
+    Baseline, CoolingRuleConfig, HeatRuleConfig, ShedRuleConfig, ShedVerdict, cooling_verdict, heat_verdict,
+    shed_verdict,
 )
 from orion.schemas.curiosity_urgent import URGENT_REQUEST_CHANNEL, URGENT_REQUEST_KIND, CuriosityUrgentRequestV1
 from orion.schemas.hardware_watch import (
@@ -94,10 +95,26 @@ class Watcher:
                                       ceiling_rearm_c=settings.gpu_ceiling_rearm_c)
         self._baselines: dict[str, _BaselineCache] = {}
         self._last_refresh: dict[str, datetime] = {}
+        self._last_shed: dict[str, Any] = {}          # incident_id -> latest ShedVerdict (for the event)
+        self._pending_resolved: dict[str, dict] = {}  # resolved rows whose event failed to publish
+        self._lock: asyncio.Lock | None = None
+        self._lock_loop: Any = None
         self.last = TickReport()
+
+    def _guard(self) -> asyncio.Lock:
+        """One lock per event loop: a tick, an operator resolve and a simulate never interleave, so
+        a tick can never act on a row the operator just closed (re-shedding a resolved incident)."""
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock, self._lock_loop = asyncio.Lock(), loop
+        return self._lock
 
     # --- the tick -----------------------------------------------------------------------------
     async def tick(self) -> TickReport:
+        async with self._guard():
+            return await self._tick()
+
+    async def _tick(self) -> TickReport:
         now = self.clock()
         report = TickReport(at=now)
         if not self.s.enabled:
@@ -139,21 +156,38 @@ class Watcher:
                 evidence = {"verdict": v.detail, "recent": _compact_cooling(points)}
                 await self._open("cooling", COOLING_SUBJECT, v.open_reason, now, evidence)
             return
-        if v.resolve and row["open_reason"] != "simulated":   # a drill ends only by operator resolve
+        if row["open_reason"] == "simulated":
+            # A drill ends only by operator resolve -- unless the AC really fails meanwhile: then the
+            # drill is closed and the real incident opens (real alert, real investigation).
+            if v.open_reason:
+                await self._resolve(row, now, "superseded", "rule")
+                evidence = {"verdict": v.detail, "recent": _compact_cooling(points)}
+                await self._open("cooling", COOLING_SUBJECT, v.open_reason, now, evidence)
+                return
+        elif v.resolve:
             await self._resolve(row, now, "recovered", "rule")
             return
         await self._update_shed(row, now)
 
     async def _cpu_heat(self, now: datetime, open_rows: dict, report: TickReport) -> None:
-        for node in self.s.heat_node_list:
+        nodes = list(dict.fromkeys(self.s.heat_node_list + [s for (r, s) in open_rows if r == "cpu_heat"]))
+        for node in nodes:
             await self._heat("cpu_heat", node, node, CPU_KEY, self.cpu_cfg, now, open_rows, report)
 
     async def _gpu_heat(self, now: datetime, open_rows: dict, report: TickReport) -> None:
+        # An open incident is always re-evaluated, even if its card stopped reporting or its node left
+        # the config (a silent sensor neither opens nor resolves: it waits for data or the operator).
+        subjects: dict[str, tuple[str, str]] = {}
+        for (rule, subject) in open_rows:
+            if rule == "gpu_heat" and "/gpu" in subject:
+                node, card = subject.split("/gpu", 1)
+                subjects[subject] = (node, f"gpu{card}_temp_c")
         for node in self.s.gpu_node_list:
             keys = await self._sync(self.store.gpu_keys, node, now - timedelta(hours=1))
             for key in keys:
-                subject = f"{node}/gpu{key[3:-len('_temp_c')]}"
-                await self._heat("gpu_heat", subject, node, key, self.gpu_cfg, now, open_rows, report)
+                subjects[f"{node}/gpu{key[3:-len('_temp_c')]}"] = (node, key)
+        for subject, (node, key) in subjects.items():
+            await self._heat("gpu_heat", subject, node, key, self.gpu_cfg, now, open_rows, report)
 
     async def _heat(self, rule: str, subject: str, node: str, key: str, cfg: HeatRuleConfig, now: datetime,
                     open_rows: dict, report: TickReport) -> None:
@@ -191,11 +225,15 @@ class Watcher:
             return None
         row: dict[str, Any] = {"incident_id": uuid.uuid4().hex, "rule": rule, "subject": subject, "status": "open",
                                "open_reason": reason, "opened_at": now, "evidence": evidence, "updated_at": now}
+        sv = None
         if rule == "cooling":
-            row.update(self._shed_fields(await self._shed_now(now), now))
+            sv = await self._shed_now(now)
+            row.update(self._shed_fields(sv, now))
         if not await self._sync(self.store.insert_incident, row):
             logger.info("hardware_watch_already_open rule=%s subject=%s", rule, subject)
             return None
+        if sv is not None:
+            self._last_shed[row["incident_id"]] = sv
         logger.warning("hardware_watch_incident_opened id=%s rule=%s subject=%s reason=%s shed=%s",
                        row["incident_id"], rule, subject, reason, row.get("shed_reason"))
         if rule == "cooling":
@@ -207,33 +245,46 @@ class Watcher:
     async def _resolve(self, row: dict, now: datetime, reason: str, by: str) -> dict:
         fields: dict[str, Any] = {"status": "resolved", "resolved_at": now, "resolve_reason": reason,
                                   "resolved_by": by}
-        if reason == "operator" and self.s.operator_snooze_sec > 0:
+        # A drill's resolve never snoozes the real rule (the snooze is per rule+subject).
+        if reason == "operator" and self.s.operator_snooze_sec > 0 and row["open_reason"] != "simulated":
             fields["snooze_until"] = now + timedelta(seconds=self.s.operator_snooze_sec)
-        await self._sync(self.store.update_incident, row["incident_id"], **fields)
+        if not await self._sync(self.store.resolve_incident, row["incident_id"], **fields):
+            logger.info("hardware_watch_already_resolved id=%s", row["incident_id"])
+            return await self._sync(self.store.get_incident, row["incident_id"]) or {**row, **fields}
         row = {**row, **fields}
+        self._last_shed.pop(row["incident_id"], None)
         logger.warning("hardware_watch_incident_resolved id=%s rule=%s subject=%s reason=%s by=%s",
                        row["incident_id"], row["rule"], row["subject"], reason, by)
-        await self._emit(row, "resolved", now)
+        if not await self._emit(row, "resolved", now):
+            self._pending_resolved[row["incident_id"]] = row   # retried next tick
         self._last_refresh.pop(row["incident_id"], None)
         if row["rule"] == "cooling":
             await self._send_recovered(row, now)
         return row
 
     async def resolve_by_operator(self, incident_id: str, by: str = "juniper") -> dict | None:
-        row = await self._sync(self.store.get_incident, incident_id)
-        if row is None or row["status"] != "open":
-            return row
-        return await self._resolve(row, self.clock(), "operator", by[:64] or "juniper")
+        async with self._guard():
+            row = await self._sync(self.store.get_incident, incident_id)
+            if row is None or row["status"] != "open":
+                return row
+            return await self._resolve(row, self.clock(), "operator", by[:64] or "juniper")
 
     async def simulate_cooling(self) -> dict | None:
-        now = self.clock()
-        return await self._open("cooling", COOLING_SUBJECT, "simulated", now,
-                                {"simulated": True, "note": "POST /incidents/simulate test hook"}, by="operator")
+        async with self._guard():
+            now = self.clock()
+            return await self._open("cooling", COOLING_SUBJECT, "simulated", now,
+                                    {"simulated": True, "note": "POST /incidents/simulate test hook"}, by="operator")
 
     # --- shed ---------------------------------------------------------------------------------
-    async def _shed_now(self, now: datetime):
-        pts = await self._sync(self.store.temp_points, self.s.cabinet_node, CABINET_KEY,
-                               now - timedelta(seconds=max(self.shed_cfg.window_sec, self.shed_cfg.max_age_sec) + 60))
+    async def _shed_now(self, now: datetime) -> ShedVerdict:
+        """The shed verdict; a failed cabinet read counts as unreadable (warming). It must never
+        block the AC alert, which is opened right after this."""
+        try:
+            pts = await self._sync(self.store.temp_points, self.s.cabinet_node, CABINET_KEY,
+                                   now - timedelta(seconds=max(self.shed_cfg.window_sec, self.shed_cfg.max_age_sec) + 60))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("hardware_watch_cabinet_unreadable err=%s", str(exc)[:300])
+            return ShedVerdict(True, "cabinet_unreadable", None, None)
         return shed_verdict(pts, now, self.shed_cfg)
 
     def _shed_fields(self, sv, now: datetime) -> dict[str, Any]:
@@ -246,9 +297,11 @@ class Watcher:
     async def _update_shed(self, row: dict, now: datetime) -> None:
         """Latched: once a cooling incident requested shedding it keeps requesting until it resolves.
         Before that, re-evaluate every tick and publish at once when it starts."""
+        sv = await self._shed_now(now)
+        self._last_shed[row["incident_id"]] = sv        # current temp/rise for the event
         if row.get("shed_requested"):
             return
-        fields = self._shed_fields(await self._shed_now(now), now)
+        fields = self._shed_fields(sv, now)
         if fields.get("shed_requested"):
             await self._sync(self.store.update_incident, row["incident_id"], **fields)
             row.update(fields)
@@ -319,12 +372,17 @@ class Watcher:
         logger.warning("hardware_watch_urgent_requested id=%s rule=%s subject=%s",
                        row["incident_id"], row["rule"], row["subject"])
 
-    async def _emit(self, row: dict, transition: str, now: datetime) -> None:
+    async def _emit(self, row: dict, transition: str, now: datetime) -> bool:
         shed = None
         if row["rule"] == "cooling":
-            requested = bool(row.get("shed_requested")) and row["status"] == "open"
+            # The watcher's switch also stops a request latched before it was turned off.
+            requested = bool(row.get("shed_requested")) and row["status"] == "open" and self.s.shed_enabled
+            sv = self._last_shed.get(row["incident_id"])
             shed = HardwareWatchShedV1(
-                requested=requested, reason=row.get("shed_reason"), requested_at=row.get("shed_requested_at"),
+                requested=requested,
+                reason=row.get("shed_reason") if self.s.shed_enabled or not row.get("shed_requested") else "disabled",
+                requested_at=row.get("shed_requested_at"),
+                cabinet_temp_c=getattr(sv, "temp_c", None), cabinet_rise_c=getattr(sv, "rise_c", None),
                 valid_until=now + timedelta(seconds=self.s.shed_valid_sec) if requested else None)
         ev = HardwareWatchIncidentV1(
             incident_id=row["incident_id"], rule=row["rule"], subject=row["subject"], transition=transition,
@@ -337,13 +395,18 @@ class Watcher:
                 kind=HARDWARE_WATCH_INCIDENT_KIND, source=self.source, correlation_id=uuid.UUID(row["incident_id"]),
                 payload=ev.model_dump(mode="json")))
             self._last_refresh[row["incident_id"]] = now
+            return True
         except Exception as exc:  # noqa: BLE001 -- the refresh loop re-publishes open incidents
             logger.error("hardware_watch_emit_failed id=%s transition=%s err=%s", row["incident_id"], transition, exc)
+            return False
 
     async def _retry_and_refresh(self, now: datetime, report: TickReport) -> None:
         """Retry a failed alert / urgent request; re-publish every open incident each refresh_sec so
         the pool's shed signal never lapses while the incident is open (and a restarted pool
         re-learns it)."""
+        for iid, row in list(self._pending_resolved.items()):
+            if await self._emit(row, "resolved", now):
+                self._pending_resolved.pop(iid, None)
         for row in await self._sync(self.store.open_incidents):
             if row["rule"] == "cooling" and not row.get("alert_sent_at"):
                 await self._send_alert(row, now)
@@ -406,7 +469,7 @@ def _question(row: dict, cfg: CoolingRuleConfig) -> str:
                 "Is the cabinet actually losing cooling, or is this a sensor/Z-Wave/plumbing fault? "
                 "Find the cause, rate the severity, and name the one thing Juniper should do now.")
     what = "hottest CPU/board sensor" if row["rule"] == "cpu_heat" else "GPU die temperature"
-    arm = (f"above the absolute ceiling for 2+ minutes" if row["open_reason"] == "above_ceiling"
+    arm = ("above the absolute ceiling for 2+ minutes" if row["open_reason"] == "above_ceiling"
            else f"above its own 7-day p95 ({v.get('p95')} C) for 10+ minutes")
     return (f"{row['subject']}'s {what} has been {arm} as of {when} (latest {v.get('newest')} C). "
             "Is this real heat or a sensor fault? What load or condition is driving it, how severe is it, "

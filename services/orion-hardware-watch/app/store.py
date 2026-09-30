@@ -26,7 +26,8 @@ def _since(ts: datetime) -> str:
 
 
 class PostgresStore:
-    def __init__(self, conninfo: str):
+    def __init__(self, conninfo: str, cooling_role: str = "cabinet_cooling"):
+        self.cooling_role = cooling_role
         from psycopg.rows import dict_row
         from psycopg_pool import ConnectionPool
 
@@ -50,7 +51,7 @@ class PostgresStore:
     def cooling_points(self, since: datetime) -> list[CoolingPoint]:
         rows = self._all(
             "SELECT ts, cooling_watts, stale, device_online, controller_ready FROM home_cooling_sample "
-            "WHERE ts >= %s ORDER BY ts", (since,))
+            "WHERE role = %s AND ts >= %s ORDER BY ts", (self.cooling_role, since))
         return [CoolingPoint(r["ts"], r["cooling_watts"], r["stale"], bool(r["device_online"]),
                              bool(r["controller_ready"])) for r in rows]
 
@@ -95,6 +96,14 @@ class PostgresStore:
         vals = [json.dumps(v) if k == "evidence" else v for k, v in fields.items()]
         self._all(f"UPDATE hardware_watch_incident SET {sets} WHERE incident_id = %s RETURNING incident_id",
                   (*vals, incident_id))
+
+    def resolve_incident(self, incident_id: str, **fields: Any) -> bool:
+        """Close an OPEN incident; False when it was already resolved (a racing resolve)."""
+        fields["updated_at"] = datetime.now(timezone.utc)
+        sets = ", ".join(f"{k} = %s" for k in fields)
+        rows = self._all(f"UPDATE hardware_watch_incident SET {sets} WHERE incident_id = %s AND status = 'open' "
+                         "RETURNING incident_id", (*fields.values(), incident_id))
+        return bool(rows)
 
     def get_incident(self, incident_id: str) -> dict | None:
         rows = self._all(f"SELECT {', '.join(INCIDENT_COLUMNS)} FROM hardware_watch_incident "
@@ -152,6 +161,13 @@ class MemoryStore:
     def update_incident(self, incident_id: str, **fields: Any) -> None:
         if incident_id in self.incidents:
             self.incidents[incident_id].update(fields)
+
+    def resolve_incident(self, incident_id: str, **fields: Any) -> bool:
+        r = self.incidents.get(incident_id)
+        if r is None or r["status"] != "open":
+            return False
+        r.update(fields)
+        return True
 
     def get_incident(self, incident_id: str) -> dict | None:
         r = self.incidents.get(incident_id)

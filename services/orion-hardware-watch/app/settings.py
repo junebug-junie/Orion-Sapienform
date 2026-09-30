@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     alert_max_attempts: int = Field(60, ge=1, alias="HARDWARE_WATCH_ALERT_MAX_ATTEMPTS")
 
     # --- AC rule (subject cabinet_ac) ---
+    ac_role: str = Field("cabinet_cooling", alias="HARDWARE_WATCH_AC_ROLE")   # home_cooling_sample.role
     ac_low_w: float = Field(150.0, alias="HARDWARE_WATCH_AC_LOW_W")
     ac_low_sec: float = Field(180.0, alias="HARDWARE_WATCH_AC_LOW_SEC")
     ac_stale_sec: float = Field(300.0, alias="HARDWARE_WATCH_AC_STALE_SEC")
@@ -62,6 +63,15 @@ class Settings(BaseSettings):
     gpu_ceiling_c: float = Field(85.0, alias="HARDWARE_WATCH_GPU_CEILING_C")
     gpu_ceiling_sustain_sec: float = Field(120.0, alias="HARDWARE_WATCH_GPU_CEILING_SUSTAIN_SEC")
     gpu_ceiling_rearm_c: float = Field(80.0, alias="HARDWARE_WATCH_GPU_CEILING_REARM_C")
+
+    @model_validator(mode="after")
+    def _shed_signal_outlives_refresh(self) -> "Settings":
+        # The pool's copy of a shed request lapses at shed_valid_sec; the watcher must re-publish
+        # (every refresh_sec, checked every tick_sec) well before that or shedding flaps.
+        if not (self.tick_sec < self.shed_valid_sec and self.refresh_sec < self.shed_valid_sec):
+            raise ValueError("HARDWARE_WATCH_TICK_SEC and HARDWARE_WATCH_REFRESH_SEC must both be < "
+                             "HARDWARE_WATCH_SHED_VALID_SEC")
+        return self
 
     @property
     def heat_node_list(self) -> list[str]:

@@ -107,24 +107,24 @@ read temperature alone). With the AC down and the cabinet ≥ 32 °C all three a
 
 ## Tasks
 
-- [ ] 1. Contract: `orion/schemas/hardware_watch.py` (`HardwareWatchIncidentV1`, `HardwareWatchShedV1`),
+- [x] 1. Contract: `orion/schemas/hardware_watch.py` (`HardwareWatchIncidentV1`, `HardwareWatchShedV1`),
   registry entries, channel `orion:hardware:watch:incident` (producer `orion-hardware-watch`,
   consumer `orion-gpu-pool`). Test: schema round trip, registry resolve.
-- [ ] 2. GPU temperature: `gpu_host_stats.sh` adds `temperature.gpu` as the last CSV column
+- [x] 2. GPU temperature: `gpu_host_stats.sh` adds `temperature.gpu` as the last CSV column
   `temperature_gpu_c`; `extract_measurements` adds `gpu_temp_c_max` and `gpu{i}_temp_c`. Tests in
   `services/orion-biometrics/tests/test_gpu_collector.py` and the pipeline tests.
-- [ ] 3. Rules: `orion/hardware_watch/rules.py` (pure: cooling, heat, shed, percentile). Tests:
+- [x] 3. Rules: `orion/hardware_watch/rules.py` (pure: cooling, heat, shed, percentile). Tests:
   every open/resolve arm, boundaries, the frozen-resolve flap, stale/offline/no-row.
-- [ ] 4. Pool: `orion/gpu_pool/shed.py`, scheduler U4 + `Shed` decision, runtime board + Hunter on
+- [x] 4. Pool: `orion/gpu_pool/shed.py`, scheduler U4 + `Shed` decision, runtime board + Hunter on
   the incident channel, `GpuPoolStateV1.shed`, `/health` shed block, `GPU_POOL_SHED_ENABLED`.
   Tests: U4 in `orion/gpu_pool/tests`, runtime shed tests, pool-day eval shed scenario.
-- [ ] 5. Service `services/orion-hardware-watch/` (README, `.env_example`, compose, Dockerfile,
+- [x] 5. Service `services/orion-hardware-watch/` (README, `.env_example`, compose, Dockerfile,
   requirements, `app/{settings,store,watcher,main}.py`, tests, evals). Migration
   `services/orion-sql-db/manual_migration_hardware_watch_v1.sql`.
-- [ ] 6. Replay eval over real history (fixture exported from Postgres, committed gzip):
+- [x] 6. Replay eval over real history (fixture exported from Postgres, committed gzip):
   AC fires once on the 33.11 W stretch and nowhere else; CPU p95 episode counts; cabinet rise
   distribution.
-- [ ] 7. Env parity (`sync_local_env_from_example.py`), static gates, review, PR report.
+- [x] 7. Env parity (`sync_local_env_from_example.py`), static gates, review, PR report.
 
 ## Acceptance
 

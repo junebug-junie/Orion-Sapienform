@@ -61,7 +61,7 @@ async def lifespan(app: FastAPI):
         heartbeat_interval_sec=_settings.heartbeat_interval_sec))
     await heartbeat.start_background()
     _chassis.append(heartbeat)
-    _store = PostgresStore(_settings.postgres_uri)
+    _store = PostgresStore(_settings.postgres_uri, cooling_role=_settings.ac_role)
     await asyncio.to_thread(_store.check_schema)
     _bus = OrionBusAsync(url=_settings.orion_bus_url, enabled=_settings.orion_bus_enabled)
     await _bus.connect()

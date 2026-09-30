@@ -439,6 +439,8 @@ def schedule(
             else:
                 queued.append(lease)
         elif lease.status == "backlogged":
+            # U4: a shed lease still ages out here -- deadlines apply under shed by design (plan
+            # 2026-09-29 "Deadlines still apply"); only a very long cooling incident reaches it.
             if (now - lease.created_at).total_seconds() >= d.backlog_max_age_sec:
                 out.append(DeadLetter(lease.lease_id, "backlog_max_age"))
             else:

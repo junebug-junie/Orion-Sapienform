@@ -325,3 +325,123 @@ def test_gpu_ceiling_fires_without_history_and_p95_waits_for_three_days():
     rows = store.open_incidents()
     assert [(r["subject"], r["open_reason"]) for r in rows] == [("circe/gpu3", "above_ceiling")]
     assert w.last.verdicts["gpu_heat:circe/gpu1"]["armed"] is False
+
+
+# --- review regressions (2026-09-30) ---------------------------------------------------------
+
+def _open_ac(w, store, clock, cab=30.2, until=2000):
+    feed_cooling(store, -4000, 0, varying)
+    feed_cooling(store, 5, until, 33.1)
+    cabinet(store, -1000, until, cab)
+    at(clock, 190)
+    go(w.tick())
+    return store.open_incidents()[0]
+
+
+def test_resolving_a_drill_does_not_snooze_the_real_ac_rule():
+    w, store, rec, clock = make(HARDWARE_WATCH_TEST_HOOK_ENABLED=True)
+    feed_cooling(store, -4000, 100, varying)
+    cabinet(store, -1000, 3000, 30.0)
+    at(clock, 100)
+    drill = go(w.simulate_cooling())
+    at(clock, 150)
+    go(w.resolve_by_operator(drill["incident_id"]))
+    assert store.get_incident(drill["incident_id"])["snooze_until"] is None
+    feed_cooling(store, 105, 400, 33.1)          # the AC really fails right after the drill
+    at(clock, 400)
+    go(w.tick())
+    [real] = store.open_incidents()
+    assert real["open_reason"] == "low_power"
+
+
+def test_a_real_failure_supersedes_an_open_drill():
+    w, store, rec, clock = make(HARDWARE_WATCH_TEST_HOOK_ENABLED=True)
+    feed_cooling(store, -4000, 100, varying)
+    cabinet(store, -1000, 3000, 30.0)
+    at(clock, 100)
+    drill = go(w.simulate_cooling())
+    feed_cooling(store, 105, 400, 33.1)
+    at(clock, 400)
+    go(w.tick())
+    assert store.get_incident(drill["incident_id"])["resolve_reason"] == "superseded"
+    [real] = store.open_incidents()
+    assert real["open_reason"] == "low_power"
+    assert [n.title.startswith("SIMULATED") for n in rec.on("notify") if n.severity == "critical"] == [True, False]
+
+
+def test_a_second_resolve_is_a_no_op():
+    w, store, rec, clock = make()
+    row = _open_ac(w, store, clock)
+    at(clock, 300)
+    go(w.resolve_by_operator(row["incident_id"]))
+    n_events = len(rec.on(HARDWARE_WATCH_INCIDENT_CHANNEL))
+    stale = {**row}                              # a tick holding the pre-resolve snapshot
+    go(w._resolve(stale, clock(), "recovered", "rule"))
+    assert store.get_incident(row["incident_id"])["resolved_by"] == "juniper"
+    assert len(rec.on(HARDWARE_WATCH_INCIDENT_CHANNEL)) == n_events
+
+
+def test_cabinet_query_failure_still_sends_the_alert_and_sheds_as_unreadable():
+    w, store, rec, clock = make()
+    feed_cooling(store, -4000, 0, varying)
+    feed_cooling(store, 5, 190, 33.1)
+
+    def boom(*a, **kw):
+        raise RuntimeError("bad biometrics row")
+    store.temp_points = boom
+    at(clock, 190)
+    go(w.tick())
+    [row] = store.open_incidents()
+    assert rec.on("notify")[0].severity == "critical"
+    assert row["shed_requested"] and row["shed_reason"] == "cabinet_unreadable"
+
+
+def test_turning_the_watcher_shed_switch_off_stops_a_latched_request():
+    w, store, rec, clock = make()
+    row = _open_ac(w, store, clock)
+    assert row["shed_requested"]
+    w2 = Watcher(settings=settings(HARDWARE_WATCH_SHED_ENABLED=False), store=store, publish=rec.publish,
+                 notify=rec.notify, clock=clock, run_sync=inline)
+    at(clock, 220)
+    go(w2.tick())
+    ev = HardwareWatchIncidentV1.model_validate(rec.on(HARDWARE_WATCH_INCIDENT_CHANNEL)[-1])
+    assert ev.transition == "refresh" and not ev.shed.requested and ev.shed.valid_until is None
+
+
+def test_event_carries_the_cabinet_temperature_and_rise():
+    w, store, rec, clock = make()
+    _open_ac(w, store, clock, cab=30.2)
+    ev = HardwareWatchIncidentV1.model_validate(rec.on(HARDWARE_WATCH_INCIDENT_CHANNEL)[0])
+    assert ev.shed.cabinet_temp_c == 30.2 and ev.shed.cabinet_rise_c == 0.0
+
+
+def test_a_failed_resolved_event_is_retried_next_tick():
+    w, store, rec, clock = make()
+    row = _open_ac(w, store, clock)
+    rec.publish_fails = True
+    at(clock, 300)
+    go(w.resolve_by_operator(row["incident_id"]))
+    rec.publish_fails = False
+    at(clock, 330)
+    go(w.tick())
+    evs = [HardwareWatchIncidentV1.model_validate(p) for p in rec.on(HARDWARE_WATCH_INCIDENT_CHANNEL)]
+    assert evs[-1].transition == "resolved" and evs[-1].incident_id == row["incident_id"]
+
+
+def test_refresh_must_be_shorter_than_shed_validity():
+    with pytest.raises(ValueError):
+        settings(HARDWARE_WATCH_REFRESH_SEC=300, HARDWARE_WATCH_SHED_VALID_SEC=300)
+
+
+def test_open_gpu_incident_is_evaluated_after_its_card_stops_reporting():
+    w, store, rec, clock = make(HARDWARE_WATCH_GPU_NODES="")      # node no longer configured
+    store.incidents["a" * 32] = {**{c: None for c in __import__("app.store").store.INCIDENT_COLUMNS},
+                                "incident_id": "a" * 32, "rule": "gpu_heat", "subject": "circe/gpu3",
+                                "status": "open", "open_reason": "above_ceiling", "opened_at": T0,
+                                "alert_attempts": 0, "shed_requested": False, "evidence": {},
+                                "urgent_requested_at": T0}
+    feed_temp(store, "circe", "gpu3_temp_c", 0, 400, 60.0)
+    at(clock, 400)
+    go(w.tick())
+    assert "gpu_heat:circe/gpu3" in w.last.verdicts
+    assert store.get_incident("a" * 32)["status"] == "resolved"   # 60 C < 80 C re-arm

@@ -58,6 +58,7 @@ from scripts.reading_listener import ReadingListener
 from scripts.reading_turn_listener import ReadingTurnListener
 from scripts.world_pulse_read_pipeline import WorldPulseReadPipeline
 from scripts.world_pulse_read_stage2 import WorldPulseReadStage2Pipeline
+from scripts.orion_day_letter import DurableRunsClient, OrionDayLetterLoop
 from scripts.endogenous_outreach import EndogenousOutreach
 import scripts.tension_outreach_trigger as tension_outreach_trigger
 from scripts.room_claude_relay import RoomClaudeRelay
@@ -356,6 +357,7 @@ reading_listener = None
 reading_turn_listener = None
 world_pulse_read_pipeline: Optional[WorldPulseReadPipeline] = None
 world_pulse_read_stage2: Optional[WorldPulseReadStage2Pipeline] = None
+orion_day_letter: Optional[OrionDayLetterLoop] = None
 room_claude_relay: Optional[RoomClaudeRelay] = None
 agent_step_relay: Optional[AgentStepRelay] = None
 runtime_activity_feeds: Optional[RuntimeActivityFeeds] = None
@@ -461,7 +463,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global reading_turn_listener, reading_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, orion_day_letter, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -653,6 +655,7 @@ async def startup_event():
                 contractor_peer_enabled=settings.HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED,
                 dream_hypotheses_enabled=settings.HUB_CURIOSITY_DREAM_HYPOTHESES_ENABLED,
                 dream_hypotheses_per_run=settings.HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN,
+                carry_forward_enabled=settings.HUB_CURIOSITY_CARRY_FORWARD_ENABLED,
                 kickoff_via_cortex=settings.HUB_CURIOSITY_KICKOFF_VIA_CORTEX,
                 durable_admission_enabled=settings.HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED,
                 # Door-A's release-outreach call goes to the same orion-durable-runs the
@@ -775,6 +778,7 @@ async def startup_event():
                 store_provider=concept_atlas_routes_runtime._get_substrate_store,
             )
             await world_pulse_read_stage2.start(bus, harness_rpc_bus=rpc_bus)
+
 
             # Claude as a third room participant. Hub only publishes the
             # invite and relays the reply -- orion-room-companion owns the
@@ -1430,6 +1434,44 @@ async def startup_event():
     pool_ok = getattr(app.state, "memory_pg_pool", None) is not None
     dsn_configured = bool(dsn)
     html_content = render_hub_index_html(memory_pool_ok=pool_ok)
+
+    # Orion's Day: one letter a day about what Orion thought about
+    # yesterday. Hub submits the admitted durable run and emails the
+    # persisted row; state is orion_day_letter + the durable registry.
+    # Terminal run states arrive through curiosity's existing
+    # orion:durable:run:state listener (no second subscription); the
+    # tick alone converges when that listener is off. Started here, after the
+    # memory pool exists and outside the bus block (it needs neither the bus nor
+    # a bus-enabled boot).
+    try:
+        orion_day_letter = OrionDayLetterLoop(
+            enabled=settings.HUB_ORION_DAY_ENABLED,
+            email_enabled=settings.HUB_ORION_DAY_EMAIL_ENABLED,
+            pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+            durable=DurableRunsClient(settings.HUB_ORION_DAY_DURABLE_URL),
+            notify=NotifyClient(
+                settings.NOTIFY_BASE_URL,
+                settings.NOTIFY_API_TOKEN or None,
+                timeout=settings.HUB_ORION_DAY_NOTIFY_TIMEOUT_SEC,
+            ),
+            hour_local=settings.HUB_ORION_DAY_HOUR_LOCAL,
+            minute_local=settings.HUB_ORION_DAY_MINUTE_LOCAL,
+            tick_interval_sec=settings.HUB_ORION_DAY_TICK_SEC,
+            max_attempts=settings.HUB_ORION_DAY_MAX_ATTEMPTS,
+            email_retry_sec=settings.HUB_ORION_DAY_EMAIL_RETRY_SEC,
+            carry_forward_ttl_hours=settings.HUB_ORION_DAY_CARRY_FORWARD_TTL_HOURS,
+            timeout_sec=settings.HUB_ORION_DAY_TIMEOUT_SEC,
+            image_dir=settings.REVERIE_VISUAL_STORAGE_DIR,
+            max_images=settings.HUB_ORION_DAY_MAX_IMAGES,
+            image_max_bytes=settings.HUB_ORION_DAY_IMAGE_MAX_BYTES,
+            source_service=settings.SERVICE_NAME,
+        )
+        if curiosity_investigation is not None:
+            curiosity_investigation.run_state_hooks.append(orion_day_letter.on_run_state)
+        await orion_day_letter.start()
+    except Exception:  # noqa: BLE001
+        logger.exception("orion_day_letter_start_failed")
+
     if pool_ok:
         logger.info("memory_store_banner=connected")
     elif not dsn_configured:
@@ -1442,7 +1484,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global reading_turn_listener, reading_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, orion_day_letter, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1533,6 +1575,12 @@ async def shutdown_event() -> None:
         except Exception:  # noqa: BLE001
             logger.warning("world_pulse_read_stage2_stop_failed", exc_info=True)
         world_pulse_read_stage2 = None
+    if orion_day_letter is not None:
+        try:
+            await orion_day_letter.stop()
+        except Exception:  # noqa: BLE001
+            logger.warning("orion_day_letter_stop_failed", exc_info=True)
+        orion_day_letter = None
     if collapse_mirror_chat_reply_handler is not None:
         try:
             await collapse_mirror_chat_reply_handler.stop()

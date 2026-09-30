@@ -1,0 +1,47 @@
+name: orion-day letter (hub) tests
+
+on:
+  pull_request:
+    paths:
+      - "orion/orion_day/**"
+      - "orion/schemas/orion_day.py"
+      - "orion/schemas/notify.py"
+      - "orion/curiosity/kickoff_prompt.py"
+      - "services/orion-hub/scripts/orion_day_*.py"
+      - "services/orion-hub/scripts/curiosity_investigation.py"
+      - "services/orion-hub/scripts/main.py"
+      - "services/orion-hub/app/settings.py"
+      - "services/orion-hub/.env_example"
+      - "services/orion-hub/templates/orion_day_letter.html.j2"
+      - "services/orion-hub/tests/test_orion_day_letter.py"
+      - "services/orion-hub/evals/*orion_day*"
+      - "services/orion-hub/requirements.txt"
+      - ".github/workflows/orion-day-letter-hub-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/orion_day/**"
+      - "services/orion-hub/scripts/orion_day_*.py"
+      - "services/orion-hub/templates/orion_day_letter.html.j2"
+
+jobs:
+  hub:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install -r services/orion-hub/tests/requirements-reading.txt \
+            "markdown-it-py>=3.0,<5" "Pillow>=10.4,<13" "httpx>=0.27,<1"
+      - name: Scheduler, render, carry-forward
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest -q services/orion-hub/tests/test_orion_day_letter.py \
+            services/orion-hub/tests/test_curiosity_dream_hypotheses.py
+      - name: Email full-text eval (fixture day)
+        run: python services/orion-hub/evals/run_orion_day_email_eval.py

@@ -1201,3 +1201,72 @@ def test_transport_latest_layer_has_source_metadata(client) -> None:
     assert "timestamp" in m3
     assert "age_sec" in m3
     assert "status" in m3
+
+
+# --- EWMA-derived thresholds (transport lane) -------------------------------
+
+def _warm_fake_redis(monkeypatch):
+    from orion.field import transport_thresholds as tt
+
+    class FakeRedis:
+        store: dict = {}
+
+        def hget(self, key, field):
+            return self.store.get((key, field))
+
+        def hset(self, key, field, value):
+            self.store[(key, field)] = value
+
+    FakeRedis.store = {}
+    monkeypatch.setattr(tt, "_client", lambda url: FakeRedis())
+    monkeypatch.setenv("TRANSPORT_THRESHOLDS_DERIVED_ENABLED", "true")
+    monkeypatch.setenv("TRANSPORT_THRESHOLDS_MIN_SAMPLES", "50")
+    monkeypatch.setenv("ORION_BUS_URL", "redis://fake:6379/0")
+    import time as _t
+
+    now = _t.time()
+    for i in range(300):
+        tt.record_sample(
+            "bus_synaptic_pressure", 0.04 + 0.01 * ((i * 7) % 5), "redis://fake:6379/0",
+            now_ts=now - (300 - i) * 30.0,
+        )
+    return tt
+
+
+def test_effective_channels_derived_never_above_static_and_has_provenance(monkeypatch):
+    _warm_fake_redis(monkeypatch)
+    static = substrate_lattice_routes._policy_channels()
+    eff = substrate_lattice_routes._effective_channels(static)
+    bs = eff["bus_synaptic_pressure"]
+    assert bs["watch_at"] < static["bus_synaptic_pressure"]["watch_at"]
+    assert bs["threshold_provenance"]["watch_at"]["source"] == "derived"
+    assert bs["threshold_provenance"]["watch_at"]["n_samples"] >= 300
+    for ch_id, ch in eff.items():
+        for rung in ("watch_at", "summarize_at", "propose_at"):
+            if static[ch_id].get(rung) is None:
+                assert ch[rung] is None
+            else:
+                assert ch[rung] <= static[ch_id][rung]
+    # unwired channels are untouched
+    assert eff["contract_pressure"]["watch_at"] == static["contract_pressure"]["watch_at"]
+
+
+def test_effective_channels_flag_off_is_pure_static(monkeypatch):
+    _warm_fake_redis(monkeypatch)
+    monkeypatch.setenv("TRANSPORT_THRESHOLDS_DERIVED_ENABLED", "false")
+    static = substrate_lattice_routes._policy_channels()
+    eff = substrate_lattice_routes._effective_channels(static)
+    for ch_id, ch in eff.items():
+        for rung in ("watch_at", "summarize_at", "propose_at"):
+            assert ch[rung] == static[ch_id].get(rung)
+
+
+def test_lattice_rows_report_provenance(monkeypatch):
+    _warm_fake_redis(monkeypatch)
+    chain = {"transport": {}, "freshness_threshold_sec": 60}
+    rows = substrate_lattice_routes._lattice_channel_rows(
+        chain, substrate_lattice_routes._effective_channels(substrate_lattice_routes._policy_channels())
+    )
+    bs = next(r for r in rows if r["channel_id"] == "bus_synaptic_pressure")
+    assert bs["threshold_provenance"]["watch_at"]["source"] == "derived"
+    assert bs["watch_at"] == bs["threshold_provenance"]["watch_at"]["value"]

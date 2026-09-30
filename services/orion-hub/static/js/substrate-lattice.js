@@ -348,6 +348,7 @@ function _renderLatticeValues(chain) {
             <span>ceiling: <b>${_esc(ch.action_ceiling)}</b></span>
           </div>
           <div class="text-[9px] text-gray-600 font-mono">${_esc(ch.value_source)}</div>
+          <div class="text-[9px] text-gray-500 font-mono" data-testid="threshold-provenance">${_provenanceText(ch.threshold_provenance)}</div>
           <div class="flex gap-1 mt-1">
             <button class="lattice-judgment text-[9px] rounded px-1.5 py-0.5 bg-gray-800 hover:bg-gray-700 border border-gray-700" data-channel="${id}" data-judgment="too_loud">Too Loud</button>
             <button class="lattice-judgment text-[9px] rounded px-1.5 py-0.5 bg-emerald-900/40 hover:bg-emerald-900/60 border border-emerald-800" data-channel="${id}" data-judgment="right">✓ Right</button>
@@ -364,6 +365,18 @@ function _renderLatticeValues(chain) {
       _recordJudgment(btn.dataset.channel, btn.dataset.judgment)
     );
   });
+}
+
+// One line: where watch_at came from (static | derived), the EWMA window and
+// sample count, and the fast z ("unknown" until the baseline is warm).
+function _provenanceText(prov) {
+  if (!prov || !prov.watch_at) return "threshold source: n/a";
+  const w = prov.watch_at;
+  const meta = prov._meta || {};
+  const win = typeof w.window_sec === "number" ? `${(w.window_sec / 3600).toFixed(0)}h half-life` : "no window";
+  const z = typeof meta.z_fast === "number" ? meta.z_fast.toFixed(2) : "unknown";
+  const chronic = meta.chronic_hot ? " CHRONIC-HOT" : "";
+  return _esc(`watch_at source=${w.source} (${meta.reason}) static=${w.static} ${win} n=${w.n_samples} z_fast=${z}${chronic}`);
 }
 
 function _renderSimInputs(channels) {

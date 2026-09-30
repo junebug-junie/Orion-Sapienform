@@ -384,3 +384,47 @@ def test_render_includes_trend_source_from_glossary(monkeypatch):
     monkeypatch.setattr(resolver, "fetch_bus_synaptic_prediction_error_series", lambda *a, **k: [0.31])
     out = resolver.render_bus_synaptic_digest_line([_fragment()], dsn="x", render_gate_threshold=0.15)
     assert "substrate_field_state" in out
+
+
+def test_mind_rungs_match_shared_effective_thresholds_and_flag_rolls_back(monkeypatch):
+    """The recall resolver and the hub both call fetch_effective_thresholds; the
+    resolver's rungs must equal the shared function's output for the same state."""
+    import time as _t
+
+    from app import recall_signal_resolver as rsr
+    from orion.field import transport_thresholds as tt
+
+    class FakeRedis:
+        store: dict = {}
+
+        def hget(self, key, field):
+            return self.store.get((key, field))
+
+        def hset(self, key, field, value):
+            self.store[(key, field)] = value
+
+    FakeRedis.store = {}
+    monkeypatch.setattr(tt, "_client", lambda url: FakeRedis())
+    monkeypatch.setenv("TRANSPORT_THRESHOLDS_DERIVED_ENABLED", "true")
+    monkeypatch.setenv("TRANSPORT_THRESHOLDS_MIN_SAMPLES", "50")
+    monkeypatch.setenv("ORION_BUS_URL", "redis://fake:6379/0")
+    now = _t.time()
+    for i in range(300):
+        tt.record_sample(
+            "bus_synaptic_pressure", 0.04 + 0.01 * ((i * 7) % 5), "redis://fake:6379/0",
+            now_ts=now - (300 - i) * 30.0,
+        )
+    policy = Path(__file__).resolve().parents[3] / "config/substrate-lattice/transport_lattice_policy.v1.yaml"
+    monkeypatch.setattr(rsr, "_lattice_policy_path_candidates", lambda: [policy])
+    rsr._load_bus_synaptic_lattice_rungs.cache_clear()
+    static = rsr._load_bus_synaptic_lattice_rungs()
+    assert static is not None
+    rungs, source = rsr._effective_bus_synaptic_rungs()
+    shared = tt.fetch_effective_thresholds("bus_synaptic_pressure", static, "redis://fake:6379/0")
+    assert source == "derived"
+    assert rungs == {r: shared[r]["value"] for r in tt.RUNGS}
+    assert rungs["watch_at"] < static["watch_at"]
+
+    monkeypatch.setenv("TRANSPORT_THRESHOLDS_DERIVED_ENABLED", "false")
+    rungs_off, source_off = rsr._effective_bus_synaptic_rungs()
+    assert source_off == "static" and rungs_off == static

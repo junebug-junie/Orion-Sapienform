@@ -3,11 +3,11 @@
   "metric_count": 685,
   "_last_change": {
     "change_count": 3,
-    "high_severity_count": 3,
+    "high_severity_count": 2,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-actions/orion:cortex:request (all_producers: \u2026ay', 'orion-hub', 'orion\u2026 -> \u2026ay', 'orion-durable-runs', 'orion-hub', 'orion\u2026)",
-      "high   routing_changed metric://bus_channel/orion-cortex-orch/orion:cortex:result* (declared_consumers: ['orion-cortex-gateway', 'orion-hub'] -> ['orion-cortex-gateway', 'orion-durable-runs', 'orion-hub'])",
-      "high   routing_changed metric://bus_channel/orion-durable-runs/orion:durable:run:state (declared_consumers: ['orion-hub', 'orion-sql-writer'] -> ['orion-actions', 'orion-hub', 'orion-sql-writer'])"
+      "high   removed metric://bus_channel/orion-harness-governor/orion:gpu_pool:state:request",
+      "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:state:reply:* (declared_consumers: ['orion-harness-gove\u2026 -> ['orion-cortex-exec', 'orion-harness-gove\u2026)",
+      "medium added metric://bus_channel/orion-cortex-exec/orion:gpu_pool:state:request"
     ]
   },
   "definitions": {
@@ -954,6 +954,20 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-cortex-exec/orion:gpu_pool:state:request": {
+      "schema_id": "GpuPoolStateRequestV1",
+      "all_producers": [
+        "orion-cortex-exec",
+        "orion-harness-governor",
+        "orion-hub",
+        "orion-llm-gateway"
+      ],
+      "declared_consumers": [
+        "orion-gpu-pool"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-cortex-exec/orion:metacog:sql-write": {
       "schema_id": "MetacogEntryV1",
       "all_producers": [
@@ -1669,6 +1683,7 @@
         "orion-gpu-pool"
       ],
       "declared_consumers": [
+        "orion-cortex-exec",
         "orion-harness-governor",
         "orion-hub",
         "orion-llm-gateway"
@@ -1727,19 +1742,6 @@
         "orion-gpu-pool"
       ],
       "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-harness-governor/orion:gpu_pool:state:request": {
-      "schema_id": "GpuPoolStateRequestV1",
-      "all_producers": [
-        "orion-harness-governor",
-        "orion-hub",
-        "orion-llm-gateway"
-      ],
-      "declared_consumers": [
-        "orion-gpu-pool"
-      ],
-      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-harness-governor/orion:harness:run:artifact": {

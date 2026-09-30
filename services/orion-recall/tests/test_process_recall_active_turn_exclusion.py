@@ -24,7 +24,7 @@ def test_process_recall_excludes_active_turn_candidates(monkeypatch):
     async def _anchor(**kwargs):
         return [], {}
 
-    async def _query(fragment, profile, *, session_id, node_id, entities, diagnostic=False, exclusion=None):
+    async def _query(fragment, profile, *, session_id, node_id, entities, diagnostic=False, exclusion=None, **kwargs):
         return [
             {
                 "id": "corr-live",

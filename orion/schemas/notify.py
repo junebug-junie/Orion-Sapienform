@@ -4,7 +4,9 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from orion.schemas.cortex.contracts import AgentTraceSummaryV1
 
@@ -13,6 +15,32 @@ class NotificationAttachment(BaseModel):
     filename: str
     content_base64: str
     mime_type: str = Field("application/octet-stream")
+    # When set AND the request carries body_html, the attachment is embedded as
+    # an inline (multipart/related) part referenced from the HTML as
+    # `<img src="cid:{content_id}">` instead of a regular download attachment.
+    # Bare id, no angle brackets. Ignored for plain-text-only requests.
+    content_id: Optional[str] = None
+
+    @field_validator("content_id")
+    @classmethod
+    def _normalize_content_id(cls, v: Optional[str]) -> Optional[str]:
+        # Bad ids otherwise surface as a broken Content-ID header (image never
+        # matches its cid: reference) or a mid-send ValueError that fails the
+        # whole letter. Reject at the boundary instead (HTTP 422).
+        if v is None:
+            return None
+        cid = v.strip()
+        if cid.lower().startswith("cid:"):
+            cid = cid[4:]
+        cid = cid.strip().strip("<>").strip()
+        if not cid:
+            return None
+        if not _CONTENT_ID_RE.fullmatch(cid):
+            raise ValueError("content_id must match [A-Za-z0-9._@+-]{1,200}")
+        return cid
+
+
+_CONTENT_ID_RE = re.compile(r"[A-Za-z0-9._@+-]{1,200}")
 
 
 class NotificationRequest(BaseModel):
@@ -23,6 +51,10 @@ class NotificationRequest(BaseModel):
     title: str
     body_text: Optional[str] = None
     body_md: Optional[str] = None
+    # Optional HTML rendering of the email body. Sent as a text/html
+    # alternative alongside the plain-text part (body_text or body_md is the
+    # fallback). Email-only: not persisted and not sent to the in-app event.
+    body_html: Optional[str] = None
     context: Dict[str, Any] = Field(default_factory=dict)
     tags: List[str] = Field(default_factory=list)
     recipient_group: str = Field("juniper_primary")
@@ -35,12 +67,24 @@ class NotificationRequest(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     attachments: Optional[List[NotificationAttachment]] = None
 
+    @model_validator(mode="after")
+    def _unique_content_ids(self) -> "NotificationRequest":
+        cids = [a.content_id for a in (self.attachments or []) if a.content_id]
+        if len(cids) != len(set(cids)):
+            raise ValueError("attachment content_id values must be unique within a request")
+        return self
+
 
 class NotificationAccepted(BaseModel):
     ok: bool
     notification_id: Optional[UUID] = None
     status: Optional[str] = None
     detail: Optional[str] = None
+    # What actually happened to the email for this request (EmailOutcome.status:
+    # "sent" | "failed" | "skipped" | "deferred"). "sent" means the SMTP server
+    # accepted it, not that it reached an inbox. None on endpoints that do not
+    # attempt email synchronously.
+    email_status: Optional[str] = None
 
 
 class NotificationRecord(BaseModel):

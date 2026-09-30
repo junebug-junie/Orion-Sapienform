@@ -439,6 +439,37 @@ class Settings(BaseSettings):
         default=False, validation_alias=AliasChoices("RECALL_RDF_ENABLE_SUMMARIES")
     )
 
+    # ── Bounded retrieval (2026-09-29 design, Phase 1) ─────────────────
+    # docs/superpowers/specs/2026-09-29-recall-retrieval-query-architecture-design.md.
+    # Intake: a fragment longer than this (and no caller retrieval_query) is
+    # deterministically condensed to at most this many characters before any
+    # expansion. <= 0 disables condensation (searches the fragment as-is).
+    RECALL_MAX_QUERY_CHARS: int = Field(default=600, validation_alias=AliasChoices("RECALL_MAX_QUERY_CHARS"))
+    # At most this many extracted entities become sub-queries (stopword-
+    # filtered, specificity-ranked). 0 = uncapped and unfiltered: every
+    # extracted entity becomes a sub-query and a related_by_entities pattern,
+    # in first-appearance order (the pre-2026-09-29 entity fan-out). It does
+    # NOT restore the rest of the old pipeline: feeds still run once, fetches
+    # stay concurrent under the deadline, condensation is RECALL_MAX_QUERY_CHARS,
+    # the deadline is RECALL_DEADLINE_MS_DEFAULT, browse is
+    # RECALL_BROWSE_SHORTCUT_ENABLED, and the regex/window fixes stay. Read
+    # with an explicit `is None` check, never `x or DEFAULT`, so 0 survives.
+    RECALL_MAX_SUB_QUERIES: int = Field(default=4, ge=0, validation_alias=AliasChoices("RECALL_MAX_SUB_QUERIES"))
+    # Overall fetch deadline when the caller sends no deadline_ms (caller
+    # deadline_ms wins, at 80%). Below the 90s caller RPC timeout so recall
+    # answers with what it has instead of timing out. <= 0 disables.
+    RECALL_DEADLINE_MS_DEFAULT: int = Field(default=60000, validation_alias=AliasChoices("RECALL_DEADLINE_MS_DEFAULT"))
+    # Max backend units (incl. the anchor rail) in flight per recall. Several
+    # open their own Postgres connection, so this is also the per-recall
+    # connection ceiling for the fetch stage.
+    RECALL_FETCH_CONCURRENCY: int = Field(default=4, ge=1, validation_alias=AliasChoices("RECALL_FETCH_CONCURRENCY"))
+    # Recent-only "show recent memories" shortcut (skips retrieval). Off by
+    # default: it was dead code on main until 2026-09-29, and when on it
+    # still only fires for short text whose object is memory/memories.
+    RECALL_BROWSE_SHORTCUT_ENABLED: bool = Field(
+        default=False, validation_alias=AliasChoices("RECALL_BROWSE_SHORTCUT_ENABLED")
+    )
+
     # ── SQL timeline knobs ────────────────────────────────────────────
     RECALL_ENABLE_SQL_TIMELINE: bool = Field(default=True, validation_alias=AliasChoices("RECALL_ENABLE_SQL_TIMELINE"))
     RECALL_SQL_SINCE_MINUTES: int = Field(default=180, validation_alias=AliasChoices("RECALL_SQL_SINCE_MINUTES"))

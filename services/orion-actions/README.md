@@ -660,3 +660,15 @@ conventions: `orion/core/bus/rpc_health.py` module docstring.
   - `services/orion-hub/scripts/api_routes.py`
   - `services/orion-hub/static/js/workflow-schedule-ui.js`
   - `services/orion-hub/templates/index.html`
+
+### Scheduled workflow dispatch timeout
+
+`ACTIONS_WORKFLOW_DISPATCH_TIMEOUT_SECONDS` (default 3600) is how long the scheduler waits for
+cortex-orch to finish a scheduled compactor pass (`LONG_RUNNING_SCHEDULED_WORKFLOWS` in `app/main.py`;
+every other scheduled workflow keeps `ACTIONS_EXEC_TIMEOUT_SECONDS`). The workflow claim TTL is set to
+this value + 60s so a restart mid-pass does not reap and re-run a still-running dispatch. It is separate
+from `ACTIONS_EXEC_TIMEOUT_SECONDS` (single skill/journal calls) because a compactor pass is a
+GitHub fetch (<=300s) plus map-reduce digest calls bounded by
+`COMPACTOR_DIGEST_TOTAL_BUDGET_SEC` (3000s); the old 420s wait recorded still-running passes as
+failed and retried them. The scheduler loop is serial, so this is also the longest one stuck
+workflow can delay the next due job.

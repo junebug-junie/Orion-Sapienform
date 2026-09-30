@@ -215,7 +215,8 @@ class PoolRuntime:
                 if role in self.cfg.roles and size:
                     self._ctx_seen.setdefault(role, int(size))
         self._ctx_saved = dict(self._ctx_seen)
-        paused = [r for r in stored.values() if r.get("actuation_paused_at")]
+        # Only configured cards: a row for a card since removed from the YAML must not pause the pool.
+        paused = [r for c, r in stored.items() if c in self.cfg.cards and r.get("actuation_paused_at")]
         if paused:
             first = min(paused, key=lambda r: _ts(r["actuation_paused_at"]))
             self.paused = {"since": _ts(first["actuation_paused_at"]), "by": first.get("actuation_paused_by")}
@@ -343,9 +344,7 @@ class PoolRuntime:
             roles = self.cfg.classes[req.work_class].roles
             if any(self.cfg.roles[r].operator_only for r in roles) and not operator:
                 return GpuLeaseReplyV1(status="unavailable", reason="operator_only_class")
-            if operator and (why := self.cfg.not_actuatable_reason(req.work_class)):
-                # Stage 5.7: a seat with no launch block can never load, so its lease would only
-                # drain (the scheduler no longer does) or sit forever. Refused, named.
+            if operator and (why := self._operator_refusal(req.work_class)):
                 return GpuLeaseReplyV1(status="unavailable", reason=why)
             request_id = req.request_id or uuid.uuid4().hex
             existing = await self.store.lease_by_request(request_id)
@@ -363,6 +362,19 @@ class PoolRuntime:
             self._phase("start_thread", t)
             await self._schedule_and_apply()
             return await self._reply_for(await self.store.lease(lease_id))
+
+    def _operator_refusal(self, work_class: str) -> str | None:
+        """Why an operator lease must not be admitted now, most permanent reason first (read under the
+        runtime lock, so a pause cannot land between the check and the admit). A seat with no launch
+        block can never load (stage 5.7: its lease would only drain residents or sit forever); observe
+        mode (the rollback) keeps operator holds off; a paused pool cannot load the seat."""
+        if why := self.cfg.not_actuatable_reason(work_class):
+            return why
+        if self.mode != "enforce":
+            return "hold_refused_observe_mode"
+        if self.paused is not None:
+            return "actuation_paused"
+        return None
 
     async def attach(self, req: GpuLeaseRequestV1) -> GpuLeaseReplyV1:
         """A call made under a durable run's hold: a request lease that runs in the hold's slot
@@ -473,14 +485,6 @@ class PoolRuntime:
         if ctl.verb in ("pause_actuation", "resume_actuation"):
             return await self._set_paused(ctl.verb == "pause_actuation", ctl.actor)
         if ctl.verb == "hold":
-            # Refusals, most permanent first. A seat without a launch block can never load (stage 5.7);
-            # observe mode (the rollback) keeps operator holds off; a paused pool cannot load the seat.
-            if why := self.cfg.not_actuatable_reason(ctl.work_class or ""):
-                return GpuPoolControlReplyV1(ok=False, reason=why)
-            if self.mode != "enforce":
-                return GpuPoolControlReplyV1(ok=False, reason="hold_refused_observe_mode")
-            if self.paused is not None:
-                return GpuPoolControlReplyV1(ok=False, reason="actuation_paused")
             # Operator holds (e.g. the multi-card experiment seat): no heartbeat, bounded by the
             # role's max_hold_sec, released with verb=release.
             reply = await self.acquire(GpuLeaseRequestV1(
@@ -567,7 +571,7 @@ class PoolRuntime:
         t = time.monotonic()
         decisions = schedule(self.cfg, self.roles, self.cards, [self._view(r) for r in rows], self.now(),
                              seen_ctx=self._ctx_seen, guards=self.guard_states, shed=shed.blocked,
-                             frozen=self.actuated if self.paused is not None else ())
+                             frozen=(self.actuated if self.paused is not None else frozenset()) | set(self._reconciling))
         self._phase("schedule", t)
         self._phases["decisions"] = self._phases.get("decisions", 0) + len(decisions)
         swaps: set[tuple] = set()
@@ -1040,7 +1044,17 @@ class PoolRuntime:
                            "card state", seat, res.status, res.reason)
             return
         observed = dict(res.observed)
-        # The reconcile gets its own action record: it must not be read as the last load/unload's outcome.
+        if res.in_flight is None:
+            # An actuator that cannot say whether something runs: believe neither way, keep the card.
+            logger.warning("gpu_pool_reconcile_unknown_in_flight seat=%s -- keeping the persisted card state", seat)
+            return
+        loaded = None if res.in_flight else self._observed_outcome(seat, observed)
+        if loaded is not None and loaded == all(seat in c.swapped_in for c in cards):
+            # Nothing changed: the card keeps its last load/unload record (the Hub shows that, not this).
+            logger.info("gpu_pool_reconcile_agrees seat=%s loaded=%s why=%s", seat, loaded, why)
+            return
+        # The card changes (adopted or faulted): it gets this reconcile as its action record, so its
+        # outcome is never read as the previous load/unload's.
         gen = max(c.swap_generation for c in cards)
         for c in cards:
             c.swap_action = {"action_id": rec["action_id"], "role": seat, "action": "status", "generation": gen,
@@ -1052,17 +1066,12 @@ class PoolRuntime:
             await self._finish(seat, state="fault", loaded=None, outcome="reconcile_foreign_action",
                                event="swap_failed", reason=f"reconcile_foreign_action:{why}",
                                detail={"observed": observed, "phase": res.phase})
-            return
-        loaded = self._observed_outcome(seat, observed)
-        if loaded is None:
+        elif loaded is None:
             await self._finish(seat, state="fault", loaded=None, outcome="reconcile_ambiguous", event="swap_failed",
                                reason=f"reconcile_ambiguous:{why}", detail={"observed": observed})
-            return
-        if loaded == all(seat in c.swapped_in for c in cards):
-            logger.info("gpu_pool_reconcile_agrees seat=%s loaded=%s why=%s", seat, loaded, why)
-            return
-        await self._finish(seat, state="idle", loaded=loaded, outcome="adopted", event="swapped",
-                           reason=f"adopted:{why}", detail={"observed": observed, "loaded": loaded})
+        else:
+            await self._finish(seat, state="idle", loaded=loaded, outcome="adopted", event="swapped",
+                               reason=f"adopted:{why}", detail={"observed": observed, "loaded": loaded})
 
     async def _set_paused(self, pause: bool, actor: str) -> GpuPoolControlReplyV1:
         """The emergency stop. Persisted on every gpu_pool_cards row, so a restart stays paused. An
@@ -1073,11 +1082,15 @@ class PoolRuntime:
                 return GpuPoolControlReplyV1(ok=True, reason="already_paused" if pause else "not_paused",
                                              detail=self._paused_detail())
             now = self.now()
+            try:
+                # One statement over EVERY card row (also rows of cards since removed from the YAML), and
+                # before memory: a failed write must not leave the pool running while the rows say paused.
+                await self.store.set_actuation_paused(now if pause else None, actor if pause else None, now, actor)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("gpu_pool_actuation_pause_not_persisted pause=%s actor=%s", pause, actor)
+                return GpuPoolControlReplyV1(ok=False, reason=f"not_persisted:{type(exc).__name__}",
+                                             detail=self._paused_detail())
             self.paused = {"since": now, "by": actor} if pause else None
-            for card in self.cards:
-                await self.store.upsert_card({"card": card, "actuation_paused_at": now if pause else None,
-                                              "actuation_paused_by": actor if pause else None,
-                                              "updated_at": now, "updated_by": actor})
             in_flight = sorted(self._pending_actions())
             log = logger.warning if pause else logger.info
             log("gpu_pool_actuation_%s actor=%s in_flight=%s", "paused" if pause else "resumed", actor, in_flight or "-")

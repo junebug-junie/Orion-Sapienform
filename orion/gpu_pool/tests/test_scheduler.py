@@ -389,3 +389,14 @@ def test_a_down_roles_last_seen_context_only_stops_a_false_too_big():
     waiting = schedule(CFG, down, cards(), [big], T0, seen_ctx={"agent": 131072})
     assert of(Unavailable, waiting) == [] and not grants(waiting)
     assert of(SwapLoad, waiting) == of(SwapLoad, schedule(CFG, down, cards(), [lease("agent")], T0))
+
+
+def test_a_frozen_operator_seat_keeps_its_holders_past_max_hold():
+    """An operator seat loaded while actuation is paused: recalling its holders at max_hold_sec would
+    only lead to an unload that cannot happen."""
+    cfg = _launchable_experiment()
+    loaded = {c: CardLive(c, swapped_in={"experiment"}) for c in cfg.cards}
+    holder = lease("experiment", "granted", "experiment", lease_id="x", operator=True,
+                   granted_at=T0 - timedelta(seconds=cfg.roles["experiment"].max_hold_sec + 1))
+    assert [r.lease_id for r in of(Recall, schedule(cfg, live(), loaded, [holder], T0))] == ["x"]
+    assert not of(Recall, schedule(cfg, live(), loaded, [holder], T0, frozen={"experiment"}))

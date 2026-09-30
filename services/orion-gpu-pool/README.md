@@ -71,7 +71,7 @@ actuate the same seats. They differ in exactly three ways:
 
 | | enforce (default) | observe (the rollback) |
 | --- | --- | --- |
-| a seat loaded or unloaded outside the pool | at boot and on resume, one read-only `status` per idle seat asks circe's actuator what its cards hold; the pool adopts the answer (`swapped reason=adopted:boot`), never reloads. A half-done card faults (`reconcile_ambiguous:*`); an action the pool never sent faults (`reconcile_foreign_action:*`); no answer in 90 s keeps the stored state. Swaps on that seat wait for the answer | a seat the pool has never acted on is marked loaded when its worker answers (liveness), no `status` asked |
+| a seat loaded or unloaded outside the pool | at boot and on resume, one read-only `status` per idle seat asks circe's actuator what its cards hold; the pool adopts the answer (`swapped reason=adopted:boot`), never reloads. A half-done card faults (`reconcile_ambiguous:*`); an action the pool never sent faults (`reconcile_foreign_action:*`); an actuator that cannot say whether something runs, or no answer in 90 s, keeps the stored state. Until the answer, that seat neither swaps nor drains | no `status` asked. Only a seat the pool has **never** acted on is marked loaded when its worker answers; `agent-gpu2` has been actuated (generation 79), so for gpu2 observe adopts nothing changed by hand |
 | operator `hold` | allowed for a seat that can load | refused `hold_refused_observe_mode` |
 | everything else | identical | identical |
 

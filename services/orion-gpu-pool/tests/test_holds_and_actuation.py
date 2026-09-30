@@ -416,16 +416,19 @@ def test_unanswered_status_faults_the_card():
     run(go())
 
 
-def test_pool_restart_mid_load_sends_status_never_a_second_transition():
+@pytest.mark.parametrize("mode", ["observe", "enforce"])
+def test_pool_restart_mid_load_sends_status_never_a_second_transition(mode):
+    """enforce too (stage 5.7): the idle-seat boot reconcile leaves a card mid-action to the pending
+    reconcile -- still exactly one status on the restart, never a second transition."""
     async def go():
         store, saver, clock = MemoryStore(), MemorySaver(), Clock()
-        rt1, _ = make(store=store, saver=saver, clock=clock)
+        rt1, _ = make(store=store, saver=saver, clock=clock, mode=mode)
         await boot(rt1)
         await demand_gpu2(rt1, clock)
-        [msg] = actuations(rt1)
+        [msg] = [m for m in actuations(rt1) if m.action == "load"]
         await result(rt1, msg, "accepted")
         bus2 = FakeBus()
-        rt2, _ = make(store=store, saver=saver, clock=clock, bus=bus2)
+        rt2, _ = make(store=store, saver=saver, clock=clock, bus=bus2, mode=mode)
         await rt2.start()
         sent = actuations(rt2)
         assert [(m.action, m.role) for m in sent] == [("status", SEAT)]
@@ -670,14 +673,15 @@ async def overdue(rt, clock, home):
     return msg
 
 
-def test_restart_before_the_ack_with_a_running_actuator_is_not_unreachable():
+@pytest.mark.parametrize("mode", ["observe", "enforce"])
+def test_restart_before_the_ack_with_a_running_actuator_is_not_unreachable(mode):
     async def go():
         store, saver, clock = MemoryStore(), MemorySaver(), Clock()
-        rt1, _ = make(store=store, saver=saver, clock=clock)
+        rt1, _ = make(store=store, saver=saver, clock=clock, mode=mode)
         await boot(rt1)
         home, _ = await demand_gpu2(rt1, clock)
-        [load] = actuations(rt1)                                  # no ack before the pool dies
-        rt2, _ = make(store=store, saver=saver, clock=clock, bus=FakeBus())
+        [load] = [m for m in actuations(rt1) if m.action == "load"]   # no ack before the pool dies
+        rt2, _ = make(store=store, saver=saver, clock=clock, bus=FakeBus(), mode=mode)
         rt2._world.up.discard("diffusion")
         await rt2.start()
         [status] = actuations(rt2)

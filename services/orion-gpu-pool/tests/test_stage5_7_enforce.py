@@ -86,14 +86,59 @@ def test_boot_adopts_a_seat_unloaded_by_hand():
 
 
 def test_boot_reconcile_that_agrees_changes_nothing():
+    """Every ordinary restart lands here: the card keeps its last load/unload record (in memory and in
+    the store), so the Hub never shows the reconcile as an action "in flight"."""
     async def go():
-        rt, clock = enforce()
+        store = MemoryStore()
+        last = {"action_id": "agent-gpu2:unload:g79:abc", "role": SEAT, "action": "unload", "generation": 79,
+                "outcome": "succeeded", "reason": "idle"}
+        await store.upsert_card({"card": "gpu2", "lent": False, "swapped_in": [], "swap_state": "idle",
+                                 "swap_generation": 79, "swap_action": last})
+        rt, clock = enforce(store=store)
         await boot(rt)
         [st] = statuses(rt)
         await answer_status(rt, st, UNLOADED)
         assert not rt.bus.events("swapped") and not rt.bus.events("swap_failed")
         assert rt.cards["gpu2"].swap_state == "idle" and not rt.cards["gpu2"].swapped_in
         assert not rt._reconciling
+        assert rt.cards["gpu2"].swap_action == last
+        assert {c["card"]: c for c in await store.cards()}["gpu2"]["swap_action"] == last
+        gpu2 = next(c for c in (await rt.snapshot()).cards if c.card == "gpu2")
+        assert gpu2.actuation == last
+    run(go())
+
+
+def test_a_reconcile_that_cannot_say_whether_something_runs_keeps_the_card():
+    async def go():
+        rt, _ = enforce()
+        await boot(rt)
+        [st] = statuses(rt)
+        await result(rt, st, "succeeded", observed=LOADED)          # in_flight=None: an older actuator
+        assert SEAT not in rt.cards["gpu2"].swapped_in and rt.cards["gpu2"].swap_state == "idle"
+        assert not rt.bus.events("swapped") and not rt.bus.events("swap_failed")
+    run(go())
+
+
+def test_nothing_is_drained_on_a_seat_while_its_reconcile_is_open():
+    """The stored belief is what the reconcile is checking; it must not drive recalls until answered."""
+    async def go():
+        store = MemoryStore()
+        await store.upsert_card({"card": "gpu2", "lent": False, "swapped_in": [SEAT], "swap_state": "idle",
+                                 "swap_generation": 5, "loaded_at": Clock()(), "last_active_at": Clock()()})
+        rt, clock = enforce(store=store)
+        rt._world.up.add(SEAT)
+        rt._world.up.discard("diffusion")
+        await boot(rt)
+        [st] = statuses(rt)
+        on_agent = await rt.acquire(hold("run:1"))
+        on_seat = await rt.acquire(hold("run:2"))
+        assert on_agent.grant.role == "agent" and on_seat.grant.role == SEAT
+        await rt.acquire(acq("diffusion", kind="hold"))              # gpu2's owner wants it back
+        await step(rt, clock, 30, beat=[on_agent.lease_id, on_seat.lease_id])
+        assert (await rt.store.lease(on_seat.lease_id))["status"] == "granted"   # not drained yet
+        await answer_status(rt, st, LOADED)                           # stored belief confirmed
+        await step(rt, clock, 1, beat=[on_agent.lease_id, on_seat.lease_id])
+        assert (await rt.store.lease(on_seat.lease_id))["status"] == "recalling"  # now the reclaim runs
     run(go())
 
 
@@ -172,6 +217,8 @@ def test_operator_hold_is_allowed_for_a_seat_that_can_actuate_and_drains_its_car
         rt, _ = enforce()
         rt.cfg, rt.graph, rt.actuated = cfg, build_lease_graph(lambda: cfg, MemorySaver()), cfg.actuated_seats()
         await boot(rt)
+        assert {m.role for m in statuses(rt)} == {"agent-gpu2", "experiment"}
+        rt._reconciling.clear()        # the boot reconcile is not this test's subject (it freezes the seats)
         busy = await rt.acquire(acq("chat", priority="interactive"))
         held = await rt.control(GpuPoolControlV1(verb="hold", work_class="experiment", actor="juniper"))
         assert held.ok and held.detail["status"] == "queued"
@@ -203,6 +250,34 @@ def test_experiment_hold_is_refused_named_and_nothing_drains():
 
 
 # --- the emergency stop ------------------------------------------------------------------------
+def test_a_pause_row_for_a_card_no_longer_configured_does_not_pause_and_resume_clears_every_row():
+    async def go():
+        store = MemoryStore()
+        await store.upsert_card({"card": "gpu9", "swapped_in": [], "swap_state": "idle",
+                                 "actuation_paused_at": Clock()(), "actuation_paused_by": "old"})
+        rt, _ = enforce(store=store)
+        await boot(rt)
+        assert rt.paused is None                                     # gpu9 is not in the YAML
+        await rt.control(GpuPoolControlV1(verb="pause_actuation", actor="j"))
+        await rt.control(GpuPoolControlV1(verb="resume_actuation", actor="j"))
+        assert all(r["actuation_paused_at"] is None for r in await store.cards())   # gpu9 too
+    run(go())
+
+
+def test_a_pause_that_cannot_be_persisted_changes_nothing():
+    async def go():
+        rt, _ = enforce()
+        await boot(rt)
+
+        async def broken(*a, **kw):
+            raise OSError("db down")
+        rt.store.set_actuation_paused = broken
+        out = await rt.control(GpuPoolControlV1(verb="pause_actuation", actor="j"))
+        assert not out.ok and out.reason == "not_persisted:OSError" and rt.paused is None
+        assert not rt.bus.events("actuation_paused")
+    run(go())
+
+
 def test_pause_is_persisted_published_and_survives_a_restart():
     async def go():
         store, saver, clock = MemoryStore(), MemorySaver(), Clock()

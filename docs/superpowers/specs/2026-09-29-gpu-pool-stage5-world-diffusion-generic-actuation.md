@@ -416,11 +416,14 @@ These override the recommendations above.
 2. **`observe` is kept, as the rollback only.** Both modes actuate every seat with a launch block. observe differs in
    exactly three ways: liveness adoption for never-actuated seats, no boot/resume reconcile, operator holds refused
    (`hold_refused_observe_mode`, renamed from `hold_requires_swap_actuation`, which stopped being true). An unknown
-   mode fails the boot.
+   mode fails the boot. Decision 6's "observe only re-enables the adoption shortcut" is weaker than it reads: the
+   shortcut skips any seat the pool has already acted on (`_pool_owns`), and agent-gpu2 has (generation 79), so for
+   gpu2 observe adopts nothing -- rolling back to it trades the reconcile for no adoption at all.
 3. **"Adopted via `status` at boot" did not exist before 5.7**; the boot only reconciled cards left mid-action.
    enforce now sends one read-only `status` per idle actuated seat at boot and on resume and adopts the answer
    (`swapped reason=adopted:<why>`); a half-done card or an action the pool never sent faults the card; no answer in
-   90 s keeps the persisted state. Swaps on that seat wait for the answer. The actuator re-publishes its last recorded
+   90 s (or an actuator that cannot say whether something runs) keeps the persisted state. Until the answer that seat
+   neither swaps nor drains (scheduler `frozen`); an answer that agrees leaves the card's last action record alone. The actuator re-publishes its last recorded
    result before answering; while a reconcile is open that stale row is ignored.
 4. **Correction 5.1 #5 is fixed in two places:** operator leases on a class whose seat has no launch block are
    refused `not_actuatable:<role>` (every mode, at `acquire` and at the `hold` verb), and the scheduler treats a swap

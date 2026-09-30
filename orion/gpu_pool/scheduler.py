@@ -791,7 +791,7 @@ def schedule(
                     l.granted_at and (now - l.granted_at).total_seconds() >= spec.max_hold_sec for l in holders)
                 if not holders:
                     out.append(SwapUnload(seat, "operator_released"))
-                elif over:
+                elif over and seat not in frozen_seats:   # frozen: its unload cannot happen, keep the holders
                     for l in holders:
                         if l.status == "granted":
                             recall(l, "max_hold")

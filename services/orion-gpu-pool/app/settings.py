@@ -29,8 +29,9 @@ class Settings(BaseSettings):
 
     # Stage 5.7 end state: enforce. Both modes actuate every swap seat that has a launch block in
     # config/gpu_pool.yaml. observe is the documented rollback and differs in exactly three ways:
-    # a swap seat the pool has never acted on is marked loaded when its worker answers (liveness
-    # adoption), there is no boot/resume `status` reconcile, and operator holds are refused.
+    # a swap seat the pool has NEVER acted on is marked loaded when its worker answers (liveness
+    # adoption; no such seat today), there is no boot/resume `status` reconcile, and operator holds
+    # are refused.
     # A typo fails the boot. Emergency stop is the pause_actuation control verb, not a mode.
     mode: Literal["enforce", "observe"] = Field("enforce", alias="GPU_POOL_MODE")
     tick_sec: float = Field(1.0, alias="GPU_POOL_TICK_SEC")

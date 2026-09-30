@@ -168,8 +168,10 @@ Pick the smallest one that fixes the problem.
 
 1. **Only the boot/resume reconcile misbehaves** (e.g. a wrong `adopted:*` or a fault it should not have raised):
    `GPU_POOL_MODE=observe` in the primary `.env` + `cd $WT && scripts/safe_docker_build.sh orion-gpu-pool up -d`
-   **[GO]**. Harmless: every seat is still actuated; observe only restores the liveness shortcut, turns the reconcile
-   off and refuses operator holds. Clear a fault it left with the Hub "Clear fault" button.
+   **[GO]**. Harmless: every seat is still actuated; observe turns the reconcile off and refuses operator holds. It
+   gives gpu2 **no** adoption path at all (its liveness shortcut only covers a seat the pool has never acted on, and
+   agent-gpu2 has), so after a hand change to gpu2 in observe, use the Hub "Clear fault" / wait for the pool's own
+   next action. Clear a fault the reconcile left with the Hub "Clear fault" button.
 2. **Stop all model moves now, investigate later:** the emergency stop (below). No deploy needed.
 3. **The 5.7 pool itself is wrong:** redeploy the previous pool image **[GO]**: a worktree at the pre-5.7 commit
    (`git worktree add ../Orion-Sapienform-pool-rollback d3c09c9cb`), put `GPU_POOL_MODE=observe` and

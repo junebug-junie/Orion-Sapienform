@@ -69,6 +69,7 @@ class Store(Protocol):
                           since: datetime | None, until: datetime | None, limit: int) -> list[dict[str, Any]]: ...
     async def cards(self) -> list[dict[str, Any]]: ...
     async def upsert_card(self, row: dict[str, Any]) -> None: ...
+    async def set_actuation_paused(self, at: datetime | None, by: str | None, now: datetime, actor: str) -> None: ...
     async def prune_checkpoints(self, older_than: datetime) -> int: ...
 
 
@@ -111,6 +112,11 @@ class MemoryStore:
 
     async def upsert_card(self, row):
         self._cards[row["card"]] = {**self._cards.get(row["card"], {}), **row}
+
+    async def set_actuation_paused(self, at, by, now, actor):
+        for card, row in self._cards.items():
+            self._cards[card] = {**row, "actuation_paused_at": at, "actuation_paused_by": by,
+                                 "updated_at": now, "updated_by": actor}
 
 
 class PostgresStore:
@@ -271,3 +277,9 @@ class PostgresStore:
         values = [Jsonb(row[c]) if isinstance(row[c], dict) else row[c] for c in cols]
         async with self.pool.connection() as conn:
             await conn.execute(sql, values)
+
+    async def set_actuation_paused(self, at, by, now, actor):
+        """The emergency stop (stage 5.7), all card rows in one statement: every row agrees, or none."""
+        async with self.pool.connection() as conn:
+            await conn.execute("UPDATE gpu_pool_cards SET actuation_paused_at=%s, actuation_paused_by=%s, "
+                               "updated_at=%s, updated_by=%s", [at, by, now, actor])

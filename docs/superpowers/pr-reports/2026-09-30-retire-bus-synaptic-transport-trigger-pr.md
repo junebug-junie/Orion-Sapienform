@@ -112,6 +112,6 @@ scripts/safe_docker_build.sh orion-equilibrium-service up -d --build   # from a 
 
 ## PR link
 
-(filled after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2421
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -88,6 +88,8 @@ def test_call_verb_text_sends_the_verb_route_hold_and_metadata():
     assert request["verb"] == "orion_day_note_v1" and label == "orion_day_note_v1" and timeout == 870.0
     assert request["options"]["llm_route"] == "agent" and request["options"]["policy_dispatch_only"] is True
     assert request["options"]["gpu_lease"]["lease_id"] == "hold-1"
+    # Thinking off: live 2026-09-30 the note's hidden reasoning ate all 12000 max_tokens.
+    assert request["options"]["chat_template_kwargs"] == {"enable_thinking": False}
     assert request["context"]["metadata"] == {"orion_day_input": {"digest_md": "d"}}
     assert request["recall"]["enabled"] is False
 

@@ -20,10 +20,10 @@ import contextvars
 from typing import Any
 
 from orion.cognition.compactor.map_reduce import (
-    SPECS, assemble, build_digest_request_payload, digest_from_payload, merge_gave_up, next_call,
-    record_merge, resolve_merge_without_call,
+    SPECS, assemble, build_digest_request_payload, digest_from_payload, finalize_request_payload,
+    merge_gave_up, next_call, record_merge, resolve_merge_without_call,
 )
-from orion.schemas.compactor_digest_run import DURABLE_DIGEST_KEY, CompactorDigestResultV1
+from orion.schemas.compactor_digest_run import CompactorDigestResultV1
 from orion.schemas.cortex.contracts import CortexClientRequest
 
 SIM_LEASE = {"lease_id": "hold-sim", "generation": 1, "role": "agent", "holder": "durable-runs:sim"}
@@ -123,29 +123,11 @@ class InlineDurableRun:
             gpu_roles=[SIM_LEASE["role"]], finalize=dict(brief.finalize),
             **assemble(spec, inputs, partials, merge, window_label=brief.window_label))
         self.results.append(result)
-        finalize_req = finalize_request(kwargs["req"], result)
+        # The exact request the durable run's finalize node sends (shared builder, no copy here).
+        finalize_req = CortexClientRequest.model_validate(
+            finalize_request_payload(brief, result, correlation_id=correlation_id))
         original = kwargs["_original"]
         self.finalized = await original(**{**{k: v for k, v in kwargs.items() if k != "_original"},
                                            "req": finalize_req})
         return {"run_id": result.run_id, "status": "accepted", "receipt_status": "waiting_resource",
                 "generation": 1, "deadline_at": deadline_at.isoformat(), "chunk_count": len(inputs)}
-
-
-def finalize_request(original_req: CortexClientRequest, result: CompactorDigestResultV1) -> CortexClientRequest:
-    """The request the durable run's finalize node sends (compactor_digest_graph.finalize_request_payload)."""
-    policy = dict(result.finalize.get("execution_policy") or {})
-    workflow_request = {"workflow_id": result.workflow_id, DURABLE_DIGEST_KEY: result.model_dump(mode="json")}
-    if policy:
-        workflow_request["execution_policy"] = {**policy, "invocation_mode": "immediate"}
-    return CortexClientRequest.model_validate({
-        "mode": "brain", "route_intent": "none", "verb": None, "packs": [],
-        "options": {"source": "orion-durable-runs", "policy_dispatch_only": True},
-        "recall": {"enabled": False, "required": False},
-        "context": {
-            "messages": [], "raw_user_text": f"{result.workflow_id} finalize",
-            "user_message": f"{result.workflow_id} finalize",
-            "session_id": original_req.context.session_id or result.workflow_id,
-            "user_id": original_req.context.user_id, "trace_id": "trace-finalize",
-            "metadata": {"workflow_request": workflow_request, "workflow_dispatch_source": "orion-durable-runs"},
-        },
-    })

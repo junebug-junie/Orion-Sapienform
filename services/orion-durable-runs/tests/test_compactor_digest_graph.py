@@ -362,3 +362,29 @@ def test_heavy_day_many_chunks_completes_under_the_runtime_config():
         assert result["status"] == "completed" and len(orch.calls) >= 40
 
     asyncio.run(run())
+
+
+def test_finalize_honours_pause_but_not_a_passed_deadline():
+    from app.admitted_graph import RunControlPending, WorkflowDeadline
+
+    async def run(guard_exc):
+        world, saver = World(), InMemorySaver()
+        world.grant()
+        orch = Orch(world)
+
+        async def guard(state):
+            raise guard_exc
+
+        g = build_compactor_digest_graph(orch.rpc, AdmissionDeps(
+            world.register, world.lease, world.execute, world.release, world.event,
+            now=lambda: world.now, guard=guard), saver)
+        try:
+            result = await g.ainvoke(initial(n_prs=1), CFG)
+        except RunControlPending:
+            return None, orch
+        return result, orch
+
+    paused, orch = asyncio.run(run(RunControlPending("paused")))
+    assert paused is None and orch.finalized == []                 # no card/journal while paused
+    late, orch = asyncio.run(run(WorkflowDeadline("workflow_deadline")))
+    assert late["status"] == "completed" and len(orch.finalized) == 1   # the day's work is not thrown away

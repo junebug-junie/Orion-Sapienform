@@ -34,11 +34,9 @@ from app.admitted_graph import (
 from orion.cognition.compactor.constants import COMPACTOR_FINALIZE_RPC_TIMEOUT_SEC
 from orion.cognition.compactor.map_reduce import (
     SPECS, CompactorDigestCallError, assemble, build_digest_request_payload, digest_from_payload,
-    merge_gave_up, next_call, record_merge, resolve_merge_without_call,
+    finalize_request_payload, merge_gave_up, next_call, record_merge, resolve_merge_without_call,
 )
-from orion.schemas.compactor_digest_run import (
-    DURABLE_DIGEST_KEY, CompactorDigestResultV1, CompactorDigestRunBriefV1,
-)
+from orion.schemas.compactor_digest_run import CompactorDigestResultV1, CompactorDigestRunBriefV1
 
 CortexRpc = Callable[..., Awaitable[dict[str, Any]]]
 """(request_payload, *, timeout_sec, label) -> the decoded cortex-orch result payload. Raises on a
@@ -82,37 +80,6 @@ def finish_detail(state: dict[str, Any]) -> dict[str, Any]:
         "card_id": result.get("card_id"),
         "attempts": len(state.get("call_log") or []),
         "gpu_roles": list(state.get("gpu_roles") or []),
-    }
-
-
-def finalize_request_payload(brief: CompactorDigestRunBriefV1, result: CompactorDigestResultV1, *,
-                             correlation_id: str) -> dict[str, Any]:
-    """The cortex-orch workflow request that finishes the day (card + journal, no LLM)."""
-    workflow_request: dict[str, Any] = {
-        "workflow_id": brief.workflow_id,
-        DURABLE_DIGEST_KEY: result.model_dump(mode="json"),
-    }
-    policy = brief.finalize.get("execution_policy")
-    if isinstance(policy, dict):
-        workflow_request["execution_policy"] = {**policy, "invocation_mode": "immediate"}
-    return {
-        "mode": "brain",
-        "route_intent": "none",
-        "verb": None,
-        "packs": [],
-        "options": {"source": "orion-durable-runs", "policy_dispatch_only": True,
-                    "timeout_sec": float(COMPACTOR_FINALIZE_RPC_TIMEOUT_SEC)},
-        "recall": {"enabled": False, "required": False},
-        "context": {
-            "messages": [],
-            "raw_user_text": f"{brief.workflow_id} finalize ({brief.window_label})",
-            "user_message": f"{brief.workflow_id} finalize ({brief.window_label})",
-            "session_id": brief.session_id,
-            "user_id": brief.user_id,
-            "trace_id": correlation_id,
-            "metadata": {"workflow_request": workflow_request,
-                         "workflow_dispatch_source": "orion-durable-runs"},
-        },
     }
 
 
@@ -200,6 +167,14 @@ def build_compactor_digest_graph(cortex_rpc: CortexRpc, admission: AdmissionDeps
                     "call_log": log + [failed_row]}
 
     async def finalize(state: CompactorDigestState) -> dict:
+        if admission.guard is not None:
+            # Operator pause/cancel wins before the card + journal are written (RunControlPending
+            # keeps this position). A passed deadline does not: every LLM call is already done,
+            # and throwing the day's digest away now would only waste it.
+            try:
+                await admission.guard(dict(state))
+            except WorkflowDeadline:
+                pass
         released = await admission.release(dict(state), "completed")
         brief, spec, inputs, partials, merge = _progress(dict(state))
         assembled = assemble(spec, inputs, partials, merge, window_label=brief.window_label)

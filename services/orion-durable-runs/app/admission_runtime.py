@@ -796,6 +796,9 @@ class AdmissionRuntime:
     async def _cancel_harness(self, state, reason):
         # Curiosity: hold-derived turn id. Self-sense: each question is a fresh uuid4 -- cancel
         # those from answers + any still in-flight.
+        if state.get("workflow") == COMPACTOR_DIGEST_WORKFLOW:
+            # No harness turn: each digest call is a plain cortex-orch verb RPC; a replay re-asks.
+            return
         if state.get("workflow") == REVERIE_VISUAL_WORKFLOW:
             # No harness turn: generate runs in orion-thought, whose replay is idempotent (the
             # recorded artifact, or a generate_in_flight retry).

@@ -636,6 +636,37 @@ def durable_settlement(payload: Any) -> dict | None:
             "error": str(error)[:300] if error else None}
 
 
+def durable_failure_notify_request(item: dict) -> NotificationRequest | None:
+    """The one failure notice for a scheduled workflow whose durable run ended failed/cancelled,
+    honoring the schedule's notify_on the way cortex-orch's ``_should_notify`` does (``failure`` and
+    ``completion`` notify on failure). None when no notice is due."""
+    if item.get("status") not in ("failed", "cancelled"):
+        return None
+    if str(item.get("notify_on") or "none").lower() not in ("failure", "completion"):
+        return None
+    workflow_id = str(item.get("workflow_id") or "workflow")
+    error = item.get("error") or item["status"]
+    body = (f"{workflow_id} failed: its durable run {item['durable_run_id']} ended {item['status']} "
+            f"({error}). The schedule retries with backoff; the day's journal entry was not written.")
+    return NotificationRequest(
+        source_service="orion-actions",
+        event_kind="orion.workflow.failed",
+        severity="warning",
+        title=f"Workflow {workflow_id} failed",
+        body_text=body,
+        body_md=body,
+        recipient_group=item.get("recipient_group") or "juniper_primary",
+        session_id="workflow",
+        correlation_id=str(uuid4()),
+        dedupe_key=f"workflow:{workflow_id}:failed:{item['durable_run_id']}",
+        dedupe_window_seconds=86400,
+        tags=["workflow", workflow_id, "failed", "durable"],
+        context={"workflow_id": workflow_id, "status": "failed", "execution_source": "durable_run",
+                 "durable_run_id": item["durable_run_id"], "notify_on": item.get("notify_on"),
+                 "preview_text": body[:280]},
+    )
+
+
 def _send_pending_attention(
     *,
     notify,
@@ -1938,20 +1969,28 @@ async def lifespan(app: FastAPI):
         )
         await _reply_management(env, response)
 
+    async def _report_durable_settlements(settled: list[dict]) -> None:
+        for item in settled:
+            logger.info(
+                "scheduled_workflow_durable_settled durable_run_id=%s status=%s schedule_run=%s error=%s",
+                item["durable_run_id"], item["status"], item["run_id"], item.get("error"),
+            )
+            req = durable_failure_notify_request(item)
+            if req is None:
+                continue
+            # Once per durable run (dedupe on its id), replacing the per-attempt notice orch used
+            # to send when the digest failed inside the workflow RPC.
+            result = await asyncio.to_thread(notify.send, req)
+            if not result.ok:
+                logger.warning("scheduled_workflow_durable_failure_notify_failed durable_run_id=%s detail=%s",
+                               item["durable_run_id"], result.detail)
+
     async def _handle_durable_run_state(env: BaseEnvelope) -> None:
         """Settle a scheduled compactor run from its durable run's terminal state row."""
         settlement = durable_settlement(env.payload)
         if settlement is None:
             return
-        settled = workflow_schedule_store.settle_durable_run(**settlement)
-        if settled:
-            logger.info(
-                "scheduled_workflow_durable_settled durable_run_id=%s status=%s schedule_runs=%s error=%s",
-                settlement["durable_run_id"],
-                settlement["status"],
-                ",".join(settled),
-                settlement.get("error"),
-            )
+        await _report_durable_settlements(workflow_schedule_store.settle_durable_run(**settlement))
 
     async def handle_envelope(env: BaseEnvelope) -> None:
         kind = str(env.kind or "")
@@ -2421,13 +2460,13 @@ async def lifespan(app: FastAPI):
                     if durable is not None:
                         # The LLM half runs as a durable run; its terminal state row settles this
                         # schedule run (_handle_durable_run_state). Not a success yet.
-                        workflow_schedule_store.mark_awaiting_durable(
+                        await _report_durable_settlements(workflow_schedule_store.mark_awaiting_durable(
                             run_id=claimed.run.run_id,
                             schedule_id=claimed.schedule.schedule_id,
                             durable_run_id=durable["run_id"],
                             awaiting_until=durable["awaiting_until"],
                             now_utc=now_utc,
-                        )
+                        ))
                     else:
                         workflow_schedule_store.mark_dispatch_succeeded(run_id=claimed.run.run_id, schedule_id=claimed.schedule.schedule_id, now_utc=now_utc)
                     await _audit(

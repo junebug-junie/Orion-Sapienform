@@ -43,7 +43,11 @@ from orion.cognition.github_compactor.digest import (
     parse_github_compactor_digest_json,
 )
 from orion.schemas.actions.chat_history_compactor import ChatHistoryCompactorDigestV1
+from orion.cognition.compactor.constants import COMPACTOR_FINALIZE_RPC_TIMEOUT_SEC
 from orion.schemas.actions.github_compactor import GithubCompactorDigestV1
+from orion.schemas.compactor_digest_run import (
+    DURABLE_DIGEST_KEY, CompactorDigestResultV1, CompactorDigestRunBriefV1,
+)
 
 CompactorKind = Literal["github", "chat"]
 
@@ -272,4 +276,37 @@ def assemble(spec: CompactorDigestSpec, inputs: list[dict[str, Any]], partials: 
         "merge_mode": merge_mode,
         "merge_skipped_reason": merge_skipped_reason,
         "trimmed_fields": list(trimmed_fields or []),
+    }
+
+
+def finalize_request_payload(brief: "CompactorDigestRunBriefV1", result: "CompactorDigestResultV1", *,
+                             correlation_id: str) -> dict[str, Any]:
+    """The cortex-orch workflow request that finishes the day (card + journal, no LLM): what the
+    durable run's ``finalize`` node sends. ``durable_digest`` makes orch finalize instead of
+    fetching; no ``durable_run`` key, so it can never re-submit."""
+    workflow_request: dict[str, Any] = {
+        "workflow_id": brief.workflow_id,
+        DURABLE_DIGEST_KEY: result.model_dump(mode="json"),
+    }
+    policy = brief.finalize.get("execution_policy")
+    if isinstance(policy, dict):
+        workflow_request["execution_policy"] = {**policy, "invocation_mode": "immediate"}
+    return {
+        "mode": "brain",
+        "route_intent": "none",
+        "verb": None,
+        "packs": [],
+        "options": {"source": "orion-durable-runs", "policy_dispatch_only": True,
+                    "timeout_sec": float(COMPACTOR_FINALIZE_RPC_TIMEOUT_SEC)},
+        "recall": {"enabled": False, "required": False},
+        "context": {
+            "messages": [],
+            "raw_user_text": f"{brief.workflow_id} finalize ({brief.window_label})",
+            "user_message": f"{brief.workflow_id} finalize ({brief.window_label})",
+            "session_id": brief.session_id,
+            "user_id": brief.user_id,
+            "trace_id": correlation_id,
+            "metadata": {"workflow_request": workflow_request,
+                         "workflow_dispatch_source": "orion-durable-runs"},
+        },
     }

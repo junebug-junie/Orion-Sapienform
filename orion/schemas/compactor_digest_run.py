@@ -23,8 +23,9 @@ Flow (who owns what):
 
 ``run_id`` is deterministic per (workflow, window, repo, input hash): a re-dispatch of the same
 window finds the existing run instead of starting a second one. ADDITIVE on ``extra="forbid"``
-contracts: deploy orion-durable-runs before cortex-orch (orch submits these), and cortex-orch
-before orion-actions.
+/ ``Literal`` contracts: deploy the ``DurableRunStateV1`` consumers (orion-sql-writer, orion-hub)
+and orion-durable-runs before cortex-orch (orch submits these), and cortex-orch before
+orion-actions (its 600 s dispatch wait is too short for an old in-process orch).
 """
 from __future__ import annotations
 

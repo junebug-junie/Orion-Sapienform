@@ -12,7 +12,9 @@ import ast
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from app.main import DURABLE_COMPLETION_GRACE, accepted_durable_run, durable_settlement
+from app.main import (
+    DURABLE_COMPLETION_GRACE, accepted_durable_run, durable_failure_notify_request, durable_settlement,
+)
 from app.workflow_schedule_store import WorkflowScheduleStore
 from orion.schemas.durable_run import DurableRunStateV1
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1
@@ -86,7 +88,7 @@ def test_awaiting_run_survives_claim_ttl_then_completion_settles_it(tmp_path):
     # Restart-safe: the awaiting marker is persisted.
     reloaded = WorkflowScheduleStore(str(tmp_path / "wf.json"), claim_ttl_seconds=300)
     settled = reloaded.settle_durable_run(**durable_settlement(_state("completed")), now_utc=T0 + timedelta(hours=2))
-    assert settled == [claimed.run.run_id]
+    assert [item["run_id"] for item in settled] == [claimed.run.run_id]
     run = _run(reloaded, claimed.run.run_id)
     assert run.status == "completed" and run.error is None
     schedule = reloaded.list_schedules(include_inactive=True)[0]
@@ -138,3 +140,34 @@ def test_scheduler_awaits_accepted_durable_runs_and_subscribes_to_state():
     assert "patterns.append(DURABLE_RUN_STATE_CHANNEL)" in src
     handler = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "handle_envelope")
     assert "DURABLE_RUN_STATE_KIND" in ast.unparse(handler)
+
+
+def test_terminal_row_before_the_accepted_reply_settles_on_mark(tmp_path):
+    """A run can end before the scheduler loop records orch's accepted reply (instant refusal, or a
+    re-dispatch finding a run that finishes in the gap): it must not wait ~18h for the reaper."""
+    store = _store(tmp_path, retry_backoff_seconds=300)
+    claimed = _claim(store)
+    early = store.settle_durable_run(**durable_settlement(_state("failed", detail={"error": "gpu_pool_unavailable:x"})),
+                                     now_utc=T0)
+    assert early == []                                            # nothing waiting yet: remembered
+    settled = store.mark_awaiting_durable(run_id=claimed.run.run_id, schedule_id=claimed.schedule.schedule_id,
+                                          durable_run_id=_state("failed")["run_id"], awaiting_until=DEADLINE,
+                                          now_utc=T0 + timedelta(seconds=5))
+    assert [item["status"] for item in settled] == ["failed"]
+    assert _run(store, claimed.run.run_id).error == "durable_run_failed:gpu_pool_unavailable:x"
+
+
+def test_failure_notifies_once_per_durable_run_per_policy(tmp_path):
+    store = _store(tmp_path)
+    claimed = _claim(store)
+    store.mark_awaiting_durable(run_id=claimed.run.run_id, schedule_id=claimed.schedule.schedule_id,
+                                durable_run_id=_state("failed")["run_id"], awaiting_until=DEADLINE, now_utc=T0)
+    [item] = store.settle_durable_run(**durable_settlement(_state("failed", detail={"error": "workflow_deadline"})),
+                                      now_utc=T0 + timedelta(hours=1))
+    req = durable_failure_notify_request(item)                    # schedule notify_on=failure
+    assert req is not None and req.event_kind == "orion.workflow.failed"
+    assert req.dedupe_key == f"workflow:github_compactor_pass:failed:{item['durable_run_id']}"
+    assert "workflow_deadline" in req.body_text
+    assert durable_failure_notify_request({**item, "status": "completed"}) is None
+    assert durable_failure_notify_request({**item, "notify_on": "none"}) is None
+    assert durable_failure_notify_request({**item, "notify_on": "success"}) is None

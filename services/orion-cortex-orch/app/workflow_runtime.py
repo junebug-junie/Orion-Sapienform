@@ -2002,11 +2002,9 @@ def _compactor_finalize_policy(req: CortexClientRequest, workflow_id: str) -> Di
 
 
 def _compactor_deadline_at(window_end: datetime) -> datetime:
-    deadline = window_end.astimezone(timezone.utc) + timedelta(seconds=COMPACTOR_RUN_DEADLINE_AFTER_WINDOW_SEC)
-    if deadline <= datetime.now(timezone.utc):
-        # A window whose digest deadline already passed would be admitted only to fail at once.
-        raise WorkflowExecutionError(f"compactor_window_deadline_passed:{deadline.isoformat()}")
-    return deadline
+    """Window end + COMPACTOR_RUN_DEADLINE_AFTER_WINDOW_SEC: derived from the window, never from
+    now, so re-dispatching the same window builds a byte-identical request (same run_id)."""
+    return window_end.astimezone(timezone.utc) + timedelta(seconds=COMPACTOR_RUN_DEADLINE_AFTER_WINDOW_SEC)
 
 
 def _compactor_run_id_base(brief: CompactorDigestRunBriefV1, body: Dict[str, Any]) -> str:
@@ -2040,6 +2038,11 @@ async def _submit_compactor_digest_run(
     the scheduler records a failed dispatch and retries with its own backoff. Nothing runs in-process.
     """
     settings = get_settings()
+    # Past the window's deadline a NEW run could only fail at once, but an existing one may have
+    # completed (its terminal row missed by orion-actions): still submit -- the identical request is
+    # idempotent and reports that run -- and refuse only when the receipt shows a fresh row (which
+    # the durable driver fails on its first deadline check).
+    expired = deadline_at <= datetime.now(timezone.utc)
     admission = ResourceRequirementV1(
         resource=f"llm.route.{brief.llm_route}",
         preferred_lane=brief.llm_route,
@@ -2097,6 +2100,8 @@ async def _submit_compactor_digest_run(
         )
         if receipt_status in ("failed", "cancelled"):
             continue
+        if expired and receipt_status != "completed":
+            raise WorkflowExecutionError(f"compactor_window_deadline_passed:{deadline_at.isoformat()}:{run_id}")
         return {
             "run_id": run_id,
             "status": "completed" if receipt_status == "completed" else "accepted",
@@ -3010,6 +3015,7 @@ async def execute_chat_workflow(
             raise WorkflowExecutionError(f"unimplemented_workflow:{workflow_id}")
     except Exception:
         logger.exception("workflow_failed corr=%s workflow_id=%s", correlation_id, workflow_id)
+        finalize_retry = DURABLE_DIGEST_KEY in request
         logger.info(
             "workflow_execution_truth %s",
             json.dumps(
@@ -3024,6 +3030,11 @@ async def execute_chat_workflow(
                 default=str,
             ),
         )
+        if finalize_retry:
+            # A durable run's finalize call failed: the durable driver retries it (bounded), so a
+            # notice per try would spam. The run's terminal failure is reported once, by
+            # orion-actions when it settles the schedule run.
+            raise
         await _emit_workflow_notify(
             source=source,
             req=req,
@@ -3037,11 +3048,13 @@ async def execute_chat_workflow(
             execution_source="immediate",
         )
         raise
-    if result.status == "accepted":
-        # Handed to a durable run (compactor.digest): it has not finished. Its finalize call
-        # re-enters this function with the real result and notifies then -- notifying "completed"
-        # now would report work that has not happened yet.
-        logger.info("workflow_accepted_durable corr=%s workflow_id=%s", correlation_id, workflow_id)
+    submitted = ((result.metadata or {}).get("workflow") or {}).get("durable_run") if isinstance(result.metadata, dict) else None
+    if submitted:
+        # Handed to a durable run (compactor.digest). Accepted: it has not finished, and its
+        # finalize call re-enters this function with the real result and notifies then. Receipt
+        # "completed": that finalize already notified -- a second notice would duplicate it.
+        logger.info("workflow_durable_submitted corr=%s workflow_id=%s status=%s",
+                    correlation_id, workflow_id, result.status)
     else:
         await _emit_workflow_notify(
             source=source,

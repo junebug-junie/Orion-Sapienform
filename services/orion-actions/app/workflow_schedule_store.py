@@ -62,6 +62,12 @@ class WorkflowScheduleStore:
         self._runs: List[WorkflowScheduleRunRecordV1] = []
         self._events: List[WorkflowScheduleEventRecordV1] = []
         self._metrics = metrics
+        # Terminal rows of durable runs no schedule run was (yet) waiting on: run_id -> (status,
+        # error). A run can end before the scheduler loop records the accepted reply (an instant
+        # pool refusal, or an in-flight run a re-dispatch found finishing in the gap);
+        # mark_awaiting_durable settles from here instead of waiting ~18h for the reaper. Bounded,
+        # in memory: the reaper + deterministic re-dispatch still cover a restart in between.
+        self._early_terminals: Dict[str, tuple[str, str | None]] = {}
         self._load()
 
     def _error_response(
@@ -787,15 +793,16 @@ class WorkflowScheduleStore:
         durable_run_id: str,
         awaiting_until: datetime,
         now_utc: datetime | None = None,
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         """The dispatch was accepted as a durable run: the run stays ``dispatched`` (in flight --
         attention stays quiet, no retry is armed) until that run's terminal state row arrives
-        (``settle_durable_run``) or ``awaiting_until`` passes (the reaper fails it)."""
+        (``settle_durable_run``) or ``awaiting_until`` passes (the reaper fails it). Returns the
+        settlements made at once when that row already arrived (see ``settle_durable_run``)."""
         now = _utc_now(now_utc)
         with self._lock:
             run = next((item for item in self._runs if item.run_id == run_id), None)
             if run is None:
-                return
+                return []
             run.metadata = {
                 **dict(run.metadata or {}),
                 "durable_run_id": durable_run_id,
@@ -808,7 +815,14 @@ class WorkflowScheduleStore:
                 extra={"run_id": run_id, "durable_run_id": durable_run_id,
                        "awaiting_until": run.metadata["awaiting_until"]},
             )
+            early = self._early_terminals.pop(durable_run_id, None)
+            if early is not None:
+                # It already ended: settle now through the same path a late row would take.
+                settled = self._settle_locked(durable_run_id=durable_run_id, status=early[0], error=early[1], now=now)
+                self._persist()
+                return settled
             self._persist()
+            return []
 
     def settle_durable_run(
         self,
@@ -817,33 +831,52 @@ class WorkflowScheduleStore:
         status: str,
         error: str | None = None,
         now_utc: datetime | None = None,
-    ) -> list[str]:
+    ) -> list[dict[str, Any]]:
         """A durable run a schedule run is waiting on ended (``completed`` / ``failed`` /
         ``cancelled``). Settles every still-``dispatched`` schedule run waiting on it through the
         normal success/failure paths (retry budget, attention, next occurrence). A completion for
-        a superseded claim updates the run only, like a superseded failure. Returns the settled
-        schedule run ids (empty when nothing was waiting -- e.g. a replayed terminal event)."""
+        a superseded claim updates the run only, like a superseded failure. Returns one dict per
+        settled schedule run (run_id, schedule_id, workflow_id, notify_on, recipient_group, status,
+        error). Nothing waiting: the row is remembered for ``mark_awaiting_durable`` (bounded) and
+        [] is returned -- a replayed row for an already-settled run is simply ignored there."""
         now = _utc_now(now_utc)
-        settled: list[str] = []
         with self._lock:
-            for run in list(self._runs):
-                if str(run.status).lower() != "dispatched":
-                    continue
-                if (run.metadata or {}).get("durable_run_id") != durable_run_id:
-                    continue
-                if status == "completed":
-                    schedule = self._schedules.get(run.schedule_id)
-                    if schedule is not None and schedule.last_run_at is not None and run.dispatch_at < schedule.last_run_at:
-                        run.status, run.completed_at, run.error = "completed", now, None
-                        self._event(kind="schedule_run_completed_superseded", schedule_id=run.schedule_id,
-                                    extra={"run_id": run.run_id, "durable_run_id": durable_run_id})
-                    else:
-                        self._mark_succeeded_locked(run_id=run.run_id, schedule_id=run.schedule_id, now=now)
-                else:
-                    detail = f":{error}" if error else ""
-                    self._mark_failed_locked(run_id=run.run_id, schedule_id=run.schedule_id,
-                                             error=f"durable_run_{status}{detail}"[:500], now=now)
-                settled.append(run.run_id)
+            settled = self._settle_locked(durable_run_id=durable_run_id, status=status, error=error, now=now)
             if settled:
                 self._persist()
+            elif not any((r.metadata or {}).get("durable_run_id") == durable_run_id for r in self._runs):
+                self._early_terminals[durable_run_id] = (status, error)
+                while len(self._early_terminals) > 200:
+                    self._early_terminals.pop(next(iter(self._early_terminals)))
+        return settled
+
+    def _settle_locked(self, *, durable_run_id: str, status: str, error: str | None, now: datetime) -> list[dict[str, Any]]:
+        settled: list[dict[str, Any]] = []
+        for run in list(self._runs):
+            if str(run.status).lower() != "dispatched":
+                continue
+            if (run.metadata or {}).get("durable_run_id") != durable_run_id:
+                continue
+            schedule = self._schedules.get(run.schedule_id)
+            if status == "completed":
+                if schedule is not None and schedule.last_run_at is not None and run.dispatch_at < schedule.last_run_at:
+                    run.status, run.completed_at, run.error = "completed", now, None
+                    self._event(kind="schedule_run_completed_superseded", schedule_id=run.schedule_id,
+                                extra={"run_id": run.run_id, "durable_run_id": durable_run_id})
+                else:
+                    self._mark_succeeded_locked(run_id=run.run_id, schedule_id=run.schedule_id, now=now)
+            else:
+                detail = f":{error}" if error else ""
+                self._mark_failed_locked(run_id=run.run_id, schedule_id=run.schedule_id,
+                                         error=f"durable_run_{status}{detail}"[:500], now=now)
+            settled.append({
+                "run_id": run.run_id,
+                "schedule_id": run.schedule_id,
+                "workflow_id": run.workflow_id,
+                "notify_on": schedule.notify_on if schedule is not None else None,
+                "recipient_group": schedule.execution_policy.recipient_group if schedule is not None else None,
+                "status": status,
+                "error": error,
+                "durable_run_id": durable_run_id,
+            })
         return settled

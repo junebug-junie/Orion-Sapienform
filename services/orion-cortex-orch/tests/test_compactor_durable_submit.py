@@ -231,9 +231,58 @@ def test_generations_are_bounded(monkeypatch, fixed_now):
         _run(_scheduled("github_compactor_pass"), fake)
 
 
-def test_deadline_already_passed_is_refused():
+@pytest.mark.real_durable_submit
+def test_past_deadline_redispatch_still_finds_a_completed_run_but_refuses_a_fresh_one(monkeypatch):
+    """Day 2026-09-28's deadline (window end + 24h) passed by 2026-10-02. A completed run whose
+    terminal row orion-actions missed is still reported; a fresh row is refused."""
+    late = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
+
+    class _Late(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return late if tz is None else late.astimezone(tz)
+
+    monkeypatch.setattr(wr, "datetime", _Late)
+    brief_kwargs = dict(kind="github", workflow_id="github_compactor_pass", window_label="2026-09-28",
+                        inputs=[{"items": [{"number": 1}]}], timeout_sec=660.0, session_id="s",
+                        finalize={"repo": "acme/widgets"})
+    from orion.schemas.compactor_digest_run import CompactorDigestRunBriefV1
+    brief = CompactorDigestRunBriefV1(**brief_kwargs)
+    past = datetime(2026, 9, 30, 6, 0, tzinfo=timezone.utc)
+
+    async def submit(dispatch):
+        monkeypatch.setattr(wr, "dispatch_durable_run", dispatch)
+        return await wr._submit_compactor_digest_run(bus=_Bus(), source=ServiceRef(name="o"), correlation_id="c",
+                                                     brief=brief, deadline_at=past)
+
+    done = asyncio.run(submit(_Dispatch(statuses=["completed"])))
+    assert done["status"] == "completed"
     with pytest.raises(wr.WorkflowExecutionError, match="compactor_window_deadline_passed"):
-        wr._compactor_deadline_at(datetime.now(timezone.utc) - timedelta(days=2))
+        asyncio.run(submit(_Dispatch(statuses=["waiting_resource"])))
+
+
+@pytest.mark.real_durable_submit
+def test_already_finalized_redispatch_does_not_notify_twice(monkeypatch, fixed_now, notifications):
+    monkeypatch.setattr(wr, "dispatch_durable_run", _Dispatch(statuses=["completed"]))
+    fake, _ = _fetch_only(_prs(2))
+    result = _run(_scheduled("github_compactor_pass", notify_on="completion"), fake)
+    assert result.status == "success" and notifications == []
+
+
+def test_failed_finalize_does_not_notify_per_retry(monkeypatch, notifications):
+    async def no_calls(*args, **kwargs):
+        raise AssertionError("no calls")
+
+    async def broken(**kwargs):
+        raise wr.WorkflowExecutionError("journal_write_bus_disabled")
+
+    monkeypatch.setattr(wr, "_publish_journal_entry_write_or_fail", broken)
+    durable = _durable_result()
+    policy = {**durable.finalize["execution_policy"], "notify_on": "failure"}
+    req = _req("github_compactor_pass", durable_digest=durable.model_dump(mode="json"), execution_policy=policy)
+    with pytest.raises(wr.WorkflowExecutionError):
+        _run(req, no_calls)
+    assert notifications == []
 
 
 @pytest.mark.real_durable_submit

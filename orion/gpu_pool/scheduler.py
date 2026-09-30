@@ -67,7 +67,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
-from typing import Iterable, Mapping, Union
+from typing import Collection, Iterable, Mapping, Union
 
 from orion.gpu_pool.config import PoolConfig
 from orion.schemas.gpu_pool import URGENT_PREEMPT as PREEMPT
@@ -368,6 +368,7 @@ def schedule(
     seen_ctx: dict[str, int] | None = None,
     guards: dict[str, str | None] | None = None,
     shed: Mapping[str, str] | None = None,
+    frozen: Collection[str] | None = None,
 ) -> list[Decision]:
     """``seen_ctx``: each role's last-seen per-slot context, kept by the caller across restarts of
     the role. Used ONLY to decide "too big for this class" -- a briefly-down big role must not make
@@ -377,7 +378,14 @@ def schedule(
     read must be passed as failing, e.g. "unavailable"). A name missing from a dict fails closed.
     ``None`` means the caller evaluates no guards at all (pure tests, the replay eval).
 
-    ``shed``: priority -> shed reason name (U4). None or empty = nothing shed."""
+    ``shed``: priority -> shed reason name (U4). None or empty = nothing shed.
+
+    ``frozen``: swap seats whose load/unload cannot happen right now (stage 5.7: the operator paused
+    actuation). A swap seat with no ``launch`` block is always frozen (nothing can load it). A frozen
+    seat is never drained -- not for an owner reclaim, not at max_hold_sec, and an operator lease on
+    it never drains its residents -- because a drain only exists to empty a card for a swap, and a
+    swap that cannot happen would leave the card serving nobody. Swap decisions are still returned,
+    so the caller can report them."""
     d = cfg.defaults
     out: list[Decision] = []
     # U4, on the ORIGINAL priority (before the urgent rollback below rewrites urgent to background).
@@ -452,9 +460,12 @@ def schedule(
 
     # --- 2. what is draining this tick (no new grants there) -------------------------
     swap_roles = [r for r, spec in cfg.roles.items() if spec.swap is not None]
+    frozen_seats = set(frozen or ()) | {r for r in swap_roles if cfg.roles[r].launch is None}
     max_held: set[str] = set()
     for seat in swap_roles:
         spec = cfg.roles[seat]
+        if seat in frozen_seats:
+            continue
         if ctx.loaded(seat):
             # A resident owner that could actually run there wants its card back: the seat drains.
             if not spec.operator_only and any(

@@ -14,6 +14,7 @@ on:
       - "services/orion-llamacpp-bonsai-host/**"
       - "services/orion-sql-db/manual_migration_gpu_pool_v1.sql"
       - "services/orion-sql-db/manual_migration_gpu_pool_v2_holds.sql"
+      - "services/orion-sql-db/manual_migration_gpu_pool_v3_actuation_pause.sql"
       # stage 5.4: world-model takes a pool lease (the "world" job below)
       - "services/orion-world-model/**"
       - "services/orion-equilibrium-service/app/settings.py"

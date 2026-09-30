@@ -16,7 +16,7 @@ Design: `docs/superpowers/specs/2026-09-24-gpu-pool-design.md`.
 | scheduling decisions | `orion/gpu_pool/scheduler.py` (pure function, one test per rule) |
 | lease lifecycle | `orion/gpu_pool/lease_graph.py` (LangGraph, checkpointed in Postgres) |
 | the only client | `orion/gpu_pool/client.py` (`async with gpu_lease(...)`) |
-| live projection | `gpu_pool_leases`, `gpu_pool_cards` (`services/orion-sql-db/manual_migration_gpu_pool_v1.sql`, then `_v2_holds.sql`) |
+| live projection | `gpu_pool_leases`, `gpu_pool_cards` (`services/orion-sql-db/manual_migration_gpu_pool_v1.sql`, then `_v2_holds.sql`, then `_v3_actuation_pause.sql`) |
 | swap actuation engine + guards | `app/runtime.py` (`_begin_actuation`, `on_actuate_result`, `_check_actuation`), `app/guards.py` |
 | lease history | `gpu_pool_events`, written by orion-sql-writer from `orion:gpu_pool:event` |
 
@@ -44,10 +44,10 @@ with the server's own `GET /props`: the loaded file must equal the profile's `hf
 | channel | what |
 | --- | --- |
 | `orion:gpu_pool:lease:request` | acquire / heartbeat / release / cancel / attach / status (RPC; answers at once). See "Durable-run holds" below. |
-| `orion:gpu_pool:actuate:request` / `:actuate:result` | pool ↔ host actuator (`GpuActuateV1` / `GpuActuateResultV1`). The pool sends only for seats in `GPU_POOL_ACTUATE_ROLES` (empty by default = never). |
+| `orion:gpu_pool:actuate:request` / `:actuate:result` | pool ↔ host actuator (`GpuActuateV1` / `GpuActuateResultV1`). The pool sends only for swap seats with a `launch:` block in `config/gpu_pool.yaml`, and nothing while actuation is paused (stage 5.7). |
 | `orion:gpu_pool:event` | lease facts; callers wake on `granted` |
 | `orion:gpu_pool:state` (+ `:state:request`) | whole-pool snapshot |
-| `orion:gpu_pool:control:request` | operator: lend, unlend, hold, release, replay, cancel, backfill. No token (the pool trusts the bus like every Orion service); each verb is logged with its actor and published as a pool event. |
+| `orion:gpu_pool:control:request` | operator: lend, unlend, hold, release, replay, cancel, backfill, clear_fault, pause_actuation, resume_actuation. No token (the pool trusts the bus like every Orion service); each verb is logged with its actor and published as a pool event. |
 | `orion:llm:worker:announce` | worker → pool discovery |
 
 HTTP is only `/health`, the read-only `GET /v1/pool` debug mirror, and
@@ -58,14 +58,50 @@ Transport rule: the lease RPC travels on a fresh correlation id (the turn's id r
 label, which orion-equilibrium-service excludes from its transport baseline. Waiting in line is
 not transport.
 
-## Stage 1: observe mode (this deploy)
+## Mode and the emergency stop (stage 5.7: enforce is the end state)
 
-The pool discovers, answers leases, publishes state and events, and persists history. **Nothing
-depends on it yet**: the gateway, durable-runs, world-model and diffusion still use their old
-paths until stages 3-5. Swap decisions are published as `swap_requested` events with
-`actuated: false`; no model is loaded or unloaded. Backlogged leases replay when their role
-returns, but re-dispatching a *request* on behalf of a caller that has gone away arrives with the
-gateway cutover (stage 3).
+Runbook: `docs/runbooks/2026-09-30-gpu-pool-stage5-7-enforce.md`.
+
+**Which seats the pool loads is config, not a switch.** A swap seat is actuated if and only if it has
+a `launch:` block in `config/gpu_pool.yaml` (`PoolConfig.actuated_seats()`); today that is
+`agent-gpu2`. `GPU_POOL_ACTUATE_ROLES` is deleted, with no fallback.
+
+`GPU_POOL_MODE` (default `enforce`; any other value than `enforce`/`observe` fails the boot). Both modes
+actuate the same seats. They differ in exactly three ways:
+
+| | enforce (default) | observe (the rollback) |
+| --- | --- | --- |
+| a seat loaded or unloaded outside the pool | at boot and on resume, one read-only `status` per idle seat asks circe's actuator what its cards hold; the pool adopts the answer (`swapped reason=adopted:boot`), never reloads. A half-done card faults (`reconcile_ambiguous:*`); an action the pool never sent faults (`reconcile_foreign_action:*`); no answer in 90 s keeps the stored state. Swaps on that seat wait for the answer | a seat the pool has never acted on is marked loaded when its worker answers (liveness), no `status` asked |
+| operator `hold` | allowed for a seat that can load | refused `hold_refused_observe_mode` |
+| everything else | identical | identical |
+
+**Operator holds on a seat nothing can load are refused in every mode**, with
+`not_actuatable:<role>`: today `experiment` (deferred, no launch block). The scheduler never drains a
+seat's residents for a seat without a launch, so even a lease that got past the refusal could not
+empty the cards (stage 5 spec, "Corrections from building 5.1" item 5). The Hub greys the button out
+with that reason.
+
+**Emergency stop -- the one way to stop every model load and unload at once:** Hub GPU pool panel,
+"Emergency stop: pause all model loading/unloading" (or control verb `pause_actuation`). While paused:
+
+- nothing is sent to the actuator; every swap decision is published as
+  `swap_requested {actuated: false, paused: true}` with `reason=actuation_paused`;
+- no seat is drained or recalled for a swap (the loaded 27B keeps serving; diffusion waits for gpu2);
+- an action already in flight is NOT stopped (the actuator owns it) -- the pool keeps following its
+  result. To stop that too, stop `orion-circe-gpu-lane-controller` on circe;
+- operator holds are refused `actuation_paused`;
+- it is persisted on every `gpu_pool_cards` row (`actuation_paused_at/_by`,
+  `manual_migration_gpu_pool_v3_actuation_pause.sql`), so a restart stays paused; state carries
+  `actuation_paused {paused, since, by}` and `/health` carries `actuation`;
+- events `actuation_paused` / `actuation_resumed` record who and when.
+
+"Resume" (`resume_actuation`) first asks the actuator what each card holds (enforce), then acts on
+queued demand.
+
+### History: stage 1 observe mode
+
+Stage 1 deployed the pool with nothing depending on it; swap decisions were only published. The
+modes have since changed meaning (above).
 
 ## Stage 5.1: config + contracts
 
@@ -101,7 +137,8 @@ Spec: `docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic
   Runbook: `docs/runbooks/2026-09-29-gpu-pool-stage5-3-cutover.md`. End-to-end test:
   `tests/test_stage5_3_cutover_e2e.py` (real runtime -> real controller, fake docker).
 - **`experiment`** lost its dead bridge verbs; the validator exempts an operator-only seat with no
-  launch and no bridge (deferred; nothing can load it, and operator holds are refused in observe).
+  launch and no bridge (deferred; nothing can load it). Since 5.7 its operator hold is refused
+  `not_actuatable:experiment` in every mode.
 - **Seat limit**: `agent-gpu2 max_hold_sec: 9000` (Juniper 2026-09-29).
 
 
@@ -212,10 +249,10 @@ urgent work: it validates pool events against the priority list.
 Nothing sends urgent work yet (Plan 3 adds the trigger). A live pause smoke is **UNVERIFIED**: it
 would pause a real background run, so it waits for Juniper's approval.
 
-## Swap actuation (stage 4.3, OFF by default)
+## Swap actuation (stage 4.3; config-armed since 5.7)
 
-`GPU_POOL_ACTUATE_ROLES` (comma list of swap seats) arms it; empty = every swap decision stays a
-`swap_requested {actuated: false}` event, as before. For an armed seat the pool:
+Every swap seat with a `launch:` block is actuated (see "Mode and the emergency stop"). For such a
+seat the pool:
 
 1. persists the action on `gpu_pool_cards` (`swap_state`, `swap_role`, `swap_generation`,
    `swap_action`), **then** sends `GpuActuateV1 {action_id, generation, launch_digest, deadline_at}`
@@ -235,8 +272,8 @@ would pause a real background run, so it waits for Juniper's approval.
    `GpuPoolControlV1 verb=clear_fault card=<card>` (Hub button on a faulted card) reconciles with
    `status` and adopts the answer, then cools down; a fault discovery cannot clear needs this.
 5. On a pool restart, a card left `loading`/`unloading` is reconciled with `status`, never a
-   second transition. A seat already loaded by the old path is **adopted** from observation (its
-   idle and max-hold clocks start then), not reloaded.
+   second transition. An idle seat is **adopted** from the actuator's `status` answer in enforce
+   (from its worker's liveness in observe); its idle and max-hold clocks start then. Never reloaded.
 
 Loads are blocked -- reported as `swap_requested {actuated: false, reason}` -- by `min_residency`
 (after an unload, `swap_min_residency_sec`), `cooldown`, and the seat's `swap.guards`:
@@ -263,6 +300,9 @@ psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_gpu_pool_v1.sql
 #     without it). If the index build fails it leaves an INVALID index: DROP INDEX
 #     gpu_pool_leases_hold_idx; and re-run.
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_gpu_pool_v2_holds.sql
+# 1c. stage 5.7 (additive, lock_timeout 5s; a 5.7 pool refuses to boot without it): the persisted
+#     emergency stop.
+psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_gpu_pool_v3_actuation_pause.sql
 # 2. equilibrium must exclude the queue-wait hop BEFORE the pool publishes rpc_health:
 #    EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS=log_orion_metacognition,gpu_pool_wait
 # 3. the pool

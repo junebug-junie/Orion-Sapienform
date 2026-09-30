@@ -235,17 +235,58 @@ def test_idle_seat_unloads():
     assert [(u.role, u.reason) for u in of(SwapUnload, run([], crds=idle))] == [("agent-gpu2", "idle")]
 
 
-def test_experiment_drains_every_card_then_loads():
+def _launchable_experiment():
+    """The experiment seat as it would be once built: with a launch block. ``model_copy`` skips the
+    validator (which would also demand launches on every resident); the scheduler reads only
+    ``launch is None``."""
+    launch = CFG.roles["agent-gpu2"].launch
+    roles = {**CFG.roles, "experiment": CFG.roles["experiment"].model_copy(update={"launch": launch})}
+    return CFG.model_copy(update={"roles": roles})
+
+
+def test_an_actuatable_operator_seat_drains_every_card_then_loads():
+    cfg = _launchable_experiment()
     exp = lease("experiment", lease_id="x", operator=True)
     busy = [lease("chat", "granted", "chat", lease_id="c"), lease("metacog", "granted", "metacog", lease_id="m")]
     new_meta = lease("metacog", lease_id="n")
-    decisions = run(busy + [exp, new_meta])
+    decisions = schedule(cfg, live(), cards(), busy + [exp, new_meta], T0)
     assert {r.lease_id for r in of(Recall, decisions)} == {"c", "m"}
     assert "n" not in grants(decisions) and not of(SwapLoad, decisions)
     # metacog is background-able work: it waits for the drain instead of failing
     assert not of(Backlog, decisions)
-    [s] = of(SwapLoad, run([exp]))
+    [s] = of(SwapLoad, schedule(cfg, live(), cards(), [exp], T0))
     assert s.role == "experiment"
+
+
+def test_experiment_without_a_launch_never_drains_a_resident():
+    """Stage 5.7 (stage 5 spec, "Corrections from building 5.1" item 5): the live experiment seat
+    has no launch block, so nothing can load it. An operator lease on it must not drain everything
+    it evicts -- that would leave every card serving nobody."""
+    assert CFG.roles["experiment"].launch is None
+    exp = lease("experiment", lease_id="x", operator=True)
+    busy = [lease("chat", "granted", "chat", lease_id="c"), lease("metacog", "granted", "metacog", lease_id="m")]
+    new_meta = lease("metacog", lease_id="n")
+    decisions = run(busy + [exp, new_meta])
+    assert not of(Recall, decisions)
+    assert grants(decisions)["n"] in ("metacog", "fast")
+
+
+def test_a_frozen_seat_is_never_drained():
+    """Actuation paused (stage 5.7): the loaded 27B keeps serving. An owner reclaim or max_hold_sec
+    would only empty the card for an unload that cannot happen."""
+    gpu2 = cards(gpu2=CardLive("gpu2", swapped_in={"agent-gpu2"},
+                               loaded_at=T0 - timedelta(seconds=CFG.roles["agent-gpu2"].max_hold_sec + 1)))
+    on_seat = lease("agent", "granted", "agent-gpu2", lease_id="a")
+    reclaim = lease("diffusion", lease_id="d")
+    thawed = schedule(CFG, live(), gpu2, [on_seat, reclaim], T0)
+    assert [r.lease_id for r in of(Recall, thawed)] == ["a"]          # control: it drains when not frozen
+    frozen = schedule(CFG, live(), gpu2, [on_seat, reclaim], T0, frozen={"agent-gpu2"})
+    assert not of(Recall, frozen) and not of(SwapUnload, frozen)
+    nxt = lease("agent", lease_id="n")
+    busy_agent = lease("agent", "granted", "agent", lease_id="b")
+    assert grants(schedule(CFG, live(), gpu2, [on_seat, busy_agent, nxt], T0, frozen={"agent-gpu2"})) == {}
+    idle = schedule(CFG, live(), gpu2, [busy_agent, nxt], T0, frozen={"agent-gpu2"})
+    assert grants(idle) == {"n": "agent-gpu2"}                          # still grantable while frozen
 
 
 def test_experiment_loaded_backlogs_background_and_chat_waits():

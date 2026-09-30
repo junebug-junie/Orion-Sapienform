@@ -6,11 +6,16 @@ serial and the scheduler always sees a consistent world. Only the Postgres advis
 runs a runtime at all (see app/main.py), so this lock is the whole concurrency story.
 
 Stage 4.3 adds durable-run holds (acquire kind=hold, ``attach`` for each call under one, ``status``
-for resume) and the swap actuation engine: for a seat named in GPU_POOL_ACTUATE_ROLES the pool
-sends GpuActuateV1 to the seat's host actuator and walks the card through
+for resume) and the swap actuation engine: for a swap seat with a ``launch`` block the pool sends
+GpuActuateV1 to the seat's host actuator and walks the card through
 idle -> loading|unloading -> idle|fault from the GpuActuateResultV1 replies, persisting every step
 on gpu_pool_cards so a restart reconciles (``status``) instead of issuing a second transition.
-Seats not in that set keep today's observe behaviour: ``swap_requested {actuated: false}``.
+
+Stage 5.7 (enforce is the end state): a seat is actuated iff it has a launch block (the
+GPU_POOL_ACTUATE_ROLES list is deleted). The one emergency stop is the ``pause_actuation`` control
+verb, persisted on gpu_pool_cards: while paused every swap decision is published as
+``swap_requested {actuated: false, paused: true}`` and no seat is drained. In enforce mode a boot (and
+a resume) asks the actuator what each idle seat's cards really hold and adopts it.
 """
 from __future__ import annotations
 
@@ -21,7 +26,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Iterable
+from typing import Any, Awaitable, Callable
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.gpu_pool.client import WAIT_HOP_LABEL
@@ -94,22 +99,7 @@ RECENT_ACTIONS = 8
 MAX_STATUS_EXTENSIONS = 4
 
 
-def validate_actuate_roles(cfg: PoolConfig, roles: Iterable[str]) -> frozenset[str]:
-    """GPU_POOL_ACTUATE_ROLES must name non-operator swap seats with a launch block (the launch
-    names the actuator). A typo must fail the boot, not silently leave a seat unactuated."""
-    out = frozenset(r.strip() for r in roles if r and r.strip())
-    problems = []
-    for role in sorted(out):
-        spec = cfg.roles.get(role)
-        if spec is None:
-            problems.append(f"{role}: not a role in config/gpu_pool.yaml")
-        elif spec.swap is None or spec.operator_only:
-            problems.append(f"{role}: not a (non-operator) swap seat")
-        elif spec.launch is None:
-            problems.append(f"{role}: has no launch block naming its actuator")
-    if problems:
-        raise ValueError("GPU_POOL_ACTUATE_ROLES: " + "; ".join(problems))
-    return out
+POOL_MODES = ("enforce", "observe")
 
 
 def _ts(value: Any) -> datetime | None:
@@ -156,10 +146,12 @@ class LockStats:
 class PoolRuntime:
     def __init__(self, *, cfg: PoolConfig, profiles: dict[str, Any], store: Any, graph: Any,
                  bus: Any = None, prober: Prober | None = None, now: Callable[[], datetime] = _utcnow,
-                 mode: str = "observe", service_name: str = "orion-gpu-pool",
+                 mode: str = "enforce", service_name: str = "orion-gpu-pool",
                  announce_stale_sec: float = 120.0, probe_interval_sec: float = 15.0,
                  state_publish_sec: float = 5.0, replay_payload_max_bytes: int = 262144,
-                 actuate_roles: Iterable[str] = (), shed_enabled: bool = False):
+                 shed_enabled: bool = False):
+        if mode not in POOL_MODES:
+            raise ValueError(f"GPU_POOL_MODE must be one of {POOL_MODES}, got {mode!r}")
 
         self.cfg, self.profiles, self.store, self.graph, self.bus = cfg, profiles, store, graph, bus
         self.prober, self.now, self.mode = prober, now, mode
@@ -181,7 +173,14 @@ class PoolRuntime:
         self._swap_requested: set[tuple] = set()
         self._serialized_reported: set[tuple] = set()   # (lease_id, reason) already reported
         self._ctx_seen: dict[str, int] = {}
-        self.actuate_roles = validate_actuate_roles(cfg, actuate_roles)
+        # Stage 5.7: config, not a list. A seat is actuated iff it has a launch block.
+        self.actuated = cfg.actuated_seats()
+        # The emergency stop (control verb pause_actuation), persisted on every gpu_pool_cards row:
+        # {"since": datetime, "by": actor} while paused, else None.
+        self.paused: dict[str, Any] | None = None
+        # enforce: seat -> the `status` this process sent to learn what the seat's cards really hold
+        # (boot and resume). Nothing is actuated on that seat until it is answered or times out.
+        self._reconciling: dict[str, dict[str, Any]] = {}
         # Swap-load guards (app/guards.py fills these outside the lock). Every guard starts failing
         # ("unread"): a pool that has not read the thermal sensor yet must not load a model.
         self.guard_states: dict[str, str | None] = {g: "unread" for g in SWAP_GUARDS}
@@ -216,6 +215,12 @@ class PoolRuntime:
                 if role in self.cfg.roles and size:
                     self._ctx_seen.setdefault(role, int(size))
         self._ctx_saved = dict(self._ctx_seen)
+        paused = [r for r in stored.values() if r.get("actuation_paused_at")]
+        if paused:
+            first = min(paused, key=lambda r: _ts(r["actuation_paused_at"]))
+            self.paused = {"since": _ts(first["actuation_paused_at"]), "by": first.get("actuation_paused_by")}
+            logger.warning("gpu_pool_actuation_paused_at_boot since=%s by=%s -- no model is loaded or unloaded "
+                           "until verb=resume_actuation", self.paused["since"].isoformat(), self.paused["by"])
         for row in await self.store.live_leases():
             await self._sync_row(row["lease_id"])
         self._resolve()
@@ -226,6 +231,7 @@ class PoolRuntime:
             logger.warning("gpu_pool_actuation_reconcile seat=%s action_id=%s state=%s",
                            seat, act.get("action_id"), self.cards[self.cfg.roles[seat].cards[0]].swap_state)
             await self._send_status(seat, act, reason="pool_restart")
+        await self._reconcile_idle_seats("boot")
 
     def _thread(self, lease_id: str) -> dict:
         return {"configurable": {"thread_id": f"gpu_pool:{lease_id}"}}
@@ -280,18 +286,17 @@ class PoolRuntime:
     def _pool_owns(self, seat: str) -> bool:
         """The pool's own swap state is the truth for a seat it actuates, from the first action it
         issued there (or whenever that card is mid-swap / faulted)."""
-        if seat not in self.actuate_roles:
+        if seat not in self.actuated:
             return False
         cards = [self.cards[c] for c in self.cfg.roles[seat].cards]
         return any(c.swap_generation > 0 or c.swap_state != "idle" for c in cards)
 
     def _observe_swap_seats(self) -> None:
-        """A seat the pool does not actuate is loaded when its worker is really up. Otherwise the
-        pool would refuse to use a 27B that the old elastic runtime (or an operator) already brought
-        up on gpu2. A seat the pool actuates is observed only until the pool's first action there:
-        that is how a seat loaded by the old path is adopted when actuation is armed, not reloaded
-        (stage 4 spec, "No window where nobody can open gpu2"). After that the pool's intent is the
-        truth, and discovery still gates grants on the worker being confirmed."""
+        """observe mode only (the stage 5.7 rollback): a swap seat is marked loaded when its worker
+        is really up, until the pool's first action there. That is how a seat loaded by hand is
+        adopted without a reload. After the pool's first action its own intent is the truth, and
+        discovery still gates grants on the worker being confirmed. enforce mode never guesses from
+        liveness: it asks the actuator (``_reconcile_idle_seats``, at boot and on resume)."""
         if self.mode == "enforce":
             return
         for role, spec in self.cfg.roles.items():
@@ -301,7 +306,7 @@ class PoolRuntime:
             for card in spec.cards:
                 c = self.cards[card]
                 if alive:
-                    if role in self.actuate_roles and role not in c.swapped_in:
+                    if role in self.actuated and role not in c.swapped_in:
                         # Adopted: its max_hold_sec and idle-unload clocks start now. Without the
                         # second, an armed pool would unload a 27B the old path just loaded on
                         # its first tick, before the run that asked for it could be granted.
@@ -309,7 +314,7 @@ class PoolRuntime:
                         c.last_active_at = self.now()
                     c.swapped_in.add(role)
                 else:
-                    if role in c.swapped_in and role in self.actuate_roles:
+                    if role in c.swapped_in and role in self.actuated:
                         c.loaded_at = None
                     c.swapped_in.discard(role)
 
@@ -338,6 +343,10 @@ class PoolRuntime:
             roles = self.cfg.classes[req.work_class].roles
             if any(self.cfg.roles[r].operator_only for r in roles) and not operator:
                 return GpuLeaseReplyV1(status="unavailable", reason="operator_only_class")
+            if operator and (why := self.cfg.not_actuatable_reason(req.work_class)):
+                # Stage 5.7: a seat with no launch block can never load, so its lease would only
+                # drain (the scheduler no longer does) or sit forever. Refused, named.
+                return GpuLeaseReplyV1(status="unavailable", reason=why)
             request_id = req.request_id or uuid.uuid4().hex
             existing = await self.store.lease_by_request(request_id)
             if existing is not None:
@@ -461,11 +470,17 @@ class PoolRuntime:
                     await self._emit_row("replayed", new)
                 await self._schedule_and_apply()
             return GpuPoolControlReplyV1(ok=True, detail={"lease_id": row["lease_id"], "status": new["status"]})
-        if ctl.verb == "hold" and self.mode != "enforce":
-            # Until the pool actuates swaps (stage 5), a hold would only drain every card it spans
-            # and never load anything: a full LLM outage until someone clicks release.
-            return GpuPoolControlReplyV1(ok=False, reason="hold_requires_swap_actuation")
+        if ctl.verb in ("pause_actuation", "resume_actuation"):
+            return await self._set_paused(ctl.verb == "pause_actuation", ctl.actor)
         if ctl.verb == "hold":
+            # Refusals, most permanent first. A seat without a launch block can never load (stage 5.7);
+            # observe mode (the rollback) keeps operator holds off; a paused pool cannot load the seat.
+            if why := self.cfg.not_actuatable_reason(ctl.work_class or ""):
+                return GpuPoolControlReplyV1(ok=False, reason=why)
+            if self.mode != "enforce":
+                return GpuPoolControlReplyV1(ok=False, reason="hold_refused_observe_mode")
+            if self.paused is not None:
+                return GpuPoolControlReplyV1(ok=False, reason="actuation_paused")
             # Operator holds (e.g. the multi-card experiment seat): no heartbeat, bounded by the
             # role's max_hold_sec, released with verb=release.
             reply = await self.acquire(GpuLeaseRequestV1(
@@ -551,7 +566,8 @@ class PoolRuntime:
         shed = self.shed_view()
         t = time.monotonic()
         decisions = schedule(self.cfg, self.roles, self.cards, [self._view(r) for r in rows], self.now(),
-                             seen_ctx=self._ctx_seen, guards=self.guard_states, shed=shed.blocked)
+                             seen_ctx=self._ctx_seen, guards=self.guard_states, shed=shed.blocked,
+                             frozen=self.actuated if self.paused is not None else ())
         self._phase("schedule", t)
         self._phases["decisions"] = self._phases.get("decisions", 0) + len(decisions)
         swaps: set[tuple] = set()
@@ -652,10 +668,13 @@ class PoolRuntime:
         return (type(d).__name__, d.role, d.reason if isinstance(d, SwapBlocked) else None)
 
     async def _swap(self, d: SwapLoad | SwapUnload | SwapBlocked) -> None:
-        """A seat in GPU_POOL_ACTUATE_ROLES is actuated; any other seat, and every blocked load, is
-        reported as ``swap_requested {actuated: false}`` (edge-triggered: once when it starts, again
-        if it recurs later)."""
-        if isinstance(d, (SwapLoad, SwapUnload)) and d.role in self.actuate_roles:
+        """A seat with a launch block is actuated. While actuation is paused, for a seat with no launch
+        block, and for every blocked load, the decision is reported as ``swap_requested {actuated:
+        false}`` instead (edge-triggered: once when it starts, again if it recurs later)."""
+        if d.role in self._reconciling and not isinstance(d, SwapBlocked):
+            return   # the actuator has not said yet what the card holds: decide again next tick
+        paused = self.paused is not None and isinstance(d, (SwapLoad, SwapUnload))
+        if isinstance(d, (SwapLoad, SwapUnload)) and d.role in self.actuated and not paused:
             now = self.now()
             if not any(c.cooldown_until and c.cooldown_until > now for c in self._seat_cards(d.role)):
                 await self._begin_actuation(d)
@@ -670,10 +689,17 @@ class PoolRuntime:
         self._swap_requested.add(key)
         detail: dict[str, Any] = {"action": "unload" if isinstance(d, SwapUnload) else "load",
                                   "actuated": False, "mode": self.mode}
+        reason = d.reason
         if isinstance(d, SwapBlocked):
             detail.update(blocked=True, guard_state=d.detail)
+        elif paused:
+            detail.update(paused=True, wanted=d.reason)
+            reason = "actuation_paused"
+        elif d.role not in self.actuated:
+            reason = f"not_actuatable:{d.role}"
+            detail.update(wanted=d.reason)
         await self._emit(GpuPoolEventV1(
-            event="swap_requested", role=d.role, cards=list(self.cfg.roles[d.role].cards), reason=d.reason,
+            event="swap_requested", role=d.role, cards=list(self.cfg.roles[d.role].cards), reason=reason,
             detail=detail))
 
     # --- actuation engine -----------------------------------------------------------------
@@ -846,6 +872,11 @@ class PoolRuntime:
             act = cards[0].swap_action or {}
             pending = cards[0].swap_state in ("loading", "unloading")
             now = self.now()
+            rec = self._reconciling.get(seat)
+            if res.action == "status" and rec is not None and res.action_id == rec["action_id"]:
+                self._reconciling.pop(seat, None)
+                await self._on_reconcile(seat, res, rec)
+                return
             if res.action == "status":
                 if not pending or res.action_id != act.get("status_action_id"):
                     # Also the normal end of a reconcile: the actuator re-publishes the last result it
@@ -887,6 +918,11 @@ class PoolRuntime:
                 await self._adopt(seat, observed, why="status")
                 return
 
+            if not pending and rec is not None:
+                # The actuator re-publishes its last recorded result before answering a reconcile
+                # `status`; that row's `observed` is as old as the action. The fresh answer decides.
+                logger.info("gpu_pool_actuate_result_during_reconcile seat=%s action_id=%s", seat, res.action_id)
+                return
             if not pending or res.action_id != act.get("action_id"):
                 # A result for an action we already gave up on (unanswered in time, or superseded by
                 # a refused retry). If this process issued it and the card is idle, believe the
@@ -938,6 +974,13 @@ class PoolRuntime:
         no terminal result by deadline_at -> ask `status`; no answer to that -> fault."""
         now = self.now()
         ack = self.cfg.defaults.actuate_ack_sec
+        for seat, rec in list(self._reconciling.items()):
+            if (now - rec["sent_at"]).total_seconds() >= max(ack, STATUS_REPLY_SEC):
+                # Nothing was in flight, so nothing to fault: keep the persisted state, say so, and
+                # let the next real action meet the actuator (unreachable -> the usual cooldown).
+                self._reconciling.pop(seat, None)
+                logger.warning("gpu_pool_reconcile_unanswered seat=%s action_id=%s why=%s -- keeping the "
+                               "persisted card state", seat, rec["action_id"], rec["why"])
         for seat, act in self._pending_actions().items():
             sent0 = _ts(act.get("sent_at"))
             if sent0 and (now - sent0).total_seconds() >= MAX_ACTION_TIMEOUTS * self._action_timeout(seat):
@@ -958,6 +1001,101 @@ class PoolRuntime:
             deadline = _ts(act.get("deadline_at"))
             if deadline and now >= deadline:
                 await self._send_status(seat, act, reason="deadline")
+
+    # --- stage 5.7: adoption and the emergency stop ---------------------------------------
+    async def _reconcile_idle_seats(self, why: str) -> None:
+        """enforce mode: ask the actuator (one read-only ``status`` per seat) what each idle actuated
+        seat's cards really hold, and adopt the answer. This is how a seat loaded or unloaded outside
+        the pool (by hand, while paused, or before this process) is adopted, never reloaded. observe
+        mode keeps the older liveness shortcut instead (``_observe_swap_seats``)."""
+        if self.mode != "enforce":
+            return
+        for seat in sorted(self.actuated):
+            cards = self._seat_cards(seat)
+            if any(c.swap_state != "idle" for c in cards) or seat in self._reconciling:
+                continue   # in flight: the pending-action reconcile owns it; fault: clear_fault does
+            spec = self.cfg.roles[seat]
+            now = self.now()
+            rec = {"action_id": f"{seat}:reconcile:{uuid.uuid4().hex[:8]}", "sent_at": now, "why": why}
+            self._reconciling[seat] = rec
+            msg = GpuActuateV1(
+                action_id=rec["action_id"], generation=max(1, max(c.swap_generation for c in cards)),
+                actuator=spec.launch.actuator, role=seat, action="status", cards=list(spec.cards), profile=None,
+                launch_digest=launch_digest(self.cfg, seat),
+                deadline_at=now + timedelta(seconds=self.cfg.defaults.actuate_ack_sec), reason=f"reconcile:{why}")
+            logger.info("gpu_pool_reconcile_send seat=%s action_id=%s why=%s", seat, rec["action_id"], why)
+            await self._publish(GPU_POOL_ACTUATE_REQUEST_CHANNEL, GPU_ACTUATE_KIND, msg.model_dump(mode="json"), None)
+
+    async def _on_reconcile(self, seat: str, res: GpuActuateResultV1, rec: dict[str, Any]) -> None:
+        why = rec["why"]
+        cards = self._seat_cards(seat)
+        if any(c.swap_state != "idle" for c in cards):
+            logger.info("gpu_pool_reconcile_superseded seat=%s swap_state=%s", seat, cards[0].swap_state)
+            return
+        if res.status in ("accepted", "progress"):
+            self._reconciling[seat] = rec   # not the answer yet
+            return
+        if res.status != "succeeded":
+            logger.warning("gpu_pool_reconcile_refused seat=%s status=%s reason=%s -- keeping the persisted "
+                           "card state", seat, res.status, res.reason)
+            return
+        observed = dict(res.observed)
+        # The reconcile gets its own action record: it must not be read as the last load/unload's outcome.
+        gen = max(c.swap_generation for c in cards)
+        for c in cards:
+            c.swap_action = {"action_id": rec["action_id"], "role": seat, "action": "status", "generation": gen,
+                             "profile": None, "reason": f"reconcile:{why}", "sent_at": rec["sent_at"].isoformat(),
+                             "acked_at": self.now().isoformat(), "phase": None, "outcome": None,
+                             "status_action_id": None, "status_sent_at": None, "extensions": 0}
+        if res.in_flight:
+            # The actuator is running an action this pool never sent (or no longer knows about).
+            await self._finish(seat, state="fault", loaded=None, outcome="reconcile_foreign_action",
+                               event="swap_failed", reason=f"reconcile_foreign_action:{why}",
+                               detail={"observed": observed, "phase": res.phase})
+            return
+        loaded = self._observed_outcome(seat, observed)
+        if loaded is None:
+            await self._finish(seat, state="fault", loaded=None, outcome="reconcile_ambiguous", event="swap_failed",
+                               reason=f"reconcile_ambiguous:{why}", detail={"observed": observed})
+            return
+        if loaded == all(seat in c.swapped_in for c in cards):
+            logger.info("gpu_pool_reconcile_agrees seat=%s loaded=%s why=%s", seat, loaded, why)
+            return
+        await self._finish(seat, state="idle", loaded=loaded, outcome="adopted", event="swapped",
+                           reason=f"adopted:{why}", detail={"observed": observed, "loaded": loaded})
+
+    async def _set_paused(self, pause: bool, actor: str) -> GpuPoolControlReplyV1:
+        """The emergency stop. Persisted on every gpu_pool_cards row, so a restart stays paused. An
+        action already in flight is NOT stopped (the actuator owns it; stop circe's
+        orion-gpu-lane-controller for that); the pool keeps following its result."""
+        async with self._locked("control"):
+            if pause == (self.paused is not None):
+                return GpuPoolControlReplyV1(ok=True, reason="already_paused" if pause else "not_paused",
+                                             detail=self._paused_detail())
+            now = self.now()
+            self.paused = {"since": now, "by": actor} if pause else None
+            for card in self.cards:
+                await self.store.upsert_card({"card": card, "actuation_paused_at": now if pause else None,
+                                              "actuation_paused_by": actor if pause else None,
+                                              "updated_at": now, "updated_by": actor})
+            in_flight = sorted(self._pending_actions())
+            log = logger.warning if pause else logger.info
+            log("gpu_pool_actuation_%s actor=%s in_flight=%s", "paused" if pause else "resumed", actor, in_flight or "-")
+            await self._emit(GpuPoolEventV1(event="actuation_paused" if pause else "actuation_resumed",
+                                            holder=actor, cards=list(self.cfg.cards),
+                                            detail={"in_flight": in_flight, "actuated": sorted(self.actuated)}))
+            if not pause:
+                # Whatever an operator did by hand while paused: ask, adopt, then decide.
+                await self._reconcile_idle_seats("resume")
+            await self._schedule_and_apply()
+            await self.publish_state()
+        return GpuPoolControlReplyV1(ok=True, reason="paused" if pause else "resumed",
+                                     detail={**self._paused_detail(), "in_flight": in_flight})
+
+    def _paused_detail(self) -> dict[str, Any]:
+        if self.paused is None:
+            return {"paused": False}
+        return {"paused": True, "since": self.paused["since"].isoformat(), "by": self.paused["by"]}
 
     async def _clear_fault(self, ctl: GpuPoolControlV1) -> GpuPoolControlReplyV1:
         """Operator: take a card out of fault. A seat still in the YAML is reconciled with the
@@ -1200,7 +1338,7 @@ class PoolRuntime:
                                   swapped_in=sorted(c.swapped_in), swap_state=c.swap_state,
                                   cooldown_until=c.cooldown_until, swap_role=c.swap_role,
                                   residency_until=c.residency_until, loaded_at=c.loaded_at,
-                                  actuated_roles=sorted(r for r in self.actuate_roles
+                                  actuated_roles=sorted(r for r in self.actuated
                                                         if c.card in self.cfg.roles[r].cards),
                                   actuation=c.swap_action) for c in self.cards.values()],
             roles=self.discovered, unclaimed_servers=self.unclaimed,
@@ -1212,6 +1350,7 @@ class PoolRuntime:
                 turn_correlation_id=r.get("turn_correlation_id"), generation=int(r.get("generation") or 0),
                 hold_lease_id=r.get("hold_lease_id")) for r in rows] if include_leases else [],
             queue_depth=queue, backlog_depth=backlog, swap_guards=dict(self.guard_states),
+            actuation_paused=self._paused_detail() if self.paused is not None else None,
             shed=self.shed_board.view(self.now(), self.shed_enabled).as_dict(),
             config=self.cfg.model_dump(mode="json", by_alias=True, exclude={"digest"}) if include_config else None,
             config_yaml=self.cfg.source_text if include_config else None,

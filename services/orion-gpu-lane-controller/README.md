@@ -101,8 +101,11 @@ Keys: `GPU_POOL_ACTUATOR_NAME`, `GPU_POOL_FENCE_STATE_PATH`, `GPU_LANE_DRAIN_TIM
 - Keys: `GPU2_ENABLED`, `GPU2_DIFFUSION_URL`, `GPU2_AGENT_URL`, `GPU2_MODEL_READY_TIMEOUT_SEC`,
   `GPU_LANE_CONTROLLER_TOKEN`. Renamed: `GPU2_POOL_FENCE_STATE_PATH` -> `GPU_POOL_FENCE_STATE_PATH`
   (same file), `GPU2_DRAIN_TIMEOUT_SEC` -> `GPU_LANE_DRAIN_TIMEOUT_SEC` (same meaning, default 300).
-- No enable/disable key remains. Emergency stops: `ORION_BUS_ENABLED=false` on this service (it then
-  hears no actuation requests), stopping the container, or `GPU_POOL_ACTUATE_ROLES=` empty on the pool.
+- No enable/disable key remains. **Emergency stop (stage 5.7): pause actuation on the pool** -- Hub GPU
+  pool panel "Emergency stop", or control verb `pause_actuation` (persisted; see
+  `services/orion-gpu-pool/README.md`). That stops every new load/unload but lets one already running
+  finish; to stop that too, stop this container (`docker stop orion-circe-gpu-lane-controller`).
+  `GPU_POOL_ACTUATE_ROLES` no longer exists.
 - `launch_digest` is unchanged by the deletion (the always-null bridge fields stay in its hashed
   body), so a pool and a controller on either side of 5.6 still agree.
 
@@ -128,5 +131,5 @@ curl http://localhost:8090/health
 (`docker compose down -v` deletes it and resets the accepted generation to 0 -- don't). If it is
 corrupt, every request is refused `fence_state_unreadable:*` until an operator inspects it:
 `docker exec orion-circe-gpu-lane-controller cat /state/gpu2_pool_fence.json`. Only delete it with
-the pool's actuation disarmed (`GPU_POOL_ACTUATE_ROLES=` empty), since the pool's next generation
-must then be above whatever the controller last accepted.
+the pool's actuation paused (`pause_actuation`), since the pool's next generation must then be above
+whatever the controller last accepted.

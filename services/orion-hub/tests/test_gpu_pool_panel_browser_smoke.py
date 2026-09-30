@@ -204,3 +204,82 @@ def test_gpu_pool_panel_shows_swap_fault_guards_and_holds_with_their_calls():
         assert "2/1 slots in use" in page.inner_text('[data-role="chat"]')
         assert errors == []
         browser.close()
+
+
+def test_gpu_pool_panel_emergency_stop_and_hold_refusal():
+    """Stage 5.7: the experiment hold is greyed out with the pool's reason (no launch block: nothing can
+    load it), the emergency stop POSTs pause_actuation, and a paused pool shows the banner, the header
+    badge and a resume control that POSTs resume_actuation."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    launch = {"actuator": "circe", "service": "atlas-agent-burst"}
+    config = dict(CONFIG, cards={**CONFIG["cards"], "gpu2": {"vram_gb": 32}},
+                  roles={**CONFIG["roles"],
+                         "experiment": {**CONFIG["roles"]["experiment"], "swap": {"evicts": "all"}, "launch": None},
+                         "agent-gpu2": {"kind": "llm", "cards": ["gpu2"], "owner": ["agent"], "port": 8016,
+                                        "swap": {"evicts": ["diffusion"]}, "launch": launch},
+                         "diffusion": {"kind": "service", "cards": ["gpu2"], "owner": ["diffusion"], "port": 8014,
+                                       "slots": 1, "vram_gb": 24, "launch": launch}})
+    running = dict(STATE, mode="enforce", config=config, actuation_paused=None,
+                   cards=STATE["cards"] + [{"card": "gpu2", "vram_gb": 32, "swapped_in": [], "swap_state": "idle",
+                                            "actuated_roles": ["agent-gpu2"]}])
+    paused = dict(running, actuation_paused={"paused": True, "since": "2026-09-30T07:00:00Z", "by": "hub-operator"})
+    template = (HUB / "templates" / "gpu_pool.html").read_text().replace("{{HUB_UI_ASSET_VERSION}}", "t")
+    script = (HUB / "static" / "js" / "gpu_pool.js").read_text()
+    current = {"state": running}
+    posted: list[dict] = []
+
+    def handle(route):
+        url = route.request.url
+        if url.endswith("/gpu-pool"):
+            return route.fulfill(body=template, content_type="text/html")
+        if "/static/js/gpu_pool.js" in url:
+            return route.fulfill(body=script, content_type="application/javascript")
+        if "/api/gpu-pool/stream" in url:
+            frame = json.dumps({"version": 1, "state": current["state"], "events": []})
+            return route.fulfill(body=f"event: snapshot\ndata: {frame}\n\n", content_type="text/event-stream")
+        if "/api/gpu-pool/state" in url:
+            return route.fulfill(body=json.dumps(current["state"]), content_type="application/json")
+        if "/api/gpu-pool/history" in url:
+            return route.fulfill(body=json.dumps({"by_role": [], "by_class": [], "series": [], "events": [], "minutes": 60}),
+                                 content_type="application/json")
+        if "/api/gpu-pool/control" in url:
+            body = json.loads(route.request.post_data)
+            posted.append(body)
+            current["state"] = paused if body["verb"] == "pause_actuation" else running
+            return route.fulfill(body=json.dumps({"ok": True, "reason": "paused" if body["verb"] == "pause_actuation"
+                                                  else "resumed", "detail": {}}), content_type="application/json")
+        return route.fulfill(status=404, body="")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.route("http://hub.test/**", handle)
+        page.goto("http://hub.test/gpu-pool")
+        page.wait_for_selector('button[data-verb="pause_actuation"]')
+        refused = page.locator('#holdControls button[data-hold-refused="not_actuatable:experiment"]')
+        assert refused.count() == 1 and refused.is_disabled()
+        assert "nothing can load it" in page.inner_text("#holdControls")
+        assert page.locator('button[data-verb="hold"]').count() == 0
+        assert "pool actuates agent-gpu2" in page.inner_text('[data-card="gpu2"]')
+        assert page.inner_text("#poolMode") == "mode: enforce"
+
+        page.once("dialog", lambda d: d.accept())
+        page.click('button[data-verb="pause_actuation"]')
+        page.wait_for_function("document.getElementById('controlStatus').textContent.includes('pause_actuation: ok')")
+        assert posted == [{"verb": "pause_actuation"}]
+
+        page.reload()                                   # the next state frame carries the pause
+        page.wait_for_selector('[data-actuation="paused"]')
+        assert "PAUSED" in page.inner_text("#actuationControls") and "hub-operator" in page.inner_text("#actuationControls")
+        assert "model loading PAUSED" in page.inner_text("#poolMode")
+        assert "PAUSED: nothing is loaded or unloaded" in page.inner_text('[data-card="gpu2"]')
+        page.once("dialog", lambda d: d.accept())
+        page.click('button[data-verb="resume_actuation"]')
+        page.wait_for_function("document.getElementById('controlStatus').textContent.includes('resume_actuation: ok')")
+        assert posted[-1] == {"verb": "resume_actuation"}
+        assert errors == [], errors
+        browser.close()

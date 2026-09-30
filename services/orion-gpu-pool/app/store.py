@@ -19,10 +19,12 @@ LEASE_COLUMNS = (
 )
 CARD_COLUMNS = ("card", "lent", "swapped_in", "swap_state", "cooldown_until", "last_active_at",
                 "swap_role", "swap_generation", "swap_action", "residency_until", "loaded_at",
-                "seen_ctx", "updated_at", "updated_by")
+                "seen_ctx", "actuation_paused_at", "actuation_paused_by", "updated_at", "updated_by")
 # Columns added by services/orion-sql-db/manual_migration_gpu_pool_v2_holds.sql (stage 4.3).
 V2_LEASE_COLUMNS = ("hold_lease_id",)
 V2_CARD_COLUMNS = ("swap_role", "swap_generation", "swap_action", "residency_until", "loaded_at", "seen_ctx")
+# Added by manual_migration_gpu_pool_v3_actuation_pause.sql (stage 5.7): the emergency stop.
+V3_CARD_COLUMNS = ("actuation_paused_at", "actuation_paused_by")
 # LangGraph's checkpoint tables for lease threads live in their own schema. They used to share
 # public.checkpoints with durable-runs, whose resume sweep lists EVERY checkpoint in that table
 # (alist(None)) every 2 minutes: at one lease per inference the pool's threads became most of
@@ -207,11 +209,13 @@ class PostgresStore:
 
     async def check_schema(self) -> None:
         """The migrations are operator-applied (services/orion-sql-db/manual_migration_gpu_pool_v1.sql,
-        then _v2_holds.sql). Refuse to start without them rather than run on an in-memory illusion:
-        without v2 every hold/child row and every actuation state write would fail at runtime."""
+        then _v2_holds.sql, then _v3_actuation_pause.sql). Refuse to start without them rather than run
+        on an in-memory illusion: without v2 every hold/child row and every actuation state write would
+        fail at runtime; without v3 the emergency stop could not be persisted (a pause would not survive
+        a restart)."""
         async with self.pool.connection() as conn:
             await conn.execute(f"SELECT lease_id, {', '.join(V2_LEASE_COLUMNS)} FROM gpu_pool_leases LIMIT 0")
-            await conn.execute(f"SELECT card, {', '.join(V2_CARD_COLUMNS)} FROM gpu_pool_cards LIMIT 0")
+            await conn.execute(f"SELECT card, {', '.join(V2_CARD_COLUMNS + V3_CARD_COLUMNS)} FROM gpu_pool_cards LIMIT 0")
 
     async def upsert_lease(self, row):
         cols = [c for c in LEASE_COLUMNS if c in row]

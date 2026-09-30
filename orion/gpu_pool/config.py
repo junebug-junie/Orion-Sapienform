@@ -259,9 +259,9 @@ class PoolConfig(BaseModel):
             if role.swap is None:
                 continue
             if role.operator_only and role.launch is None:
-                # Operator-only seat nothing can load yet (experiment, stage 5 Decision 3). Stays
-                # refused at runtime: operator holds are refused in observe mode, and 5.7's enforce
-                # rule requires launch blocks (the Hub "not_actuatable" surface ships with that).
+                # Operator-only seat nothing can load yet (experiment, stage 5 Decision 3). Stage 5.7:
+                # the pool refuses any operator lease on it (``not_actuatable_reason``), and the
+                # scheduler never drains its residents for one, so nothing can empty its cards.
                 continue
             unlaunched = [r for r in [name, *self.evicted_by(name)] if r in self.roles and self.roles[r].launch is None]
             if unlaunched:
@@ -339,6 +339,25 @@ class PoolConfig(BaseModel):
         yet (stage 5 spec, Decision 2 and "Corrections from building 5.2" 6)."""
         launch = self.roles[role].launch
         return launch.profiles[0] if launch is not None and launch.profiles else None
+
+    def actuated_seats(self) -> frozenset[str]:
+        """Stage 5.7: the swap seats the pool loads and unloads itself. A seat is actuated if and only
+        if it has a ``launch`` block (which names its actuator); there is no second list to drift from
+        this YAML (GPU_POOL_ACTUATE_ROLES was deleted). The validator already requires a launch on every
+        non-operator swap seat and on every role a launched seat evicts."""
+        return frozenset(r for r, spec in self.roles.items() if spec.swap is not None and spec.launch is not None)
+
+    def not_actuatable_reason(self, work_class: str) -> str | None:
+        """Why an operator lease on ``work_class`` must be refused, or None. A swap seat without a
+        launch block (``experiment``, deferred) can never be loaded, so granting its lease would only
+        drain every resident it evicts and leave the cards empty (stage 5 "Corrections from building
+        5.1" item 5)."""
+        cls = self.classes.get(work_class)
+        for role in (cls.roles if cls else []):
+            spec = self.roles[role]
+            if spec.swap is not None and spec.launch is None:
+                return f"not_actuatable:{role}"
+        return None
 
     def serialized_with(self, role: str) -> list[str]:
         """``serialize_with`` read symmetrically: what ``role`` lists plus every role listing it."""

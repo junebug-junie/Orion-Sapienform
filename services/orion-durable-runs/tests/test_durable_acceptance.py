@@ -83,7 +83,7 @@ def install_gpu2_actuator(bus, gpu, actions):
 def test_curiosity_receipt_wait_restart_grant_dispatch_and_completion(monkeypatch, placement, repair_required):
     async def scenario(pool, saver, store):
         bus = TypedBus()
-        gpu = InProcessPool(actuate=(SEAT,) if placement == "gpu2" else ())
+        gpu = InProcessPool(can_load=placement == "gpu2")
         settings = Settings(_env_file=None, DURABLE_RUNS_GRAPH_HOST="", POSTGRES_URI=DSN, ORION_BUS_ENABLED=False,
             DURABLE_RUNS_ADMISSION_ENABLED=True, DURABLE_RUNS_TURN_RPC_TIMEOUT_SEC=0.05,
             DURABLE_RUNS_LEASE_HEARTBEAT_SEC=0.1)

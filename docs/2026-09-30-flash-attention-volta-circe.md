@@ -85,6 +85,40 @@ With 20 items each, this shows no visible reasoning loss from ternary weights at
 
 ---
 
+## Four concurrent sessions: Bonsai vs Q4 27B (4 slots × 32K, flash attention on)
+
+The Q4 27B cannot fit 4 × 65K on one card: about 16.5 GB base plus about 2.1 GB per 32K of session. So both models ran at 4 × 32K.
+
+| Runs at once | Bonsai per run (total) | Q4 27B per run (total) |
+| ---: | ---: | ---: |
+| 1 | 51.7 | 33.0 |
+| 2 | 42.8 (~80) | 26.4 (~51) |
+| 3 | 33.7 (~91) | 22.1 (~62) |
+| 4 | 26.8 (~97) | 18.0 (~67) |
+
+These are two passes each, 512 forced tokens with thinking off. The first Q4 pass includes a cold warm-up, so its totals are not shown. The two-runs dip seen at 4 × 65K (23 tok/s each) did not appear at 32K slots.
+
+| | Bonsai | Q4 27B |
+| --- | ---: | ---: |
+| VRAM, 4 × 32K loaded | 15.9 GB | 25.0 GB |
+| 4 concurrent agent loops (6 steps), wall | 187 s | 231 s |
+| Prompt-cache reuse in those loops | 79.7% | 79.4% |
+
+**The prompt cache misses the prior assistant reply on both models.** This is the Qwen3.8 chat template, not Bonsai, so the live agent lane pays it too.
+
+In four concurrent depth sweeps to about 26K, recall held for every session on both models. The decode figures in those rows (~1 tok/s) are not meaningful: each answer was about 15 tokens, generated while three other slots were prefilling 6K-token prompts.
+
+### Sessions per 32 GB card at today's agent context (131K)
+
+The live agent lane's own logs (1,485 requests since 2026-09-24) show prompts of: median 24K, p90 60.5K, p95 68K, max 82K. **6.8% exceed 65K**, so 65K slots would cut off the deep end of long runs, and 131K is the safe size.
+
+| Model | Sessions × 131K per card | VRAM |
+| --- | ---: | ---: |
+| Q4 27B (live) | 1 | 24.9 GB (live gpu1) |
+| Bonsai | **2** | ~24.1 GB (same total cache as the measured 4 × 65K) |
+
+Two options are untested: a `q8_0` KV cache (about 3 Bonsai × 131K), and `--kv-unified` (4 sessions sharing one 262K pool).
+
 ## Where the "off on Volta" rule came from
 
 Every "off" in `config/llm_profiles.yaml` traced back to one measurement: a 2026-07-09 llama-optimus tuning run of `qwen3-coder-next-q5km-2xv100-32gb-agent-depth`. That run was split across two GPUs on an older llama.cpp build, and found flash attention on "collapses TG ~20x". Other profiles copied the rule without their own bench, and the DeepSeek and BF16 field notes repeated it.

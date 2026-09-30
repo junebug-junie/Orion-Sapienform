@@ -75,7 +75,7 @@ def test_process_recall_diagnostic_contains_gating_suppression_and_selection(mon
     async def _anchor(**kwargs):
         return [], {}
 
-    async def _query(fragment, profile, *, session_id, node_id, entities, diagnostic=False, exclusion=None):
+    async def _query(fragment, profile, *, session_id, node_id, entities, diagnostic=False, exclusion=None, **kwargs):
         return [
             {
                 "id": "corr-diagnostic",

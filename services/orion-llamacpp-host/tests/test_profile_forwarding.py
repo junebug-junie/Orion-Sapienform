@@ -1176,3 +1176,12 @@ def test_deepseek_v41_circe_profile_loads_from_yaml():
         "DeepSeek-V4.1-Flash-MXFP4-engram-00001-of-00011.gguf"
     )
     assert profile.llamacpp.model_root.endswith("DeepSeek-V4.1-Flash-MXFP4-engram")
+
+
+def test_parse_llama_build_upstream_and_semver_fork():
+    main = importlib.import_module("app.main")
+    assert main._parse_llama_build("version: 8740 (3b6fcfe)\nbuilt with GNU") == 8740
+    # PrismML fork: the leading 0 is a semver major, not the build number. Reading it as 0
+    # made the wrapper treat the binary as pre-b5332 and drop --flash-attn off / --reasoning.
+    assert main._parse_llama_build("version: 0.2.0-dev (build 10750, commit 88c4bc60)") == 10750
+    assert main._parse_llama_build("no version here") is None

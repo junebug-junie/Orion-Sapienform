@@ -20,7 +20,15 @@ from orion.world_pulse_read.journal import publish_journal
 from orion.llm.routes import fcc_model_for_route
 from orion.schemas.reading import SourceFetchEvidenceV1
 from orion.schemas.reading_turn import ReadingRunBriefV1
-from orion.world_pulse_read.durable import ReadingCancelled, ReadingPending, bind_turn, cancel_claim, poll_turn, release_claim
+from orion.world_pulse_read.durable import (
+    ReadingCancelled,
+    ReadingPending,
+    bind_turn,
+    cancel_claim,
+    poll_turn,
+    reading_retrieval_query,
+    release_claim,
+)
 from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseReadSeedV1
 from orion.substrate.adapters.world_pulse_read import map_world_pulse_read_handoff_to_substrate
 from orion.substrate.materializer import SubstrateGraphMaterializer
@@ -595,7 +603,10 @@ class WorldPulseReadPipeline:
             prompt = _build_document_stage1_prompt(
                 seed, trace_id, sha256=document[0], text=document[1]
             )
-        outcome = await self._generate(prompt, trace_id, seed_id=seed.seed_id)
+        outcome = await self._generate(
+            prompt, trace_id, seed_id=seed.seed_id,
+            retrieval_query=reading_retrieval_query(seed),
+        )
         trace_id = outcome.trace_id or trace_id
         if not outcome.text:
             raise ValueError(outcome.fail_reason or "empty_generation")
@@ -632,10 +643,13 @@ class WorldPulseReadPipeline:
             raise NoReadEvidenceError(no_evidence_reason(seed.url, fetches))
         return handoff
 
-    async def _generate(self, prompt: str, correlation_id: str, *, seed_id: str) -> GenerateOutcome:
+    async def _generate(
+        self, prompt: str, correlation_id: str, *, seed_id: str, retrieval_query: str | None = None,
+    ) -> GenerateOutcome:
         brief = ReadingRunBriefV1(seed_id=seed_id, stage=1, prompt=prompt,
             session_id=self.session_id, timeout_sec=self.timeout_sec,
-            fcc_model_label=self._fcc_model_label)
+            fcc_model_label=self._fcc_model_label,
+            retrieval_query=retrieval_query)
         try:
             request = await self._with_conn(lambda conn: bind_turn(conn, brief, correlation_id))
             if request is None:

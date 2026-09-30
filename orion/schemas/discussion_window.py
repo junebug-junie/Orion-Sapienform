@@ -15,7 +15,11 @@ class DiscussionWindowRequestV1(BaseModel):
     end_time_utc: Optional[datetime] = None
     user_id: Optional[str] = None
     source: Optional[str] = None
-    max_turns: int = Field(30, ge=1, le=200)
+    # le raised 200 -> 5000 so the chat compactor can ask for a whole day
+    # (orion.cognition.chat_history_compactor.constants.COMPACTOR_MAX_TURNS).
+    # forbid-model rollout: the exec that validates this must be deployed
+    # before an orch that sends max_turns > 200.
+    max_turns: int = Field(30, ge=1, le=5000)
     require_prompt_and_response: bool = True
     # When True (default), only the most recent unbroken run of turns is kept —
     # selection stops at the first gap wider than the contiguity threshold, so a

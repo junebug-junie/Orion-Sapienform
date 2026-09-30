@@ -1,7 +1,8 @@
 name: chat_history_compactor_digest_v1
 label: Chat History Compactor Digest
 description: >
-  Compact a bounded chat_history_log discussion window into card + journal digest JSON.
+  Compact a chat_history_log discussion window (a whole day, or one chunk of it, or
+  a merge of chunk digests) into card + journal digest JSON.
   Uses only chat_history_compactor_input payload passed in metadata.
 
 category: Generative
@@ -9,7 +10,10 @@ priority: high
 
 requires_gpu: true
 requires_memory: false
-timeout_ms: 90000
+# 10 minutes, same as github_compactor_digest_v1: a whole-day chunk (up to
+# ~100k chars of input, 16k-token completion) on the agent lane overran 90s.
+# Must equal orion.cognition.compactor.constants.DIGEST_VERB_TIMEOUT_MS.
+timeout_ms: 600000
 
 services:
   - LLMGatewayService

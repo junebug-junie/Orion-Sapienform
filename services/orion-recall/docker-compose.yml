@@ -107,6 +107,13 @@ services:
       # is now structured full-text, not embedding cosine); left in place,
       # safe to remove in a follow-up.
       - RECALL_CARDS_MIN_SIMILARITY=${RECALL_CARDS_MIN_SIMILARITY:-0.32}
+      # Bounded retrieval (2026-09-29). Numeric, so compose-level defaults
+      # matching .env_example (see tests/test_docker_compose_numeric_defaults.py).
+      - RECALL_MAX_QUERY_CHARS=${RECALL_MAX_QUERY_CHARS:-600}
+      - RECALL_MAX_SUB_QUERIES=${RECALL_MAX_SUB_QUERIES:-4}
+      - RECALL_DEADLINE_MS_DEFAULT=${RECALL_DEADLINE_MS_DEFAULT:-60000}
+      - RECALL_FETCH_CONCURRENCY=${RECALL_FETCH_CONCURRENCY:-4}
+      - RECALL_BROWSE_SHORTCUT_ENABLED=${RECALL_BROWSE_SHORTCUT_ENABLED:-false}
       - RECALL_SQL_SINCE_MINUTES=${RECALL_SQL_SINCE_MINUTES}
       - RECALL_SQL_TOP_K=${RECALL_SQL_TOP_K}
       # Default timeline table is chat_history_log unless overridden.

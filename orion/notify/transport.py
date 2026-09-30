@@ -54,6 +54,21 @@ class EmailTransport:
         msg["To"] = ", ".join(recipients)
         msg.set_content(request.body_text or request.body_md or "")
 
+        # Optional HTML alternative. Plain-text-only requests skip this entirely
+        # and produce the same single-part (or multipart/mixed with attachments)
+        # message as before. With HTML the structure becomes:
+        #   multipart/alternative
+        #     text/plain                  (fallback)
+        #     multipart/related           (only if inline images exist)
+        #       text/html
+        #       image/* Content-ID: <cid> (inline)
+        # wrapped in multipart/mixed if any regular attachments are present.
+        html_part = None
+        body_html = getattr(request, "body_html", None)
+        if body_html:
+            msg.add_alternative(body_html, subtype="html")
+            html_part = msg.get_payload()[-1]
+
         for attachment in request.attachments or []:
             try:
                 data = base64.b64decode(attachment.content_base64)
@@ -62,7 +77,18 @@ class EmailTransport:
                 continue
 
             maintype, subtype = _split_mime(attachment.mime_type)
-            msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=attachment.filename)
+            cid = _normalize_cid(getattr(attachment, "content_id", None))
+            if html_part is not None and cid:
+                html_part.add_related(
+                    data,
+                    maintype=maintype,
+                    subtype=subtype,
+                    cid=f"<{cid}>",
+                    filename=attachment.filename,
+                    disposition="inline",
+                )
+            else:
+                msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=attachment.filename)
 
         # `send_message` raises SMTPRecipientsRefused only when EVERY recipient is
         # refused. On a PARTIAL refusal it returns a dict of the refused
@@ -84,6 +110,17 @@ class EmailTransport:
 
         if refused:
             raise smtplib.SMTPRecipientsRefused(refused)
+
+
+def _normalize_cid(content_id: Optional[str]) -> Optional[str]:
+    """Bare Content-ID (no angle brackets, no `cid:` prefix), or None."""
+    if not content_id:
+        return None
+    cid = content_id.strip()
+    if cid.lower().startswith("cid:"):
+        cid = cid[4:]
+    cid = cid.strip().strip("<>").strip()
+    return cid or None
 
 
 def _split_mime(mime_type: Optional[str]) -> tuple[str, str]:

@@ -28,6 +28,7 @@ from orion.harness.fcc_motor import (
     resolve_auth_token,
     resolve_fcc_backend,
     run_fcc_turn,
+    is_progress_frame,
     summarize_harness_step,
 )
 from orion.harness.grammar_emit import (
@@ -492,9 +493,15 @@ class HarnessRunner:
                 if not isinstance(step, dict):
                     continue
                 reading_tracker.observe(step)
-                step_chars = measure_step_payload_chars(step)
-                step_char_sum += step_chars
-                step_char_max = max(step_char_max, step_chars)
+                # Heartbeat frames stay in the live stream, receipts and step_count (unchanged)
+                # but are not grammar-recorded work: kept out of the collector atoms AND out
+                # of step_char_sum/max so avg_step_chars (= sum / completed atoms) keeps a
+                # numerator and denominator over the same population.
+                progress_frame = is_progress_frame(step)
+                if not progress_frame:
+                    step_chars = measure_step_payload_chars(step)
+                    step_char_sum += step_chars
+                    step_char_max = max(step_char_max, step_chars)
                 for error_text in _extract_tool_result_errors(step):
                     kind = short_error_kind(error_text)
                     if kind == _last_tool_failure_kind:
@@ -504,7 +511,8 @@ class HarnessRunner:
                         _last_tool_failure_kind = kind
                     tool_failure_streak_max = max(tool_failure_streak_max, tool_failure_streak)
                 summary = summarize_harness_step(step, index=step_count)
-                collector.record_step_started(order=step_count + 1, summary=summary)
+                if not progress_frame:
+                    collector.record_step_started(order=step_count + 1, summary=summary)
                 tool_name = _extract_tool_name(step)
                 step_kind = classify_step_tool_kind(tool_name)
                 if step_kind == "context_gathering":
@@ -525,7 +533,8 @@ class HarnessRunner:
                 )
                 receipts.append(receipt)
                 step_count += 1
-                collector.record_step_completed(order=step_count)
+                if not progress_frame:
+                    collector.record_step_completed(order=step_count)
                 try:
                     await publish_harness_run_step(
                         self.bus,

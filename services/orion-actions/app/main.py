@@ -38,7 +38,6 @@ from orion.journaler import (
     build_write_payload,
     cooldown_key_for_trigger,
     draft_from_cortex_result,
-    merge_world_pulse_curiosity_into_draft,
     resolve_policy,
 )
 from orion.schemas.actions.daily import DailyMetacogV1, DailyPulseV1
@@ -48,11 +47,10 @@ from orion.schemas.durable_run import DURABLE_RUN_STATE_CHANNEL, DURABLE_RUN_STA
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.notify import NotificationRecord, NotificationRequest
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
-from orion.schemas.world_pulse import WorldPulseRunResultV1
 from .capability_gap_journal import build_daily_seed_payload, collect_capability_gaps
 from .perception_gap_journal import collect_perception_gaps
 from .walkway_forecast import collect_walkway_jobs, run_walkway_tick
-from .world_pulse_journal import handle_world_pulse_run_result_journal
+from .world_pulse_journal import handle_world_pulse_run_result_journal, submit_durable_run_via_cortex
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
     SKILL_BIOMETRICS_SNAPSHOT_V1,
@@ -1306,7 +1304,6 @@ async def lifespan(app: FastAPI):
         parent: BaseEnvelope,
         *,
         trigger,
-        world_pulse_result: WorldPulseRunResultV1 | None = None,
     ) -> dict[str, Any]:
         journal_llm_route = _normalized_llm_route(settings.actions_journal_llm_route, settings.actions_llm_route)
         tk = str(getattr(trigger, "trigger_kind", "") or "")
@@ -1355,8 +1352,6 @@ async def lifespan(app: FastAPI):
         if not orch_payload.get("ok", False):
             raise RuntimeError(f"journal_compose_failed:{orch_payload.get('error') or orch_payload.get('status')}")
         draft = draft_from_cortex_result(orch_payload)
-        if world_pulse_result is not None:
-            draft = merge_world_pulse_curiosity_into_draft(draft, world_pulse_result)
         write = build_write_payload(
             draft,
             trigger=trigger,
@@ -1378,7 +1373,6 @@ async def lifespan(app: FastAPI):
         audit_action: str,
         dedupe_key: str,
         reason: str | None = None,
-        world_pulse_result: WorldPulseRunResultV1 | None = None,
     ) -> bool:
         if not settings.actions_journaling_enabled:
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action, reason="journaling_disabled")
@@ -1395,7 +1389,6 @@ async def lifespan(app: FastAPI):
             result = await _run_journal(
                 parent,
                 trigger=trigger,
-                world_pulse_result=world_pulse_result,
             )
             # Notification dispatch (email/in-app) happens exactly once, from the
             # post-persist consumer (_handle_journal_created) after the SQL write is
@@ -1771,11 +1764,20 @@ async def lifespan(app: FastAPI):
         )
 
     async def _handle_world_pulse_run_result_journal(env: BaseEnvelope) -> bool:
+        # Submitted as an admitted journal.compose durable run (GPU pool hold, restart-durable,
+        # deadline = next local midnight); orion-durable-runs composes and publishes the write.
+        # This service no longer composes world_pulse_digest in-process.
         return await handle_world_pulse_run_result_journal(
             env,
             settings=settings,
-            dispatch_journal=_dispatch_journal,
+            submit=lambda request: submit_durable_run_via_cortex(
+                bus=_actions_rpc_bus,
+                source=src,
+                request=request,
+                request_channel=settings.cortex_request_channel,
+            ),
             audit=_audit,
+            llm_route=_normalized_llm_route(settings.actions_journal_llm_route, settings.actions_llm_route),
         )
 
     async def _handle_journal_collapse_stored(env: BaseEnvelope) -> bool:

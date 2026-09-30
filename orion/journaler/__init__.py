@@ -21,7 +21,9 @@ from .worker import (
     draft_from_cortex_result,
     format_world_pulse_curiosity_block,
     journal_mode_for_trigger,
+    append_unless_present,
     merge_world_pulse_curiosity_into_draft,
+    world_pulse_curiosity_appendix,
 )
 
 __all__ = [
@@ -51,6 +53,8 @@ __all__ = [
     "draft_from_cortex_result",
     "format_world_pulse_curiosity_block",
     "journal_mode_for_trigger",
+    "append_unless_present",
     "merge_world_pulse_curiosity_into_draft",
+    "world_pulse_curiosity_appendix",
     "build_journal_entry_index_payload",
 ]

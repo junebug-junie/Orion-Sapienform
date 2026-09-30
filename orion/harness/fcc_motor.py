@@ -280,6 +280,19 @@ def summarize_harness_step(step: Dict[str, Any], *, index: int) -> str:
     return base + summarize_context_risk_suffix(step)
 
 
+def is_progress_frame(step: Dict[str, Any]) -> bool:
+    """True for the CLI's `tool_progress` heartbeat frames ("still running", no content).
+
+    They arrive in bulk (~21% of recorded harness steps over 48h, ~75% inside the largest
+    runs), carry no work of their own, and were being recorded as a started+completed grammar
+    atom pair each -- flooding one sql-writer lane at run end (2026-09-29: 722 events shed).
+    """
+    if not isinstance(step, dict):
+        return False
+    raw = step.get("raw") if isinstance(step.get("raw"), dict) else step
+    return str(raw.get("type") or step.get("type") or "") == "tool_progress"
+
+
 def _extract_tool_name(step: Dict[str, Any]) -> str | None:
     raw = step.get("raw") if isinstance(step.get("raw"), dict) else step
     if not isinstance(raw, dict):

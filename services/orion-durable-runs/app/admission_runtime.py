@@ -36,6 +36,8 @@ from app.admitted_graph import (
 )
 from app.admitted_reflect_graph import build_admitted_reflect_graph
 from app.compactor_digest_graph import build_compactor_digest_graph, finish_detail as compactor_digest_finish_detail
+from app.journal_compose_graph import build_journal_compose_graph, finish_detail as journal_compose_finish_detail
+from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW
 from app.admitted_self_sense_graph import build_admitted_self_sense_graph
 from app.graph import failed_turn_meta, finish_detail, recorded_turn_correlation_id, turn_correlation_id, urgent_detail
 from app.pool_hold import (
@@ -78,7 +80,9 @@ WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORK
               # checkpointed, so a restart after generate resumes at caption with no lease.
               REVERIE_VISUAL_WORKFLOW: {"generate"},
               # One LLM call per digest run; finalize lets the hold go before it calls cortex-orch.
-              COMPACTOR_DIGEST_WORKFLOW: {"digest"}}
+              COMPACTOR_DIGEST_WORKFLOW: {"digest"},
+              # Only compose holds the GPU; publish lets the hold go before it sends the write.
+              JOURNAL_COMPOSE_WORKFLOW: {"compose"}}
 # The DurableRunStateV1.node each admitted terminal is published under (the graph node it ends at).
 TERMINAL_STATE_NODE = {"completed": "finish", "failed": "failed", "cancelled": "finish"}
 # Pool events (for a durable-run holder) after which a waiting run should look at its hold now.
@@ -148,6 +152,10 @@ class AdmissionRuntime:
             # Late-bound (like reading above): the runner's method is read per call.
             COMPACTOR_DIGEST_WORKFLOW: build_compactor_digest_graph(
                 lambda payload, **kw: runner._cortex_orch_rpc(payload, **kw), admission_deps, runner._checkpointer),
+            # Late-bound (like reading/reverie above): the runner's methods are read per call.
+            JOURNAL_COMPOSE_WORKFLOW: build_journal_compose_graph(
+                lambda brief, **kw: runner._compose_journal(brief, **kw),
+                lambda write: runner._publish_journal_write(write), admission_deps, runner._checkpointer),
         }
         # Back-compat alias used by older tests that reach for `.graph`.
         self.graph = self.graphs[DEFAULT_WORKFLOW]
@@ -186,6 +194,8 @@ class AdmissionRuntime:
             return reverie_visual_finish_detail(state)
         if workflow == COMPACTOR_DIGEST_WORKFLOW:
             return compactor_digest_finish_detail(state)
+        if workflow == JOURNAL_COMPOSE_WORKFLOW:
+            return journal_compose_finish_detail(state)
         return finish_detail(state)
 
     def _reverie_step(self, request, budget_sec=None):

@@ -7,6 +7,8 @@
 - World Pulse's old direct-email path is deleted outright: the `publish-email` route, `publish_email.py`, `wiring.py`, `render_email_digest`, the `WORLD_PULSE_EMAIL_*` and `NOTIFY_*` settings and env keys, and the `EmailWorldPulseRenderV1` schema and its registry entry.
 - Regression tests cover both halves.
 
+- Daily Pulse / Daily Metacog **generation paused** (Juniper, 2026-09-30): `ACTIONS_DAILY_PULSE_ENABLED` and `ACTIONS_DAILY_METACOG_ENABLED` default `false` in `settings.py` and `.env_example`; local `services/orion-actions/.env` set to `false` by hand (sync does not overwrite existing values). Evidence the consumer is thin: orion-self-experiments logged 6 `self_experiment_created type=skill_probe source=daily_pulse_v1` in 8 days, none from metacog, no completion events. Reversible by flipping either flag. Test: `test_daily_pulse_and_metacog_generation_paused_by_default`.
+
 ## Outcome moved
 
 Two daily emails of pretty-printed JSON no longer reach Juniper's inbox. Everything that depends on those reports keeps working:

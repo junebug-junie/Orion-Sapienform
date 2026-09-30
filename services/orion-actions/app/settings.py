@@ -114,11 +114,11 @@ class Settings(BaseSettings):
     actions_daily_run_on_startup: bool = Field(False, alias="ACTIONS_DAILY_RUN_ON_STARTUP")
     actions_daily_run_once_date: str | None = Field(None, alias="ACTIONS_DAILY_RUN_ONCE_DATE")
 
-    actions_daily_pulse_enabled: bool = Field(True, alias="ACTIONS_DAILY_PULSE_ENABLED")
+    actions_daily_pulse_enabled: bool = Field(False, alias="ACTIONS_DAILY_PULSE_ENABLED")
     actions_daily_pulse_hour_local: int = Field(8, alias="ACTIONS_DAILY_PULSE_HOUR_LOCAL")
     actions_daily_pulse_minute_local: int = Field(30, alias="ACTIONS_DAILY_PULSE_MINUTE_LOCAL")
 
-    actions_daily_metacog_enabled: bool = Field(True, alias="ACTIONS_DAILY_METACOG_ENABLED")
+    actions_daily_metacog_enabled: bool = Field(False, alias="ACTIONS_DAILY_METACOG_ENABLED")
     actions_daily_metacog_hour_local: int = Field(20, alias="ACTIONS_DAILY_METACOG_HOUR_LOCAL")
     actions_daily_metacog_minute_local: int = Field(15, alias="ACTIONS_DAILY_METACOG_MINUTE_LOCAL")
 

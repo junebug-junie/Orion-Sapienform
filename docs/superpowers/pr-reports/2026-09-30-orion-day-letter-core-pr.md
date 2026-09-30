@@ -72,6 +72,9 @@ pool take-backs and the 06:00 congestion. No model has been called yet (not depl
 - `services/orion-cortex-exec/app/{executor,settings}.py`, `.env_example`, `docker-compose.yml`, `README.md`: budgets, route default.
 - `services/orion-sql-db/manual_migration_orion_day_letter_v1.sql`: the table.
 - `orion/bus/channels.yaml`: catalog fix (see above).
+- `config/metrics/metric_definitions.lock.json`: re-locked for that catalog change (2 declared-routing
+  deltas: durable-runs as a producer of `orion:cortex:request` and a consumer of `orion:cortex:result*`;
+  CI's definition-drift gate caught it on the first push). #2431 re-locks for the same edit.
 - Tests: `orion/orion_day/tests/*`, `services/orion-durable-runs/tests/test_orion_day_{graph,postgres}.py`, `services/orion-durable-runs/tests/test_verb_text.py`, `services/orion-cortex-exec/tests/test_orion_day_verbs.py`.
 - Eval: `orion/orion_day/evals/run_orion_day_eval.py`. Smoke: `scripts/smoke_orion_day_letter.py`.
 - CI: `.github/workflows/orion-durable-runs-tests.yml` (paths + orion_day tests + eval), `orion-gpu-pool-tests.yml` (cortex-exec verb test).

@@ -840,7 +840,6 @@ class AdmissionRuntime:
         if state.get("workflow") == COMPACTOR_DIGEST_WORKFLOW:
             # No harness turn: each digest call is a plain cortex-orch verb RPC; a replay re-asks.
             return
-        if state.get("workflow") == REVERIE_VISUAL_WORKFLOW:
         if state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, ORION_DAY_WORKFLOW):
             # No harness turn: generate runs in orion-thought, whose replay is idempotent (the
             # recorded artifact, or a generate_in_flight retry); orion_day.letter's calls are plain

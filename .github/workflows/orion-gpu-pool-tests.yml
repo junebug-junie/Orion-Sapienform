@@ -6,6 +6,8 @@ on:
       - "services/orion-gpu-pool/**"
       - "orion/gpu_pool/**"
       - "orion/schemas/gpu_pool.py"
+      # U4 shed lever: the pool consumes hardware-watch incidents (cooling_incident)
+      - "orion/schemas/hardware_watch.py"
       - "config/gpu_pool.yaml"
       - "config/llm_profiles.yaml"
       - "services/orion-llamacpp-host/**"
@@ -65,6 +67,8 @@ on:
       - "services/orion-gpu-pool/**"
       - "orion/gpu_pool/**"
       - "orion/schemas/gpu_pool.py"
+      # U4 shed lever: the pool consumes hardware-watch incidents (cooling_incident)
+      - "orion/schemas/hardware_watch.py"
       - "config/gpu_pool.yaml"
       - "config/llm_profiles.yaml"
       - "services/orion-llamacpp-host/**"

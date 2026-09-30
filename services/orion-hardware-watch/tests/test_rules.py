@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from orion.autonomy.thermal_gate import DEFAULT_ELEVATED_C
 from orion.hardware_watch.rules import (
     Baseline, CoolingPoint, CoolingRuleConfig, HeatRuleConfig, TempPoint, cooling_verdict, heat_verdict,
-    held_for, percentile, shed_verdict,
+    cabinet_rise_c, held_for, percentile, shed_verdict,
 )
 
 T0 = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
@@ -188,3 +188,29 @@ def test_shed_at_thermal_gate_elevated_without_a_rise():
 def test_unreadable_cabinet_sheds():
     assert shed_verdict([], at(0)).reason == "cabinet_unreadable"
     assert shed_verdict(temps(0, 60, 25.0), at(60 + 301)).reason == "cabinet_unreadable"
+
+
+# --- cabinet_rise_c: the shared rise function (reflex 1.0 C, learned action 0.5 C) ------------
+
+def test_cabinet_rise_is_newest_minus_window_minimum():
+    pts = temps(0, 900, lambda t: 26.0 + t / 1800.0)   # 26 -> 26.5 over 15 min
+    assert cabinet_rise_c(pts, at(900), 900) == 0.5
+    # the same series under the reflex's 1.0 C threshold does not shed; the caller owns thresholds
+    assert shed_verdict(pts, at(900)).reason is None
+
+
+def test_cabinet_rise_ignores_readings_outside_the_window_and_is_never_negative():
+    pts = temps(0, 1800, lambda t: 30.0 - t / 1800.0)   # falling 30 -> 29
+    assert cabinet_rise_c(pts, at(1800), 900) == 0.0
+    early_low = [TempPoint(at(0), 20.0)] + temps(1000, 1800, 26.0)
+    assert cabinet_rise_c(early_low, at(1800), 900) == 0.0
+
+
+def test_cabinet_rise_none_without_readings_in_window():
+    assert cabinet_rise_c([], at(0)) is None
+    assert cabinet_rise_c(temps(0, 60, 25.0), at(2000), 900) is None
+
+
+def test_shed_verdict_reports_the_shared_rise():
+    pts = temps(0, 900, lambda t: 26.0 + t / 900.0)
+    assert shed_verdict(pts, at(900)).rise_c == cabinet_rise_c(pts, at(900), 900)

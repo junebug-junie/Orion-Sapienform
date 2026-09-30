@@ -233,18 +233,36 @@ class ShedVerdict:
     rise_c: float | None
 
 
+def cabinet_rise_c(cabinet: Sequence[TempPoint], now: datetime, window_sec: float = 900.0) -> float | None:
+    """How much the cabinet has warmed within the last ``window_sec``: newest reading minus the
+    lowest reading in ``[now - window_sec, now]``, in C (>= 0). None when no finite reading falls
+    in the window. No threshold here: the caller applies its own.
+
+    Shared on purpose. The hardware-watch reflex (``shed_verdict``, threshold 1.0 C) and Orion's
+    later learned ``shed_background_gpu`` trigger (attend-to-act loop, threshold 0.5 C;
+    docs/superpowers/specs/2026-09-29-attend-to-act-loop-design.md "Amendment 2026-09-29") must
+    agree on what "rising" means, so the learned action imports this instead of writing its own.
+    ``cabinet``: athena's ``cabinet_temp_c`` readings, ascending. Does not check freshness: a
+    caller that needs "fresh" checks the newest reading's age itself.
+    """
+    window = [p.value for p in cabinet if 0 <= _age(now, p.ts) <= window_sec and math.isfinite(p.value)]
+    if not window:
+        return None
+    newest = next(p.value for p in reversed(cabinet) if 0 <= _age(now, p.ts) <= window_sec and math.isfinite(p.value))
+    return round(newest - min(window), 2)
+
+
 def shed_verdict(cabinet: Sequence[TempPoint], now: datetime,
                  cfg: ShedRuleConfig = ShedRuleConfig()) -> ShedVerdict:
     """Is the cabinet warming? ``cabinet``: athena's cabinet_temp_c readings, ascending.
 
-    Rise = newest - lowest reading in the last window_sec. An unreadable sensor (no reading within
+    Rise = ``cabinet_rise_c`` (newest - lowest reading in the last window_sec). An unreadable sensor (no reading within
     max_age_sec, thermal_gate's own staleness bound) counts as warming: with the AC down, a room
     nobody can measure is treated as hot, like the pool's thermal swap guard does."""
     newest = cabinet[-1] if cabinet else None
     if newest is None or _age(now, newest.ts) > cfg.max_age_sec or not math.isfinite(newest.value):
         return ShedVerdict(True, "cabinet_unreadable", None, None)
-    window = [p.value for p in cabinet if 0 <= _age(now, p.ts) <= cfg.window_sec and math.isfinite(p.value)]
-    rise = round(newest.value - min(window), 2) if window else None
+    rise = cabinet_rise_c(cabinet, now, cfg.window_sec)
     if newest.value >= cfg.elevated_c:
         return ShedVerdict(True, "cabinet_elevated", newest.value, rise)
     if rise is not None and rise >= cfg.rise_c:

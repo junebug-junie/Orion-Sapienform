@@ -107,6 +107,7 @@ from orion.curiosity.kickoff_prompt import (
     build_kickoff_prompt,
     build_resume_preamble,
 )
+from orion.orion_day.carry_forward import release_carry_forward, take_carry_forward
 from orion.dream.hypotheses import release_hypotheses_for_run, take_hypotheses_for_offer
 from orion.curiosity.peer_briefs import (
     REFUSED_OR_FAILED_RECENT_CYPHER,
@@ -637,6 +638,10 @@ class CuriosityInvestigation:
         # --- dream hypotheses (orion/dream/hypotheses.py) -------------------
         dream_hypotheses_enabled: bool = False,
         dream_hypotheses_per_run: int = 3,
+        # --- Orion's Day carry-forward (orion/orion_day/carry_forward.py) ---
+        # The regular investigate line only: claims yesterday's letter's
+        # carry_forward_md once and shows it as its own kickoff section.
+        carry_forward_enabled: bool = False,
         # --- the self-inquiry line -----------------------------------------
         self_inquiry_enabled: bool = False,
         self_inquiry_daily_cap: int = 3,
@@ -760,6 +765,12 @@ class CuriosityInvestigation:
         self.contractor_peer_enabled = bool(contractor_peer_enabled)
         self.dream_hypotheses_enabled = bool(dream_hypotheses_enabled)
         self.dream_hypotheses_per_run = max(0, int(dream_hypotheses_per_run))
+        self.carry_forward_enabled = bool(carry_forward_enabled)
+        # Other Hub loops that want terminal durable-run states without a second
+        # subscription (Orion's Day: scripts/orion_day_letter.py). Each hook gets
+        # every DurableRunStateV1 this listener decodes; a failing hook is logged
+        # and never stops curiosity's own handling.
+        self.run_state_hooks: list = []
         # Per-run dedupe: durable admission completes via `_handle_run_state`,
         # while non-durable / dispatch-fallback journals in-process. Both call
         # `_enqueue_help_requests_after_run`; a run that hits both must not
@@ -1142,6 +1153,23 @@ class CuriosityInvestigation:
         return await take_hypotheses_for_offer(
             self._pool_provider(), run_id=run_id, limit=self.dream_hypotheses_per_run
         )
+
+    async def _take_carry_forward(self, run_id: str):
+        """Claim Orion's Day carry-forward for this run. None when off or nothing fresh.
+
+        Not gated on the graph: the section asks for no write, so it is shown on
+        every prompt it is claimed for (the claim means "shown to Orion").
+        """
+        if not self.carry_forward_enabled or not run_id:
+            return None
+        return await take_carry_forward(self._pool_provider(), run_id=run_id)
+
+    async def _release_offers(self, run_id: str, *, dream: bool, carry_forward: bool) -> None:
+        """Give back what this run claimed but Orion never saw (cancelled before the turn)."""
+        if dream:
+            await release_hypotheses_for_run(self._pool_provider(), run_id=run_id)
+        if carry_forward:
+            await release_carry_forward(self._pool_provider(), run_id=run_id)
 
     async def _read_peer_briefs_for_nudge(self) -> tuple:
         """Unused PeerBriefs for kickoff soft-nudge (RO_QUERY only).
@@ -1779,6 +1807,7 @@ class CuriosityInvestigation:
         if self.contractor_peer_enabled:
             peer_briefs = await self._read_peer_briefs_for_nudge()
         dream_hypotheses = await self._take_dream_hypotheses(view, run_id)
+        carry_forward = await self._take_carry_forward(run_id)
         prompt = build_kickoff_prompt(
             material,
             view=view,
@@ -1796,7 +1825,13 @@ class CuriosityInvestigation:
             contractor_peer_enabled=self.contractor_peer_enabled,
             peer_briefs=peer_briefs,
             dream_hypotheses=dream_hypotheses,
+            carry_forward=carry_forward,
         )
+        if carry_forward is not None:
+            logger.info(
+                "curiosity_carry_forward_offered run=%s letter_date=%s chars=%s",
+                run_id, carry_forward.letter_date, len(carry_forward.text),
+            )
         if dream_hypotheses:
             logger.info(
                 "curiosity_dream_hypotheses_offered run=%s ids=%s",
@@ -1834,8 +1869,9 @@ class CuriosityInvestigation:
                 # cooldown stamp spent for a run cortex never confirmed.
                 if not self.durable_admission_enabled:
                     await self._refund_investigation(previous_stamp)
-                    if dream_hypotheses:
-                        await release_hypotheses_for_run(self._pool_provider(), run_id=run_id)
+                    await self._release_offers(
+                        run_id, dream=bool(dream_hypotheses), carry_forward=carry_forward is not None
+                    )
                 raise
             if dispatched:
                 return "dispatched"
@@ -1881,8 +1917,9 @@ class CuriosityInvestigation:
             # cancellation continue -- swallowing it would leave a task the
             # shutdown is waiting on.
             await self._refund_investigation(previous_stamp)
-            if dream_hypotheses:
-                await release_hypotheses_for_run(self._pool_provider(), run_id=run_id)
+            await self._release_offers(
+                run_id, dream=bool(dream_hypotheses), carry_forward=carry_forward is not None
+            )
             raise
         if not text:
             logger.info("curiosity_investigation_no_text run=%s debug=%s", run_id, debug)
@@ -4090,6 +4127,11 @@ class CuriosityInvestigation:
         # Every transition feeds Hub's live activity surface, before the
         # outreach filter below narrows to `completed`.
         get_runtime_activity().run_state(state.model_dump(mode="json"))
+        for hook in list(self.run_state_hooks):
+            try:
+                await hook(state)
+            except Exception:  # noqa: BLE001
+                logger.exception("curiosity_run_state_hook_failed run=%s", state.run_id)
         if state.workflow == "curiosity.investigate" and isinstance((state.detail or {}).get("urgent"), dict):
             # Urgent runs end in a report, never in reach-out or the ordinary
             # completion hooks.

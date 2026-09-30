@@ -978,6 +978,43 @@ class Settings(BaseSettings):
         default=3,
         alias="HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN",
     )
+    # Orion's Day carry-forward (orion/orion_day/carry_forward.py): the regular
+    # investigate line claims the freshest unexpired letter's carry_forward_md
+    # once and shows it as its own kickoff section. Never the letter's note.
+    HUB_CURIOSITY_CARRY_FORWARD_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_CARRY_FORWARD_ENABLED"
+    )
+
+    # --- Orion's Day: the daily letter (scripts/orion_day_letter.py) --------
+    # Hub gathers yesterday (America/Denver), submits an admitted
+    # `orion_day.letter` durable run, and emails the persisted row. State is the
+    # orion_day_letter table + the durable registry; nothing is kept in memory.
+    # Needs services/orion-sql-db/manual_migration_orion_day_letter_v1.sql.
+    HUB_ORION_DAY_ENABLED: bool = Field(default=True, alias="HUB_ORION_DAY_ENABLED")
+    # Separate kill switch for the email only: runs still write the letter.
+    HUB_ORION_DAY_EMAIL_ENABLED: bool = Field(default=True, alias="HUB_ORION_DAY_EMAIL_ENABLED")
+    HUB_ORION_DAY_HOUR_LOCAL: int = Field(default=8, ge=0, le=23, alias="HUB_ORION_DAY_HOUR_LOCAL")
+    HUB_ORION_DAY_MINUTE_LOCAL: int = Field(default=30, ge=0, le=59, alias="HUB_ORION_DAY_MINUTE_LOCAL")
+    HUB_ORION_DAY_TICK_SEC: float = Field(default=300.0, gt=0, alias="HUB_ORION_DAY_TICK_SEC")
+    HUB_ORION_DAY_DURABLE_URL: str = Field(
+        default="http://127.0.0.1:8124", alias="HUB_ORION_DAY_DURABLE_URL"
+    )
+    # Durable attempts per letter day (orion-day-<date>-1..N); then one notice.
+    HUB_ORION_DAY_MAX_ATTEMPTS: int = Field(default=6, ge=1, alias="HUB_ORION_DAY_MAX_ATTEMPTS")
+    # Per-LLM-call budget sent on the brief (brief.timeout_sec, max 3600).
+    HUB_ORION_DAY_TIMEOUT_SEC: float = Field(default=1800.0, gt=0, le=3600, alias="HUB_ORION_DAY_TIMEOUT_SEC")
+    # How long carry_forward_md stays eligible for curiosity after the letter is written.
+    HUB_ORION_DAY_CARRY_FORWARD_TTL_HOURS: float = Field(
+        default=36.0, gt=0, le=336, alias="HUB_ORION_DAY_CARRY_FORWARD_TTL_HOURS"
+    )
+    # Wait between email attempts after notify did not answer email_status=sent.
+    HUB_ORION_DAY_EMAIL_RETRY_SEC: float = Field(default=1800.0, gt=0, alias="HUB_ORION_DAY_EMAIL_RETRY_SEC")
+    # Notify call timeout: the request carries inline images.
+    HUB_ORION_DAY_NOTIFY_TIMEOUT_SEC: float = Field(default=60.0, gt=0, alias="HUB_ORION_DAY_NOTIFY_TIMEOUT_SEC")
+    # Visual reveries attached inline (most salient chains first), read from
+    # REVERIE_VISUAL_STORAGE_DIR and transcoded to JPEG <=1024px under this cap each.
+    HUB_ORION_DAY_MAX_IMAGES: int = Field(default=6, ge=0, alias="HUB_ORION_DAY_MAX_IMAGES")
+    HUB_ORION_DAY_IMAGE_MAX_BYTES: int = Field(default=450000, gt=0, alias="HUB_ORION_DAY_IMAGE_MAX_BYTES")
     # Soft Mind work-shape lines into the curiosity / self-inquiry role teach
     # (advisory only; Orion still authors :InvestigationRole / HelpRequest).
     # Default on; set false to leave motor kickoff prompts unchanged.

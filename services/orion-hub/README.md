@@ -3226,6 +3226,34 @@ turns get it, truth rules, search pattern, how to add a tool), see the
 
 **Reading search (orion-introspect `reading_results query=...`).** A loop in `ReadingListener` embeds each verified reading once (title + learned text, via vector-host HTTP `/embedding`) and publishes `VectorUpsertV1` on `orion:vector:semantic:upsert`; orion-vector-writer stores it in Chroma `HUB_READING_SEARCH_COLLECTION`. The loop is hash-aware, so a Stage 2 summary replacing Stage 1 text is re-indexed, and it doubles as the backfill (`reading_search_index indexed=N pending=M` every `HUB_READING_SEARCH_INDEX_INTERVAL_SEC`). A query embeds only the question, keeps Chroma hits at or above `HUB_READING_SEARCH_MIN_SIMILARITY`, and re-reads each hit from Postgres through the same verified-reading gate. Embedder/Chroma failure or a not-yet-built index is logged as `reading_search_failure` and reported to the model as "answer unknown", never as no results. Recalibrate the floor with `python services/orion-hub/evals/run_reading_search_calibration.py`.
 
+## Orion's Day (daily letter)
+
+Once a day Hub writes Juniper a letter about what Orion thought about yesterday
+(one America/Denver calendar day), and hands a short list of threads to
+Orion's next curiosity run.
+
+- **Scheduling** (`scripts/orion_day_letter.py`): after 08:30 local
+  (`HUB_ORION_DAY_HOUR_LOCAL`/`_MINUTE_LOCAL`) Hub gathers the day and submits an
+  admitted `orion_day.letter` durable run to orion-durable-runs
+  (`HUB_ORION_DAY_DURABLE_URL`). The run writes the `orion_day_letter` row. Hub keeps
+  no state of its own: the attempt number comes from `GET /runs/orion-day-<date>-<n>`,
+  a failed/abandoned attempt is retried as `n+1` up to `HUB_ORION_DAY_MAX_ATTEMPTS`
+  (then one in-app notice), an operator cancel is not retried, and the letter is
+  abandoned at the next day's slot. An empty day sends nothing.
+- **Email** (`scripts/orion_day_email.py`, `templates/orion_day_letter.html.j2`): a row
+  with `emailed_at IS NULL` is rendered (HTML with inline styles + a full plain-text
+  part, nothing truncated, up to `HUB_ORION_DAY_MAX_IMAGES` reverie images inline as
+  `cid:reverieN@orion`) and sent through orion-notify. `emailed_at` /
+  `email_notification_id` (uuid5 of the date) are stamped only when notify answers
+  `email_status == "sent"`. Kill switch: `HUB_ORION_DAY_EMAIL_ENABLED`.
+- **Carry-forward** (`orion/orion_day/carry_forward.py`): the regular investigate
+  line claims the freshest unexpired, unoffered `carry_forward_md` once and shows it
+  under its own header in the kickoff prompt; a cancelled turn gives it back. The
+  letter's note never reaches curiosity. Kill switch:
+  `HUB_CURIOSITY_CARRY_FORWARD_ENABLED`; freshness `HUB_ORION_DAY_CARRY_FORWARD_TTL_HOURS`.
+- Checks: `tests/test_orion_day_letter.py`; eval
+  `python services/orion-hub/evals/run_orion_day_email_eval.py [--material m.json]`.
+
 ## Curiosity resource admission
 
 `HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=true` is the operator-template default.

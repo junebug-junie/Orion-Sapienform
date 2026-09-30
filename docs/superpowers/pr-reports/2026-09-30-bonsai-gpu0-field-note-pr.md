@@ -6,6 +6,7 @@
 - The compose file gets a `build:` section, so the post-merge `up -d --build` really rebuilds.
 - Field note `docs/2026-09-30-ternary-bonsai2-27b-1xv100-circe.md` plus raw data and scripts in `docs/bench/2026-09-30-bonsai2-circe/`.
 - **Flash attention on for every stock-image Volta profile** (`config/llm_profiles.yaml`), from a same-card A/B of Bonsai / Qwen3.8-27B Q4 / Qwen3.6-35B: ~2x faster at 61K depth, never slower short. Live lanes already ran it (wrapper read b10398 as build 0 and dropped "off"), so this is no change today and blocks a slowdown at the next rebuild. Report: `docs/2026-09-30-flash-attention-volta-circe.md`.
+- Design proposal (no code): `docs/superpowers/design/2026-09-30-agent-lanes-to-bonsai-design.md`, moving the gpu1/gpu2 agent lanes to Bonsai via the existing llamacpp-host workers.
 - Reasoning at depth (hard, 20 items): Q4 27B 20/20, Bonsai 19/20, 35B 19/20. At 4 concurrent sessions Bonsai is ~45% faster than Q4 27B, and fits 2 × 131K per card against 1.
 
 ## Outcome moved

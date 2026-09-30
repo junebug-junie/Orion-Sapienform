@@ -403,6 +403,35 @@ These override the recommendations above.
    - `GET /v1/gpu-slots/circe-gpu2/status` stops showing progress. The pool reads the bus results instead.
    - The pool must start sending `profile` for roles that have `launch.profiles`. Choosing a profile by vision, ctx or VRAM is not built.
 
+## Corrections from building 5.7 (enforce)
+
+1. **Emergency stop: the spec was silent, so 5.7 adds the smallest persisted one.** 5.6 removed the controller's
+   enable switch and 5.7 removes `GPU_POOL_ACTUATE_ROLES`, which left no fast way to stop every load/unload. Added:
+   control verbs `pause_actuation` / `resume_actuation` (Hub button, or `scripts/gpu_pool_pause.py`), persisted on
+   every `gpu_pool_cards` row (`actuation_paused_at/_by`, migration `manual_migration_gpu_pool_v3_actuation_pause.sql`,
+   required at boot). While paused nothing is sent to the actuator and no seat is drained (scheduler `frozen`);
+   swap decisions are still published (`swap_requested reason=actuation_paused`). An action already in flight is not
+   stopped (the actuator owns it); stopping the controller container is the documented second step for that.
+   Not a mode and not an env key: one verb, visible in state, `/health` and two new events.
+2. **`observe` is kept, as the rollback only.** Both modes actuate every seat with a launch block. observe differs in
+   exactly three ways: liveness adoption for never-actuated seats, no boot/resume reconcile, operator holds refused
+   (`hold_refused_observe_mode`, renamed from `hold_requires_swap_actuation`, which stopped being true). An unknown
+   mode fails the boot.
+3. **"Adopted via `status` at boot" did not exist before 5.7**; the boot only reconciled cards left mid-action.
+   enforce now sends one read-only `status` per idle actuated seat at boot and on resume and adopts the answer
+   (`swapped reason=adopted:<why>`); a half-done card or an action the pool never sent faults the card; no answer in
+   90 s keeps the persisted state. Swaps on that seat wait for the answer. The actuator re-publishes its last recorded
+   result before answering; while a reconcile is open that stale row is ignored.
+4. **Correction 5.1 #5 is fixed in two places:** operator leases on a class whose seat has no launch block are
+   refused `not_actuatable:<role>` (every mode, at `acquire` and at the `hold` verb), and the scheduler treats a swap
+   seat without a launch as frozen, so it never drains residents for one even if a lease got past the refusal.
+5. **Deploy order gains sql-writer first**: `GpuPoolEventV1` (extra=forbid, literal event list) gains
+   `actuation_paused` / `actuation_resumed`, and sql-writer validates every pool event. Hub goes last (its new verbs
+   are refused by an old pool). circe needs nothing: no launch or config-model change, digests unchanged.
+6. **The experiment seat's validator exemption stays**; the "validator refuses enforce while a swap role lacks launch"
+   rule was already unconditional (every non-operator swap seat needs a launch since 5.1), so no mode-specific rule
+   was added.
+
 ## Proposed schema / API changes
 
 - `orion/gpu_pool/config.py`:

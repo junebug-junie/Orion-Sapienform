@@ -261,8 +261,9 @@ async def lifespan(app: FastAPI):
         service_name=_settings.service_name, announce_stale_sec=_settings.announce_stale_sec,
         probe_interval_sec=_settings.probe_interval_sec, state_publish_sec=_settings.state_publish_sec,
         replay_payload_max_bytes=_settings.replay_payload_max_bytes,
-        actuate_roles=_settings.actuate_role_list, shed_enabled=_settings.shed_enabled)
-    logger.info("gpu_pool_actuation roles=%s", sorted(runtime.actuate_roles) or "off")
+        shed_enabled=_settings.shed_enabled)
+    # Stage 5.7: every swap seat with a launch block is actuated; pause_actuation is the only stop.
+    logger.info("gpu_pool_actuation mode=%s seats=%s", _settings.mode, sorted(runtime.actuated) or "none")
     # The actuator's replies are subscribed BEFORE start(): start() asks about a swap the previous
     # process left in flight, and the answer must not arrive to nobody. Lease RPCs start after it.
     results = Hunter(_cfg(), handler=_on_actuate_result, patterns=[GPU_POOL_ACTUATE_RESULT_CHANNEL])
@@ -323,6 +324,7 @@ app = FastAPI(title="orion-gpu-pool", lifespan=lifespan)
 async def health() -> dict[str, Any]:
     return {"ok": runtime is not None, "service": _settings.service_name, "mode": _settings.mode,
             "config_digest": runtime.cfg.digest if runtime else None,
+            "actuation": ({"seats": sorted(runtime.actuated), **runtime._paused_detail()} if runtime else None),
             "shed": runtime.shed_board.view(runtime.now(), runtime.shed_enabled).as_dict() if runtime else None}
 
 

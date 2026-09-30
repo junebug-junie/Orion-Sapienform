@@ -267,7 +267,7 @@ def gpu_pool_history(minutes: int = 60, work_class: Optional[str] = None, holder
 
 # --- operator control -----------------------------------------------------------------------
 class ControlBody(BaseModel):
-    verb: str = Field(pattern="^(lend|unlend|hold|release|replay|cancel|backfill|clear_fault)$")
+    verb: str = Field(pattern="^(lend|unlend|hold|release|replay|cancel|backfill|clear_fault|pause_actuation|resume_actuation)$")
     card: Optional[str] = None
     lease_id: Optional[str] = None
     work_class: Optional[str] = None

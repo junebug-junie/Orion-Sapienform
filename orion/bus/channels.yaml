@@ -3193,10 +3193,10 @@ channels:
     schema_id: "DurableRunStateV1"
     message_kind: "durable.run.state.v1"
     producer_services: ["orion-durable-runs"]
-    consumer_services: ["orion-sql-writer", "orion-hub"]
+    consumer_services: ["orion-sql-writer", "orion-hub", "orion-actions"]
     stability: "experimental"
     since: "2026-09-06"
-    description: "One row per node transition of a durable run -> substrate_durable_run_state (sql-writer). Hub consumes `completed` to run outreach, which only Hub can deliver."
+    description: "One row per node transition of a durable run -> substrate_durable_run_state (sql-writer). Hub consumes `completed` to run outreach, which only Hub can deliver. orion-actions consumes the terminal row of a `compactor.digest` run to settle the scheduled compactor run that submitted it."
 
   - name: "orion:durable:run:reply:*"
     kind: "result"
@@ -3247,7 +3247,7 @@ channels:
     consumer_services: ["orion-llm-gateway", "orion-durable-runs", "orion-world-model", "orion-thought", "orion-hub", "orion-sql-writer"]
     stability: "experimental"
     since: "2026-09-24"
-    description: "Lease lifecycle facts (admitted, queued, granted w/ waited_ms, backlogged, recalled, aborted, expired, retried, dead_lettered, replayed, released, unavailable), swap requests, lend/unlend, discovery confirm/mismatch. Callers wake on 'granted'; sql-writer persists."
+    description: "Lease lifecycle facts (admitted, queued, granted w/ waited_ms, backlogged, recalled, aborted, expired, retried, dead_lettered, replayed, released, unavailable), swap requests, lend/unlend, discovery confirm/mismatch, actuation_paused/actuation_resumed (stage 5.7 emergency stop; sql-writer must be redeployed before a pool that emits them). Callers wake on 'granted'; sql-writer persists."
 
   - name: "orion:gpu_pool:state:reply:*"
     kind: "result"
@@ -3297,7 +3297,7 @@ channels:
     consumer_services: ["orion-gpu-pool"]
     stability: "experimental"
     since: "2026-09-24"
-    description: "Operator verbs (lend, unlend, replay, cancel, backfill) checked against GPU_POOL_OPERATOR_TOKEN; fail closed when unset. Reply GpuPoolControlReplyV1 on orion:gpu_pool:control:reply:*."
+    description: "Operator verbs (lend, unlend, hold, release, replay, cancel, backfill, clear_fault, pause_actuation, resume_actuation). No token: the pool trusts the bus; every verb is logged with its actor. pause_actuation is the one emergency stop for model loads/unloads (persisted; stage 5.7). Reply GpuPoolControlReplyV1 on orion:gpu_pool:control:reply:*."
 
   - name: "orion:gpu_pool:actuate:request"
     kind: "request"

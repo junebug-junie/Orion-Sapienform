@@ -35,6 +35,9 @@ from app.admitted_graph import (
     WorkflowDeadline, build_admitted_graph,
 )
 from app.admitted_reflect_graph import build_admitted_reflect_graph
+from app.compactor_digest_graph import build_compactor_digest_graph, finish_detail as compactor_digest_finish_detail
+from app.journal_compose_graph import build_journal_compose_graph, finish_detail as journal_compose_finish_detail
+from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW
 from app.admitted_self_sense_graph import build_admitted_self_sense_graph
 from app.graph import failed_turn_meta, finish_detail, recorded_turn_correlation_id, turn_correlation_id, urgent_detail
 from app.pool_hold import (
@@ -52,6 +55,7 @@ from app.reverie_visual_graph import (
     finish_detail as reverie_visual_finish_detail, send_abandon,
     terminal_detail as reverie_visual_terminal_detail,
 )
+from orion.schemas.compactor_digest_run import COMPACTOR_DIGEST_WORKFLOW
 from orion.schemas.reading_turn import READING_WORKFLOW
 from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW
 from orion.schemas.orion_day import ORION_DAY_WORKFLOW, OrionDayRunBriefV1
@@ -80,6 +84,10 @@ WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORK
               # Only generate holds the diffusion hold; it releases it before its result is
               # checkpointed, so a restart after generate resumes at caption with no lease.
               REVERIE_VISUAL_WORKFLOW: {"generate"},
+              # One LLM call per digest run; finalize lets the hold go before it calls cortex-orch.
+              COMPACTOR_DIGEST_WORKFLOW: {"digest"},
+              # Only compose holds the GPU; publish lets the hold go before it sends the write.
+              JOURNAL_COMPOSE_WORKFLOW: {"compose"},
               # Both LLM calls run under the hold; a restart replays the first one without a
               # checkpointed text (a finished note is never regenerated). persist needs no GPU.
               ORION_DAY_WORKFLOW: {"write_note", "write_carry_forward"}}
@@ -149,6 +157,13 @@ class AdmissionRuntime:
             REFLECT_WORKFLOW: build_admitted_reflect_graph(runner._reflect_deps(), admission_deps, runner._checkpointer),
             READING_WORKFLOW: build_reading_graph(lambda request: runner._run_reading_turn(request), admission_deps, runner._checkpointer),
             REVERIE_VISUAL_WORKFLOW: build_reverie_visual_graph(self._reverie_step, admission_deps, runner._checkpointer),
+            # Late-bound (like reading above): the runner's method is read per call.
+            COMPACTOR_DIGEST_WORKFLOW: build_compactor_digest_graph(
+                lambda payload, **kw: runner._cortex_orch_rpc(payload, **kw), admission_deps, runner._checkpointer),
+            # Late-bound (like reading/reverie above): the runner's methods are read per call.
+            JOURNAL_COMPOSE_WORKFLOW: build_journal_compose_graph(
+                lambda brief, **kw: runner._compose_journal(brief, **kw),
+                lambda write: runner._publish_journal_write(write), admission_deps, runner._checkpointer),
             # Bound lazily (like reading's run_turn): resolved on the runner at call time.
             ORION_DAY_WORKFLOW: build_orion_day_graph(OrionDayDeps(
                 call_verb_text=lambda *args, **kwargs: runner._call_verb_text(*args, **kwargs),
@@ -192,6 +207,10 @@ class AdmissionRuntime:
             return reading_finish_detail(state)
         if workflow == REVERIE_VISUAL_WORKFLOW:
             return reverie_visual_finish_detail(state)
+        if workflow == COMPACTOR_DIGEST_WORKFLOW:
+            return compactor_digest_finish_detail(state)
+        if workflow == JOURNAL_COMPOSE_WORKFLOW:
+            return journal_compose_finish_detail(state)
         if workflow == ORION_DAY_WORKFLOW:
             return orion_day_finish_detail(state)
         return finish_detail(state)
@@ -818,6 +837,10 @@ class AdmissionRuntime:
     async def _cancel_harness(self, state, reason):
         # Curiosity: hold-derived turn id. Self-sense: each question is a fresh uuid4 -- cancel
         # those from answers + any still in-flight.
+        if state.get("workflow") == COMPACTOR_DIGEST_WORKFLOW:
+            # No harness turn: each digest call is a plain cortex-orch verb RPC; a replay re-asks.
+            return
+        if state.get("workflow") == REVERIE_VISUAL_WORKFLOW:
         if state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, ORION_DAY_WORKFLOW):
             # No harness turn: generate runs in orion-thought, whose replay is idempotent (the
             # recorded artifact, or a generate_in_flight retry); orion_day.letter's calls are plain

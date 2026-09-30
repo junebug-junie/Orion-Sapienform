@@ -568,18 +568,6 @@ class HubWorldPulseMessageV1(_WPBase):
     created_at: datetime
 
 
-class EmailWorldPulseRenderV1(_WPBase):
-    run_id: str
-    subject: str
-    opening: str
-    plaintext_body: str
-    html_body: str | None = None
-    to: list[str] = Field(default_factory=list)
-    from_email: str | None = None
-    dry_run: bool = True
-    created_at: datetime
-
-
 class WorldPulseRunV1(_WPBase):
     run_id: str
     date: str
@@ -602,6 +590,8 @@ class WorldPulseRunV1(_WPBase):
     digest_created: bool = False
     sql_emit_status: str = "pending"
     graph_emit_status: str = "pending"
+    # Retired 2026-09-30 with the direct email path: nothing sets or reads this; kept only
+    # so persisted payloads still validate under extra="forbid". Always "pending".
     email_status: str = "pending"
     hub_publish_status: str = "pending"
     stance_capsule_status: str = "pending"

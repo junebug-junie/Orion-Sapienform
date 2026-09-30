@@ -54,3 +54,33 @@ def _isolate_substrate_control_surface(tmp_path, monkeypatch):
         yield
     finally:
         mutation_control_surface._CONTROL_SURFACE_STORE = previous
+
+
+@pytest.fixture(autouse=True)
+def compactor_durable_sim(request, monkeypatch):
+    """Compactor passes hand their LLM digest calls to a ``compactor.digest`` durable run
+    (orion-durable-runs). In this suite that run is simulated in-line (tests/compactor_durable_sim.py)
+    so orch tests keep covering fetch -> digest -> finalize end to end. Tests of the real submission
+    path opt out with ``@pytest.mark.real_durable_submit``."""
+    if request.node.get_closest_marker("real_durable_submit"):
+        yield None
+        return
+    import types
+
+    from app import workflow_runtime as wr
+
+    from compactor_durable_sim import InlineDurableRun
+
+    namespaces = [vars(wr)]
+    for obj in list(vars(request.module).values()):
+        ns = getattr(obj, "__globals__", None)
+        if ns is None and isinstance(obj, types.ModuleType):
+            ns = vars(obj)
+        if (isinstance(ns, dict) and ns.get("__name__") == "app.workflow_runtime"
+                and not any(ns is seen for seen in namespaces)):
+            namespaces.append(ns)
+    yield InlineDurableRun(namespaces).install(monkeypatch)
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "real_durable_submit: use the real compactor durable-run submission")

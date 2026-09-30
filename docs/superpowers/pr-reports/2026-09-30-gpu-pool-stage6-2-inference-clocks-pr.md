@@ -245,7 +245,7 @@ Q3's passthrough (`http_calls`) data.
 
 ```text
 services/orion-llm-gateway: python -m pytest tests -q          -> 350 passed
-root: python -m pytest tests/test_llm_inference_substrate_reducer.py -q -> 33 passed
+root: python -m pytest tests/test_llm_inference_substrate_reducer.py -q -> 35 passed
 root: tests/test_*registry*.py tests/test_llm_inference*.py tests/test_field_state_schemas.py
       tests/test_field_channel_glossary.py                     -> 92 passed
 services/orion-field-digester tests (from root)                -> 257 passed, 6 skipped
@@ -284,7 +284,37 @@ Live schema drift check against production Postgres: OK.
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+Code review ran in a subagent over `origin/main...HEAD`. No must-fix defects in the serving path.
+
+- Finding: a refused call's wait (the "line is long" signal) never reached the projection -- no
+  worker, so its node was `unrouted` and the reducer dropped it.
+  - Fix: an ungranted call's role clock is filed under the pool's host node (`pool_placement.pool_node()`,
+    config `host.name`); its node-level counts stay unattributed as before.
+  - Evidence: `test_an_ungranted_wait_reaches_the_projection_under_the_pool_node` (reducer),
+    `test_pool_refusal_records_the_wait_under_ungranted`, `test_passthrough_pool_refusal_is_counted_as_ungranted`.
+- Finding: rolling the reducer back to main after this deploy crash-loops it (`by_role` under `forbid`).
+  - Fix: rollback procedure added below (delete the singleton row; it self-heals).
+  - Evidence: "Rollback" section.
+- Finding: a grant landing in the same instant the HTTP client disconnects leaked the lease and the
+  role occupancy count forever (every later call on that role read as "shared").
+  - Fix: `passthrough_proxy._withdraw` releases a grant that completed while being withdrawn, on both
+    the disconnect and the cancellation path.
+  - Evidence: `test_a_grant_landing_as_the_client_leaves_is_released`, `test_client_gone_while_queued_is_recorded_once`.
+- Finding: an HTTP-only minute emitted a `calls=0` node atom that folded a zero window and re-sent
+  `inference_failure_pressure` -- a cadence change on the live channel.
+  - Fix: the reducer skips the fold and the hint when `calls == 0`, keeping the last reading and span.
+  - Evidence: `test_a_role_only_window_does_not_slide_or_resend_the_live_failure_reading`.
+- Finding: passthrough exit paths untested.
+  - Fix: tests for overflow -> re-lease (one `served`), overflow with nothing bigger (one
+    `context_overflow`), lease revoked mid-call (one `gpu_pool_recalled`), client gone while queued
+    (one `client_gone`, occupancy 0), stream breaking (one `upstream_error`).
+- Finding (nit): HTTP token counts parsed and discarded. Fix: parse removed (`usage_tokens_from` deleted).
+- Finding (nit): `slots` looked up by sanitized role key vs raw pool name. Fix: `role_slots` keys normalized with `role_key`.
+- Finding (nit): `stream_owns_lease` set before the streaming response was built. Fix: set after construction.
+- Not changed, documented: a re-leased call's model time sums under the final role; a streamed
+  call's model time includes a slow client's read time (README "Known limits").
+- Not changed (pre-existing, cosmetic): a `release()` that raises after a served reply is recorded
+  as `gateway_exception`.
 
 ## Deploy order (consumer first)
 
@@ -293,6 +323,20 @@ REVIEW_PLACEHOLDER
 
 Either order is crash-safe (verified above), but gateway-first loses the role data until the
 reducer lands. No migration. Field digester, Hub: no redeploy needed.
+
+### Rollback
+
+Gateway: redeploy the previous image; the new reducer reads a pre-6.2 atom as `by_role={}`.
+substrate-runtime: the previous reducer's model forbids `by_role`, so once this reducer has written
+the row, the old one fails every load. Roll back the gateway first, then run (operator action; the
+row is a materialized cache rebuilt on the next tick, only the 10-minute failure span is lost):
+
+```bash
+docker exec orion-athena-sql-db psql -U postgres -d conjourney -c \
+  "delete from substrate_llm_inference_projection where projection_id = 'active_llm_inference_projection'"
+```
+
+then redeploy the previous substrate-runtime image.
 
 ## Restart required
 
@@ -323,6 +367,6 @@ docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc \
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2443
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

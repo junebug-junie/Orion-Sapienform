@@ -27,7 +27,6 @@ from app.grammar_emit import (
     build_window_events,
     classify_http_outcome,
     decode_tps_from,
-    usage_tokens_from,
 )
 from app.settings import settings
 
@@ -191,20 +190,6 @@ def test_decode_tps_reads_llamacpp_timings_only(payload, expected):
 
 
 @pytest.mark.parametrize(
-    "payload, expected",
-    [
-        ({"usage": {"prompt_tokens": 12, "completion_tokens": 7}}, (12, 7)),
-        ({"usage": {"input_tokens": 30, "output_tokens": 4}}, (30, 4)),
-        ({}, (0, 0)),
-        (b'data: {"usage":{"input_tokens":5,"output_tokens":1}}\n\ndata: {"usage":{"output_tokens":9}}', (5, 9)),
-        (b'data: {"usage":{"prompt_tokens":8,"completion_tokens":3}}', (8, 3)),
-    ],
-)
-def test_usage_tokens_from_openai_and_anthropic_bodies(payload, expected):
-    assert usage_tokens_from(payload) == expected
-
-
-@pytest.mark.parametrize(
     "status, overflow, expected",
     [(200, False, "served"), (400, False, "upstream_http_4xx"), (400, True, "context_overflow"),
      (503, False, "upstream_http_5xx"), (500, False, "upstream_http_5xx")],
@@ -263,9 +248,12 @@ async def test_pool_refusal_records_the_wait_under_ungranted(fake_pool, monkeypa
     )
     await gateway.handle_chat(env)
     _, _, buckets = grammar_emit.get_recorder().drain()
-    role = buckets["unrouted"].roles["ungranted"]
+    # node counts unchanged (no worker: unattributed), the wait filed under the pool's host node
+    assert buckets["unrouted"].classes == {"gpu_pool_unavailable": 1} and buckets["unrouted"].roles == {}
+    role = buckets["circe"].roles["ungranted"]
     assert role.classes == {"gpu_pool_unavailable": 1}
     assert len(role.wait_ms) == 1 and role.model_ms == []
+    assert buckets["circe"].calls == 0
 
 
 # ── HTTP passthroughs are counted too ──────────────────────────────────────────────────────
@@ -331,7 +319,9 @@ def test_passthrough_pool_refusal_is_counted_as_ungranted(passthrough_client, fa
         "/v1/chat/completions", json={"model": "quick", "messages": [{"role": "user", "content": "hi"}]})
     assert response.status_code == 503
     _, _, buckets = grammar_emit.get_recorder().drain()
-    assert buckets["unrouted"].roles["ungranted"].classes == {"gpu_pool_unavailable": 1}
+    assert "unrouted" not in buckets  # HTTP calls never touch node counts
+    assert buckets["circe"].roles["ungranted"].classes == {"gpu_pool_unavailable": 1}
+    assert buckets["circe"].roles["ungranted"].http_calls == 1
 
 
 def test_passthrough_records_nothing_when_grammar_is_off(passthrough_client, fake_pool, monkeypatch):
@@ -644,3 +634,109 @@ async def _async(value):
 
 async def _raise():
     raise RuntimeError("pool state rpc down")
+
+
+# ── passthrough exit paths: each call recorded exactly once, with its real outcome ─────────
+
+_OVERFLOW_BODY = {"error": {"message": "the request exceeds the available context size"}}
+
+
+def _roles_total(buckets) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for node in buckets.values():
+        for role in node.roles.values():
+            for cls, n in role.classes.items():
+                out[cls] = out.get(cls, 0) + n
+    return out
+
+
+def test_overflow_then_re_lease_is_one_served_call(passthrough_client, fake_pool, monkeypatch):
+    replies = [httpx.Response(400, json=_OVERFLOW_BODY), httpx.Response(200, json={"choices": []})]
+
+    async def _fake_post(self: Any, url: str, **kwargs: Any) -> httpx.Response:
+        return replies.pop(0)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
+    response = passthrough_client.post(
+        "/v1/chat/completions", json={"model": "quick", "messages": [{"role": "user", "content": "hi"}]})
+    assert response.status_code == 200 and len(fake_pool.calls) == 2
+    _, _, buckets = grammar_emit.get_recorder().drain()
+    assert _roles_total(buckets) == {"served": 1}
+
+
+def test_overflow_with_nothing_bigger_is_one_context_overflow(passthrough_client, fake_pool, monkeypatch):
+    async def _fake_post(self: Any, url: str, **kwargs: Any) -> httpx.Response:
+        fake_pool.unavailable = "min_ctx_exceeds_class:4096"  # the re-lease finds nothing bigger
+        return httpx.Response(400, json=_OVERFLOW_BODY)
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
+    response = passthrough_client.post(
+        "/v1/chat/completions", json={"model": "quick", "messages": [{"role": "user", "content": "hi"}]})
+    assert response.status_code == 400
+    _, _, buckets = grammar_emit.get_recorder().drain()
+    assert _roles_total(buckets) == {"context_overflow": 1}
+
+
+def test_lease_revoked_mid_call_is_one_gpu_pool_recalled(passthrough_client, fake_pool, monkeypatch):
+    import asyncio
+
+    fake_pool.on_grant = lambda lease: lease.lost.set()  # the pool drops the lease at once
+
+    async def _fake_post(self: Any, url: str, **kwargs: Any) -> httpx.Response:
+        await asyncio.sleep(1.0)
+        return httpx.Response(200, json={"choices": []})
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
+    response = passthrough_client.post(
+        "/v1/chat/completions", json={"model": "quick", "messages": [{"role": "user", "content": "hi"}]})
+    assert response.status_code == 503
+    _, _, buckets = grammar_emit.get_recorder().drain()
+    assert _roles_total(buckets) == {"gpu_pool_recalled": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_grant_landing_as_the_client_leaves_is_released(fake_pool):
+    """Review finding: the acquire finished during the disconnect check; the lease (and the
+    role occupancy count) must be released, not held for the life of the process."""
+    import asyncio
+
+    from app import passthrough_proxy, pool_placement
+
+    pool_placement.reset_occupancy_for_tests()
+    handle = pool_placement.PoolLease(route="quick", spec=pool_placement.route_spec("quick"), holder="t",
+                                      turn_correlation_id=None, min_ctx_tokens=10, deadline_sec=5.0)
+    task = asyncio.ensure_future(handle.acquire())
+    await asyncio.sleep(0.05)
+    assert task.done() and pool_placement.role_in_flight() == {"fast": 1}
+    await passthrough_proxy._withdraw(task, handle)
+    assert pool_placement.role_in_flight() == {} and fake_pool.active == 0
+
+
+def test_client_gone_while_queued_is_recorded_once(fake_pool, monkeypatch):
+    """_ClientGone path: the queued acquire is withdrawn and the call is client_gone, once."""
+    import asyncio
+
+    from app import passthrough_proxy, pool_placement
+
+    fake_pool.max_wait_sec = 5.0
+    for role in fake_pool.slots:
+        fake_pool.busy[role] = fake_pool.slots[role]  # nothing free: the acquire queues
+
+    class _GoneRequest:
+        async def is_disconnected(self) -> bool:
+            return True
+
+    monkeypatch.setattr(passthrough_proxy, "_DISCONNECT_POLL_SEC", 0.01)
+    monkeypatch.setattr(passthrough_proxy, "_http_helpers",
+                        lambda: (lambda request: {}, lambda headers: {}, lambda: None))
+
+    async def _run():
+        return await passthrough_proxy.proxy_on_pool(
+            request=_GoneRequest(), route_key="quick", forward_body={}, path="/v1/chat/completions",
+            holder="http:openai", correlation_id=None, min_ctx_tokens=10, anthropic=False)
+
+    response = asyncio.run(_run())
+    assert response.status_code == passthrough_proxy.CLIENT_CLOSED_STATUS
+    _, _, buckets = grammar_emit.get_recorder().drain()
+    assert _roles_total(buckets) == {grammar_emit.CLIENT_GONE: 1}
+    assert pool_placement.role_in_flight() == {}

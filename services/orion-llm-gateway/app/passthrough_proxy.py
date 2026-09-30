@@ -39,6 +39,7 @@ from .pool_placement import (
     PoolLease,
     busy_at_grant,
     class_max_ctx,
+    pool_node,
     mark_revoked,
     passthrough_wait_sec,
     route_spec,
@@ -115,7 +116,7 @@ class _CallReport:
     """One passthrough call's entry in the inference report: recorded once, whatever the exit."""
 
     def __init__(self) -> None:
-        self.clock = grammar_emit.CallClock()
+        self.clock = grammar_emit.CallClock(pool_node=pool_node())
         self.served_by: Optional[str] = None
         self._done = False
 
@@ -135,7 +136,6 @@ class _CallReport:
                 outcome,
                 served_by=self.served_by,
                 timing=self.clock,
-                tokens=grammar_emit.usage_tokens_from(body) if body is not None else (0, 0),
                 timings=grammar_emit.timings_from(body) if body is not None else None,
                 http=True,
             )
@@ -172,6 +172,16 @@ async def _race(awaitable, watch: "asyncio.Future[str]"):
     raise _Revoked(watch.result())
 
 
+async def _withdraw(task: "asyncio.Future[Lease]", handle: PoolLease) -> None:
+    """Cancel a queued acquire. If the grant landed first (the client left in the same instant),
+    release it: otherwise the pool lease and the gateway's role occupancy count stay held."""
+    task.cancel()  # gpu_lease withdraws the queued request on cancellation
+    with contextlib.suppress(BaseException):
+        await task
+    if task.done() and not task.cancelled() and task.exception() is None:
+        await handle.release()
+
+
 async def _acquire(handle: PoolLease, request: Request) -> Lease:
     """Acquire, but withdraw the queued lease if the HTTP client goes away while waiting."""
     task = asyncio.ensure_future(handle.acquire())
@@ -181,12 +191,10 @@ async def _acquire(handle: PoolLease, request: Request) -> Lease:
             if done:
                 return task.result()
             if await request.is_disconnected():
-                task.cancel()  # gpu_lease withdraws the queued request on cancellation
-                with contextlib.suppress(BaseException):
-                    await task
+                await _withdraw(task, handle)
                 raise _ClientGone()
     except asyncio.CancelledError:
-        task.cancel()
+        await asyncio.shield(_withdraw(task, handle))
         raise
 
 
@@ -344,14 +352,15 @@ async def proxy_on_pool(
                     finally:
                         await close()
 
-                stream_owns_lease = True
-                return LeaseStreamingResponse(
+                streaming = LeaseStreamingResponse(
                     _body(),
                     cleanup=close,
                     status_code=upstream.status_code,
                     headers=forwardable_response_headers(upstream.headers),
                     media_type=upstream.headers.get("content-type") or "text/event-stream",
                 )
+                stream_owns_lease = True
+                return streaming
 
             async with httpx.AsyncClient(timeout=timeout) as client:
                 upstream = await _race(client.post(upstream_url, headers=headers, json=forward_body), watch)

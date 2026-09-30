@@ -142,32 +142,6 @@ def classify_http_outcome(status_code: int, *, context_overflow: bool = False) -
     return "upstream_http_5xx"
 
 
-_TOKEN_KEYS = (("prompt_tokens", "completion_tokens"), ("input_tokens", "output_tokens"))
-
-
-def usage_tokens_from(payload: Any) -> tuple[int, int]:
-    """(prompt, completion) from an OpenAI (``prompt_tokens``/``completion_tokens``) or
-    Anthropic (``input_tokens``/``output_tokens``) ``usage`` block: a parsed body, or raw
-    bytes (a stream's tail, last reported value wins). (0, 0) when absent."""
-    if isinstance(payload, dict):
-        usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-        for prompt_key, completion_key in _TOKEN_KEYS:
-            if prompt_key in usage or completion_key in usage:
-                try:
-                    return max(0, int(usage.get(prompt_key) or 0)), max(0, int(usage.get(completion_key) or 0))
-                except (TypeError, ValueError):
-                    return 0, 0
-        return 0, 0
-    if isinstance(payload, (bytes, bytearray, str)):
-        data = payload.encode("utf-8", "ignore") if isinstance(payload, str) else bytes(payload)
-        out = []
-        for key in ("prompt_tokens|input_tokens", "completion_tokens|output_tokens"):
-            found = re.findall(rb'"(?:' + key.encode() + rb')"\s*:\s*([0-9]+)', data)
-            out.append(int(found[-1]) if found else 0)
-        return out[0], out[1]
-    return 0, 0
-
-
 def node_hint(served_by: str | None) -> str:
     """Gateway worker labels are ``{node}-worker[-lane][-N]``. The reducer decides
     whether the hint names a real field node; the gateway only groups by it."""
@@ -219,6 +193,9 @@ class CallClock:
     role: str | None = None
     # this gateway's calls in flight on ``role`` at the (last) grant, this one included
     busy_at_grant: int | None = None
+    # the GPU pool's host node (config ``host.name``): where a call that never got a grant
+    # files its wait, so "the line is long" survives the reducer's known-node filter
+    pool_node: str | None = None
     _wait_from: float | None = None
     _model_from: float | None = None
 
@@ -438,13 +415,14 @@ class _NodeBucket:
         timing: CallClock | None = None,
         timings: ReplyTimings | None = None,
         http: bool = False,
+        roles: bool = True,
+        counts: bool = True,
     ) -> None:
-        role = role_key(timing.role if timing is not None else None)
-        if role not in self.roles and len(self.roles) >= _MAX_ROLES:
-            role = _OTHER_WORKER
-        self.roles.setdefault(role, _RoleBucket()).add(
-            outcome=outcome, timing=timing, timings=timings, http=http)
-        if http:
+        """``roles``/``counts``: which half to record (an ungranted call's node counts and its
+        role clock go to different buckets; see InferenceWindowRecorder.record_outcome)."""
+        if roles:
+            self.add_role(outcome=outcome, timing=timing, timings=timings, http=http)
+        if http or not counts:
             # HTTP passthrough calls reach the per-role clocks only (stage 6.2, record-only).
             # The node-level counts below feed inference_failure_pressure, a live field channel
             # whose population has been bus-RPC calls since 2026-09-25; widening it to the
@@ -465,11 +443,18 @@ class _NodeBucket:
             self.prompt_tokens += tokens[0]
             self.completion_tokens += tokens[1]
 
+    def add_role(self, *, outcome: str, timing: CallClock | None, timings: ReplyTimings | None,
+                 http: bool) -> None:
+        role = role_key(timing.role if timing is not None else None)
+        if role not in self.roles and len(self.roles) >= _MAX_ROLES:
+            role = _OTHER_WORKER
+        self.roles.setdefault(role, _RoleBucket()).add(outcome=outcome, timing=timing, timings=timings, http=http)
+
     def count(self, classes: frozenset[str]) -> int:
         return sum(n for name, n in self.classes.items() if name in classes)
 
     def summary(self, node: str, role_slots: dict[str, int] | None = None) -> str:
-        slots = role_slots or {}
+        slots = {role_key(k): v for k, v in (role_slots or {}).items()}
         classes = "|".join(f"{k}:{v}" for k, v in sorted(self.classes.items())) or "none"
         labels = "|".join(self.labels) or "none"
         return (
@@ -522,10 +507,23 @@ class InferenceWindowRecorder:
         inference_failure_pressure)."""
         if timing is not None:
             timing.close()
+        node = node_hint(served_by)
+        pool_node = str(timing.pool_node or "").strip().lower() if timing is not None else ""
         with self._lock:
-            bucket = self._buckets.setdefault(node_hint(served_by), _NodeBucket())
-            bucket.add(outcome=outcome, served_by=served_by, tokens=tokens, timing=timing,
-                       timings=timings, http=http)
+            if timing is not None and timing.role is None and pool_node and pool_node != node:
+                # Never granted: no worker, so the node counts stay where they always were
+                # (unrouted -> unattributed), and the wait goes to the pool's host node's
+                # "ungranted" role -- the line is that pool's line.
+                if not http:
+                    self._buckets.setdefault(node, _NodeBucket()).add(
+                        outcome=outcome, served_by=served_by, tokens=tokens, timing=timing,
+                        timings=timings, http=http, roles=False)
+                self._buckets.setdefault(pool_node, _NodeBucket()).add_role(
+                    outcome=outcome, timing=timing, timings=timings, http=http)
+            else:
+                self._buckets.setdefault(node, _NodeBucket()).add(
+                    outcome=outcome, served_by=served_by, tokens=tokens, timing=timing,
+                    timings=timings, http=http)
         return outcome
 
     def drain(self) -> tuple[float, float, dict[str, _NodeBucket]]:

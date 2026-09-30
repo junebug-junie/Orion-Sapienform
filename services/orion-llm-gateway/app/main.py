@@ -516,7 +516,7 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     holder = (typed_req.source.name if typed_req.source else None) or "llm-gateway"
     # Two clocks, not one (gpu-pool stage 6.2): the old single clock started here, before the
     # pool lease, so it reported queue wait plus model time as one number.
-    call_clock = grammar_emit.CallClock()
+    call_clock = grammar_emit.CallClock(pool_node=pool_placement.pool_node())
     try:
         result = await _dispatch_chat(body, correlation_id=str(typed_req.correlation_id), holder=holder,
                                       timing=call_clock)

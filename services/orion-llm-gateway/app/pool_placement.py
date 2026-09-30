@@ -254,6 +254,14 @@ async def role_slots() -> Dict[str, int]:
     return out
 
 
+def pool_node() -> Optional[str]:
+    """The pool's host node (``host.name``, e.g. "circe"), or None if the config cannot load."""
+    try:
+        return str(pool_config().host.name or "").strip().lower() or None
+    except Exception:  # noqa: BLE001 -- telemetry attribution only
+        return None
+
+
 def reset_occupancy_for_tests() -> None:
     with _occupancy_lock:
         _role_in_flight.clear()

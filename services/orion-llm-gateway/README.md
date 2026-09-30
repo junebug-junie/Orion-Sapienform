@@ -295,7 +295,9 @@ or stream end (the worker). The intervals are disjoint; a re-lease (context over
 sums each. Each node atom carries
 `roles=<role>[calls:n|served:n|upstream_failed:n|refused:n|request_invalid:n|wait_p50_ms:..|wait_p95_ms:..|model_p50_ms:..|model_p95_ms:..|decode_tps_p50:..|decode_tps_n:n]...`
 keyed by the granted pool role (`chat`, `agent`, `agent-gpu2`, `metacog`, `fast`;
-`ungranted` for calls that never held a lease). `wait` counts every call that waited;
+`ungranted` for calls that never held a lease -- filed under the pool's host node, so
+the wait survives the reducer while the node counts stay unattributed). `wait` counts
+every call that waited;
 `model` and `decode_tps` count served calls only. `decode_tps` is llama.cpp's own
 `timings.predicted_per_second` (bus reply `raw`, passthrough body, or a stream's last
 chunk) -- never derived from wall time; absent, not 0, when not reported. The reducer
@@ -321,6 +323,12 @@ raises inside dispatch is counted as `gateway_exception` (unattributed). Known l
   budget, so a short-budget caller on a busy-but-healthy lane can register one.
 - `wait` is measured on the gateway's clock (acquire -> grant), not read from the
   pool's `waited_ms`; the two should agree to within the bus round trip.
+- a streamed passthrough's `model` time runs to stream end, so a slow-reading client adds
+  its own time (`decode_tps` is unaffected). A call re-leased after a context overflow
+  sums both attempts under the final role.
+- a window with only per-role data (passthroughs, ungranted waits) sends a `calls=0`
+  node atom; the reducer updates `by_role` and leaves `inference_failure_pressure` and
+  its rolling span untouched.
 - the reducer keys state by serving node only; it assumes ONE gateway reports on a
   node (true today). A second gateway would overwrite the first's windows.
 - the publisher has no shutdown hook: the partial window at SIGTERM is lost, and a

@@ -454,7 +454,46 @@ def test_passthrough_only_window_does_not_move_inference_failure_pressure():
     assert after["pressure_hints"] == {}  # not measured, never a fake calm 0.0 or a 1.0
     agent = projection.nodes["llm_node:circe"].by_role["agent"]
     assert (agent.calls, agent.http_calls, agent.upstream_failed) == (5, 5, 5)
-    assert projection.recent_windows["llm_node:circe"][-1].upstream_failed == 0
+    assert "llm_node:circe" not in projection.recent_windows  # not folded at all
+
+
+def test_a_role_only_window_does_not_slide_or_resend_the_live_failure_reading():
+    """Before 6.2 a minute with no bus traffic produced no node atom, so the field held its last
+    inference_failure_pressure. A role-only window (HTTP passthroughs) must keep that cadence:
+    no fold, no hint, the previous reading and its span untouched (review finding)."""
+    failing = _window([(TIMEOUT, "circe-worker-agent")] * 3)
+    projection, first = _reduce(failing)
+    before_pressure = projection.nodes["llm_node:circe"].inference_failure_pressure
+    before_span = list(projection.recent_windows["llm_node:circe"])
+    assert first.state_deltas[0].after["pressure_hints"]["inference_failure_pressure"] > 0
+
+    rec = EMIT.InferenceWindowRecorder(clock=lambda: T0 + 60)
+    rec.record_outcome("served", served_by="circe-worker-agent", timing=_clocked(5, 900, "agent"), http=True)
+    start, _end, buckets = rec.drain()
+    role_only = EMIT.build_window_events(gateway_node="athena", window_start=start, window_end=start + 60,
+                                         buckets=buckets)
+    projection, receipt = _reduce(role_only, projection)
+    after = receipt.state_deltas[0].after
+    assert after["pressure_hints"] == {}
+    assert projection.recent_windows["llm_node:circe"] == before_span
+    assert projection.nodes["llm_node:circe"].inference_failure_pressure == before_pressure
+    assert projection.nodes["llm_node:circe"].by_role["agent"].http_calls == 1
+
+
+def test_an_ungranted_wait_reaches_the_projection_under_the_pool_node():
+    """A call the pool never granted has no worker; its wait -- the 'line is long' signal --
+    is filed under the pool's host node so the reducer keeps it (review finding)."""
+    rec = EMIT.InferenceWindowRecorder(clock=lambda: T0)
+    clock = EMIT.CallClock(pool_node="circe")
+    clock.wait_ms = 90000
+    rec.record({"text": "", "raw": {"error": "gpu_pool_unavailable"}}, served_by=None, timing=clock)
+    start, _end, buckets = rec.drain()
+    events = EMIT.build_window_events(gateway_node="athena", window_start=start, window_end=start + 60, buckets=buckets)
+    projection, _ = _reduce(events)
+    assert projection.last_unattributed_calls == 1  # node counts unchanged
+    ungranted = projection.nodes["llm_node:circe"].by_role["ungranted"]
+    assert (ungranted.calls, ungranted.refused, ungranted.wait_p50_ms) == (1, 1, 90000)
+    assert ungranted.model_p50_ms is None
 
 
 def test_round_trip_carries_occupancy_slots_and_cache_counts():

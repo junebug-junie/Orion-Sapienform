@@ -214,6 +214,12 @@ reducer". The events stay as history (`gpu_pool_events`, Hub panel walker) and a
 | G5 | owner-starvation seconds (`recall_grace_exceeded`) | **Fail (no consumer)** | 129 events, a real operator fact, but no field or cognition consumer asks "was chat starved". It stays a panel/eval number (the spec's eval already reports it). |
 | G6 | queue depth / oldest wait | **Fail (2, redundant)** | Already `gpu_pool_waiting` inside `queue_contention_score` (`orion/field/queue_contention.py:70`). |
 
+## Juniper's answers (2026-09-30)
+
+1. **Q1 (telemetry): yes.** Per-role waiting and model-time clocks plus tokens/sec go into the existing inference report (#2327). The `llm:<role>#call` rpc_health hops are dropped.
+2. **Q2 (FCC transport-baseline key): deferred, decide with an investigation.** 6.7 moves after 6.2's 48 h checkpoint. The two-clock data is the evidence for whether the FCC key measures anything real. No change before then.
+3. **Q3 (circe firewall): yes.** It needs sudo, which agents may not run (CLAUDE.md section 8), so 6.6 prints the exact commands for Juniper to run.
+
 ## Missing questions (Juniper only)
 
 1. **Q1.** Is dropping the spec's `llm:<role>#call` rpc_health hops in favour of per-role numbers

@@ -39,5 +39,5 @@ jobs:
           python -m pip install -r services/orion-hardware-watch/requirements.txt pytest
       - name: Rules + watcher tests
         run: cd services/orion-hardware-watch && PYTHONPATH=../..:. python -m pytest tests -q -p no:cacheprovider
-      - name: Replay eval (committed real history: AC fires once on the 33.11 W stretch, heat rates, shed legs)
+      - name: "Replay eval (committed real history -- AC fires once on the 33.11 W stretch, heat rates, shed legs)"
         run: cd services/orion-hardware-watch && PYTHONPATH=../..:. python evals/run_rules_replay_eval.py

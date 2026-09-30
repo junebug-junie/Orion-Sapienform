@@ -259,6 +259,8 @@ class OrionDayCondensationV1(_Model):
     reverie_thoughts_included: int = 0
     reverie_thoughts_hollow_skipped: int = 0
     reverie_thoughts_duplicate_skipped: int = 0
+    # Skipped because a more salient thought from the same chain was already chosen.
+    reverie_thoughts_chain_capped: int = 0
     reverie_chains_total: int = 0
     reverie_themes_total: int = 0
     reverie_themes_included: int = 0

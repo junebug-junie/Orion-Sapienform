@@ -2195,6 +2195,10 @@ def _default_llm_route_for_step(*, verb_name: Optional[str], step_name: Optional
     """
     if verb_name in {"harness_finalize_reflect", "orion_response_repair"}:
         return "agent"
+    # Orion's Day: the durable run always stamps llm_route="agent"; this default only keeps an
+    # unstamped caller off the quick lane, whose context a ~70k-token day digest overflows.
+    if verb_name in {"orion_day_note_v1", "orion_day_carry_forward_v1"}:
+        return "agent"
     if verb_name == "stance_react":
         return "chat"
     if verb_name == "chat_general" and step_name == "synthesize_chat_stance_brief":

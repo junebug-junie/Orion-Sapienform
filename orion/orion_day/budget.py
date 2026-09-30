@@ -45,7 +45,13 @@ REVERIE_MAX_TOKENS = 12_000
 REVERIE_RESERVE_TOKENS = 4_000
 REVERIE_MAX_THOUGHTS = 80
 REVERIE_THEME_SHARE = 0.25
-DEDUPE_PREFIX_CHARS = 160
+# Reverie thoughts within one chain, and across chains on one theme, often open with the same
+# sentence (live 2026-09-29: "The coalition is fixated on the unresolved prediction error from
+# the intake pipeline, which persists despite full mapping." x3 at 06:45). One per chain, and a
+# normalized-prefix dedupe across chains.
+DEDUPE_PREFIX_CHARS = 100
+REVERIE_PER_CHAIN = 1
+REVERIE_FRAME_CHARS = 400
 MIN_CLIP_CHARS = 400
 
 _REF_RE = re.compile(r"\[((?:curiosity|curiosity_failed|self_sense|reading|reading_journal|dream|dream_hypothesis|"
@@ -61,15 +67,19 @@ def extract_refs(text: str) -> list[str]:
     return list(seen)
 
 
+_HEADING_RE = re.compile(r"^(#{1,6})(\s)", flags=re.MULTILINE)
+
+
 @dataclass
 class _Body:
     text: str
 
     def render(self, cap: int | None) -> str:
         body = (self.text or "").strip()
-        if cap is None or len(body) <= cap:
-            return body
-        return body[:cap].rstrip() + f"\n… [clipped here: {len(body) - cap} more characters in the full record]"
+        if cap is not None and len(body) > cap:
+            body = body[:cap].rstrip() + f"\n… [clipped here: {len(body) - cap} more characters in the full record]"
+        # A body's own markdown headings sit below the digest's item headings (###).
+        return _HEADING_RE.sub(lambda m: "####" + m.group(2), body)
 
 
 def _fmt_time(value) -> str:
@@ -222,6 +232,7 @@ def _render_reveries(material: OrionDayMaterialV1, budget_chars: int, cond: Orio
     cond.reverie_themes_included = len(theme_lines)
 
     seen: set[str] = set()
+    per_chain: dict[str, int] = defaultdict(int)
     candidates: list[ReverieThoughtV1] = []
     for t in sorted(thoughts, key=lambda t: (-(t.salience or 0.0), t.created_at, t.thought_id)):
         if t.hollow:
@@ -231,7 +242,12 @@ def _render_reveries(material: OrionDayMaterialV1, budget_chars: int, cond: Orio
         if not key or key in seen:
             cond.reverie_thoughts_duplicate_skipped += 1
             continue
+        if t.chain_id and per_chain[t.chain_id] >= REVERIE_PER_CHAIN:
+            cond.reverie_thoughts_chain_capped += 1
+            continue
         seen.add(key)
+        if t.chain_id:
+            per_chain[t.chain_id] += 1
         candidates.append(t)
     thought_budget = budget_chars - used
     chosen: list[tuple[ReverieThoughtV1, str]] = []
@@ -285,7 +301,8 @@ def build_llm_view(
         cond.full_text_clip_chars = cap
         cond.full_text_items_clipped = sum(1 for b in bodies if len(b.text.strip()) > cap)
 
-    remaining = budget_chars - len(header) - len(full) - 4
+    # The reverie section's own headings and the joins between sections come out of the same budget.
+    remaining = budget_chars - len(header) - len(full) - REVERIE_FRAME_CHARS
     reverie_chars = max(0, min(remaining, int(REVERIE_MAX_TOKENS * chars_per_token)))
     reveries = _render_reveries(material, reverie_chars, cond)
     digest = "\n\n".join(part for part in (header, full, reveries) if part).strip()

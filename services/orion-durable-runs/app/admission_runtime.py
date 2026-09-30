@@ -149,10 +149,11 @@ class AdmissionRuntime:
             REFLECT_WORKFLOW: build_admitted_reflect_graph(runner._reflect_deps(), admission_deps, runner._checkpointer),
             READING_WORKFLOW: build_reading_graph(lambda request: runner._run_reading_turn(request), admission_deps, runner._checkpointer),
             REVERIE_VISUAL_WORKFLOW: build_reverie_visual_graph(self._reverie_step, admission_deps, runner._checkpointer),
+            # Bound lazily (like reading's run_turn): resolved on the runner at call time.
             ORION_DAY_WORKFLOW: build_orion_day_graph(OrionDayDeps(
-                call_verb_text=runner._call_verb_text,
+                call_verb_text=lambda *args, **kwargs: runner._call_verb_text(*args, **kwargs),
                 persist_letter=lambda row: persist_orion_day_letter(self.pool, row),
-                publish_journal=runner._publish_journal,
+                publish_journal=lambda entry: runner._publish_journal(entry),
                 load_brief=self._orion_day_brief,
             ), admission_deps, runner._checkpointer),
         }

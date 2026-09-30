@@ -63,6 +63,9 @@ pytest services/orion-hub/tests/test_orion_day_letter.py services/orion-hub/eval
   services/orion-hub/tests/test_curiosity_investigation.py services/orion-hub/tests/test_curiosity_dream_hypotheses.py \
   services/orion-hub/tests/test_curiosity_self_inquiry.py                                   243 passed
 pytest tests/test_dream_hypotheses.py orion/orion_day/tests tests/test_curiosity_peer_kickoff.py   71 passed
+full hub suite (services/orion-hub/tests, final merged head)  3201 passed, 38 failed, 72 skipped
+  -> the same 38 node ids run on origin/feat/orion-day-letter-core (no hub diff): 38 failed. Pre-existing, not this PR
+     (route/UI tests: memory_consolidation_draft_routes, llm_route_selector, substrate_effect_*, ...).
 scripts/check_env_template_parity.py      PASS (94 services)
 scripts/check_chat_route_poachers.py      PASS
 git diff --check                          clean

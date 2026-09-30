@@ -218,7 +218,10 @@ class Settings(BaseSettings):
     )
     # EMIT: also publish episode triggers (open/escalate/close). Requires
     # ENABLE and EQUILIBRIUM_METACOG_TRANSPORT_TRIGGER_ENABLE. While effective,
-    # the legacy rpc_health timeout branch is not called (no double firing).
+    # the gate owns every rpc_request() timeout it saw in a snapshot, and the
+    # rpc_transport_timeout atom for that same timeout is dropped
+    # (app/transport_timeout_owner.py). (The pooled rpc_health legacy timeout
+    # branch was retired 2026-09-29; the atom owns timeouts while EMIT is off.)
     transport_baseline_emit: bool = Field(
         False, alias="EQUILIBRIUM_TRANSPORT_BASELINE_EMIT"
     )
@@ -263,6 +266,21 @@ class Settings(BaseSettings):
     # 0 disables the cap. Not part of the reducer fingerprint.
     transport_baseline_max_triggers_per_hour: int = Field(
         30, alias="EQUILIBRIUM_TRANSPORT_BASELINE_MAX_TRIGGERS_PER_HOUR"
+    )
+    # EMIT only: how long an rpc_transport_timeout atom waits for a gate-folded
+    # snapshot window that saw the same timeout before it fires on its own.
+    # Must exceed one rpc_health publish interval (30 s) plus bus latency; an
+    # atom no window claims always fires (coverage fails open, never closed).
+    transport_timeout_atom_grace_sec: float = Field(
+        75.0, alias="EQUILIBRIUM_TRANSPORT_TIMEOUT_ATOM_GRACE_SEC"
+    )
+    # Durable readings: one TransportBaselineHourlyV1 per (service, instance,
+    # hop, UTC hour) on CHANNEL_TRANSPORT_BASELINE_HOURLY, persisted by
+    # orion-sql-writer into transport_baseline_hourly. Deploy sql-writer FIRST
+    # (it must know the route before this publishes; an unrouted kind lands in
+    # the sql-writer fallback log instead of the table).
+    transport_baseline_hourly_publish_enable: bool = Field(
+        True, alias="EQUILIBRIUM_TRANSPORT_BASELINE_HOURLY_PUBLISH_ENABLE"
     )
     # ---------------------------------------------------------------------
     # Generative (non-rupture) metacog triggers: insight + flow.
@@ -376,6 +394,9 @@ class Settings(BaseSettings):
     metacog_flow_min_ticks: int = Field(20, alias="EQUILIBRIUM_METACOG_FLOW_MIN_TICKS")
 
     channel_metacog_trigger: str = Field("orion:equilibrium:metacog:trigger", alias="CHANNEL_EQUILIBRIUM_METACOG_TRIGGER")
+    channel_transport_baseline_hourly: str = Field(
+        "orion:equilibrium:transport_baseline:hourly", alias="CHANNEL_TRANSPORT_BASELINE_HOURLY"
+    )
     channel_collapse_mirror_user_event: str = Field("orion:collapse:intake", alias="CHANNEL_COLLAPSE_MIRROR_USER_EVENT")
     channel_repair_pressure_appraisal: str = Field(
         "orion:repair_pressure:appraisal", alias="CHANNEL_REPAIR_PRESSURE_APPRAISAL"
@@ -408,7 +429,8 @@ class Settings(BaseSettings):
 
     def transport_baseline_emit_effective(self) -> bool:
         """True only when baseline triggers really publish -- the single
-        predicate that also retires the legacy rpc_health timeout branch."""
+        predicate that also hands ownership of the timeouts the gate saw from
+        the rpc_transport_timeout atom to the gate (app/transport_timeout_owner.py)."""
         return bool(
             self.transport_baseline_enable
             and self.transport_baseline_emit

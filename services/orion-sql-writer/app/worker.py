@@ -70,6 +70,7 @@ from app.models import (
     CuriosityHopReadingSQL,
     DurableRunStateSQL,
     GpuPoolEventSQL,
+    TransportBaselineHourlySQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
     SelfSenseEvalLogSQL,
@@ -121,6 +122,7 @@ from orion.schemas.curiosity_peer import PeerBriefV1
 from orion.schemas.curiosity_supervisor import HopReadingV1
 from orion.schemas.durable_run import DurableRunStateV1
 from orion.schemas.gpu_pool import GpuPoolEventV1
+from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
 from orion.schemas.self_sense import SelfSenseEvalV1
@@ -252,6 +254,7 @@ SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
 INSERT_ONLY_MODELS = {
     JournalEntrySQL,
     GpuPoolEventSQL,
+    TransportBaselineHourlySQL,
     DurableRunStateSQL,
     SelfKnowledgeItemLogSQL,
     AttentionSchemaSQL,
@@ -531,6 +534,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "CuriosityHopReadingSQL": (CuriosityHopReadingSQL, HopReadingV1),
     "DurableRunStateSQL": (DurableRunStateSQL, DurableRunStateV1),
     "GpuPoolEventSQL": (GpuPoolEventSQL, GpuPoolEventV1),
+    "TransportBaselineHourlySQL": (TransportBaselineHourlySQL, TransportBaselineHourlyV1),
     "ChatStanceBeliefLogSQL": (ChatStanceBeliefLogSQL, ChatStanceBeliefLogV1),
     "SelfConceptHistorySQL": (SelfConceptHistorySQL, SelfConceptHistoryV1),
     "SelfSenseEvalLogSQL": (SelfSenseEvalLogSQL, SelfSenseEvalV1),

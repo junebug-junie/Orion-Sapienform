@@ -34,6 +34,11 @@ logger = logging.getLogger("orion-hub.llm-routes")
 # filtered it out of every payload the Hub ever saw.
 VALID_ROUTE_IDS = ACCEPTED_LLM_ROUTES
 
+# The Hub's own Compute default, the same value as app.js's HUB_COMPUTE_DEFAULT. Before stage 6.3
+# `default_route` echoed the gateway's LLM_ROUTE_DEFAULT; pool state carries no such thing, so the
+# payload now states the Hub's constant explicitly rather than pretending the gateway reported it.
+HUB_DEFAULT_ROUTE = "quick"
+
 # The picker polls every 30 s per open tab; one pool read serves every tab for this long.
 _CACHE_SEC = 10.0
 _FAILURE_CACHE_SEC = 2.0
@@ -72,7 +77,7 @@ async def _route_view() -> dict[str, Any]:
 async def fetch_routes() -> dict[str, Any]:
     """The Compute picker's catalog. Never raises: an unreachable pool is every route ``unknown``."""
     view = await _route_view()
-    payload = _normalize_routes_payload({"routes": view.get("routes") or []})
+    payload = _normalize_routes_payload({"default_route": HUB_DEFAULT_ROUTE, "routes": view.get("routes") or []})
     payload["source"] = view.get("source") or SOURCE_UNAVAILABLE
     return payload
 

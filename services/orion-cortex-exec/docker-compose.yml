@@ -181,7 +181,6 @@ services:
       ORION_SITUATION_RUNTIME_ROUTE: ${ORION_SITUATION_RUNTIME_ROUTE:-chat}
       ORION_SITUATION_RUNTIME_TTL_SECONDS: ${ORION_SITUATION_RUNTIME_TTL_SECONDS:-120}
       ORION_SITUATION_RUNTIME_PROBE_TIMEOUT_SEC: ${ORION_SITUATION_RUNTIME_PROBE_TIMEOUT_SEC:-2.0}
-      CORTEX_EXEC_LLM_GATEWAY_URL: ${CORTEX_EXEC_LLM_GATEWAY_URL:-http://llm-gateway:8210}
       # ROADMAP A5: reads orion-gpu-pool's lease history (gpu_pool_events) so Orion can perceive
       # whether its own background thinking was made to wait. Inherited by
       # cortex-exec-{chat,spark,background} via `extends`. _ENABLED=false removes read and key.

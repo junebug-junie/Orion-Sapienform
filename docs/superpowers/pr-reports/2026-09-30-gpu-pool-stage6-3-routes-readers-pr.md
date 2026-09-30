@@ -62,6 +62,14 @@
   - `/api/llm-routes` returns 200 with `unknown` lanes instead of 502 when the pool can't be asked. The picker already renders `unknown`.
   - `RuntimeContextV1.source` is `gpu_pool` (it was `orion-llm-gateway`).
   - Held harness turns use their granted role's `ctx_per_slot` as the window.
+  - **context-exec:**
+    - It no longer fails fast when the pool says a route is down. The call is dispatched, and the pool queues or refuses it at dispatch time. A queued call can wait up to `CONTEXT_EXEC_LLM_TIMEOUT_SEC` (120 s).
+    - The smolagents path no longer forces `agent` on an unavailable route.
+    - `fallback_used` / `fallback_reason` are still emitted in `runtime_debug`, but they are now always `False` / `None`.
+    - The service is not running today (spec, 2026-09-30).
+  - **Hub, pool unreachable:**
+    - The attach-image button greys out, because vision is unknown.
+    - The lend toggle keeps its last state.
 - **Compatibility notes:**
   - `include_config` has been in `GpuPoolStateRequestV1` since stage 2, so the live pool already answers it.
   - The payloads are dicts and the only new key is additive. No schema-model change.
@@ -71,11 +79,12 @@
 
 - **Added keys:** none.
 - **Removed keys:**
+  - `CORTEX_EXEC_LLM_GATEWAY_URL` (orion-cortex-exec). Its only reader was the situational `/routes` read.
   - `HUB_LLM_GATEWAY_URL` (orion-hub). `HUB_LLM_GATEWAY_TIMEOUT_SEC` stays, because the concept classifier reads it.
   - `CONTEXT_EXEC_LLM_PROFILE_FALLBACK_ENABLED` (orion-context-exec).
 - **Renamed keys:** none.
-- **`.env_example` updated:** yes (hub, context-exec).
-- **Local `.env` synced with `python scripts/sync_local_env_from_example.py`:** run. Parity check: PASS (94 services). The sync script adds keys but does not delete them, so both removed keys are still sitting in the local `.env` files, where they do nothing (`extra="ignore"`). PR 6.6's `report_dead_env_keys.py --apply` removes them.
+- **`.env_example` updated:** yes (hub, context-exec, cortex-exec).
+- **Local `.env` synced with `python scripts/sync_local_env_from_example.py`:** run. Parity check: PASS (94 services). The sync script adds keys but does not delete them, so all three removed keys are still sitting in the local `.env` files, where they do nothing (`extra="ignore"`). PR 6.6's `report_dead_env_keys.py --apply` removes them.
 - **Skipped keys requiring operator action:** none.
 
 ## Tests run
@@ -101,6 +110,11 @@ services/orion-context-exec/tests (full)                no new failures vs main 
                                                          missing smolagents etc. locally)
 python scripts/check_env_template_parity.py             PASS
 python scripts/check_bus_reply_channels.py              16 prefixes resolved, 0 uncovered
+python scripts/check_definition_drift.py --gate         PASS (lock regenerated after merging
+                                                         origin/main: orion-cortex-exec joins the
+                                                         pool-state request/reply catalog entries)
+After review fixes: orion/{gpu_pool,situational,harness}/tests 810 passed; gateway 306 passed;
+cortex-exec situation + admission_cue 55 passed; Hub route client 23 passed
 ```
 
 New tests, one per reader, each including the pool-unreachable case:
@@ -141,7 +155,29 @@ $ docker logs --since 2h orion-llm-gateway 2>&1 | grep 'GET /routes' | <group by
 
 ## Review findings fixed
 
-(filled in after the code-review subagent; see below)
+The code-review subagent found no blockers. It ran main's old `build_routes_compat` and the new `build_route_view` on 3,000 random pool states and the no-state case, and the output differed only by the new `role` key. It also searched `.py`, `.js`, `.sh`, compose and Makefiles and found no `/routes` reader left.
+
+- **Finding:** `CORTEX_EXEC_LLM_GATEWAY_URL` became dead config. Its only reader was the situational `llm_gateway_client` URL. Its comments still said "probes GET /routes".
+  - **Fix:** removed it from cortex-exec `settings.py`, `.env_example`, `docker-compose.yml`, README and the test fixtures, and rewrote the comments. Ran the env sync.
+  - **Evidence:** env parity PASS. `rg CORTEX_EXEC_LLM_GATEWAY_URL` finds nothing.
+- **Finding:** when the pool can't be reached, the Hub's lend toggle showed "closed". The unknown catalog has `gate_open: null`, and `=== true` read that as false, which is a guess.
+  - **Fix:** `chatBurstGateFromCatalog` only acts on a real boolean. On `null` the toggle keeps its last known state.
+  - **Evidence:** a node check (true -> open, false -> closed, null -> unchanged) and `test_lend_toggle_ignores_an_unknown_gate_instead_of_rendering_closed`. `node --check app.js` passes.
+- **Finding:** the parity test compared the new generator with itself.
+  - **Fix:** froze a golden fixture of main's (a005658db) `build_routes_compat` output over 8 states: all up with gpu0 lent and not lent, a spill of agent to agent-gpu2 and metacog to fast, chat only with and without the lend, chat down while lent, no roles, and no state. `test_view_matches_the_old_gateway_generator_output` asserts the new view matches it, ignoring `role`.
+  - **Evidence:** 8 cases pass. A mutation (chat-burst `operator_closed` changed to `down`) fails 4 of them.
+- **Finding:** the Hub's `default_route` always fell back to "quick" while looking as if the gateway had reported it.
+  - **Fix:** it is now an explicit `HUB_DEFAULT_ROUTE = "quick"`, documented as the Hub's own constant.
+  - **Evidence:** `test_default_route_is_the_hubs_own_constant_matching_the_composer` also checks it matches app.js's `HUB_COMPUTE_DEFAULT`.
+- **Finding:** the context-exec behavior change was not stated in the report.
+  - **Fix:** it is now stated under "Behavior changed" below.
+- **Nits fixed:**
+  - The stale "/admission + /routes" runtime-activity comments in Hub `.env_example` and `settings.py`.
+  - The leftover `HUB_LLM_GATEWAY_URL` in `test_turn_orchestrator_ws_frames.py`.
+- **Nits not fixed (noted):**
+  - The situational pool read identifies itself as `orion-situational`, not the host service's name. It is trace metadata only.
+  - `test_no_pool_state_falls_back_to_the_env_ceiling` only checks that the guard did not fire. It does not check the ceiling value it fell back to.
+  - On the gateway-only path, an `unknown` entry still names its first role's `served_by`/`upstream`. That is inherited behavior, and it goes away with 6.5.
 
 ## Restart required
 
@@ -187,6 +223,6 @@ User-Agent tells readers apart even though every athena-host caller shares one s
 
 ## PR link
 
-(see PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2444
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -401,7 +401,6 @@ If `self_state` is absent, stale, or fails to parse, metacog-lane scoring falls 
 | `ORION_SITUATION_RUNTIME_ROUTE` | `chat` | Which `orion-llm-gateway` route's model to report. |
 | `ORION_SITUATION_RUNTIME_TTL_SECONDS` | `120` | This service's own cache, on top of the gateway's own 15s route-health cache. |
 | `ORION_SITUATION_RUNTIME_PROBE_TIMEOUT_SEC` | `2.0` | Bound on the GPU pool state RPC; a slow/dead pool degrades the prompt line, never blocks the turn. |
-| `CORTEX_EXEC_LLM_GATEWAY_URL` | `http://llm-gateway:8210` | Base URL for the probe. `llm-gateway` is the real Docker Compose service key (`scripts/check_service_hostname_refs.py` gates against hardcoding a `services/<dirname>`-shaped hostname like `orion-llm-gateway` instead -- that directory-name pattern has caused a real silent-crash incident before, see that script's docstring); matches `CONTEXT_EXEC_LLM_GATEWAY_URL`/`HUB_LLM_GATEWAY_URL`'s existing convention. |
 
 **Tests:** `tests/test_situation_provider.py` (mocks `urlopen`; covers live-model-reported, gateway-unreachable degrade, route-missing-from-response degrade, disabled-by-default, and TTL caching).
 

@@ -123,7 +123,7 @@ class Settings(BaseSettings):
 
     # --- Runtime activity (header marquee + "what's running" modal) ---
     # Folds facts Hub already sees (curiosity durable-run transitions, harness
-    # turn handoffs + steps) with the LLM gateway's /admission + /routes into
+    # turn handoffs + steps) with the GPU pool's live state feed into
     # one snapshot served at /api/runtime-activity (+ SSE at .../stream).
     # See orion/hub/runtime_activity.py. Disabled = no gateway polling, no
     # startup backfill, routes answer 503; the in-process folds still run

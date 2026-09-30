@@ -5,6 +5,8 @@ config riding along (``include_config=True``) -- so these tests feed it exactly 
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -62,12 +64,22 @@ def test_view_from_state_uses_the_config_the_pool_sent():
     assert routes["chat-burst"]["status"] == "operator_closed" and routes["chat-burst"]["gate_open"] is False
 
 
-def test_view_matches_the_gateway_compat_generator_it_replaces():
-    """Same inputs, same per-route answers as the gateway's GET /routes (which now calls this)."""
-    state = _state([_role("chat"), _role("agent"), _role("agent-gpu2", "unloaded"), _role("fast")], gpu0_lent=True)
-    from_state = build_route_view(state)
-    with_local_cfg = build_route_view({k: v for k, v in state.items() if k != "config"}, CFG)
-    assert from_state == with_local_cfg
+_GOLDEN = json.loads((Path(__file__).parent / "fixtures_routes_compat_golden.json").read_text())
+
+
+@pytest.mark.parametrize("case", sorted(_GOLDEN))
+def test_view_matches_the_old_gateway_generator_output(case):
+    """Frozen output of the pre-6.3 gateway ``build_routes_compat`` (origin/main a005658db, run on
+    these states with the repo's config/gpu_pool.yaml). The moved generator must reproduce it route
+    for route; the only addition is ``role``. A reader's state carries the pool's config, so the
+    view is built from that; the no-state case is the gateway path (its own config)."""
+    golden = _GOLDEN[case]
+    if golden["state"] is None:
+        view = build_route_view(None, CFG)
+    else:
+        view = build_route_view({**golden["state"], "config": _config_payload()})
+    got = [{k: v for k, v in entry.items() if k != "role"} for entry in view["routes"]]
+    assert got == golden["routes"]
 
 
 def test_down_route_carries_no_model_ctx_or_vision():

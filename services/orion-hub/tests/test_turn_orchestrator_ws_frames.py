@@ -336,7 +336,6 @@ async def test_turn_orchestrator_threads_situation_prompt_fragment_into_harness_
         ORION_SITUATION_TIMEZONE="America/Denver",
         ORION_PRESENCE_DEFAULT_REQUESTOR="Juniper",
         ORION_PRESENCE_PERSIST_ALLOWED=False,
-        HUB_LLM_GATEWAY_URL="http://127.0.0.1:8210",
     )
     with patches[0], patches[1], patches[2], patch.object(
         turn_orchestrator_mod, "build_situation_for_ctx", build_situation_mock
@@ -395,7 +394,6 @@ async def test_turn_orchestrator_emits_situation_cockpit_hop() -> None:
         ORION_SITUATION_TIMEZONE="America/Denver",
         ORION_PRESENCE_DEFAULT_REQUESTOR="Juniper",
         ORION_PRESENCE_PERSIST_ALLOWED=False,
-        HUB_LLM_GATEWAY_URL="http://127.0.0.1:8210",
         orion_situation_perception_enabled=False,
     )
     with patches[0], patches[1], patches[2], patch.object(

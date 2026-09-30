@@ -78,6 +78,8 @@ class OrionDaySourceStatusV1(_Model):
     status: Literal["ok", "empty", "error"]
     count: int = Field(default=0, ge=0)
     error: str | None = None
+    # The read hit its row limit: more rows existed than were gathered.
+    truncated: bool = False
 
 
 class CuriosityRunItemV1(_Model):

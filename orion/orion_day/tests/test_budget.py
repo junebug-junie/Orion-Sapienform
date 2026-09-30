@@ -78,7 +78,15 @@ def test_every_rendered_reference_resolves_to_material():
     assert view.included_refs == extract_refs(view.digest_md)
     assert set(view.included_refs) <= material_refs(material)
     assert "curiosity:ab61e4ccd47b" in view.included_refs
-    assert "dream_hypothesis:dh-1a69e4d982ac" in view.included_refs
+    assert "dream_offered:1" in view.included_refs
+
+
+def test_hypothesis_ids_never_reach_the_model():
+    material = _material()
+    view = build_llm_view(material)
+    assert material.dream_hypotheses and "dh-1a69e4d982ac" not in view.digest_md
+    assert "dream_hypothesis:" not in view.digest_md
+    assert fx.DREAM_HYPOTHESES[0]["claim"] in view.digest_md  # the claim itself is shown
 
 
 def test_body_headings_are_demoted_below_item_headings():

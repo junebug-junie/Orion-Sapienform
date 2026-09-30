@@ -13,13 +13,14 @@ INSERT INTO orion_day_letter (
     material, sources, journal_entry_id, created_at, carry_forward_expires_at
 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (letter_date) DO NOTHING
-RETURNING run_id
+RETURNING run_id, note_md, created_at
 """
-SELECT_RUN_ID_SQL = "SELECT run_id FROM orion_day_letter WHERE letter_date = %s"
+SELECT_STORED_SQL = "SELECT run_id, note_md, created_at FROM orion_day_letter WHERE letter_date = %s"
 
 
-async def persist_letter(pool: Any, row: dict[str, Any]) -> str:
-    """Insert the day's letter unless one exists. Returns the stored row's run_id."""
+async def persist_letter(pool: Any, row: dict[str, Any]) -> dict[str, Any]:
+    """Insert the day's letter unless one exists. Returns the STORED row's
+    ``{"run_id", "note_md", "created_at"}`` -- this run's, or the earlier run's that won."""
     from psycopg.types.json import Jsonb
 
     params = (
@@ -30,8 +31,8 @@ async def persist_letter(pool: Any, row: dict[str, Any]) -> str:
     async with pool.connection() as conn:
         inserted = await (await conn.execute(INSERT_LETTER_SQL, params)).fetchone()
         if inserted is not None:
-            return str(inserted["run_id"])
-        existing = await (await conn.execute(SELECT_RUN_ID_SQL, (row["letter_date"],))).fetchone()
+            return dict(inserted)
+        existing = await (await conn.execute(SELECT_STORED_SQL, (row["letter_date"],))).fetchone()
     if existing is None:
         raise RuntimeError("orion_day_letter insert conflicted but no row is readable")
-    return str(existing["run_id"])
+    return dict(existing)

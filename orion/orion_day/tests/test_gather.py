@@ -81,17 +81,29 @@ def test_compactors_are_fetched_by_their_stable_ids_and_refs():
     conn = fx.FakeConn(github={**fx.CHAT_COMPACTOR, "entry_id": "gh1", "source_ref": "github_compactor_pass:x"})
     material = _gather(conn)
     lookups = [args for sql, args in conn.calls if sql == gather.JOURNAL_BY_ID_OR_REF_SQL]
+    day_end = orion_day_window(fx.LETTER_DATE).window_end
     assert lookups[0] == (
         stable_chat_compactor_journal_entry_id(workflow_id="chat_history_compactor_pass",
                                                compactor_index="chat_compactor:day:2026-09-29"),
         "chat_history_compactor_pass:chat_compactor:day:2026-09-29",
+        day_end,
     )
     assert lookups[1] == (
         stable_github_compactor_journal_entry_id(workflow_id="github_compactor_pass", calendar_date="2026-09-29",
                                                  repo="junebug-junie/Orion-Sapienform"),
         "github_compactor_pass:2026-09-29:junebug-junie/Orion-Sapienform",
+        day_end,
     )
     assert material.github_compactor.entry_id == "gh1"
+
+
+def test_a_compactor_row_written_during_the_day_is_not_the_day_digest():
+    # GitHub rolling mode labels a run with its own date: a digest made DURING the day shares the
+    # day digest's stable id but covers the previous 24 h.
+    during = {**fx.CHAT_COMPACTOR, "entry_id": "gh-rolling", "created_at": fx.T0}
+    material = _gather(fx.FakeConn(github=during))
+    assert material.github_compactor is None
+    assert "created_at >= $3" in gather.JOURNAL_BY_ID_OR_REF_SQL
 
 
 def test_stable_compactor_ids_match_live_rows():
@@ -112,7 +124,8 @@ def _selected_columns(sql: str) -> set[str]:
     return {c.strip().split(".")[-1].split(" ")[0] for c in select.replace("SELECT", "").split(",")}
 
 
-@pytest.mark.parametrize("sql", [introspect_sql.HYPOTHESIS_WINDOW_SQL, introspect_sql.HYPOTHESIS_RECENT_SQL])
+@pytest.mark.parametrize("sql", [introspect_sql.HYPOTHESIS_WINDOW_SQL, introspect_sql.HYPOTHESIS_RECENT_SQL,
+                                 gather.DREAM_HYPOTHESES_SEEN_SQL])
 def test_hypothesis_sql_only_reads_offered_rows_and_never_the_arm(sql):
     assert "h.offered_at IS NOT NULL" in sql
     columns = _selected_columns(sql)
@@ -123,10 +136,16 @@ def test_hypothesis_sql_only_reads_offered_rows_and_never_the_arm(sql):
 
 def test_no_gather_statement_touches_the_blind_columns():
     statements = [v for k, v in vars(gather).items() if k.endswith("_SQL")]
-    statements += [introspect_sql.NARRATIVE_WINDOW_SQL, introspect_sql.HYPOTHESIS_WINDOW_SQL]
+    statements += [introspect_sql.NARRATIVE_WINDOW_SQL, introspect_sql.HYPOTHESIS_WINDOW_SQL,
+                   introspect_sql.HYPOTHESIS_RECENT_SQL, introspect_sql.NARRATIVE_RECENT_SQL]
     for sql in statements:
         for forbidden in ("arm", "ref_a", "ref_b", "cycle_json"):
             assert not re.search(rf"\b{forbidden}\b", sql), (forbidden, sql[:80])
+
+
+def test_letter_shows_only_hypotheses_whose_offering_run_completed():
+    sql = gather.DREAM_HYPOTHESES_SEEN_SQL
+    assert "h.offered_run_id" in sql and "s.status = 'completed'" in sql
 
 
 def test_hypothesis_model_rejects_an_arm_field():

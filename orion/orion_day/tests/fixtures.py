@@ -101,7 +101,7 @@ VISUAL_REVERIES = [
      "path": "/mnt/storage-lukewarm/orion/reverie-visual/a550.png",
      "description": "A glowing light bulb with a blue and yellow light trail.", "theme_key": "light"},
 ]
-CHAT_COMPACTOR = {"entry_id": "d5f4c123", "created_at": _t(8), "title": "Reading Queue Timeout",
+CHAT_COMPACTOR = {"entry_id": "d5f4c123", "created_at": datetime(2026, 9, 30, 12, 1, tzinfo=timezone.utc), "title": "Reading Queue Timeout",
                   "body": "Juniper and I talked about the reading queue timeout.",
                   "source_ref": "chat_history_compactor_pass:chat_compactor:day:2026-09-29"}
 WORLD_PULSE = {"run_id": "1765808d", "date": "2026-09-29", "title": "Daily World Pulse",
@@ -131,7 +131,7 @@ class FakeConn:
             wp_introspect._WINDOW_SQL: ("readings", READING_ROWS),
             gather.JOURNALS_BY_PREFIX_SQL: ("reading_journals", READING_JOURNALS),
             introspect_sql.NARRATIVE_WINDOW_SQL: ("dream_narratives", DREAM_NARRATIVES),
-            introspect_sql.HYPOTHESIS_WINDOW_SQL: ("dream_hypotheses", DREAM_HYPOTHESES),
+            gather.DREAM_HYPOTHESES_SEEN_SQL: ("dream_hypotheses", DREAM_HYPOTHESES),
             gather.REVERIE_THOUGHTS_SQL: ("reverie_thoughts", REVERIE_THOUGHTS),
             gather.REVERIE_CHAINS_SQL: ("reverie_chains", REVERIE_CHAINS),
             gather.VISUAL_REVERIES_SQL: ("visual_reveries", VISUAL_REVERIES),
@@ -153,8 +153,8 @@ class FakeConn:
                 raise RuntimeError("world pulse down")
             return FakeRecord(WORLD_PULSE)
         if sql == gather.JOURNAL_BY_ID_OR_REF_SQL:
-            ref = args[1]
-            if ref.startswith("chat_history_compactor_pass:"):
-                return FakeRecord(self.chat) if self.chat else None
-            return FakeRecord(self.github) if self.github else None
+            ref, written_after = args[1], args[2]
+            row = self.chat if ref.startswith("chat_history_compactor_pass:") else self.github
+            # The SQL's own `created_at >= $3` guard, applied to the canned row.
+            return FakeRecord(row) if row and row["created_at"] >= written_after else None
         raise AssertionError(f"unexpected fetchrow: {sql[:60]}")

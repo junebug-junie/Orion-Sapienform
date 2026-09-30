@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from test_admission_runtime_postgres import DSN, Runner, runtime, with_database
+from test_admission_runtime_postgres import DSN, InProcessPool, runtime, with_database
 from test_orion_day_graph import CARRY, NOTE, make_brief
 from orion.orion_day.brief import build_orion_day_request
 from orion.schemas.orion_day import (
@@ -109,11 +109,63 @@ def test_letter_run_holds_the_agent_card_for_both_calls_and_persists_once():
         done = next(e for e in await store.history(again.run_id) if e["event"] == "run.completed")
         assert done["detail"]["persist_outcome"] == "already_written"
         assert done["detail"]["existing_run_id"] == req.run_id
-        assert len(rt.runner.journals) == 1
+        # It republishes the day's entry from the stored row: identical to the first, so a first run
+        # whose journal never landed is healed and a healthy one is untouched.
+        first, second = rt.runner.journals
+        assert second.model_dump() == first.model_dump()
         async with pool.connection() as conn:
             count = await (await conn.execute("SELECT count(*) AS n FROM orion_day_letter")).fetchone()
         assert count["n"] == 1
         await rt.close()
+    asyncio.run(with_database(scenario))
+
+
+class Crash(BaseException):
+    """A process death mid-node: escapes every except Exception, leaves the checkpoint behind."""
+
+
+def test_restart_mid_carry_forward_resumes_under_the_same_hold_without_rewriting_the_note():
+    """AdmissionRuntime._recover with WORK_NODES[orion_day.letter]: a driver dies inside
+    write_carry_forward while holding the hold; the next driver fences it, waits for the same
+    hold, and replays ONLY the carry-forward."""
+    async def scenario(pool, saver, store):
+        await migrate(pool)
+        gpu = await InProcessPool().boot()
+        rt = runtime(pool, saver, store, gpu=gpu)
+        attach_letter_io(rt, gpu)
+        real = rt.runner._call_verb_text
+
+        async def dies_in_carry_forward(verb, *args, **kwargs):
+            if verb == ORION_DAY_CARRY_FORWARD_VERB:
+                raise Crash()
+            return await real(verb, *args, **kwargs)
+
+        rt.runner._call_verb_text = dies_in_carry_forward
+        req = request_for(1)
+        rt._current = req.run_id
+        await rt.submit(req)
+        with pytest.raises(Crash):
+            await rt._drive(await store.get_run(req.run_id))
+        snap = await rt._graph_for("orion_day.letter").aget_state(rt.config(req.run_id))
+        assert snap.next == ("write_carry_forward",) and snap.values["lease"]
+        [hold] = gpu.leases(holder=f"durable-runs:{req.run_id}")
+        assert hold["status"] == "granted"
+
+        # The next process: a fresh runtime on the same database and pool.
+        rt2 = runtime(pool, saver, store, gpu=gpu)
+        attach_letter_io(rt2, gpu)
+        rt2._current = req.run_id
+        await rt2._drive(await store.get_run(req.run_id))
+        assert (await store.get_run(req.run_id))["terminal"] == "completed"
+        assert [c[0] for c in rt2.runner.verb_calls] == [ORION_DAY_CARRY_FORWARD_VERB]  # no second note
+        final = await rt2._graph_for("orion_day.letter").aget_state(rt2.config(req.run_id))
+        assert final.values["llm_attempts"]["write_note"] == 1
+        assert final.values["turn_fence"] == 1  # the dead driver's attempt was fenced
+        async with pool.connection() as conn:
+            row = await (await conn.execute("SELECT note_md FROM orion_day_letter")).fetchone()
+        assert row["note_md"] == NOTE.strip()
+        await rt.close()
+        await rt2.close()
     asyncio.run(with_database(scenario))
 
 

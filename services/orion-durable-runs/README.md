@@ -150,20 +150,33 @@ Graph (`app/orion_day_graph.py`):
   `orion_day_note_v1` (long first-person note, plain markdown; its prompt has no
   future-curiosity instruction) and `orion_day_carry_forward_v1` (threads for future curiosity,
   given the digest and the finished note). Each text is checkpointed; a restart never
-  regenerates one. A lost/recalled hold replays the node (not an attempt); a transport error or
-  an empty/short completion is one attempt (`DURABLE_RUNS_RETRY_MAX_ATTEMPTS`).
+  regenerates one. A lost/recalled hold replays the node (not an attempt). A transport error,
+  or a completion `runner.strict_final_text` refuses (empty final text -- never the reasoning
+  fields --, error text framed as prose, `finish_reason=length`) or below the node's floor (note
+  < 400 chars; carry-forward with no list item) is one attempt
+  (`DURABLE_RUNS_RETRY_MAX_ATTEMPTS`), and the next one waits out a backoff in `retry_wait`.
+- The hold asks for `requirements.minimum_context_tokens` = digest + note + carry-forward, so a
+  heavy day is never placed on the 65,536-token chat card (live `/props` 2026-09-30) when the
+  pool spills agent work there.
 - The hold is released as soon as the carry-forward text is checkpointed.
 - `persist` (no GPU): `INSERT INTO orion_day_letter ... ON CONFLICT (letter_date) DO NOTHING`
   (`app/orion_day_store.py`, migration `services/orion-sql-db/manual_migration_orion_day_letter_v1.sql`),
-  then -- only if the row is this run's -- publishes the NOTE as `journal.entry.write`
-  (id `uuid5(letter_date)`, `trigger_kind=orion_day_letter`, journal email disabled: Hub
-  sends the styled email). DB/bus trouble backs off through `retry_wait`.
+  then publishes the STORED row's NOTE as `journal.entry.write` (id `uuid5(letter_date)`, the
+  row's `created_at`, the writing run as correlation id, `trigger_kind=orion_day_letter`,
+  journal email disabled: Hub sends the styled email) -- identical from every run, so a later
+  run heals a journal the first never got out. An insert failure backs off and eventually fails
+  the run; once the row exists the journal never fails it (own retry budget, then
+  `journal_published=false`).
 - The checkpoint keeps only a slim brief; the full brief (material + digest, ~1 MB on a heavy
   day) is read from `durable_admission_runs.request`, so the resume sweep's checkpoint scan
   does not load it once per checkpoint.
 - Finish detail: `line=orion_day`, `letter_date`, `persisted`, `persist_outcome`
-  (`written` / `already_written`), `existing_run_id`, `journal_entry_id`, text lengths,
-  `llm_attempts`. The status API adds an `orion_day` block.
+  (`written` / `already_written` -- key on this, not on `completed`), `existing_run_id`,
+  `journal_entry_id`, `journal_published`, text lengths, `carry_forward_refs`, `llm_attempts`.
+  The status API adds an `orion_day` block.
+- A timed-out verb call is not cancelled at cortex (no harness turn to cancel): the RPC gives up
+  30 s before the node's budget and the hold is released, but the model may finish that
+  generation on the card. It is the same exposure `self_study.reflect` has.
 
 `DurableRunner` can drive more than one compiled graph, keyed by
 `DurableRunRequestV1.workflow`. Today only `"curiosity.investigate"` is registered --
@@ -356,9 +369,9 @@ set both that admission flag and `HUB_CURIOSITY_KICKOFF_VIA_CORTEX=false`.
 
 `orion_day.letter` (additive `DurableWorkflowV1` value and journal `trigger_kind`/`source_kind`):
 apply `manual_migration_orion_day_letter_v1.sql`, then deploy orion-sql-writer and
-orion-actions (they parse `DurableRunStateV1` / `JournalEntryWriteV1`), this service,
-orion-cortex-orch + orion-cortex-exec (the two verbs and their budgets), and only then the Hub
-build that submits the workflow.
+orion-actions (they parse `DurableRunStateV1` / `JournalEntryWriteV1`), orion-cortex-orch +
+orion-cortex-exec (the two verbs and their budgets), this service, and only then the Hub build
+that submits the workflow.
 
 ## Checks
 

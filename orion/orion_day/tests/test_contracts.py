@@ -79,6 +79,18 @@ def test_request_is_admitted_on_the_agent_lane_in_background():
     assert again.brief.llm_view.digest_md == request.brief.llm_view.digest_md
 
 
+def test_request_asks_for_enough_context_for_digest_note_and_carry_forward():
+    from orion.orion_day.brief import minimum_context_tokens
+
+    brief = _brief()
+    request = build_orion_day_request(brief)
+    need = request.admission.requirements["minimum_context_tokens"]
+    assert need == minimum_context_tokens(brief) == brief.llm_view.approx_tokens + 1500 + 12000 + 4000
+    # A heavy day (the live 2026-09-29 digest: ~70k estimated tokens) cannot go to the 65,536-token chat card.
+    heavy = brief.model_copy(update={"llm_view": brief.llm_view.model_copy(update={"approx_tokens": 69938})})
+    assert minimum_context_tokens(heavy) > 65536
+
+
 def test_request_requires_admission_and_a_matching_brief():
     brief = _brief()
     with pytest.raises(ValidationError, match="require durable resource admission"):

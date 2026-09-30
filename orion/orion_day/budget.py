@@ -54,7 +54,7 @@ REVERIE_PER_CHAIN = 1
 REVERIE_FRAME_CHARS = 400
 MIN_CLIP_CHARS = 400
 
-_REF_RE = re.compile(r"\[((?:curiosity|curiosity_failed|self_sense|reading|reading_journal|dream|dream_hypothesis|"
+_REF_RE = re.compile(r"\[((?:curiosity|curiosity_failed|self_sense|reading|reading_journal|dream|dream_offered|"
                      r"chat_compactor|github_compactor|world_pulse_digest|visual_reverie|reverie|reverie_theme)"
                      r":[^\]\s]+)\]")
 
@@ -145,8 +145,11 @@ def _full_text_blocks(material: OrionDayMaterialV1) -> list[tuple[str, list]]:
 
     dreams = [[f"### [dream:{d.id}] {d.tldr or 'Dream'}", *([_Body(d.narrative)] if d.narrative else [])]
               for d in material.dream_narratives]
-    dreams += [[f"### [dream_hypothesis:{h.hypothesis_id}] {h.claim}", *([_Body(h.why)] if h.why else [])]
-               for h in material.dream_hypotheses]
+    # No hypothesis id in the model's view: `dream_hypothesis:<id>` is the dream scorecard's
+    # formed_from join key (orion/dream/hypotheses.py), and a prior formed from the letter must
+    # never be credited to the blind offer. The material (email) keeps the ids.
+    dreams += [[f"### [dream_offered:{i}] {h.claim}", *([_Body(h.why)] if h.why else [])]
+               for i, h in enumerate(material.dream_hypotheses, start=1)]
     if dreams:
         sections.append((f"## Dreams ({len(material.dream_narratives)} narratives, "
                          f"{len(material.dream_hypotheses)} hypotheses offered to me)", dreams))
@@ -324,7 +327,7 @@ def material_refs(material: OrionDayMaterialV1) -> set[str]:
     refs |= {f"reading:{r.seed_id}" for r in material.readings}
     refs |= {f"reading_journal:{j.entry_id}" for j in material.reading_journals}
     refs |= {f"dream:{d.id}" for d in material.dream_narratives}
-    refs |= {f"dream_hypothesis:{h.hypothesis_id}" for h in material.dream_hypotheses}
+    refs |= {f"dream_offered:{i}" for i in range(1, len(material.dream_hypotheses) + 1)}
     if material.chat_compactor is not None:
         refs.add(f"chat_compactor:{material.chat_compactor.entry_id}")
     if material.github_compactor is not None:

@@ -11,9 +11,10 @@ Checks, each PASS/FAIL:
                    answers, readings, reading journals, dreams, compactors) is referenced.
 3. full_text    -- unless the view reports clipping, each full-text body appears verbatim.
 4. condensation -- reveries are condensed (shown <= total, hollow never shown, one per chain).
-5. budget       -- approx_tokens <= budget_tokens; the note prompt fits the agent lane's 131k
+5. blind        -- no dream-hypothesis id (the scorecard's formed_from join key) in the view.
+6. budget       -- approx_tokens <= budget_tokens; the note prompt fits the agent lane's 131k
                    context with the note's completion budget on top.
-6. determinism  -- two builds of the same material are byte-identical.
+7. determinism  -- two builds of the same material are byte-identical.
 
 Usage:
     python orion/orion_day/evals/run_orion_day_eval.py                 # fixture day
@@ -56,7 +57,7 @@ def required_refs(m: OrionDayMaterialV1) -> set[str]:
     refs |= {f"reading:{r.seed_id}" for r in m.readings}
     refs |= {f"reading_journal:{j.entry_id}" for j in m.reading_journals}
     refs |= {f"dream:{d.id}" for d in m.dream_narratives}
-    refs |= {f"dream_hypothesis:{h.hypothesis_id}" for h in m.dream_hypotheses}
+    refs |= {f"dream_offered:{i}" for i in range(1, len(m.dream_hypotheses) + 1)}
     if m.chat_compactor:
         refs.add(f"chat_compactor:{m.chat_compactor.entry_id}")
     if m.github_compactor:
@@ -87,6 +88,10 @@ def evaluate(material: OrionDayMaterialV1) -> list[tuple[str, bool, str]]:
     missing = sorted(required_refs(material) - set(refs))
     results.append(("grounding", not unresolved and not missing,
                     f"refs={len(refs)} unresolved={unresolved[:5]} missing={missing[:5]}"))
+
+    leaked_ids = [h.hypothesis_id for h in material.dream_hypotheses if h.hypothesis_id in view.digest_md]
+    ok = not leaked_ids and "dream_hypothesis:" not in view.digest_md
+    results.append(("blind", ok, f"hypotheses={len(material.dream_hypotheses)} ids_in_view={leaked_ids[:3]}"))
 
     if view.condensed.full_text_clip_chars is None:
         # Bodies appear verbatim apart from the documented heading demotion (their own markdown

@@ -26,6 +26,23 @@ from orion.schemas.orion_day import (
 from orion.schemas.resource_admission import ResourceRequirementV1
 
 
+# Completion budgets the hold must leave room for (cortex-exec LLM_ORION_DAY_NOTE_MAX_TOKENS /
+# LLM_ORION_DAY_CARRY_FORWARD_MAX_TOKENS defaults): the carry-forward prompt is the digest PLUS
+# the note, so one hold must fit digest + note + carry-forward.
+NOTE_COMPLETION_TOKENS = 12_000
+CARRY_FORWARD_COMPLETION_TOKENS = 4_000
+PROMPT_FRAME_TOKENS = 1_500
+
+
+def minimum_context_tokens(brief: OrionDayRunBriefV1) -> int:
+    """The context a card needs for this run's two calls. Sent as the admission's
+    ``requirements.minimum_context_tokens`` (the pool only grants a card whose live
+    ctx_per_slot covers it): a heavy day must not be placed on the 65,536-token chat card
+    (live /props 2026-09-30) when the pool spills agent work there; a light day still may."""
+    return (brief.llm_view.approx_tokens + PROMPT_FRAME_TOKENS
+            + NOTE_COMPLETION_TOKENS + CARRY_FORWARD_COMPLETION_TOKENS)
+
+
 class OrionDayEmptyError(RuntimeError):
     """The day holds nothing to write about. No letter is better than an empty-shell one."""
 
@@ -93,6 +110,7 @@ def build_orion_day_request(
             resource=f"llm.route.{ORION_DAY_LLM_ROUTE}",
             preferred_lane=ORION_DAY_LLM_ROUTE,
             priority="background",
+            requirements={"minimum_context_tokens": minimum_context_tokens(brief)},
             deadline_at=deadline_at or default_deadline(brief.letter_date, tz_name=brief.timezone),
         ),
     )

@@ -148,6 +148,50 @@ class WorkflowSpec:
     failed_turn_correlation_id: Callable[[dict[str, Any]], str | None] | None = None
 
 
+
+def _finish_reasons(payload: dict[str, Any]) -> list[str]:
+    """Every provider finish_reason reported in a cortex result's step blocks."""
+    out: list[str] = []
+    for step in list(payload.get("steps") or payload.get("step_results") or []):
+        if not isinstance(step, dict):
+            continue
+        for container_key in ("result", "detail"):
+            container = step.get(container_key)
+            if not isinstance(container, dict):
+                continue
+            for block in container.values():
+                if not isinstance(block, dict):
+                    continue
+                if isinstance(block.get("finish_reason"), str):
+                    out.append(block["finish_reason"])
+                raw = block.get("raw") if isinstance(block.get("raw"), dict) else {}
+                for choice in raw.get("choices") or []:
+                    if isinstance(choice, dict) and isinstance(choice.get("finish_reason"), str):
+                        out.append(choice["finish_reason"])
+    return out
+
+
+def strict_final_text(payload: dict[str, Any], verb: str) -> str:
+    """The model's final answer and nothing else, for a freeform (non-JSON) verb.
+
+    Deliberately NOT ``extract_cortex_payload_text``: when ``final_text`` is empty that falls back
+    to step candidates including ``reasoning_content`` / think blocks, so a reasoning model that
+    spent its whole budget thinking (the self_study.reflect incident) would hand back its
+    reasoning as the answer -- a JSON verb's parser rejects that, a freeform one would store it.
+    Raises (an attempt, never a success) on: empty final text, error text framed as prose
+    (``looks_like_error_text``), and a completion cut off at max_tokens (finish_reason=length)."""
+    from orion.cognition.cortex_payload_extract import looks_like_error_text
+
+    text = str(payload.get("final_text") or "").strip()
+    if not text:
+        raise RuntimeError(f"verb_empty_final_text:{verb}")
+    if looks_like_error_text(text):
+        raise RuntimeError(f"verb_error_text:{verb}:{text[:120]}")
+    diagnostics = (payload.get("metadata") or {}).get("runtime_response_diagnostics") or {}
+    if "length" in _finish_reasons(payload) or diagnostics.get("truncation_detected") is True:
+        raise RuntimeError(f"verb_truncated_at_max_tokens:{verb}")
+    return text
+
 class DurableRunner:
     _corr_for_admission = staticmethod(_corr_uuid)
     def __init__(self, settings: Settings, *, bus: OrionBusAsync | None, checkpointer: Any) -> None:
@@ -554,16 +598,15 @@ class DurableRunner:
         timeout_sec: float,
         user_text: str,
     ) -> str:
-        """One cortex verb call returning the raw completion text (no JSON parsing), over
+        """One cortex verb call returning the model's final answer text (no JSON parsing), over
         ``_cortex_orch_rpc`` (shared with compactor.digest).
 
         Same request shape as ``_call_reflect_llm`` (``policy_dispatch_only``; the verb's prompt
         reads ``context.metadata``), but it RAISES on every failure -- RPC error/timeout,
-        undecodable reply, non-ok result, empty text -- so an admitted graph node counts it as
-        an attempt instead of finishing on nothing. ``gpu_lease`` attaches the call to the run's
-        pool hold (``options.gpu_lease``); ``llm_route`` stays the brief's route."""
-        from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
-
+        undecodable reply, non-ok result, and anything ``strict_final_text`` refuses -- so an
+        admitted graph node counts it as an attempt instead of finishing on it. ``gpu_lease``
+        attaches the call to the run's pool hold (``options.gpu_lease``); ``llm_route`` stays the
+        brief's route."""
         request = CortexClientRequest(
             mode="brain",
             route_intent="none",
@@ -583,9 +626,7 @@ class DurableRunner:
         payload = await self._cortex_orch_rpc(request.model_dump(mode="json"), timeout_sec=timeout_sec, label=verb)
         if not payload.get("ok", False):
             raise RuntimeError(f"verb_not_ok:{verb}:{payload.get('status')}:{str(payload.get('error'))[:200]}")
-        text = extract_cortex_payload_text(payload)
-        if not text or not text.strip():
-            raise RuntimeError(f"verb_empty_text:{verb}")
+        text = strict_final_text(payload, verb)
         logger.info("durable_verb_text_ok verb=%s chars=%d", verb, len(text))
         return text
 

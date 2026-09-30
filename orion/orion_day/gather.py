@@ -34,7 +34,7 @@ from typing import Any, Awaitable, Callable
 from orion.cognition.chat_history_compactor.digest import stable_chat_compactor_journal_entry_id
 from orion.cognition.compactor.index import build_compactor_index
 from orion.cognition.github_compactor.digest import stable_github_compactor_journal_entry_id
-from orion.dream.introspect_sql import HYPOTHESIS_WINDOW_SQL, NARRATIVE_WINDOW_SQL
+from orion.dream.introspect_sql import H_COLS, HYPOTHESIS_BLIND_WHERE, NARRATIVE_WINDOW_SQL
 from orion.orion_day.window import orion_day_window
 from orion.schemas.orion_day import (
     ORION_DAY_TIMEZONE,
@@ -112,13 +112,28 @@ WHERE source_ref LIKE $3 AND created_at >= $1 AND created_at < $2
 ORDER BY created_at, entry_id
 """
 
+# A compactor's DAY digest for day D is written after D ends (06:00 the next morning). The
+# GitHub compactor's rolling mode labels a run with its own date and shares the day mode's
+# stable id, so a rolling run made DURING D would otherwise stand in for D's digest.
 JOURNAL_BY_ID_OR_REF_SQL = """
 SELECT entry_id, created_at, title, body, source_ref
 FROM journal_entries
-WHERE entry_id = $1 OR source_ref = $2
+WHERE (entry_id = $1 OR source_ref = $2) AND created_at >= $3
 ORDER BY (entry_id = $1) DESC, created_at DESC
 LIMIT 1
 """
+
+# Offered hypotheses (the blind rule, orion/dream/introspect_sql.py) AND only those whose offering
+# curiosity run completed: "offered" alone does not mean Orion saw one (a failed run keeps its
+# offer), and the letter must not be the first time Orion sees a hypothesis.
+DREAM_HYPOTHESES_SEEN_SQL = f"""
+SELECT {H_COLS} FROM dream_hypothesis h
+WHERE {HYPOTHESIS_BLIND_WHERE} AND h.offered_at >= $1 AND h.offered_at < $2
+  AND EXISTS (SELECT 1 FROM substrate_durable_run_state s
+              WHERE s.run_id = h.offered_run_id AND s.status = 'completed')
+ORDER BY h.offered_at, h.hypothesis_id
+"""
+READINGS_LIMIT = 2000
 
 REVERIE_THOUGHTS_SQL = """
 SELECT thought_id, created_at, salience, interpretation, expectation, expectation_verdict,
@@ -297,7 +312,7 @@ async def gather_self_sense(conn: Any, start: datetime, end: datetime) -> list[S
 
 
 async def gather_readings(conn: Any, start: datetime, end: datetime) -> list[ReadingItemV1]:
-    items = await reading_items_between(conn, since=start, until=end, text_cap=None)
+    items = await reading_items_between(conn, since=start, until=end, text_cap=None, limit=READINGS_LIMIT)
     return [ReadingItemV1(
         seed_id=i.id, occurred_at=i.occurred_at, title=i.extra.get("title") or None,
         url=i.extra.get("url") or None, why_now=i.extra.get("why_now") or None, learned=i.text,
@@ -321,7 +336,7 @@ async def gather_dream_hypotheses(conn: Any, start: datetime, end: datetime) -> 
     return [DreamHypothesisV1(
         hypothesis_id=str(r["hypothesis_id"]), cycle_id=r["cycle_id"], claim=r["claim"] or "",
         why=r["why"], offered_at=_aware(r["occurred_at"]),
-    ) for r in await conn.fetch(HYPOTHESIS_WINDOW_SQL, start, end)]
+    ) for r in await conn.fetch(DREAM_HYPOTHESES_SEEN_SQL, start, end)]
 
 
 async def gather_reverie_thoughts(conn: Any, start: datetime, end: datetime) -> list[ReverieThoughtV1]:
@@ -348,18 +363,19 @@ async def gather_visual_reveries(conn: Any, start: datetime, end: datetime) -> l
     ) for r in await conn.fetch(VISUAL_REVERIES_SQL, start, end)]
 
 
-async def gather_chat_compactor(conn: Any, letter_date: date) -> JournalTextV1 | None:
+async def gather_chat_compactor(conn: Any, letter_date: date, written_after: datetime) -> JournalTextV1 | None:
     index = build_compactor_index(kind="chat_history_log", mode="day", calendar_date=letter_date.isoformat())
     entry_id = stable_chat_compactor_journal_entry_id(workflow_id=CHAT_COMPACTOR_WORKFLOW_ID, compactor_index=index)
-    row = await conn.fetchrow(JOURNAL_BY_ID_OR_REF_SQL, entry_id, f"{CHAT_COMPACTOR_WORKFLOW_ID}:{index}")
+    row = await conn.fetchrow(JOURNAL_BY_ID_OR_REF_SQL, entry_id, f"{CHAT_COMPACTOR_WORKFLOW_ID}:{index}", written_after)
     return _journal(row) if row is not None else None
 
 
-async def gather_github_compactor(conn: Any, letter_date: date, repo: str) -> JournalTextV1 | None:
+async def gather_github_compactor(conn: Any, letter_date: date, repo: str, written_after: datetime) -> JournalTextV1 | None:
     day = letter_date.isoformat()
     entry_id = stable_github_compactor_journal_entry_id(
         workflow_id=GITHUB_COMPACTOR_WORKFLOW_ID, calendar_date=day, repo=repo)
-    row = await conn.fetchrow(JOURNAL_BY_ID_OR_REF_SQL, entry_id, f"{GITHUB_COMPACTOR_WORKFLOW_ID}:{day}:{repo}")
+    row = await conn.fetchrow(JOURNAL_BY_ID_OR_REF_SQL, entry_id, f"{GITHUB_COMPACTOR_WORKFLOW_ID}:{day}:{repo}",
+                              written_after)
     return _journal(row) if row is not None else None
 
 
@@ -398,6 +414,8 @@ async def gather_orion_day(
     failed = await _read(sources, "curiosity_failed", lambda: gather_curiosity_failed(conn, start, end), [])
     self_sense = await _read(sources, "self_sense", lambda: gather_self_sense(conn, start, end), [])
     readings = await _read(sources, "readings", lambda: gather_readings(conn, start, end), [])
+    if len(readings) >= READINGS_LIMIT:
+        sources["readings"] = sources["readings"].model_copy(update={"truncated": True})
     reading_journals = await _read(
         sources, "reading_journals",
         lambda: gather_journals_by_prefix(conn, start, end, "world_pulse_read_stage2:"), [])
@@ -406,8 +424,8 @@ async def gather_orion_day(
     thoughts = await _read(sources, "reverie_thoughts", lambda: gather_reverie_thoughts(conn, start, end), [])
     chains = await _read(sources, "reverie_chains", lambda: gather_reverie_chains(conn, start, end), [])
     visuals = await _read(sources, "visual_reveries", lambda: gather_visual_reveries(conn, start, end), [])
-    chat = await _read(sources, "chat_compactor", lambda: gather_chat_compactor(conn, letter_date), None)
-    github = await _read(sources, "github_compactor", lambda: gather_github_compactor(conn, letter_date, github_repo), None)
+    chat = await _read(sources, "chat_compactor", lambda: gather_chat_compactor(conn, letter_date, end), None)
+    github = await _read(sources, "github_compactor", lambda: gather_github_compactor(conn, letter_date, github_repo, end), None)
     digest = await _read(sources, "world_pulse_digest", lambda: gather_world_pulse_digest(conn, letter_date), None)
     return OrionDayMaterialV1(
         letter_date=letter_date,

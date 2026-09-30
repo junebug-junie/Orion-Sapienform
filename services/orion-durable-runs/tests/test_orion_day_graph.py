@@ -83,7 +83,7 @@ class World:
             self.persist_fail -= 1
             raise RuntimeError("db down")
         existing = self.rows.setdefault(row["letter_date"], row)
-        return existing["run_id"]
+        return {k: existing[k] for k in ("run_id", "note_md", "created_at")}
 
     async def publish_journal(self, entry):
         if self.journal_fail:
@@ -166,7 +166,7 @@ def test_waits_without_spending_attempts_then_writes_note_carry_forward_and_lett
         assert values["note_md"] == NOTE.strip() and values["carry_forward_md"] == CARRY
         assert [c[0] for c in world.calls] == [ORION_DAY_NOTE_VERB, ORION_DAY_CARRY_FORWARD_VERB]
         for _, _, extra in world.calls:
-            assert extra["route"] == "agent" and extra["timeout"] == 900.0
+            assert extra["route"] == "agent" and extra["timeout"] == 870.0
             assert extra["lease"].lease_id == "hold-od"  # attached to the run's hold
         # Hold handed back as soon as the carry-forward text was checkpointed, before persist.
         assert world.releases[0] == "completed" and world.hold_at_persist is False
@@ -254,12 +254,18 @@ def test_restart_during_persist_is_idempotent():
 def test_a_second_run_for_the_same_day_is_a_no_op():
     async def scenario():
         world, saver = World(), InMemorySaver()
-        world.rows[date(2026, 9, 29)] = {"run_id": "orion-day-2026-09-29-0", "letter_date": date(2026, 9, 29)}
+        first_at = datetime(2026, 9, 30, 13, tzinfo=timezone.utc)
+        world.rows[date(2026, 9, 29)] = {"run_id": "orion-day-2026-09-29-0", "letter_date": date(2026, 9, 29),
+                                         "note_md": "The earlier run's note. " * 30, "created_at": first_at}
         snap = await drive(world.graph(saver), world)
         assert snap.values["status"] == "completed"
         assert snap.values["persisted"] is False and snap.values["persist_outcome"] == "already_written"
         assert snap.values["existing_run_id"] == "orion-day-2026-09-29-0"
-        assert world.journals == []  # never republishes another run's day
+        # It (re)publishes the STORED row's journal entry -- identical id, body and timestamp -- so a
+        # first run that wrote the row but never got its journal out is healed, and nothing differs.
+        (entry,) = world.journals
+        assert entry.body == world.rows[date(2026, 9, 29)]["note_md"] and entry.created_at == first_at
+        assert entry.entry_id == orion_day_journal_entry_id("2026-09-29")
     asyncio.run(scenario())
 
 
@@ -269,7 +275,32 @@ def test_persist_failure_backs_off_and_retries():
         world.persist_fail, world.journal_fail = 1, 1
         snap = await drive(world.graph(saver), world)
         assert snap.values["status"] == "completed" and snap.values["persisted"] is True
-        assert snap.values["tail_attempts"] == {"persist": 2}
+        assert snap.values["tail_attempts"] == {"persist": 1, "journal": 1}
+        assert snap.values["journal_published"] is True
+    asyncio.run(scenario())
+
+
+def test_journal_trouble_never_fails_a_run_whose_letter_is_written():
+    async def scenario():
+        world, saver = World(max_attempts=2), InMemorySaver()
+        world.journal_fail = 100
+        snap = await drive(world.graph(saver), world)
+        assert snap.values["status"] == "completed"
+        assert snap.values["persisted"] is True and snap.values["journal_published"] is False
+        assert world.rows and not world.journals
+        assert finish_detail(snap.values)["journal_published"] is False
+    asyncio.run(scenario())
+
+
+def test_journal_entry_is_stamped_with_the_rows_created_at_on_every_replay():
+    async def scenario():
+        world, saver = World(), InMemorySaver()
+        world.journal_fail = 1
+        snap = await drive(world.graph(saver), world)
+        row_at = world.rows[date(2026, 9, 29)]["created_at"]
+        (entry,) = world.journals
+        assert entry.created_at == row_at  # not the (later) replay's clock
+        assert snap.values["status"] == "completed"
     asyncio.run(scenario())
 
 
@@ -302,6 +333,61 @@ def test_empty_or_short_completion_is_an_attempt_never_a_success():
         assert snap.values["status"] == "completed"
         assert snap.values["llm_attempts"]["write_note"] == 3
         assert len(snap.values["note_md"]) >= MIN_NOTE_CHARS
+    asyncio.run(scenario())
+
+
+def test_a_failed_attempt_waits_out_a_backoff_before_the_next_one():
+    async def scenario():
+        world, saver = World(max_attempts=3), InMemorySaver()
+        world.replies[ORION_DAY_NOTE_VERB] = [RuntimeError("cortex restarting")]
+        graph = world.graph(saver)
+        world.granted = True
+        await graph.ainvoke(initial(), CFG)
+        snap = await graph.aget_state(CFG)
+        assert snap.next == ("retry_wait",)  # parked, not straight back into another call
+        assert datetime.fromisoformat(snap.values["retry_at"]) == world.now + timedelta(seconds=30)
+        assert len(world.calls) == 1
+        # AdmissionRuntime._drive only resumes a parked retry_wait once now >= retry_at (the same
+        # gate as curiosity's retry_wait); drive() advances the clock to retry_at the same way.
+        snap = await drive(graph, world, first=False)
+        assert snap.values["status"] == "completed" and snap.values["llm_attempts"]["write_note"] == 2
+    asyncio.run(scenario())
+
+
+def test_carry_forward_without_a_list_item_is_an_attempt():
+    async def scenario():
+        world, saver = World(max_attempts=3), InMemorySaver()
+        world.replies[ORION_DAY_CARRY_FORWARD_VERB] = ["A paragraph with no list at all, just prose about threads.", CARRY]
+        snap = await drive(world.graph(saver), world)
+        assert snap.values["status"] == "completed"
+        assert snap.values["llm_attempts"]["write_carry_forward"] == 2
+        assert snap.values["carry_forward_refs"] == {"valid": 1, "unknown": 0}
+    asyncio.run(scenario())
+
+
+def test_a_release_error_after_the_carry_forward_keeps_the_text():
+    async def scenario():
+        world, saver = World(), InMemorySaver()
+        real = world.release
+
+        async def flaky_release(state, reason, keep_requeued=False):
+            if reason == "completed" and state.get("carry_forward_md") and not state.get("letter_written"):
+                world.release = real
+                raise RuntimeError("store down")
+            return await real(state, reason, keep_requeued)
+
+        world.release = flaky_release
+        snap = await drive(world.graph(saver), world)
+        assert snap.values["status"] == "completed"
+        assert [c[0] for c in world.calls].count(ORION_DAY_CARRY_FORWARD_VERB) == 1
+    asyncio.run(scenario())
+
+
+def test_rpc_timeout_sits_under_the_node_budget():
+    async def scenario():
+        world, saver = World(), InMemorySaver()
+        await drive(world.graph(saver), world)
+        assert all(extra["timeout"] == 900.0 - 30.0 for _, _, extra in world.calls)
     asyncio.run(scenario())
 
 

@@ -71,7 +71,7 @@ def _window(
 ) -> list[GrammarEventV1]:
     rec = EMIT.InferenceWindowRecorder(clock=lambda: start)
     for result, served_by in calls:
-        rec.record(result, served_by=served_by, elapsed_s=0.4)
+        rec.record(result, served_by=served_by)
     start, _end, buckets = rec.drain()
     return EMIT.build_window_events(gateway_node=gateway, window_start=start, window_end=start + 60, buckets=buckets)
 
@@ -330,3 +330,128 @@ def test_hand_built_atom_without_node_is_unattributed():
     )
     projection, receipt = _reduce([ev])
     assert receipt.state_deltas == [] and projection.last_unattributed_calls == 3
+
+
+# ── gpu-pool stage 6.2: per-role wait/model clocks (consumer side) ─────────────────────────
+
+
+def _hand_atom(summary: str, trace: str = "llm_gateway.inference:athena:w62") -> GrammarEventV1:
+    return GrammarEventV1(
+        event_id=f"{trace}:00",
+        event_kind="atom_emitted",
+        trace_id=trace,
+        emitted_at=NOW,
+        atom=GrammarAtomV1(
+            atom_id=f"{trace}:00",
+            trace_id=trace,
+            atom_type="observation",
+            semantic_role=ROLE_NODE_WINDOW,
+            layer="inference",
+            summary=summary,
+        ),
+        provenance=GrammarProvenanceV1(source_service=LLM_INFERENCE_SOURCE_SERVICE),
+    )
+
+
+def _clocked(wait_ms, model_ms, role):
+    clock = EMIT.CallClock()
+    clock.wait_ms, clock.model_ms, clock.role = wait_ms, model_ms, role
+    return clock
+
+
+def test_round_trip_carries_per_role_clocks_into_the_projection_and_delta():
+    rec = EMIT.InferenceWindowRecorder(clock=lambda: T0)
+    fast = {"text": "ok", "raw": {"timings": {"predicted_per_second": 55.0}}}
+    rec.record(fast, served_by="circe-worker-fast", timing=_clocked(10, 300, "fast"))
+    rec.record(fast, served_by="circe-worker-chat", timing=_clocked(128000, 9000, "chat"))
+    rec.record(TIMEOUT, served_by="circe-worker-chat", timing=_clocked(2000, 60000, "chat"))
+    start, _end, buckets = rec.drain()
+    events = EMIT.build_window_events(gateway_node="athena", window_start=start, window_end=start + 60, buckets=buckets)
+
+    projection, receipt = _reduce(events)
+    state = projection.nodes["llm_node:circe"]
+    assert set(state.by_role) == {"chat", "fast"}
+    chat = state.by_role["chat"]
+    assert (chat.calls, chat.served, chat.upstream_failed) == (2, 1, 1)
+    # both calls waited (the timeout too); nearest-rank over [2000, 128000]
+    assert (chat.wait_p50_ms, chat.wait_p95_ms) == (2000, 128000)
+    assert chat.model_p50_ms == 9000  # served only: the timeout's 60 s budget is not a speed
+    assert chat.decode_tps_p50 == 55.0 and chat.decode_tps_samples == 1
+    assert state.by_role["fast"].model_p50_ms == 300
+    # the delta the field digester sees carries it too (debug only, no pressure hint from it)
+    after = receipt.state_deltas[0].after
+    assert after["by_role"]["chat"]["wait_p95_ms"] == 128000
+    assert set(after["pressure_hints"]) <= {"inference_failure_pressure"}
+    assert "latency_p50_ms" not in after
+
+
+def test_summary_from_a_gateway_before_stage_6_2_still_reduces_with_empty_roles():
+    ev = _hand_atom("node=circe calls=2 served=2 upstream_failed=0 p50_ms=900 p95_ms=1200 "
+                    "workers=circe-worker-chat classes=served:2")
+    projection, receipt = _reduce([ev])
+    state = projection.nodes["llm_node:circe"]
+    assert state.by_role == {} and state.served == 2
+    assert "latency_p50_ms" not in receipt.state_deltas[0].after
+
+
+def test_malformed_role_entries_are_dropped_not_guessed():
+    ev = _hand_atom("node=circe calls=3 served=3 upstream_failed=0 classes=served:3 "
+                    "roles=chat[calls:2|served:2|wait_p50_ms:40|model_p50_ms:x|decode_tps_p50:nan]"
+                    "fast[calls:1|served:1|decode_tps_p50:-4]junk")
+    projection, _ = _reduce([ev])
+    roles = projection.nodes["llm_node:circe"].by_role
+    assert set(roles) == {"chat", "fast"}
+    assert roles["chat"].wait_p50_ms == 40 and roles["chat"].model_p50_ms is None
+    assert roles["chat"].decode_tps_p50 is None and roles["fast"].decode_tps_p50 is None
+
+
+def test_persisted_row_from_the_previous_reducer_still_loads():
+    """The live row carries the retired latency_p*_ms fields. Under extra="forbid" a plain
+    removal would crash-loop the reducer on its first load (2026-07-24 incident class)."""
+    live_shape = {
+        "projection_id": LLM_INFERENCE_PROJECTION_ID,
+        "generated_at": "2026-09-30T09:44:00Z",
+        "nodes": {"llm_node:circe": {
+            "calls": 8, "served": 8, "node_id": "circe", "refused": 0, "target_id": "llm_node:circe",
+            "window_sec": 60.0, "observed_at": "2026-09-30T09:44:00.687844Z", "gateway_node": "gateway",
+            "prompt_tokens": 8369, "latency_p50_ms": 1999, "latency_p95_ms": 79240,
+            "schema_version": "llm_inference.node_state.v1", "outcome_classes": {"served": 8},
+            "request_invalid": 0, "source_trace_id": "llm_gateway.inference:gateway:20260930T094259Z",
+            "upstream_failed": 0, "sample_window_id": "20260930T094259Z",
+            "served_by_labels": ["circe-worker-metacog", "circe-worker-chat"], "completion_tokens": 536,
+            "evidence_event_ids": ["x"], "inference_failure_pressure": 0.0,
+        }},
+    }
+    loaded = LlmInferenceProjectionV1.model_validate(live_shape)
+    dumped = loaded.nodes["llm_node:circe"].model_dump()
+    assert "latency_p50_ms" not in dumped and dumped["by_role"] == {}
+
+
+def test_node_state_still_forbids_unknown_fields():
+    from pydantic import ValidationError
+
+    from orion.schemas.llm_inference_projection import LlmInferenceNodeStateV1, LlmInferenceRoleStateV1
+
+    base = dict(target_id="llm_node:circe", node_id="circe", gateway_node="g", sample_window_id="w",
+                source_trace_id="t", observed_at=NOW)
+    with pytest.raises(ValidationError):
+        LlmInferenceNodeStateV1(**base, latency_p99_ms=1)
+    with pytest.raises(ValidationError):
+        LlmInferenceRoleStateV1(calls=1, latency_ms=3)
+
+
+def test_passthrough_only_window_does_not_move_inference_failure_pressure():
+    """HTTP passthrough calls reach by_role only (stage 6.2 is record-only): a window with
+    nothing but passthrough failures writes no failure pressure and adds nothing to its span."""
+    rec = EMIT.InferenceWindowRecorder(clock=lambda: T0)
+    for _ in range(5):
+        rec.record_outcome("upstream_http_5xx", served_by="circe-worker-agent",
+                           timing=_clocked(10, 100, "agent"), http=True)
+    start, _end, buckets = rec.drain()
+    events = EMIT.build_window_events(gateway_node="athena", window_start=start, window_end=start + 60, buckets=buckets)
+    projection, receipt = _reduce(events)
+    after = receipt.state_deltas[0].after
+    assert after["pressure_hints"] == {}  # not measured, never a fake calm 0.0 or a 1.0
+    agent = projection.nodes["llm_node:circe"].by_role["agent"]
+    assert (agent.calls, agent.http_calls, agent.upstream_failed) == (5, 5, 5)
+    assert projection.recent_windows["llm_node:circe"][-1].upstream_failed == 0

@@ -10,12 +10,16 @@ from orion.schemas.llm_inference_projection import (
     ROLE_NODE_WINDOW,
     ROLE_WINDOW_COMPLETED,
     LlmInferenceNodeStateV1,
+    LlmInferenceRoleStateV1,
     LlmInferenceWindowCountV1,
 )
 
 from .constants import KNOWN_FIELD_NODES, LLM_INFERENCE_SOURCE_SERVICE, LLM_INFERENCE_TRACE_PREFIX
 
 _KV_RE = re.compile(r"(\w+)=([^,;\s]+)")
+# ``roles=chat[calls:3|served:3|wait_p50_ms:40|...]metacog[...]`` (grammar_emit._RoleBucket.summary)
+_ROLE_RE = re.compile(r"([a-z0-9_.-]+)\[([^\]]*)\]")
+_MAX_ROLES = 16
 
 
 def _utc_now(now: datetime | None) -> datetime:
@@ -75,6 +79,45 @@ def _parse_classes(raw: str | None) -> dict[str, int]:
             continue
         try:
             out[name] = out.get(name, 0) + max(0, int(count or 0))
+        except ValueError:
+            continue
+    return out
+
+
+def _parse_roles(raw: str | None) -> dict[str, LlmInferenceRoleStateV1]:
+    """Per-role clocks from the node atom. A malformed role entry is dropped, never guessed;
+    an absent ``roles=`` (a gateway from before stage 6.2) yields ``{}``."""
+    out: dict[str, LlmInferenceRoleStateV1] = {}
+    for role, body in _ROLE_RE.findall(raw or ""):
+        if role in out or len(out) >= _MAX_ROLES:
+            continue
+        kv: dict[str, str] = {}
+        for part in body.split("|"):
+            key, sep, value = part.partition(":")
+            if sep and key.strip():
+                kv[key.strip()] = value.strip()
+        tps: float | None
+        try:
+            tps = float(kv["decode_tps_p50"]) if "decode_tps_p50" in kv else None
+        except ValueError:
+            tps = None
+        if tps is not None and not (tps > 0.0 and tps != float("inf")):
+            tps = None
+        try:
+            out[role] = LlmInferenceRoleStateV1(
+                calls=_int(kv, "calls"),
+                http_calls=_int(kv, "http_calls"),
+                served=_int(kv, "served"),
+                upstream_failed=_int(kv, "upstream_failed"),
+                refused=_int(kv, "refused"),
+                request_invalid=_int(kv, "request_invalid"),
+                wait_p50_ms=_opt_int(kv, "wait_p50_ms"),
+                wait_p95_ms=_opt_int(kv, "wait_p95_ms"),
+                model_p50_ms=_opt_int(kv, "model_p50_ms"),
+                model_p95_ms=_opt_int(kv, "model_p95_ms"),
+                decode_tps_p50=tps,
+                decode_tps_samples=_int(kv, "decode_tps_n"),
+            )
         except ValueError:
             continue
     return out
@@ -160,8 +203,7 @@ def extract_llm_inference_windows(
             request_invalid=_int(kv, "request_invalid"),
             prompt_tokens=_int(kv, "prompt_tokens"),
             completion_tokens=_int(kv, "completion_tokens"),
-            latency_p50_ms=_opt_int(kv, "p50_ms"),
-            latency_p95_ms=_opt_int(kv, "p95_ms"),
+            by_role=_parse_roles(kv.get("roles")),
             served_by_labels=_parse_labels(kv.get("workers")),
             outcome_classes=_parse_classes(kv.get("classes")),
             inference_failure_pressure=None,

@@ -34,11 +34,15 @@ actuators:
 
 priorities: [urgent, interactive, system, background]   # highest first
 
+# index = the card's CUDA / nvidia-smi device number on circe (CUDA_DEVICE_ORDER=PCI_BUS_ID). Hub's
+# biometrics GPU labels join nvidia-smi on it (stage 5.5). gpu0/1/3 verified live 2026-09-29 against
+# circe's running containers (atlas chat/agent/metacog+fast CUDA_VISIBLE_DEVICES_OVERRIDE=0/1/3); those
+# roles have no launch block, so CI cannot check them against compose -- re-verify if a card moves.
 cards:
-  gpu0: {vram_gb: 32, lendable: true}   # chat's card; others only while Juniper has it lent
-  gpu1: {vram_gb: 32}
-  gpu2: {vram_gb: 32, index: 2}         # PG500-216 (a V100); index = CUDA device on circe
-  gpu3: {vram_gb: 32}
+  gpu0: {vram_gb: 32, lendable: true, index: 0}   # chat's card; others only while Juniper has it lent
+  gpu1: {vram_gb: 32, index: 1}
+  gpu2: {vram_gb: 32, index: 2}         # PG500-216 (a V100); the actuator sets the launch roles' device from it
+  gpu3: {vram_gb: 32, index: 3}
 
 roles:
   chat:       {kind: llm, cards: [gpu0], owner: chat, port: 8011}
@@ -52,8 +56,9 @@ roles:
                # No load/unload bridge verbs (stage 5.3 cutover): the controller runs this `launch` block
                # and diffusion's through its generic executor. Rollback = restore
                # `load: gpu2/agent, unload: gpu2/restore` and drop `profiles` (runbook 2026-09-29-gpu-pool-stage5-3-cutover).
-               # after_wait_sec keeps today's 1200s elastic trigger; guards are today's elastic eligibility checks.
-               swap: {evicts: [diffusion], after_wait_sec: 1200, guards: [thermal, visual_baseline]},
+               # after_wait_sec keeps today's 1200s elastic trigger. guards: thermal only -- visual_baseline was
+               # deleted in stage 5.4 (a reverie-visual diffusion hold reclaims gpu2 through the queue).
+               swap: {evicts: [diffusion], after_wait_sec: 1200, guards: [thermal]},
                launch: {actuator: circe, compose: services/orion-llamacpp-host/docker-compose.atlas-workers.yml,
                         env_file: services/orion-llamacpp-host/.env, service: atlas-agent-burst,
                         compose_profile: agent-burst,
@@ -110,7 +115,7 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
 
 hold_routes:   # durable-run holds on non-LLM roles; durable-runs reads these, the gateway never does
   # reverie.visual's generate step (docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.md).
-  # Advisory for the diffusion host itself: orion-thought validates the hold ref before generating,
-  # and still takes the /capacity permit world-model shares gpu2 through until stage 5.4.
+  # The hold IS the grant (stage 5.4): orion-thought validates the hold ref before generating and
+  # takes no second gate; world.serialize_with keeps world-model off gpu2 while it is held.
   # priority is informational: ResourceRequirementV1.priority (always background) wins for holds.
   diffusion: {class: diffusion, priority: background}

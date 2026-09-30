@@ -31,7 +31,7 @@ from typing import Any, Awaitable, Callable
 from orion.schemas.curiosity_urgent import URGENT_EVIDENCE_MAX_BYTES
 
 from . import biometrics_node_client, cabinet_cooling_routes, cabinet_sensors_routes, gpu_pool_routes
-from .biometrics_preview_routes import _parse_lane_map, gpu_cards_from_raw_recent
+from .biometrics_preview_routes import gpu_cards_from_raw_recent, pool_lane_map
 from .cabinet_ambient_routes import _iso_utc, _parse_db_timestamp
 from .settings import settings
 
@@ -116,7 +116,7 @@ async def _host(node: str) -> dict[str, Any]:
 
 async def _gpu_cards(node: str) -> list[dict[str, Any]]:
     payload = await biometrics_node_client.fetch_raw_recent(node, limit=1)
-    cards = gpu_cards_from_raw_recent(payload, _parse_lane_map(node))
+    cards = gpu_cards_from_raw_recent(payload, *pool_lane_map(node, now=_now_utc()))
     for card in cards:
         card.pop("trend", None)
         card["processes"] = list(card.get("processes") or [])[:MAX_PROCESSES_PER_GPU]

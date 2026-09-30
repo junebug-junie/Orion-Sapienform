@@ -415,7 +415,7 @@ Deleted in 4.5 (kill means kill, no fallback): the durable broker, lane policy a
 (`orion/durable_admission/{broker,policy,elastic}.py`), `app/elastic_runtime.py`,
 `/leases/validate`, `/admission`, `/elastic/status`, `/elastic/target`. The frozen tables
 `durable_resource_demands` / `durable_resource_leases` / `durable_elastic_slot` get no new rows;
-they stay only because `/capacity` joins them until stage 5.
+they stay only because `/capacity` joins them until stage 5.6 deletes both.
 
 Deleted in 4.6: the durable lease token itself (`ResourceLeaseV1`, `X-Orion-Resource-Lease`,
 `options.resource_lease`, the gateway's `LeaseGuard`). A run's GPU pool hold ref (`GpuLeaseRefV1`:
@@ -437,8 +437,10 @@ Internal operator endpoints (host port 8124, container port 8121):
 | `POST /runs/{run_id}/cancel` | Release the hold and durably cancel |
 | `POST /runs/{run_id}/release-outreach-lease` | Hub finished Door-A composition: release the kept hold |
 
-`DURABLE_RUNS_CAPACITY_ENABLED=true` keeps the world-model / visual-chain permit authority at
-`/capacity` (NOT durable runs; stage 5 moves those onto pool leases). Since 4.5 it is built with
+`DURABLE_RUNS_CAPACITY_ENABLED=true` keeps the `/capacity` permit authority up, but since GPU pool
+stage 5.4 it has **no callers**: world-model takes a pool `world` lease and the visual chain runs
+under its run's diffusion hold (`orion/gpu_pool/tests/test_stage5_4_no_capacity_callers.py` fails
+if a caller returns). Stage 5.6 deletes it. Since 4.5 it is built with
 `reserve_waiting=False`: frozen pending demands no longer reserve a backend. An active legacy
 durable lease still fences its backend, which is why the cutover waits for zero of them.
 

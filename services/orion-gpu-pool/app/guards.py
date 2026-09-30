@@ -1,4 +1,4 @@
-"""Swap-load guards (stage 4 spec, "Guards (pool side)"): the two physical checks durable-runs'
+"""Swap-load guards (stage 4 spec, "Guards (pool side)"): the physical check durable-runs'
 elastic runtime made before borrowing gpu2 (``environment()`` in
 services/orion-durable-runs/app/elastic_runtime.py, deleted in 4.5), read here so the pool is the
 one decider.
@@ -6,9 +6,10 @@ one decider.
 - ``thermal``: the cabinet sensor through ``orion.autonomy.thermal_gate.thermal_state`` (same
   hysteresis). Blocks when the verdict does not allow GPU work OR is degraded (no/stale reading):
   loading an extra model into a room nobody can measure is refused, like the elastic path does.
-- ``visual_baseline``: thought ``/visual-chain/activity``. Blocks while the visual chain's baseline
-  is overdue or an attempt is running (it needs diffusion on gpu2). Stage-4-only; deleted when the
-  visual chain moves onto diffusion leases (stage 5).
+
+``visual_baseline`` (thought ``/visual-chain/activity``: refuse a 27B load while the image baseline
+was overdue) was deleted in stage 5.4. A reverie-visual run takes a diffusion hold on its own cadence
+and reclaims gpu2 through the queue (owner reclaim), so the pool needs no side read of the chain.
 
 Each guard is None when clear, else a short reason. A read that fails is a reason ("unavailable:
 ..."), never a silent pass. Runs OUTSIDE the runtime lock: HTTP must not stall lease RPCs.
@@ -16,29 +17,18 @@ Each guard is None when clear, else a short reason. A read that fails is a reaso
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta
-from typing import Any, Callable
+from typing import Any
 
 from orion.autonomy.thermal_gate import thermal_state
 
 
-# The activity endpoint stamps observed_at while answering, i.e. after the caller took its "now".
-# A same-host reading can therefore look a few ms in the future; that is not staleness. Beyond this,
-# a future stamp is a real clock problem and still blocks.
-VISUAL_CLOCK_SKEW_SEC = 2.0
-
-
 class GuardReader:
-    def __init__(self, *, cabinet_url: str, visual_activity_url: str,
-                 clock: Callable[[], datetime] | None = None):
+    def __init__(self, *, cabinet_url: str):
         self.cabinet_url = cabinet_url
-        self.visual_activity_url = visual_activity_url
-        self._clock = clock
         self._thermal = "hot"   # conservative until the first real reading (as elastic_runtime)
 
-    async def read(self, client: Any, now: datetime) -> dict[str, str | None]:
-        return {"thermal": await self._read_thermal(client),
-                "visual_baseline": await self._read_visual(client, now)}
+    async def read(self, client: Any) -> dict[str, str | None]:
+        return {"thermal": await self._read_thermal(client)}
 
     async def _read_thermal(self, client: Any) -> str | None:
         try:
@@ -58,31 +48,4 @@ class GuardReader:
             return f"degraded:{verdict.reason}"[:120]
         if not verdict.allows_gpu_work:
             return f"{verdict.state}:{verdict.reason}"[:120]
-        return None
-
-    async def _read_visual(self, client: Any, now: datetime) -> str | None:
-        from orion.reverie.baseline import load_baseline_policy
-        from orion.schemas.reverie_visual import VisualActivityV1
-
-        policy = load_baseline_policy()
-        if not policy.enabled:
-            return None
-        try:
-            r = await client.get(self.visual_activity_url)
-            r.raise_for_status()
-            activity = VisualActivityV1.model_validate(r.json())
-        except Exception as exc:  # noqa: BLE001
-            return f"unavailable:{type(exc).__name__}"[:120]
-        # Age against when the answer arrived, not when the read began (live 2026-09-26: a "now" taken
-        # before the request made every fresh reading ~ms "in the future" -> visual_activity_unavailable,
-        # so the pool could never load gpu2).
-        now = max(now, self._clock()) if self._clock else now
-        age = (now - activity.observed_at).total_seconds()
-        if activity.history_status != "ok" or not -VISUAL_CLOCK_SKEW_SEC <= age <= policy.freshness_sec:
-            return "visual_activity_unavailable"
-        if activity.active_attempt_id:
-            return "visual_attempt_running"
-        if not activity.last_success_at or \
-                activity.last_success_at + timedelta(seconds=policy.interval_sec) <= now:
-            return "visual_baseline_urgent"
         return None

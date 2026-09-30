@@ -113,7 +113,7 @@ const HOLD_STATE = {
   cards: [{ card: "gpu2", swap_state: "fault", swap_role: "agent-gpu2", actuated_roles: ["agent-gpu2"],
             actuation: { action: "load", role: "agent-gpu2", generation: 3, reason: "demand", outcome: "failed" },
             cooldown_until: null }, { card: "gpu1" }],
-  swap_guards: { thermal: null, visual_baseline: "visual_baseline_urgent" },
+  swap_guards: { thermal: "hot:temp_over_hot" },   // visual_baseline guard deleted in stage 5.4
   leases: [
     { lease_id: "h1", kind: "hold", holder: "durable-runs:r1", status: "granted", role: "agent", generation: 2, granted_at: "2026-09-25T10:00:00Z" },
     { lease_id: "c1", kind: "request", hold_lease_id: "h1", status: "granted", role: "agent" },
@@ -144,8 +144,8 @@ test("swapModel exposes fault and the action; guardModel says which guard blocks
   assert.equal(sw.gpu2.action.outcome, "failed");
   assert.deepEqual(sw.gpu2.actuatedRoles, ["agent-gpu2"]);
   assert.equal(sw.gpu1.swapState, "idle");                       // a pre-4.3 pool sends none of it
-  assert.deepEqual(gp.guardModel(HOLD_STATE), [{ name: "thermal", clear: true, why: null },
-    { name: "visual_baseline", clear: false, why: "visual_baseline_urgent" }]);
+  assert.deepEqual(gp.guardModel(HOLD_STATE), [{ name: "thermal", clear: false, why: "hot:temp_over_hot" }]);
+  assert.deepEqual(gp.guardModel({ swap_guards: { thermal: null } }), [{ name: "thermal", clear: true, why: null }]);
 });
 
 test("the template carries the holds and guards mount points the renderer writes to", () => {

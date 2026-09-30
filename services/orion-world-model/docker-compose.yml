@@ -64,12 +64,7 @@ services:
       # earlier draft overclaimed this as a complete isolation fix.
       - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}
 
-      - WM_GPU2_CAPACITY_ENABLED=${WM_GPU2_CAPACITY_ENABLED}
-      - WM_GPU2_CAPACITY_URL=${WM_GPU2_CAPACITY_URL}
-      - WM_GPU2_CAPACITY_BACKEND_KEY=${WM_GPU2_CAPACITY_BACKEND_KEY}
-      - WM_GPU2_CAPACITY_LANE=${WM_GPU2_CAPACITY_LANE}
-      - WM_GPU2_CAPACITY_BUDGET_SEC=${WM_GPU2_CAPACITY_BUDGET_SEC}
-      - WM_GPU2_CAPACITY_POLL_INTERVAL_SEC=${WM_GPU2_CAPACITY_POLL_INTERVAL_SEC}
+      - WM_GPU_LEASE_DEADLINE_SEC=${WM_GPU_LEASE_DEADLINE_SEC:-2.0}
 
     volumes:
       - /mnt/storage-warm/models/world-model:/mnt/storage-warm/models/world-model

@@ -43,8 +43,6 @@ class Settings(BaseSettings):
     actuate_roles: str = Field("", alias="GPU_POOL_ACTUATE_ROLES")
     # Swap-load guards (read outside the runtime lock, every guard_refresh_sec).
     cabinet_url: str = Field("http://100.92.216.81:8080/api/cabinet/sensors/latest", alias="GPU_POOL_CABINET_URL")
-    visual_activity_url: str = Field("http://orion-athena-thought:7155/visual-chain/activity",
-                                     alias="GPU_POOL_VISUAL_ACTIVITY_URL")
     guard_refresh_sec: float = Field(30.0, gt=0, alias="GPU_POOL_GUARD_REFRESH_SEC")
     # U4 shed lever kill switch (orion/gpu_pool/shed.py). OFF in code: the pool still receives and
     # shows shed signals (orion-hardware-watch cooling incidents) but blocks nothing. ON in .env_example.

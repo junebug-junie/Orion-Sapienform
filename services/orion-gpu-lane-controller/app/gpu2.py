@@ -9,6 +9,7 @@ import contextvars
 import json
 import time
 import urllib.request
+from dataclasses import dataclass
 from loguru import logger
 from . import lane_control as lc
 from . import pool_fence
@@ -30,6 +31,27 @@ async def phase(name):
         await asyncio.wait_for(hook(name), timeout=5)
     except Exception:  # noqa: BLE001 -- progress telemetry never changes a transition's outcome
         logger.warning("gpu2_progress_publish_failed phase={}", name)
+
+
+@dataclass(frozen=True)
+class Transition:
+    """One pool-fenced move of this card: the fixed target to start, under the pool action and
+    generation that authorised it (checked by pool_fence.authority at every step).
+
+    Replaced orion.schemas.gpu_slot.GpuSlotRequestV1 on the pool path (stage 5.5): that HTTP-era
+    contract hard-coded which card owns which target ("circe-gpu2" -> diffusion/agent-burst); card
+    ownership now comes from config/gpu_pool.yaml via the pool's GpuActuateV1. Stage 5.6 deletes the
+    module; stage 5.3 cuts agent-gpu2 over to the generic launch executor (5.2), retiring this bridge."""
+    target: str
+    operation_id: str
+    generation: int
+
+    def __post_init__(self):
+        if self.target not in TARGET_NAMES:
+            raise ValueError(f"unknown_target:{self.target}")
+
+
+TARGET_NAMES = ("diffusion", "agent-burst")
 
 
 def targets():

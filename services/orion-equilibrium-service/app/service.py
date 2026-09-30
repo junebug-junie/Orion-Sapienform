@@ -11,7 +11,6 @@ from orion.core.bus.bus_service_chassis import BaseChassis, ChassisConfig
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
-from .substrate_metacog_gate import build_substrate_metacog_trigger
 from .repair_pressure_metacog_gate import build_repair_pressure_metacog_trigger
 from .telemetry_anomaly_metacog_gate import build_telemetry_anomaly_metacog_trigger
 from .chat_turn_metacog_gate import (
@@ -119,9 +118,7 @@ class EquilibriumService(BaseChassis):
         # baseline/manual/pulse/relational/telemetry_anomaly's own fires); transport
         # (2026-07-24) got one from day one instead of repeating that bug.
         self._last_trigger_ts_by_kind: Dict[str, float] = {}
-        self._last_baseline_scores: Tuple[float, float] = (-1.0, -1.0)
         self._bus_synaptic_falkor_client: Any = None
-        self._baseline_skip_count: int = 0
         self._chat_turn_correlator: ChatTurnCorrelator | None = None
         self._downtime_tracker = DowntimeTransitionTracker()
         self._attention_self_model_reader: AttentionSelfModelReader | None = None
@@ -794,69 +791,6 @@ class EquilibriumService(BaseChassis):
                 logger.warning(f"Metacognition tick loop error: {e}")
             await asyncio.sleep(interval)
 
-    async def _maybe_emit_baseline_metacog_trigger(self) -> bool:
-        """Evaluate distress/zen and publish a baseline metacog trigger when due."""
-        distress, zen, _ = self._calculate_metrics()
-        last_d, last_z = self._last_baseline_scores
-        unchanged = abs(distress - last_d) < 0.01 and abs(zen - last_z) < 0.01
-        max_skips = max(0, int(settings.metacog_baseline_max_skips))
-
-        if unchanged and self._baseline_skip_count < max_skips:
-            self._baseline_skip_count += 1
-            logger.info(
-                "Skipping baseline trigger (no change). distress=%.3f zen=%.3f skip=%d max_skips=%d",
-                distress,
-                zen,
-                self._baseline_skip_count,
-                max_skips,
-            )
-            return False
-
-        if unchanged and max_skips > 0:
-            logger.info(
-                "Forcing baseline trigger after unchanged scores. distress=%.3f zen=%.3f skip=%d",
-                distress,
-                zen,
-                self._baseline_skip_count,
-            )
-
-        self._baseline_skip_count = 0
-        self._last_baseline_scores = (distress, zen)
-
-        if settings.metacog_substrate_trigger_enable:
-            substrate_trigger = build_substrate_metacog_trigger(
-                zen_state="zen" if zen > 0.5 else "not_zen",
-                pressure=distress,
-                recall_enabled=settings.metacog_recall_enabled,
-                dense_threshold=float(settings.metacog_substrate_dense_threshold),
-                pulse_threshold=float(settings.metacog_substrate_pulse_threshold),
-            )
-            if substrate_trigger is not None:
-                await self._publish_metacog_trigger(substrate_trigger)
-                return True
-
-        trigger = MetacogTriggerV1(
-            trigger_kind="baseline",
-            reason="scheduled_check",
-            zen_state="zen" if zen > 0.5 else "not_zen",
-            pressure=distress,
-            recall_enabled=settings.metacog_recall_enabled,
-        )
-        await self._publish_metacog_trigger(trigger)
-        return True
-
-    async def _metacog_baseline_loop(self) -> None:
-        if not settings.metacog_enable:
-            return
-
-        interval = float(settings.metacog_baseline_interval_sec)
-        while not self._stop.is_set():
-            try:
-                await self._maybe_emit_baseline_metacog_trigger()
-            except Exception as e:
-                logger.error(f"Metacog baseline loop error: {e}")
-            await asyncio.sleep(interval)
-
     async def _spark_heartbeat_loop(self) -> None:
         if not self.bus.enabled:
             return
@@ -1254,7 +1188,6 @@ class EquilibriumService(BaseChassis):
         await self._load_transport_baseline_state()
         publisher = asyncio.create_task(self._publish_loop())
         collapse_task = asyncio.create_task(self._collapse_loop())
-        metacog_task = asyncio.create_task(self._metacog_baseline_loop())
         heartbeat_task = None
         if settings.equilibrium_spark_heartbeat_enable:
             heartbeat_task = asyncio.create_task(self._spark_heartbeat_loop())
@@ -1495,7 +1428,6 @@ class EquilibriumService(BaseChassis):
 
         publisher.cancel()
         collapse_task.cancel()
-        metacog_task.cancel()
         if heartbeat_task:
             heartbeat_task.cancel()
         bus_synaptic_poll_task.cancel()
@@ -1504,7 +1436,6 @@ class EquilibriumService(BaseChassis):
         await asyncio.gather(
             publisher,
             collapse_task,
-            metacog_task,
             *( [heartbeat_task] if heartbeat_task else [] ),
             bus_synaptic_poll_task,
             generative_poll_task,

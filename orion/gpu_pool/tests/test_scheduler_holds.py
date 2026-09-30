@@ -10,7 +10,7 @@ from orion.gpu_pool.scheduler import (
 )
 from orion.gpu_pool.tests.test_scheduler import CFG, T0, cards, grants, lease, live, of, run
 
-CLEAR = {"thermal": None, "visual_baseline": None}
+CLEAR = {"thermal": None}
 AFTER = CFG.swap_after_wait_sec("agent-gpu2")
 
 
@@ -196,15 +196,14 @@ def test_cooldown_after_failed_load_is_reported():
 
 
 def test_guards_block_loading_by_name_and_fail_closed():
-    hot = {"thermal": "hot", "visual_baseline": None}
+    hot = {"thermal": "hot"}
     [b] = of(SwapBlocked, schedule(CFG, live(), cards(), _demand(), T0, guards=hot))
     assert (b.reason, b.detail) == ("guard:thermal", "hot")
-    urgent = {"thermal": None, "visual_baseline": "visual_baseline_urgent"}
-    assert [b.reason for b in of(SwapBlocked, schedule(CFG, live(), cards(), _demand(), T0, guards=urgent))] \
-        == ["guard:visual_baseline"]
-    unread = {"thermal": None}   # a guard the caller never read fails closed
+    unread: dict = {}   # a guard the caller never read fails closed
     assert [b.reason for b in of(SwapBlocked, schedule(CFG, live(), cards(), _demand(), T0, guards=unread))] \
-        == ["guard:visual_baseline"]
+        == ["guard:thermal"]
+    # stage 5.4: an overdue image baseline no longer blocks the 27B load (visual_baseline deleted)
+    assert CFG.roles["agent-gpu2"].swap.guards == ["thermal"]
 
 
 def test_no_block_reported_without_demand():

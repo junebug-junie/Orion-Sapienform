@@ -70,7 +70,7 @@ class ReverieVisualRunBriefV1(BaseModel):
 
     visual_request: VisualRunRequestV1
     # Per-step RPC budget (AdmissionRuntime.execute reads brief.timeout_sec for the
-    # held generate step). Covers the /capacity permit wait plus diffusion.
+    # held generate step). Covers diffusion under the run's hold (no separate GPU wait since stage 5.4).
     timeout_sec: float = Field(default=360.0, gt=0)
     session_id: str | None = None
 
@@ -117,7 +117,7 @@ class ReverieVisualStepResultV1(BaseModel):
     step: ReverieVisualStep
     status: ReverieVisualStepStatus
     attempt_id: str | None = None
-    # Machine-readable why for retry/terminal (thermal_refused, gpu2_capacity:..., ...).
+    # Machine-readable why for retry/terminal (thermal_refused, resource_deferred:..., hold_invalid:..., ...).
     reason: str | None = None
     # Set on terminal and on caption done. None while the run is still in flight.
     outcome: VisualRunOutcome | None = None

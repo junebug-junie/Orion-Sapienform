@@ -160,6 +160,25 @@ documented tap/smoke script (mirrors `orion-vision-host`'s
 request is `scripts/publish_test_task.py`. Wiring a real upstream caller
 (e.g. a reverie/attention consumer) is out of scope for this patch.
 
+## GPU2: a pool lease, not a permit (GPU pool stage 5.4)
+
+This service shares circe's gpu2 with orion-diffusion-host. Every forward pass
+on a CUDA device first takes a short `world` lease from orion-gpu-pool
+(`orion.gpu_pool.client.gpu_lease`, class `world`, priority `system`,
+deadline `WM_GPU_LEASE_DEADLINE_SEC`, default 2 s). The pool never grants it
+while a diffusion lease or durable-run hold is active on gpu2
+(`config/gpu_pool.yaml`: `world.serialize_with: [diffusion]`), and says so
+with a `queued` event, `reason=serialized:diffusion`.
+
+| outcome | `error_code` |
+| --- | --- |
+| still queued at the deadline (usually behind diffusion) | `gpu_contended` (same code as the old permit) |
+| lease RPC unanswered / bus down / no bus | `gpu_pool_unreachable` |
+| CPU fallback | no lease taken |
+
+There is no ungated GPU path and no fallback to the old durable-runs
+`/capacity` permit (removed here; the broker itself is deleted in stage 5.6).
+
 ## Probes
 
 | Endpoint | Purpose |

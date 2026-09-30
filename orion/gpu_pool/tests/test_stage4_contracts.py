@@ -117,6 +117,9 @@ def test_new_swap_events(event):
 
 def test_card_fault_state():
     assert GpuCardStateV1(card="gpu2", vram_gb=32, swap_state="fault").swap_state == "fault"
+    # Stage 5.5: additive, optional -- a pre-5.5 payload (no index) still validates.
+    assert GpuCardStateV1(card="gpu2", vram_gb=32).index is None
+    assert GpuCardStateV1(card="gpu2", vram_gb=32, index=2).index == 2
 
 
 # --- actuation --------------------------------------------------------------------------------
@@ -243,7 +246,7 @@ def test_unbridged_seat_with_launches_is_valid_and_after_wait_overrides():
     data = copy.deepcopy(RAW)
     swap = data["roles"]["agent-gpu2"]["swap"]
     swap.pop("load", None), swap.pop("unload", None)   # the committed shape since 5.3
-    swap.update(after_wait_sec=1200, guards=["thermal", "visual_baseline"])
+    swap.update(after_wait_sec=1200, guards=["thermal"])
     cfg = PoolConfig.model_validate(data)
     assert cfg.swap_after_wait_sec("agent-gpu2") == 1200
     assert cfg.swap_after_wait_sec("experiment") == cfg.defaults.swap_after_wait_sec

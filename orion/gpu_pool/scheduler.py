@@ -24,7 +24,7 @@ Stage 4.3 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-ac
   H4 hold recall uses defaults.hold_clawback_grace_sec; a swap seat with max_hold_sec drains once
      it has been loaded that long, then unloads (today's DURABLE_RUNS_ELASTIC_MAX_BORROW_SEC)
   S1 a seat load is blocked -- reported as SwapBlocked, never silent -- by min residency after an
-     unload, cooldown after a failed load, or a failing guard (thermal, visual_baseline)
+     unload, cooldown after a failed load, or a failing guard (thermal)
   S2 a card in "fault" grants nothing on any of its roles; a card mid-swap grants nothing on the
      seat or the roles it evicts
 

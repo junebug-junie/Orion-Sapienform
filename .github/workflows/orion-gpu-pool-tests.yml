@@ -13,8 +13,8 @@ on:
       - "services/orion-llamacpp-host/**"
       - "services/orion-sql-db/manual_migration_gpu_pool_v1.sql"
       - "services/orion-sql-db/manual_migration_gpu_pool_v2_holds.sql"
-      # the visual_baseline swap guard reads this policy (stage 4.3)
-      - "config/proposals/visual_baseline.v1.yaml"
+      # stage 5.4: world-model takes a pool lease (the "world" job below)
+      - "services/orion-world-model/**"
       - "services/orion-equilibrium-service/app/settings.py"
       - "services/orion-equilibrium-service/.env_example"
       - "services/orion-equilibrium-service/docker-compose.yml"
@@ -30,6 +30,13 @@ on:
       - "services/orion-hub/templates/gpu_pool.html"
       - "services/orion-hub/static/js/gpu_pool*.js"
       - "services/orion-hub/tests/test_gpu_pool_*.py"
+      # stage 5.5: Hub biometrics GPU labels derived from pool state
+      - "services/orion-hub/scripts/biometrics_preview_routes.py"
+      - "services/orion-hub/scripts/urgent_evidence.py"
+      - "services/orion-hub/static/js/biometrics-view*.js"
+      - "services/orion-hub/tests/test_biometrics_preview_api.py"
+      - "services/orion-hub/tests/test_biometrics_view_ui.py"
+      - "services/orion-hub/tests/test_urgent_evidence.py"
       - ".github/workflows/orion-gpu-pool-tests.yml"
       # stage 4.4: consumers of the GPU lease ref (the "consumers" job below)
       - "orion/harness/fcc_motor.py"
@@ -76,7 +83,7 @@ on:
       - "services/orion-hub/static/js/gpu_pool*.js"
       - "scripts/check_gpu_pool_config.py"
       - "services/orion-sql-db/manual_migration_gpu_pool_v*.sql"
-      - "config/proposals/visual_baseline.v1.yaml"
+      - "services/orion-world-model/**"
       - "services/orion-diffusion-host/docker-compose.yml"
       - "services/orion-diffusion-host/.env_example"
       - "orion/llm/resource_lease.py"
@@ -159,6 +166,14 @@ jobs:
           python -m pip install fastapi==0.111.0 httpx==0.27.2 pydantic==2.11.5 pydantic-settings==2.5.2 \
             SQLAlchemy==2.0.43 psycopg2-binary aiohttp==3.12.15 python-multipart
           cd services/orion-hub && python -m pytest tests/test_gpu_pool_routes.py -q -p no:cacheprovider
+      # Relies on the Hub pins installed by the previous step. Skips the pre-existing router-registration
+      # test: it imports scripts.api_routes, which needs spacy (not installed in this job).
+      - name: Hub biometrics GPU labels from pool state (stage 5.5)
+        run: |
+          cd services/orion-hub
+          python -m pytest tests/test_biometrics_preview_api.py tests/test_urgent_evidence.py -q -p no:cacheprovider \
+            -k "not router_registered"
+          python -m pytest tests/test_biometrics_view_ui.py -k lane_badge -q -p no:cacheprovider
       - name: Policy eval (owner starvation, lost leases, spill-down violations)
         run: python services/orion-gpu-pool/evals/run_pool_day_eval.py
 
@@ -212,3 +227,22 @@ jobs:
           (cd services/orion-harness-governor && python -m pytest tests/test_rpc_health_publish.py -q -p no:cacheprovider)
           (cd services/orion-cortex-exec && python -m pytest tests/test_situation_provider.py -q -p no:cacheprovider)
           (cd services/orion-hub && python -m pytest tests/test_unified_turn_gpu_placement.py -q -p no:cacheprovider)
+
+  world:
+    name: gpu-pool stage 5.4 — world-model takes a pool lease (no /capacity permit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps (CPU torch; the service's image uses the cu121 wheel)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r services/orion-world-model/requirements.txt pytest pytest-asyncio numpy
+      - name: world-model suite (lease around the forward pass, gpu_contended mapping, settings parity)
+        run: cd services/orion-world-model && python -m pytest tests -q -p no:cacheprovider

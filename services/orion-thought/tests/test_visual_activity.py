@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 import os
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -270,7 +271,8 @@ async def test_only_selected_source_is_credited_and_store_restores_selection(dat
     monkeypatch.setattr(vc, 'upload_to_percept_store', no_caption)
     for index, kind, source_id in [(0,'reverie','thought-id'),(1,'self_study','entry-id'),(2,'memory','crystal-id')]:
         rotation[0] = index
-        chain = await vc.run_visual_chain_once(bus=None)
+        # A bus: a run with no hold asks the pool (granted by conftest's fake) since stage 5.4.
+        chain = await vc.run_visual_chain_once(bus=AsyncMock())
         assert chain.chain_json['production_receipt']
         selected = chain.context_selection
         assert selected.source_kind == kind

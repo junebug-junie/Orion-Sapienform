@@ -31,7 +31,7 @@ def physical_to_visible_cuda_index(
 ) -> Optional[int]:
     """Translate a PHYSICAL GPU index (what pynvml/NVML reports, and what
     operator-facing config like WM_DEFAULT_DEVICE/WM_DEVICES names -- same
-    convention as orion-diffusion-host's DIFFUSION_POWER_INTENT_GPU_INDEX,
+    convention as orion-diffusion-host's power-intent gpu_index,
     "the PHYSICAL nvidia-smi index...NOT the container's cuda:N") into the
     index torch's CUDA runtime will actually see for it.
 

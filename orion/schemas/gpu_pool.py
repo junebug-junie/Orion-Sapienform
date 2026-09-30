@@ -185,6 +185,9 @@ class GpuCardStateV1(BaseModel):
 
     card: str
     vram_gb: float
+    # The card's CUDA/nvidia-smi index on the pool host (config ``cards.<c>.index``); None when the
+    # YAML leaves it unset. Stage 5.5: Hub's biometrics GPU labels join nvidia-smi cards on this.
+    index: int | None = None
     lendable: bool = False
     lent: bool = False
     swapped_in: list[str] = Field(default_factory=list)
@@ -230,6 +233,7 @@ class GpuPoolStateV1(BaseModel):
     generated_at: datetime = Field(default_factory=_now)
     mode: Literal["observe", "enforce"] = "observe"
     config_digest: str
+    host: str | None = None   # config ``host.name``: the node whose cards these are (stage 5.5 labels)
     cards: list[GpuCardStateV1]
     roles: list[DiscoveredRoleV1]
     unclaimed_servers: list[str] = Field(default_factory=list)

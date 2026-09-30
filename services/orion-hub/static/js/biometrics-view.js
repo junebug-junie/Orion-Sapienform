@@ -512,6 +512,26 @@
 
   // --- Modal: GPU subview -------------------------------------------------
 
+  // The card's lane badge. `lane` is derived by Hub from the GPU pool's live state
+  // (stage 5.5): the roles on that card right now, "unassigned" for a card the pool
+  // does not manage, or "no pool state" when the pool's feed is absent or stale.
+  // `lane_assigned` is the server's own verdict; a response without it falls back to
+  // the old "unassigned" string check so a stale cached page still greys correctly.
+  function laneBadge(gpu) {
+    var text = gpu && gpu.lane ? String(gpu.lane) : "unassigned";
+    var assigned =
+      gpu && typeof gpu.lane_assigned === "boolean" ? gpu.lane_assigned : text !== "unassigned";
+    return {
+      text: text,
+      assigned: assigned,
+      className:
+        "text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full border " +
+        (assigned
+          ? "border-indigo-700 bg-indigo-950/60 text-indigo-200"
+          : "border-gray-700 bg-gray-900 text-gray-500"),
+    };
+  }
+
   function gpuCard(gpu) {
     var box = document.createElement("div");
     box.className = "rounded-xl border border-gray-800 bg-gray-950/40 p-3 flex flex-col gap-2";
@@ -521,13 +541,11 @@
     var title = document.createElement("div");
     title.className = "text-sm font-semibold text-gray-100";
     title.textContent = "#" + gpu.index + " " + (gpu.name || "?");
+    var badge = laneBadge(gpu);
     var lane = document.createElement("span");
-    lane.className =
-      "text-[11px] uppercase tracking-wide px-2 py-0.5 rounded-full border " +
-      (gpu.lane === "unassigned"
-        ? "border-gray-700 bg-gray-900 text-gray-500"
-        : "border-indigo-700 bg-indigo-950/60 text-indigo-200");
-    lane.textContent = gpu.lane;
+    lane.className = badge.className;
+    lane.textContent = badge.text;
+    lane.title = "From the GPU pool's live state (roles on this card now)";
     head.appendChild(title);
     head.appendChild(lane);
     box.appendChild(head);
@@ -766,6 +784,7 @@
     onModalClose,
     showModalSubview,
     shouldPoll,
+    laneBadge,
   };
 
   // Guarded so the module can be require()d under node:test for the pure

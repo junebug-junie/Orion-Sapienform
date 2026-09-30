@@ -387,3 +387,15 @@ def test_biometrics_tile_labels_are_not_the_smallest_lowest_contrast_text() -> N
     text-gray-500 -- bumped to at least 11px / gray-400 for legibility."""
     assert 'l.className = "text-[11px] uppercase tracking-wide text-gray-400 truncate";' in BIOMETRICS_VIEW_JS
     assert 'l.className = "text-[10px] uppercase tracking-wide text-gray-500 truncate";' not in BIOMETRICS_VIEW_JS
+
+
+def test_gpu_lane_badge_is_pool_derived_and_loaded_by_the_page() -> None:
+    """Stage 5.5: the badge renders the server's pool-derived label and greys on the
+    server's own lane_assigned verdict; the page loads this exact script."""
+    assert '<script src="/static/js/biometrics-view.js?v={{HUB_UI_ASSET_VERSION}}"' in INDEX_HTML
+    assert "function laneBadge(gpu)" in BIOMETRICS_VIEW_JS
+    assert "gpu.lane_assigned" in BIOMETRICS_VIEW_JS
+    card_fn = BIOMETRICS_VIEW_JS[BIOMETRICS_VIEW_JS.index("function gpuCard(gpu)"):]
+    card_fn = card_fn[: card_fn.index("var memFraction")]
+    assert "laneBadge(gpu)" in card_fn
+    assert 'gpu.lane === "unassigned"' not in card_fn

@@ -12,9 +12,8 @@ on:
       - "config/llm_profiles.yaml"
       - "services/orion-llamacpp-host/**"
       - "services/orion-llamacpp-bonsai-host/**"
-      - "services/orion-sql-db/manual_migration_gpu_pool_v1.sql"
-      - "services/orion-sql-db/manual_migration_gpu_pool_v2_holds.sql"
-      - "services/orion-sql-db/manual_migration_gpu_pool_v3_actuation_pause.sql"
+      # every pool migration: tests/test_schema_drift_gate.py holds them against the boot self-heal list
+      - "services/orion-sql-db/manual_migration_gpu_pool_*.sql"
       # stage 5.4: world-model takes a pool lease (the "world" job below)
       - "services/orion-world-model/**"
       - "services/orion-equilibrium-service/app/settings.py"
@@ -87,7 +86,7 @@ on:
       - "services/orion-hub/scripts/gpu_pool_routes.py"
       - "services/orion-hub/static/js/gpu_pool*.js"
       - "scripts/check_gpu_pool_config.py"
-      - "services/orion-sql-db/manual_migration_gpu_pool_v*.sql"
+      - "services/orion-sql-db/manual_migration_gpu_pool_*.sql"
       - "services/orion-world-model/**"
       - "services/orion-diffusion-host/docker-compose.yml"
       - "services/orion-diffusion-host/.env_example"

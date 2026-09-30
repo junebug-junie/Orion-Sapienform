@@ -55,7 +55,8 @@ PSQL() { docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "$1
 
 ```bash
 PSQL "SELECT column_name FROM information_schema.columns WHERE table_name='gpu_pool_leases' AND column_name='hold_lease_id'"
-# expect: hold_lease_id   (empty = migration NOT applied -- stop. A 4.3 pool refuses to boot without it)
+# expect: hold_lease_id   (empty = migration NOT applied. Before 2026-09-30 a 4.3 pool refused to boot
+#   without it; a current pool adds it at boot -- see services/orion-gpu-pool/README.md "Boot schema self-heal")
 # (2026-09-25 read: the column is ABSENT on live -- the migration has not been applied yet.)
 
 # [GO] apply it (additive DDL, lock_timeout 5s) if missing:

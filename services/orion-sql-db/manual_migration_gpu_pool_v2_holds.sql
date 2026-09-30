@@ -1,8 +1,10 @@
 -- orion-gpu-pool stage 4.3: durable-run holds and the swap actuation engine.
 -- Spec: docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md
--- Additive only, safe on the live tables. Apply BEFORE deploying a 4.3 pool: it refuses to boot
--- without these columns (app/store.py check_schema). Each statement is its own transaction when
--- run with `psql -f` (autocommit), which CREATE INDEX CONCURRENTLY requires.
+-- Additive only, safe on the live tables. Since 2026-09-30 the pool also adds these COLUMNS itself
+-- at boot (app/store.py BOOT_ADDITIVE_COLUMNS, kept identical by tests/test_schema_drift_gate.py),
+-- so a pool deployed first no longer crash-loops. Still run this file: the index below is operator-only.
+-- Each statement is its own transaction when run with `psql -f` (autocommit), which
+-- CREATE INDEX CONCURRENTLY requires.
 --
 -- lock_timeout: ADD COLUMN takes an ACCESS EXCLUSIVE lock for an instant (no rewrite: every new
 -- column is nullable or has a constant default). If the pool is mid-commit it waits at most 5s

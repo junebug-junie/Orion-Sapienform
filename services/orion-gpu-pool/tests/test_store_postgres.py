@@ -67,7 +67,7 @@ def test_projection_roundtrip_and_single_writer_lock():
         from app.store import PostgresStore
 
         store = PostgresStore(pool)
-        await store.check_schema()
+        assert await store.check_schema() == []
         now = datetime(2026, 9, 24, 12, tzinfo=timezone.utc)
         row = {"lease_id": "a", "request_id": "ra", "holder": "h", "work_class": "fast", "priority": "system",
                "kind": "request", "status": "queued", "created_at": now, "updated_at": now}
@@ -268,9 +268,10 @@ def test_prune_forgets_only_old_ended_leases_in_bounded_batches():
     _run_with_runtime(body)
 
 
-def test_v2_and_v3_migrations_are_additive_idempotent_and_required_at_boot():
-    """Applied to a live-shaped v1 table with rows: nothing lost, re-runnable, and a pool without it
-    refuses to boot (check_schema) instead of failing on its first hold."""
+def test_v2_and_v3_migrations_are_additive_idempotent_and_seen_by_check_schema():
+    """Applied to a live-shaped v1 table with rows: nothing lost, re-runnable, and check_schema names
+    exactly the columns each file still owes (the pool heals those at boot since 2026-09-30:
+    tests/test_schema_self_heal_postgres.py)."""
     async def go():
         import psycopg
         from psycopg.rows import dict_row
@@ -285,8 +286,7 @@ def test_v2_and_v3_migrations_are_additive_idempotent_and_required_at_boot():
             await conn.execute("INSERT INTO gpu_pool_cards (card, swapped_in) VALUES ('gpu2', '{agent-gpu2}')")
         pool = await _v1_only_pool()
         try:
-            with pytest.raises(Exception):
-                await PostgresStore(pool).check_schema()
+            assert len(await PostgresStore(pool).check_schema()) == 9      # all of v2 + v3
         finally:
             await pool.close()
         async with await psycopg.AsyncConnection.connect(URI, autocommit=True, row_factory=dict_row) as conn:
@@ -300,9 +300,9 @@ def test_v2_and_v3_migrations_are_additive_idempotent_and_required_at_boot():
                                             "'gpu_pool_leases_hold_idx'::regclass")).fetchone()
             assert idx["indisvalid"]
         pool = await _v1_only_pool()
-        try:
-            with pytest.raises(Exception):                         # stage 5.7: v3 is required too
-                await PostgresStore(pool).check_schema()
+        try:                                                       # stage 5.7: v3 still owed
+            assert await PostgresStore(pool).check_schema() == [
+                ("gpu_pool_cards", "actuation_paused_at"), ("gpu_pool_cards", "actuation_paused_by")]
         finally:
             await pool.close()
         async with await psycopg.AsyncConnection.connect(URI, autocommit=True, row_factory=dict_row) as conn:
@@ -313,7 +313,7 @@ def test_v2_and_v3_migrations_are_additive_idempotent_and_required_at_boot():
                 and card["actuation_paused_by"] is None           # additive: not paused by the migration
         pool = await _v1_only_pool()
         try:
-            await PostgresStore(pool).check_schema()
+            assert await PostgresStore(pool).check_schema() == []
         finally:
             await pool.close()
     asyncio.run(go())

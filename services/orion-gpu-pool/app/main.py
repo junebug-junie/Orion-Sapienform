@@ -234,10 +234,16 @@ async def lifespan(app: FastAPI):
     saver = AsyncPostgresSaver(_pool)
     await saver.setup()
     _store = PostgresStore(_pool, conninfo=_settings.postgres_uri)
-    await _store.check_schema()
     logger.info("gpu_pool_waiting_for_leader_lock")
     await _store.leader()
     logger.info("gpu_pool_leader_acquired")
+    # Only now (single writer): add any missing additive projection columns. A lock it cannot get
+    # in time leaves the pool SERVING degraded (see PostgresStore.heal_schema), never exiting --
+    # the pool is the only path for every LLM call. Raises only for a missing table/non-additive
+    # column (SchemaNotHealable): that one still needs the operator migration.
+    schema = await _store.heal_schema()
+    logger.info("gpu_pool_schema state=%s applied=%s missing=%s", schema["state"], schema["applied"],
+                schema["missing"])
     moved = await _store.adopt_public_checkpoints()  # only now: the previous writer has exited
     if moved:
         logger.info("gpu_pool_checkpoints_adopted rows=%s schema=%s", moved, CHECKPOINT_SCHEMA)
@@ -291,6 +297,8 @@ async def lifespan(app: FastAPI):
         runtime.guard_states = {g: None for g in SWAP_GUARDS}
     _tasks.append(asyncio.create_task(_tick_forever()))
     _tasks.append(asyncio.create_task(_prune_forever()))
+    if _store.schema_degraded:
+        _tasks.append(asyncio.create_task(_store.heal_forever(_stop)))
     logger.info("gpu_pool_ready channels=%s", [GPU_POOL_LEASE_REQUEST_CHANNEL, GPU_POOL_STATE_REQUEST_CHANNEL,
                                               GPU_POOL_CONTROL_REQUEST_CHANNEL, LLM_WORKER_ANNOUNCE_CHANNEL,
                                               GPU_POOL_ACTUATE_RESULT_CHANNEL, HARDWARE_WATCH_INCIDENT_CHANNEL])
@@ -324,6 +332,9 @@ app = FastAPI(title="orion-gpu-pool", lifespan=lifespan)
 async def health() -> dict[str, Any]:
     return {"ok": runtime is not None, "service": _settings.service_name, "mode": _settings.mode,
             "config_digest": runtime.cfg.digest if runtime else None,
+            # state=degraded: serving, but the listed columns are held in memory only (lost on a
+            # restart) -- apply the named operator migration or let the background retry heal it.
+            "schema": _store.schema_status() if _store is not None else None,
             "actuation": ({"seats": sorted(runtime.actuated), **runtime._paused_detail()} if runtime else None),
             "shed": runtime.shed_board.view(runtime.now(), runtime.shed_enabled).as_dict() if runtime else None}
 

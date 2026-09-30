@@ -1,0 +1,43 @@
+name: orion-hardware-watch tests
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-hardware-watch/**"
+      - "orion/hardware_watch/**"
+      - "orion/schemas/hardware_watch.py"
+      - "orion/schemas/curiosity_urgent.py"
+      - "orion/schemas/notify.py"
+      - "orion/autonomy/thermal_gate.py"
+      - "services/orion-sql-db/manual_migration_hardware_watch_v1.sql"
+      - ".github/workflows/orion-hardware-watch-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/orion-hardware-watch/**"
+      - "orion/hardware_watch/**"
+      - "orion/schemas/hardware_watch.py"
+      - "orion/schemas/curiosity_urgent.py"
+      - "orion/schemas/notify.py"
+      - "orion/autonomy/thermal_gate.py"
+      - "services/orion-sql-db/manual_migration_hardware_watch_v1.sql"
+      - ".github/workflows/orion-hardware-watch-tests.yml"
+
+jobs:
+  hardware-watch:
+    name: hardware-watch — rules + watcher + real-history replay eval
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-hardware-watch/requirements.txt pytest
+      - name: Rules + watcher tests
+        run: cd services/orion-hardware-watch && PYTHONPATH=../..:. python -m pytest tests -q -p no:cacheprovider
+      - name: "Replay eval (committed real history -- AC fires once on the 33.11 W stretch, heat rates, shed legs)"
+        run: cd services/orion-hardware-watch && PYTHONPATH=../..:. python evals/run_rules_replay_eval.py

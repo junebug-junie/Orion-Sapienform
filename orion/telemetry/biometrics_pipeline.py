@@ -194,6 +194,27 @@ def extract_measurements(sample: Dict[str, object]) -> Dict[str, float]:
         out["gpu_watts_total"] = totals[0]
         out["gpu_count"] = float(totals[1])  # so a consumer can check the total against the box
 
+    # GPU die temperature (nvidia-smi temperature.gpu, gpu_host_stats.sh's last CSV column).
+    # Per card as gpu{index}_temp_c so orion-hardware-watch's per-GPU heat rule reads indexed
+    # history from orion_biometrics_summary, plus the hottest card. A card whose reading is
+    # missing or not a number is omitted (absent-is-not-zero); a GPU with no usable index is
+    # counted in the max but gets no per-card key.
+    gpus = gpu.get("gpus")
+    if isinstance(gpus, list):
+        hottest: Optional[float] = None
+        for entry in gpus:
+            if not isinstance(entry, dict):
+                continue
+            temp = _as_float(entry.get("temperature_gpu_c"))
+            if temp is None or temp < 0.0:
+                continue
+            hottest = temp if hottest is None else max(hottest, temp)
+            index = str(entry.get("gpu_index", "")).strip()
+            if index.isdigit():
+                out[f"gpu{int(index)}_temp_c"] = temp
+        if hottest is not None:
+            out["gpu_temp_c_max"] = hottest
+
     # CPU package power from RAPL, summed over sockets. The largest previously-unattributed
     # term on athena: chassis 407 W, GPU 44 W, CPU 210 W across two packages -- more than half
     # the machine, invisible until now, on the node whose whole job is CPU orchestration.

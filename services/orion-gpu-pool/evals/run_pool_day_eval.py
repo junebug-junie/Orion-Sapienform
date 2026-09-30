@@ -38,6 +38,15 @@ agent and the loaded agent-gpu2 seat, chat traffic on chat, then an urgent hold.
   - no chat/interactive lease is ever recalled
   - with urgent_max_concurrent: 0 (rollback) nothing is paused
 
+Shed scenario (U4, docs/superpowers/plans/2026-09-29-urgent-curiosity-plan-4-5-hardware-watch-and-shedding.md):
+metacog system/background and chat traffic, a background durable-run hold already running, and an
+urgent hold arriving while cooling_incident sheds background+system. Hard targets:
+  - zero new grants to background/system leases (other than a running hold's own calls) while shed
+  - shed recalls nothing (the only recall is U1 pausing the running hold for the urgent one), and
+    the running hold keeps getting its calls granted until then
+  - chat (interactive) and the urgent hold are granted while shed
+  - after the shed clears, waiting background/system work is granted within one tick
+
 Also measured: lease-graph checkpoint throughput through the real PoolRuntime + MemorySaver.
 That number is an in-memory ceiling; Postgres checkpoint throughput is UNVERIFIED until live.
 
@@ -61,7 +70,7 @@ from orion.gpu_pool.config import load_pool_config  # noqa: E402
 from orion.gpu_pool.lease_graph import initial_state, transition  # noqa: E402
 from orion.gpu_pool.scheduler import (  # noqa: E402
     Abort, Backlog, CardLive, DeadLetter, Expire, Grant, LeaseView, Recall, Requeue, RoleLive,
-    Serialized, SwapBlocked, SwapLoad, SwapUnload, Unavailable, schedule,
+    Serialized, Shed, SwapBlocked, SwapLoad, SwapUnload, Unavailable, schedule,
 )
 
 CFG = load_pool_config()
@@ -471,6 +480,114 @@ def urgent_failures(u: dict, rollback: dict) -> list[str]:
     return out
 
 
+SHED_SEC, SHED_FROM, SHED_UNTIL = 900, 200, 600
+SHED = {"background": "cooling_incident", "system": "cooling_incident"}
+
+
+def shed_scenario(cfg=CFG) -> dict:
+    """U4 through the real scheduler + lease table: shed on at SHED_FROM, off at SHED_UNTIL."""
+    leases: dict[str, dict] = {}
+    work_left: dict[str, float] = {}
+    rng = random.Random(11)
+    grants: list[tuple[int, str, str, bool]] = []     # (sec, lease, priority, is_child)
+    recalls: list[str] = []
+    shed_reported: set[str] = set()
+    cards = {c: CardLive(c) for c in cfg.cards}
+
+    def add(lid: str, req: dict, now: datetime) -> None:
+        leases[lid] = dict(initial_state(lid, {"request_id": lid, **req}, now))
+
+    def apply(st: dict, ev: dict) -> None:
+        st.update(transition(st, ev, cfg), history=[])
+
+    for sec in range(SHED_SEC):
+        now = T0 + timedelta(seconds=sec)
+        at = now.isoformat()
+        if sec == 0:
+            add("H-run", {"work_class": "agent", "kind": "hold", "priority": "background", "retryable": True,
+                          "holder": "durable-runs:run"}, now)
+        if sec == 350:
+            add("H-urgent", {"work_class": "agent", "kind": "hold", "priority": "urgent", "retryable": True,
+                             "holder": "durable-runs:urgent"}, now)
+        run = leases.get("H-run")
+        if run and run["status"] == "granted" and sec % 40 == 10:   # the running hold's next call
+            lid = f"K{sec}"
+            add(lid, {"work_class": "agent", "kind": "request", "priority": "background",
+                      "hold_lease_id": "H-run"}, now)
+            work_left[lid] = 20
+        if sec % 30 == 5:
+            add(f"C{sec}", {"work_class": "chat", "kind": "request", "priority": "interactive"}, now)
+            work_left[f"C{sec}"] = 20
+        if sec % 5 == 0:
+            prio = "system" if rng.random() < 0.5 else "background"
+            add(f"M{sec}", {"work_class": "metacog", "kind": "request", "priority": prio, "retryable": True}, now)
+            work_left[f"M{sec}"] = rng.randint(3, 10)
+
+        for lid, st in leases.items():
+            if st["status"] not in ("granted", "recalling"):
+                continue
+            if lid in work_left:
+                work_left[lid] -= 1
+                if work_left[lid] <= 0:
+                    apply(st, {"type": "release_ok", "at": at})
+                    continue
+            elif lid == "H-urgent" and sec >= 500:
+                apply(st, {"type": "release_ok", "at": at})
+                continue
+            apply(st, {"type": "heartbeat", "at": at})
+
+        shed = SHED if SHED_FROM <= sec < SHED_UNTIL else None
+        for d in schedule(cfg, LIVE, cards, _views(leases), now, guards={"thermal": None, "visual_baseline": None},
+                          shed=shed):
+            if isinstance(d, Shed):
+                shed_reported.add(d.lease_id)
+                continue
+            if isinstance(d, (SwapLoad, SwapUnload, SwapBlocked, Serialized)):
+                continue
+            st = leases[d.lease_id]
+            ev = {"type": _EV[type(d)], "at": at, "reason": getattr(d, "reason", None)}
+            if isinstance(d, Grant):
+                ev["role"] = d.role
+                grants.append((sec, d.lease_id, st["request"]["priority"],
+                               bool(st["request"].get("hold_lease_id"))))
+            if isinstance(d, Recall):
+                ev["recall_by"] = d.recall_by.isoformat()
+                recalls.append((d.lease_id, d.reason))
+            apply(st, ev)
+
+    during = [g for g in grants if SHED_FROM <= g[0] < SHED_UNTIL]
+    after = [g for g in grants if g[0] >= SHED_UNTIL and g[2] in ("background", "system") and not g[3]]
+    return {
+        "shed_window_sec": [SHED_FROM, SHED_UNTIL],
+        "new_low_priority_grants_while_shed": sum(1 for g in during if g[2] in ("background", "system") and not g[3]),
+        "running_hold_calls_granted_while_shed": sum(1 for g in during if g[3]),
+        # U1 may pause it for the urgent hold (urgent_preempt); shed itself must never recall anything.
+        "running_hold_paused_for_urgent": ("H-run", "urgent_preempt") in recalls,
+        "recalls_not_for_urgent": [r for r in recalls if r[1] != "urgent_preempt"],
+        "chat_grants_while_shed": sum(1 for g in during if g[2] == "interactive"),
+        "urgent_granted_at_sec": next((g[0] for g in grants if g[1] == "H-urgent"), None),
+        "leases_reported_shed": len(shed_reported),
+        "first_low_priority_grant_after_clear_sec": (after[0][0] - SHED_UNTIL) if after else None,
+    }
+
+
+def shed_failures(s: dict) -> list[str]:
+    out = []
+    if s["new_low_priority_grants_while_shed"]:
+        out.append("shed_granted_low_priority")
+    if not s["running_hold_calls_granted_while_shed"] or s["recalls_not_for_urgent"]:
+        out.append("shed_disturbed_running_work")
+    if not s["chat_grants_while_shed"]:
+        out.append("shed_blocked_chat")
+    if s["urgent_granted_at_sec"] is None or not SHED_FROM <= s["urgent_granted_at_sec"] < SHED_UNTIL:
+        out.append("shed_blocked_urgent")
+    if not s["leases_reported_shed"]:
+        out.append("shed_not_reported")
+    if s["first_low_priority_grant_after_clear_sec"] is None or s["first_low_priority_grant_after_clear_sec"] > 1:
+        out.append("shed_not_cleared")
+    return out
+
+
 async def checkpoint_throughput(n: int = 300) -> float:
     from langgraph.checkpoint.memory import MemorySaver
 
@@ -499,6 +616,7 @@ def main() -> int:
     rollback_cfg = CFG.model_copy(update={"defaults": CFG.defaults.model_copy(update={"urgent_max_concurrent": 0})})
     rollback = urgent_scenario(rollback_cfg)
     report["urgent_rollback_paused"] = rollback["paused"]
+    report["shed_scenario"] = shed_scenario()
     report["leases_per_sec_inmemory"] = round(asyncio.run(checkpoint_throughput()), 1)
     import json
 
@@ -506,6 +624,7 @@ def main() -> int:
     failures = [k for k in ("owner_starvation_sec", "leases_lost", "small_role_violations", "world_diffusion_grant_overlap_sec",
                             "run_blocked_behind_itself_sec", "run_call_waits_over_one_inference") if report[k]]
     failures += urgent_failures(report["urgent_scenario"], rollback)
+    failures += shed_failures(report["shed_scenario"])
     if not report["interleaved_grants"]:
         failures.append("interleaved_grants")
     if not (report["counts"].get("serialized:diffusion") or report["counts"].get("serialized:world")):

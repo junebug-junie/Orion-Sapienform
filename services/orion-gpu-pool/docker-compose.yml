@@ -31,6 +31,7 @@ services:
       - GPU_POOL_ACTUATE_ROLES=${GPU_POOL_ACTUATE_ROLES:-}
       - GPU_POOL_CABINET_URL=${GPU_POOL_CABINET_URL:-http://100.92.216.81:8080/api/cabinet/sensors/latest}
       - GPU_POOL_GUARD_REFRESH_SEC=${GPU_POOL_GUARD_REFRESH_SEC:-30}
+      - GPU_POOL_SHED_ENABLED=${GPU_POOL_SHED_ENABLED:-false}
       - GPU_POOL_CONFIG_PATH=/app/config/gpu_pool.yaml
       - GPU_POOL_PROFILES_PATH=/app/config/llm_profiles.yaml
     healthcheck:

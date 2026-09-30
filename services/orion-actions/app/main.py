@@ -1790,7 +1790,7 @@ async def lifespan(app: FastAPI):
             settings.cortex_request_channel,
             rpc_env,
             reply_channel=reply_channel,
-            timeout_sec=float(settings.actions_exec_timeout_seconds),
+            timeout_sec=float(settings.actions_workflow_dispatch_timeout_seconds),
         )
         decoded = _actions_rpc_bus.codec.decode(msg.get("data"))
         if not decoded.ok or decoded.envelope is None:

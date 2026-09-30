@@ -263,10 +263,10 @@ def test_multiple_prs_span_all_three_buckets_in_one_call() -> None:
 
 
 def test_exceeds_max_digest_input_prs_cap_on_synthetic_window() -> None:
-    """Regression guard: a window with more than MAX_DIGEST_INPUT_PRS real
-    events must report the real count, not a value silently capped like
-    trim_github_compactor_input()'s LLM-facing item list."""
-    from orion.cognition.github_compactor.constants import MAX_DIGEST_INPUT_PRS
+    """Regression guard: a window with more than the github compactor's old
+    32-PR digest cap (MAX_DIGEST_INPUT_PRS, removed 2026-09-29) must report the
+    real count, not a silently capped one."""
+    MAX_DIGEST_INPUT_PRS = 32
 
     prs = [
         _pr(

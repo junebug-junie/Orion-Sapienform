@@ -34,7 +34,11 @@ from orion.schemas.self_study import (
 )
 from orion.notify.client import NotifyClient
 from orion.cognition.compactor.truncate import truncate_at_word_boundary
-from orion.cognition.github_compactor.constants import PR_BODY_MAX_CHARS
+from orion.cognition.github_compactor.constants import (
+    GITHUB_PULLS_MAX_PAGES,
+    GITHUB_PULLS_PER_PAGE,
+    PR_BODY_MAX_CHARS,
+)
 
 from .router import PlanRouter
 from . import self_study as self_study_module
@@ -987,6 +991,19 @@ def _normalize_nvme_smart_log(*, node_name: str, device: str, payload: Dict[str,
     }
 
 
+def _parse_skill_utc(value: object) -> datetime | None:
+    """ISO timestamp (skill arg or GitHub field) -> aware UTC datetime, else None."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _truncate_pr_body(body: object, *, max_chars: int = PR_BODY_MAX_CHARS) -> str | None:
     text = str(body or "").strip()
     if not text:
@@ -1650,31 +1667,60 @@ class GithubRecentPullRequestsVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutpu
             result = {"available": False, "reason": "github_repo_not_configured", "items": [], "lookback_days": lookback_days}
             return _skill_result_output(skill_name="skills.repo.github_recent_prs.v1", result=result, ok=False, status="unavailable", error={"message": result["reason"]}), []
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        now_utc = datetime.now(timezone.utc)
+        window_start = _parse_skill_utc(skill_args.get("window_start_utc"))
+        window_end = _parse_skill_utc(skill_args.get("window_end_utc"))
+        window_mode = "window" if window_start is not None else "rolling"
+        if window_start is None:
+            window_start = now_utc - timedelta(days=lookback_days)
         headers = {"Accept": "application/vnd.github+json", "User-Agent": "orion-cortex-exec"}
         if settings.github_token:
             headers["Authorization"] = f"Bearer {settings.github_token}"
         base = str(settings.github_api_url or "https://api.github.com").rstrip("/")
-        # GitHub max per_page is 100. Keep this at/above MAX_DIGEST_INPUT_PRS (32)
-        # so a ~30-merge day is not silently truncated at fetch before digest.
-        pulls_url = f"{base}/repos/{quote(owner)}/{quote(repo)}/pulls?state=closed&sort=updated&direction=desc&per_page=100"
+        pulls_base = (
+            f"{base}/repos/{quote(owner)}/{quote(repo)}/pulls"
+            f"?state=closed&sort=updated&direction=desc&per_page={GITHUB_PULLS_PER_PAGE}"
+        )
+        # Paginate newest-updated first until a page's oldest updated_at is before
+        # the window start: a PR merged in the window has updated_at >= merged_at
+        # >= window start, so nothing older can qualify. The old single-page fetch
+        # silently dropped merges past the 100th most-recently-updated closed PR.
+        pull_rows: List[Dict[str, Any]] = []
+        pages_fetched = 0
+        page_cap_hit = False
         try:
-            request = Request(pulls_url, headers=headers)
-            with urlopen(request, timeout=float(settings.skills_mesh_ops_timeout_sec)) as response:  # noqa: S310
-                payload_json = json.loads(response.read().decode("utf-8"))
+            for page in range(1, GITHUB_PULLS_MAX_PAGES + 1):
+                request = Request(f"{pulls_base}&page={page}", headers=headers)
+                with urlopen(request, timeout=float(settings.skills_mesh_ops_timeout_sec)) as response:  # noqa: S310
+                    page_json = json.loads(response.read().decode("utf-8"))
+                pages_fetched += 1
+                rows = [row for row in page_json if isinstance(row, dict)] if isinstance(page_json, list) else []
+                pull_rows.extend(rows)
+                if len(rows) < GITHUB_PULLS_PER_PAGE:
+                    break
+                oldest_updated = _parse_skill_utc(rows[-1].get("updated_at"))
+                if oldest_updated is not None and oldest_updated < window_start:
+                    break
+            else:
+                page_cap_hit = True
         except Exception as exc:
             result = {"available": False, "reason": str(exc), "items": [], "lookback_days": lookback_days}
             return _skill_result_output(skill_name="skills.repo.github_recent_prs.v1", result=result, ok=False, status="unavailable", error={"message": str(exc)}), []
         items: List[Dict[str, Any]] = []
-        for pr in payload_json if isinstance(payload_json, list) else []:
-            if not isinstance(pr, dict):
-                continue
+        seen_numbers: set = set()
+        for pr in pull_rows:
             merged_at = pr.get("merged_at")
             if not merged_at:
                 continue
-            merged_dt = datetime.fromisoformat(str(merged_at).replace("Z", "+00:00"))
-            if merged_dt < cutoff:
+            # A PR updated between page reads can shift pages and appear twice.
+            if pr.get("number") in seen_numbers:
                 continue
+            merged_dt = datetime.fromisoformat(str(merged_at).replace("Z", "+00:00"))
+            if merged_dt < window_start:
+                continue
+            if window_end is not None and merged_dt > window_end:
+                continue
+            seen_numbers.add(pr.get("number"))
             touched_paths: List[str] = []
             changed_files_count = int(pr.get("changed_files") or 0)
             files_url = pr.get("url")
@@ -1705,11 +1751,18 @@ class GithubRecentPullRequestsVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutpu
                 "inferred_services": _infer_services_from_paths(touched_paths),
                 "body": _truncate_pr_body(pr.get("body")),
             }
+            if len(str(pr.get("body") or "").strip()) > PR_BODY_MAX_CHARS:
+                item["body_truncated"] = True
             items.append(item)
         result = {
             "available": True,
             "repo": f"{owner}/{repo}",
             "lookback_days": lookback_days,
+            "window_mode": window_mode,
+            "window_start_utc": window_start.isoformat(),
+            "window_end_utc": (window_end or now_utc).isoformat(),
+            "pages_fetched": pages_fetched,
+            "page_cap_hit": page_cap_hit,
             "merged_pr_count": len(items),
             "items": items,
             "grouped_summary": _summarize_prs_by_service(items),

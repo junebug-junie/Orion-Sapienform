@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     actions_daily_llm_route: str | None = Field(None, alias="ACTIONS_DAILY_LLM_ROUTE")
     actions_journal_llm_route: str | None = Field(None, alias="ACTIONS_JOURNAL_LLM_ROUTE")
     actions_exec_timeout_seconds: float = Field(240.0, alias="ACTIONS_EXEC_TIMEOUT_SECONDS")
+    # RPC wait for a SCHEDULED workflow dispatch (_dispatch_scheduled_workflow).
+    # Separate from ACTIONS_EXEC_TIMEOUT_SECONDS (single skill/journal calls):
+    # a compactor pass is fetch (<=300s) + map-reduce digest calls bounded by
+    # COMPACTOR_DIGEST_TOTAL_BUDGET_SEC (3000s), so the old 420s wait gave up on
+    # runs that were still working and then retried them.
+    actions_workflow_dispatch_timeout_seconds: float = Field(3600.0, alias="ACTIONS_WORKFLOW_DISPATCH_TIMEOUT_SECONDS")
     actions_daily_timezone: str = Field("America/Denver", alias="ACTIONS_DAILY_TIMEZONE")
     actions_daily_run_on_startup: bool = Field(False, alias="ACTIONS_DAILY_RUN_ON_STARTUP")
     actions_daily_run_once_date: str | None = Field(None, alias="ACTIONS_DAILY_RUN_ONCE_DATE")

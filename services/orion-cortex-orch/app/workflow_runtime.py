@@ -4,35 +4,50 @@ import asyncio
 import json
 import logging
 import re
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Literal, Tuple
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from orion.cognition.workflows import get_workflow_definition, workflow_registry_payload
-from orion.cognition.chat_history_compactor.constants import DEFAULT_MAX_TURNS
+from orion.cognition.chat_history_compactor.constants import COMPACTOR_MAX_TURNS
 from orion.cognition.chat_history_compactor.digest import (
+    build_chat_history_compactor_digest_inputs,
+    build_chat_history_compactor_merge_input,
+    concatenate_chat_partial_digests,
     fit_chat_compactor_digest_within_budget,
     build_quiet_day_chat_digest,
     parse_chat_history_compactor_digest_json,
     stable_chat_compactor_journal_entry_id,
-    trim_chat_history_compactor_input,
 )
 from orion.cognition.chat_history_compactor.window import (
     exclude_workflow_notification_turns,
     resolve_chat_compactor_window,
 )
+from orion.cognition.compactor.constants import (
+    COMPACTOR_DIGEST_TOTAL_BUDGET_SEC,
+    DIGEST_LLM_ROUTES,
+    DIGEST_MAX_TOKENS,
+    DIGEST_MIN_CALL_SEC,
+    DIGEST_ORCH_RPC_TIMEOUT_SEC,
+)
+from orion.cognition.compactor.digest import EMPTY_COMPLETION_ERROR
 from orion.cognition.github_compactor.constants import (
     DEFAULT_LOOKBACK_DAYS,
-    DIGEST_ORCH_RPC_TIMEOUT_SEC,
     GITHUB_FETCH_ORCH_RPC_TIMEOUT_SEC,
 )
 from orion.cognition.github_compactor.digest import (
+    build_github_compactor_digest_inputs,
+    build_github_compactor_merge_input,
+    concatenate_github_partial_digests,
+    filter_items_to_window,
     fit_digest_within_budget,
     build_quiet_day_digest,
     parse_github_compactor_digest_json,
     stable_github_compactor_journal_entry_id,
-    trim_github_compactor_input,
 )
+from orion.cognition.github_compactor.window import resolve_github_compactor_window
 from orion.schemas.actions.chat_history_compactor import ChatHistoryCompactorDigestV1
 from orion.schemas.actions.github_compactor import GithubCompactorDigestV1
 from orion.core.bus.async_service import OrionBusAsync
@@ -1962,6 +1977,7 @@ def _build_compactor_digest_request(
     input_key: str,
     input_payload: Dict[str, Any],
     llm_route: str | None = None,
+    timeout_sec: float | None = None,
 ) -> CortexClientRequest:
     """Shared brain-lane digest request shape for compactor workflows."""
     synth_req = req.model_copy(deep=True)
@@ -1996,9 +2012,15 @@ def _build_compactor_digest_request(
             "reasoning": {"effort": "none"},
         }
     )
-    if verb == "github_compactor_digest_v1":
-        # Must cover the 10-minute verb budget; default orch wait used to be 120s.
-        synth_req.options["timeout_sec"] = float(DIGEST_ORCH_RPC_TIMEOUT_SEC)
+    # Both digest verbs run a 10-minute exec budget (verb YAML timeout_ms); the
+    # orch wait must cover it. `timeout_sec` may be lowered by the caller to what
+    # is left of the whole-pass budget.
+    synth_req.options["timeout_sec"] = float(timeout_sec if timeout_sec is not None else DIGEST_ORCH_RPC_TIMEOUT_SEC)
+    # ctx.max_tokens wins in exec's _resolve_llm_chat_max_tokens; the old path fell
+    # back to LLM_CHAT_GENERAL_MAX_TOKENS (8000 live), too tight for a full-day
+    # narrative with no journal_body cap (finish_reason=length ->
+    # structured_output_rejected).
+    synth_req.options["max_tokens"] = int(DIGEST_MAX_TOKENS)
     if llm_route is not None:
         synth_req.options["llm_route"] = llm_route
     return synth_req
@@ -2028,11 +2050,145 @@ def _compactor_digest_from_payload(
             return model_cls.model_validate(digest_raw), None
         return parse_json(str(payload.get("final_text") or "")), None
     except (ValueError, TypeError) as exc:
+        if str(exc) == EMPTY_COMPLETION_ERROR:
+            return None, f"{error_prefix}:empty_completion"
         return None, f"{error_prefix}:invalid_json:{exc}"
 
 
-async def _run_github_compactor_digest(
+@dataclass
+class _CompactorDigestRun:
+    """Evidence for one compactor digest pass (single call, or chunks + merge)."""
+
+    digest: Any
+    route: str | None
+    chunk_count: int
+    merge_mode: str  # "single" | "llm_merge" | "concatenated"
+    attempts: List[Dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _CompactorDigestSpec:
+    verb: str
+    prompt: str
+    input_key: str
+    metadata_key: str
+    model_cls: Any
+    parse_json: Any
+    error_prefix: str
+    fit_budget: Any
+    build_merge_input: Any
+    concatenate: Any
+
+
+_GITHUB_DIGEST_SPEC = _CompactorDigestSpec(
+    verb="github_compactor_digest_v1",
+    prompt="Compact merged PR activity into repo development digest.",
+    input_key="github_compactor_input",
+    metadata_key="github_compactor_digest",
+    model_cls=GithubCompactorDigestV1,
+    parse_json=parse_github_compactor_digest_json,
+    error_prefix="github_compactor_digest_failed",
+    fit_budget=fit_digest_within_budget,
+    build_merge_input=build_github_compactor_merge_input,
+    concatenate=concatenate_github_partial_digests,
+)
+
+_CHAT_DIGEST_SPEC = _CompactorDigestSpec(
+    verb="chat_history_compactor_digest_v1",
+    prompt="Compact recent Hub chat into a durable memory digest.",
+    input_key="chat_history_compactor_input",
+    metadata_key="chat_history_compactor_digest",
+    model_cls=ChatHistoryCompactorDigestV1,
+    parse_json=parse_chat_history_compactor_digest_json,
+    error_prefix="chat_compactor_digest_failed",
+    fit_budget=fit_chat_compactor_digest_within_budget,
+    build_merge_input=build_chat_history_compactor_merge_input,
+    concatenate=concatenate_chat_partial_digests,
+)
+
+
+async def _call_compactor_digest_with_retry(
     *,
+    spec: _CompactorDigestSpec,
+    call_verb_runtime,
+    bus: OrionBusAsync,
+    source: ServiceRef,
+    correlation_id: str,
+    call_correlation_id: str,
+    causality_chain: list | None,
+    trace: dict | None,
+    req: CortexClientRequest,
+    workflow_id: str,
+    input_payload: Dict[str, Any],
+    deadline: float,
+    step_label: str,
+    attempts: List[Dict[str, Any]],
+) -> Tuple[Any, str]:
+    """One digest call, tried over DIGEST_LLM_ROUTES until it yields a parsed digest.
+
+    Every failure shape seen live is retried (empty completion, invalid JSON,
+    structured_output_rejected, verb failure): they were transient, and the
+    github pass used to fail the whole day on the first one. Over-budget card
+    prose is repaired afterwards, never retried.
+    """
+    last_error: str | None = None
+    for route in DIGEST_LLM_ROUTES:
+        remaining = deadline - time.monotonic()
+        if remaining < DIGEST_MIN_CALL_SEC:
+            last_error = f"{spec.error_prefix}:pass_budget_exhausted"
+            break
+        synth_req = _build_compactor_digest_request(
+            req=req,
+            correlation_id=correlation_id,
+            workflow_id=workflow_id,
+            verb=spec.verb,
+            prompt=spec.prompt,
+            input_key=spec.input_key,
+            input_payload=input_payload,
+            llm_route=route,
+            timeout_sec=min(float(DIGEST_ORCH_RPC_TIMEOUT_SEC), remaining),
+        )
+        verb_result = await call_verb_runtime(
+            bus,
+            source=source,
+            client_request=synth_req,
+            correlation_id=call_correlation_id,
+            causality_chain=causality_chain,
+            trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
+            timeout_sec=float((synth_req.options or {}).get("timeout_sec", DIGEST_ORCH_RPC_TIMEOUT_SEC)),
+        )
+        if not verb_result.ok:
+            error = f"{spec.error_prefix}:{verb_result.error or 'verb_failed'}"
+            digest = None
+        else:
+            digest, error = _compactor_digest_from_payload(
+                _extract_result_payload(verb_result),
+                metadata_key=spec.metadata_key,
+                model_cls=spec.model_cls,
+                parse_json=spec.parse_json,
+                error_prefix=spec.error_prefix,
+            )
+        attempts.append({"step": step_label, "route": route, "ok": error is None, **({"error": error[:300]} if error else {})})
+        if error:
+            logger.warning(
+                "compactor_digest_attempt_failed corr=%s workflow_id=%s step=%s route=%s error=%s",
+                correlation_id,
+                workflow_id,
+                step_label,
+                route,
+                error[:300],
+            )
+            last_error = error
+            continue
+        return digest, route
+    raise WorkflowExecutionError(last_error or f"{spec.error_prefix}:exhausted")
+
+
+async def _run_compactor_digest(
+    *,
+    spec: _CompactorDigestSpec,
+    inputs: List[Dict[str, Any]],
+    window_label: str,
     call_verb_runtime,
     bus: OrionBusAsync,
     source: ServiceRef,
@@ -2041,46 +2197,85 @@ async def _run_github_compactor_digest(
     trace: dict | None,
     req: CortexClientRequest,
     workflow_id: str,
-    fetch_payload: Dict[str, Any],
-) -> GithubCompactorDigestV1:
-    synth_req = _build_compactor_digest_request(
-        req=req,
-        correlation_id=correlation_id,
-        workflow_id=workflow_id,
-        verb="github_compactor_digest_v1",
-        prompt="Compact merged PR activity into repo development digest.",
-        input_key="github_compactor_input",
-        input_payload=trim_github_compactor_input(fetch_payload),
-    )
-    verb_result = await call_verb_runtime(
-        bus,
+) -> _CompactorDigestRun:
+    """Digest a full window: one call if it fits, else map (chunk digests) + reduce (merge call).
+
+    Chunking keeps each call inside the smallest context an agent-class call can
+    land on (compactor.constants.DIGEST_INPUT_CHAR_BUDGET); nothing is dropped to
+    make it fit. If every merge attempt fails, the chunk digests (real model
+    output over real input) are joined deterministically and the run is marked
+    ``merge_mode=concatenated`` instead of throwing the day's work away.
+    """
+    if not inputs:
+        raise WorkflowExecutionError(f"{spec.error_prefix}:empty_input")
+    deadline = time.monotonic() + float(COMPACTOR_DIGEST_TOTAL_BUDGET_SEC)
+    attempts: List[Dict[str, Any]] = []
+    common = dict(
+        spec=spec,
+        call_verb_runtime=call_verb_runtime,
+        bus=bus,
         source=source,
-        client_request=synth_req,
         correlation_id=correlation_id,
         causality_chain=causality_chain,
-        trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
-        timeout_sec=float((synth_req.options or {}).get("timeout_sec", DIGEST_ORCH_RPC_TIMEOUT_SEC)),
+        trace=trace,
+        req=req,
+        workflow_id=workflow_id,
+        deadline=deadline,
+        attempts=attempts,
     )
-    if not verb_result.ok:
-        raise WorkflowExecutionError(f"github_compactor_digest_failed:{verb_result.error or 'verb_failed'}")
-    digest, error = _compactor_digest_from_payload(
-        _extract_result_payload(verb_result),
-        metadata_key="github_compactor_digest",
-        model_cls=GithubCompactorDigestV1,
-        parse_json=parse_github_compactor_digest_json,
-        error_prefix="github_compactor_digest_failed",
-    )
-    if error:
-        raise WorkflowExecutionError(error)
-    digest, trimmed_fields = fit_digest_within_budget(digest)
+    if len(inputs) == 1:
+        digest, route = await _call_compactor_digest_with_retry(
+            **common,
+            call_correlation_id=correlation_id,
+            input_payload=inputs[0],
+            step_label="single",
+        )
+        merge_mode = "single"
+    else:
+        partials = []
+        route = None
+        for index, chunk_input in enumerate(inputs, start=1):
+            partial, route = await _call_compactor_digest_with_retry(
+                **common,
+                call_correlation_id=_workflow_sub_correlation_id(correlation_id, f"digest_chunk_{index}"),
+                input_payload=chunk_input,
+                step_label=f"chunk_{index}_of_{len(inputs)}",
+            )
+            partials.append(partial)
+        try:
+            digest, route = await _call_compactor_digest_with_retry(
+                **common,
+                call_correlation_id=_workflow_sub_correlation_id(correlation_id, "digest_merge"),
+                input_payload=spec.build_merge_input(base_input=inputs[0], partial_digests=partials),
+                step_label="merge",
+            )
+            merge_mode = "llm_merge"
+        except WorkflowExecutionError as exc:
+            logger.warning(
+                "compactor_digest_merge_failed_concatenating corr=%s workflow_id=%s chunks=%s error=%s",
+                correlation_id,
+                workflow_id,
+                len(partials),
+                exc,
+            )
+            digest = spec.concatenate(partials, window_label=window_label)
+            merge_mode = "concatenated"
+    digest, trimmed_fields = spec.fit_budget(digest)
     if trimmed_fields:
         logger.info(
-            "compactor_digest_trimmed_to_budget corr=%s workflow_id=%s fields=%s",
+            "compactor_digest_trimmed_to_budget corr=%s workflow_id=%s route=%s fields=%s",
             correlation_id,
             workflow_id,
+            route,
             ",".join(trimmed_fields),
         )
-    return digest
+    return _CompactorDigestRun(
+        digest=digest,
+        route=route,
+        chunk_count=len(inputs),
+        merge_mode=merge_mode,
+        attempts=attempts,
+    )
 
 
 async def _execute_github_compactor_pass(
@@ -2095,8 +2290,20 @@ async def _execute_github_compactor_pass(
 ) -> CortexClientResult:
     workflow_id = "github_compactor_pass"
     lookback_days = _resolve_github_compactor_lookback_days(req)
-    window_label = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    skill_args = {"lookback_days": lookback_days}
+    try:
+        window = resolve_github_compactor_window(
+            workflow_request=_workflow_request(req),
+            now=datetime.now(timezone.utc),
+            lookback_days=lookback_days,
+        )
+    except ValueError as exc:
+        raise WorkflowExecutionError(f"github_compactor_window_invalid:{exc}") from exc
+    window_label = window.window_label
+    skill_args = {
+        "lookback_days": lookback_days,
+        "window_start_utc": window.window_start.isoformat(),
+        "window_end_utc": window.window_end.isoformat(),
+    }
     fetch_req = CortexClientRequest(
         mode="brain",
         route_intent="none",
@@ -2152,14 +2359,40 @@ async def _execute_github_compactor_pass(
         raise WorkflowExecutionError(f"github_fetch_unavailable:{reason}")
 
     repo = str(fetch_payload.get("repo") or "unknown repo").strip()
-    merged_pr_count = int(fetch_payload.get("merged_pr_count") or 0)
+    fetch_payload = dict(fetch_payload)
+    if window.mode == "day":
+        # Re-apply the calendar day here: an exec that predates window-bounded
+        # fetch returns a rolling now-N-days list, which must not leak into (or
+        # fall short of) the day. Rolling windows stay owned by the fetch.
+        fetch_payload["items"] = filter_items_to_window(
+            list(fetch_payload.get("items") or []),
+            window_start=window.window_start,
+            window_end=window.window_end,
+        )
+    else:
+        fetch_payload["items"] = list(fetch_payload.get("items") or [])
+    fetch_payload["window_mode"] = window.mode
+    fetch_payload["window_start_utc"] = window.window_start.isoformat()
+    fetch_payload["window_end_utc"] = window.window_end.isoformat()
+    if window.calendar_date:
+        fetch_payload["calendar_date"] = window.calendar_date
+    merged_pr_count = len(fetch_payload["items"])
+    digest_inputs, coverage = build_github_compactor_digest_inputs(fetch_payload)
+    if fetch_payload.get("page_cap_hit"):
+        # The GitHub walk stopped at GITHUB_PULLS_MAX_PAGES before reaching the
+        # window start: merges may be missing, so coverage is not complete.
+        coverage["input_truncated"] = True
     card_id: str | None = None
     card_persist_skipped_reason: str | None = None
+    digest_run: _CompactorDigestRun | None = None
 
     if merged_pr_count == 0:
         digest = build_quiet_day_digest(repo=repo, window_label=window_label)
     else:
-        digest = await _run_github_compactor_digest(
+        digest_run = await _run_compactor_digest(
+            spec=_GITHUB_DIGEST_SPEC,
+            inputs=digest_inputs,
+            window_label=window_label,
             call_verb_runtime=call_verb_runtime,
             bus=bus,
             source=source,
@@ -2168,8 +2401,8 @@ async def _execute_github_compactor_pass(
             trace=trace,
             req=req,
             workflow_id=workflow_id,
-            fetch_payload=fetch_payload,
         )
+        digest = digest_run.digest
         try:
             persisted_card_id = await persist_github_compactor_memory_card(
                 digest=digest,
@@ -2223,9 +2456,14 @@ async def _execute_github_compactor_pass(
     if card_id:
         persisted.insert(0, f"memory_card:{card_id}")
 
+    window_phrase = (
+        f"on {window.calendar_date} ({window.timezone_name})"
+        if window.mode == "day"
+        else f"in the last {lookback_days} day(s)"
+    )
     if merged_pr_count == 0:
         main_result = (
-            f"No merged PRs for {repo} in the last {lookback_days} day(s). "
+            f"No merged PRs for {repo} {window_phrase}. "
             f"Journal entry {write.entry_id} recorded; repo snapshot card unchanged."
         )
     else:
@@ -2250,6 +2488,20 @@ async def _execute_github_compactor_pass(
         "lookback_days": lookback_days,
         "repo": repo,
         "window_label": window_label,
+        "window_mode": window.mode,
+        "window_start_utc": window.window_start.isoformat(),
+        "window_end_utc": window.window_end.isoformat(),
+        "total_count": int(coverage.get("total_count") or 0),
+        "covered_count": int(coverage.get("covered_count") or 0),
+        "input_truncated": bool(coverage.get("input_truncated")),
+        "truncated_pr_numbers": list(coverage.get("truncated_pr_numbers") or []),
+        "github_pages_fetched": fetch_payload.get("pages_fetched"),
+        "github_page_cap_hit": bool(fetch_payload.get("page_cap_hit")),
+        "digest_chunk_count": digest_run.chunk_count if digest_run else 0,
+        "digest_merge_mode": digest_run.merge_mode if digest_run else None,
+        "digest_llm_route": digest_run.route if digest_run else None,
+        "digest_attempts": digest_run.attempts if digest_run else [],
+        "journal_body_chars": len(digest.journal_body or ""),
         "card_id": card_id,
         "card_summary_preview": digest.card_summary[:200],
         "journal_entry": write.model_dump(mode="json"),
@@ -2274,68 +2526,6 @@ async def _execute_github_compactor_pass(
         correlation_id=correlation_id,
         metadata=metadata,
     )
-
-
-async def _run_chat_history_compactor_digest(
-    *,
-    call_verb_runtime,
-    bus: OrionBusAsync,
-    source: ServiceRef,
-    correlation_id: str,
-    causality_chain: list | None,
-    trace: dict | None,
-    req: CortexClientRequest,
-    workflow_id: str,
-    window: DiscussionWindowResultV1,
-) -> Tuple[ChatHistoryCompactorDigestV1, str]:
-    last_error: str | None = None
-    digest_input = trim_chat_history_compactor_input(window)
-    for route in ("chat", "quick"):
-        synth_req = _build_compactor_digest_request(
-            req=req,
-            correlation_id=correlation_id,
-            workflow_id=workflow_id,
-            verb="chat_history_compactor_digest_v1",
-            prompt="Compact recent Hub chat into a durable memory digest.",
-            input_key="chat_history_compactor_input",
-            input_payload=digest_input,
-            llm_route=route,
-        )
-        verb_result = await call_verb_runtime(
-            bus,
-            source=source,
-            client_request=synth_req,
-            correlation_id=correlation_id,
-            causality_chain=causality_chain,
-            trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
-            timeout_sec=float((synth_req.options or {}).get("timeout_sec", 120.0)),
-        )
-        if not verb_result.ok:
-            last_error = f"chat_compactor_digest_failed:{verb_result.error or 'verb_failed'}"
-            continue
-        digest, error = _compactor_digest_from_payload(
-            _extract_result_payload(verb_result),
-            metadata_key="chat_history_compactor_digest",
-            model_cls=ChatHistoryCompactorDigestV1,
-            parse_json=parse_chat_history_compactor_digest_json,
-            error_prefix="chat_compactor_digest_failed",
-        )
-        if error:
-            last_error = error
-            continue
-        # Over-budget prose is repaired here, not retried: the "quick" route would
-        # re-run the whole digest for a formatting miss on already-valid content.
-        digest, trimmed_fields = fit_chat_compactor_digest_within_budget(digest)
-        if trimmed_fields:
-            logger.info(
-                "compactor_digest_trimmed_to_budget corr=%s workflow_id=%s route=%s fields=%s",
-                correlation_id,
-                workflow_id,
-                route,
-                ",".join(trimmed_fields),
-            )
-        return digest, route
-    raise WorkflowExecutionError(last_error or "chat_compactor_digest_failed:exhausted")
 
 
 async def _execute_chat_history_compactor_pass(
@@ -2367,7 +2557,9 @@ async def _execute_chat_history_compactor_pass(
         end_time_utc=window_spec.window_end,
         user_id=None,
         source=None,
-        max_turns=DEFAULT_MAX_TURNS,
+        # Every turn in the window, not a trailing slice (digest is embedded
+        # verbatim in the daily letter). Hitting the ceiling -> input_truncated.
+        max_turns=COMPACTOR_MAX_TURNS,
         require_prompt_and_response=True,
         # "Compact the last N hours" means everything organic in that window, not
         # just the trailing unbroken session — a quiet gap (idle overnight, a burst
@@ -2439,17 +2631,22 @@ async def _execute_chat_history_compactor_pass(
 
     card_id: str | None = None
     card_persist_skipped_reason: str | None = None
-    digest_route: str | None = None
+    digest_run: _CompactorDigestRun | None = None
     persisted: List[str] = []
     journal_entry: dict | None = None
+    window_label = window_spec.calendar_date or window_spec.compactor_index
+    digest_inputs, coverage = build_chat_history_compactor_digest_inputs(
+        window, fetch_limit=COMPACTOR_MAX_TURNS
+    )
 
     quiet = window.turn_count <= 0 or not (window.transcript_text or "").strip()
     if quiet:
-        digest = build_quiet_day_chat_digest(
-            window_label=window_spec.calendar_date or window_spec.compactor_index
-        )
+        digest = build_quiet_day_chat_digest(window_label=window_label)
     else:
-        digest, digest_route = await _run_chat_history_compactor_digest(
+        digest_run = await _run_compactor_digest(
+            spec=_CHAT_DIGEST_SPEC,
+            inputs=digest_inputs,
+            window_label=window_label,
             call_verb_runtime=call_verb_runtime,
             bus=bus,
             source=source,
@@ -2458,8 +2655,8 @@ async def _execute_chat_history_compactor_pass(
             trace=trace,
             req=req,
             workflow_id=workflow_id,
-            window=window,
         )
+        digest = digest_run.digest
         try:
             persisted_card_id = await persist_chat_history_compactor_memory_card(
                 digest=digest,
@@ -2482,7 +2679,12 @@ async def _execute_chat_history_compactor_pass(
                 exc_info=True,
             )
 
-    # Spec: journal append fires only for non-quiet windows (no empty-shell stubs).
+    # Quiet-window behavior (kept deliberately): a window with no organic turns
+    # writes NO journal entry and NO memory card -- only the workflow result
+    # records the quiet day. This differs from github_compactor_pass, which does
+    # journal its quiet day. Consumers (the daily letter) must treat a missing
+    # chat entry for a date as "no Hub chat that day", confirmed by this run's
+    # workflow metadata (turn_count=0), not as a failed run.
     if not quiet and (digest.journal_body or "").strip():
         draft = JournalEntryDraftV1(
             mode="digest",
@@ -2550,7 +2752,14 @@ async def _execute_chat_history_compactor_pass(
         "compactor_index": window_spec.compactor_index,
         "card_id": card_id,
         "card_summary_preview": digest.card_summary[:200],
-        "digest_llm_route": digest_route,
+        "digest_llm_route": digest_run.route if digest_run else None,
+        "digest_chunk_count": digest_run.chunk_count if digest_run else 0,
+        "digest_merge_mode": digest_run.merge_mode if digest_run else None,
+        "digest_attempts": digest_run.attempts if digest_run else [],
+        "total_count": int(coverage.get("total_count") or 0),
+        "covered_count": int(coverage.get("covered_count") or 0),
+        "input_truncated": bool(coverage.get("input_truncated")),
+        "journal_body_chars": len(digest.journal_body or "") if not quiet else 0,
         "window_mode": window_spec.mode,
         "lookback_hours": window_spec.lookback_hours,
         "selection_strategy": window.selection_strategy,

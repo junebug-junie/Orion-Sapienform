@@ -326,66 +326,28 @@ class DurableRunner:
             return None
         return findings
 
-    async def _call_verb_text(
-        self,
-        verb: str,
-        metadata: dict[str, Any],
-        llm_route: str,
-        *,
-        gpu_lease: GpuLeaseRefV1 | None = None,
-        timeout_sec: float,
-        user_text: str,
-    ) -> str:
-        """One cortex verb call returning the raw completion text (no JSON parsing).
-
-        Same request shape as ``_call_reflect_llm`` (``policy_dispatch_only``; the verb's prompt
-        reads ``context.metadata``), but it RAISES on every failure -- RPC error/timeout,
-        undecodable reply, non-ok result, empty text -- so an admitted graph node counts it as
-        an attempt instead of finishing on nothing. ``gpu_lease`` attaches the call to the run's
-        pool hold (``options.gpu_lease``); ``llm_route`` stays the brief's route."""
-        from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
-
+    async def _cortex_orch_rpc(self, request_payload: dict[str, Any], *, timeout_sec: float, label: str) -> dict[str, Any]:
+        """compactor.digest (admitted): one cortex-orch request -- a digest verb call carrying the
+        run's hold as ``options.gpu_lease``, or the finalize workflow request -- and its decoded
+        ``CortexClientResult`` payload. Validated as a ``CortexClientRequest`` before it leaves, so
+        a malformed request fails here, not as an opaque orch validation error. Raises on transport
+        or decode failure; the graph decides what a non-ok payload means."""
         if self._bus is None:
             raise RuntimeError("no_bus")
-        request = CortexClientRequest(
-            mode="brain",
-            route_intent="none",
-            verb=verb,
-            options={
-                "policy_dispatch_only": True,
-                **({"llm_route": llm_route} if llm_route else {}),
-                **({"gpu_lease": gpu_lease.model_dump(mode="json")} if gpu_lease is not None else {}),
-            },
-            recall=RecallDirective(enabled=False, required=False),
-            context=CortexClientContext(
-                messages=[LLMMessage(role="user", content=user_text)],
-                raw_user_text=user_text,
-                metadata=metadata,
-            ),
-        )
+        request = CortexClientRequest.model_validate(request_payload)
         rpc_correlation_id = uuid4()
-        reply_channel = f"orion:cortex:result:durable-verb:{rpc_correlation_id}"
-        envelope = BaseEnvelope(
-            kind="cortex.orch.request",
-            source=self._source(),
-            correlation_id=rpc_correlation_id,
-            reply_to=reply_channel,
-            payload=request.model_dump(mode="json"),
-        )
-        msg = await self._bus.rpc_request(
-            self._settings.cortex_request_channel, envelope, reply_channel=reply_channel, timeout_sec=timeout_sec,
-        )
+        reply_channel = f"orion:cortex:result:compactor-digest:{rpc_correlation_id}"
+        envelope = BaseEnvelope(kind="cortex.orch.request", source=self._source(), correlation_id=rpc_correlation_id,
+                                reply_to=reply_channel, payload=request.model_dump(mode="json"))
+        msg = await self._bus.rpc_request(self._settings.cortex_request_channel, envelope,
+                                          reply_channel=reply_channel, timeout_sec=float(timeout_sec))
         decoded = self._bus.codec.decode(msg.get("data"))
         if not decoded.ok or decoded.envelope is None:
-            raise RuntimeError(f"verb_reply_undecodable:{verb}:{decoded.error}")
+            raise RuntimeError(f"cortex_orch_decode_failed:{decoded.error}")
         payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
-        if not payload.get("ok", False):
-            raise RuntimeError(f"verb_not_ok:{verb}:{payload.get('status')}:{str(payload.get('error'))[:200]}")
-        text = extract_cortex_payload_text(payload)
-        if not text or not text.strip():
-            raise RuntimeError(f"verb_empty_text:{verb}")
-        logger.info("durable_verb_text_ok verb=%s corr=%s chars=%d", verb, rpc_correlation_id, len(text))
-        return text
+        logger.info("compactor_digest_cortex_reply step=%s rpc=%s ok=%s status=%s",
+                    label, rpc_correlation_id, payload.get("ok"), payload.get("status"))
+        return payload
 
     def _source(self) -> ServiceRef:
         s = self._settings
@@ -581,6 +543,51 @@ class DurableRunner:
             return None
         ok = await self._publish(JOURNAL_WRITE_CHANNEL, "journal.entry.write.v1", entry, _corr_uuid(entry.correlation_id or ""))
         return entry.entry_id if ok else None
+
+    async def _call_verb_text(
+        self,
+        verb: str,
+        metadata: dict[str, Any],
+        llm_route: str,
+        *,
+        gpu_lease: GpuLeaseRefV1 | None = None,
+        timeout_sec: float,
+        user_text: str,
+    ) -> str:
+        """One cortex verb call returning the raw completion text (no JSON parsing), over
+        ``_cortex_orch_rpc`` (shared with compactor.digest).
+
+        Same request shape as ``_call_reflect_llm`` (``policy_dispatch_only``; the verb's prompt
+        reads ``context.metadata``), but it RAISES on every failure -- RPC error/timeout,
+        undecodable reply, non-ok result, empty text -- so an admitted graph node counts it as
+        an attempt instead of finishing on nothing. ``gpu_lease`` attaches the call to the run's
+        pool hold (``options.gpu_lease``); ``llm_route`` stays the brief's route."""
+        from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
+
+        request = CortexClientRequest(
+            mode="brain",
+            route_intent="none",
+            verb=verb,
+            options={
+                "policy_dispatch_only": True,
+                **({"llm_route": llm_route} if llm_route else {}),
+                **({"gpu_lease": gpu_lease.model_dump(mode="json")} if gpu_lease is not None else {}),
+            },
+            recall=RecallDirective(enabled=False, required=False),
+            context=CortexClientContext(
+                messages=[LLMMessage(role="user", content=user_text)],
+                raw_user_text=user_text,
+                metadata=metadata,
+            ),
+        )
+        payload = await self._cortex_orch_rpc(request.model_dump(mode="json"), timeout_sec=timeout_sec, label=verb)
+        if not payload.get("ok", False):
+            raise RuntimeError(f"verb_not_ok:{verb}:{payload.get('status')}:{str(payload.get('error'))[:200]}")
+        text = extract_cortex_payload_text(payload)
+        if not text or not text.strip():
+            raise RuntimeError(f"verb_empty_text:{verb}")
+        logger.info("durable_verb_text_ok verb=%s chars=%d", verb, len(text))
+        return text
 
     async def _publish(self, channel: str, kind: str, model: Any, corr: UUID) -> bool:
         try:

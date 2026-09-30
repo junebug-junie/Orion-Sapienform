@@ -670,10 +670,11 @@ class PoolRuntime:
         self._serialized_reported.add(key)   # only once sent: a failed publish is retried next tick
 
     @staticmethod
-    def _swap_key(d: SwapLoad | SwapUnload | SwapBlocked, action: str) -> tuple:
-        """One reporting episode: seat + action + why it is not happening. Never the guard's state
-        text or anything else that can change tick to tick (a key that flips re-fires every tick)."""
-        return (type(d).__name__, d.role, action, d.reason if isinstance(d, SwapBlocked) else None)
+    def _swap_key(role: str, action: str, reason: str, wanted: str) -> tuple:
+        """One reporting episode: seat + action + the reason reported + the scheduler's own reason.
+        Never the guard's state text or anything else that can change tick to tick (a key that
+        flips re-fires every tick)."""
+        return (role, action, reason, wanted)
 
     async def _swap(self, d: SwapLoad | SwapUnload | SwapBlocked) -> tuple:
         """A seat with a launch block is actuated. While actuation is paused, for a seat with no launch
@@ -683,20 +684,18 @@ class PoolRuntime:
         for this tick."""
         action = "unload" if isinstance(d, SwapUnload) else "load"
         if d.role in self._reconciling and not isinstance(d, SwapBlocked):
-            return self._swap_key(d, action)   # the actuator has not said yet what the card holds
+            # the actuator has not said yet what the card holds: decide again next tick
+            return self._swap_key(d.role, action, "reconciling", d.reason)
         paused = self.paused is not None and isinstance(d, (SwapLoad, SwapUnload))
         if isinstance(d, (SwapLoad, SwapUnload)) and d.role in self.actuated and not paused:
             now = self.now()
             if not any(c.cooldown_until and c.cooldown_until > now for c in self._seat_cards(d.role)):
                 await self._begin_actuation(d)
-                return self._swap_key(d, action)
+                return self._swap_key(d.role, action, "actuated", d.reason)
             # Backoff after a refused/unanswered action. The scheduler already reports blocked
             # LOADS; an unload has no scheduler-side cooldown, and without this a dead actuator
             # would get a fresh unload every actuate_ack_sec.
             d = SwapBlocked(d.role, "cooldown", action)
-        key = self._swap_key(d, action)
-        if key in self._swap_requested:
-            return key
         detail: dict[str, Any] = {"action": action, "actuated": False, "mode": self.mode}
         reason = d.reason
         if isinstance(d, SwapBlocked):
@@ -707,10 +706,14 @@ class PoolRuntime:
         elif d.role not in self.actuated:
             reason = f"not_actuatable:{d.role}"
             detail.update(wanted=d.reason)
+        key = self._swap_key(d.role, action, reason, d.reason)
+        if key in self._swap_requested:
+            return key
         await self._emit(GpuPoolEventV1(
             event="swap_requested", role=d.role, cards=list(self.cfg.roles[d.role].cards), reason=reason,
             detail=detail))
-        self._swap_requested.add(key)   # only once sent: a failed publish is retried next tick
+        # After the emit: an emit that raises is retried next tick (publish errors are swallowed inside).
+        self._swap_requested.add(key)
         return key
 
     # --- actuation engine -----------------------------------------------------------------

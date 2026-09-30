@@ -255,6 +255,6 @@ controller images. After the drop, restore the tables with
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2426
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

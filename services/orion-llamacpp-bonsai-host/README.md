@@ -45,12 +45,17 @@ curl -fsS http://localhost:8017/health
 
 The first boot downloads the 7.21 GB GGUF into `${LLM_CACHE_DIR}/gguf`.
 
-## gpu0 is chat's card: Orion cannot chat while this runs
+## gpu0 is chat's card: stopping chat takes more than chat
 
 Bonsai needs a whole 32 GB card. gpu0 belongs to the chat worker, and chat
 has no pool launch block (`config/gpu_pool.yaml`), so the lane controller
-never restarts it on its own. Chat requests wait (`on_unavailable: wait`)
-until it is back.
+never restarts it on its own. While it is down:
+
+- chat requests wait (`on_unavailable: wait`);
+- agent, metacog and fast lose their last fallback, since all three list
+  `chat` as an overflow role;
+- **do not lend gpu0.** It is `lendable: true`, and a lent gpu0 looks free to
+  the pool for agent work while Bonsai holds it.
 
 ```bash
 docker stop orion-circe-atlas-llamacpp-chat
@@ -69,8 +74,10 @@ from announcements. `restart: "no"` keeps it from coming back after a reboot
 and holding gpu0 when chat should.
 
 Auto-rebuild: `mesh-utilities/common/include_services_circe.txt` lists this
-service, so a merge touching it rebuilds and restarts it on circe (and fails
-on OOM while chat holds gpu0). `exclude_services.txt` keeps it off athena.
+service, so a merge touching it runs `up -d --build` on circe. The compose
+file has a `build:` section, so that really rebuilds, reusing the cached fork
+compile. It then starts the worker, which fails to load while chat holds gpu0.
+`exclude_services.txt` keeps it off athena.
 
 ## The image carries its own wrapper and profiles
 
@@ -92,8 +99,8 @@ cp services/orion-llamacpp-bonsai-host/.env_example services/orion-llamacpp-bons
 
 - `ctx_size: 262144`, `n_parallel: 4`. llama-server divides the context
   across slots, so each run gets 65,536 tokens.
-- VRAM, measured on circe gpu0: 24.1-24.3 GB with flash attention on,
-  27.2-28.6 GB with it off. That covers all four 65K slots, whether idle or
+- VRAM on circe gpu0: 24.1-24.3 GB with flash attention on (two hand
+  readings), 27.2-28.6 GB with it off (sampled every second). That covers all four 65K slots, whether idle or
   full.
 - `reasoning: auto`. To turn thinking off per request, send
   `chat_template_kwargs: {"enable_thinking": false}`. This template rejects

@@ -8,6 +8,13 @@
 
 services:
   bonsai-worker:
+    # `up --build` (post-merge auto-rebuild) must rebuild, or wrapper/profile
+    # changes never reach the image. The fork compile layer stays cached.
+    build:
+      context: ../..
+      dockerfile: services/orion-llamacpp-bonsai-host/Dockerfile
+      args:
+        - HOST_IMAGE=orion-llamacpp-host:0.1.0
     image: ${BONSAI_LLAMACPP_IMAGE:-llamacpp-bonsai-prism:server-local-volta}
     container_name: ${PROJECT:-orion}-bonsai-worker
     # Borrowed card: never come back on its own after a reboot or controller swap.

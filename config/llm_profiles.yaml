@@ -2156,7 +2156,8 @@ profiles:
       port: 8080
 
       # llama-server splits --ctx-size across --parallel: 262144 / 4 = 65536
-      # per run. VRAM measured on circe gpu0 2026-09-30: 24.1-24.3 GB (flash_attn on).
+      # per run. VRAM on circe gpu0 2026-09-30: 24.1-24.3 GB flash_attn on (two nvidia-smi readings),
+      # 27.2-28.6 GB off (1,639 samples).
       ctx_size: 262144
       n_gpu_layers: 99
       threads: 16

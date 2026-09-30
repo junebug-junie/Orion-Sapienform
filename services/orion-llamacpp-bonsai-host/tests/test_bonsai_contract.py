@@ -38,7 +38,8 @@ def test_dockerfile_pins_prism_fork_for_volta():
 def test_compose_stays_off_shared_image_and_pool_ports():
     compose = yaml.safe_load((HOST / "docker-compose.yml").read_text(encoding="utf-8"))
     svc = compose["services"]["bonsai-worker"]
-    assert "build" not in svc  # built by scripts/build-bonsai-volta.sh only
+    # Auto-rebuild runs `up -d --build`: without a build section it only restarts a stale image.
+    assert svc["build"]["dockerfile"] == "services/orion-llamacpp-bonsai-host/Dockerfile"
     assert "llamacpp-bonsai-prism" in svc["image"]
     assert svc["restart"] == "no"
     env = "\n".join(svc["environment"])

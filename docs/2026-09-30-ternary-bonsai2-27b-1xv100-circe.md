@@ -14,7 +14,7 @@ It runs on Volta. Stock llama.cpp cannot load it; Prism's fork can.
 - **Fits on one 32 GB card** with four 65K-token slots: **24.1–24.3 GB** with flash attention on.
 - **Decode:** 51 tok/s for one short run. Four runs at once get **27 tok/s each, ~99 tok/s total**.
 - **Context depth costs speed.** At 61K tokens, decode is **32 tok/s** with flash attention on and **17.6** with it off. The 35B chat model holds **~70 tok/s** at every depth on the same card.
-- **Prompt caching survives four slots.** In four concurrent agent-style loops, every step re-processed only its new tokens: **73%** of prompt tokens came from cache, and the rest was genuinely new text.
+- **Prompt caching mostly survives four slots, but it misses the model's own replies.** In four concurrent agent-style loops, **73%** of prompt tokens came from cache. Of the tokens that were re-processed, **23.5%** were the model's own previous reply being read again: the template renders an assistant turn differently when it comes back as history. This is Prism's open tool-loop issue, and it does happen here.
 - **Recall held to the slot limit.** A fact planted at turn 0 and a fresh fact at each turn were both recalled correctly at every depth up to 61K. This is an easy exact-string test; see the caveats.
 - **The "flash attention off on Volta" rule is wrong for this model.** Turning it on wins at depth and saves ~4 GB. The exception: exactly two concurrent runs get slower.
 
@@ -105,7 +105,7 @@ The 35B chat worker has one slot, so it cannot serve concurrent runs at all; req
 
 ## Context depth (the degradation question)
 
-One conversation grows by ~5.5K tokens a turn until it hits the 65,536-token slot. Each turn asks for a fact planted at turn 0 (far) and one planted in the newest chunk (near). Thinking was off; a medium-effort pass matched within ~1.5 tok/s and recalled identically.
+One conversation grows by ~5.5K tokens a turn until it hits the 65,536-token slot. Each turn asks for a fact planted at turn 0 (far) and one planted in the newest chunk (near). Thinking was off; a medium-effort pass matched within ~1.7 tok/s and recalled identically.
 
 | Depth (tokens) | Bonsai FA off: decode / prefill | Bonsai FA on: decode / prefill | 35B chat: decode / prefill | Recall (all three) |
 | ---: | ---: | ---: | ---: | --- |
@@ -127,11 +127,12 @@ Bonsai loses speed with depth: **−55%** decode from 14K to 61K with flash atte
 
 Four conversations ran at once, 6 steps each. Every step re-sent the whole history plus a ~1–1.7K-token "tool result", like a curiosity run. This was measured with flash attention off.
 
-- Every step after the first had `cache_n` = the previous total, so **only new tokens were processed**.
-- Totals: **36,597 prompt tokens processed, 99,138 reused (73%)**, over 211 s wall.
-- Prefill on the new tokens ran at 350–490 tok/s per slot, and decode at 14–29 tok/s per slot, while four ran together.
+- The history up to the end of the previous *prompt* was reused every step. The four slots did not evict each other.
+- **The previous assistant reply was never reused.** Each step's `cache_n` is the previous prompt total minus 4, so the prior reply (up to 512 tokens) was re-processed. This happened even with thinking off and only `content` sent back, so it is template re-rendering, not a harness artifact.
+- Totals: **36,597 prompt tokens processed, 99,138 reused (73%)**. **8,607 (23.5%)** of the processed tokens were the model's own prior replies; the rest was new tool-result text. Wall time: 211 s.
+- Prefill on processed tokens ran at 350–490 tok/s per slot, and decode at 13.7–29.5 tok/s per slot, while four ran together.
 
-This was the main risk going in: hybrid linear-attention models can miss the prompt cache across slots. It did not happen here. Prism's open issue about tool loops (Bonsai-demo #183) concerns re-rendered reasoning. Our profile sets `preserve_thinking: false`, and whether that setting mattered is **unverified**.
+Cross-slot eviction, the risk Cursor raised, did not happen. The known issue (Bonsai-demo #183, "tool calls re-rendered differently from how they were generated") did. `preserve_thinking: false` does not prevent it. A long curiosity run pays this re-read on every step: the cost grows with reply length, not with context length.
 
 ---
 
@@ -141,9 +142,9 @@ This was the main risk going in: hybrid linear-attention models can miss the pro
 | --- | ---: | ---: |
 | VRAM after load | 27,170 MiB | 24,098 MiB |
 | VRAM peak under load | 28,612 MiB | 24,296 MiB |
-| Max power / util (FA off run) | 279.6 W / 100% | not sampled |
+| Max power / util | 279.6 W / 100% | not sampled |
 
-These are 1,639 one-second samples on the FA-off run. The KV cache for all four 65K slots is allocated at boot, so memory barely moves with load.
+The FA-off figures come from 1,639 one-second samples (`vram.csv`). The **FA-on figures are two hand readings of `nvidia-smi`**, one after load and one after the depth sweep. They were not continuously sampled, so the FA-on peak could be higher. The KV cache for all four 65K slots is allocated at boot, so memory barely moves with load.
 
 ---
 
@@ -153,7 +154,7 @@ These are 1,639 one-second samples on the FA-off run. The KV cache for all four 
 - Three concurrent runs, and whether the two-run dip also hits 3.
 - Quality at depth beyond exact-string recall.
 - A like-for-like quality comparison against the 35B or the Q4 27B.
-- Any speed on the 35B while Orion's live chat traffic shares the card. There was none during the run, but we did not check at every moment.
+- The 35B was the live chat worker and **did serve Orion traffic during its run**. Seven of its ten depth turns waited 55–66 s wall against ~8–9 s of compute, which is queueing behind real requests on a 1-slot worker. Per-request tok/s comes from llama.cpp's own timings and is unaffected, but its wall times are not comparable.
 
 ---
 

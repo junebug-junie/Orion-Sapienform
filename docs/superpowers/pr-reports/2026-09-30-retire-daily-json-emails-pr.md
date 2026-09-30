@@ -143,6 +143,6 @@ Live proof after restart: the next 08:30/20:15 notify rows for `orion.daily.puls
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2429
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

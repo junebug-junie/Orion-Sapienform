@@ -9,6 +9,9 @@ on:
       - "orion/curiosity/kickoff_prompt.py"
       - "services/orion-hub/scripts/orion_day_*.py"
       - "services/orion-hub/scripts/curiosity_investigation.py"
+      - "services/orion-hub/scripts/main.py"
+      - "services/orion-hub/app/settings.py"
+      - "services/orion-hub/.env_example"
       - "services/orion-hub/templates/orion_day_letter.html.j2"
       - "services/orion-hub/tests/test_orion_day_letter.py"
       - "services/orion-hub/evals/*orion_day*"
@@ -16,6 +19,10 @@ on:
       - ".github/workflows/orion-day-letter-hub-tests.yml"
   push:
     branches: [main]
+    paths:
+      - "orion/orion_day/**"
+      - "services/orion-hub/scripts/orion_day_*.py"
+      - "services/orion-hub/templates/orion_day_letter.html.j2"
 
 jobs:
   hub:

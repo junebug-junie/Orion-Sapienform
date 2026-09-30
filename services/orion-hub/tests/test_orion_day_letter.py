@@ -87,6 +87,20 @@ class _Conn(fx.FakeConn):
         self.empty = empty
         self.broken = broken
         self.stamps: list[tuple] = []
+        self.locked = False
+        self.lock_held_elsewhere = False
+        self.stamp_fails = 0
+
+    async def fetchval(self, sql, *args):
+        if sql == odl.EMAIL_LOCK_SQL:
+            if self.lock_held_elsewhere:
+                return False
+            self.locked = True
+            return True
+        if sql == odl.EMAIL_UNLOCK_SQL:
+            self.locked = False
+            return True
+        return await super().fetchval(sql, *args)
 
     async def fetch(self, sql, *args):
         if self.empty:
@@ -105,6 +119,10 @@ class _Conn(fx.FakeConn):
 
     async def execute(self, sql, *args):
         assert sql == odl.STAMP_EMAILED_SQL
+        assert self.locked, "stamp must happen under the email lock"
+        if self.stamp_fails:
+            self.stamp_fails -= 1
+            raise RuntimeError("connection reset")
         self.stamps.append(args)
         row = self.table.get(args[0])
         if row is not None and row.get("emailed_at") is None:
@@ -153,15 +171,16 @@ class _Durable:
 
 
 class _Notify:
-    def __init__(self, email_status="sent", ok=True) -> None:
+    def __init__(self, email_status="sent", ok=True, detail=None) -> None:
         self.email_status = email_status
         self.ok = ok
+        self.detail = detail
         self.sent: list = []
 
     def send(self, request):
         self.sent.append(request)
         return NotificationAccepted(ok=self.ok, notification_id=request.notification_id,
-                                    status="queued", email_status=self.email_status)
+                                    status="queued", email_status=self.email_status, detail=self.detail)
 
 
 def _loop(conn, durable, notify, **over) -> odl.OrionDayLetterLoop:
@@ -320,7 +339,7 @@ def test_an_unemailed_row_is_sent_and_stamped_only_on_sent():
     assert len(notify.sent) == 1
 
 
-@pytest.mark.parametrize("status,ok", [("failed", True), ("skipped", True), ("deferred", True), (None, False)])
+@pytest.mark.parametrize("status,ok", [("failed", True), ("deferred", True), (None, False)])
 def test_no_stamp_unless_email_status_is_sent_and_the_retry_resends_without_regenerating(status, ok):
     table = {LETTER_DATE: _row(_letter())}
     conn, durable = _Conn(table), _Durable()
@@ -684,3 +703,129 @@ def test_frozen_prompt_is_resent_on_retry():
     body = body[:body.index("\n    async def ", 10)]
     assert "return request.prompt" in body and "preamble + request.prompt" in body
     assert "build_kickoff_prompt" not in body and "take_carry_forward" not in body
+
+
+# --- review fixes --------------------------------------------------------------------------
+
+
+def test_the_durable_deadline_is_the_hub_hard_stop_not_midnight():
+    durable = _Durable()
+    _run(_loop(_Conn({}), durable, _Notify()))
+    deadline = datetime.fromisoformat(durable.submitted[0]["admission"]["deadline_at"].replace("Z", "+00:00"))
+    assert deadline == datetime(2026, 10, 1, 14, 30, tzinfo=timezone.utc)  # 10-01 08:30 MDT
+
+
+def test_skipped_email_waits_until_the_hard_stop():
+    table = {LETTER_DATE: _row(_letter())}
+    notify = _Notify(email_status="skipped")
+    loop = _loop(_Conn(table), _Durable(), notify, email_retry_sec=0.0)
+    assert _run(loop) == "email_failed"
+    assert _run(loop) == "email_backoff"
+    assert len(notify.sent) == 1
+
+
+def test_a_timed_out_reply_is_never_resent_automatically():
+    table = {LETTER_DATE: _row(_letter())}
+    notify = _Notify(email_status=None, ok=False, detail="HTTPConnectionPool: Read timed out. (read timeout=60)")
+    conn = _Conn(table)
+    loop = _loop(conn, _Durable(), notify)
+    assert _run(loop) == "email_outcome_unknown"
+    assert _run(loop) == "email_outcome_unknown"
+    assert len(notify.sent) == 1 and conn.stamps == []
+
+
+def test_a_failed_stamp_after_sent_is_retried_then_never_resent():
+    table = {LETTER_DATE: _row(_letter())}
+    conn = _Conn(table)
+    conn.stamp_fails = 1
+    notify = _Notify()
+    assert _run(_loop(conn, _Durable(), notify)) == "emailed"
+    assert len(conn.stamps) == 1
+    conn2 = _Conn({LETTER_DATE: _row(_letter())})
+    conn2.stamp_fails = 5
+    loop = _loop(conn2, _Durable(), notify)
+    assert _run(loop) == "email_stamp_failed"
+    assert _run(loop) == "email_outcome_unknown"
+    assert len(notify.sent) == 2  # one per letter table, never a resend
+
+
+def test_another_process_holding_the_email_lock_blocks_the_send():
+    table = {LETTER_DATE: _row(_letter())}
+    conn = _Conn(table)
+    conn.lock_held_elsewhere = True
+    notify = _Notify()
+    assert _run(_loop(conn, _Durable(), notify)) == "email_locked"
+    assert notify.sent == []
+
+
+def test_repeated_submit_refusals_raise_one_notice():
+    durable, notify = _Durable(submit_status=422), _Notify()
+    conn = _Conn({})
+    loop = _loop(conn, durable, notify, submit_refused_retry_sec=0.0)
+    for _ in range(odl.MAX_SUBMIT_REFUSALS + 2):
+        assert _run(loop) == "submit_refused"
+    assert len(notify.sent) == 1 and "submit_refused_http_422" in notify.sent[0].body_text
+
+
+def test_sha_fallback_path_cannot_escape_the_image_dir(tmp_path):
+    inner = tmp_path / "imgs"
+    inner.mkdir()
+    _png(tmp_path / "secret.png")
+    v = VisualReverieV1(sha256="../secret", created_at=fx._t(1), path=None)
+    assert email.load_inline_images(_letter(visuals=[v]), storage_dir=str(inner)) == []
+
+
+def test_non_http_urls_are_not_linked_and_markdown_images_are_not_fetched():
+    material = _material()
+    reading = material.readings[0].model_copy(update={"url": "javascript:alert(1)"})
+    gh = material.github_compactor.model_copy(update={"body": "see ![pixel](http://tracker.example/p.gif) ok"})
+    html = email.render_html(_letter(material=material.model_copy(
+        update={"readings": [reading], "github_compactor": gh})), [])
+    assert 'href="javascript' not in html
+    assert "<img src=\"http" not in html  # at most a plain link, never a fetched image
+    assert "pixel" in html
+
+
+def _release_loop(monkeypatch, history, status=200):
+    loop, taken, released = _curiosity_loop(monkeypatch)
+    loop.durable_runs_url = "http://durable"
+    g = type(loop)._release_carry_forward_if_unseen.__globals__
+
+    class _Resp:
+        status_code = status
+
+        def json(self):
+            return {"history": history}
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url):
+            return _Resp()
+
+    class _Httpx:
+        AsyncClient = _Client
+
+    monkeypatch.setitem(g, "httpx", _Httpx)
+    return loop, released
+
+
+def test_an_unstarted_durable_curiosity_run_gives_its_carry_forward_back(monkeypatch):
+    loop, released = _release_loop(monkeypatch, [{"event": "run.accepted"}, {"event": "run.abandoned"}])
+    asyncio.run(loop._release_carry_forward_if_unseen("run-x"))
+    assert released == ["run-x"]
+
+
+def test_a_started_or_unknown_run_keeps_the_claim(monkeypatch):
+    loop, released = _release_loop(monkeypatch, [{"event": "run.started"}])
+    asyncio.run(loop._release_carry_forward_if_unseen("run-x"))
+    loop2, released2 = _release_loop(monkeypatch, [], status=404)
+    asyncio.run(loop2._release_carry_forward_if_unseen("run-y"))
+    assert released == [] and released2 == []

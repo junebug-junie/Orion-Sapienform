@@ -779,40 +779,6 @@ async def startup_event():
             )
             await world_pulse_read_stage2.start(bus, harness_rpc_bus=rpc_bus)
 
-            # Orion's Day: one letter a day about what Orion thought about
-            # yesterday. Hub submits the admitted durable run and emails the
-            # persisted row; state is orion_day_letter + the durable registry.
-            # Terminal run states arrive through curiosity's existing
-            # orion:durable:run:state listener (no second subscription); the
-            # tick alone converges when that listener is off.
-            try:
-                orion_day_letter = OrionDayLetterLoop(
-                    enabled=settings.HUB_ORION_DAY_ENABLED,
-                    email_enabled=settings.HUB_ORION_DAY_EMAIL_ENABLED,
-                    pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
-                    durable=DurableRunsClient(settings.HUB_ORION_DAY_DURABLE_URL),
-                    notify=NotifyClient(
-                        settings.NOTIFY_BASE_URL,
-                        settings.NOTIFY_API_TOKEN or None,
-                        timeout=settings.HUB_ORION_DAY_NOTIFY_TIMEOUT_SEC,
-                    ),
-                    hour_local=settings.HUB_ORION_DAY_HOUR_LOCAL,
-                    minute_local=settings.HUB_ORION_DAY_MINUTE_LOCAL,
-                    tick_interval_sec=settings.HUB_ORION_DAY_TICK_SEC,
-                    max_attempts=settings.HUB_ORION_DAY_MAX_ATTEMPTS,
-                    email_retry_sec=settings.HUB_ORION_DAY_EMAIL_RETRY_SEC,
-                    carry_forward_ttl_hours=settings.HUB_ORION_DAY_CARRY_FORWARD_TTL_HOURS,
-                    timeout_sec=settings.HUB_ORION_DAY_TIMEOUT_SEC,
-                    image_dir=settings.REVERIE_VISUAL_STORAGE_DIR,
-                    max_images=settings.HUB_ORION_DAY_MAX_IMAGES,
-                    image_max_bytes=settings.HUB_ORION_DAY_IMAGE_MAX_BYTES,
-                    source_service=settings.SERVICE_NAME,
-                )
-                if curiosity_investigation is not None:
-                    curiosity_investigation.run_state_hooks.append(orion_day_letter.on_run_state)
-                await orion_day_letter.start()
-            except Exception:  # noqa: BLE001
-                logger.exception("orion_day_letter_start_failed")
 
             # Claude as a third room participant. Hub only publishes the
             # invite and relays the reply -- orion-room-companion owns the
@@ -1468,6 +1434,44 @@ async def startup_event():
     pool_ok = getattr(app.state, "memory_pg_pool", None) is not None
     dsn_configured = bool(dsn)
     html_content = render_hub_index_html(memory_pool_ok=pool_ok)
+
+    # Orion's Day: one letter a day about what Orion thought about
+    # yesterday. Hub submits the admitted durable run and emails the
+    # persisted row; state is orion_day_letter + the durable registry.
+    # Terminal run states arrive through curiosity's existing
+    # orion:durable:run:state listener (no second subscription); the
+    # tick alone converges when that listener is off. Started here, after the
+    # memory pool exists and outside the bus block (it needs neither the bus nor
+    # a bus-enabled boot).
+    try:
+        orion_day_letter = OrionDayLetterLoop(
+            enabled=settings.HUB_ORION_DAY_ENABLED,
+            email_enabled=settings.HUB_ORION_DAY_EMAIL_ENABLED,
+            pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+            durable=DurableRunsClient(settings.HUB_ORION_DAY_DURABLE_URL),
+            notify=NotifyClient(
+                settings.NOTIFY_BASE_URL,
+                settings.NOTIFY_API_TOKEN or None,
+                timeout=settings.HUB_ORION_DAY_NOTIFY_TIMEOUT_SEC,
+            ),
+            hour_local=settings.HUB_ORION_DAY_HOUR_LOCAL,
+            minute_local=settings.HUB_ORION_DAY_MINUTE_LOCAL,
+            tick_interval_sec=settings.HUB_ORION_DAY_TICK_SEC,
+            max_attempts=settings.HUB_ORION_DAY_MAX_ATTEMPTS,
+            email_retry_sec=settings.HUB_ORION_DAY_EMAIL_RETRY_SEC,
+            carry_forward_ttl_hours=settings.HUB_ORION_DAY_CARRY_FORWARD_TTL_HOURS,
+            timeout_sec=settings.HUB_ORION_DAY_TIMEOUT_SEC,
+            image_dir=settings.REVERIE_VISUAL_STORAGE_DIR,
+            max_images=settings.HUB_ORION_DAY_MAX_IMAGES,
+            image_max_bytes=settings.HUB_ORION_DAY_IMAGE_MAX_BYTES,
+            source_service=settings.SERVICE_NAME,
+        )
+        if curiosity_investigation is not None:
+            curiosity_investigation.run_state_hooks.append(orion_day_letter.on_run_state)
+        await orion_day_letter.start()
+    except Exception:  # noqa: BLE001
+        logger.exception("orion_day_letter_start_failed")
+
     if pool_ok:
         logger.info("memory_store_banner=connected")
     elif not dsn_configured:

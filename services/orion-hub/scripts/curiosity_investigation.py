@@ -71,6 +71,8 @@ something worth writing up manufactures significance daily.
 from __future__ import annotations
 
 import asyncio
+
+import httpx
 import json
 import logging
 import re
@@ -1163,6 +1165,31 @@ class CuriosityInvestigation:
         if not self.carry_forward_enabled or not run_id:
             return None
         return await take_carry_forward(self._pool_provider(), run_id=run_id)
+
+    async def _release_carry_forward_if_unseen(self, run_id: str) -> None:
+        """A durable run that ended before its turn started never showed Orion the
+        carry-forward it claimed at kickoff: give it back. "Started" is the run's own
+        `run.started` event in durable-runs' history (GET /runs/{id}); on any doubt
+        (unreachable, unknown run) the claim is kept -- a lost offer is recoverable by the
+        next day's letter, a double offer is not."""
+        if not self.carry_forward_enabled or not run_id:
+            return
+        root = str(self.durable_runs_url or "").strip().rstrip("/")
+        if not root:
+            return
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(f"{root}/runs/{run_id}")
+            if resp.status_code != 200:
+                return
+            history = resp.json().get("history") or []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("curiosity_carry_forward_release_check_failed run=%s err=%s", run_id, exc)
+            return
+        if any(isinstance(e, dict) and e.get("event") == "run.started" for e in history):
+            return
+        await release_carry_forward(self._pool_provider(), run_id=run_id)
+        logger.info("curiosity_carry_forward_released_unstarted run=%s", run_id)
 
     async def _release_offers(self, run_id: str, *, dream: bool, carry_forward: bool) -> None:
         """Give back what this run claimed but Orion never saw (cancelled before the turn)."""
@@ -4137,6 +4164,8 @@ class CuriosityInvestigation:
             # completion hooks.
             await self._handle_urgent_run_state(state)
             return
+        if state.workflow == "curiosity.investigate" and state.status in {"failed", "abandoned", "cancelled"}:
+            await self._release_carry_forward_if_unseen(state.run_id)
         if state.workflow != "curiosity.investigate" or state.status != "completed":
             return
         detail = state.detail or {}

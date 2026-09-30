@@ -23,7 +23,7 @@ import logging
 import re
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -62,7 +62,7 @@ _MD = None
 
 # Inline styles per tag: Gmail keeps inline styles; a <style> block is not guaranteed.
 _TAG_STYLES = {
-    "p": "margin:0 0 12px 0;line-height:1.55;",
+    "p": "margin:0 0 12px",
     "h1": "font-size:20px;margin:18px 0 8px 0;line-height:1.3;",
     "h2": "font-size:18px;margin:16px 0 8px 0;line-height:1.3;",
     "h3": "font-size:16px;margin:14px 0 6px 0;line-height:1.3;",
@@ -71,7 +71,7 @@ _TAG_STYLES = {
     "h6": "font-size:14px;margin:12px 0 6px 0;",
     "ul": "margin:0 0 12px 0;padding-left:22px;",
     "ol": "margin:0 0 12px 0;padding-left:22px;",
-    "li": "margin:0 0 4px 0;line-height:1.5;",
+    "li": "margin:0 0 4px",
     "blockquote": "margin:0 0 12px 0;padding:4px 12px;border-left:3px solid #9aa4b2;color:#4a5260;",
     "pre": "margin:0 0 12px 0;padding:10px;background-color:#f2f4f7;color:#1f2430;"
            "white-space:pre-wrap;word-wrap:break-word;font-family:Menlo,Consolas,monospace;font-size:13px;",
@@ -92,7 +92,10 @@ def _md():
         from markdown_it import MarkdownIt
 
         # html=False: raw HTML inside a journal body is escaped, never rendered.
-        _MD = MarkdownIt("commonmark", {"html": False, "linkify": False, "breaks": True}).enable("table")
+        # `image` disabled: a body's ![](http://...) must not pull remote images (tracking
+        # pixels, broken boxes) into the letter; the alt text stays as plain text.
+        _MD = (MarkdownIt("commonmark", {"html": False, "linkify": False, "breaks": True})
+               .enable("table").disable("image"))
     return _MD
 
 
@@ -136,8 +139,12 @@ def select_images(letter: OrionDayLetterV1, max_images: int) -> list[VisualRever
 def _image_path(storage_dir: str, reverie: VisualReverieV1) -> Path:
     # Resolve inside the configured (mounted) dir by basename only: a path in the row can never
     # point the reader elsewhere on disk.
-    name = Path(reverie.path).name if reverie.path else f"{reverie.sha256}.png"
-    return Path(storage_dir) / name
+    name = Path(reverie.path or f"{reverie.sha256}.png").name
+    base = Path(storage_dir).resolve()
+    path = (base / name).resolve()
+    if not path.is_relative_to(base):
+        raise FileNotFoundError(str(path))
+    return path
 
 
 def transcode_jpeg(raw: bytes, *, max_px: int, max_bytes: int) -> bytes | None:
@@ -194,6 +201,8 @@ def load_inline_images(
 def _local(value: datetime | None, tz: ZoneInfo, fmt: str = "%H:%M") -> str:
     if value is None:
         return ""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(tz).strftime(fmt)
 
 
@@ -275,6 +284,7 @@ def build_context(letter: OrionDayLetterV1, images: list[InlineImage]) -> dict[s
                         "self_label": a.self_label_score, "grounded": a.grounded_record_score,
                         "when": _local(a.created_at, tz)} for a in m.self_sense],
         "readings": [{"title": r.title or r.url or "Reading", "url": r.url, "why_now": r.why_now,
+                      "href": r.url if (r.url or "").lower().startswith(("http://", "https://")) else None,
                       "status": r.reading_status or "unknown", "when": _local(r.occurred_at, tz),
                       "learned": markdown_to_html(r.learned)} for r in m.readings],
         "reading_journals": [{"title": j.title or "Reading journal", "when": _local(j.created_at, tz),

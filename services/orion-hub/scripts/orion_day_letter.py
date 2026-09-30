@@ -42,10 +42,19 @@ from scripts.orion_day_email import build_notification, letter_notification_id, 
 
 logger = logging.getLogger("orion-hub.orion_day_letter")
 
+# Gmail clips an HTML body past ~102 KB behind "View entire message" (content is kept).
+GMAIL_CLIP_BYTES = 102_000
+
 TERMINAL_RETRY = frozenset({"failed", "abandoned"})
 TERMINAL_STOP = frozenset({"cancelled"})
 TERMINAL_DONE = frozenset({"completed"})
 TERMINAL = TERMINAL_RETRY | TERMINAL_STOP | TERMINAL_DONE
+
+# Session advisory lock per letter day around the send: a second Hub on the same database
+# (a worktree deploy, a dev Hub) cannot email the same letter concurrently.
+EMAIL_LOCK_SQL = "SELECT pg_try_advisory_lock(hashtext('orion_day_email:' || $1::text))"
+EMAIL_UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtext('orion_day_email:' || $1::text))"
+MAX_SUBMIT_REFUSALS = 3
 
 STAMP_EMAILED_SQL = """
 UPDATE orion_day_letter
@@ -178,6 +187,10 @@ class OrionDayLetterLoop:
         self._exhausted_noticed: set[date] = set()
         self._email_retry_after: dict[date, float] = {}
         self._submit_retry_after: dict[date, float] = {}
+        self._submit_refusals: dict[date, int] = {}
+        # Dates whose email outcome is unknown (reply lost after a possible send, or the stamp
+        # failed after `sent`): never resent automatically -- a duplicate letter is worse.
+        self._email_outcome_unknown: set[date] = set()
 
     # --- lifecycle ---------------------------------------------------------------------------
 
@@ -217,9 +230,25 @@ class OrionDayLetterLoop:
         detail = getattr(state, "detail", None) or {}
         logger.info("orion_day_run_terminal run=%s status=%s persist_outcome=%s",
                     state.run_id, state.status, detail.get("persist_outcome"))
-        task = asyncio.create_task(self.tick())
+        task = asyncio.create_task(self._hook_tick())
         self._hook_tasks.add(task)
         task.add_done_callback(self._hook_tasks.discard)
+
+    async def _hook_tick(self) -> None:
+        try:
+            await self.tick()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("orion_day_hook_tick_failed")
+
+    def hard_stop(self, letter_date: date) -> datetime:
+        """When letter L stops being active: the next letter's slot."""
+        return letter_slot(letter_date + timedelta(days=1), hour=self.hour_local,
+                           minute=self.minute_local, tz_name=self.tz_name)
+
+    def _mono_until(self, when: datetime) -> float:
+        return time.monotonic() + max(0.0, (when - self._clock()).total_seconds())
 
     # --- the tick ----------------------------------------------------------------------------
 
@@ -290,7 +319,11 @@ class OrionDayLetterLoop:
             self._empty_dates.add(letter_date)
             logger.info("orion_day_empty date=%s -- no letter, no email", letter_date)
             return "empty_day"
-        request = build_orion_day_request(brief, attempt=attempt)
+        # Deadline = Hub's own hard stop. The builder's default (local midnight starting L+2)
+        # ends before it, and a run abandoned there would be resubmitted with a past deadline
+        # and abandoned again until max_attempts.
+        request = build_orion_day_request(brief, attempt=attempt,
+                                          deadline_at=self.hard_stop(letter_date).astimezone(timezone.utc))
         try:
             status, body = await self.durable.submit(request.model_dump(mode="json"))
         except DurableUnavailable as exc:
@@ -300,6 +333,11 @@ class OrionDayLetterLoop:
             # 409 = same run_id with a different brief; 422 = durable-runs without the
             # orion_day.letter workflow. Neither heals on the next tick; wait before regathering.
             self._submit_retry_after[letter_date] = time.monotonic() + self.submit_refused_retry_sec
+            refusals = self._submit_refusals.get(letter_date, 0) + 1
+            self._submit_refusals[letter_date] = refusals
+            if refusals >= MAX_SUBMIT_REFUSALS:
+                await self._notice_exhausted(letter_date, AttemptState(
+                    attempt=attempt - 1, status=f"submit_refused_http_{status}", error=body))
             logger.warning("orion_day_submit_refused run=%s http=%s body=%s", request.run_id, status, body)
             return "submit_refused"
         logger.info("orion_day_submitted run=%s attempt=%s view_tokens=%s",
@@ -309,26 +347,68 @@ class OrionDayLetterLoop:
     async def _send(self, letter) -> str:
         if not self.email_enabled:
             return "email_disabled"
-        retry_after = self._email_retry_after.get(letter.letter_date)
+        day = letter.letter_date
+        if day in self._email_outcome_unknown:
+            return "email_outcome_unknown"
+        retry_after = self._email_retry_after.get(day)
         if retry_after is not None and time.monotonic() < retry_after:
             return "email_backoff"
-        images = await asyncio.to_thread(
-            load_inline_images, letter, storage_dir=self.image_dir,
-            max_images=self.max_images, max_bytes=self.image_max_bytes,
-        )
-        request = build_notification(letter, images, source_service=self.source_service)
-        accepted: NotificationAccepted = await asyncio.to_thread(self.notify.send, request)
-        if not (accepted.ok and accepted.email_status == "sent"):
-            self._email_retry_after[letter.letter_date] = time.monotonic() + self.email_retry_sec
-            logger.warning("orion_day_email_not_sent date=%s ok=%s email_status=%s detail=%s",
-                           letter.letter_date, accepted.ok, accepted.email_status, accepted.detail)
-            return "email_failed"
         pool = self._pool_provider()
         async with pool.acquire() as conn:
-            await conn.execute(STAMP_EMAILED_SQL, letter.letter_date, str(request.notification_id))
-        self._email_retry_after.pop(letter.letter_date, None)
-        logger.info("orion_day_emailed date=%s notification=%s images=%s html_chars=%s",
-                    letter.letter_date, request.notification_id, len(images), len(request.body_html or ""))
+            if not await conn.fetchval(EMAIL_LOCK_SQL, str(day)):
+                return "email_locked"
+            try:
+                return await self._send_locked(conn, letter)
+            finally:
+                await conn.fetchval(EMAIL_UNLOCK_SQL, str(day))
+
+    def _build_request(self, letter):
+        images = load_inline_images(letter, storage_dir=self.image_dir,
+                                    max_images=self.max_images, max_bytes=self.image_max_bytes)
+        return build_notification(letter, images, source_service=self.source_service), images
+
+    async def _send_locked(self, conn, letter) -> str:
+        day = letter.letter_date
+        # Re-read under the lock: another process may have sent it since our first read.
+        fresh = await fetch_letter(conn, day)
+        if fresh is not None and fresh.emailed_at is not None:
+            return "quota_met"
+        request, images = await asyncio.to_thread(self._build_request, letter)
+        html_bytes = len((request.body_html or "").encode("utf-8"))
+        if html_bytes > GMAIL_CLIP_BYTES:
+            logger.warning("orion_day_email_large date=%s html_bytes=%s -- Gmail shows the rest "
+                           "behind 'View entire message'", day, html_bytes)
+        accepted: NotificationAccepted = await asyncio.to_thread(self.notify.send, request)
+        if not (accepted.ok and accepted.email_status == "sent"):
+            detail = str(accepted.detail or "")
+            if not accepted.ok and "timed out" in detail.lower():
+                # notify sends SMTP synchronously, so a timed-out reply may follow a real send.
+                self._email_outcome_unknown.add(day)
+                logger.error("orion_day_email_outcome_unknown date=%s detail=%s -- not resending; "
+                             "check the inbox/notify logs, then clear by restarting Hub", day, detail)
+                return "email_outcome_unknown"
+            if accepted.email_status == "skipped":
+                # Policy declined or SMTP not configured: no retry today can change that.
+                self._email_retry_after[day] = self._mono_until(self.hard_stop(day))
+            else:
+                self._email_retry_after[day] = time.monotonic() + self.email_retry_sec
+            logger.warning("orion_day_email_not_sent date=%s ok=%s email_status=%s detail=%s",
+                           day, accepted.ok, accepted.email_status, detail)
+            return "email_failed"
+        for attempt in range(3):
+            try:
+                await conn.execute(STAMP_EMAILED_SQL, day, str(request.notification_id))
+                break
+            except Exception as exc:  # noqa: BLE001
+                if attempt == 2:
+                    self._email_outcome_unknown.add(day)
+                    logger.error("orion_day_email_stamp_failed date=%s notification=%s err=%s -- "
+                                 "sent but unstamped; not resending", day, request.notification_id, exc)
+                    return "email_stamp_failed"
+                await asyncio.sleep(0.5 * (attempt + 1))
+        self._email_retry_after.pop(day, None)
+        logger.info("orion_day_emailed date=%s notification=%s images=%s html_bytes=%s",
+                    day, request.notification_id, len(images), html_bytes)
         return "emailed"
 
     async def _notice_exhausted(self, letter_date: date, latest: AttemptState) -> None:

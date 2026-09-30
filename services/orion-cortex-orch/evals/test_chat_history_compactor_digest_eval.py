@@ -1,8 +1,9 @@
 """Deterministic evals for the chat history compactor digest seam.
 
 These measure the input/output budget contract the digest LLM lives inside:
-adversarial windows must trim to a bounded prompt payload, digest outputs must
-respect card/journal budgets, and quiet windows must never fabricate substance.
+adversarial windows must split into bounded per-call payloads WITHOUT dropping
+any turn, digest outputs must respect card budgets (journal body is stored in
+full), and quiet windows must never fabricate substance.
 Digest *quality* (does the summary reflect the transcript) still needs an
 LLM-in-the-loop eval; that gap is tracked in the PR report.
 """
@@ -16,29 +17,26 @@ import pytest
 
 from orion.cognition.chat_history_compactor.constants import (
     CARD_SUMMARY_MAX_CHARS,
-    DEFAULT_MAX_TURNS,
     DIGEST_TURN_PROMPT_MAX_CHARS,
     DIGEST_TURN_RESPONSE_MAX_CHARS,
-    JOURNAL_BODY_MAX_CHARS,
     JOURNAL_TITLE_MAX_CHARS,
 )
 from orion.cognition.chat_history_compactor.digest import (
+    build_chat_history_compactor_digest_inputs,
     fit_chat_compactor_digest_within_budget,
     build_quiet_day_chat_digest,
     parse_chat_history_compactor_digest_json,
-    trim_chat_history_compactor_input,
 )
 from orion.schemas.discussion_window import DiscussionWindowResultV1, DiscussionWindowTurnV1
 
 # Fixed, independent of DIGEST_TURN_*_MAX_CHARS on purpose: the point of this
 # ceiling is to catch a *future* widening of those per-turn caps pushing the
-# real digest payload past what's safe for the downstream `chat`/`quick` LLM
-# route's context window -- deriving it from the same constants it's meant
-# to guard would make it tautological (it could never fail no matter how
-# large the caps grew). ~150k chars is comfortable headroom under any
-# reasonable 32k+ token context window for DEFAULT_MAX_TURNS turns plus
-# realistic id/metadata overhead; revisit only with a real gateway context
-# limit in hand, not to make an over-budget test pass.
+# real per-call digest payload past what's safe for the smallest context an
+# agent-class call can land on (chat's card, 65k tokens/slot) -- deriving it
+# from the same constants it's meant to guard would make it tautological.
+# ~150k chars of serialized JSON (incl. window metadata) stays under that with
+# a 16k-token completion; revisit only with a real gateway context limit in
+# hand, not to make an over-budget test pass.
 DIGEST_INPUT_MAX_SERIALIZED_CHARS = 150_000
 
 
@@ -54,12 +52,10 @@ def _window(turns: list[DiscussionWindowTurnV1]) -> DiscussionWindowResultV1:
     )
 
 
-def test_eval_adversarial_window_trims_to_bounded_digest_input() -> None:
+def test_eval_adversarial_window_splits_into_bounded_calls_without_dropping_turns() -> None:
     # Realistic-length ids/metadata (real UUID4s, a user_id, a source label)
     # rather than short synthetic strings like "corr-0" -- a fixture with
-    # trivially short ids under-counts the real serialized payload size and
-    # can pass this budget check while production windows (real UUIDs on
-    # every turn) blow past it.
+    # trivially short ids under-counts the real serialized payload size.
     turns = [
         DiscussionWindowTurnV1(
             created_at=datetime(2026, 7, 9, 4, 0, tzinfo=timezone.utc) + timedelta(seconds=i),
@@ -67,21 +63,21 @@ def test_eval_adversarial_window_trims_to_bounded_digest_input() -> None:
             user_id=str(uuid.uuid4()),
             source="hub_ws",
             prompt="p" * 10_000,
-            response="r" * 10_000,
+            response="r" * 20_000,
         )
         for i in range(500)
     ]
-    payload = trim_chat_history_compactor_input(_window(turns))
+    inputs, stats = build_chat_history_compactor_digest_inputs(_window(turns))
 
-    assert len(payload["turns"]) == DEFAULT_MAX_TURNS
-    assert payload["turns_truncated_for_digest"] is True
-    assert payload["turns_total"] == 500
-    for turn in payload["turns"]:
-        assert len(turn["prompt"]) <= DIGEST_TURN_PROMPT_MAX_CHARS + 1  # +ellipsis
-        assert len(turn["response"]) <= DIGEST_TURN_RESPONSE_MAX_CHARS + 1
-    # Newest suffix wins: the last raw turn must survive the trim.
-    assert payload["turns"][-1]["correlation_id"] == turns[-1].correlation_id
-    assert len(json.dumps(payload)) <= DIGEST_INPUT_MAX_SERIALIZED_CHARS
+    covered = [t["correlation_id"] for payload in inputs for t in payload["turns"]]
+    assert covered == [t.correlation_id for t in turns]  # every turn, in order
+    assert stats["covered_count"] == stats["total_count"] == 500
+    assert stats["input_truncated"] is True  # runaway turns hit the safety caps
+    for payload in inputs:
+        for turn in payload["turns"]:
+            assert len(turn["prompt"]) <= DIGEST_TURN_PROMPT_MAX_CHARS + 1  # +ellipsis
+            assert len(turn["response"]) <= DIGEST_TURN_RESPONSE_MAX_CHARS + 1
+        assert len(json.dumps(payload)) <= DIGEST_INPUT_MAX_SERIALIZED_CHARS
 
 
 def test_eval_small_window_passes_through_untrimmed() -> None:
@@ -93,9 +89,11 @@ def test_eval_small_window_passes_through_untrimmed() -> None:
             response="short response",
         )
     ]
-    payload = trim_chat_history_compactor_input(_window(turns))
+    inputs, _stats = build_chat_history_compactor_digest_inputs(_window(turns))
+    assert len(inputs) == 1
+    payload = inputs[0]
     assert payload["turn_count"] == 1
-    assert "turns_truncated_for_digest" not in payload
+    assert "chunk_count" not in payload
     assert payload["turns"][0]["prompt"] == "short prompt"
     assert payload["turns"][0]["response"] == "short response"
 
@@ -111,7 +109,6 @@ def test_eval_quiet_window_digest_is_honest_and_within_budget() -> None:
     assert "No indexed chat digest memory card was written" in digest.journal_body
     assert len(digest.card_summary) <= CARD_SUMMARY_MAX_CHARS
     assert len(digest.journal_title or "") <= JOURNAL_TITLE_MAX_CHARS
-    assert len(digest.journal_body or "") <= JOURNAL_BODY_MAX_CHARS
 
 
 def test_eval_digest_json_round_trip_and_rejection() -> None:

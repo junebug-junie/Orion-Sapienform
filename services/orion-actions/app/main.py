@@ -78,6 +78,12 @@ from .scheduler_cursor_store import (
 from .workflow_schedule_metrics import WorkflowScheduleMetrics
 from .workflow_schedule_store import ClaimedSchedule, ScheduleAttentionSignal, WorkflowScheduleStore
 
+
+# Scheduled workflows whose orch pass is a fetch plus several LLM calls
+# (fetch <=300s + digest map-reduce <=COMPACTOR_DIGEST_TOTAL_BUDGET_SEC) and so
+# need ACTIONS_WORKFLOW_DISPATCH_TIMEOUT_SECONDS instead of the short exec wait.
+LONG_RUNNING_SCHEDULED_WORKFLOWS = frozenset({"github_compactor_pass", "chat_history_compactor_pass"})
+
 logger = logging.getLogger("orion-actions")
 _actions_rpc_bus = None
 PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
@@ -1116,6 +1122,9 @@ async def lifespan(app: FastAPI):
         metrics=workflow_schedule_metrics,
         max_dispatch_attempts=settings.actions_workflow_schedule_max_dispatch_attempts,
         retry_backoff_seconds=settings.actions_workflow_schedule_retry_backoff_seconds,
+        # A claim must not be reaped (and retried) while its dispatch can still
+        # legitimately be waiting on orch -- e.g. after an actions restart mid-pass.
+        claim_ttl_seconds=int(max(300.0, settings.actions_workflow_dispatch_timeout_seconds + 60.0)),
     )
     try:
         from .workflow_schedule_bootstrap import ensure_chat_history_compactor_daily_schedule
@@ -1752,6 +1761,14 @@ async def lifespan(app: FastAPI):
             )
             return True
 
+    def scheduled_workflow_dispatch_timeout_sec(workflow_id: str | None) -> float:
+        # Only the multi-call compactor passes get the long wait: the scheduler
+        # loop is serial, so every other scheduled workflow keeps the short
+        # ACTIONS_EXEC_TIMEOUT_SECONDS bound and a hung one cannot stall it for an hour.
+        if str(workflow_id or "") in LONG_RUNNING_SCHEDULED_WORKFLOWS:
+            return float(settings.actions_workflow_dispatch_timeout_seconds)
+        return float(settings.actions_exec_timeout_seconds)
+
     async def _dispatch_scheduled_workflow(claimed: ClaimedSchedule) -> None:
         entry = claimed.schedule
         run = claimed.run
@@ -1792,7 +1809,7 @@ async def lifespan(app: FastAPI):
             settings.cortex_request_channel,
             rpc_env,
             reply_channel=reply_channel,
-            timeout_sec=float(settings.actions_exec_timeout_seconds),
+            timeout_sec=scheduled_workflow_dispatch_timeout_sec(entry.workflow_id),
         )
         decoded = _actions_rpc_bus.codec.decode(msg.get("data"))
         if not decoded.ok or decoded.envelope is None:

@@ -32,7 +32,9 @@ logger = logging.getLogger("llamacpp-host")
 
 BOOT_ID = str(uuid.uuid4())
 _LLAMA_FLAG_PATTERN = re.compile(r"--([a-z0-9][a-z0-9-]*)")
-_LLAMA_BUILD_PATTERN = re.compile(r"version:\s*(\d+)")
+# Upstream prints `version: 8740 (hash)`; semver'd forks (PrismML) print
+# `version: 0.2.0-dev (build 10750, commit ...)`, where the leading digit is not the build.
+_LLAMA_BUILD_PATTERN = re.compile(r"\(build\s+(\d+)|version:\s*(\d+)\b(?!\.)")
 _GGUF_SHARD_PATTERN = re.compile(r"^(.+/)(.+)-(\d{5})-of-(\d{5})\.gguf$")
 
 # llama-server --spec-type values that load a draft GGUF with no classic-draft
@@ -299,10 +301,12 @@ def _get_llama_server_build(server_bin: str) -> Optional[int]:
         return None
 
     version_text = f"{result.stdout}\n{result.stderr}"
-    match = _LLAMA_BUILD_PATTERN.search(version_text)
-    if match is None:
-        return None
-    return int(match.group(1))
+    return _parse_llama_build(version_text)
+
+
+def _parse_llama_build(version_text: str) -> Optional[int]:
+    builds = [int(a or b) for a, b in _LLAMA_BUILD_PATTERN.findall(version_text)]
+    return builds[0] if builds else None
 
 
 def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict[str, str]]:

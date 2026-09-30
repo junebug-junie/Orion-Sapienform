@@ -64,3 +64,67 @@ def test_contiguous_suffix_only_false_respects_max_turns_cap() -> None:
 def test_empty_input_yields_empty_output_both_strategies() -> None:
     assert select_turns([], contiguous_suffix_only=True, max_turns=30) == ([], "time_bound_then_contiguous_suffix")
     assert select_turns([], contiguous_suffix_only=False, max_turns=30) == ([], "time_bound_recent_n")
+
+
+def test_sql_row_limit_scales_with_max_turns() -> None:
+    from orion.discussion_window.sql_fetch import sql_row_limit
+
+    assert sql_row_limit(30) == 500
+    assert sql_row_limit(5000) == 10_000
+
+
+def test_request_schema_accepts_a_whole_day_of_turns() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from orion.cognition.chat_history_compactor.constants import COMPACTOR_MAX_TURNS
+    from orion.schemas.discussion_window import DiscussionWindowRequestV1
+
+    DiscussionWindowRequestV1(lookback_seconds=86400, max_turns=COMPACTOR_MAX_TURNS)
+    with pytest.raises(ValidationError):
+        DiscussionWindowRequestV1(lookback_seconds=86400, max_turns=COMPACTOR_MAX_TURNS + 1)
+
+
+def test_fetch_keeps_newest_rows_when_capped(monkeypatch) -> None:
+    """SQL is newest-first (DESC LIMIT) then reversed, so a cap drops the oldest rows."""
+    import sys
+    import types
+
+    from orion.discussion_window import sql_fetch
+    from orion.schemas.discussion_window import DiscussionWindowRequestV1
+
+    captured = {}
+    rows_desc = [_row(10 - i, f"t{10 - i}") for i in range(3)]  # t10, t9, t8
+
+    class _Result:
+        def mappings(self):
+            return rows_desc
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params):
+            captured["sql"] = str(sql)
+            captured["params"] = params
+            return _Result()
+
+    class _Engine:
+        def connect(self):
+            return _Conn()
+
+    fake = types.SimpleNamespace(create_engine=lambda *a, **k: _Engine(), text=lambda s: s)
+    monkeypatch.setitem(sys.modules, "sqlalchemy", fake)
+    req = DiscussionWindowRequestV1(
+        lookback_seconds=86400,
+        end_time_utc=datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc),
+        max_turns=2,
+        contiguous_suffix_only=False,
+    )
+    out = sql_fetch.fetch_discussion_window("postgresql://x", req)
+    assert "ORDER BY created_at DESC" in captured["sql"]
+    assert captured["params"]["row_limit"] == 500
+    assert [t.correlation_id for t in out.turns] == ["t9", "t10"]

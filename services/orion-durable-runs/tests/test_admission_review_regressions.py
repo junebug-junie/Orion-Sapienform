@@ -7,7 +7,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.graph import Deps
-from app.settings import Settings
 from orion.schemas.durable_run import DURABLE_RUN_STATE_KIND
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_admission_runtime_postgres import DSN, Runner, request, runtime, with_database
@@ -94,12 +93,6 @@ def test_finished_checkpoint_recovery_delivers_full_completion_through_outbox():
         assert len([model for kind, model in rt.runner.events if kind == DURABLE_RUN_STATE_KIND]) == 1
         await rt.close()
     asyncio.run(with_database(scenario))
-
-
-@pytest.mark.parametrize("heartbeat", [15, 20])
-def test_heartbeat_must_leave_time_to_renew_before_expiry(heartbeat):
-    with pytest.raises(ValueError):
-        Settings(postgres_uri="postgresql://unused/test", lease_seconds=15, lease_heartbeat_sec=heartbeat)
 
 
 @pytest.mark.parametrize("control", ["paused", "cancelled"])
@@ -197,7 +190,7 @@ def test_status_initial_wait_stops_at_first_grant_across_release_and_retry():
 def test_duplicate_receipt_of_a_pre_cutover_row_ignores_broker_lane_fields():
     """Rows accepted before 4.5 carry broker-derived ``alternatives``; a producer's duplicate
     receipt (which never sends them) is the same run, not a conflict. Any real change still is."""
-    from orion.durable_admission.store import SubmissionConflict
+    from orion.durable_runs.registry_store import SubmissionConflict
 
     async def scenario(pool, saver, store):
         rt = runtime(pool, saver, store)

@@ -24,6 +24,11 @@ What you will notice:
 
 The bridge code stays in the controller until 5.6, so the rollback is a YAML revert.
 
+> **Superseded by 5.6 (2026-09-30):** the bridge and the `swap.load`/`swap.unload` keys are deleted, and
+> the config validator now refuses them. The YAML-revert rollback below no longer works (every action would
+> be refused `config_unloadable`). Roll back 5.6 by redeploying the previous durable-runs and controller
+> images (a `git revert` of the 5.6 PR), not by editing `config/gpu_pool.yaml`.
+
 ## Conventions
 
 - athena commands run from a **worktree** of merged `main` (`scripts/safe_docker_build.sh` refuses the
@@ -331,6 +336,8 @@ CI half of check 4: `orion/gpu_pool/tests/test_stage5_config.py` (the old litera
 `CUDA_VISIBLE_DEVICES_OVERRIDE=2` on a launch service is refused by `check_gpu_pool_config.py`).
 
 ## Rollback
+
+> **Superseded by 5.6** -- see the note at the top: this YAML revert is refused since 5.6.
 
 The bridge is still in the controller (until 5.6), so rolling back is a config revert. Do it with
 gpu2 idle (step 0 checks), or accept one refused action + 600 s cooldown during the window.

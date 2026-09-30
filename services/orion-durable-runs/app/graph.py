@@ -261,6 +261,9 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[CuriosityRunState], Awaitable[
             # never sent as ``assigned_lane`` (Hub names the ``agent`` route for a held turn).
             gpu_lease=_gpu_lease(state),
             urgent=brief.urgent,
+            # What recall searches for (the run's standing question). From the
+            # checkpointed brief, so it survives a Hub restart.
+            retrieval_query=brief.retrieval_query,
         )
         result, meta = await timed_turn(deps.run_turn, request)
         if not result.ok or not result.text.strip():

@@ -7,7 +7,8 @@ set are the card index (``cuda_env``) and an allow-listed profile (``profile_var
 Docker: ``docker`` is the only binary, the subcommands are ``ps``/``stop``/``up -d --no-build
 --no-deps``, and each names exactly one compose service.
 
-The steps are gpu2.py's ``transition()`` ones, per role instead of per fixed target:
+The steps (the stage-4 gpu2 bridge's, per role instead of per fixed target; the bridge itself was
+deleted in stage 5.6):
 
 - **load**: for each evicted role that is running: drain (if it has ``drain``) -> stop. Then ``up``
   the seat with its env, un-drain it if it has ``drain``, and wait for ``ready`` up to
@@ -18,8 +19,6 @@ The steps are gpu2.py's ``transition()`` ones, per role instead of per fixed tar
   has ``drain``) -> stop the seat, then start every evicted role and wait for ready.
 - Generation + digest fence (``pool_fence.authority``) before every mutation; rollback checks
   identity and generation only, so a checkout edited mid-load cannot strand the card.
-
-gpu2.py (the stage-4 bridge) stays until 5.6; both share the controller's single ``_task`` slot.
 """
 from __future__ import annotations
 
@@ -33,7 +32,7 @@ from typing import Any, Callable, NamedTuple
 
 from loguru import logger
 
-from . import lane_control as lc
+from . import compose as dc
 from . import pool_fence
 from .pool_fence import LaunchPlan, RolePlan
 from .settings import settings
@@ -55,9 +54,9 @@ class Intent(NamedTuple):
     generation: int
 
 
-def runner(timeout_sec: float) -> lc.SafeCommandRunner:
+def runner(timeout_sec: float) -> dc.SafeCommandRunner:
     """Only ``docker``, never through a shell. Replaced by a fake in tests."""
-    return lc.SafeCommandRunner(allowed_commands={"docker"}, timeout_sec=timeout_sec)
+    return dc.SafeCommandRunner(allowed_commands={"docker"}, timeout_sec=timeout_sec)
 
 
 def _http(url: str, payload: Any = None) -> Any:
@@ -82,13 +81,13 @@ async def phase(name: str) -> None:
         logger.warning("launch_exec_progress_publish_failed phase={}", name)
 
 
-def _target(plan: RolePlan) -> lc.LaneTarget:
-    return lc.LaneTarget(key=plan.role, compose_relpath=plan.compose, env_relpath=plan.env_file or "",
+def _target(plan: RolePlan) -> dc.ComposeTarget:
+    return dc.ComposeTarget(key=plan.role, compose_relpath=plan.compose, env_relpath=plan.env_file or "",
                          compose_service=plan.service, profile=plan.compose_profile, extra_env=dict(plan.env))
 
 
 def _snapshot_sync(plan: RolePlan) -> dict[str, Any]:
-    return lc._snapshot(runner(READ_TIMEOUT_SEC), lc._repo_root(), _target(plan))
+    return dc.snapshot(runner(READ_TIMEOUT_SEC), dc.repo_root(), _target(plan))
 
 
 async def snapshot(plan: RolePlan) -> dict[str, Any]:
@@ -143,9 +142,9 @@ async def wait_ready(plan: RolePlan, deadline: float | None = None) -> None:
 async def drain(plan: RolePlan) -> None:
     assert plan.drain is not None
     await request(plan.base_url + plan.drain.set_path, {"draining": True})
-    # launch.drain has no timeout key; the bridge's GPU2_DRAIN_TIMEOUT_SEC applies to every role
-    # until 5.6 renames it (the key's meaning is unchanged: max wait for in-flight work to finish).
-    deadline = time.monotonic() + settings.GPU2_DRAIN_TIMEOUT_SEC
+    # launch.drain has no timeout key: one controller-wide max wait for in-flight work to finish
+    # (stage 5.6 renamed it from the gpu2-era GPU2_DRAIN_TIMEOUT_SEC; same meaning, same default).
+    deadline = time.monotonic() + settings.GPU_LANE_DRAIN_TIMEOUT_SEC
     while True:
         state = await request(plan.base_url + plan.drain.status)
         if isinstance(state, dict) and state.get("draining") is True and state.get("in_flight") is False:
@@ -176,11 +175,11 @@ async def llm_idle(plan: RolePlan) -> bool:
 
 
 def _compose(plan: RolePlan, *args: str):
-    root = lc._repo_root()
+    root = dc.repo_root()
     target = _target(plan)
     env = {k: v for k, v in os.environ.items() if k not in plan.unset}
     env.update(plan.env)   # process env wins over --env-file for compose interpolation
-    cmd = [*lc._base_cmd(target, root), *args, target.compose_service]
+    cmd = [*dc.base_cmd(target, root), *args, target.compose_service]
     return runner(settings.GPU_LANE_COMMAND_TIMEOUT_SEC).run(cmd, cwd=str(root), env=env)
 
 
@@ -220,7 +219,7 @@ Authority = Callable[..., Any]
 async def execute(plan: LaunchPlan, action: str, intent: Intent, *,
                   authority: Authority | None = None) -> dict[str, Any]:
     """Run one accepted ``load``/``unload``. Returns ``{"status": success|noop|failed, "error"?,
-    "restored"?}`` in gpu2.transition()'s shape, so actuator_bus maps both the same way."""
+    "restored"?}``; actuator_bus maps it onto a GpuActuateResultV1."""
     authority = authority or pool_fence.authority
     async with lock:
         started = time.monotonic()

@@ -127,7 +127,7 @@ prepare -> resource_request -> resource_wait -> generate -> caption -> finish
   `DURABLE_RUNS_RETRY_MAX_SEC`). Pending records live in `durable_resource_events` (no
   new table; optional index `manual_migration_durable_resource_abandon_pending_v1.sql`),
   are re-read newest-first every `DURABLE_RUNS_HOLD_STATUS_POLL_SEC`, and so survive a
-  durable-runs restart. After `ABANDON_GIVE_UP_SEC` (3 h, `orion/durable_admission/store.py`)
+  durable-runs restart. After `ABANDON_GIVE_UP_SEC` (3 h, `orion/durable_runs/registry_store.py`)
   retries stop: thought's own max-age sweep has released the attempt by then. Paused or
   completed runs are never abandoned.
 - Restart: `generate` is the work node. A restart mid-generate fences it and replays it
@@ -432,10 +432,8 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
   no longer emitted.
 
 Deleted in 4.5 (kill means kill, no fallback): the durable broker, lane policy and widening
-(`orion/durable_admission/{broker,policy,elastic}.py`), `app/elastic_runtime.py`,
-`/leases/validate`, `/admission`, `/elastic/status`, `/elastic/target`. The frozen tables
-`durable_resource_demands` / `durable_resource_leases` / `durable_elastic_slot` get no new rows;
-they stay only because `/capacity` joins them until stage 5.6 deletes both.
+(the old durable-admission `broker`/`policy`/`elastic` modules), `app/elastic_runtime.py`,
+`/leases/validate`, `/admission`, `/elastic/status`, `/elastic/target`.
 
 Deleted in 4.6: the durable lease token itself (`ResourceLeaseV1`, `X-Orion-Resource-Lease`,
 `options.resource_lease`, the gateway's `LeaseGuard`). A run's GPU pool hold ref (`GpuLeaseRefV1`:
@@ -457,12 +455,16 @@ Internal operator endpoints (host port 8124, container port 8121):
 | `POST /runs/{run_id}/cancel` | Release the hold and durably cancel |
 | `POST /runs/{run_id}/release-outreach-lease` | Hub finished Door-A composition: release the kept hold |
 
-`DURABLE_RUNS_CAPACITY_ENABLED=true` keeps the `/capacity` permit authority up, but since GPU pool
-stage 5.4 it has **no callers**: world-model takes a pool `world` lease and the visual chain runs
-under its run's diffusion hold (`orion/gpu_pool/tests/test_stage5_4_no_capacity_callers.py` fails
-if a caller returns). Stage 5.6 deletes it. Since 4.5 it is built with
-`reserve_waiting=False`: frozen pending demands no longer reserve a backend. An active legacy
-durable lease still fences its backend, which is why the cutover waits for zero of them.
+Deleted in 5.6 (GPU pool stage 5, Decision 5): the `/capacity` permit broker (`POST
+/capacity/{acquire,renew,release}`, `GET /capacity`, `DURABLE_RUNS_CAPACITY_ENABLED`,
+`DURABLE_RUNS_LEASE_SECONDS`, the `Capacity*V1` schemas and the capacity client). World-model takes a
+pool `world` lease and the visual chain runs under its run's diffusion hold since 5.4;
+`orion/gpu_pool/tests/test_stage5_4_no_capacity_callers.py` fails if a caller returns. The run
+registry store moved to `orion/durable_runs/registry_store.py` (`DurableRunRegistryStore`). The four
+dead tables (`durable_gateway_permits`, `durable_resource_demands`, `durable_resource_leases`,
+`durable_elastic_slot`) are dropped by `services/orion-sql-db/manual_migration_gpu_pool_stage5_drop_legacy_tables.sql`,
+run through `scripts/gpu_pool_stage5_snapshot_and_drop.sh` (snapshot first). `durable_admission_runs`
+and `durable_resource_events` stay.
 
 Run the real Postgres tests and evals with an explicitly disposable database (each creates a
 fresh schema). They run the REAL GPU pool runtime in process (`tests/pool_fixture.py`):
@@ -471,7 +473,6 @@ fresh schema). They run the REAL GPU pool runtime in process (`tests/pool_fixtur
 python -m pip install -r services/orion-durable-runs/requirements.txt -r requirements-dev.txt -r services/orion-durable-runs/tests/requirements-acceptance.txt
 ORION_ADMISSION_TEST_DSN=postgresql://user@127.0.0.1:55439/admission_test PYTHONPATH=. python -m pytest services/orion-durable-runs/tests -q
 ORION_ADMISSION_TEST_DSN=postgresql://user@127.0.0.1:55439/admission_test PYTHONPATH=. python services/orion-durable-runs/evals/hold_fairness.py
-ORION_ADMISSION_TEST_DSN=postgresql://user@127.0.0.1:55439/admission_test PYTHONPATH=. python services/orion-durable-runs/evals/gateway_capacity.py
 ```
 
 `tests/test_durable_acceptance.py` exercises Cortex receipt, Postgres wait/restart, the pool's

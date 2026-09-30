@@ -2671,7 +2671,8 @@ def test_chat_history_compactor_pass_upserts_card_and_writes_journal(monkeypatch
     assert result.metadata["workflow"]["turn_count"] == 1
     assert card_calls.get("digest") is not None
     assert any(ch == "orion:journal:write" for ch, _ in bus.published)
-    assert digest_routes[0] == "chat"
+    # Durable-admission route, never Juniper's reserved `chat` lane.
+    assert digest_routes[0] == "agent"
     assert "Discussed indexed memory card upserts." in (result.final_text or "")
     # Regression: "compact the last N hours" must fetch everything organic in
     # the window, not just the trailing contiguous session — a quiet gap must
@@ -3006,7 +3007,7 @@ def test_chat_history_compactor_pass_window_of_only_workflow_triggers_is_treated
     assert result.metadata["workflow"]["persisted"] == []
 
 
-def test_chat_history_compactor_pass_digest_chat_then_quick_retry(monkeypatch) -> None:
+def test_chat_history_compactor_pass_digest_retries_after_invalid_json(monkeypatch) -> None:
     bus = DummyBus()
     routes: list[str] = []
 
@@ -3040,14 +3041,14 @@ def test_chat_history_compactor_pass_digest_chat_then_quick_retry(monkeypatch) -
         if req.verb == "chat_history_compactor_digest_v1":
             route = str((req.options or {}).get("llm_route") or "")
             routes.append(route)
-            if route == "chat":
+            if len(routes) == 1:
                 return DummyVerbResult(
                     payload={"result": {"status": "success", "final_text": "not-json", "metadata": {}}}
                 )
             digest = {
-                "card_summary": "Quick-route digest recovered.",
+                "card_summary": "Retry digest recovered.",
                 "journal_title": "Chat digest",
-                "journal_body": "Recovered on quick.",
+                "journal_body": "Recovered on retry.",
                 "turn_refs": ["corr-b"],
             }
             return DummyVerbResult(
@@ -3081,8 +3082,11 @@ def test_chat_history_compactor_pass_digest_chat_then_quick_retry(monkeypatch) -
         )
     )
     assert result.ok is True
-    assert routes == ["chat", "quick"]
-    assert result.metadata["workflow"].get("digest_llm_route") == "quick"
+    assert routes == ["agent", "agent"]
+    assert result.metadata["workflow"].get("digest_llm_route") == "agent"
+    attempts = result.metadata["workflow"]["digest_attempts"]
+    assert [a["ok"] for a in attempts] == [False, True]
+    assert "invalid_json" in attempts[0]["error"]
 
 
 def test_chat_history_compactor_pass_digest_from_final_text_only(monkeypatch) -> None:
@@ -3158,7 +3162,7 @@ def test_chat_history_compactor_pass_digest_from_final_text_only(monkeypatch) ->
     assert result.ok is True
     assert card_calls.get("digest") is not None
     assert card_calls["digest"].card_summary == "Digest parsed from final_text."
-    assert result.metadata["workflow"].get("digest_llm_route") == "chat"
+    assert result.metadata["workflow"].get("digest_llm_route") == "agent"
     assert any(ch == "orion:journal:write" for ch, _ in bus.published)
 
 
@@ -3314,9 +3318,9 @@ def test_chat_history_compactor_pass_over_budget_is_trimmed_and_persisted(monkey
         )
     )
     assert result.ok is True
-    # Repaired on the first route: an over-budget digest must not burn the "quick"
-    # retry route, which re-runs the whole digest for a formatting miss.
-    assert routes == ["chat"]
+    # Repaired on the first attempt: an over-budget digest must not burn the
+    # retry, which re-runs the whole digest for a formatting miss.
+    assert routes == ["agent"]
     assert card_called["n"] == 1
     assert len(persisted_digests[0].card_summary) == CHAT_CARD_SUMMARY_MAX_CHARS
     assert persisted_digests[0].card_summary.endswith("\u2026")

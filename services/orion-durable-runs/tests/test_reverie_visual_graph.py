@@ -412,7 +412,7 @@ def test_reverie_visual_timeouts_nest_and_the_hold_heartbeat_fits_its_ttl():
 
 class FakeStore:
     """The admission store's run row, terminal outbox and run.abandon_* records (same semantics as
-    PostgresAdmissionStore: event ids are ON CONFLICT DO NOTHING; pending = terminal failed/cancelled
+    DurableRunRegistryStore: event ids are ON CONFLICT DO NOTHING; pending = terminal failed/cancelled
     with a pending record and no acked one). Shared across runtimes to model a restart."""
 
     def __init__(self, workflow):
@@ -609,7 +609,7 @@ def test_terminal_abandon_answer_that_closed_nothing_stays_pending():
 
 
 def test_unconfirmed_abandon_is_given_up_after_thoughts_own_sweep_would_have_released_it():
-    from orion.durable_admission.store import ABANDON_GIVE_UP_SEC
+    from orion.durable_runs.registry_store import ABANDON_GIVE_UP_SEC
 
     async def run():
         world = World()

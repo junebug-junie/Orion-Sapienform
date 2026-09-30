@@ -30,8 +30,10 @@ from orion.gpu_pool.discovery import Probe, resolve_roles
 from orion.gpu_pool.lease_graph import FINAL, InvalidTransition, initial_state
 from orion.gpu_pool.scheduler import (
     Abort, Backlog, CardLive, DeadLetter, Expire, Grant, LeaseView, Recall, Requeue, RoleLive,
-    Serialized, SwapBlocked, SwapLoad, SwapUnload, Unavailable, schedule,
+    Serialized, Shed, SwapBlocked, SwapLoad, SwapUnload, Unavailable, schedule,
 )
+from orion.gpu_pool.shed import ShedBoard, ShedSignal
+from orion.schemas.hardware_watch import HardwareWatchIncidentV1
 from orion.gpu_pool.config import SWAP_GUARDS
 from orion.schemas.gpu_pool import (
     GPU_ACTUATE_KIND, GPU_POOL_ACTUATE_REQUEST_CHANNEL, GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND,
@@ -52,6 +54,12 @@ _EVENT_FOR = {Grant: "grant", Recall: "recall", Abort: "abort", Expire: "expire"
 _PUBLIC = {"granted": "granted", "recalling": "recalled", "backlogged": "backlogged",
            "unavailable": "unavailable", "dead_letter": "dead_lettered", "released": "released",
            "retry_wait": "retried", "queued": "queued"}
+
+
+# A cooling_incident signal lasts until the producer's valid_until (default 300 s, the watcher
+# refreshes every 60 s), never longer than SHED_MAX_VALID_SEC from when the pool received it.
+SHED_DEFAULT_VALID_SEC = 300.0
+SHED_MAX_VALID_SEC = 900.0
 
 
 def event_envelope_correlation(event: GpuPoolEventV1) -> uuid.UUID:
@@ -151,7 +159,7 @@ class PoolRuntime:
                  mode: str = "observe", service_name: str = "orion-gpu-pool",
                  announce_stale_sec: float = 120.0, probe_interval_sec: float = 15.0,
                  state_publish_sec: float = 5.0, replay_payload_max_bytes: int = 262144,
-                 actuate_roles: Iterable[str] = ()):
+                 actuate_roles: Iterable[str] = (), shed_enabled: bool = False):
 
         self.cfg, self.profiles, self.store, self.graph, self.bus = cfg, profiles, store, graph, bus
         self.prober, self.now, self.mode = prober, now, mode
@@ -177,6 +185,12 @@ class PoolRuntime:
         # Swap-load guards (app/guards.py fills these outside the lock). Every guard starts failing
         # ("unread"): a pool that has not read the thermal sensor yet must not load a model.
         self.guard_states: dict[str, str | None] = {g: "unread" for g in SWAP_GUARDS}
+        # U4 shed lever (orion/gpu_pool/shed.py). GPU_POOL_SHED_ENABLED=false keeps every signal
+        # visible but blocks nothing.
+        self.shed_board = ShedBoard()
+        self.shed_enabled = shed_enabled
+        self._shed_reported: set[tuple] = set()   # (lease_id, reason) already reported
+        self._shed_active: str | None = None      # last logged active reason (edge-triggered log)
         self._started = False
         self._recent_actions: dict[str, list[str]] = {}
         self._ctx_saved: dict[str, int] = {}
@@ -534,16 +548,22 @@ class PoolRuntime:
                 await self._resume(row["lease_id"], {"type": "cancel", "reason": "config_removed"})
                 continue
             rows.append(row)
+        shed = self.shed_view()
         t = time.monotonic()
         decisions = schedule(self.cfg, self.roles, self.cards, [self._view(r) for r in rows], self.now(),
-                             seen_ctx=self._ctx_seen, guards=self.guard_states)
+                             seen_ctx=self._ctx_seen, guards=self.guard_states, shed=shed.blocked)
         self._phase("schedule", t)
         self._phases["decisions"] = self._phases.get("decisions", 0) + len(decisions)
         swaps: set[tuple] = set()
         serialized: set[tuple] = set()
+        shed_now: set[tuple] = set()
         by_id = {r["lease_id"]: r for r in rows}
         for d in decisions:
             try:
+                if isinstance(d, Shed):
+                    shed_now.add((d.lease_id, d.reason))
+                    await self._report_shed(d, by_id.get(d.lease_id), shed)
+                    continue
                 if isinstance(d, Serialized):
                     serialized.add((d.lease_id, d.reason))
                     await self._report_serialized(d, by_id.get(d.lease_id))
@@ -563,7 +583,56 @@ class PoolRuntime:
         # Edge-triggered: a swap decision is reported when it starts, and again if it recurs later.
         self._swap_requested &= swaps
         self._serialized_reported &= serialized
+        self._shed_reported &= shed_now
         await self._touch_swap_seats(rows)
+
+    # --- U4 shed ------------------------------------------------------------------------
+    def on_incident(self, ev: HardwareWatchIncidentV1) -> str:
+        """orion-hardware-watch incident -> the ``cooling_incident`` shed signal for that incident.
+        Open + shed.requested sets (or refreshes) it; anything else clears it. The signal lapses at
+        the event's ``shed.valid_until``, capped at SHED_MAX_VALID_SEC from now so a bad clock can
+        never latch shedding. Returns what it did, for the log."""
+        if ev.rule != "cooling":
+            return "ignored"
+        if ev.status != "open" or ev.shed is None or not ev.shed.requested:
+            return "cleared" if self.shed_board.clear("cooling_incident", ev.incident_id) else "noop"
+        now = self.now()
+        cap = now + timedelta(seconds=SHED_MAX_VALID_SEC)
+        valid_until = min(ev.shed.valid_until or (now + timedelta(seconds=SHED_DEFAULT_VALID_SEC)), cap)
+        self.shed_board.set(ShedSignal(
+            "cooling_incident", ev.incident_id, ev.shed.requested_at or ev.opened_at, valid_until,
+            {"subject": ev.subject, "open_reason": ev.open_reason, "shed_reason": ev.shed.reason,
+             "cabinet_temp_c": ev.shed.cabinet_temp_c}))
+        return "set"
+
+    def shed_view(self):
+        """The board as the scheduler will use it now; logs when the active reason changes."""
+        now = self.now()
+        for gone in self.shed_board.prune(now):
+            logger.warning("gpu_pool_shed_lapsed reason=%s source=%s valid_until=%s -- no refresh from its producer",
+                           gone.reason, gone.source_id, gone.valid_until.isoformat())
+        view = self.shed_board.view(now, self.shed_enabled)
+        active = next((r["name"] for r in view.reasons if r["active"]), None)
+        if active != self._shed_active:
+            logger.warning("gpu_pool_shed_%s reason=%s enabled=%s blocked=%s", "on" if active else "off",
+                           active or self._shed_active, self.shed_enabled, view.blocked)
+            self._shed_active = active
+        return view
+
+    async def _report_shed(self, d: Shed, row: dict | None, view) -> None:
+        """U4: a ``queued`` event naming the shed reason (and the incident behind it), once per
+        lease and reason while it lasts. Not a lease transition: the row stays where it is."""
+        key = (d.lease_id, d.reason)
+        if key in self._shed_reported or row is None:
+            return
+        name = d.reason.removeprefix("shed:")
+        sources = next((r["sources"] for r in view.reasons if r["name"] == name), [])
+        await self._emit(GpuPoolEventV1(
+            event="queued", lease_id=d.lease_id, holder=row.get("holder"), work_class=row.get("work_class"),
+            priority=row.get("priority"), turn_correlation_id=row.get("turn_correlation_id"),
+            attempt=row.get("attempt"), reason=d.reason,
+            detail={"shed": True, "shed_reason": name, "sources": [s["source_id"] for s in sources]}))
+        self._shed_reported.add(key)   # only once sent: a failed publish is retried next tick
 
     async def _report_serialized(self, d: Serialized, row: dict | None) -> None:
         """serialize_with (stage 5 Z1): a ``queued`` event naming the blocking role, once per lease
@@ -618,13 +687,12 @@ class PoolRuntime:
         agent-gpu2 after the stage-5.3 cutover: 900 (seat) + 600 (diffusion) = 1500 s to the first
         `status`, faulted as stuck at MAX_ACTION_TIMEOUTS x that = 3000 s. The controller's realistic
         worst case -- a failed load: two `docker ps` reads (<= 30 s each) + diffusion drain
-        (GPU2_DRAIN_TIMEOUT_SEC, 300) + seat ready wait (900) + diffusion's restore ready wait (600) +
+        (controller GPU_LANE_DRAIN_TIMEOUT_SEC, 300) + seat ready wait (900) + diffusion's restore ready wait (600) +
         four quick `docker stop`/`up` calls -- is ~1900 s: past the first deadline (the pool keeps
         polling while `status` says in_flight) and inside the ceiling. NOT inside it: docker calls
         that each run near their own GPU_LANE_COMMAND_TIMEOUT_SEC (900 s, four of them on a failed
         load, ~4100 s in all). That is a wedged actuator, and faulting the card is this ceiling's job;
-        a late result is then ignored and an operator `clear_fault` reconciles (same as the bridge,
-        whose ceiling was 300 s tighter). Both bounds pinned by tests/test_stage5_3_cutover_e2e.py."""
+        a late result is then ignored and an operator `clear_fault` reconciles. Both bounds pinned by tests/test_stage5_3_cutover_e2e.py."""
         names = [seat, *self.cfg.evicted_by(seat)]
         total = sum(self.cfg.roles[r].launch.timeout_sec for r in names if self.cfg.roles[r].launch)
         return total or 900.0
@@ -1144,6 +1212,7 @@ class PoolRuntime:
                 turn_correlation_id=r.get("turn_correlation_id"), generation=int(r.get("generation") or 0),
                 hold_lease_id=r.get("hold_lease_id")) for r in rows] if include_leases else [],
             queue_depth=queue, backlog_depth=backlog, swap_guards=dict(self.guard_states),
+            shed=self.shed_board.view(self.now(), self.shed_enabled).as_dict(),
             config=self.cfg.model_dump(mode="json", by_alias=True, exclude={"digest"}) if include_config else None,
             config_yaml=self.cfg.source_text if include_config else None,
             history_lease_id=history_for,

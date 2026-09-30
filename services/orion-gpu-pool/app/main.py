@@ -29,6 +29,8 @@ from orion.schemas.gpu_pool import (
     GpuLeaseRequestV1, GpuPoolControlReplyV1, GpuPoolControlV1, GpuPoolStateRequestV1, LlmWorkerAnnounceV1,
 )
 
+from orion.schemas.hardware_watch import HARDWARE_WATCH_INCIDENT_CHANNEL, HardwareWatchIncidentV1
+
 from app.guards import GuardReader
 from app.runtime import SLOW_LOCK_MS, PoolRuntime
 from app.settings import get_settings
@@ -147,6 +149,19 @@ async def _guards_forever(reader: GuardReader) -> None:
                 pass
 
 
+async def _on_incident(env: BaseEnvelope) -> None:
+    """orion-hardware-watch incident -> the cooling_incident shed signal (U4)."""
+    try:
+        ev = HardwareWatchIncidentV1.model_validate(env.payload or {})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gpu_pool_incident_invalid err=%s", str(exc)[:300])
+        return
+    did = runtime.on_incident(ev)
+    if did in ("set", "cleared"):
+        logger.info("gpu_pool_shed_signal %s incident=%s rule=%s transition=%s shed=%s", did, ev.incident_id,
+                    ev.rule, ev.transition, ev.shed.reason if ev.shed else None)
+
+
 async def _on_announce(env: BaseEnvelope) -> None:
     try:
         await runtime.on_announce(LlmWorkerAnnounceV1.model_validate(env.payload or {}))
@@ -246,7 +261,7 @@ async def lifespan(app: FastAPI):
         service_name=_settings.service_name, announce_stale_sec=_settings.announce_stale_sec,
         probe_interval_sec=_settings.probe_interval_sec, state_publish_sec=_settings.state_publish_sec,
         replay_payload_max_bytes=_settings.replay_payload_max_bytes,
-        actuate_roles=_settings.actuate_role_list)
+        actuate_roles=_settings.actuate_role_list, shed_enabled=_settings.shed_enabled)
     logger.info("gpu_pool_actuation roles=%s", sorted(runtime.actuate_roles) or "off")
     # The actuator's replies are subscribed BEFORE start(): start() asks about a swap the previous
     # process left in flight, and the answer must not arrive to nobody. Lease RPCs start after it.
@@ -264,6 +279,10 @@ async def lifespan(app: FastAPI):
     hunter = Hunter(_cfg(), handler=_on_announce, patterns=[LLM_WORKER_ANNOUNCE_CHANNEL])
     await hunter.start_background()
     _chassis.append(hunter)
+    incidents = Hunter(_cfg(), handler=_on_incident, patterns=[HARDWARE_WATCH_INCIDENT_CHANNEL])
+    await incidents.start_background()
+    _chassis.append(incidents)
+    logger.info("gpu_pool_shed enabled=%s channel=%s", _settings.shed_enabled, HARDWARE_WATCH_INCIDENT_CHANNEL)
     _stop.clear()
     if any(spec.swap and spec.swap.guards for spec in cfg.roles.values()):
         _tasks.append(asyncio.create_task(_guards_forever(GuardReader(cabinet_url=_settings.cabinet_url))))
@@ -273,7 +292,7 @@ async def lifespan(app: FastAPI):
     _tasks.append(asyncio.create_task(_prune_forever()))
     logger.info("gpu_pool_ready channels=%s", [GPU_POOL_LEASE_REQUEST_CHANNEL, GPU_POOL_STATE_REQUEST_CHANNEL,
                                               GPU_POOL_CONTROL_REQUEST_CHANNEL, LLM_WORKER_ANNOUNCE_CHANNEL,
-                                              GPU_POOL_ACTUATE_RESULT_CHANNEL])
+                                              GPU_POOL_ACTUATE_RESULT_CHANNEL, HARDWARE_WATCH_INCIDENT_CHANNEL])
     try:
         yield
     finally:
@@ -303,7 +322,8 @@ app = FastAPI(title="orion-gpu-pool", lifespan=lifespan)
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {"ok": runtime is not None, "service": _settings.service_name, "mode": _settings.mode,
-            "config_digest": runtime.cfg.digest if runtime else None}
+            "config_digest": runtime.cfg.digest if runtime else None,
+            "shed": runtime.shed_board.view(runtime.now(), runtime.shed_enabled).as_dict() if runtime else None}
 
 
 @app.get("/v1/lock-stats")

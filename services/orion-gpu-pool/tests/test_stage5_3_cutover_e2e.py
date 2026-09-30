@@ -46,7 +46,7 @@ def _controller():
             mod.__path__ = [str(path)]
             sys.modules[name] = mod
     out = {}
-    for name in ("settings", "lane_control", "pool_fence", "gpu2", "launch_exec", "actuator_bus"):
+    for name in ("settings", "compose", "pool_fence", "launch_exec", "actuator_bus"):
         full = f"{app_pkg}.{name}"
         if full not in sys.modules:
             spec = importlib.util.spec_from_file_location(full, CTL_DIR / "app" / f"{name}.py")
@@ -124,17 +124,13 @@ class Circe:
         shutil.copy(REPO / "config" / "gpu_pool.yaml", root / "config" / "gpu_pool.yaml")
         s = CTL.settings.settings
         monkeypatch.setattr(s, "GPU_LANE_REPO_ROOT", str(root))
-        monkeypatch.setattr(s, "GPU2_POOL_FENCE_STATE_PATH", str(tmp_path / "fence.json"))
-        monkeypatch.setattr(s, "GPU2_ENABLED", True)
+        monkeypatch.setattr(s, "GPU_POOL_FENCE_STATE_PATH", str(tmp_path / "fence.json"))
         monkeypatch.setattr(s, "GPU_POOL_ACTUATOR_NAME", "circe")
-        monkeypatch.setattr(s, "GPU2_DRAIN_TIMEOUT_SEC", 1.0)
+        monkeypatch.setattr(s, "GPU_LANE_DRAIN_TIMEOUT_SEC", 1.0)
         monkeypatch.setattr(CTL.actuator_bus, "_task", None)
         monkeypatch.setattr(CTL.actuator_bus, "_current", None)
         monkeypatch.setattr(CTL.launch_exec, "POLL_SEC", 0.001)
 
-        async def no_bridge(req):
-            raise AssertionError(f"5.3: {req.target} went through the gpu2 bridge")
-        monkeypatch.setattr(CTL.gpu2, "transition", no_bridge)
         self.docker = FakeDocker(running)
         self.http = FakeHttp(self.docker)
         monkeypatch.setattr(CTL.launch_exec, "runner", lambda timeout_sec: self.docker)
@@ -301,7 +297,7 @@ def test_actuation_deadline_and_stuck_ceiling_cover_the_controllers_worst_case()
     seat, diffusion = CFG.roles[SEAT].launch, CFG.roles["diffusion"].launch
     assert budget == seat.timeout_sec + diffusion.timeout_sec == 1500
     fields = CTL.settings.Settings.model_fields     # the shipped defaults, not whatever .env says
-    drain, command = fields["GPU2_DRAIN_TIMEOUT_SEC"].default, fields["GPU_LANE_COMMAND_TIMEOUT_SEC"].default
+    drain, command = fields["GPU_LANE_DRAIN_TIMEOUT_SEC"].default, fields["GPU_LANE_COMMAND_TIMEOUT_SEC"].default
     reads = 2 * CTL.launch_exec.READ_TIMEOUT_SEC
     realistic = reads + drain + seat.timeout_sec + diffusion.timeout_sec + 4 * 15
     wedged = reads + drain + seat.timeout_sec + diffusion.timeout_sec + 4 * command
@@ -345,14 +341,13 @@ def test_probe_reads_status_and_digest_agreement_without_touching_anything(tmp_p
 
 
 def test_probe_reports_a_controller_checkout_on_another_commit(tmp_path, monkeypatch):
-    """circe still on the rollback shape (bridge verbs) while the pool runs 5.3: MISMATCH."""
+    """circe's checkout on another launch block (here: a different ready timeout) than the pool's: MISMATCH."""
     import yaml
     probe = _probe_module()
     circe = Circe(tmp_path, monkeypatch)
     path = tmp_path / "circe" / "config" / "gpu_pool.yaml"
     data = yaml.safe_load(path.read_text())
-    data["roles"][SEAT]["swap"].update(load="gpu2/agent", unload="gpu2/restore")
-    data["roles"][SEAT]["launch"].pop("profiles")
+    data["roles"][SEAT]["launch"]["timeout_sec"] = 901
     path.write_text(yaml.safe_dump(data, sort_keys=False))
     got = _ask(circe, probe.build(CFG, SEAT, "digest"))
     assert probe.verdict("digest", got) == "MISMATCH: controller checkout/image is not on this commit"

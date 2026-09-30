@@ -9,7 +9,6 @@ equilibrium-service settings/bus are needed.
 from __future__ import annotations
 
 import importlib.util
-import inspect
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,32 +40,25 @@ def _assert_mapped(trigger, *, severity=None):
     return m
 
 
-def test_transport_snapshot_gate():
+def test_transport_snapshot_gate_is_retired_but_history_still_maps():
+    """The pooled rpc_health timeout builder was killed 2026-09-29 (a coarser
+    copy of the per-call atom). Stored rows from it still exist, so the mapper
+    must keep reading their upstream shape."""
     g = _gate("transport_metacog_gate")
-    build = g.build_transport_metacog_trigger_from_snapshot
-    # PR #2310 removes the legacy p95 latency branch and its threshold kwarg;
-    # pass it only while the builder still accepts it so either merge order works.
-    extra = (
-        {"latency_p95_threshold_ms": 5000.0}
-        if "latency_p95_threshold_ms" in inspect.signature(build).parameters
-        else {}
-    )
-    t = build(
+    assert not hasattr(g, "build_transport_metacog_trigger_from_snapshot")
+    m = map_trigger(
+        "transport",
+        "transport:cortex-exec:timeout_count=2",
         {
+            "evidence_source": "rpc_health_snapshot",
+            "fired_conditions": ["timeout_count=2"],
             "service": "cortex-exec",
-            "window_start": "2026-09-24T00:00:00Z",
-            "window_end": "2026-09-24T00:00:30Z",
             "success_count": 3,
             "timeout_count": 2,
-            "success_latency_ms_p50": 900.0,
-            "success_latency_ms_p95": 1200.0,
-            "success_latency_ms_max": 1300.0,
             "channel_counts": {"orion:state:request": 5},
         },
-        **extra,
-        **COMMON,
     )
-    _assert_mapped(t, severity="critical")
+    assert not m.density_rationale.startswith("no_evidence") and m.severity == "critical"
 
 
 def test_transport_grammar_gate():
@@ -81,12 +73,6 @@ def test_transport_grammar_gate():
         **COMMON,
     )
     _assert_mapped(t, severity="degraded")
-
-
-def test_transport_bus_synaptic_gate():
-    g = _gate("transport_metacog_gate")
-    t = g.build_transport_metacog_trigger_from_bus_synaptic(0.5, error_threshold=0.15, **COMMON)
-    _assert_mapped(t, severity="critical")
 
 
 def test_telemetry_anomaly_gate():

@@ -36,7 +36,7 @@ FROM python:3.11-slim
 # this date (docker 29.4.1, compose v5.1.3). Nothing here re-verifies that
 # match if the host's docker is later upgraded without rebuilding this
 # image -- a real gap (review finding), not fixed here; a mismatch would
-# surface as a `docker compose` invocation failure in lane_control.py, not
+# surface as a `docker compose` invocation failure in app/compose.py, not
 # a silent one, but with no explicit message pointing at version skew as
 # the cause. Bump both pins by hand if circe's host docker/compose changes.
 RUN apt-get update && apt-get install -y --no-install-recommends \

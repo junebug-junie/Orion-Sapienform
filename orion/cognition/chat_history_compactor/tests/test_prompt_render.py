@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from orion.cognition.chat_history_compactor.digest import trim_chat_history_compactor_input
+from orion.cognition.chat_history_compactor.digest import build_chat_history_compactor_digest_inputs
 from orion.cognition.planner.prompt_renderer import PromptRenderer
 from orion.schemas.discussion_window import DiscussionWindowResultV1, DiscussionWindowTurnV1
 
@@ -28,10 +28,10 @@ def test_rendered_prompt_carries_topic_coverage_instruction() -> None:
 
 def test_rendered_prompt_surfaces_truncation_flag_for_a_long_turn() -> None:
     """When a real long turn gets word-boundary-truncated by
-    trim_chat_history_compactor_input, the render must actually carry the
+    build_chat_history_compactor_digest_inputs, the render must actually carry the
     `truncated`/`turn_content_truncated` markers into the LLM-visible JSON,
     not just compute them and drop them before the prompt is built."""
-    long_prompt = "one two three four five " + ("word " * 400)
+    long_prompt = "one two three four five " + ("word " * 2000)
     turns = [
         DiscussionWindowTurnV1(
             created_at=datetime(2026, 8, 11, 4, 0, tzinfo=timezone.utc),
@@ -47,7 +47,8 @@ def test_rendered_prompt_surfaces_truncation_flag_for_a_long_turn() -> None:
         turns=turns,
         transcript_text="ignored",
     )
-    digest_input = trim_chat_history_compactor_input(window)
+    inputs, _stats = build_chat_history_compactor_digest_inputs(window)
+    digest_input = inputs[0]
     assert digest_input["turn_content_truncated"] is True  # sanity: fixture actually truncates
 
     text = _renderer().render(
@@ -56,3 +57,18 @@ def test_rendered_prompt_surfaces_truncation_flag_for_a_long_turn() -> None:
     assert '"turn_content_truncated": true' in text
     assert '"truncated": true' in text
     assert "do not guess or invent" in text
+
+
+def test_rendered_prompt_chunk_and_merge_modes() -> None:
+    chunk = _renderer().render(
+        TEMPLATE_NAME,
+        {"metadata": {"chat_history_compactor_input": {"turns": [], "chunk_index": 2, "chunk_count": 3}}},
+    )
+    assert "part 2 of 3" in chunk
+    assert "MERGE step" not in chunk
+    merge = _renderer().render(
+        TEMPLATE_NAME,
+        {"metadata": {"chat_history_compactor_input": {"partial_digests": [{"chunk_index": 1}]}}},
+    )
+    assert "MERGE step" in merge
+    assert "NO length limit" in merge

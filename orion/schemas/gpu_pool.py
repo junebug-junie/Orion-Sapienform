@@ -242,6 +242,10 @@ class GpuPoolStateV1(BaseModel):
     backlog_depth: dict[str, int] = Field(default_factory=dict)
     # Swap-load guards as the pool last read them: name -> None when clear, else why it blocks.
     swap_guards: dict[str, str | None] = Field(default_factory=dict)
+    # U4 shed lever (orion/gpu_pool/shed.py ShedView.as_dict): enabled, active_reason, blocked
+    # (priority -> reason), reasons (each with precedence, blocks, active, effective, sources).
+    # Empty from a pool that predates it.
+    shed: dict[str, Any] = Field(default_factory=dict)
     # Filled only on request (GpuPoolStateRequestV1), never on the periodic broadcast:
     config: dict[str, Any] | None = None          # parsed config/gpu_pool.yaml (the Hub picture)
     config_yaml: str | None = None                # the file as written (the Hub "raw YAML" view)

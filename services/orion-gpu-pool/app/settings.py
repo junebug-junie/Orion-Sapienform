@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     # Swap-load guards (read outside the runtime lock, every guard_refresh_sec).
     cabinet_url: str = Field("http://100.92.216.81:8080/api/cabinet/sensors/latest", alias="GPU_POOL_CABINET_URL")
     guard_refresh_sec: float = Field(30.0, gt=0, alias="GPU_POOL_GUARD_REFRESH_SEC")
+    # U4 shed lever kill switch (orion/gpu_pool/shed.py). OFF in code: the pool still receives and
+    # shows shed signals (orion-hardware-watch cooling incidents) but blocks nothing. ON in .env_example.
+    shed_enabled: bool = Field(False, alias="GPU_POOL_SHED_ENABLED")
 
     @property
     def actuate_role_list(self) -> list[str]:

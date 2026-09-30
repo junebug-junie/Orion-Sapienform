@@ -275,3 +275,38 @@ def test_chassis_watts_contains_gpu_watts_and_the_contract_says_so():
 # services/orion-sql-writer/tests/test_biometrics_summary_sql_shape.py. An earlier version of
 # this file grepped the model's source text for "measurements = Column(JSONB", which still
 # matches when the line is commented out -- it would have passed with the column removed.
+
+
+def test_gpu_temperature_is_per_card_plus_hottest():
+    # Real circe reading 2026-09-29 (nvidia-smi temperature.gpu, space-padded strings).
+    sample = {"gpu": {"gpus": [
+        {"gpu_index": "0", "temperature_gpu_c": " 39"},
+        {"gpu_index": "1", "temperature_gpu_c": " 41"},
+        {"gpu_index": "3", "temperature_gpu_c": " 71"},
+    ]}}
+    out = extract_measurements(sample)
+    assert out["gpu0_temp_c"] == 39.0
+    assert out["gpu1_temp_c"] == 41.0
+    assert out["gpu3_temp_c"] == 71.0
+    assert out["gpu_temp_c_max"] == 71.0
+    assert "gpu2_temp_c" not in out
+
+
+def test_gpu_temperature_absent_when_the_csv_predates_the_column():
+    # A host still running the old gpu_host_stats.sh: no temperature column at all.
+    out = extract_measurements({"gpu": {"gpus": [{"gpu_index": "0", "power_draw_watts": " 38.7"}]}})
+    assert "gpu_temp_c_max" not in out
+    assert not any(k.startswith("gpu0_temp") for k in out)
+
+
+@pytest.mark.parametrize("bad", ["", " [N/A]", None, True, "-5"])
+def test_unreadable_gpu_temperature_is_absent_not_zero(bad):
+    out = extract_measurements({"gpu": {"gpus": [{"gpu_index": "0", "temperature_gpu_c": bad}]}})
+    assert "gpu_temp_c_max" not in out and "gpu0_temp_c" not in out
+
+
+def test_gpu_temperature_without_a_usable_index_still_counts_in_the_max():
+    out = extract_measurements({"gpu": {"gpus": [{"gpu_index": " x", "temperature_gpu_c": "80"},
+                                                 {"gpu_index": "1", "temperature_gpu_c": "60"}]}})
+    assert out["gpu_temp_c_max"] == 80.0
+    assert out["gpu1_temp_c"] == 60.0

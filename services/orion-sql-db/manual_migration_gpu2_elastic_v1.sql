@@ -1,3 +1,6 @@
+-- SUPERSEDED (GPU pool stage 5.6): the table below is dropped by
+-- manual_migration_gpu_pool_stage5_drop_legacy_tables.sql. Do not apply this file; kept as history
+-- (and as the fixture scripts/gpu_pool_stage5_snapshot_and_drop.sh is tested against).
 -- Additive; retain on rollback. Same database and lock as durable capacity.
 CREATE TABLE IF NOT EXISTS durable_elastic_slot (
     slot text PRIMARY KEY CHECK (slot = 'circe-gpu2'),

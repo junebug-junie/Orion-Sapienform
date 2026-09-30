@@ -98,3 +98,35 @@ def test_procs_csv_never_mistaken_for_the_main_gpu_file(monkeypatch, tmp_path):
     assert result["latest_file"] == "2026-09-02T00:00:00.csv"
     assert len(result["gpus"]) == 2
     assert result["gpus"][0]["gpu_name"] == "Tesla P4"
+
+
+def test_real_script_carries_gpu_temperature_into_measurements(monkeypatch, tmp_path):
+    """End to end through the real gpu_host_stats.sh (fake nvidia-smi on PATH): the new last
+    column reaches collect_gpu_stats() by header name and extract_measurements() per card."""
+    import subprocess as real_subprocess
+
+    from orion.telemetry.biometrics_pipeline import extract_measurements
+
+    script = Path(__file__).resolve().parents[3] / "orion" / "sensors" / "gpu_host_stats.sh"
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "nvidia-smi"
+    # Same line shape as circe's real output 2026-09-29.
+    fake.write_text(
+        "#!/bin/bash\n"
+        "case \"$*\" in\n"
+        "  *query-gpu*) echo '0, GPU-aaa, Tesla V100-PCIE-32GB, 0, 27888, 32768, 36.91, 39'\n"
+        "               echo '3, GPU-ddd, Tesla V100-PCIE-32GB, 100, 15384, 32768, 210.68, 71' ;;\n"
+        "  *) : ;;\n"
+        "esac\n", encoding="utf-8")
+    fake.chmod(0o755)
+    out = tmp_path / "out"
+    env = {"PATH": f"{bindir}:{os.environ.get('PATH', '')}", "GPU_STATS_OUTDIR": str(out)}
+    real_subprocess.run(["bash", str(script)], check=True, env=env)
+    monkeypatch.setattr(utils_module, "TELEMETRY_DIR", str(out))
+    _fake_script(monkeypatch)
+
+    result = collect_gpu_stats()
+    assert [g["temperature_gpu_c"].strip() for g in result["gpus"]] == ["39", "71"]
+    m = extract_measurements({"gpu": result})
+    assert m["gpu0_temp_c"] == 39.0 and m["gpu3_temp_c"] == 71.0 and m["gpu_temp_c_max"] == 71.0

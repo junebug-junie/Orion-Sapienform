@@ -509,6 +509,7 @@ from orion.schemas.telemetry.rpc_health import RpcChannelLatencyV1, RpcHealthSna
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
+from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload, MetaTagsRequestV1, MetaTagsResultV1
 from orion.schemas.metacog_patches import MetacogDraftTextPatchV1
 from orion.schemas.metacog_entry import MetacogEntryV1, MetacogRepairPressure
@@ -636,6 +637,7 @@ from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.curiosity_peer import HelpRequestV1, PeerBriefConsumedV1, PeerBriefV1
 from orion.schemas.curiosity_supervisor import READING_KIND, HopReadingV1
 from orion.schemas.curiosity_urgent import URGENT_REQUEST_KIND, CuriosityUrgentRequestV1
+from orion.schemas.hardware_watch import HARDWARE_WATCH_INCIDENT_KIND, HardwareWatchIncidentV1
 from orion.schemas.durable_run import (
     CuriosityTurnRequestV1,
     CuriosityTurnResultV1,
@@ -872,6 +874,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MetacognitionTickV1": MetacognitionTickV1,
     "MetacognitiveTraceV1": MetacognitiveTraceV1,
     "MetacogTriggerV1": MetacogTriggerV1,
+    "TransportBaselineHourlyV1": TransportBaselineHourlyV1,
     "MetacogDraftTextPatchV1": MetacogDraftTextPatchV1,
     "MetacogEntryV1": MetacogEntryV1,
     "RepairPressureAppraisalV1": RepairPressureAppraisalV1,
@@ -1010,6 +1013,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ReverieVisualStepResultV1": ReverieVisualStepResultV1,
     "CuriosityTurnResultV1": CuriosityTurnResultV1,
     "CuriosityUrgentRequestV1": CuriosityUrgentRequestV1,
+    "HardwareWatchIncidentV1": HardwareWatchIncidentV1,
     "HelpRequestV1": HelpRequestV1,
     "PeerBriefV1": PeerBriefV1,
     "PeerBriefConsumedV1": PeerBriefConsumedV1,
@@ -1861,6 +1865,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "GpuLeaseRequestV1": SchemaRegistration(model=GpuLeaseRequestV1, kind="gpu_pool.lease.request.v1"),
     "GpuLeaseReplyV1": SchemaRegistration(model=GpuLeaseReplyV1, kind="gpu_pool.lease.reply.v1"),
     "GpuPoolEventV1": SchemaRegistration(model=GpuPoolEventV1, kind="gpu_pool.event.v1"),
+    # Transport baseline gate hourly per-hop summary (2026-09-29). In BOTH maps.
+    "TransportBaselineHourlyV1": SchemaRegistration(
+        model=TransportBaselineHourlyV1, kind="transport_baseline.hourly.v1"
+    ),
     "GpuPoolStateV1": SchemaRegistration(model=GpuPoolStateV1, kind="gpu_pool.state.v1"),
     "GpuPoolStateRequestV1": SchemaRegistration(model=GpuPoolStateRequestV1, kind="gpu_pool.state.request.v1"),
     "GpuPoolControlV1": SchemaRegistration(model=GpuPoolControlV1, kind="gpu_pool.control.v1"),
@@ -1876,6 +1884,7 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "ReverieVisualStepResultV1": SchemaRegistration(model=ReverieVisualStepResultV1, kind="reverie.visual.step.result.v1"),
     "CuriosityTurnResultV1": SchemaRegistration(model=CuriosityTurnResultV1, kind="curiosity.turn.result.v1"),
     "CuriosityUrgentRequestV1": SchemaRegistration(model=CuriosityUrgentRequestV1, kind=URGENT_REQUEST_KIND),
+    "HardwareWatchIncidentV1": SchemaRegistration(model=HardwareWatchIncidentV1, kind=HARDWARE_WATCH_INCIDENT_KIND),
     "HelpRequestV1": SchemaRegistration(
         model=HelpRequestV1,
         kind="curiosity.help.request.v1",

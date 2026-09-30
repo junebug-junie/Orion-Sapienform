@@ -53,11 +53,11 @@ from app.reverie_visual_graph import (
 from orion.schemas.reading_turn import READING_WORKFLOW
 from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW
 from app.self_sense_graph import finish_detail as self_sense_finish_detail
-from orion.durable_admission.store import (
+from orion.durable_runs.registry_store import (
     ABANDON_ACKED_EVENT,
     ABANDON_GIVE_UP_SEC,
     ABANDON_PENDING_EVENT,
-    PostgresAdmissionStore,
+    DurableRunRegistryStore,
 )
 from orion.gpu_pool.client import DURABLE_RUN_HOLDER_PREFIX, durable_run_holder
 from orion.schemas.gpu_pool import GpuLeaseReplyV1
@@ -121,7 +121,7 @@ TAKEBACK_RELEASE_REASONS = frozenset({HoldLost.release_reason, URGENT_PREEMPT})
 class AdmissionRuntime:
     def __init__(self, settings, runner, pool, *, store=None, clock=None, holds=None):
         self.settings, self.runner, self.pool = settings, runner, pool
-        self.store = store or PostgresAdmissionStore(pool)
+        self.store = store or DurableRunRegistryStore(pool)
         self.now = clock or (lambda: datetime.now(timezone.utc))
         self.holds = holds or PoolHolds(runner._bus, source=settings.service_name)
         if settings.lease_heartbeat_sec * 2 > self.holds.hold_ttl_sec:

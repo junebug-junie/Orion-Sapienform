@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
 from orion.schemas.reading_turn import ReadingRunBriefV1, READING_WORKFLOW
 from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW, ReverieVisualRunBriefV1
@@ -165,6 +165,17 @@ class CuriosityRunBriefV1(BaseModel):
     # MODEL: deploy orion-durable-runs before orion-hub.
     retrieval_query: str | None = Field(default=None, max_length=1000)
 
+    @model_serializer(mode="wrap")
+    def _omit_unset_retrieval_query(self, handler):
+        # An older reader of this model forbids unknown keys, even null ones
+        # (same rule as orion/schemas/reading.py's result selectors). Unset, the
+        # key is absent from EVERY dump -- wire, stored request_json, checkpoint
+        # -- so a new producer stays byte-compatible with an old consumer.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("retrieval_query") is None:
+            data.pop("retrieval_query", None)
+        return data
+
 
 class DurableRunRequestV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -263,6 +274,17 @@ class CuriosityTurnRequestV1(BaseModel):
     # Additive: the brief's retrieval_query (what recall searches for). Omitted
     # on the wire when None, so a runner only sends it once Hub put it on the brief.
     retrieval_query: str | None = Field(default=None, max_length=1000)
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_retrieval_query(self, handler):
+        # An older reader of this model forbids unknown keys, even null ones
+        # (same rule as orion/schemas/reading.py's result selectors). Unset, the
+        # key is absent from EVERY dump -- wire, stored request_json, checkpoint
+        # -- so a new producer stays byte-compatible with an old consumer.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("retrieval_query") is None:
+            data.pop("retrieval_query", None)
+        return data
 
 
 class CuriosityTurnResultV1(BaseModel):

@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.reading import SourceFetchEvidenceV1
@@ -29,6 +29,17 @@ class ReadingRunBriefV1(BaseModel):
     # durable as the prompt. ADDITIVE ON A `forbid` MODEL: deploy
     # orion-durable-runs before orion-hub.
     retrieval_query: str | None = Field(default=None, max_length=1000)
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_retrieval_query(self, handler):
+        # An older reader of this model forbids unknown keys, even null ones
+        # (same rule as orion/schemas/reading.py's result selectors). Unset, the
+        # key is absent from EVERY dump -- wire, stored request_json, checkpoint
+        # -- so a new producer stays byte-compatible with an old consumer.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("retrieval_query") is None:
+            data.pop("retrieval_query", None)
+        return data
 
 
 class ReadingTurnRequestV1(BaseModel):

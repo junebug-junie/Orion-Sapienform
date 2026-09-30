@@ -509,6 +509,7 @@ from orion.schemas.telemetry.rpc_health import RpcChannelLatencyV1, RpcHealthSna
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
+from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
 from orion.schemas.telemetry.meta_tags import MetaTagsPayload, MetaTagsRequestV1, MetaTagsResultV1
 from orion.schemas.metacog_patches import MetacogDraftTextPatchV1
 from orion.schemas.metacog_entry import MetacogEntryV1, MetacogRepairPressure
@@ -871,6 +872,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MetacognitionTickV1": MetacognitionTickV1,
     "MetacognitiveTraceV1": MetacognitiveTraceV1,
     "MetacogTriggerV1": MetacogTriggerV1,
+    "TransportBaselineHourlyV1": TransportBaselineHourlyV1,
     "MetacogDraftTextPatchV1": MetacogDraftTextPatchV1,
     "MetacogEntryV1": MetacogEntryV1,
     "RepairPressureAppraisalV1": RepairPressureAppraisalV1,
@@ -1859,6 +1861,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "GpuLeaseRequestV1": SchemaRegistration(model=GpuLeaseRequestV1, kind="gpu_pool.lease.request.v1"),
     "GpuLeaseReplyV1": SchemaRegistration(model=GpuLeaseReplyV1, kind="gpu_pool.lease.reply.v1"),
     "GpuPoolEventV1": SchemaRegistration(model=GpuPoolEventV1, kind="gpu_pool.event.v1"),
+    # Transport baseline gate hourly per-hop summary (2026-09-29). In BOTH maps.
+    "TransportBaselineHourlyV1": SchemaRegistration(
+        model=TransportBaselineHourlyV1, kind="transport_baseline.hourly.v1"
+    ),
     "GpuPoolStateV1": SchemaRegistration(model=GpuPoolStateV1, kind="gpu_pool.state.v1"),
     "GpuPoolStateRequestV1": SchemaRegistration(model=GpuPoolStateRequestV1, kind="gpu_pool.state.request.v1"),
     "GpuPoolControlV1": SchemaRegistration(model=GpuPoolControlV1, kind="gpu_pool.control.v1"),

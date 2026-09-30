@@ -51,7 +51,10 @@ Not run yet. UNVERIFIED live: after `orion-harness-governor` restart, largest ne
 
 ## Review findings fixed
 
-(see below / PR thread)
+- Finding (low): after a run that dies on trailing progress frames, `record_step_failed` used the count of ALL frames as its order, so the failure atom had no started atom to link to.
+  - Fix: failure atom now uses the order of the last frame actually recorded (`last_recorded_step_order`).
+  - Evidence: `test_error_after_trailing_progress_frames_links_failure_to_last_real_step` (fails with the old order).
+- Reviewer noted, not changed: `record_result_assembled(step_count=...)` still carries the all-frames count; nothing reads it.
 
 ## Restart required
 

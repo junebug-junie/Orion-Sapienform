@@ -88,3 +88,35 @@ def test_collector_still_chains_successors_across_a_gap_in_order() -> None:
     events = build_harness_grammar_events(c)
     successors = [e for e in events if e.edge and e.edge.relation_type == "temporal_successor"]
     assert len(successors) == 1  # completed(1) -> started(7): the chain is unbroken
+
+
+@pytest.mark.asyncio
+async def test_error_after_trailing_progress_frames_links_failure_to_last_real_step() -> None:
+    async def _fcc(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield _frame("assistant", message={"content": "real"})
+        for _ in range(4):
+            yield _frame("tool_progress")
+        yield {"type": "error", "error": "boom", "error_code": "fcc_timeout"}
+
+    grammar_events: list[Any] = []
+
+    async def _publish(channel: str, envelope: Any) -> None:
+        if channel == "orion:grammar:event":
+            grammar_events.append(envelope.payload)
+
+    bus = AsyncMock()
+    bus.publish = AsyncMock(side_effect=_publish)
+    request = HarnessRunRequestV1(
+        correlation_id="c-progress-err",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    await HarnessRunner(bus, step_channel="orion:harness:run:step", fcc_runner=_fcc).run(request)
+
+    motor = [e for e in grammar_events if e["trace_id"].endswith(":harness_motor")]
+    failed = [e["atom"] for e in motor if e.get("atom") and e["atom"]["semantic_role"] == "exec_step_failed"]
+    assert len(failed) == 1 and "order=1," in failed[0]["summary"]  # the real step, not frame 5
+    derived = [e["edge"] for e in motor if e.get("edge") and e["edge"]["relation_type"] == "derived_from"]
+    assert any(ed["to_atom_id"] == failed[0]["atom_id"] for ed in derived)  # linked to its started atom

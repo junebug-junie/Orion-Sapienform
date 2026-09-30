@@ -442,6 +442,7 @@ class HarnessRunner:
 
         receipts: list[GrammarReceiptV1] = []
         step_count = 0
+        last_recorded_step_order = 0  # order of the last non-progress frame in the collector
         draft_text = ""
         exit_code: int | None = None
         fcc_served_model: str | None = None
@@ -512,6 +513,7 @@ class HarnessRunner:
                     tool_failure_streak_max = max(tool_failure_streak_max, tool_failure_streak)
                 summary = summarize_harness_step(step, index=step_count)
                 if not progress_frame:
+                    last_recorded_step_order = step_count + 1
                     collector.record_step_started(order=step_count + 1, summary=summary)
                 tool_name = _extract_tool_name(step)
                 step_kind = classify_step_tool_kind(tool_name)
@@ -586,9 +588,11 @@ class HarnessRunner:
                     hinted = apply_context_overflow_hint(error_msg) if error_msg else ""
                     grounding_status = error_code or hinted or error_msg or "failed"
                     motor_failed = True
-                if step_count > 0:
+                if last_recorded_step_order > 0:
+                    # Not step_count: trailing progress frames have no started atom to
+                    # link the failure to.
                     collector.record_step_failed(
-                        order=step_count,
+                        order=last_recorded_step_order,
                         error_kind=short_error_kind(error_code or error_msg),
                     )
                 logger.warning(

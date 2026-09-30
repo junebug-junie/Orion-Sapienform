@@ -638,6 +638,7 @@ from orion.schemas.curiosity_peer import HelpRequestV1, PeerBriefConsumedV1, Pee
 from orion.schemas.curiosity_supervisor import READING_KIND, HopReadingV1
 from orion.schemas.curiosity_urgent import URGENT_REQUEST_KIND, CuriosityUrgentRequestV1
 from orion.schemas.hardware_watch import HARDWARE_WATCH_INCIDENT_KIND, HardwareWatchIncidentV1
+from orion.schemas.compactor_digest_run import CompactorDigestResultV1, CompactorDigestRunBriefV1
 from orion.schemas.durable_run import (
     CuriosityTurnRequestV1,
     CuriosityTurnResultV1,
@@ -993,6 +994,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "DurableRunRequestV1": DurableRunRequestV1,
     "JournalComposeRunBriefV1": JournalComposeRunBriefV1,
     "DurableRunReceiptV1": DurableRunReceiptV1,
+    "CompactorDigestRunBriefV1": CompactorDigestRunBriefV1,
+    "CompactorDigestResultV1": CompactorDigestResultV1,
     "ResourceEventV1": ResourceEventV1,
     "GpuLeaseRequestV1": GpuLeaseRequestV1,
     "GpuLeaseReplyV1": GpuLeaseReplyV1,

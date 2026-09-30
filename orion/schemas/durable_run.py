@@ -35,6 +35,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
+from orion.schemas.compactor_digest_run import COMPACTOR_DIGEST_WORKFLOW, CompactorDigestRunBriefV1
 from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
 from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW, JournalComposeRunBriefV1
 from orion.schemas.reading_turn import ReadingRunBriefV1, READING_WORKFLOW
@@ -56,6 +57,9 @@ CURIOSITY_TURN_RESULT_KIND = "curiosity.turn.result.v1"
 
 DurableWorkflowV1 = Literal[
     "curiosity.investigate", "self_sense_eval", "self_study.reflect", "reading.turn", "reverie.visual",
+    # ADDITIVE on extra="forbid"/Literal models: deploy orion-durable-runs before cortex-orch (orch
+    # submits these), or an old validator rejects the request.
+    "compactor.digest",
     # ADDITIVE on extra="forbid"/Literal models. Deploy orion-durable-runs first, then
     # orion-cortex-orch (validates the request) and orion-sql-writer (validates DurableRunStateV1
     # rows for this workflow), then the producer (orion-actions); an old validator rejects it.
@@ -190,7 +194,7 @@ class DurableRunRequestV1(BaseModel):
     workflow: DurableWorkflowV1
     correlation_id: str
     requested_at: datetime = Field(default_factory=_utc_now)
-    brief: CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1 | JournalComposeRunBriefV1
+    brief: CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1 | CompactorDigestRunBriefV1 | JournalComposeRunBriefV1
     admission: ResourceRequirementV1 | None = None
 
     @model_validator(mode="after")
@@ -199,9 +203,11 @@ class DurableRunRequestV1(BaseModel):
             raise ValueError("workflow and reading brief must agree")
         if (self.workflow == REVERIE_VISUAL_WORKFLOW) != isinstance(self.brief, ReverieVisualRunBriefV1):
             raise ValueError("workflow and reverie.visual brief must agree")
+        if (self.workflow == COMPACTOR_DIGEST_WORKFLOW) != isinstance(self.brief, CompactorDigestRunBriefV1):
+            raise ValueError("workflow and compactor.digest brief must agree")
         if (self.workflow == JOURNAL_COMPOSE_WORKFLOW) != isinstance(self.brief, JournalComposeRunBriefV1):
             raise ValueError("workflow and journal.compose brief must agree")
-        if self.workflow in (READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW, JOURNAL_COMPOSE_WORKFLOW) and self.admission is None:
+        if self.workflow in (READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW, COMPACTOR_DIGEST_WORKFLOW, JOURNAL_COMPOSE_WORKFLOW) and self.admission is None:
             raise ValueError(f"{self.workflow} runs require durable resource admission")
         return self
 

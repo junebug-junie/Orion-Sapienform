@@ -666,12 +666,23 @@ conventions: `orion/core/bus/rpc_health.py` module docstring.
 
 ### Scheduled workflow dispatch timeout
 
-`ACTIONS_WORKFLOW_DISPATCH_TIMEOUT_SECONDS` (default 3600) is how long the scheduler waits for
-cortex-orch to finish a scheduled compactor pass (`LONG_RUNNING_SCHEDULED_WORKFLOWS` in `app/main.py`;
-every other scheduled workflow keeps `ACTIONS_EXEC_TIMEOUT_SECONDS`). The workflow claim TTL is set to
-this value + 60s so a restart mid-pass does not reap and re-run a still-running dispatch. It is separate
-from `ACTIONS_EXEC_TIMEOUT_SECONDS` (single skill/journal calls) because a compactor pass is a
-GitHub fetch (<=300s) plus map-reduce digest calls bounded by
-`COMPACTOR_DIGEST_TOTAL_BUDGET_SEC` (3000s); the old 420s wait recorded still-running passes as
-failed and retried them. The scheduler loop is serial, so this is also the longest one stuck
-workflow can delay the next due job.
+`ACTIONS_WORKFLOW_DISPATCH_TIMEOUT_SECONDS` (default 600) is how long the scheduler waits for
+cortex-orch to answer a scheduled compactor dispatch (`LONG_RUNNING_SCHEDULED_WORKFLOWS` in `app/main.py`;
+every other scheduled workflow keeps `ACTIONS_EXEC_TIMEOUT_SECONDS`). It covers only the synchronous part:
+the GitHub fetch (<=300s) or chat discussion window, then registering the `compactor.digest` durable run.
+The workflow claim TTL is this value + 60s. The scheduler loop is serial, so this is also the longest one
+stuck workflow can delay the next due job.
+
+### Scheduled compactors settle from their durable run
+
+The compactors' LLM digest calls run as an admitted `compactor.digest` durable run in
+`orion-durable-runs` (each chunk digest and the merge is a checkpointed node holding a GPU pool hold;
+a busy pool at 06:00 is a wait, not a failure). cortex-orch replies `status="accepted"` with
+`metadata.workflow.durable_run` once the run is registered, and the scheduler marks the schedule run
+awaiting that durable run (`mark_awaiting_durable`: still `dispatched`, so attention stays quiet and no
+retry is armed). orion-actions subscribes to `orion:durable:run:state`; the run's terminal row
+(`completed` / `failed` / `cancelled`) settles the schedule run through the normal success/failure
+paths (`settle_durable_run`: retry budget, attention, next occurrence). If no terminal row arrives by
+the run's admission deadline + 15 min (e.g. orion-actions was down when it was published), the reaper
+fails it as `durable_run_completion_unobserved`; the retry re-dispatches the same window, which finds the
+run by its deterministic id and reports it without re-running any LLM call.

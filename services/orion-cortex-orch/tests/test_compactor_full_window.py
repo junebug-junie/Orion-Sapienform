@@ -1,5 +1,6 @@
-"""Full-window compactor passes: every PR / turn covered, journal body untrimmed,
-map-reduce over the char budget, and transient digest failures retried."""
+"""Full-window compactor passes: every PR / turn covered, journal body untrimmed, map-reduce over
+the char budget. The digest calls run in a ``compactor.digest`` durable run, simulated in-line here
+(tests/compactor_durable_sim.py); attempts / pool waits / resume are tested in orion-durable-runs."""
 from __future__ import annotations
 
 import asyncio
@@ -11,6 +12,7 @@ import pytest
 
 from app import workflow_runtime as wr
 from app.workflow_runtime import execute_chat_workflow
+from orion.cognition.compactor import map_reduce
 from orion.cognition.compactor.constants import DIGEST_MAX_TOKENS
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.cortex.contracts import CortexClientRequest
@@ -155,30 +157,12 @@ def test_github_forty_prs_all_covered_via_map_reduce_and_body_untrimmed() -> Non
     # Journal body stored in full (the old 8000-char trim is gone).
     assert bus.journal_bodies() == [long_body]
     assert wf["journal_body_chars"] == len(long_body)
-    # Explicit durable-admission route + completion budget on every call.
+    # Explicit durable-admission route + completion budget on every call, and every call carries
+    # the durable run's GPU pool hold (the gateway attaches it instead of queueing behind it).
     assert {o["llm_route"] for o in digest_options} == {"agent"}
     assert {o["max_tokens"] for o in digest_options} == {DIGEST_MAX_TOKENS}
-
-
-def test_github_empty_completion_is_retried() -> None:
-    bus = _Bus()
-    calls: list[str] = []
-
-    async def fake(*args, **kwargs):
-        req = kwargs["client_request"]
-        if req.verb == "skills.repo.github_recent_prs.v1":
-            return _github_fetch_result(_forty_prs()[:2])
-        calls.append(req.options["llm_route"])
-        if len(calls) == 1:
-            return _Result(final_text="")  # live: invalid_json:Expecting value: line 1 column 1
-        return _Result(final_text=json.dumps({"card_summary": "ok", "journal_title": "t", "journal_body": "b", "pr_refs": ["#1000"]}))
-
-    result = _run(_req("github_compactor_pass"), fake, bus)
-    wf = result.metadata["workflow"]
-    assert result.ok is True
-    assert calls == ["agent", "agent"]
-    assert [a["ok"] for a in wf["digest_attempts"]] == [False, True]
-    assert wf["digest_attempts"][0]["error"] == "github_compactor_digest_failed:empty_completion"
+    assert all(o["gpu_lease"]["lease_id"] == "hold-sim" for o in digest_options)
+    assert wf["digest_gpu_roles"] == ["agent"]
 
 
 def test_github_control_character_json_parses() -> None:
@@ -397,7 +381,7 @@ def test_github_merge_that_drops_refs_falls_back_to_concatenation() -> None:
 
 
 def test_github_merge_input_over_budget_skips_merge_call(monkeypatch) -> None:
-    monkeypatch.setattr(wr, "DIGEST_INPUT_CHAR_BUDGET", 20_000)
+    monkeypatch.setattr(map_reduce, "DIGEST_INPUT_CHAR_BUDGET", 20_000)
     bus = _Bus()
     merge_calls = []
 
@@ -416,21 +400,3 @@ def test_github_merge_input_over_budget_skips_merge_call(monkeypatch) -> None:
     assert merge_calls == []
     assert wf["digest_merge_mode"] == "concatenated"
     assert wf["digest_merge_skipped_reason"] == "merge_input_over_budget"
-
-
-def test_pass_budget_exhausted_mid_map_fails_without_journal(monkeypatch) -> None:
-    clock = {"t": 0.0}
-    monkeypatch.setattr(wr.time, "monotonic", lambda: clock["t"])
-    bus = _Bus()
-
-    async def fake(*args, **kwargs):
-        req = kwargs["client_request"]
-        if req.verb == "skills.repo.github_recent_prs.v1":
-            return _github_fetch_result(_forty_prs())
-        clock["t"] += 2000.0  # each chunk call eats a big slice of the 3000s pass budget
-        return _simple_digest(req.context.metadata["github_compactor_input"])
-
-    with pytest.raises(Exception) as exc:
-        _run(_req("github_compactor_pass"), fake, bus)
-    assert "pass_budget_exhausted" in str(exc.value)
-    assert bus.journal_bodies() == []

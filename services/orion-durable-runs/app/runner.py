@@ -326,6 +326,29 @@ class DurableRunner:
             return None
         return findings
 
+    async def _cortex_orch_rpc(self, request_payload: dict[str, Any], *, timeout_sec: float, label: str) -> dict[str, Any]:
+        """compactor.digest (admitted): one cortex-orch request -- a digest verb call carrying the
+        run's hold as ``options.gpu_lease``, or the finalize workflow request -- and its decoded
+        ``CortexClientResult`` payload. Validated as a ``CortexClientRequest`` before it leaves, so
+        a malformed request fails here, not as an opaque orch validation error. Raises on transport
+        or decode failure; the graph decides what a non-ok payload means."""
+        if self._bus is None:
+            raise RuntimeError("no_bus")
+        request = CortexClientRequest.model_validate(request_payload)
+        rpc_correlation_id = uuid4()
+        reply_channel = f"orion:cortex:result:compactor-digest:{rpc_correlation_id}"
+        envelope = BaseEnvelope(kind="cortex.orch.request", source=self._source(), correlation_id=rpc_correlation_id,
+                                reply_to=reply_channel, payload=request.model_dump(mode="json"))
+        msg = await self._bus.rpc_request(self._settings.cortex_request_channel, envelope,
+                                          reply_channel=reply_channel, timeout_sec=float(timeout_sec))
+        decoded = self._bus.codec.decode(msg.get("data"))
+        if not decoded.ok or decoded.envelope is None:
+            raise RuntimeError(f"cortex_orch_decode_failed:{decoded.error}")
+        payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        logger.info("compactor_digest_cortex_reply step=%s rpc=%s ok=%s status=%s",
+                    label, rpc_correlation_id, payload.get("ok"), payload.get("status"))
+        return payload
+
     def _source(self) -> ServiceRef:
         s = self._settings
         return ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name)

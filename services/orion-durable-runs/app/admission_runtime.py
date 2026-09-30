@@ -35,6 +35,7 @@ from app.admitted_graph import (
     WorkflowDeadline, build_admitted_graph,
 )
 from app.admitted_reflect_graph import build_admitted_reflect_graph
+from app.compactor_digest_graph import build_compactor_digest_graph, finish_detail as compactor_digest_finish_detail
 from app.admitted_self_sense_graph import build_admitted_self_sense_graph
 from app.graph import failed_turn_meta, finish_detail, recorded_turn_correlation_id, turn_correlation_id, urgent_detail
 from app.pool_hold import (
@@ -48,6 +49,7 @@ from app.reverie_visual_graph import (
     finish_detail as reverie_visual_finish_detail, send_abandon,
     terminal_detail as reverie_visual_terminal_detail,
 )
+from orion.schemas.compactor_digest_run import COMPACTOR_DIGEST_WORKFLOW
 from orion.schemas.reading_turn import READING_WORKFLOW
 from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW
 from app.self_sense_graph import finish_detail as self_sense_finish_detail
@@ -74,7 +76,9 @@ WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORK
               REFLECT_WORKFLOW: {"llm_call"}, READING_WORKFLOW: {"reading_turn"},
               # Only generate holds the diffusion hold; it releases it before its result is
               # checkpointed, so a restart after generate resumes at caption with no lease.
-              REVERIE_VISUAL_WORKFLOW: {"generate"}}
+              REVERIE_VISUAL_WORKFLOW: {"generate"},
+              # One LLM call per digest run; finalize lets the hold go before it calls cortex-orch.
+              COMPACTOR_DIGEST_WORKFLOW: {"digest"}}
 # The DurableRunStateV1.node each admitted terminal is published under (the graph node it ends at).
 TERMINAL_STATE_NODE = {"completed": "finish", "failed": "failed", "cancelled": "finish"}
 # Pool events (for a durable-run holder) after which a waiting run should look at its hold now.
@@ -141,6 +145,9 @@ class AdmissionRuntime:
             REFLECT_WORKFLOW: build_admitted_reflect_graph(runner._reflect_deps(), admission_deps, runner._checkpointer),
             READING_WORKFLOW: build_reading_graph(lambda request: runner._run_reading_turn(request), admission_deps, runner._checkpointer),
             REVERIE_VISUAL_WORKFLOW: build_reverie_visual_graph(self._reverie_step, admission_deps, runner._checkpointer),
+            # Late-bound (like reading above): the runner's method is read per call.
+            COMPACTOR_DIGEST_WORKFLOW: build_compactor_digest_graph(
+                lambda payload, **kw: runner._cortex_orch_rpc(payload, **kw), admission_deps, runner._checkpointer),
         }
         # Back-compat alias used by older tests that reach for `.graph`.
         self.graph = self.graphs[DEFAULT_WORKFLOW]
@@ -177,6 +184,8 @@ class AdmissionRuntime:
             return reading_finish_detail(state)
         if workflow == REVERIE_VISUAL_WORKFLOW:
             return reverie_visual_finish_detail(state)
+        if workflow == COMPACTOR_DIGEST_WORKFLOW:
+            return compactor_digest_finish_detail(state)
         return finish_detail(state)
 
     def _reverie_step(self, request, budget_sec=None):

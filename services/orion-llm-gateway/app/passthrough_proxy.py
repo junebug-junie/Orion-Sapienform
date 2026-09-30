@@ -37,6 +37,7 @@ from .pool_placement import (
     POOL_UNAVAILABLE,
     LeaseStreamingResponse,
     PoolLease,
+    busy_at_grant,
     class_max_ctx,
     mark_revoked,
     passthrough_wait_sec,
@@ -119,7 +120,7 @@ class _CallReport:
         self._done = False
 
     def granted(self, lease: Lease) -> None:
-        self.clock.granted(getattr(lease.grant, "role", None))
+        self.clock.granted(getattr(lease.grant, "role", None), busy=busy_at_grant(lease))
         self.served_by = getattr(lease.grant, "served_by", None)
 
     def finish(self, outcome: str, *, body: Any = None) -> None:
@@ -135,7 +136,7 @@ class _CallReport:
                 served_by=self.served_by,
                 timing=self.clock,
                 tokens=grammar_emit.usage_tokens_from(body) if body is not None else (0, 0),
-                decode_tps=grammar_emit.decode_tps_from(body) if body is not None else None,
+                timings=grammar_emit.timings_from(body) if body is not None else None,
                 http=True,
             )
         except Exception:  # noqa: BLE001 -- telemetry must never break a reply

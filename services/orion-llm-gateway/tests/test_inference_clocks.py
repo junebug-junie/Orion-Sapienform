@@ -445,7 +445,7 @@ def test_a_passthrough_only_window_leaves_the_failure_population_untouched():
     rec.record_outcome("upstream_http_5xx", served_by="circe-worker-agent",
                        timing=_clock(10, 200, "agent"), http=True)
     rec.record_outcome("served", served_by="circe-worker-agent", timing=_clock(5, 900, "agent"),
-                       tokens=(100, 10), decode_tps=20.0, http=True)
+                       tokens=(100, 10), timings=grammar_emit.ReplyTimings(decode_tps=20.0), http=True)
     _, _, buckets = rec.drain()
     events = build_window_events(gateway_node="athena", window_start=0, window_end=60, buckets=buckets)
     kv = _kv(events[0].atom.summary)
@@ -454,3 +454,193 @@ def test_a_passthrough_only_window_leaves_the_failure_population_untouched():
     agent = _roles(events[0].atom.summary)["agent"]
     assert (agent["calls"], agent["http_calls"], agent["upstream_failed"]) == ("2", "2", "1")
     assert agent["model_p50_ms"] == "900" and agent["decode_tps_p50"] == "20.0"
+
+
+# ── stage 7 covariates: occupancy at grant, slots, llama.cpp prompt-cache counts ───────────
+
+# The exact timings block a leased /v1/chat/completions call to the fast role returned
+# through this gateway on 2026-09-30 (llama.cpp b10398): prompt_n + cache_n == usage.prompt_tokens.
+LIVE_TIMINGS = {
+    "cache_n": 3, "prompt_n": 11, "prompt_ms": 33.016, "prompt_per_token_ms": 3.0014545454545454,
+    "prompt_per_second": 333.1717954930943, "predicted_n": 2, "predicted_ms": 11.283,
+    "predicted_per_token_ms": 5.6415, "predicted_per_second": 177.25782150137377,
+}
+
+
+def test_timings_from_reads_the_live_llamacpp_shape():
+    t = grammar_emit.timings_from({"timings": LIVE_TIMINGS, "usage": {"prompt_tokens": 14}})
+    assert (t.prompt_n, t.cache_n) == (11, 3)
+    assert t.decode_tps == pytest.approx(177.2578, rel=1e-4)
+    tail = b'data: {"timings":' + __import__("json").dumps(LIVE_TIMINGS).encode() + b"}\n\ndata: [DONE]\n\n"
+    assert grammar_emit.timings_from(tail) == t
+    assert grammar_emit.timings_from({}) == grammar_emit.ReplyTimings()
+
+
+def _busy_clock(busy: int, role: str = "metacog") -> CallClock:
+    c = _clock(5, 500, role)
+    c.busy_at_grant = busy
+    return c
+
+
+def test_decode_speed_is_banded_by_occupancy_at_grant_and_carries_slots_and_cache():
+    rec = InferenceWindowRecorder(clock=lambda: 0.0)
+    for busy, tps in [(1, 100.0), (1, 90.0), (3, 40.0), (4, 30.0), (2, 50.0)]:
+        rec.record({"text": "ok", "raw": {"timings": {"predicted_per_second": tps, "prompt_n": 10, "cache_n": 90}}},
+                   served_by="circe-worker-metacog", timing=_busy_clock(busy))
+    _, _, buckets = rec.drain()
+    events = build_window_events(gateway_node="athena", window_start=0, window_end=60, buckets=buckets,
+                                 role_slots={"metacog": 4})
+    m = _roles(events[0].atom.summary)["metacog"]
+    assert (m["decode_tps_solo_p50"], m["decode_tps_solo_n"]) == ("90.0", "2")  # [90, 100] nearest-rank
+    assert (m["decode_tps_shared_p50"], m["decode_tps_shared_n"]) == ("40.0", "3")
+    assert (m["busy_p50"], m["busy_max"], m["slots"]) == ("2", "4", "4")
+    assert (m["prompt_n"], m["cache_n"], m["cache_reports"]) == ("50", "450", "5")
+
+
+def test_unknown_occupancy_and_no_cache_report_are_omitted_not_zero():
+    rec = InferenceWindowRecorder(clock=lambda: 0.0)
+    rec.record({"text": "ok", "raw": {"timings": {"predicted_per_second": 10.0}}},
+               served_by="circe-worker-fast", timing=_clock(1, 50, "fast"))
+    _, _, buckets = rec.drain()
+    events = build_window_events(gateway_node="athena", window_start=0, window_end=60, buckets=buckets)
+    f = _roles(events[0].atom.summary)["fast"]
+    for key in ("busy_p50", "busy_max", "slots", "prompt_n", "cache_n", "decode_tps_solo_p50"):
+        assert key not in f, key
+    assert f["cache_reports"] == "0" and f["decode_tps_p50"] == "10.0"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_bus_calls_see_each_other_at_grant_and_occupancy_never_leaks(fake_pool, monkeypatch):
+    import asyncio
+
+    from app import pool_placement
+
+    pool_placement.reset_occupancy_for_tests()
+    gate = threading.Event()
+
+    def run(body, plan):
+        gate.wait(2.0)
+        return {"text": "hi", "raw": {"timings": {"predicted_per_second": 20.0}}, "route": plan.route,
+                "served_by": plan.route_target.served_by}
+
+    monkeypatch.setattr(gateway, "run_llm_chat", run)
+    fake_pool.choose = lambda kw: "metacog"
+
+    def _env():
+        return BaseEnvelope(
+            kind="llm.chat.request", source=ServiceRef(name="cortex-exec", node="n", version="0"),
+            correlation_id=str(uuid.uuid4()),
+            payload=ChatRequestPayload(messages=[LLMMessage(role="user", content="ping")],
+                                       route="metacog").model_dump(mode="json"),
+        )
+
+    first = asyncio.ensure_future(gateway.handle_chat(_env()))
+    await asyncio.sleep(0.1)
+    second = asyncio.ensure_future(gateway.handle_chat(_env()))
+    await asyncio.sleep(0.1)
+    assert pool_placement.role_in_flight() == {"metacog": 2}
+    gate.set()
+    await asyncio.gather(first, second)
+    assert pool_placement.role_in_flight() == {}  # released on every path, never leaks
+
+    _, _, buckets = grammar_emit.get_recorder().drain()
+    role = buckets["circe"].roles["metacog"]
+    assert sorted(role.busy) == [1, 2]
+    assert role.decode_tps_solo == [20.0] and role.decode_tps_shared == [20.0]
+
+
+@pytest.mark.asyncio
+async def test_occupancy_is_released_when_the_upstream_call_raises(fake_pool, monkeypatch):
+    from app import pool_placement
+
+    pool_placement.reset_occupancy_for_tests()
+
+    def boom(body, plan):
+        raise RuntimeError("worker thread crashed")
+
+    monkeypatch.setattr(gateway, "run_llm_chat", boom)
+    with pytest.raises(RuntimeError):
+        await gateway._dispatch_chat(
+            __import__("app.models", fromlist=["ChatBody"]).ChatBody(
+                route="quick", messages=[{"role": "user", "content": "x"}]),
+            correlation_id="c")
+    assert pool_placement.role_in_flight() == {}
+
+
+def test_passthrough_carries_occupancy_and_cache_counts(passthrough_client, fake_pool, monkeypatch):
+    from app import pool_placement
+
+    pool_placement.reset_occupancy_for_tests()
+
+    async def _fake_post(self: Any, url: str, **kwargs: Any) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [], "timings": LIVE_TIMINGS})
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
+    passthrough_client.post("/v1/chat/completions", json={"model": "quick", "messages": [{"role": "user", "content": "hi"}]})
+    _, _, buckets = grammar_emit.get_recorder().drain()
+    (role,) = buckets["circe"].roles.values()
+    assert role.busy == [1]
+    assert (role.prompt_n, role.cache_n, role.cache_reports) == (11, 3, 1)
+    assert pool_placement.role_in_flight() == {}
+
+
+@pytest.mark.asyncio
+async def test_role_slots_reads_llm_roles_from_pool_state(monkeypatch):
+    from app import pool_placement
+
+    async def _state():
+        return {"roles": [
+            {"role": "metacog", "kind": "llm", "slots": 4},
+            {"role": "agent", "kind": "llm", "slots": 1},
+            {"role": "diffusion", "kind": "service", "slots": 1},
+            {"role": "chat", "kind": "llm", "slots": 0},  # down: unknown, not zero
+        ]}
+
+    monkeypatch.setattr(pool_placement, "fetch_pool_state", _state)
+    assert await pool_placement.role_slots() == {"metacog": 4, "agent": 1}
+
+    async def _none():
+        return None
+
+    monkeypatch.setattr(pool_placement, "fetch_pool_state", _none)
+    assert await pool_placement.role_slots() == {}
+
+
+@pytest.mark.asyncio
+async def test_publisher_stamps_slots_and_survives_a_slots_failure():
+    import asyncio
+
+    for provider, expect in ((lambda: _async({"metacog": 4}), "slots:4"), (_raise, None)):
+        grammar_emit.reset_recorder_for_tests()
+        grammar_emit.get_recorder().record({"text": "ok", "raw": {}}, served_by="circe-worker-metacog",
+                                           timing=_busy_clock(1))
+        published = []
+
+        class _Bus:
+            async def publish(self, channel, envelope):
+                published.append(envelope)
+
+        stop = asyncio.Event()
+
+        async def _stop_soon():
+            await asyncio.sleep(0.05)
+            stop.set()
+
+        await asyncio.gather(
+            grammar_emit.run_window_publisher(_Bus(), gateway_node="athena", window_sec=60, stop=stop,
+                                              slots_provider=provider),
+            _stop_soon(),
+        )
+        summary = published[0].payload["atom"]["summary"]
+        if expect:
+            assert expect in summary
+        else:
+            assert "slots:" not in summary and "metacog[" in summary
+
+
+async def _async(value):
+    return value
+
+
+async def _raise():
+    raise RuntimeError("pool state rpc down")

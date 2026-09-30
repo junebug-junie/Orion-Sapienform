@@ -303,6 +303,15 @@ puts these on `nodes.<llm_node>.by_role` in `substrate_llm_inference_projection`
 (debug only, no field channel). The old `p50_ms`/`p95_ms` (one clock from before the
 lease: queue wait + model time, per machine) are retired.
 
+Covariates, so a per-role baseline does not read normal slot sharing as a degraded
+worker (stage 7 input): `busy` is this gateway's calls in flight on the granted role
+at grant, this one included (`pool_placement.busy_at_grant`, counted from grant to
+lease release); decode speed is also split `decode_tps_solo_p50` (busy == 1) vs
+`decode_tps_shared_p50`; `slots` is the pool's discovered slot count for the role,
+read once per window from pool state (omitted when the pool is unreachable);
+`prompt_n`/`cache_n` sum llama.cpp's `timings.prompt_n` (prompt tokens processed)
+and `timings.cache_n` (reused from the KV cache) over served calls that reported both.
+
 What counts as a backend failure: only replies framed `[Error: ...` that are a
 timeout, refused/failed connection, HTTP 5xx, 404 or other backend error. Upstream
 4xx (e.g. an oversized prompt), image-to-text-route refusals and unreadable

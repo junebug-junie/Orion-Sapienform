@@ -455,3 +455,21 @@ def test_passthrough_only_window_does_not_move_inference_failure_pressure():
     agent = projection.nodes["llm_node:circe"].by_role["agent"]
     assert (agent.calls, agent.http_calls, agent.upstream_failed) == (5, 5, 5)
     assert projection.recent_windows["llm_node:circe"][-1].upstream_failed == 0
+
+
+def test_round_trip_carries_occupancy_slots_and_cache_counts():
+    rec = EMIT.InferenceWindowRecorder(clock=lambda: T0)
+    for busy, tps in [(1, 60.0), (2, 35.0), (2, 33.0)]:
+        clock = _clocked(5, 800, "metacog")
+        clock.busy_at_grant = busy
+        rec.record({"text": "ok", "raw": {"timings": {"predicted_per_second": tps, "prompt_n": 20, "cache_n": 180}}},
+                   served_by="circe-worker-metacog", timing=clock)
+    start, _end, buckets = rec.drain()
+    events = EMIT.build_window_events(gateway_node="athena", window_start=start, window_end=start + 60,
+                                      buckets=buckets, role_slots={"metacog": 4})
+    projection, _ = _reduce(events)
+    m = projection.nodes["llm_node:circe"].by_role["metacog"]
+    assert (m.decode_tps_solo_p50, m.decode_tps_solo_samples) == (60.0, 1)
+    assert (m.decode_tps_shared_p50, m.decode_tps_shared_samples) == (33.0, 2)
+    assert (m.busy_p50, m.busy_max, m.slots) == (2, 2, 4)
+    assert (m.prompt_n, m.cache_n, m.cache_reports) == (60, 540, 3)

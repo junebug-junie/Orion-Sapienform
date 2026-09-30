@@ -392,7 +392,7 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
                 plan.route, holder=holder, turn_correlation_id=correlation_id,
                 min_ctx_tokens=min_ctx, deadline_sec=wait_s, hold=hold,
             ) as lease:
-                timing.granted(getattr(lease.grant, "role", None))
+                timing.granted(getattr(lease.grant, "role", None), busy=pool_placement.busy_at_grant(lease))
                 read_timeout_s = deadline - time.monotonic()
                 if read_timeout_s <= 0:
                     # The grant came after the caller's budget ran out: generate nothing.
@@ -735,6 +735,7 @@ async def main() -> None:
                 chat_svc.bus,
                 gateway_node=settings.node_name or "gateway",
                 window_sec=settings.llm_gateway_grammar_window_sec,
+                slots_provider=pool_placement.role_slots,
             )
         )
     await asyncio.gather(*tasks)

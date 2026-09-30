@@ -23,6 +23,12 @@ llama.cpp's own ``timings.predicted_per_second`` -- a per-token speed, so a 0.3 
 classifier and a 120 s agent turn on the same role are comparable. The old mixed
 ``p50_ms``/``p95_ms`` (queue wait + model time, per machine) are retired.
 
+Two covariates ride along so a per-role baseline is not fooled by normal slot sharing
+(stage 7 input, 2026-09-30): ``busy`` -- this gateway's calls in flight on the granted
+role at grant, this one included (pool_placement occupancy), with decode speed split
+``solo`` (busy == 1) vs ``shared``; and llama.cpp's own ``timings.prompt_n``/``cache_n``
+(prompt tokens processed vs reused from the KV cache) summed per role.
+
 Bounded by construction: counts, clock percentiles and token totals only.
 No prompt text, no response text, no correlation ids.
 """
@@ -64,6 +70,8 @@ _UNROUTED = "unrouted"
 UNGRANTED_ROLE = "ungranted"
 _ROLE_SAFE_RE = re.compile(r"[^a-z0-9_.-]")
 _DECODE_TPS_RE = re.compile(rb'"predicted_per_second"\s*:\s*([0-9]+(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?)')
+_PROMPT_N_RE = re.compile(rb'"prompt_n"\s*:\s*([0-9]+)')
+_CACHE_N_RE = re.compile(rb'"cache_n"\s*:\s*([0-9]+)')
 _HTTP_STATUS_RE = re.compile(r"(client|server) error '(\d{3})")
 
 
@@ -209,6 +217,8 @@ class CallClock:
     wait_ms: int | None = None
     model_ms: int | None = None
     role: str | None = None
+    # this gateway's calls in flight on ``role`` at the (last) grant, this one included
+    busy_at_grant: int | None = None
     _wait_from: float | None = None
     _model_from: float | None = None
 
@@ -216,8 +226,9 @@ class CallClock:
         self._close_model()
         self._wait_from = self.clock()
 
-    def granted(self, role: str | None) -> None:
+    def granted(self, role: str | None, busy: int | None = None) -> None:
         now = self.clock()
+        self.busy_at_grant = busy if busy is None else max(1, int(busy))
         if self._wait_from is not None:
             self.wait_ms = (self.wait_ms or 0) + _ms(now - self._wait_from)
             self._wait_from = None
@@ -246,6 +257,40 @@ class CallClock:
 def role_key(role: str | None) -> str:
     raw = _ROLE_SAFE_RE.sub("", str(role or "").strip().lower())
     return raw or UNGRANTED_ROLE
+
+
+@dataclass(frozen=True)
+class ReplyTimings:
+    """llama.cpp's own ``timings`` for one reply. Every field None when not reported."""
+
+    decode_tps: float | None = None
+    prompt_n: int | None = None  # prompt tokens processed this call
+    cache_n: int | None = None  # prompt tokens reused from the slot's KV cache
+
+
+def _last_int(pattern: "re.Pattern[bytes]", data: bytes) -> int | None:
+    found = pattern.findall(data)
+    return int(found[-1]) if found else None
+
+
+def _nonneg_int(value: Any) -> int | None:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
+
+
+def timings_from(payload: Any) -> ReplyTimings:
+    """Decode speed and prompt-cache counts from a reply body (dict, bytes, or a stream's tail)."""
+    prompt_n = cache_n = None
+    if isinstance(payload, dict):
+        timings = payload.get("timings") if isinstance(payload.get("timings"), dict) else {}
+        prompt_n, cache_n = _nonneg_int(timings.get("prompt_n")), _nonneg_int(timings.get("cache_n"))
+    elif isinstance(payload, (bytes, bytearray, str)):
+        data = payload.encode("utf-8", "ignore") if isinstance(payload, str) else bytes(payload)
+        prompt_n, cache_n = _last_int(_PROMPT_N_RE, data), _last_int(_CACHE_N_RE, data)
+    return ReplyTimings(decode_tps=decode_tps_from(payload), prompt_n=prompt_n, cache_n=cache_n)
 
 
 def decode_tps_from(payload: Any) -> float | None:
@@ -288,6 +333,15 @@ class _RoleBucket:
     # served calls only: the worker. A timed-out call's model time is its budget, not a speed.
     model_ms: list[int] = field(default_factory=list)
     decode_tps: list[float] = field(default_factory=list)
+    # decode speed banded by occupancy at grant: alone on the role vs sharing it
+    decode_tps_solo: list[float] = field(default_factory=list)
+    decode_tps_shared: list[float] = field(default_factory=list)
+    # every granted call's occupancy at grant (this gateway's calls in flight on the role)
+    busy: list[int] = field(default_factory=list)
+    # served calls reporting llama.cpp prompt counts: processed vs reused from the KV cache
+    prompt_n: int = 0
+    cache_n: int = 0
+    cache_reports: int = 0
 
     @staticmethod
     def _push(samples: list, value) -> None:
@@ -295,25 +349,38 @@ class _RoleBucket:
             samples.pop(0)
         samples.append(value)
 
-    def add(self, *, outcome: str, timing: "CallClock | None", decode_tps: float | None, http: bool = False) -> None:
+    def add(self, *, outcome: str, timing: "CallClock | None", timings: ReplyTimings | None,
+            http: bool = False) -> None:
         self.calls += 1
         self.http_calls += int(bool(http))
         self.classes[outcome] = self.classes.get(outcome, 0) + 1
+        busy = timing.busy_at_grant if timing is not None else None
         if timing is not None and timing.wait_ms is not None:
             self._push(self.wait_ms, int(timing.wait_ms))
-        if outcome == OUTCOME_SERVED:
-            if timing is not None and timing.model_ms is not None:
-                self._push(self.model_ms, int(timing.model_ms))
-            if decode_tps is not None:
-                self._push(self.decode_tps, float(decode_tps))
+        if busy is not None:
+            self._push(self.busy, int(busy))
+        if outcome != OUTCOME_SERVED:
+            return
+        if timing is not None and timing.model_ms is not None:
+            self._push(self.model_ms, int(timing.model_ms))
+        timings = timings or ReplyTimings()
+        if timings.decode_tps is not None:
+            self._push(self.decode_tps, float(timings.decode_tps))
+            if busy is not None:
+                self._push(self.decode_tps_solo if busy <= 1 else self.decode_tps_shared, float(timings.decode_tps))
+        if timings.prompt_n is not None and timings.cache_n is not None:
+            self.prompt_n += timings.prompt_n
+            self.cache_n += timings.cache_n
+            self.cache_reports += 1
 
     def count(self, classes: frozenset[str]) -> int:
         return sum(n for name, n in self.classes.items() if name in classes)
 
-    def summary(self, role: str) -> str:
+    def summary(self, role: str, slots: int | None = None) -> str:
         """``role[k:v|k:v]`` -- one token, no spaces/commas/semicolons, so it rides the node
         atom's kv summary and a role can never be split from its node by a batch boundary."""
         wait, model, tps = sorted(self.wait_ms), sorted(self.model_ms), sorted(self.decode_tps)
+        busy = sorted(self.busy)
         fields = [
             ("calls", self.calls),
             ("http_calls", self.http_calls),
@@ -327,6 +394,16 @@ class _RoleBucket:
             ("model_p95_ms", _percentile(model, 0.95)),
             ("decode_tps_p50", _fmt_tps(_percentile(tps, 0.5))),
             ("decode_tps_n", len(tps)),
+            ("decode_tps_solo_p50", _fmt_tps(_percentile(sorted(self.decode_tps_solo), 0.5))),
+            ("decode_tps_solo_n", len(self.decode_tps_solo)),
+            ("decode_tps_shared_p50", _fmt_tps(_percentile(sorted(self.decode_tps_shared), 0.5))),
+            ("decode_tps_shared_n", len(self.decode_tps_shared)),
+            ("busy_p50", _percentile(busy, 0.5)),
+            ("busy_max", busy[-1] if busy else None),
+            ("slots", slots if slots and slots > 0 else None),
+            ("prompt_n", self.prompt_n if self.cache_reports else None),
+            ("cache_n", self.cache_n if self.cache_reports else None),
+            ("cache_reports", self.cache_reports),
         ]
         body = "|".join(f"{k}:{v}" for k, v in fields if v is not None)
         return f"{role}[{body}]"
@@ -359,14 +436,14 @@ class _NodeBucket:
         served_by: str | None,
         tokens: tuple[int, int],
         timing: CallClock | None = None,
-        decode_tps: float | None = None,
+        timings: ReplyTimings | None = None,
         http: bool = False,
     ) -> None:
         role = role_key(timing.role if timing is not None else None)
         if role not in self.roles and len(self.roles) >= _MAX_ROLES:
             role = _OTHER_WORKER
         self.roles.setdefault(role, _RoleBucket()).add(
-            outcome=outcome, timing=timing, decode_tps=decode_tps, http=http)
+            outcome=outcome, timing=timing, timings=timings, http=http)
         if http:
             # HTTP passthrough calls reach the per-role clocks only (stage 6.2, record-only).
             # The node-level counts below feed inference_failure_pressure, a live field channel
@@ -391,7 +468,8 @@ class _NodeBucket:
     def count(self, classes: frozenset[str]) -> int:
         return sum(n for name, n in self.classes.items() if name in classes)
 
-    def summary(self, node: str) -> str:
+    def summary(self, node: str, role_slots: dict[str, int] | None = None) -> str:
+        slots = role_slots or {}
         classes = "|".join(f"{k}:{v}" for k, v in sorted(self.classes.items())) or "none"
         labels = "|".join(self.labels) or "none"
         return (
@@ -402,7 +480,7 @@ class _NodeBucket:
             f"workers={labels} classes={classes} "
             f"worker_attempted={_counts(self.worker_attempted)} "
             f"worker_failed={_counts(self.worker_failed)} "
-            f"roles={''.join(b.summary(r) for r, b in sorted(self.roles.items())) or 'none'}"
+            f"roles={''.join(b.summary(r, slots.get(r)) for r, b in sorted(self.roles.items())) or 'none'}"
         )
 
 
@@ -425,7 +503,7 @@ class InferenceWindowRecorder:
             served_by=served_by,
             timing=timing,
             tokens=_usage_tokens(result),
-            decode_tps=decode_tps_from(raw),
+            timings=timings_from(raw),
         )
         return outcome
 
@@ -436,7 +514,7 @@ class InferenceWindowRecorder:
         served_by: str | None,
         timing: CallClock | None = None,
         tokens: tuple[int, int] = (0, 0),
-        decode_tps: float | None = None,
+        timings: ReplyTimings | None = None,
         http: bool = False,
     ) -> str:
         """An already-classified call (the HTTP passthroughs classify by status code and pass
@@ -447,7 +525,7 @@ class InferenceWindowRecorder:
         with self._lock:
             bucket = self._buckets.setdefault(node_hint(served_by), _NodeBucket())
             bucket.add(outcome=outcome, served_by=served_by, tokens=tokens, timing=timing,
-                       decode_tps=decode_tps, http=http)
+                       timings=timings, http=http)
         return outcome
 
     def drain(self) -> tuple[float, float, dict[str, _NodeBucket]]:
@@ -468,7 +546,9 @@ def build_window_events(
     window_start: float,
     window_end: float,
     buckets: dict[str, _NodeBucket],
+    role_slots: dict[str, int] | None = None,
 ) -> list[GrammarEventV1]:
+    """``role_slots``: the pool's slot count per role at window end (None -> omitted)."""
     gw = (gateway_node or "gateway").strip().lower().replace(":", "_") or "gateway"
     trace_id = f"{LLM_INFERENCE_TRACE_PREFIX}{gw}:{_window_id(window_start)}"
     emitted_at = datetime.fromtimestamp(window_end, tz=timezone.utc)
@@ -505,7 +585,7 @@ def build_window_events(
         )
 
     events = [
-        _event(i, ROLE_NODE_WINDOW, bucket.summary(node), node)
+        _event(i, ROLE_NODE_WINDOW, bucket.summary(node, role_slots), node)
         for i, (node, bucket) in enumerate(sorted(buckets.items()))
     ]
     total = sum(b.calls for b in buckets.values())
@@ -541,9 +621,13 @@ async def run_window_publisher(
     gateway_node: str,
     window_sec: float,
     stop: asyncio.Event | None = None,
+    slots_provider: Callable[[], Any] | None = None,
 ) -> None:
     """Flush one window every ``window_sec``. Publishing failures are logged and the
-    window is dropped -- telemetry must never back up into the serving path."""
+    window is dropped -- telemetry must never back up into the serving path.
+
+    ``slots_provider`` (async, -> {role: slots}) is read once per window, off the serving
+    path; a failure only omits ``slots`` from that window."""
     from orion.grammar.publish import publish_grammar_event
 
     recorder = get_recorder()
@@ -555,8 +639,15 @@ async def run_window_publisher(
         except asyncio.TimeoutError:
             pass
         start, end, buckets = recorder.drain()
+        role_slots: dict[str, int] | None = None
+        if slots_provider is not None and buckets:
+            try:
+                role_slots = await slots_provider()
+            except Exception:  # noqa: BLE001
+                logger.warning("llm_gateway_grammar_slots_unavailable", exc_info=True)
         events = build_window_events(
-            gateway_node=gateway_node, window_start=start, window_end=end, buckets=buckets
+            gateway_node=gateway_node, window_start=start, window_end=end, buckets=buckets,
+            role_slots=role_slots,
         )
         sent = 0
         try:

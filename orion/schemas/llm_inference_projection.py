@@ -107,6 +107,24 @@ class LlmInferenceRoleStateV1(BaseModel):
     decode_tps_p50: float | None = Field(default=None, gt=0.0)
     # served calls whose reply carried timings.predicted_per_second (the p50's sample size)
     decode_tps_samples: int = 0
+    # Covariates so a per-role baseline does not read normal slot sharing as a degraded worker
+    # (stage 7 input): llama.cpp decodes every busy slot in one batch, so decode speed is banded
+    # by occupancy at grant -- solo (the only call in flight on the role) vs shared.
+    decode_tps_solo_p50: float | None = Field(default=None, gt=0.0)
+    decode_tps_solo_samples: int = 0
+    decode_tps_shared_p50: float | None = Field(default=None, gt=0.0)
+    decode_tps_shared_samples: int = 0
+    # this gateway's calls in flight on the role at each grant (this one included). Counts
+    # calls, not pool leases: an idle durable-run hold keeps a slot but decodes nothing.
+    busy_p50: int | None = None
+    busy_max: int | None = None
+    # the pool's discovered slot count for the role at window end (None: pool unreachable)
+    slots: int | None = None
+    # llama.cpp timings.prompt_n / cache_n summed over served calls that reported both:
+    # prompt tokens processed vs reused from the slot's KV cache. None when none reported.
+    prompt_n: int | None = None
+    cache_n: int | None = None
+    cache_reports: int = 0
 
 
 class LlmInferenceNodeStateV1(BaseModel):

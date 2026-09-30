@@ -84,6 +84,16 @@ def _parse_classes(raw: str | None) -> dict[str, int]:
     return out
 
 
+def _opt_tps(kv: dict[str, str], key: str) -> float | None:
+    try:
+        tps = float(kv[key]) if key in kv else None
+    except ValueError:
+        return None
+    if tps is None or not (tps > 0.0 and tps != float("inf")):
+        return None
+    return tps
+
+
 def _parse_roles(raw: str | None) -> dict[str, LlmInferenceRoleStateV1]:
     """Per-role clocks from the node atom. A malformed role entry is dropped, never guessed;
     an absent ``roles=`` (a gateway from before stage 6.2) yields ``{}``."""
@@ -96,13 +106,6 @@ def _parse_roles(raw: str | None) -> dict[str, LlmInferenceRoleStateV1]:
             key, sep, value = part.partition(":")
             if sep and key.strip():
                 kv[key.strip()] = value.strip()
-        tps: float | None
-        try:
-            tps = float(kv["decode_tps_p50"]) if "decode_tps_p50" in kv else None
-        except ValueError:
-            tps = None
-        if tps is not None and not (tps > 0.0 and tps != float("inf")):
-            tps = None
         try:
             out[role] = LlmInferenceRoleStateV1(
                 calls=_int(kv, "calls"),
@@ -115,8 +118,18 @@ def _parse_roles(raw: str | None) -> dict[str, LlmInferenceRoleStateV1]:
                 wait_p95_ms=_opt_int(kv, "wait_p95_ms"),
                 model_p50_ms=_opt_int(kv, "model_p50_ms"),
                 model_p95_ms=_opt_int(kv, "model_p95_ms"),
-                decode_tps_p50=tps,
+                decode_tps_p50=_opt_tps(kv, "decode_tps_p50"),
                 decode_tps_samples=_int(kv, "decode_tps_n"),
+                decode_tps_solo_p50=_opt_tps(kv, "decode_tps_solo_p50"),
+                decode_tps_solo_samples=_int(kv, "decode_tps_solo_n"),
+                decode_tps_shared_p50=_opt_tps(kv, "decode_tps_shared_p50"),
+                decode_tps_shared_samples=_int(kv, "decode_tps_shared_n"),
+                busy_p50=_opt_int(kv, "busy_p50"),
+                busy_max=_opt_int(kv, "busy_max"),
+                slots=_opt_int(kv, "slots"),
+                prompt_n=_opt_int(kv, "prompt_n"),
+                cache_n=_opt_int(kv, "cache_n"),
+                cache_reports=_int(kv, "cache_reports"),
             )
         except ValueError:
             continue

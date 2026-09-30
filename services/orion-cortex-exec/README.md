@@ -583,3 +583,15 @@ python scripts/bus_harness.py brain "plan a party"
 ```
 
 Self-study reads the published Graphify bundle via `SELF_STUDY_GRAPH_PATH`, mounted from warm storage using `SELF_STUDY_GRAPH_HOST_PATH`. See [local graph operations](../../docs/graphify-local-storage.md).
+
+## Orion's Day verbs (2026-09-30)
+
+`orion_day_note_v1` and `orion_day_carry_forward_v1` (`orion/cognition/verbs/`) are called by
+the `orion_day.letter` durable run (services/orion-durable-runs) under its GPU pool hold, route
+`agent` (also this executor's default for them when a caller forgets to stamp one). Both return
+plain text and stay out of the structured-output verb list.
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `LLM_ORION_DAY_NOTE_MAX_TOKENS` | `12000` | Completion budget for the long reflective note (reasoning tokens count against it on the agent-lane model). |
+| `LLM_ORION_DAY_CARRY_FORWARD_MAX_TOKENS` | `4000` | Completion budget for the carry-forward thread list. |

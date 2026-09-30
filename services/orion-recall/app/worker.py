@@ -2023,6 +2023,112 @@ def _recall_deadline_budget_ms(q: RecallQueryV1) -> int:
         return 60000
 
 
+async def _run_pcr_collectors(
+    q: RecallQueryV1,
+    *,
+    pcr_backend_plan: Dict[str, bool],
+    remaining_s: float | None,
+    corr_id: str,
+) -> Tuple[List[Dict[str, Any]], Dict[str, int], Dict[str, int], bool]:
+    """Run the purposeful-recall PCR collectors under the recall deadline.
+
+    Returns (candidates, backend_counts, elapsed_ms_per_collector,
+    deadline_hit). Both collectors run concurrently and share whatever is left
+    of the overall recall deadline (``remaining_s``; None = no deadline). A
+    collector still running at the deadline is cancelled and its result
+    dropped; the recall never fails because of it. concept_region's work runs
+    in a thread (asyncio.to_thread) that cannot be killed: cancelling only
+    stops the recall from waiting on it, the thread finishes in the
+    background.
+
+    Before 2026-09-30 this block ran after the deadline-bounded fetch, with
+    no deadline and no timing: a cold get_substrate_store() (first-call
+    Falkor hydration, measured 6.25s live) made the first belief recall after
+    a restart take 9.5s with ~9.3s missing from timings_ms.
+    """
+    units: List[Tuple[str, Any]] = []
+    if pcr_backend_plan.get("active_packet") and settings.RECALL_ACTIVE_PACKET_ENABLED:
+        units.append(
+            (
+                "active_packet",
+                lambda: fetch_active_packet_fragments(q, pool=_recall_pg_pool, settings=settings),
+            )
+        )
+    if pcr_backend_plan.get("concept_region") and settings.RECALL_CONCEPT_REGION_ENABLED:
+        # Both get_substrate_store() (first-call hydration: FalkorDB issues
+        # several synchronous GRAPH.QUERY network calls with no client-side
+        # timeout, see FalkorSubstrateStore.__init__) and
+        # fetch_concept_region_fragment_and_reinforce's store reads/write are
+        # blocking -- both must run inside the offloaded thread. The inner
+        # lambda defers both calls into the thread (an argument expression
+        # would be evaluated on the event loop). The collector also writes a
+        # small activation bump for whatever it matched (see
+        # collectors/CONCEPT_REINFORCEMENT_DESIGN.md), on the same thread.
+        units.append(
+            (
+                "concept_region",
+                lambda: asyncio.to_thread(
+                    lambda: fetch_concept_region_fragment_and_reinforce(q, store=get_substrate_store())
+                ),
+            )
+        )
+    if not units:
+        return [], {}, {}, False
+    if remaining_s is not None and remaining_s <= 0:
+        logger.warning(
+            "recall_deadline_hit corr_id=%s stage=pcr_collectors skipped=%s",
+            corr_id,
+            [name for name, _f in units],
+        )
+        return [], {}, {name: 0 for name, _f in units}, True
+
+    elapsed_ms: Dict[str, int] = {}
+
+    async def _timed(name: str, factory: Any) -> Any:
+        started = time.perf_counter()
+        try:
+            return await factory()
+        finally:
+            elapsed_ms[name] = int((time.perf_counter() - started) * 1000)
+
+    tasks: List[Tuple[str, asyncio.Future]] = []
+    for name, factory in units:
+        try:
+            tasks.append((name, asyncio.ensure_future(_timed(name, factory))))
+        except Exception as exc:  # one broken collector must not strand the other
+            logger.debug("%s collector could not start: %s", name, exc)
+    deadline_hit = False
+    if tasks:
+        _done, pending = await asyncio.wait(
+            [t for _n, t in tasks],
+            timeout=(max(0.0, remaining_s) if remaining_s is not None else None),
+        )
+        if pending:
+            deadline_hit = True
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            logger.warning(
+                "recall_deadline_hit corr_id=%s stage=pcr_collectors pending=%s",
+                corr_id,
+                [n for n, t in tasks if t in pending],
+            )
+
+    candidates: List[Dict[str, Any]] = []
+    counts: Dict[str, int] = {}
+    for name, task in tasks:
+        if task.cancelled():
+            continue
+        exc = task.exception()
+        if exc is not None:
+            logger.debug("%s collector skipped: %s", name, exc)
+            continue
+        frags = list(task.result() or [])
+        candidates.extend(frags)
+        counts[name] = len(frags)
+    return candidates, counts, elapsed_ms, deadline_hit
+
+
 async def process_recall(
     q: RecallQueryV1,
     *,
@@ -2447,6 +2553,7 @@ async def process_recall(
         active_turn_ts=exclusion.get("active_turn_ts"),
     )
     timing_breakdown_ms["self_hit_suppression"] = int((time.time() - suppression_start) * 1000)
+    timings_ms["suppression"] = timing_breakdown_ms["self_hit_suppression"]
     candidates_kept = len(candidates)
     if suppressed:
         logger.info(
@@ -2455,41 +2562,21 @@ async def process_recall(
             suppressed,
         )
 
+    pcr_started = time.perf_counter()
     if settings.RECALL_PCR_ENABLED and recall_phase == "purposeful":
-        if pcr_backend_plan.get("active_packet") and settings.RECALL_ACTIVE_PACKET_ENABLED:
-            try:
-                ap_frags = await fetch_active_packet_fragments(q, pool=_recall_pg_pool, settings=settings)
-                candidates.extend(ap_frags)
-                backend_counts_total["active_packet"] = len(ap_frags)
-            except Exception as exc:
-                logger.debug("active_packet collector skipped: %s", exc)
-
-        if pcr_backend_plan.get("concept_region") and settings.RECALL_CONCEPT_REGION_ENABLED:
-            try:
-                # Both get_substrate_store() (first-call hydration: FalkorDB
-                # issues several synchronous GRAPH.QUERY network calls with
-                # no client-side timeout, see FalkorSubstrateStore.__init__)
-                # and fetch_concept_region_fragment_and_reinforce's store
-                # reads/write are blocking -- both must run inside the
-                # offloaded thread, not just the fragment fetch.
-                # asyncio.to_thread only defers execution of the callable
-                # it's given; any argument expression (like a bare
-                # get_substrate_store() call) is still evaluated up front on
-                # the calling coroutine, i.e. still on this shared event
-                # loop. The lambda below defers both calls into the thread.
-                # fetch_concept_region_fragment_and_reinforce also writes a
-                # small activation bump for whatever it matched (see
-                # collectors/CONCEPT_REINFORCEMENT_DESIGN.md) -- a real
-                # Falkor write measured sub-millisecond live, on the same
-                # already-offloaded thread, so no new latency risk on the
-                # event loop.
-                cr_frags = await asyncio.to_thread(
-                    lambda: fetch_concept_region_fragment_and_reinforce(q, store=get_substrate_store())
-                )
-                candidates.extend(cr_frags)
-                backend_counts_total["concept_region"] = len(cr_frags)
-            except Exception as exc:
-                logger.debug("concept_region collector skipped: %s", exc)
+        pcr_cands, pcr_counts, pcr_elapsed, pcr_deadline_hit = await _run_pcr_collectors(
+            q,
+            pcr_backend_plan=pcr_backend_plan,
+            remaining_s=_remaining_s(),
+            corr_id=corr_id,
+        )
+        candidates.extend(pcr_cands)
+        backend_counts_total.update(pcr_counts)
+        for name, ms in pcr_elapsed.items():
+            timings_ms[f"pcr_{name}"] = ms
+        if pcr_deadline_hit:
+            deadline_hit = True
+    timings_ms["pcr_collectors"] = int((time.perf_counter() - pcr_started) * 1000)
 
     # Provisional: fusion stamps this into bundle.stats; both are overwritten
     # with the true end-to-end figure once everything below has run.
@@ -2571,11 +2658,24 @@ async def process_recall(
     timings_ms["fusion"] = timing_breakdown_ms["fusion"]
     timing_breakdown_ms["total"] = latency_ms
     eligible_belief_count = 0
+    eligible_started = time.perf_counter()
     if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"} and _recall_pg_pool is not None:
-        try:
-            eligible_belief_count = await count_eligible_active(_recall_pg_pool)
-        except Exception as exc:
-            logger.debug("eligible_belief_count skipped: %s", exc)
+        # Debug-only count: bounded by what is left of the deadline and
+        # skipped once it has passed, like the shadow compare below. Skipping
+        # it does not cut any results, so it does not set deadline_hit.
+        eligible_remaining = _remaining_s()
+        if eligible_remaining is not None and eligible_remaining <= 0:
+            logger.debug("eligible_belief_count skipped: deadline passed")
+        else:
+            try:
+                eligible_belief_count = await asyncio.wait_for(
+                    count_eligible_active(_recall_pg_pool), timeout=eligible_remaining
+                )
+            except asyncio.TimeoutError:
+                logger.debug("eligible_belief_count skipped: deadline passed")
+            except Exception as exc:
+                logger.debug("eligible_belief_count skipped: %s", exc)
+    timings_ms["eligible_count"] = int((time.perf_counter() - eligible_started) * 1000)
     pcr_debug: Dict[str, Any] | None = None
     if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"}:
         continuity_count = sum(1 for i in bundle.items if recall_phase == "continuity")
@@ -2669,6 +2769,7 @@ async def process_recall(
             or any(str(item.source or "") == "vector" for item in bundle.items[:2])
         )
     )
+    shadow_started = time.perf_counter()
     shadow_remaining = _remaining_s()
     if should_shadow_compare and shadow_remaining is not None and shadow_remaining <= 0:
         # Diagnostic only: never spend time past the deadline on it.
@@ -2692,6 +2793,7 @@ async def process_recall(
             selected_cards = list(shadow_debug.get("ranked_cards") or [])[:6]
         except Exception as exc:
             logger.debug(f"recall shadow compare skipped: {exc}")
+    timings_ms["shadow_compare"] = int((time.perf_counter() - shadow_started) * 1000)
 
     pressure_events = _build_recall_pressure_events(
         q=q,

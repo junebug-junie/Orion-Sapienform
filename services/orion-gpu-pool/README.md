@@ -82,7 +82,8 @@ empty the cards (stage 5 spec, "Corrections from building 5.1" item 5). The Hub 
 with that reason.
 
 **Emergency stop -- the one way to stop every model load and unload at once:** Hub GPU pool panel,
-"Emergency stop: pause all model loading/unloading" (or control verb `pause_actuation`). While paused:
+"Emergency stop: pause all model loading/unloading" (or control verb `pause_actuation`; from a shell,
+`scripts/gpu_pool_pause.py pause|resume`). While paused:
 
 - nothing is sent to the actuator; every swap decision is published as
   `swap_requested {actuated: false, paused: true}` with `reason=actuation_paused`;

@@ -283,3 +283,35 @@ def test_the_deleted_key_stays_deleted_and_enforce_is_the_default():
     assert Settings(_env_file=None, ORION_BUS_URL="redis://x", POSTGRES_URI="postgresql://x").mode == "enforce"
     with pytest.raises(ValidationError):
         Settings(_env_file=None, ORION_BUS_URL="redis://x", POSTGRES_URI="postgresql://x", GPU_POOL_MODE="enforced")
+
+
+def test_the_shell_emergency_stop_script_round_trips_through_the_real_control_path():
+    """scripts/gpu_pool_pause.py: the envelope it sends is what app.main._on_control validates, and it
+    reads the pool's real reply (runbook "Emergency stop", for when the Hub is down)."""
+    import importlib.util
+    import json
+
+    from orion.schemas.gpu_pool import GPU_POOL_CONTROL_REPLY_PREFIX, GPU_POOL_CONTROL_REQUEST_CHANNEL
+
+    path = Path(__file__).resolve().parents[3] / "scripts" / "gpu_pool_pause.py"
+    spec = importlib.util.spec_from_file_location("gpu_pool_pause", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.GPU_POOL_CONTROL_REQUEST_CHANNEL == GPU_POOL_CONTROL_REQUEST_CHANNEL
+
+    async def go():
+        rt, _ = enforce()
+        await boot(rt)
+        await rt.control(GpuPoolControlV1(verb="lend", card="gpu0"))   # a busy-ish pool, not a fresh one
+        for action, want in (("pause", "PAUSED since"), ("pause", "PAUSED since"), ("resume", "RUNNING")):
+            reply_channel, env = mod.build(action, "juniper-shell")
+            assert reply_channel.startswith(GPU_POOL_CONTROL_REPLY_PREFIX) and env.reply_to == reply_channel
+            out = await rt.control(GpuPoolControlV1.model_validate(env.payload))   # as _on_control does
+            raw = {"type": "message", "data": json.dumps({"payload": out.model_dump(mode="json")})}
+            line = mod.describe(action, mod.parse(raw))
+            assert line.startswith(want), line
+        assert rt.paused is None
+        assert [e["holder"] for e in rt.bus.events("actuation_paused")] == ["juniper-shell"]
+        refused = mod.parse({"payload": {"ok": False, "reason": "invalid:x", "detail": {}}})
+        assert mod.describe("pause", refused) == "REFUSED: invalid:x"
+    run(go())

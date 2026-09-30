@@ -166,6 +166,6 @@ docker logs orion-athena-hub 2>&1 | grep curiosity_carry_forward_offered
 
 ## PR link
 
-(filled after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2437
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

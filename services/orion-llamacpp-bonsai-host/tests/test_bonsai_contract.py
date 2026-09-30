@@ -101,3 +101,16 @@ def test_profile_launch_argv(monkeypatch):
     assert flag("--n-predict") == "16384"
     # Measured win on circe gpu0 2026-09-30; see the field note.
     assert flag("--flash-attn") == "on"
+
+
+def test_never_auto_deployed():
+    """Manual only: it defaults to gpu0, chat's card, so a post-merge `up` would fight chat."""
+    common = REPO / "mesh-utilities" / "common"
+    service = "orion-llamacpp-bonsai-host"
+    for include in common.glob("include_services*"):
+        files = include.rglob("*.txt") if include.is_dir() else [include]
+        for f in files:
+            lines = {l.strip() for l in f.read_text(encoding="utf-8").splitlines()}
+            assert service not in lines, f
+    excludes = (common / "exclude_services.txt").read_text(encoding="utf-8").splitlines()
+    assert service in {l.strip() for l in excludes}

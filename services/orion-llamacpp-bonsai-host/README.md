@@ -73,11 +73,11 @@ here. The pool and the gateway build URLs from configured role ports, never
 from announcements. `restart: "no"` keeps it from coming back after a reboot
 and holding gpu0 when chat should.
 
-Auto-rebuild: `mesh-utilities/common/include_services_circe.txt` lists this
-service, so a merge touching it runs `up -d --build` on circe. The compose
-file has a `build:` section, so that really rebuilds, reusing the cached fork
-compile. It then starts the worker, which fails to load while chat holds gpu0.
-`exclude_services.txt` keeps it off athena.
+Manual only (Juniper, 2026-09-30). It is in no host's auto-rebuild list:
+absent from `mesh-utilities/common/include_services_circe.txt`, and listed in
+`exclude_services.txt`. A merge never starts it on gpu0 over chat. Run
+`up -d --build` by hand; the `build:` section rebuilds with the current
+wrapper and profiles, reusing the cached fork compile.
 
 ## The image carries its own wrapper and profiles
 

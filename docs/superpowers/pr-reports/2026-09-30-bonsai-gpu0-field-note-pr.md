@@ -67,7 +67,8 @@ circe gpu0: /health 200; argv includes --flash-attn off (soak) and later --flash
   - Fix: added the agent/metacog/fast fallback loss and "don't lend gpu0".
 - Finding: stale Dockerfile comments; minor ranges.
   - Fix: corrected.
-- **Open, needs Juniper:** circe's `include_services_circe.txt` auto-deploys this service on merge, and it now defaults to gpu0 while chat holds it.
+- Finding: circe's auto-rebuild would start it on gpu0 over chat.
+  - Fix (Juniper: manual only): removed from `include_services_circe.txt`; a test fails if any include list names it; CI triggers on those lists.
 
 ## Restart required
 
@@ -82,7 +83,6 @@ docker start orion-circe-atlas-llamacpp-chat
 
 ## Risks / concerns
 
-- Severity: high. Merging auto-runs `up -d --build` on circe. That rebuilds, then starts Bonsai on gpu0. With chat up it fails to load. If chat happens to be down, it takes gpu0 first.
 - Severity: medium. Exactly two concurrent runs are slower with flash attention on (23 vs 41 tok/s each). Three are unmeasured.
 - Severity: medium. It burned an 8K output budget thinking on one math prompt.
 

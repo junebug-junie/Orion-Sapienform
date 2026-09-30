@@ -277,9 +277,11 @@ def _loop(bus, *, text: str | None = "found it", conn=None, **over) -> Curiosity
     loop._harness_rpc_bus = bus
 
     async def _fake_generate(
-        prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None
+        prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, session_id=None,
+        **extra,
     ):
         loop.seen_prompt = prompt
+        loop.seen_generate_kwargs = dict(extra)
         return (text or ""), {
             "elapsed_sec": 1.0,
             "harness_step_count": 14,
@@ -2804,3 +2806,50 @@ def test_energy_no_fresh_pressure_never_holds(snapshot) -> None:
     loop = _loop(bus, energy_stakes_enabled=True, energy_stakes_reader=_energy_reader(snapshot, []))
     assert asyncio.run(loop.tick()) is None
     assert len(bus.journal) == 1
+
+
+def test_outreach_composition_recalls_about_the_finding_not_the_prompt() -> None:
+    """PR #2423 review: the composition turn (OUTREACH_TAG) used to send the whole
+    composition prompt as recall's search text. It now sends the finding it composes
+    about, capped at RecallQueryV1's 1000 chars, whitespace collapsed."""
+    outreach = _FakeOutreach()
+    loop = _graph_loop(
+        _FakeBus(), reader=_reach_out_reader(None),
+        outreach_enabled=True, outreach_provider=lambda: outreach,
+    )
+    seen: list = []
+
+    async def _gen(prompt, correlation_id, **kw):
+        seen.append((prompt, kw))
+        return "worth saying", {"fcc_model_label": "M"}
+
+    loop._generate = _gen  # type: ignore[assignment]
+    finding = "The route node\n  has no edges.  " + "x" * 3000
+    asyncio.run(
+        loop._maybe_reach_out(
+            outcome=_reach_out_outcome("run-q"), finding_text=finding, run_id="run-q", hop_notes=[],
+        )
+    )
+    prompt, kw = seen[0]
+    assert kw["retrieval_query"].startswith("The route node has no edges. xxx")
+    assert len(kw["retrieval_query"]) == 1000
+    assert kw["retrieval_query"] != prompt
+
+
+def test_outreach_composition_with_no_finding_sends_no_query() -> None:
+    outreach = _FakeOutreach()
+    loop = _graph_loop(
+        _FakeBus(), reader=_reach_out_reader(None),
+        outreach_enabled=True, outreach_provider=lambda: outreach,
+    )
+    seen: list = []
+
+    async def _gen(prompt, correlation_id, **kw):
+        seen.append(kw)
+        return "worth saying", {}
+
+    loop._generate = _gen  # type: ignore[assignment]
+    asyncio.run(
+        loop._maybe_reach_out(outcome=_reach_out_outcome("run-e"), finding_text="  ", run_id="run-e", hop_notes=[])
+    )
+    assert "retrieval_query" not in seen[0]

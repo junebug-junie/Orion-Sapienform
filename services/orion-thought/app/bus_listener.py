@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 from pydantic import ValidationError
 
 from orion.cognition.plan_loader import build_plan_for_verb
+from orion.cognition.recall_query import cap_retrieval_query
 from orion.core.bus.async_service import OrionBusAsync
 
 from .rpc_health import fold_bus
@@ -195,6 +196,13 @@ def build_stance_react_context(
     }
     if isinstance(surface_context, dict) and surface_context:
         context["surface_context"] = surface_context
+    # What recall searches for on both stance recalls (cortex-exec's
+    # run_recall_step reads ctx["retrieval_query"]). Top-level ctx only, never
+    # stance_inputs: stance_react.j2 renders every stance_inputs key into the
+    # stance LLM prompt, and this is recall's search text, not stance context.
+    retrieval_query = cap_retrieval_query(request.retrieval_query)
+    if retrieval_query:
+        context["retrieval_query"] = retrieval_query
     if mind_coloring is not None:
         context["mind_coloring"] = mind_coloring
     if request.gpu_lease is not None:

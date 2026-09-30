@@ -184,6 +184,15 @@ class StanceReactRequestV1(BaseModel):
     # (autonomous reading, curiosity) has no fallback of its own and needs
     # orion-thought's.
     caller_handles_lane_fallback: bool = False
+    # What recall should search for on this turn, chosen by the caller: a
+    # self-inquiry run's standing question, a reading's "<title> — <claim>".
+    # None = the caller did not say; recall condenses the turn text itself.
+    # orion-thought copies it into the cortex-exec ctx as ctx["retrieval_query"];
+    # cortex-exec sends it as RecallQueryV1.retrieval_query on both stance
+    # recalls (PCR phase 0+1 and phase 3). Additive on a non-forbid model, so
+    # an old orion-thought silently ignores it: deploy orion-thought (and
+    # orion-recall, PR #2416) before orion-hub starts sending it.
+    retrieval_query: str | None = Field(default=None, max_length=1000)
 
 
 def __getattr__(name: str) -> object:

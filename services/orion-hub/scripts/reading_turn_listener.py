@@ -167,6 +167,9 @@ class ReadingTurnListener:
                     correlation_id=request.correlation_id,
                     session_id=brief.session_id,
                     user_message=brief.prompt,
+                    # "<source title> — <stage-1 claim>", set by the pipeline on
+                    # the stored brief: recall searches that, not the prompt.
+                    retrieval_query=brief.retrieval_query,
                     payload=payload,
                     continuity_messages=None,
                     harness_rpc_bus=self.rpc_bus,

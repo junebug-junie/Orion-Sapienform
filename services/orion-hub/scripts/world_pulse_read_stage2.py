@@ -22,7 +22,15 @@ from orion.world_pulse_read.journal import publish_journal
 from orion.llm.routes import fcc_model_for_route
 from orion.schemas.reading import ReadingRequestedV1
 from orion.schemas.reading_turn import ReadingRunBriefV1
-from orion.world_pulse_read.durable import ReadingCancelled, ReadingPending, bind_turn, cancel_claim, poll_turn, release_claim
+from orion.world_pulse_read.durable import (
+    ReadingCancelled,
+    ReadingPending,
+    bind_turn,
+    cancel_claim,
+    poll_turn,
+    reading_retrieval_query,
+    release_claim,
+)
 from orion.world_pulse_read.events import publish_lifecycle
 from orion.world_pulse_read.urls import validate_source_url
 from orion.schemas.world_pulse_read import (
@@ -669,7 +677,12 @@ class WorldPulseReadStage2Pipeline:
         """Production path: unified turn + fenced JSON. Tests replace this."""
         trace_id = str(uuid4())
         created_at = datetime.now(timezone.utc)
-        outcome = await self._generate(_build_stage2_prompt(handoff, trace_id), trace_id, seed_id=handoff.seed_ref.seed_id)
+        outcome = await self._generate(
+            _build_stage2_prompt(handoff, trace_id), trace_id, seed_id=handoff.seed_ref.seed_id,
+            # Recall searches the source and what stage 1 concluded, not the
+            # stage-2 prompt (which embeds the whole stage-1 handoff JSON).
+            retrieval_query=reading_retrieval_query(handoff.seed_ref, handoff.what_i_learned),
+        )
         trace_id = outcome.trace_id or trace_id
         if not outcome.text:
             raise ValueError(outcome.fail_reason or "empty_generation")
@@ -685,10 +698,13 @@ class WorldPulseReadStage2Pipeline:
             on_dropped=self._note_dropped_keys,
         )
 
-    async def _generate(self, prompt: str, correlation_id: str, *, seed_id: str) -> GenerateOutcome:
+    async def _generate(
+        self, prompt: str, correlation_id: str, *, seed_id: str, retrieval_query: str | None = None,
+    ) -> GenerateOutcome:
         brief = ReadingRunBriefV1(seed_id=seed_id, stage=2, prompt=prompt,
             session_id=self.session_id, timeout_sec=self.timeout_sec,
-            fcc_model_label=self._fcc_model_label)
+            fcc_model_label=self._fcc_model_label,
+            retrieval_query=retrieval_query)
         try:
             request = await self._with_conn(lambda conn: bind_turn(conn, brief, correlation_id))
             if request is None:

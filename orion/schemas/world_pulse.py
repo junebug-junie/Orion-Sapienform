@@ -590,6 +590,8 @@ class WorldPulseRunV1(_WPBase):
     digest_created: bool = False
     sql_emit_status: str = "pending"
     graph_emit_status: str = "pending"
+    # Retired 2026-09-30 with the direct email path: nothing sets or reads this; kept only
+    # so persisted payloads still validate under extra="forbid". Always "pending".
     email_status: str = "pending"
     hub_publish_status: str = "pending"
     stance_capsule_status: str = "pending"

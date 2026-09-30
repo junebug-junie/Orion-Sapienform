@@ -45,16 +45,45 @@ curl -fsS http://localhost:8017/health
 
 The first boot downloads the 7.21 GB GGUF into `${LLM_CACHE_DIR}/gguf`.
 
-## gpu2 is borrowed
+## gpu2 is borrowed: out-of-memory risk for the whole run
 
-`orion-gpu-lane-controller` owns gpu2 (`config/gpu_pool.yaml`: agent-gpu2,
-with diffusion reclaiming it). This worker is **not** in the pool, so the
-controller will neither start it nor evict it. Before `up`, confirm nothing
-else is on the card (`nvidia-smi -i 2`). `restart: "no"` stops it from coming
-back on its own after a reboot. Stop it when done:
+`orion-gpu-lane-controller` owns gpu2 (`config/gpu_pool.yaml`: `agent-gpu2`,
+which diffusion reclaims). This worker is **not** in the pool, and the pool
+has no verb that reserves a whole card for an outside worker. So the
+controller does not know Bonsai is there. If an agent backlog passes its swap
+wait, or a diffusion request lands, it will launch its own worker (17.6 GB+)
+or diffusion (about 24 GB) onto a card already holding Bonsai's roughly 24 GB,
+and one side runs out of memory. Checking `nvidia-smi -i 2` before `up` only
+covers the start.
+
+For a bake-off, pick one:
+
+- Run it in a window with no image generation and no agent backlog, and
+  watch `nvidia-smi -i 2`.
+- Stop the controller for the duration. This also stops every other pool
+  swap, including gpu1's affect/agent flips.
+
+The worker announces `LLM_ROLE=bonsai-bakeoff`, which is not a pool role, so
+the pool's discovery view lists it under `unclaimed`. It does not use
+`experiment`: that role belongs to the DeepSeek soak, and announcements are
+keyed by role, so the two would overwrite each other. No traffic is routed
+here. The pool and the gateway build URLs from configured role ports, never
+from announcements.
+
+`restart: "no"` keeps the worker from coming back on its own after a reboot.
+Stop it when done:
 
 ```bash
 scripts/safe_docker_build.sh orion-llamacpp-bonsai-host down
+```
+
+## New-service `.env`
+
+`scripts/sync_local_env_from_example.py` cannot bootstrap a new service.
+On the deploying host, create the `.env` once from the template:
+
+```bash
+cp services/orion-llamacpp-bonsai-host/.env_example services/orion-llamacpp-bonsai-host/.env
 ```
 
 ## Profile choices
@@ -74,7 +103,9 @@ scripts/safe_docker_build.sh orion-llamacpp-bonsai-host down
   template honours this kwarg the way Qwen3.8's does.
 - `n_predict: 16384`. Smaller output caps end generation mid-thought.
 - `flash_attn: off`, matching the live Qwen3.8-27B agent lane on the same
-  hardware.
+  hardware. The wrapper only emits `--flash-attn off` when the binary reports
+  a build number above b5332. That number is `git rev-list --count`, so the
+  Dockerfile uses a blobless clone, not `--depth 1`, and asserts the number.
 
 ## Bake-off measurements
 

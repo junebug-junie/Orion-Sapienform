@@ -24,6 +24,11 @@ def test_dockerfile_pins_prism_fork_for_volta():
     # Prism: CUDA 13.3 builds segfault; host nvcc 13.x dropped sm_70.
     assert "nvidia/cuda:12.8.1-devel-ubuntu24.04" in text
     assert "orion-llamacpp-host:0.1.0" in text
+    # Build number = rev-list count; a shallow clone reports 1 and the wrapper
+    # then drops --flash-attn off (main.py is_b5332_compatible).
+    code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
+    assert "--depth" not in code
+    assert "-gt 5332" in text
 
 
 def test_compose_stays_off_shared_image_and_pool_ports():
@@ -34,7 +39,10 @@ def test_compose_stays_off_shared_image_and_pool_ports():
     assert svc["restart"] == "no"
     env = "\n".join(svc["environment"])
     assert PROFILE in env
-    assert "LLM_ROLE=experiment" in env
+    # `experiment` is the DeepSeek soak's pool role; announcements are keyed by role.
+    pool = yaml.safe_load((REPO / "config" / "gpu_pool.yaml").read_text(encoding="utf-8"))
+    role = next(e.split("=", 1)[1] for e in svc["environment"] if e.startswith("LLM_ROLE="))
+    assert role not in pool["roles"]
     # 8011/8015/8016 are pool lanes, 8099 is the DeepSeek soak.
     assert svc["ports"] == ["${BONSAI_HOST_PORT:-8017}:8080"]
     example = (HOST / ".env_example").read_text(encoding="utf-8")

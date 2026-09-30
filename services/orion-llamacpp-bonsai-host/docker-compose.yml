@@ -19,15 +19,15 @@ services:
       - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-true}
       - LLM_PROFILES_CONFIG_PATH=${LLM_PROFILES_CONFIG_PATH:-/app/config/llm_profiles.yaml}
       - LLM_PROFILE_NAME=${BONSAI_PROFILE_NAME:-ternary-bonsai2-27b-pq2-v100-32gb-circe-np4}
-      - LLM_ROLE=experiment
+      # Not a config/gpu_pool.yaml role: the pool lists it under `unclaimed`
+      # instead of fighting the DeepSeek soak for the `experiment` announcement.
+      - LLM_ROLE=bonsai-bakeoff
       - LLM_ANNOUNCE_PORT=${BONSAI_HOST_PORT:-8017}
       - HF_TOKEN=${HF_TOKEN}
       - hf_token=${hf_token}
       - LLAMACPP_HOST_OVERRIDE=0.0.0.0
       - LLAMACPP_PORT_OVERRIDE=8080
       - CUDA_VISIBLE_DEVICES_OVERRIDE=${BONSAI_CUDA_VISIBLE_DEVICES:-2}
-      - ENSURE_MODEL_DOWNLOAD=true
-      - WAIT_FOR_MODEL_SECONDS=0
     volumes:
       - "${LLM_CACHE_DIR}:/models"
     ports:

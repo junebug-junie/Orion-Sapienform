@@ -24,6 +24,7 @@ docker build \
   -t "${IMAGE}" \
   .
 
-echo "checking --ctx-checkpoints on ${IMAGE}"
+echo "checking the final image runs the fork, not the base image's llama-server"
+docker run --rm --entrypoint /app/llama-server "${IMAGE}" --version
 docker run --rm --entrypoint /app/llama-server "${IMAGE}" --help | grep -E -- "--ctx-checkpoints"
 echo "ok ${IMAGE}"

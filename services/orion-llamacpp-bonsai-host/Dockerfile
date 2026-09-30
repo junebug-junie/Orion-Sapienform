@@ -23,14 +23,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
-RUN git init . \
-    && git remote add origin "${PRISM_REPO}" \
-    && git fetch --depth 1 origin "${PRISM_REF}" \
-    && git checkout FETCH_HEAD
+# Blobless, NOT --depth 1: llama.cpp's build number is `git rev-list --count HEAD`.
+# A shallow clone reports build 1, and the wrapper then treats the binary as
+# pre-b5332 and silently drops --flash-attn off and --reasoning.
+RUN git clone --filter=blob:none --branch prism "${PRISM_REPO}" . \
+    && git checkout "${PRISM_REF}"
 
 # Stubs are enough for the link when the daemon has no GPU in the build.
 ENV LIBRARY_PATH=/usr/local/cuda/lib64/stubs
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs
+# ggml-cuda links the driver; stubs ship only libcuda.so, the binary wants .so.1.
+RUN ln -sf libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1
 
 # FA_ALL_QUANTS: Prism KNOWN_ISSUES -- quantized KV types need it under flash attention.
 RUN cmake -B build \
@@ -44,7 +47,12 @@ RUN cmake -B build \
         -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --config Release --target llama-server llama-cli -j"$(nproc)" \
     && grep -rlaiq "pq2_0" build/bin \
-    && ./build/bin/llama-server --help | grep -E -- "--ctx-checkpoints"
+    && ./build/bin/llama-server --version 2>&1 | tee /tmp/version \
+    && test "$(grep -oE '\(build [0-9]+' /tmp/version | grep -oE '[0-9]+')" -gt 5332 \
+    && ./build/bin/llama-server --help > /tmp/help \
+    && for f in --ctx-checkpoints --jinja --reasoning --reasoning-format --chat-template-kwargs --flash-attn --no-context-shift; do \
+         grep -qE -- "(^|[ ,])$f([ ,=]|$)" /tmp/help || { echo "missing $f"; exit 1; }; \
+       done
 
 FROM ${HOST_IMAGE}
 

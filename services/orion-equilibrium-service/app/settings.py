@@ -483,7 +483,8 @@ class Settings(BaseSettings):
 
     def transport_baseline_emit_effective(self) -> bool:
         """True only when baseline triggers really publish -- the single
-        predicate that also retires the legacy rpc_health timeout branch."""
+        predicate that also hands ownership of the timeouts the gate saw from
+        the rpc_transport_timeout atom to the gate (app/transport_timeout_owner.py)."""
         return bool(
             self.transport_baseline_enable
             and self.transport_baseline_emit

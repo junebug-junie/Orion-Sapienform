@@ -14,8 +14,15 @@ Consumer: orion-sql-writer -> ``transport_baseline_hourly``; read by
 ``scripts/analysis/grade_transport_baseline.py``.
 
 A restart mid-hour produces two rows for that hour (``flush_reason="shutdown"``
-then ``"hour_end"``). Counts add; percentiles are per row and a reader combines
-them weighted by ``windows_evaluated`` (an approximation, stated here, not hidden).
+then ``"hour_end"``). A snapshot that arrives after its hour was already flushed
+(delayed message, producer clock skew) gets its own ``flush_reason="late"`` row
+rather than reopening the hour. Counts add; percentiles are per row and a reader
+combines them weighted by ``windows_evaluated`` (an approximation, stated here,
+not hidden).
+
+Delivery is Redis pub/sub: equilibrium retries a row it could not publish, but a
+row published while sql-writer is down is lost. "Durable" means it survives an
+equilibrium restart once written, not that every hour is guaranteed to land.
 
 Hour boundaries use the snapshot's own ``window_end`` (the producer's clock, same
 clock the reducer runs on), in UTC.
@@ -40,7 +47,7 @@ class TransportBaselineHourlyV1(BaseModel):
     instance: Optional[str] = None
     key: str = Field(..., description="Hop key, e.g. a bus request channel, '<channel>#<label>', 'verb:<name>'.")
     hour_start: datetime
-    flush_reason: Literal["hour_end", "shutdown"]
+    flush_reason: Literal["hour_end", "shutdown", "late"]
     flushed_at: datetime
 
     windows_seen: int = Field(..., ge=0, description="Snapshots folded for this key in the hour.")
@@ -67,6 +74,11 @@ class TransportBaselineHourlyV1(BaseModel):
     )
 
     excluded: bool = False
-    warm: bool = False
+    warm: bool = Field(False, description="Key past n_warm judged windows at the hour's last fold.")
+    warm_at_start: bool = Field(
+        False,
+        description="Warm at the hour's first fold. Until warm the floor simply equals the level, so "
+        "floor_ms_start and the medians of a non-warm hour are warm-up values, not a resting state.",
+    )
     emit_effective: bool = False
     config_fingerprint: str

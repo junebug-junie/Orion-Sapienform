@@ -261,8 +261,9 @@ def test_owner_prefers_a_non_excluded_credit_for_an_ambiguous_atom():
                   window_start_ts=0.0, window_end_ts=30.0, now=0.0)
     assert o.offer_atom(_pending("orion:bg", 10.0))
     # the excluded credit is what is left
-    assert o._credits[0].excluded and o._credits[0].remaining == 1
-    assert o._credits[1].remaining == 0
+    excl, plain = o._credits["orion:bg"]
+    assert excl.excluded and excl.remaining == 1
+    assert plain.remaining == 0
 
 
 def test_owner_credits_age_out():
@@ -271,3 +272,52 @@ def test_owner_credits_age_out():
     assert o.credit_count == 2
     o.expire(301.0)
     assert o.credit_count == 0
+
+
+def test_owner_matches_a_timeout_absorbed_into_a_later_window():
+    """Short-lived buses (orion-mind, dispatch runtime, thought) fold into the
+    publisher via absorb(), which keeps the absorbing window's start: a
+    timeout 20 s before window_start is still that window's timeout."""
+    o = TimeoutAtomOwner()
+    o.add_credits([_Ob("orion:exec:request:LLMGatewayService", 1)], window_start_ts=100.0,
+                  window_end_ts=130.0, now=0.0)
+    assert o.offer_atom(_pending("orion:exec:request:LLMGatewayService", 80.0))
+    # but not arbitrarily early
+    o.add_credits([_Ob("orion:x", 1)], window_start_ts=100.0, window_end_ts=130.0, now=0.0)
+    assert not o.offer_atom(_pending("orion:x", 100.0 - o.lookback_s - 1))
+
+
+def test_owner_pending_overflow_fires_oldest_instead_of_dropping():
+    o = TimeoutAtomOwner(max_pending=2)
+    for i in range(3):
+        assert not o.offer_atom(_pending("orion:a" if i % 2 else "orion:b", 0.0, received=float(i)))
+    assert o.pending_count == 2
+    fired = o.expire(10.0)  # inside grace: only the overflow fires
+    assert [p.received_ts for p in fired] == [0.0]
+    assert len(o.drain()) == 2
+
+
+@pytest.mark.asyncio
+async def test_real_shutdown_path_fires_held_atoms_before_the_bus_closes(monkeypatch):
+    """The chassis cancels _run while it is parked in iter_messages(), so the
+    flush must live in _shutdown and run before bus.close()."""
+    svc = _service(monkeypatch, emit=True)
+    order: list[str] = []
+    svc.bus.publish = AsyncMock(side_effect=lambda ch, env: order.append(f"publish:{ch}"))
+    svc.bus.close = AsyncMock(side_effect=lambda: order.append("close"))
+    await _atom(svc, _atom_event(UNCOVERED, at=T0))
+    await svc._handle_rpc_health_snapshot(_snap(0, {LLM: _stats([900.0] * 5)}), zen=0.9, distress=0.1)
+    await svc._shutdown()
+    assert order[-1] == "close"
+    assert f"publish:{settings.channel_metacog_trigger}" in order
+    assert f"publish:{settings.channel_transport_baseline_hourly}" in order
+
+
+@pytest.mark.asyncio
+async def test_housekeeping_task_is_created_once_across_run_restarts(monkeypatch):
+    svc = _service(monkeypatch, emit=True)
+    svc._ensure_transport_housekeeping()
+    first = svc._transport_housekeeping_task
+    svc._ensure_transport_housekeeping()
+    assert svc._transport_housekeeping_task is first
+    first.cancel()

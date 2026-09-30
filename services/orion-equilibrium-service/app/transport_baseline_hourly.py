@@ -12,6 +12,7 @@ Pure: no clock reads, no I/O. The caller passes ``now`` (wall clock) to
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -19,6 +20,8 @@ from typing import Any
 from uuid import uuid4
 
 from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
+
+logger = logging.getLogger("orion.equilibrium.transport_baseline_hourly")
 
 # Per-key samples kept per hour: 30 s windows -> 120 per hour. Bounded anyway so
 # a burst of producers or a clock jump cannot grow a bucket without limit.
@@ -65,6 +68,8 @@ class _Bucket:
     would_emit: dict[str, int] = field(default_factory=dict)
     excluded: bool = False
     warm: bool = False
+    warm_at_start: bool | None = None
+    late: bool = False
 
 
 class TransportBaselineHourly:
@@ -72,7 +77,11 @@ class TransportBaselineHourly:
         self.config_fingerprint = config_fingerprint
         self.flush_grace_s = float(flush_grace_s)
         self._buckets: dict[tuple[str, str | None, str, float], _Bucket] = {}
+        # Buckets already flushed (hour_end/shutdown): a later fold for one of
+        # them becomes a separate "late" row instead of silently reopening it.
+        self._closed: dict[tuple[str, str | None, str, float], float] = {}
         self.dropped_buckets = 0
+        self._dropped_reported = 0
 
     def _bucket(self, service: str, instance: str | None, key: str, hour: float) -> _Bucket | None:
         bk = (service, instance, key, hour)
@@ -81,7 +90,7 @@ class TransportBaselineHourly:
             if len(self._buckets) >= MAX_BUCKETS:
                 self.dropped_buckets += 1
                 return None
-            b = _Bucket(service=service, instance=instance, key=key, hour_start=hour)
+            b = _Bucket(service=service, instance=instance, key=key, hour_start=hour, late=bk in self._closed)
             self._buckets[bk] = b
         return b
 
@@ -111,6 +120,8 @@ class TransportBaselineHourly:
             b.open_now = tuple(ob.open_conditions)
             b.excluded = bool(ob.excluded)
             b.warm = bool(ob.warm)
+            if b.warm_at_start is None:
+                b.warm_at_start = bool(ob.warm)
         for ev in getattr(result, "events", ()) or ():
             b = self._bucket(ev.service, ev.instance, ev.key, hour)
             if b is None:
@@ -129,7 +140,7 @@ class TransportBaselineHourly:
             instance=b.instance,
             key=b.key,
             hour_start=datetime.fromtimestamp(b.hour_start, tz=timezone.utc),
-            flush_reason=reason,  # type: ignore[arg-type]
+            flush_reason=("late" if b.late else reason),  # type: ignore[arg-type]
             flushed_at=datetime.fromtimestamp(now, tz=timezone.utc),
             windows_seen=b.windows_seen,
             windows_evaluated=b.windows_evaluated,
@@ -147,6 +158,7 @@ class TransportBaselineHourly:
             would_emit_by_condition=dict(b.would_emit),
             excluded=b.excluded,
             warm=b.warm,
+            warm_at_start=bool(b.warm_at_start),
             emit_effective=emit_effective,
             config_fingerprint=self.config_fingerprint,
         )
@@ -155,14 +167,29 @@ class TransportBaselineHourly:
         """Rows for every bucket whose hour ended more than ``flush_grace_s``
         ago (the grace lets the hour's last 30 s window land first)."""
         due = [k for k, b in self._buckets.items() if now >= b.hour_start + 3600.0 + self.flush_grace_s]
-        return [
+        rows = [
             self._row(self._buckets.pop(k), reason="hour_end", now=now, emit_effective=emit_effective)
             for k in sorted(due, key=lambda k: (k[3], k[0], k[1] or "", k[2]))
         ]
+        for k in due:
+            self._closed[k] = now
+        # Remember closed hours for two days; older late folds are vanishingly rare.
+        self._closed = {k: t for k, t in self._closed.items() if now - t < 2 * 86400.0}
+        self._report_dropped()
+        return rows
+
+    def _report_dropped(self) -> None:
+        if self.dropped_buckets > self._dropped_reported:
+            logger.warning(
+                "transport_baseline_hourly bucket cap %d reached: %d observation bucket(s) dropped so far",
+                MAX_BUCKETS, self.dropped_buckets,
+            )
+            self._dropped_reported = self.dropped_buckets
 
     def flush_all(self, now: float, *, emit_effective: bool) -> list[TransportBaselineHourlyV1]:
         """Shutdown: every open bucket, partial hours included."""
         keys = sorted(self._buckets, key=lambda k: (k[3], k[0], k[1] or "", k[2]))
+        self._report_dropped()
         return [
             self._row(self._buckets.pop(k), reason="shutdown", now=now, emit_effective=emit_effective)
             for k in keys

@@ -19,7 +19,8 @@ DAY = datetime(2026, 9, 30, tzinfo=timezone.utc)
 
 
 def _row(hour: int, *, key="orion:exec:request:LLMGatewayService", z=0.0, ratio=1.0, floor=1000.0,
-         floor_start=None, evaluated=40, day=0, opened=None, would=None, excluded=False, fp="f1"):
+         floor_start=None, evaluated=40, day=0, opened=None, would=None, excluded=False, fp="f1",
+         warm=True, warm_at_start=True):
     return {
         "service": "cortex-exec", "instance": "chat", "key": key,
         "hour_start": (DAY + timedelta(days=day, hours=hour)).isoformat(),
@@ -28,7 +29,7 @@ def _row(hour: int, *, key="orion:exec:request:LLMGatewayService", z=0.0, ratio=
         "saturation_ratio_p50": ratio, "baseline_ms": floor, "floor_ms_start": floor_start or floor,
         "floor_ms": floor, "calls_per_min_mean": 3.0, "conditions_opened": opened or {},
         "open_at_hour_end": [], "would_emit_by_condition": would or {}, "excluded": excluded,
-        "warm": True, "emit_effective": False, "config_fingerprint": fp,
+        "warm": warm, "warm_at_start": warm_at_start, "emit_effective": False, "config_fingerprint": fp,
     }
 
 
@@ -126,3 +127,30 @@ def test_empty_input_says_so(tmp_path, capsys):
     p.write_text("")
     assert mod.main(["--input", str(p)]) == 3
     assert "UNVERIFIED" in capsys.readouterr().out
+
+
+def test_warm_up_rows_are_not_a_floor_baseline_or_a_resting_state():
+    # one fast early warm-up draw, then a settled floor 2x higher: not a creep
+    rows = [_row(0, floor=400.0, warm=False, warm_at_start=False, z=3.0, ratio=2.0)]
+    rows.append(_row(1, floor=1000.0, floor_start=450.0, warm=True, warm_at_start=False))
+    rows += [_row(h, floor=1000.0) for h in range(2, 12)]
+    report, g = _grade(rows)
+    k = g["orion:exec:request:LLMGatewayService"]
+    assert k.floor_flags == [] and k.verdict == "PASS"
+
+
+def test_a_cold_start_under_the_same_fingerprint_restarts_the_segment():
+    rows = [_row(h, floor=1000.0) for h in range(0, 4)]
+    rows.append(_row(4, floor=1800.0, floor_start=500.0, warm=False, warm_at_start=False))  # cold start
+    rows += [_row(h, floor=1800.0) for h in range(5, 12)]
+    _, g = _grade(rows)
+    assert g["orion:exec:request:LLMGatewayService"].floor_flags == []
+
+
+def test_quiet_hours_follow_denver_dst():
+    # Summer (MDT, UTC-6): 07 UTC = 01 local (quiet), 12 UTC = 06 local (not).
+    assert mod.is_quiet_hour("2026-09-30T07:00:00+00:00")
+    assert not mod.is_quiet_hour("2026-09-30T12:00:00+00:00")
+    # Winter (MST, UTC-7): 07 UTC = 00 local (not), 12 UTC = 05 local (quiet).
+    assert not mod.is_quiet_hour("2026-11-10T07:00:00+00:00")
+    assert mod.is_quiet_hour("2026-11-10T12:00:00+00:00")

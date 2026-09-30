@@ -40,6 +40,7 @@ class TransportBaselineHourlySQL(Base):
     would_emit_by_condition = Column(JSON, nullable=True)
     excluded = Column(Boolean, nullable=False, default=False)
     warm = Column(Boolean, nullable=False, default=False)
+    warm_at_start = Column(Boolean, nullable=False, default=False)
     emit_effective = Column(Boolean, nullable=False, default=False)
     config_fingerprint = Column(String, nullable=False)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import json
 import logging
 from datetime import datetime, timezone
@@ -90,6 +91,8 @@ def _node_age_sec(observed_at: str | None) -> float | None:
 
 def _parse_ts(value: Any) -> float | None:
     """ISO string / datetime / epoch -> epoch seconds (UTC if naive), else None."""
+    if isinstance(value, bool):
+        return None
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, datetime):
@@ -211,6 +214,12 @@ class EquilibriumService(BaseChassis):
             else None
         )
         self._hourly_outbox: list[Any] = []
+        # One housekeeping task per process, not per _run: _supervise_run
+        # restarts _run after a crash, and a per-_run task would pile up.
+        self._transport_housekeeping_task: asyncio.Task | None = None
+        # Serializes outbox read-modify-write across the housekeeping loop and
+        # the shutdown flush (both await between reading and writing it).
+        self._hourly_publish_lock = asyncio.Lock()
 
     def _trace_meta(
         self,
@@ -324,7 +333,7 @@ class EquilibriumService(BaseChassis):
                     recall_enabled=settings.metacog_recall_enabled,
                 )
             except Exception as e:
-                # A fold bug must neither kill the legacy branch below nor
+                # A fold bug must neither kill the rest of this handler nor
                 # wedge the gate on every later snapshot: cold-start it.
                 logger.exception("transport_baseline fold failed")
                 gate.reset(f"fold_failed:{type(e).__name__}")
@@ -371,6 +380,12 @@ class EquilibriumService(BaseChassis):
         snapshot window already saw this timeout, the gate's episode owns it
         and the atom is dropped; otherwise it is held for the grace period and
         fires from the housekeeping loop if no window claims it.
+
+        Deliberate: a timeout the gate owns is subject to the gate's hourly
+        publish budget (EQUILIBRIUM_TRANSPORT_BASELINE_MAX_TRIGGERS_PER_HOUR).
+        Past the budget, the gate's row is dropped (logged as
+        transport_baseline_suppressed) and the atom does NOT fall back -- the
+        budget is the mesh-wide-outage cap, and an atom fallback would defeat it.
         """
         correlation_id = str(payload_dict.get("correlation_id") or "")
         zen_state = "zen" if zen > 0.5 else "not_zen"
@@ -378,6 +393,13 @@ class EquilibriumService(BaseChassis):
         if owner is not None:
             now = datetime.now().timestamp()
             emitted = _parse_ts(payload_dict.get("emitted_at"))
+            if emitted is None:
+                # Different clock domain from the producer's credit windows, so
+                # this atom will most likely not match and will fire (fails open).
+                logger.debug(
+                    "transport_timeout_owner emitted_at missing/unparseable corr=%s; using receipt time",
+                    correlation_id,
+                )
             pending = PendingAtom(
                 atom=dict(atom),
                 correlation_id=correlation_id,
@@ -405,18 +427,33 @@ class EquilibriumService(BaseChassis):
             await self._publish_metacog_trigger(trigger)
 
     async def _publish_transport_hourly(self, rows: List[Any]) -> None:
-        """Publish hourly rows; anything that fails to publish stays in a
-        bounded outbox and is retried on the next housekeeping tick."""
+        """Publish hourly rows; a row that fails to reach Redis stays in a
+        bounded outbox and is retried on the next housekeeping tick. A row the
+        bus rejects as invalid (ValueError/TypeError, which includes pydantic's
+        ValidationError) is dropped with an error -- retrying it would only
+        block every later row. Delivery past Redis is pub/sub: a row published
+        while sql-writer is down is not retried."""
+        async with self._hourly_publish_lock:
+            await self._publish_transport_hourly_locked(rows)
+
+    async def _publish_transport_hourly_locked(self, rows: List[Any]) -> None:
         pending = self._hourly_outbox + list(rows)
         self._hourly_outbox = []
+        published = 0
         for i, row in enumerate(pending):
-            env = BaseEnvelope(
-                kind=TRANSPORT_BASELINE_HOURLY_KIND,
-                source=self._source(),
-                payload=row.model_dump(mode="json"),
-            )
             try:
+                env = BaseEnvelope(
+                    kind=TRANSPORT_BASELINE_HOURLY_KIND,
+                    source=self._source(),
+                    payload=row.model_dump(mode="json"),
+                )
                 await self.bus.publish(settings.channel_transport_baseline_hourly, env)
+                published += 1
+            except (ValueError, TypeError) as e:
+                logger.error(
+                    "transport_baseline_hourly row rejected, dropped (not retried): %s key=%s hour=%s",
+                    e, getattr(row, "key", None), getattr(row, "hour_start", None),
+                )
             except Exception as e:
                 rest = pending[i:]
                 dropped = max(0, len(rest) - _HOURLY_OUTBOX_MAX)
@@ -426,10 +463,10 @@ class EquilibriumService(BaseChassis):
                     e, len(self._hourly_outbox), dropped,
                 )
                 return
-        if pending:
+        if published:
             logger.info(
                 "transport_baseline_hourly published rows=%d channel=%s",
-                len(pending), settings.channel_transport_baseline_hourly,
+                published, settings.channel_transport_baseline_hourly,
             )
 
     async def _transport_housekeeping_once(self, now: float) -> None:
@@ -453,6 +490,28 @@ class EquilibriumService(BaseChassis):
             except Exception:
                 logger.exception("transport housekeeping failed")
             await asyncio.sleep(_TRANSPORT_HOUSEKEEPING_SEC)
+
+    def _ensure_transport_housekeeping(self) -> None:
+        if self._timeout_owner is None and self._transport_hourly is None:
+            return
+        t = self._transport_housekeeping_task
+        if t is None or t.done():
+            self._transport_housekeeping_task = asyncio.create_task(
+                self._transport_housekeeping_loop(), name="equilibrium-transport-housekeeping"
+            )
+
+    async def _shutdown(self) -> None:
+        """Flush BEFORE the chassis cancels _run and closes the bus. The chassis
+        cancels the _run task while it is parked in iter_messages(), so nothing
+        after that loop runs on a real shutdown -- this override is the only
+        place a shutdown flush can happen with the bus still open."""
+        t = self._transport_housekeeping_task
+        if t is not None and not t.done():
+            t.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await t
+        await self._transport_shutdown_flush()
+        await super()._shutdown()
 
     async def _transport_shutdown_flush(self) -> None:
         """Best effort: held atoms fire, partial hourly buckets publish."""
@@ -1342,11 +1401,7 @@ class EquilibriumService(BaseChassis):
             heartbeat_task = asyncio.create_task(self._spark_heartbeat_loop())
         bus_synaptic_poll_task = asyncio.create_task(self._bus_synaptic_poll_loop())
         generative_poll_task = asyncio.create_task(self._generative_metacog_poll_loop())
-        transport_housekeeping_task = (
-            asyncio.create_task(self._transport_housekeeping_loop())
-            if (self._timeout_owner is not None or self._transport_hourly is not None)
-            else None
-        )
+        self._ensure_transport_housekeeping()
 
         # Build list of channels to subscribe to
         channels = [settings.health_channel]
@@ -1583,8 +1638,6 @@ class EquilibriumService(BaseChassis):
             heartbeat_task.cancel()
         bus_synaptic_poll_task.cancel()
         generative_poll_task.cancel()
-        if transport_housekeeping_task:
-            transport_housekeeping_task.cancel()
 
         await asyncio.gather(
             publisher,
@@ -1592,10 +1645,8 @@ class EquilibriumService(BaseChassis):
             *( [heartbeat_task] if heartbeat_task else [] ),
             bus_synaptic_poll_task,
             generative_poll_task,
-            *( [transport_housekeeping_task] if transport_housekeeping_task else [] ),
             return_exceptions=True,
         )
-        await self._transport_shutdown_flush()
 
         # Release the Postgres connection the generative gates cached, if any --
         # the FalkorDB client above is Redis-backed and pooled, this one holds a

@@ -4,8 +4,9 @@
 Acceptance check 1 of docs/superpowers/specs/2026-09-24-metacog-capture-and-
 transport-ewma-baseline-design.md, made runnable:
 
-- Per hop with traffic, during quiet hours 01:00-06:00 MDT (07:00-12:00 UTC,
-  i.e. rows whose ``hour_start`` UTC hour is 7..11): the median z must be
+- Per hop with traffic, during quiet hours 01:00-06:00 Juniper-local time
+  (America/Denver, DST-aware: 07:00-12:00 UTC under MDT, 08:00-13:00 UTC under
+  MST), i.e. rows whose local ``hour_start`` hour is 1..5: the median z must be
   within +/-0.5 and the median saturation ratio within [0.8, 1.3]. Medians are
   across hourly rows, weighted by ``windows_evaluated`` (each row already holds
   the median of its own evaluated windows -- a median of medians, stated, not
@@ -15,6 +16,10 @@ transport-ewma-baseline-design.md, made runnable:
   design (90 s half-life down), and "busy quietly becoming normal" is the upward
   failure this guards. A config change (new fingerprint) cold-starts the gate,
   so it also starts a new comparison segment.
+- Warm-up is not a resting state: until a hop has ``n_warm`` judged windows its
+  floor simply equals its level. Rows not warm at the hour's start are left out
+  of the medians, and a non-warm row (first learning, or a cold start after a
+  fold/load failure under the same fingerprint) restarts the floor segment.
 
 Also prints what the gate WOULD have published per condition per day (the
 would-emit counts), which is what sizes the EMIT decision.
@@ -34,8 +39,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+from zoneinfo import ZoneInfo
 
-QUIET_UTC_HOURS = frozenset({7, 8, 9, 10, 11})  # 01:00-06:00 MDT (UTC-6)
+LOCAL_TZ = ZoneInfo("America/Denver")
+QUIET_LOCAL_HOURS = frozenset({1, 2, 3, 4, 5})  # hours starting 01:00..05:00 local = 01:00-06:00
 Z_BAND = 0.5
 RATIO_BAND = (0.8, 1.3)
 FLOOR_RISE_LIMIT = 1.5
@@ -46,7 +53,7 @@ COLUMNS = (
     "windows_evaluated", "success_count", "timeout_count", "z_p50", "z_p90",
     "saturation_ratio_p50", "baseline_ms", "floor_ms_start", "floor_ms",
     "calls_per_min_mean", "conditions_opened", "open_at_hour_end",
-    "would_emit_by_condition", "excluded", "warm", "emit_effective", "config_fingerprint",
+    "would_emit_by_condition", "excluded", "warm", "warm_at_start", "emit_effective", "config_fingerprint",
 )
 
 
@@ -64,6 +71,14 @@ def _dict(v: Any) -> dict:
         except ValueError:
             return {}
     return v if isinstance(v, dict) else {}
+
+
+def is_quiet_hour(hour_start: Any) -> bool:
+    return _ts(hour_start).astimezone(LOCAL_TZ).hour in QUIET_LOCAL_HOURS
+
+
+def _warm_at_start(r: dict) -> bool:
+    return bool(r.get("warm_at_start", r.get("warm", True)))
 
 
 def weighted_median(pairs: Iterable[tuple[float, int]]) -> float | None:
@@ -107,10 +122,16 @@ def floor_rises(rows: list[dict]) -> list[str]:
     for r in sorted(rows, key=lambda r: _ts(r["hour_start"])):
         if r.get("config_fingerprint") != fp:
             fp, seg_min = r.get("config_fingerprint"), None
+        if not _warm_at_start(r):
+            # warm-up (first learning or a cold start): floor == level, not a floor yet
+            seg_min = None
+            if not r.get("warm", True):
+                continue
         shifted = int(_dict(r.get("conditions_opened")).get("regime_shift", 0) or 0) > 0
         # In the hour a regime_shift was stated, the end-of-hour floor is the
         # re-seeded new normal: only the start is judged against the old segment.
-        values = (r.get("floor_ms_start"),) if shifted else (r.get("floor_ms_start"), r.get("floor_ms"))
+        start = r.get("floor_ms_start") if _warm_at_start(r) else None
+        values = (start,) if shifted else (start, r.get("floor_ms"))
         for v in values:
             if v is None or v <= 0:
                 continue
@@ -129,7 +150,9 @@ def floor_rises(rows: list[dict]) -> list[str]:
 def grade_key(ident: str, rows: list[dict]) -> KeyGrade:
     quiet = [
         r for r in rows
-        if _ts(r["hour_start"]).hour in QUIET_UTC_HOURS and int(r.get("windows_evaluated") or 0) > 0
+        if is_quiet_hour(r["hour_start"])
+        and int(r.get("windows_evaluated") or 0) > 0
+        and _warm_at_start(r)
     ]
     z = weighted_median((r.get("z_p50"), r.get("windows_evaluated")) for r in quiet)
     ratio = weighted_median((r.get("saturation_ratio_p50"), r.get("windows_evaluated")) for r in quiet)
@@ -155,7 +178,9 @@ def grade_key(ident: str, rows: list[dict]) -> KeyGrade:
     problems.extend(g.floor_flags)
     if not gradable and not g.floor_flags:
         g.verdict = "NOT_GRADABLE"
-        g.sentence = "had no judged traffic in quiet hours, so there is nothing to say about its resting state yet."
+        g.sentence = (
+            "had no judged, warmed-up traffic in quiet hours, so there is nothing to say about its resting state yet."
+        )
         return g
     g.verdict = "FAIL" if problems else "PASS"
     if g.verdict == "PASS":

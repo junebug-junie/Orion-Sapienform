@@ -66,3 +66,61 @@ def test_a_producer_row_constructs_the_sql_model() -> None:
     )
     obj = TransportBaselineHourlySQL(**row.model_dump())
     assert obj.key.endswith("LLMGatewayService") and obj.would_emit_by_condition == {"timeout:open": 1}
+
+
+def test_a_real_envelope_lands_through_the_worker_consume_path(monkeypatch) -> None:
+    """Envelope -> handle_envelope -> route -> schema -> _write_row column filter ->
+    insert-only branch, against sqlite. Catches a route/schema/column mismatch the
+    direct-constructor test above cannot."""
+    import asyncio
+    from uuid import uuid4
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    import app.worker as worker
+    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    TransportBaselineHourlySQL.__table__.create(bind=engine)
+    Session = sessionmaker(bind=engine)
+    holder: dict = {}
+
+    def _get_session():
+        holder.setdefault("s", Session())
+        return holder["s"]
+
+    def _remove_session():
+        s = holder.pop("s", None)
+        if s is not None:
+            s.close()
+
+    monkeypatch.setattr(worker, "get_session", _get_session)
+    monkeypatch.setattr(worker, "remove_session", _remove_session)
+
+    row = TransportBaselineHourlyV1(
+        summary_id="row-1", service="orion-durable-runs", instance="main",
+        key="orion:gpu_pool:lease:request#gpu_pool_lease",
+        hour_start=datetime(2026, 9, 29, 9, tzinfo=timezone.utc), flush_reason="hour_end",
+        flushed_at=datetime(2026, 9, 29, 10, 1, 30, tzinfo=timezone.utc),
+        windows_seen=120, windows_evaluated=12, z_p50=-0.2, z_p90=0.9, saturation_ratio_p50=1.01,
+        floor_ms_start=40.0, floor_ms=41.0, calls_per_min_mean=0.4,
+        conditions_opened={}, open_at_hour_end=[], would_emit_by_condition={"timeout:open": 1},
+        warm=True, warm_at_start=True, config_fingerprint="fp",
+    )
+    env = BaseEnvelope(
+        kind=TRANSPORT_BASELINE_HOURLY_KIND, source=ServiceRef(name="orion-equilibrium-service"),
+        correlation_id=uuid4(), payload=row.model_dump(mode="json"),
+    )
+    asyncio.run(worker.handle_envelope(env))
+
+    s = Session()
+    try:
+        got = s.get(TransportBaselineHourlySQL, "row-1")
+        assert got is not None, "the envelope did not reach transport_baseline_hourly"
+        assert got.key == "orion:gpu_pool:lease:request#gpu_pool_lease"
+        assert got.would_emit_by_condition == {"timeout:open": 1}
+        assert got.warm_at_start is True and got.windows_evaluated == 12
+    finally:
+        s.close()

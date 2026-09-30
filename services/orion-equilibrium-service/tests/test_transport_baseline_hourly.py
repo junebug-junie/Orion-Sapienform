@@ -181,3 +181,21 @@ async def test_publish_flag_off_keeps_no_accumulator(monkeypatch):
     await svc._handle_rpc_health_snapshot(_snap(0, {LLM: _stats([1000.0] * 5)}), zen=0.9, distress=0.1)
     await svc._transport_shutdown_flush()
     assert _hourly_published(svc) == []
+
+
+def test_a_fold_for_an_already_flushed_hour_is_a_late_row_not_a_reopen():
+    gate = TransportBaselineGate(TransportBaselineConfig(), [])
+    acc = TransportBaselineHourly(config_fingerprint="f")
+    _run(gate, acc, range(0, 3), lambda i: [1000.0] * 5)
+    assert [r.flush_reason for r in acc.flush_due(T0.timestamp() + 3700, emit_effective=False)] == ["hour_end"]
+    _run(gate, acc, range(3, 4), lambda i: [1000.0] * 5)  # delayed snapshot, same hour
+    rows = acc.flush_due(T0.timestamp() + 3800, emit_effective=False)
+    assert [(r.flush_reason, r.windows_seen) for r in rows] == [("late", 1)]
+
+
+def test_warm_at_start_records_whether_the_hour_began_warm():
+    gate = TransportBaselineGate(TransportBaselineConfig(), [])
+    acc = TransportBaselineHourly(config_fingerprint="f")
+    _run(gate, acc, range(0, 30), lambda i: [1000.0] * 5)
+    r = acc.flush_all(T0.timestamp() + 3700, emit_effective=False)[0]
+    assert r.warm and not r.warm_at_start

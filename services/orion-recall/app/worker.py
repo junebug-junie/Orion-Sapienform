@@ -4,6 +4,7 @@ import asyncio
 import functools
 import logging
 import re
+import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
@@ -2047,6 +2048,12 @@ async def _run_pcr_collectors(
     a restart take 9.5s with ~9.3s missing from timings_ms.
     """
     units: List[Tuple[str, Any]] = []
+    # Set when the recall stops waiting for concept_region (deadline or
+    # cancellation). The thread cannot be killed, so the collector checks this
+    # right before its reinforcement write: dropped fragments must not be
+    # reinforced as if they had been surfaced.
+    cr_abandoned = threading.Event()
+    on_cancel: Dict[str, threading.Event] = {"concept_region": cr_abandoned}
     if pcr_backend_plan.get("active_packet") and settings.RECALL_ACTIVE_PACKET_ENABLED:
         units.append(
             (
@@ -2068,7 +2075,9 @@ async def _run_pcr_collectors(
             (
                 "concept_region",
                 lambda: asyncio.to_thread(
-                    lambda: fetch_concept_region_fragment_and_reinforce(q, store=get_substrate_store())
+                    lambda: fetch_concept_region_fragment_and_reinforce(
+                        q, store=get_substrate_store(), abandoned=cr_abandoned
+                    )
                 ),
             )
         )
@@ -2088,6 +2097,11 @@ async def _run_pcr_collectors(
         started = time.perf_counter()
         try:
             return await factory()
+        except asyncio.CancelledError:
+            ev = on_cancel.get(name)
+            if ev is not None:
+                ev.set()
+            raise
         finally:
             elapsed_ms[name] = int((time.perf_counter() - started) * 1000)
 
@@ -2105,6 +2119,11 @@ async def _run_pcr_collectors(
         )
         if pending:
             deadline_hit = True
+            for n, t in tasks:
+                if t in pending and n in on_cancel:
+                    # Before cancel(), so the flag is up even if the
+                    # thread returns before the cancellation is delivered.
+                    on_cancel[n].set()
             for t in pending:
                 t.cancel()
             await asyncio.gather(*pending, return_exceptions=True)

@@ -850,7 +850,11 @@ def _redact_endpoint_for_log(endpoint: str) -> str:
     return urlunparse((p.scheme, netloc, p.path, p.params, p.query, p.fragment))
 
 
-def build_substrate_store_from_env() -> SubstrateGraphStore:
+def build_substrate_store_from_env(
+    *,
+    falkor_socket_timeout_s: float | None = None,
+    falkor_socket_connect_timeout_s: float | None = None,
+) -> SubstrateGraphStore:
     """Select substrate semantic store.
 
     **RDF Store V1 safety:** GraphDB is used only when ``SUBSTRATE_STORE_BACKEND`` is set to
@@ -884,7 +888,12 @@ def build_substrate_store_from_env() -> SubstrateGraphStore:
     if backend in {"falkor", "falkordb"}:
         from orion.substrate.falkor_store import build_falkor_substrate_store_from_env
 
-        return build_falkor_substrate_store_from_env()
+        # Optional redis socket timeouts, only for the direct falkor backend
+        # (None = no timeout, the prior behaviour for every caller).
+        return build_falkor_substrate_store_from_env(
+            client_socket_timeout_s=falkor_socket_timeout_s,
+            client_socket_connect_timeout_s=falkor_socket_connect_timeout_s,
+        )
 
     if backend in {"routed"}:
         from orion.substrate.routed_store import build_routed_substrate_store_from_env

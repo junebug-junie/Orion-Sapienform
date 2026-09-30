@@ -29,7 +29,7 @@ from orion.core.bus.bus_schemas import AttachmentRefV1, BaseEnvelope, ChatReques
 from orion.core.contracts.recall import RecallQueryV1
 from orion.cognition.recall_query import (
     cap_retrieval_query,
-    recall_mode_from_cfg,
+    recall_query_mode_from_cfg,
     retrieval_query_from_ctx,
 )
 
@@ -2449,7 +2449,7 @@ async def run_recall_step(
     the one phase 0+1 used), else ``ctx["retrieval_query"]`` (the caller's
     choice, e.g. a self-inquiry run's standing question), else None and recall
     condenses ``fragment`` itself. ``fragment`` stays the turn text either way.
-    ``recall_cfg["mode"]`` (``context_only`` for verbs whose YAML says so) and
+    ``recall_cfg["query_mode"]`` (``context_only`` for verbs whose YAML says so) and
     ``deadline_ms`` (the RPC wait actually used) ride on the same request.
     """
     t0 = time.time()
@@ -2470,7 +2470,7 @@ async def run_recall_step(
         if retrieval_query is not None
         else retrieval_query_from_ctx(ctx)
     )
-    recall_mode = recall_mode_from_cfg(recall_cfg)
+    recall_mode = recall_query_mode_from_cfg(recall_cfg)
     deadline_ms = max(1, int(round(float(recall_timeout) * 1000)))
     _log_grounding_snapshot(
         component=f"recall:{step_name}",

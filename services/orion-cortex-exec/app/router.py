@@ -6,6 +6,7 @@ import os
 import re
 from typing import Any, Dict, List
 
+from orion.cognition.recall_query import RECALL_QUERY_MODE_KEY
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ServiceRef
 
@@ -936,19 +937,22 @@ class PlanRunner:
         ):
             recall_cfg = dict(recall_cfg)
             recall_cfg["enabled"] = False
-        verb_recall_mode = (
-            str(plan.metadata.get("recall_mode_default") or "").strip().lower()
+        verb_query_mode = (
+            str(plan.metadata.get("recall_query_mode_default") or "").strip().lower()
             if isinstance(plan.metadata, dict)
             else ""
         )
-        if verb_recall_mode and "mode" not in recall_cfg:
-            # Verb YAML `recall_mode` (e.g. reverie's context_only). run_recall_step
-            # reads recall_cfg["mode"] on every path (pre-recall, PCR, supervisor);
-            # the inline plan step reads ctx["recall"], so that copy gets it too.
+        if verb_query_mode and RECALL_QUERY_MODE_KEY not in recall_cfg:
+            # Verb YAML `recall_query_mode` (e.g. reverie's context_only).
+            # run_recall_step reads recall_cfg["query_mode"] on every path
+            # (pre-recall, PCR, supervisor); the inline plan step reads
+            # ctx["recall"], so that copy gets it too. Its own key, not "mode":
+            # recall_cfg["mode"] is RecallDirective.mode, which cortex-orch
+            # always sets to "hybrid".
             recall_cfg = dict(recall_cfg)
-            recall_cfg["mode"] = verb_recall_mode
-            if isinstance(ctx.get("recall"), dict) and "mode" not in ctx["recall"]:
-                ctx["recall"] = {**ctx["recall"], "mode": verb_recall_mode}
+            recall_cfg[RECALL_QUERY_MODE_KEY] = verb_query_mode
+            if isinstance(ctx.get("recall"), dict) and RECALL_QUERY_MODE_KEY not in ctx["recall"]:
+                ctx["recall"] = {**ctx["recall"], RECALL_QUERY_MODE_KEY: verb_query_mode}
         raw_enabled = recall_cfg.get("enabled", True)
         ctx.setdefault("recall", recall_cfg)
         recall_enabled = recall_enabled_value(recall_cfg)

@@ -114,7 +114,7 @@ def test_run_recall_step_explicit_retrieval_query_beats_ctx(capture):
 
 
 def test_run_recall_step_context_only_mode_needs_no_fragment(capture):
-    step, _, _ = _run({"verb": "reverie_narrate", "user_message": None}, recall_cfg={"mode": "context_only"})
+    step, _, _ = _run({"verb": "reverie_narrate", "user_message": None}, recall_cfg={"query_mode": "context_only"})
 
     assert step.status == "success"
     req = capture.sent[-1]
@@ -125,7 +125,7 @@ def test_run_recall_step_context_only_mode_needs_no_fragment(capture):
 
 
 def test_run_recall_step_ignores_unknown_mode(capture):
-    _run({"verb": "chat_general", "user_message": "x"}, recall_cfg={"mode": "bogus"})
+    _run({"verb": "chat_general", "user_message": "x"}, recall_cfg={"query_mode": "bogus"})
 
     assert capture.sent[-1].mode == "retrieve"
 
@@ -209,8 +209,8 @@ def test_stance_grounding_phase3_query_equals_phase01_query(capture, monkeypatch
 
 def test_reverie_verb_yamls_declare_context_only():
     for verb in ("reverie_narrate", "reverie_expectation_judge"):
-        assert build_plan_for_verb(verb).metadata["recall_mode_default"] == "context_only"
-    assert build_plan_for_verb("chat_general").metadata["recall_mode_default"] == ""
+        assert build_plan_for_verb(verb).metadata["recall_query_mode_default"] == "context_only"
+    assert build_plan_for_verb("chat_general").metadata["recall_query_mode_default"] == ""
 
 
 @pytest.mark.parametrize("verb", ["reverie_narrate", "reverie_expectation_judge"])
@@ -245,20 +245,36 @@ def test_router_sends_context_only_for_reverie_verbs(capture, monkeypatch, verb)
     assert all(r.retrieval_query is None for r in capture.sent)
 
 
-def test_router_caller_mode_beats_verb_default(capture, monkeypatch):
+def _run_reverie_plan(monkeypatch, *, extra):
     fake_llm = StepExecutionResult(
         status="success", verb_name="reverie_narrate", step_name="llm", order=0,
         result={"LLMGatewayService": {"content": "{}"}}, latency_ms=1, node="n", logs=[], error=None,
     )
     monkeypatch.setattr(router, "call_step_services", AsyncMock(return_value=fake_llm))
     monkeypatch.setattr(router, "prepare_brain_reply_context", AsyncMock(return_value=None))
-    ctx = {"user_message": "explicit", "mode": "reverie"}
+    ctx = {"user_message": None, "mode": "reverie"}
     req = PlanExecutionRequest(
         plan=build_plan_for_verb("reverie_narrate", mode="brain"),
-        args=PlanExecutionArgs(request_id="rq", extra={"mode": "brain", "recall": {"mode": "retrieve"}}),
+        args=PlanExecutionArgs(request_id="rq", extra=extra),
         context=ctx,
     )
-
     asyncio.run(PlanRunner().run_plan(bus=object(), source=SOURCE, req=req, correlation_id="corr-r", ctx=ctx))
 
+
+def test_router_caller_query_mode_beats_verb_default(capture, monkeypatch):
+    _run_reverie_plan(monkeypatch, extra={"mode": "brain", "recall": {"query_mode": "retrieve"}})
+
     assert capture.sent and all(r.mode == "retrieve" for r in capture.sent)
+
+
+def test_orch_routed_recall_directive_keeps_the_verb_context_only_default(capture, monkeypatch):
+    """PR #2423 review: cortex-orch always sends recall=RecallDirective().model_dump(),
+    whose "mode" is "hybrid". With the verb default stored under recall_cfg["mode"], that
+    silently suppressed reverie's context_only. The default now has its own key."""
+    from orion.schemas.cortex.contracts import RecallDirective
+
+    directive = RecallDirective().model_dump()
+    assert directive["mode"] == "hybrid"
+    _run_reverie_plan(monkeypatch, extra={"mode": "brain", "recall": directive})
+
+    assert capture.sent and all(r.mode == "context_only" for r in capture.sent)

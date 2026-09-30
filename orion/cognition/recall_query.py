@@ -42,15 +42,22 @@ def retrieval_query_from_ctx(ctx: dict[str, Any] | None) -> str | None:
     return cap_retrieval_query(ctx.get("retrieval_query"))
 
 
-def recall_mode_from_cfg(recall_cfg: dict[str, Any] | None) -> str:
-    """``recall_cfg["mode"]`` when it is a known recall mode, else ``retrieve``.
+# recall_cfg key for RecallQueryV1.mode. NOT recall_cfg["mode"]: that key is
+# already RecallDirective.mode ("hybrid"/"deep"/"graph"), which cortex-orch
+# always sets, so sharing it would silently drop a verb's context_only default
+# (PR #2423 review).
+RECALL_QUERY_MODE_KEY = "query_mode"
 
-    The router fills this from a verb YAML's ``recall_mode`` (plan metadata
-    ``recall_mode_default``), the same way ``recall_enabled`` flows.
+
+def recall_query_mode_from_cfg(recall_cfg: dict[str, Any] | None) -> str:
+    """``recall_cfg["query_mode"]`` when it is a known RecallQueryV1 mode, else ``retrieve``.
+
+    The router fills this from a verb YAML's ``recall_query_mode`` (plan metadata
+    ``recall_query_mode_default``), the same way ``recall_enabled`` flows.
     """
     if not isinstance(recall_cfg, dict):
         return "retrieve"
-    mode = str(recall_cfg.get("mode") or "").strip().lower()
+    mode = str(recall_cfg.get(RECALL_QUERY_MODE_KEY) or "").strip().lower()
     return mode if mode in RECALL_MODES else "retrieve"
 
 
@@ -130,7 +137,7 @@ def build_recall_query_v1(
     recall_cfg = recall_cfg if isinstance(recall_cfg, dict) else {}
     fragment_text = last_user_message_from_ctx(ctx)
     retrieval_query = retrieval_query_from_ctx(ctx)
-    mode = recall_mode_from_cfg(recall_cfg)
+    mode = recall_query_mode_from_cfg(recall_cfg)
     if not fragment_text and not retrieval_query and mode != "context_only":
         return None
     lane_val = recall_cfg.get("lane")

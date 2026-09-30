@@ -153,11 +153,11 @@ Full design: `docs/superpowers/specs/2026-07-24-transport-metacog-trigger-design
 
 - **(A) `RpcHealthSnapshotV1` windows** on `orion:rpc_health:snapshot` (published every `RPC_HEALTH_PUBLISH_INTERVAL_SEC` by `orion-cortex-exec`/`orion-cortex-orch`, `orion/core/bus/rpc_health_publish.py`, PR #1313/#1315, live-verified). Fires when `timeout_count > 0` (real evidence, no threshold). **The pooled-p95 latency branch and its `EQUILIBRIUM_METACOG_TRANSPORT_LATENCY_P95_THRESHOLD_MS` key were removed 2026-09-24**: the slow call in those windows was metacog's own background LLM draft, so the branch was a self-loop (~2,000 junk rows/day). Per-hop latency moved to the baseline gate below. While `EQUILIBRIUM_TRANSPORT_BASELINE_EMIT` is effective, this whole Option A branch is not called -- the baseline gate's timeout/zero_success episodes replace it. An empty window (no real calls) fires nothing -- absence of traffic isn't evidence of trouble, same rule `orion-signal-gateway`'s `rpc_health` organ adapter already applies.
 - **(C) `rpc_transport_timeout` grammar atoms** on `orion:grammar:event` (published by `orion/core/bus/async_service.py::_emit_rpc_timeout_grammar`, fired from both of `rpc_request()`'s real timeout branches -- generalizes `chat_turn`'s own `exec_turn_timeout`/`stance_timeout` markers, scoped to one harness/thought RPC each, to every one of the 37+ real `rpc_request()` call sites sharing that one client). Terminal by construction -- a real RPC already timed out by the time this atom exists, no threshold to evaluate.
-- **(bus_synaptic) `node:substrate.bus_synaptic`'s `prediction_error`**, polled directly from FalkorDB (`orion_substrate` graph, written by `orion-substrate-runtime`'s `_bus_synaptic_tick` -- PR #1377/#1380) every `EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_INTERVAL_SEC`, not message-driven like A/C. Passively covers RPC-health-invisible organs (bespoke long-poll clients like `orion-harness-governor`) that A/C structurally cannot see. Fires at `error >= EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD` (default `0.15`). **Retuned 2026-07-30**: `bus_synaptic_prediction_error` changed from a magnitude (mean `|z|`, saturating at `1.0`) to the *fraction of edges currently anomalous*, so the old `1.0` default would have required every edge in the mesh to be anomalous at once. `0.15` is ~1.6x the live-measured baseline max (60 samples over 10 min: median 0.026, p95 0.072, max 0.094); zero baseline samples reached it. A single organ failing reads ~0.051 and even the three busiest together read 0.136 -- **below** this threshold, deliberately: baseline-to-few-organ separation is only ~1.45x, so no threshold separates them cleanly. This detects broad mesh events (>=15-20% of edges). Few-organ detection needs a per-organ signal, not a lower bar here.
+- **(bus_synaptic) -- RETIRED 2026-09-30.** A FalkorDB poll of `node:substrate.bus_synaptic`'s `prediction_error` (fraction of bus-synaptic edges at `|z| >= 3`). Its metric quality gate failed on live data: the edge z-scores are stamped at `orion-bus-mirror`'s dequeue time by a single consumer Redis disconnects for output-buffer overflow roughly every 20 minutes, it fired 50-155 episodes/day evenly across the clock without tracking real RPC-timeout storms, and its stated purpose (one bespoke organ) sits below its own noise band by design. Builder, poll loop, settings and env keys were removed, not disabled. Evidence: `docs/superpowers/pr-reports/2026-09-30-retire-bus-synaptic-transport-trigger-pr.md`.
 
-Own cooldown lane from day one (`EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC`) -- not sharing the global lane, avoiding the exact bug `chat_turn` had to fix after the fact (see above). All three evidence sources share this one lane.
+Own cooldown lane from day one (`EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC`) -- not sharing the global lane, avoiding the exact bug `chat_turn` had to fix after the fact (see above). Both remaining evidence sources (A/C) share this one lane.
 
-`EQUILIBRIUM_METACOG_TRANSPORT_TRIGGER_ENABLE` is live (`true`) as of 2026-07-24 (flipped shortly after shipping, commit `40cd21f80` -- correcting a stale claim this paragraph carried before). All three evidence sources (A/C/bus_synaptic) are now live as of 2026-07-26 (`EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_ENABLE=true`) -- unlike `SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED` (a pure shadow write nothing consumed, so flipping it carried near-zero risk), this dispatches a real `MetacogTriggerV1` into `orion_metacog`, so it needed its own explicit go-ahead. Watch for the first real fire (`orion_metacog` row, `trigger_kind=transport`, `upstream.evidence_source=bus_synaptic_prediction_error`) before fully trusting this path the same way A/C were already trusted.
+`EQUILIBRIUM_METACOG_TRANSPORT_TRIGGER_ENABLE` is live (`true`) as of 2026-07-24 (flipped shortly after shipping, commit `40cd21f80` -- correcting a stale claim this paragraph carried before). The bus_synaptic source was live 2026-07-26 to 2026-09-30 and is now retired (see above).
 
 | Env | Default | Purpose |
 |-----|---------|---------|
@@ -165,10 +165,6 @@ Own cooldown lane from day one (`EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC`) --
 | `EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC` | `30` | transport's own cooldown window, separate from `EQUILIBRIUM_METACOG_COOLDOWN_SEC` |
 | `CHANNEL_RPC_HEALTH_SNAPSHOT` | `orion:rpc_health:snapshot` | Option A's source channel |
 | `CHANNEL_GRAMMAR_EVENT` | `orion:grammar:event` | Option C's source channel, filtered to `semantic_role=="rpc_transport_timeout"` |
-| `EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_ENABLE` | `true` | Master gate for Option bus_synaptic |
-| `EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_INTERVAL_SEC` | `30` | Poll cadence for Option bus_synaptic |
-| `EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_ERROR_THRESHOLD` | `0.15` | Option bus_synaptic's fire threshold (fraction of edges anomalous; ~3.5x measured baseline) |
-| `FALKORDB_URI` / `FALKORDB_SUBSTRATE_GRAPH` | `orion_substrate` | Option bus_synaptic's read-only FalkorDB connection |
 
 ### transport baseline gate (per-hop EWMA, 2026-09-24)
 
@@ -198,14 +194,6 @@ Log-only by default. Look for `transport_baseline_obs` (per-key z, ratio, calls,
 
 Changing any tunable changes the state fingerprint: the next boot logs `transport_baseline cold_start reason=config_fingerprint_mismatch` and re-learns. Rollback: set `EQUILIBRIUM_TRANSPORT_BASELINE_ENABLE=false` and delete the Redis key.
 
-
-**Testing the bus_synaptic option:**
-
-See [Testing](#testing) section above for:
-- Unit tests of threshold logic (`TestBusSynapticEvidence`)
-- End-to-end eval verifying the complete FalkorDB → poll → trigger → postgres pipeline (`run_bus_synaptic_poll_e2e_eval.py`)
-
-The E2E eval proves the "first real fire" path mentioned above and provides a smoke test you can run any time to verify the poll loop is working correctly.
 
 ### insight + flow metacog triggers (generative, non-rupture)
 
@@ -244,7 +232,7 @@ Both de-dupe keys are recorded **only after a real publish**, never on a cooldow
 
 **Downstream type mapping (this is new behavior for the whole family).** Before this, `CollapseMirrorEntryV2.type` was guessed *only* from phi bands in `orion-cortex-exec`'s `_fallback_metacog_draft()` — which is not fallback-only, since the successful-LLM-draft path seeds its `base_entry` from that same function and the draft prompt forbids the LLM from choosing `type` itself. So `trigger_kind` drove `type` in **no** path at all, and `"epiphany"` was unreachable dead code. That heuristic now consults `trigger_kind` **first**: `insight → type="epiphany"` (`change_type=reorientation`), `flow → type="flow"` (`change_type=stabilizing`), everything else falls through to the unchanged phi-band guess.
 
-Shipped **disabled**, same standard as `transport`'s bus_synaptic option: they dispatch a real `MetacogTriggerV1` into `orion_metacog`, so flipping them on is a human decision made after a post-merge live-data check. That check never happened — this service's mesh dependency went down for 11 days right after these shipped, so there was no live window to watch. **Flipped on 2026-08-11**, now that the mesh is back. Watch for the first real fire (`orion_metacog` row, `trigger_kind=insight`/`flow`, `upstream.evidence_source=attention_self_model_prediction_error_confidence`) the same way you would for a fresh flip.
+Shipped **disabled**, same standard as `transport`'s (since retired) bus_synaptic option: they dispatch a real `MetacogTriggerV1` into `orion_metacog`, so flipping them on is a human decision made after a post-merge live-data check. That check never happened — this service's mesh dependency went down for 11 days right after these shipped, so there was no live window to watch. **Flipped on 2026-08-11**, now that the mesh is back. Watch for the first real fire (`orion_metacog` row, `trigger_kind=insight`/`flow`, `upstream.evidence_source=attention_self_model_prediction_error_confidence`) the same way you would for a fresh flip.
 
 | Env | Default | Purpose |
 |-----|---------|---------|
@@ -312,43 +300,9 @@ redis-cli -u "$BUS" SUBSCRIBE "orion:event:equilibrium:snapshot"
 ```bash
 # From repo root
 python3 -m pytest services/orion-equilibrium-service/tests/test_transport_metacog_gate.py -v
-
-# Or specific test class
-python3 -m pytest services/orion-equilibrium-service/tests/test_transport_metacog_gate.py::TestBusSynapticEvidence -v
 ```
 
-The `TestBusSynapticEvidence` class verifies the bus_synaptic threshold logic in isolation:
-- `test_below_threshold_does_not_fire()` — error < 1.0 → no trigger
-- `test_at_threshold_fires()` — error ≥ 1.0 → trigger fires
-- `test_above_threshold_fires()` — custom thresholds respected
-- `test_custom_threshold_respected()` — config-driven threshold gates behavior
-
-### End-to-end eval: Bus_synaptic poll trigger smoke test
-
-**This test verifies the complete pipeline end-to-end: FalkorDB → poll loop → trigger dispatch → postgres persistence.**
-
-```bash
-# Run from inside the Docker environment where all services are running:
-cd services/orion-equilibrium-service
-python3 evals/run_bus_synaptic_poll_e2e_eval.py
-```
-
-The eval will:
-1. Connect to live FalkorDB and Postgres
-2. Inject a high `prediction_error` value (1.2) into `node:substrate.bus_synaptic`
-3. Wait for the next poll cycle (default 30s)
-4. Verify a `MetacogTriggerV1` was published to `orion:equilibrium:metacog:trigger`
-5. Confirm the trigger persisted to the `orion_metacog` table with `evidence_source="bus_synaptic_prediction_error"`
-
-**Success criteria:**
-- ✓ Poll loop reads FalkorDB correctly
-- ✓ Threshold check fires when error ≥ 1.0
-- ✓ Trigger published to bus
-- ✓ Trigger persisted with correct evidence metadata
-
-**Requirements:**
-- All Orion services running (equilibrium, FalkorDB, Postgres, bus)
-- `EQUILIBRIUM_METACOG_TRANSPORT_BUS_SYNAPTIC_POLL_ENABLE=true` in `.env`
+`tests/test_bus_synaptic_transport_retired.py` keeps the retired bus_synaptic transport source retired (no builder, poll loop, settings or env keys).
 
 ---
 

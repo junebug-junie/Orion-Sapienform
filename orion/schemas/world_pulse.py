@@ -568,18 +568,6 @@ class HubWorldPulseMessageV1(_WPBase):
     created_at: datetime
 
 
-class EmailWorldPulseRenderV1(_WPBase):
-    run_id: str
-    subject: str
-    opening: str
-    plaintext_body: str
-    html_body: str | None = None
-    to: list[str] = Field(default_factory=list)
-    from_email: str | None = None
-    dry_run: bool = True
-    created_at: datetime
-
-
 class WorldPulseRunV1(_WPBase):
     run_id: str
     date: str

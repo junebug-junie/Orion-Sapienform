@@ -67,6 +67,8 @@ Important clarification:
 
 ### Daily scheduler and restarts
 
+Daily Pulse and Daily Metacog are still generated every day (they feed orion-self-experiments via `focus_skill_id` / `tomorrow_experiment_skill_id`) and still land in-app (Hub notification + async chat message). Their raw-JSON **emails are retired** as of 2026-09-30: `ACTIONS_DAILY_EMAIL_ENABLED` defaults to `false` and gates only those two emails (not Journal Pass, `world_pulse_digest`, workflow schedule alerts, or error/critical notifies). Note: the daily journal trigger reuses `ACTIONS_DAILY_PULSE_HOUR_LOCAL`/`_MINUTE_LOCAL` rather than its own window.
+
 Built-in daily triggers (daily pulse, world pulse, daily metacog, daily journal) compare local wall time in `ACTIONS_DAILY_TIMEZONE` to configured hour/minute windows. **Before durable cursors**, in-memory `last_*` maps reset on restart; if local time is already past the cutoff, the same calendar day can be **eligible again**, which can queue duplicate downstream work and notify/email bursts. **With cursors** (default path next to the workflow schedule JSON under the mounted `/data/orion-actions/` volume), a successful completion is persisted per job; restart hydrates from disk before the first scheduler tick. `ACTIONS_DAILY_RUN_ON_STARTUP` still allows an initial run when no completion is recorded for the process session, but **does not** bypass a cursor that already marks today complete. Tune `ACTIONS_DAILY_TIMEZONE`, per-job hours, and `ACTIONS_DAILY_RUN_ONCE_DATE` for operator overrides.
 
 ### State persistence volume (fixes restart-driven re-fires)

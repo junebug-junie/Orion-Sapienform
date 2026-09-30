@@ -130,7 +130,9 @@ class Settings(BaseSettings):
     actions_daily_goal_archive_minute_local: int = Field(15, alias="ACTIONS_DAILY_GOAL_ARCHIVE_MINUTE_LOCAL")
     actions_async_messages_enabled: bool = Field(True, alias="ACTIONS_ASYNC_MESSAGES_ENABLED")
     actions_daily_async_messages_enabled: bool = Field(True, alias="ACTIONS_DAILY_ASYNC_MESSAGES_ENABLED")
-    actions_daily_email_enabled: bool = Field(True, alias="ACTIONS_DAILY_EMAIL_ENABLED")
+    # Retired 2026-09-30: the raw-JSON "Daily Pulse"/"Daily Metacog" emails are no longer
+    # sent. Generation, self-experiment enqueue, and in-app copies are unaffected.
+    actions_daily_email_enabled: bool = Field(False, alias="ACTIONS_DAILY_EMAIL_ENABLED")
     actions_pending_attention_enabled: bool = Field(True, alias="ACTIONS_PENDING_ATTENTION_ENABLED")
     actions_preserve_generic_notify_enabled: bool = Field(True, alias="ACTIONS_PRESERVE_GENERIC_NOTIFY_ENABLED")
     actions_world_pulse_enabled: bool = Field(False, alias="ACTIONS_WORLD_PULSE_ENABLED")

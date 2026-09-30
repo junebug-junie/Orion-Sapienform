@@ -313,3 +313,55 @@ def test_workflow_recovered_does_not_call_attention_request(monkeypatch, tmp_pat
     asyncio.run(_publish_workflow_attention_signal(signal=signal, notify=notify))
     assert len(notify.attention_calls) == 0
     assert len(notify.chat_calls) == 1
+
+
+def test_daily_json_emails_are_retired_by_default_but_in_app_delivery_remains(monkeypatch) -> None:
+    """Retired 2026-09-30: Daily Pulse / Daily Metacog no longer request email.
+
+    Generation and in-app delivery (Hub notification via notify.send + async chat
+    message) must still happen -- orion-self-experiments consumes both artifacts.
+    notify only emails an info-severity request when channels_requested contains
+    "email" (orion-notify email_delivery.should_send_email), so None == no email.
+    """
+    from pathlib import Path
+
+    from app.settings import Settings
+
+    monkeypatch.delenv("ACTIONS_DAILY_EMAIL_ENABLED", raising=False)
+    assert Settings(_env_file=None).actions_daily_email_enabled is False
+
+    env_example = Path(__file__).resolve().parents[1] / ".env_example"
+    lines = [ln.strip() for ln in env_example.read_text(encoding="utf-8").splitlines()]
+    assert "ACTIONS_DAILY_EMAIL_ENABLED=false" in lines
+
+    monkeypatch.setattr(settings, "actions_daily_email_enabled", False)
+    monkeypatch.setattr(settings, "actions_preserve_generic_notify_enabled", True)
+    monkeypatch.setattr(settings, "actions_async_messages_enabled", True)
+    monkeypatch.setattr(settings, "actions_daily_async_messages_enabled", True)
+    for action_name, event_kind, title in (
+        (ACTION_DAILY_PULSE_V1, "orion.daily.pulse", "Orion — Daily Pulse"),
+        (ACTION_DAILY_METACOG_V1, "orion.daily.metacog", "Orion — Daily Metacog"),
+    ):
+        notify = _FakeNotify()
+        req = _daily_notify_request(
+            event_kind=event_kind,
+            title=title,
+            dedupe_key="dedupe-key",
+            correlation_id="corr-retired",
+            payload={"date": "2026-09-30"},
+            include_email_channel=settings.actions_daily_email_enabled,
+        )
+        assert req.channels_requested is None
+        assert req.severity == "info"
+        _publish_daily_outputs(
+            notify=notify,
+            action_name=action_name,
+            title=title,
+            preview_text="preview",
+            full_text="full",
+            notify_req=req,
+            correlation_id="corr-retired",
+        )
+        assert len(notify.send_calls) == 1
+        assert not notify.send_calls[0].channels_requested
+        assert len(notify.chat_calls) == 1

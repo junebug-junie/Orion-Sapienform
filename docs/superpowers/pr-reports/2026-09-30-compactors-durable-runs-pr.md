@@ -63,9 +63,9 @@ Before this patch (PR #2422): orion-actions called cortex-orch synchronously and
 ## Tests run
 
 ```text
-services/orion-durable-runs: pytest tests evals  -> 223 passed... (see final numbers below; Postgres-backed tests skip locally, CI runs them)
+services/orion-durable-runs tests + orion/cognition/compactor: 233 passed, 68 skipped (Postgres-backed tests skip locally; CI runs them)
 services/orion-cortex-orch:  pytest tests -> no new failures vs origin/main baseline (34 pre-existing in-suite failures on main, unchanged)
-services/orion-actions:      pytest tests -> all passed (baseline also clean)
+services/orion-actions: 210 passed (origin/main baseline also clean)
 orion/cognition/compactor + github_compactor + chat_history_compactor + tests/test_check_chat_route_poachers.py + memory-card tests -> passed
 Static gates (derived from .github/workflows/orion-static-gates.yml): env-sync tests, schema registry, schema skew, grammar catalog, metric lineage, definition drift (after re-lock), inner-state, hostname refs, journal dispatch registry, chat route poachers, async routes, system_health producers, stdlib shadow -> all PASS
 ```
@@ -150,6 +150,6 @@ No migration. `CORTEX_DURABLE_ADMISSION_ENABLED=true` must stay set in cortex-or
 
 ## PR link
 
-(added after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2431
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

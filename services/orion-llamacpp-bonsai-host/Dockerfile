@@ -25,7 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /src
 # Blobless, NOT --depth 1: llama.cpp's build number is `git rev-list --count HEAD`.
 # A shallow clone reports build 1, and the wrapper then treats the binary as
-# pre-b5332 and silently drops --flash-attn off and --reasoning.
+# pre-b5332 and silently drops --flash-attn and --reasoning.
 RUN git clone --filter=blob:none --branch prism "${PRISM_REPO}" . \
     && git checkout "${PRISM_REF}"
 
@@ -58,4 +58,10 @@ FROM ${HOST_IMAGE}
 
 # Stock wrapper looks for /app/llama-server and sibling .so files.
 COPY --from=build /src/build/bin/ /app/
+# The base image only supplies the wrapper's Python deps. Its baked wrapper and
+# profiles are as old as its last rebuild: on Circe (2026-09-30) they lacked this
+# profile (KeyError at boot) and the fork build-number parse (drops --flash-attn).
+COPY services/orion-llamacpp-host/app /app/app
+COPY config /app/config
+COPY orion /app/orion
 ENV LD_LIBRARY_PATH=/app

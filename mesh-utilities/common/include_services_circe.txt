@@ -18,7 +18,6 @@ orion-biometrics
 orion-diffusion-host
 orion-gpu-lane-controller
 orion-juniper-affective-state
-orion-llamacpp-bonsai-host
 orion-power-guard
 orion-world-model
 # orion-vision-host REMOVED 2026-09-21: this entry only ever meant the

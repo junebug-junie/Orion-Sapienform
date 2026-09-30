@@ -1,0 +1,20 @@
+{"depth_target": 8000, "tag": "chain4", "want": "3553", "got": "3553", "ok": true, "finish": "stop", "prompt_tokens": 8871, "gen": 1565, "tg": 94.07761288847666, "reasoning_chars": 5136, "wall": 90.19}
+{"depth_target": 8000, "tag": "decoy", "want": "1392", "got": "1392", "ok": true, "finish": "stop", "prompt_tokens": 8871, "gen": 1137, "tg": 94.28382931989931, "reasoning_chars": 3577, "wall": 13.1}
+{"depth_target": 8000, "tag": "arith", "want": "2656", "got": "2656", "ok": true, "finish": "stop", "prompt_tokens": 8878, "gen": 1858, "tg": 94.06674749589052, "reasoning_chars": 4357, "wall": 20.81}
+{"depth_target": 8000, "tag": "date", "want": "Saturday", "got": "Saturday", "ok": true, "finish": "stop", "prompt_tokens": 8869, "gen": 1470, "tg": 94.27264804172623, "reasoning_chars": 5192, "wall": 16.66}
+{"depth_target": 8000, "tag": "who", "want": "Mirela Cask", "got": "Mirela Cask", "ok": true, "finish": "stop", "prompt_tokens": 8870, "gen": 1237, "tg": 94.36604213943457, "reasoning_chars": 4334, "wall": 14.14}
+{"depth_target": 24000, "tag": "chain4", "want": "5493", "got": "5493", "ok": true, "finish": "stop", "prompt_tokens": 25583, "gen": 494, "tg": 90.03590500665246, "reasoning_chars": 1404, "wall": 47.1}
+{"depth_target": 24000, "tag": "decoy", "want": "2000", "got": "2000", "ok": true, "finish": "stop", "prompt_tokens": 25583, "gen": 1591, "tg": 89.9085938714098, "reasoning_chars": 5194, "wall": 18.87}
+{"depth_target": 24000, "tag": "arith", "want": "1616", "got": "1616", "ok": true, "finish": "stop", "prompt_tokens": 25590, "gen": 1375, "tg": 89.9817994632242, "reasoning_chars": 2832, "wall": 16.47}
+{"depth_target": 24000, "tag": "date", "want": "Thursday", "got": "Thursday", "ok": true, "finish": "stop", "prompt_tokens": 25581, "gen": 1399, "tg": 89.9827347637651, "reasoning_chars": 4947, "wall": 16.69}
+{"depth_target": 24000, "tag": "who", "want": "Ilse Marr", "got": "Ilse Marr", "ok": true, "finish": "stop", "prompt_tokens": 25582, "gen": 1262, "tg": 90.0262923855662, "reasoning_chars": 4441, "wall": 15.19}
+{"depth_target": 40000, "tag": "chain4", "want": "2290", "got": "2290", "ok": true, "finish": "stop", "prompt_tokens": 39591, "gen": 1117, "tg": 87.52282586679527, "reasoning_chars": 3759, "wall": 79.5}
+{"depth_target": 40000, "tag": "decoy", "want": "8944", "got": "8944", "ok": true, "finish": "stop", "prompt_tokens": 39591, "gen": 1802, "tg": 87.37287840153598, "reasoning_chars": 5953, "wall": 21.85}
+{"depth_target": 40000, "tag": "arith", "want": "2701", "got": "2701", "ok": true, "finish": "stop", "prompt_tokens": 39598, "gen": 2131, "tg": 87.2936422946586, "reasoning_chars": 5197, "wall": 25.67}
+{"depth_target": 40000, "tag": "date", "want": "Sunday", "got": "Tuesday", "ok": false, "finish": "stop", "prompt_tokens": 39589, "gen": 360, "tg": 87.58197125121794, "reasoning_chars": 1376, "wall": 5.34}
+{"depth_target": 40000, "tag": "who", "want": "Petra Lume", "got": "Petra Lume", "ok": true, "finish": "stop", "prompt_tokens": 39590, "gen": 683, "tg": 87.58316874622194, "reasoning_chars": 2347, "wall": 9.03}
+{"depth_target": 50000, "tag": "chain4", "want": "4671", "got": "4671", "ok": true, "finish": "stop", "prompt_tokens": 48721, "gen": 662, "tg": 85.59842674746537, "reasoning_chars": 2007, "wall": 92.01}
+{"depth_target": 50000, "tag": "decoy", "want": "4749", "got": "4749", "ok": true, "finish": "stop", "prompt_tokens": 48721, "gen": 1340, "tg": 84.17414827225964, "reasoning_chars": 4207, "wall": 17.18}
+{"depth_target": 50000, "tag": "arith", "want": "2388", "got": "2388", "ok": true, "finish": "stop", "prompt_tokens": 48728, "gen": 2255, "tg": 85.05101174873178, "reasoning_chars": 5016, "wall": 27.79}
+{"depth_target": 50000, "tag": "date", "want": "Tuesday", "got": "Tuesday", "ok": true, "finish": "stop", "prompt_tokens": 48719, "gen": 1101, "tg": 85.38915545316785, "reasoning_chars": 3863, "wall": 14.15}
+{"depth_target": 50000, "tag": "who", "want": "Oswin Hale", "got": "Oswin Hale", "ok": true, "finish": "stop", "prompt_tokens": 48720, "gen": 378, "tg": 85.45522654790953, "reasoning_chars": 1258, "wall": 5.68}

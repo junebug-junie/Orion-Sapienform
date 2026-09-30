@@ -503,16 +503,19 @@ async def startup_event():
             # affect store was bound here, so the conversation-phase read was
             # always unbound: every unified turn said "Conversation phase:
             # unknown" and never recorded the user's turn. Same helper
-            # orion-cortex-exec calls -- see orion/situational/state_buses.py.
-            from orion.situational.state_buses import bind_situation_state_buses
-
-            bind_situation_state_buses(bus)
-
+            # orion-cortex-exec calls -- see orion/situational/state_buses.py
+            # (bound just below, once the RPC fork exists).
+            #
             # Outbound RPC uses a forked bus + worker so long-lived Hub subscribers
             # (trace/biometrics caches) cannot steal gateway/TTS/embedding replies.
             from orion.core.bus.rpc_fork import fork_rpc_client
 
             rpc_bus = await fork_rpc_client(bus)
+            # Bound after the fork so the runtime line's GPU pool state read (an RPC, stage 6.3)
+            # rides rpc_bus; the Redis-backed stores stay on the main bus.
+            from orion.situational.state_buses import bind_situation_state_buses
+
+            bind_situation_state_buses(bus, rpc_bus=rpc_bus)
             cortex_client = CortexGatewayClient(rpc_bus)
             tts_client = TTSClient(rpc_bus)
             logger.info("Bus Clients initialized (Hub RPC on forked bus).")

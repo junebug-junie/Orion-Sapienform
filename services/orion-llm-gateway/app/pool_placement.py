@@ -31,7 +31,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.gpu_pool.client import Lease, LeaseUnavailable
 from orion.gpu_pool.client import gpu_lease as _client_gpu_lease
 from orion.gpu_pool.config import PoolConfig, RouteSpec, load_pool_config
-from orion.llm.routes import BACKGROUND_LLM_ROUTES, LLM_ROUTE_DISPLAY_ORDER, SYSTEM_LLM_ROUTES
+from orion.gpu_pool.route_view import build_route_view
 from orion.schemas.gpu_pool import (
     GpuLeaseRefV1,
     GPU_POOL_STATE_REPLY_PREFIX,
@@ -66,7 +66,6 @@ HOLDER_ANTHROPIC = "http:anthropic"
 _STATE_CACHE_SEC = 10.0
 _STATE_FAILURE_CACHE_SEC = 2.0
 _STATE_RPC_TIMEOUT_SEC = 3.0
-_UP_STATUSES = frozenset({"confirmed", "static"})
 
 _bus: Any = None
 
@@ -457,101 +456,13 @@ async def fetch_pool_state() -> Optional[Dict[str, Any]]:
     return state
 
 
-def _definitional_priority(route_id: str) -> Optional[str]:
-    """The Hub picker filters on this; it is what the route IS, not the pool's queue priority."""
-    if route_id in BACKGROUND_LLM_ROUTES:
-        return "background"
-    if route_id in SYSTEM_LLM_ROUTES:
-        return "system"
-    return None
-
-
-def _catalog_route_ids(cfg: PoolConfig) -> List[str]:
-    ordered = [r for r in LLM_ROUTE_DISPLAY_ORDER if r in cfg.routes]
-    return ordered + sorted(r for r in cfg.routes if r not in ordered)
-
-
-def _served_by(cfg: PoolConfig, role: str) -> str:
-    return f"{cfg.host.name}-worker-{role}"  # the same label the pool puts on a grant
-
-
-def _role_serves_class(cfg: PoolConfig, work_class: str, role: str, cards: Dict[str, Dict[str, Any]]) -> bool:
-    spec = cfg.roles.get(role)
-    if spec is None or spec.operator_only:
-        return False
-    if cfg.owns(work_class, role):
-        return True
-    # A borrower only reaches a lendable card while the operator has it lent.
-    return all(bool((cards.get(card) or {}).get("lent")) for card in cfg.lendable_cards(role))
-
-
-def _entry(route_id: str, *, cfg: PoolConfig, role: str, status: str, discovered: Optional[Dict[str, Any]],
-           checked_at: Optional[str], gate_open: Optional[bool] = None) -> Dict[str, Any]:
-    live = status == "up" and discovered is not None
-    return {
-        "id": route_id,
-        "served_by": _served_by(cfg, role),
-        "backend": LLAMACPP_BACKEND,
-        "status": status,
-        "latency_ms": None,
-        "last_checked_at": checked_at,
-        # Full path when the pool knows it (durable-runs compares against a full activation path).
-        "model": (discovered.get("model_path") or discovered.get("model_file")) if live else None,
-        "vision": discovered.get("vision") if live else None,
-        "n_ctx": discovered.get("ctx_per_slot") if live else None,
-        "priority": _definitional_priority(route_id),
-        "reserved_free_slots": None,
-        "upstream": (discovered or {}).get("url") or cfg.url(role),
-        "gate_open": gate_open,
-    }
-
-
 def build_routes_compat(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """``GET /routes`` in its pre-pool shape, generated from pool state. Kept for durable-runs,
-    fcc_motor, situational context, context-exec and the Hub until each reads pool state."""
-    cfg = pool_config()
-    routes: List[Dict[str, Any]] = []
-    if not isinstance(state, dict):
-        for route_id in _catalog_route_ids(cfg):
-            first = cfg.classes[cfg.routes[route_id].work_class].roles[0]
-            routes.append(_entry(route_id, cfg=cfg, role=first, status="unknown", discovered=None, checked_at=None))
-        return {"default_route": str(settings.llm_route_default or "quick"), "routes": routes}
-
-    roles = {r.get("role"): r for r in (state.get("roles") or []) if isinstance(r, dict)}
-    cards = {c.get("card"): c for c in (state.get("cards") or []) if isinstance(c, dict)}
-    generated_at = state.get("generated_at")
-
-    def up(role: str) -> bool:
-        return (roles.get(role) or {}).get("status") in _UP_STATUSES
-
-    def checked(role: str) -> Optional[str]:
-        value = (roles.get(role) or {}).get("checked_at") or generated_at
-        return str(value) if value is not None else None
-
-    for route_id in _catalog_route_ids(cfg):
-        work_class = cfg.routes[route_id].work_class
-        if route_id == "chat-burst":
-            # Durable-runs reads this until stage 4: borrowable only while Juniper has gpu0 lent.
-            lent = all(bool((cards.get(c) or {}).get("lent")) for c in cfg.roles["chat"].cards)
-            status = ("up" if up("chat") else "down") if lent else "operator_closed"
-            routes.append(_entry(route_id, cfg=cfg, role="chat", status=status, discovered=roles.get("chat"),
-                                 checked_at=checked("chat"), gate_open=lent))
-            continue
-        if route_id == "agent-burst":
-            status = "up" if up("agent-gpu2") else "down"
-            routes.append(_entry(route_id, cfg=cfg, role="agent-gpu2", status=status,
-                                 discovered=roles.get("agent-gpu2"), checked_at=checked("agent-gpu2")))
-            continue
-        candidates = cfg.classes[work_class].roles
-        chosen = next((r for r in candidates if up(r) and _role_serves_class(cfg, work_class, r, cards)), None)
-        if chosen is None:
-            first = candidates[0]
-            routes.append(_entry(route_id, cfg=cfg, role=first, status="down", discovered=roles.get(first),
-                                 checked_at=checked(first)))
-        else:
-            routes.append(_entry(route_id, cfg=cfg, role=chosen, status="up", discovered=roles.get(chosen),
-                                 checked_at=checked(chosen)))
-    return {"default_route": str(settings.llm_route_default or "quick"), "routes": routes}
+    """``GET /routes`` in its pre-pool shape. The generator itself moved to
+    ``orion.gpu_pool.route_view`` (stage 6.3) so readers build the same view from the pool state
+    they read themselves; this endpoint only wraps it with the gateway's default route until PR 6.5
+    deletes it."""
+    view = build_route_view(state, pool_config())
+    return {"default_route": str(settings.llm_route_default or "quick"), "routes": view["routes"]}
 
 
 async def get_routes_payload() -> Dict[str, Any]:

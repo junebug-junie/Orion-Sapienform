@@ -187,3 +187,87 @@ class TestPriorityIsFailSafe:
         out = _normalize(payload)
         harness = next(r for r in out["routes"] if r["id"] == "harness")
         assert harness["priority"] == "system"
+
+
+# ── GPU pool stage 6.3: the catalog is built from pool state, not the gateway's GET /routes ──
+
+
+class TestCatalogFromPoolState:
+    def setup_method(self):
+        llm_gateway_client.reset_route_view_cache()
+
+    def teardown_method(self):
+        llm_gateway_client.reset_route_view_cache()
+
+    @pytest.mark.asyncio
+    async def test_no_bus_is_every_route_unknown_never_a_guess(self, monkeypatch):
+        monkeypatch.setattr(llm_gateway_client, "_rpc_bus", lambda: None)
+        out = await llm_gateway_client.fetch_routes()
+        assert out["source"] == "gpu_pool_unavailable"
+        assert [r["id"] for r in out["routes"]] == list(LLM_ROUTE_DISPLAY_ORDER)
+        assert all(r["status"] == "unknown" and r["vision"] is None for r in out["routes"])
+        # The picker still gets its fail-safe definitional priority for a yielding lane.
+        assert {r["id"]: r["priority"] for r in out["routes"]}["quick_background"] == "background"
+
+    @pytest.mark.asyncio
+    async def test_pool_silent_is_unknown_and_retried_soon(self, monkeypatch):
+        calls = []
+
+        async def _silent(bus, **kw):
+            calls.append(kw)
+            return None
+
+        monkeypatch.setattr("orion.gpu_pool.placement.fetch_pool_state", _silent)
+        monkeypatch.setattr(llm_gateway_client, "_rpc_bus", lambda: object())
+        out = await llm_gateway_client.fetch_routes()
+        assert out["source"] == "gpu_pool_unavailable"
+        assert all(r["status"] == "unknown" for r in out["routes"])
+        assert llm_gateway_client._cache["ttl"] == llm_gateway_client._FAILURE_CACHE_SEC
+        assert calls and calls[0]["include_config"] is True
+
+    @pytest.mark.asyncio
+    async def test_one_pool_read_serves_every_tab_inside_the_cache_window(self, monkeypatch):
+        from orion.gpu_pool.config import load_pool_config
+
+        cfg = load_pool_config()
+        state = {"cards": [], "roles": [
+            {"role": "fast", "kind": "llm", "cards": ["gpu3"], "url": "http://h:8013", "status": "confirmed",
+             "model_file": "fast.gguf", "ctx_per_slot": 4096, "vision": True}],
+            "config": cfg.model_dump(mode="json", by_alias=True, exclude={"digest"})}
+        calls = []
+
+        async def _state(bus, **kw):
+            calls.append(kw)
+            return state
+
+        monkeypatch.setattr("orion.gpu_pool.placement.fetch_pool_state", _state)
+        monkeypatch.setattr(llm_gateway_client, "_rpc_bus", lambda: object())
+        first = await llm_gateway_client.fetch_routes()
+        second = await llm_gateway_client.fetch_routes()
+        assert len(calls) == 1 and first == second
+        quick = {r["id"]: r for r in first["routes"]}["quick"]
+        # The attach-image button follows this flag.
+        assert quick["status"] == "up" and quick["vision"] is True
+
+
+def test_api_llm_routes_is_200_with_unknown_lanes_when_the_pool_is_unreachable(monkeypatch):
+    """The endpoint used to 502 when the gateway was down; the browser now always gets a catalog,
+    and an unreachable pool reads as unknown lanes (the picker's existing 'unknown' rendering)."""
+    import asyncio
+
+    from scripts import api_routes
+
+    llm_gateway_client.reset_route_view_cache()
+    monkeypatch.setattr(llm_gateway_client, "_rpc_bus", lambda: None)
+    out = asyncio.run(api_routes.api_llm_routes())
+    llm_gateway_client.reset_route_view_cache()
+    assert out["source"] == "gpu_pool_unavailable"
+    assert all(r["status"] == "unknown" for r in out["routes"])
+
+
+def test_hub_no_longer_reads_the_gateway_routes_endpoint():
+    """Pins the move so 6.5's zero-read window cannot be reopened by a revert."""
+    import inspect
+
+    source = inspect.getsource(llm_gateway_client)
+    assert "aiohttp" not in source and "HUB_LLM_GATEWAY_URL" not in source

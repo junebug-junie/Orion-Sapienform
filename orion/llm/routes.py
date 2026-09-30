@@ -33,11 +33,11 @@ surface -- was closed on 2026-08-19. Those now derive from this module:
 
     services/orion-llm-gateway/app/route_catalog.py        CATALOG_ROUTE_IDS
     services/orion-hub/scripts/llm_gateway_client.py       VALID_ROUTE_IDS + backfill + ordering
-    scripts/smoke_llm_gateway_routes.py                    both the GET /routes catalog check
+    scripts/smoke_llm_gateway_routes.py                    both the pool route-view catalog check
                                                            and the RPC dispatch loop
 
 The Hub UI's picker (`services/orion-hub/static/js/app.js`) deliberately does NOT show every
-route. It now derives from `GET /routes` and filters on the route's own `priority` field rather
+route. It now derives from the Hub's `/api/llm-routes` (GPU pool state) and filters on the route's own `priority` field rather
 than on a hardcoded name list, so a background lane is visible to operators in the catalog while
 staying unpickable by a human who would only get a yielding lane's latency. That is a policy
 difference expressed as a property, not another list to drift.

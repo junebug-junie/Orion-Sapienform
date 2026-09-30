@@ -7,7 +7,7 @@ import os
 import time
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import uvicorn
 
@@ -33,7 +33,7 @@ from .llm_backend import (
 )
 from .anthropic_passthrough import register_anthropic_passthrough_routes
 from .openai_passthrough import register_openai_passthrough_routes
-from . import grammar_emit, pool_placement, upstream_cancel
+from . import grammar_emit, pool_placement, routes_compat_reads, upstream_cancel
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
 from .resource_lease import ResourceLeaseRejected, gpu_lease_from_options
@@ -127,11 +127,19 @@ async def ready() -> JSONResponse:
 
 
 @app.get("/routes")
-async def routes_catalog() -> Dict[str, Any]:
-    """Compatibility view generated from orion-gpu-pool state (pool_placement.build_routes_compat).
-    Kept until durable-runs, fcc_motor, situational context, context-exec and the Hub read pool
-    state directly; removed in stage 6 of the GPU pool spec."""
+async def routes_catalog(request: Request) -> Dict[str, Any]:
+    """Compatibility view generated from orion-gpu-pool state (orion.gpu_pool.route_view).
+    Stage 6.3 moved every known reader to pool state; every read left is counted and logged
+    (routes_compat_reads) so PR 6.5 can delete this after 24 h of zero reads."""
+    routes_compat_reads.record(request.client.host if request.client else None,
+                               request.headers.get("user-agent"))
     return await pool_placement.get_routes_payload()
+
+
+@app.get("/debug/routes-compat-reads")
+async def routes_compat_reads_debug() -> Dict[str, Any]:
+    """Reads of ``GET /routes`` since this process started (see app/routes_compat_reads.py)."""
+    return routes_compat_reads.snapshot()
 
 
 def _cfg() -> ChassisConfig:

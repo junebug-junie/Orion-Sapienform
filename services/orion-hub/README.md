@@ -1890,10 +1890,10 @@ producer -- these are facts Hub already sees):
   evidence the governor started the turn; before that the turn is *queued*).
   The lane is derived from the same `fcc_model_label` predicate
   `HarnessGovernorClient.run()` uses to pick the queue, so it cannot disagree.
-- **LLM gateway lanes** -- polled from orion-llm-gateway's `GET /admission`
-  (per-upstream inflight / waiting / shed gauges) joined to `GET /routes` by
-  the catalog's `upstream` field, so each worker's queue is labelled with the
-  route names that dispatch to it (`metacog`, `quick_background`, ...).
+- **LLM gateway lanes** -- one record per GPU pool role, built from the Hub's
+  live pool feed (`scripts/runtime_activity_routes.py` `pool_lanes`). The old
+  `GET /admission` + `GET /routes` join is gone (the admission ledger was
+  deleted in pool stage 5; `/routes` is retiring in stage 6).
 
 Endpoints: `GET /api/runtime-activity` (snapshot) and
 `GET /api/runtime-activity/stream` (SSE, one frame per change). Reducer:
@@ -2021,7 +2021,7 @@ Then open the Hub Memory tab → **Review queue**, or `GET /api/memory/cards?sta
 
 **Proposal review (attention + review decisions):** Hub main tab → **Pending Decisions** lists decision-worthy `pending_review` proposals from the context-exec proposal review API. Enabled in Athena `.env_example` (`HUB_PROPOSAL_REVIEW_ENABLED=true`); panel and script are omitted from the page when false. Hub calls `GET /health`, `GET /proposals`, detail, eligibility, and `POST /proposals/{id}/review` only — it does not read JSON ledger files, does not POST triage, and does not execute proposals directly. Approval creates future execution eligibility only. See [docs/proposal-review-api.md](../../docs/proposal-review-api.md).
 
-**Compute lane override (mode vs compute):** Hub chat UI exposes **Mode** and **Compute** dropdowns. Mode decides behavior (`Auto`, `Grounded Small`, `Brain`, `Quick`, `Story`, `Agent`, `Council`); **Compute** selects the GPU/model lane (`chat`, `quick`, `agent`, `metacog`). Default compute is `quick`. Hub proxies `GET /api/llm-routes` from `HUB_LLM_GATEWAY_URL` (`GET /routes` on orion-llm-gateway) and polls every 30s. Selected lane is sent as `llm_route` on chat payloads (wired into cortex `options.llm_route`). **Mode: Agent now routes through FCC (see below), not context-exec** — `llm_route`/**Compute** is independent of Mode and unaffected by this: it's still the plain-completion lane picker used by Quick/Story/auto-escalated turns via `orion-llm-gateway`, not something FCC (Orion or Agent mode) ever consults. Down lanes warn with explicit **Use quick / Try anyway / Cancel** — no silent fallback.
+**Compute lane override (mode vs compute):** Hub chat UI exposes **Mode** and **Compute** dropdowns. Mode decides behavior (`Auto`, `Grounded Small`, `Brain`, `Quick`, `Story`, `Agent`, `Council`); **Compute** selects the GPU/model lane (`chat`, `quick`, `agent`, `metacog`). Default compute is `quick`. Hub serves `GET /api/llm-routes` from GPU pool state (`orion:gpu_pool:state` RPC with the pool's config, built by `orion/gpu_pool/route_view.py`, cached 10s; GPU pool stage 6.3 -- it no longer calls orion-llm-gateway's retiring `GET /routes`) and polls every 30s. When the pool cannot be asked, every lane is `unknown` (`source: gpu_pool_unavailable`), never a guessed `up`. Selected lane is sent as `llm_route` on chat payloads (wired into cortex `options.llm_route`). **Mode: Agent now routes through FCC (see below), not context-exec** — `llm_route`/**Compute** is independent of Mode and unaffected by this: it's still the plain-completion lane picker used by Quick/Story/auto-escalated turns via `orion-llm-gateway`, not something FCC (Orion or Agent mode) ever consults. Down lanes warn with explicit **Use quick / Try anyway / Cancel** — no silent fallback.
 
 **Social room toggle vs Mode vs Compute:**
 

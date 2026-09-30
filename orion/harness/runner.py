@@ -262,6 +262,7 @@ async def default_fcc_runner(
     reading_binding: Any = None,
     reading_only: bool = False,
     gpu_lease: dict[str, Any] | None = None,
+    pool_state: dict[str, Any] | None = None,
     **_: Any,
 ) -> AsyncIterator[dict[str, Any]]:
     env_path = expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env"))
@@ -269,6 +270,7 @@ async def default_fcc_runner(
     token = resolve_auth_token(env, override=os.environ.get("HARNESS_FCC_AUTH_TOKEN", ""))
     async for event in run_fcc_turn(
         gpu_lease=gpu_lease,
+        pool_state=pool_state,
         reading_binding=reading_binding,
         reading_only=reading_only,
         prompt=prompt,
@@ -307,13 +309,16 @@ class HarnessRunner:
         self.fcc_runner = fcc_runner or default_fcc_runner
         self.fcc_timeout_sec = fcc_timeout_sec
         self.served_model_probe = served_model_probe or probe_current_served_model
-        # The GPU pool's live state (discovered role -> profile/model), read only for a
-        # turn that holds a lease. Injectable for tests.
+        # The GPU pool's live state (discovered role -> profile/model/ctx, plus the pool's config so
+        # a route can be mapped to the role it lands on). Read at most once per turn, for a held
+        # turn or a pool-backed route, and shared by the prompt's self-context line and the motor's
+        # window probe (GPU pool stage 6.3: both used to read the gateway's GET /routes).
+        # Injectable for tests.
         self.pool_state_probe = pool_state_probe or self._read_pool_state
         self.node_name = node_name or _default_harness_node_name()
 
     async def _read_pool_state(self) -> dict[str, Any] | None:
-        return await fetch_pool_state(self.bus, source="orion-harness-governor")
+        return await fetch_pool_state(self.bus, source="orion-harness-governor", include_config=True)
 
     async def run(
         self,
@@ -364,6 +369,8 @@ class HarnessRunner:
             else:
                 fcc_backend = parsed[0]
 
+        turn_pool_state: dict[str, Any] | None = None
+
         async def _probe_serving_placement() -> ServingPlacement | None:
             # Best-effort self-context: which real backend serves this turn.
             # A held turn: the hold's role (a fact -- every call under a hold
@@ -371,12 +378,16 @@ class HarnessRunner:
             # Otherwise: the route's default model, stated as a default, since
             # the pool places each unheld call on its own and may spill it
             # (spec 2026-09-24-gpu-pool-design.md, reader impacts item 5).
-            # Never the reason a turn doesn't start.
+            # Both read GPU pool state, once per turn; the same state then sizes
+            # the motor's window (stage 6.3: no GET /routes read). Never the
+            # reason a turn doesn't start.
+            nonlocal turn_pool_state
             try:
+                if serving_role or fcc_route:
+                    turn_pool_state = await self.pool_state_probe()
                 if serving_role:
-                    state = await self.pool_state_probe()
-                    return placement_from_lease(serving_role, discovered_role(state, serving_role))
-                model = await self.served_model_probe(fcc_label)
+                    return placement_from_lease(serving_role, discovered_role(turn_pool_state, serving_role))
+                model = await self.served_model_probe(fcc_label, pool_state=turn_pool_state)
                 return placement_from_route_default(fcc_route, model) if model else None
             except Exception:
                 logger.warning(
@@ -481,6 +492,7 @@ class HarnessRunner:
         async for event in self.fcc_runner(
             **({"gpu_lease": request.gpu_lease.model_dump(mode="json")}
                if getattr(request, "gpu_lease", None) is not None else {}),
+            **({"pool_state": turn_pool_state} if isinstance(turn_pool_state, dict) else {}),
             **({"reading_binding": request.reading_binding} if getattr(request, "reading_binding", None) else {}),
             **({"reading_only": True} if getattr(request, "reading_only", False) else {}),
             prompt=prompt,

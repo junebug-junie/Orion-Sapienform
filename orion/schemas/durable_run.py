@@ -36,6 +36,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
+from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW, JournalComposeRunBriefV1
 from orion.schemas.reading_turn import ReadingRunBriefV1, READING_WORKFLOW
 from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW, ReverieVisualRunBriefV1
 from orion.schemas.gpu_pool import GpuLeaseRefV1
@@ -54,7 +55,10 @@ CURIOSITY_TURN_REQUEST_KIND = "curiosity.turn.request.v1"
 CURIOSITY_TURN_RESULT_KIND = "curiosity.turn.result.v1"
 
 DurableWorkflowV1 = Literal[
-    "curiosity.investigate", "self_sense_eval", "self_study.reflect", "reading.turn", "reverie.visual"
+    "curiosity.investigate", "self_sense_eval", "self_study.reflect", "reading.turn", "reverie.visual",
+    # ADDITIVE on extra="forbid"/Literal models: deploy orion-durable-runs, then orion-cortex-orch
+    # (it validates the request), then the producer (orion-actions), or an old validator rejects it.
+    "journal.compose",
 ]
 
 # The runner's node names, in order. `attention_reason` on the surface lane
@@ -167,7 +171,7 @@ class DurableRunRequestV1(BaseModel):
     workflow: DurableWorkflowV1
     correlation_id: str
     requested_at: datetime = Field(default_factory=_utc_now)
-    brief: CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1
+    brief: CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1 | JournalComposeRunBriefV1
     admission: ResourceRequirementV1 | None = None
 
     @model_validator(mode="after")
@@ -176,7 +180,9 @@ class DurableRunRequestV1(BaseModel):
             raise ValueError("workflow and reading brief must agree")
         if (self.workflow == REVERIE_VISUAL_WORKFLOW) != isinstance(self.brief, ReverieVisualRunBriefV1):
             raise ValueError("workflow and reverie.visual brief must agree")
-        if self.workflow in (READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW) and self.admission is None:
+        if (self.workflow == JOURNAL_COMPOSE_WORKFLOW) != isinstance(self.brief, JournalComposeRunBriefV1):
+            raise ValueError("workflow and journal.compose brief must agree")
+        if self.workflow in (READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW, JOURNAL_COMPOSE_WORKFLOW) and self.admission is None:
             raise ValueError(f"{self.workflow} runs require durable resource admission")
         return self
 

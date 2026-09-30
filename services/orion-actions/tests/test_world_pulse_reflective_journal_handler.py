@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -79,296 +79,164 @@ def test_build_trigger_when_eligible() -> None:
     assert trigger.source_ref == "wp-1"
 
 
-# --- retry of failed world_pulse_digest composes (2026-09-29) -----------------------
+# --- durable submission (2026-09-30): journal.compose admitted run ---------------------------
 
 import asyncio  # noqa: E402
-from datetime import timedelta  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+from unittest.mock import AsyncMock  # noqa: E402
 from uuid import uuid4  # noqa: E402
 
-from app.pending_journal_store import PendingJournalStore, backoff_for_attempts  # noqa: E402
 from app.world_pulse_journal import (  # noqa: E402
-    drain_pending_world_pulse_journals,
+    build_world_pulse_journal_run_request,
     handle_world_pulse_run_result_journal,
-    is_retryable_journal_error,
+    next_local_midnight,
+    submit_durable_run_via_cortex,
 )
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef  # noqa: E402
+from orion.core.bus.codec import OrionCodec  # noqa: E402
 
-_T0 = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
-_SRC = ServiceRef(name="orion-actions", version="test")
-_GPU_ERR = RuntimeError("journal_compose_failed:{'message': 'gpu_pool_unavailable:deadline'}")
-
-
-def _retry_settings(**overrides) -> Settings:
-    base = {
-        "ACTIONS_WORLD_PULSE_JOURNAL_ENABLED": True,
-        "ACTIONS_JOURNALING_ENABLED": True,
-        "ACTIONS_WORLD_PULSE_JOURNAL_RETRY_ENABLED": True,
-        "ACTIONS_WORLD_PULSE_JOURNAL_RETRY_MAX_AGE_HOURS": 12,
-    }
-    base.update(overrides)
-    return Settings(**base)
+_NOW = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)   # 06:00 Denver
 
 
-def _env_for(result: WorldPulseRunResultV1) -> BaseEnvelope:
-    return BaseEnvelope(
-        kind="world.pulse.run.result.v1",
-        source=ServiceRef(name="orion-world-pulse", version="0.1.0"),
-        correlation_id=str(uuid4()),
-        payload=result.model_dump(mode="json"),
-    )
+def _cfg(**kw) -> Settings:
+    base = {"ACTIONS_WORLD_PULSE_JOURNAL_ENABLED": True, "ACTIONS_JOURNALING_ENABLED": True}
+    return Settings(**{**base, **kw})
 
 
-class _FakeDispatch:
-    """Mirrors main._dispatch_journal's contract: True on success; on a compose error
-    awaits on_failure(exc) and returns False; on cooldown/disabled returns False
-    without calling on_failure. Counts journals actually written per run_id."""
-
-    def __init__(self, script: list) -> None:
-        self.script = list(script)  # each item: "ok" | "skip" | Exception
-        self.calls = 0
-        self.written: dict[str, int] = {}
-
-    async def __call__(self, parent, *, trigger, audit_action, dedupe_key, on_failure=None, **kw):
-        self.calls += 1
-        step = self.script.pop(0) if self.script else "ok"
-        if step == "ok":
-            self.written[trigger.source_ref] = self.written.get(trigger.source_ref, 0) + 1
-            return True
-        if step == "skip":
-            return False
-        if on_failure is not None:
-            await on_failure(step)
-        return False
+def _env(result: WorldPulseRunResultV1) -> BaseEnvelope:
+    return BaseEnvelope(kind="world.pulse.run.result.v1", source=ServiceRef(name="orion-world-pulse"),
+                        correlation_id=str(uuid4()), payload=result.model_dump(mode="json"))
 
 
 class _Audit:
-    def __init__(self) -> None:
-        self.calls: list[dict] = []
+    def __init__(self):
+        self.calls = []
 
     async def __call__(self, env, **kw):
         self.calls.append(kw)
 
 
-def _handle(env, cfg, dispatch, audit, store, now=_T0):
-    return asyncio.run(
-        handle_world_pulse_run_result_journal(
-            env, settings=cfg, dispatch_journal=dispatch, audit=audit, retry_store=store, now_fn=lambda: now
-        )
-    )
+def _handle(env, *, submit, cfg=None, audit=None, now=_NOW):
+    audit = audit or _Audit()
+    slept = []
+
+    async def sleep(sec):
+        slept.append(sec)
+
+    asyncio.run(handle_world_pulse_run_result_journal(
+        env, settings=cfg or _cfg(), submit=submit, audit=audit, llm_route="quick_background",
+        now_fn=lambda: now, sleep=sleep))
+    return audit, slept
 
 
-def _drain(store, cfg, dispatch, audit, now):
-    return asyncio.run(
-        drain_pending_world_pulse_journals(
-            store=store,
-            settings=cfg,
-            dispatch_journal=dispatch,
-            audit=audit,
-            source=_SRC,
-            now=now,
-            now_after_dispatch=lambda: now,
-        )
-    )
+def test_request_is_deterministic_admitted_and_bounded_to_local_midnight() -> None:
+    r1 = build_world_pulse_journal_run_request(_result(), settings=_cfg(), llm_route="quick_background", now=_NOW)
+    r2 = build_world_pulse_journal_run_request(_result(), settings=_cfg(), llm_route="quick_background",
+                                               now=_NOW + timedelta(hours=3))
+    assert r1.run_id == "world-pulse-journal:wp-1"
+    assert r1.workflow == "journal.compose"
+    # Redelivery resubmits the identical request (durable-runs ignores deadline_at on a resubmit).
+    d1 = r1.model_dump(mode="json", exclude={"requested_at"})
+    d2 = r2.model_dump(mode="json", exclude={"requested_at"})
+    d1["admission"].pop("deadline_at"); d2["admission"].pop("deadline_at")
+    assert d1 == d2
+    assert r1.brief.entry_id == r2.brief.entry_id and r1.correlation_id == r2.correlation_id
+    adm = r1.admission
+    assert adm.resource == "llm.route.quick_background" and adm.preferred_lane == "quick_background"
+    assert adm.priority == "background"
+    assert adm.deadline_at == datetime(2026, 10, 1, 6, 0, tzinfo=timezone.utc)   # midnight Denver (MDT)
+    assert r1.brief.trigger.trigger_kind == "world_pulse_digest"
+    assert r1.brief.world_pulse_result["run"]["run_id"] == "wp-1"
+    assert r1.brief.recall_profile == "journal.world_pulse.grounded.v1"
 
 
-def test_retryable_error_classification() -> None:
-    assert is_retryable_journal_error(_GPU_ERR)
-    assert is_retryable_journal_error(TimeoutError("RPC timeout waiting on x"))
-    assert is_retryable_journal_error(ValueError("cortex_orch_missing_final_text"))
-    assert is_retryable_journal_error(RuntimeError("cortex_orch_decode_failed:bad"))
-    assert is_retryable_journal_error(RuntimeError("journal_compose_failed:{'message': 'gpu_pool_recalled:lease'}"))
-    assert is_retryable_journal_error(RuntimeError("pool_unreachable:connect"))
-    assert is_retryable_journal_error(RuntimeError("gateway_capacity_rejected:busy"))
-    assert not is_retryable_journal_error(RuntimeError("journal_compose_failed:unknown_verb"))
+def test_next_local_midnight_late_evening() -> None:
+    late = datetime(2026, 10, 1, 5, 30, tzinfo=timezone.utc)   # 23:30 Denver, Sep 30
+    assert next_local_midnight(late, "America/Denver") == datetime(2026, 10, 1, 6, 0, tzinfo=timezone.utc)
 
 
-def test_failure_enqueues_with_backoff(tmp_path) -> None:
-    store = PendingJournalStore(tmp_path / "pending_journals.json")
-    audit = _Audit()
-    _handle(_env_for(_result()), _retry_settings(), _FakeDispatch([_GPU_ERR]), audit, store)
-    entry = store.get("wp-1")
-    assert entry is not None
-    assert entry.attempts == 1
-    assert entry.next_at_dt == _T0 + timedelta(minutes=5)
-    assert entry.first_failed_at_dt == _T0
-    assert "gpu_pool_unavailable" in entry.last_error
-    assert any(c.get("status") == "retry_scheduled" for c in audit.calls)
+def test_eligible_result_submits_once_and_audits() -> None:
+    submitted = []
+
+    async def submit(request):
+        submitted.append(request)
+        return None
+
+    audit, slept = _handle(_env(_result()), submit=submit)
+    assert len(submitted) == 1 and slept == []
+    assert audit.calls[-1]["status"] == "submitted"
+    assert audit.calls[-1]["extra"]["durable_run_id"] == "world-pulse-journal:wp-1"
 
 
-def test_non_retryable_outcomes_do_not_enqueue(tmp_path) -> None:
-    store = PendingJournalStore(tmp_path / "pending_journals.json")
-    # cooldown / journaling disabled: dispatch returns False without an error
-    _handle(_env_for(_result()), _retry_settings(), _FakeDispatch(["skip"]), _Audit(), store)
-    assert store.get("wp-1") is None
-    # deterministic compose error
-    _handle(_env_for(_result()), _retry_settings(), _FakeDispatch([RuntimeError("bad_trigger")]), _Audit(), store)
-    assert store.get("wp-1") is None
-    # retry feature off: nothing enqueued, dispatch receives no on_failure
-    seen: dict = {}
+def test_redelivery_resubmits_the_same_run_id() -> None:
+    ids = []
 
-    async def spy(parent, **kw):
-        seen.update(kw)
-        return False
+    async def submit(request):
+        ids.append((request.run_id, request.brief.entry_id, request.correlation_id))
+        return None
 
-    _handle(_env_for(_result()), _retry_settings(ACTIONS_WORLD_PULSE_JOURNAL_RETRY_ENABLED=False), spy, _Audit(), store)
-    assert "on_failure" not in seen
-    assert store.pending() == []
+    _handle(_env(_result()), submit=submit)
+    _handle(_env(_result()), submit=submit, now=_NOW + timedelta(hours=1))
+    assert len(ids) == 2 and ids[0] == ids[1]
 
 
-def test_drain_retries_until_success_and_never_duplicates(tmp_path) -> None:
-    store = PendingJournalStore(tmp_path / "pending_journals.json")
-    cfg = _retry_settings()
-    dispatch = _FakeDispatch([_GPU_ERR, _GPU_ERR, "ok"])
-    _handle(_env_for(_result()), cfg, dispatch, _Audit(), store)
-    # not due yet
-    assert _drain(store, cfg, dispatch, _Audit(), _T0 + timedelta(minutes=4)) == []
-    assert _drain(store, cfg, dispatch, _Audit(), _T0 + timedelta(minutes=5)) == [("wp-1", "rescheduled")]
-    entry = store.get("wp-1")
-    assert entry.attempts == 2
-    assert entry.next_at_dt == _T0 + timedelta(minutes=5) + backoff_for_attempts(2)
-    assert _drain(store, cfg, dispatch, _Audit(), entry.next_at_dt) == [("wp-1", "completed")]
-    assert store.get("wp-1") is None
-    assert store.is_completed("wp-1")
-    assert dispatch.written == {"wp-1": 1}
-    # further drains and a redelivered run result must not write again
-    assert _drain(store, cfg, dispatch, _Audit(), _T0 + timedelta(hours=3)) == []
-    audit = _Audit()
-    _handle(_env_for(_result()), cfg, dispatch, audit, store)
-    assert dispatch.written == {"wp-1": 1}
-    assert audit.calls[-1]["reason"] == "world_pulse_journal_already_written"
+def test_submit_retries_briefly_then_reports_failure() -> None:
+    calls = []
+
+    async def submit(request):
+        calls.append(1)
+        return "TimeoutError: RPC timeout"
+
+    audit, slept = _handle(_env(_result()), submit=submit)
+    assert len(calls) == 3 and slept == [5.0, 15.0]
+    assert audit.calls[-1]["status"] == "failed"
+    assert audit.calls[-1]["reason"].startswith("durable_submit_failed:")
 
 
-def test_pending_survives_restart(tmp_path) -> None:
-    path = tmp_path / "pending_journals.json"
-    store = PendingJournalStore(path)
-    cfg = _retry_settings()
-    _handle(_env_for(_result()), cfg, _FakeDispatch([_GPU_ERR]), _Audit(), store)
-    reloaded = PendingJournalStore(path)
-    entry = reloaded.get("wp-1")
-    assert entry is not None and entry.attempts == 1
-    dispatch = _FakeDispatch(["ok"])
-    assert _drain(reloaded, cfg, dispatch, _Audit(), _T0 + timedelta(minutes=6)) == [("wp-1", "completed")]
-    assert dispatch.written == {"wp-1": 1}
-    assert PendingJournalStore(path).is_completed("wp-1")
+def test_ineligible_results_do_not_submit() -> None:
+    async def submit(request):
+        raise AssertionError("must not submit")
+
+    audit, _ = _handle(_env(_result(dry_run=True)), submit=submit)
+    assert audit.calls[-1]["reason"] == "world_pulse_dry_run"
+    audit, _ = _handle(_env(_result()), submit=submit, cfg=_cfg(ACTIONS_JOURNALING_ENABLED=False))
+    assert audit.calls[-1]["reason"] == "journaling_disabled"
+    audit, _ = _handle(_env(_result()), submit=submit,
+                       cfg=Settings(ACTIONS_WORLD_PULSE_JOURNAL_ENABLED=False))
+    assert audit.calls == []
 
 
-def test_gives_up_after_max_age(tmp_path) -> None:
-    store = PendingJournalStore(tmp_path / "pending_journals.json")
-    cfg = _retry_settings(ACTIONS_WORLD_PULSE_JOURNAL_RETRY_MAX_AGE_HOURS=12)
-    _handle(_env_for(_result()), cfg, _FakeDispatch([_GPU_ERR]), _Audit(), store)
-    dispatch = _FakeDispatch(["ok"])
-    audit = _Audit()
-    out = _drain(store, cfg, dispatch, audit, _T0 + timedelta(hours=12, minutes=1))
-    assert out == [("wp-1", "gave_up")]
-    assert dispatch.calls == 0
-    assert store.get("wp-1") is None
-    assert audit.calls[-1]["action_name"] == "world_pulse_journal_gave_up"
+def _bus_replying(payload):
+    codec = OrionCodec()
+    reply = BaseEnvelope(kind="cortex.orch.result", source=ServiceRef(name="orion-cortex-orch"),
+                         correlation_id=str(uuid4()), payload=payload)
+    return SimpleNamespace(codec=codec, rpc_request=AsyncMock(return_value={"data": codec.encode(reply)}))
 
 
-def test_drain_drops_when_not_dispatched(tmp_path) -> None:
-    store = PendingJournalStore(tmp_path / "pending_journals.json")
-    cfg = _retry_settings()
-    _handle(_env_for(_result()), cfg, _FakeDispatch([_GPU_ERR]), _Audit(), store)
-    out = _drain(store, cfg, _FakeDispatch(["skip"]), _Audit(), _T0 + timedelta(minutes=5))
-    assert out == [("wp-1", "dropped_not_dispatched")]
-    assert store.pending() == []
+def test_submit_via_cortex_checks_the_receipt() -> None:
+    request = build_world_pulse_journal_run_request(_result(), settings=_cfg(), llm_route="quick_background", now=_NOW)
+    good = {"ok": True, "status": "accepted", "metadata": {"durable_run": {
+        "run_id": request.run_id, "workflow_kind": "journal.compose",
+        "requested_resource": "llm.route.quick_background", "status": "waiting_resource"}}}
+    bus = _bus_replying(good)
+    src = ServiceRef(name="orion-actions")
+    assert asyncio.run(submit_durable_run_via_cortex(bus=bus, source=src, request=request,
+                                                     request_channel="orion:cortex:request")) is None
+    sent = bus.rpc_request.await_args.args[1]
+    assert sent.payload["context"]["metadata"]["durable_run"]["run_id"] == request.run_id
+    wrong = {**good, "metadata": {"durable_run": {**good["metadata"]["durable_run"], "run_id": "other"}}}
+    assert asyncio.run(submit_durable_run_via_cortex(bus=_bus_replying(wrong), source=src, request=request,
+                                                     request_channel="c")) == "receipt_run_id_mismatch"
+    refused = {"ok": False, "status": "fail", "error": {"message": "durable admission is disabled at Cortex"}}
+    assert asyncio.run(submit_durable_run_via_cortex(bus=_bus_replying(refused), source=src, request=request,
+                                                     request_channel="c")).startswith("not_accepted:fail")
 
 
-def test_drain_disabled_is_noop(tmp_path) -> None:
-    store = PendingJournalStore(tmp_path / "pending_journals.json")
-    _handle(_env_for(_result()), _retry_settings(), _FakeDispatch([_GPU_ERR]), _Audit(), store)
-    off = _retry_settings(ACTIONS_WORLD_PULSE_JOURNAL_RETRY_ENABLED=False)
-    assert _drain(store, off, _FakeDispatch(["ok"]), _Audit(), _T0 + timedelta(hours=1)) == []
-    assert store.get("wp-1") is not None
-
-
-def test_retry_settings_defaults() -> None:
-    cfg = Settings()
-    assert cfg.actions_world_pulse_journal_retry_enabled is True
-    assert cfg.actions_world_pulse_journal_retry_max_age_hours == 12.0
-
-
-def test_gives_up_when_retry_would_cross_local_day(tmp_path) -> None:
-    """A retry after local midnight would spend tomorrow's one world_pulse email."""
-    store = PendingJournalStore(tmp_path / "pending_journals.json")
-    cfg = _retry_settings(ACTIONS_DAILY_TIMEZONE="America/Denver", ACTIONS_WORLD_PULSE_JOURNAL_RETRY_MAX_AGE_HOURS=48)
-    late = datetime(2026, 9, 30, 5, 0, tzinfo=timezone.utc)  # 23:00 Denver, Sep 29
-    _handle(_env_for(_result()), cfg, _FakeDispatch([_GPU_ERR]), _Audit(), store, now=late)
-    dispatch = _FakeDispatch(["ok"])
-    audit = _Audit()
-    out = _drain(store, cfg, dispatch, audit, late + timedelta(hours=1, minutes=5))  # 00:05 Denver, Sep 30
-    assert out == [("wp-1", "gave_up")]
-    assert dispatch.calls == 0
-    assert audit.calls[-1]["reason"].startswith("crossed_local_day")
-
-
-def test_reschedule_emits_audit(tmp_path) -> None:
-    store = PendingJournalStore(tmp_path / "pending_journals.json")
-    cfg = _retry_settings()
-    _handle(_env_for(_result()), cfg, _FakeDispatch([_GPU_ERR]), _Audit(), store)
-    audit = _Audit()
-    _drain(store, cfg, _FakeDispatch([_GPU_ERR]), audit, _T0 + timedelta(minutes=5))
-    assert audit.calls[-1]["status"] == "retry_scheduled"
-    assert audit.calls[-1]["extra"]["attempts"] == 2
-
-
-def test_store_write_failure_does_not_escape_handler(tmp_path) -> None:
-    store = PendingJournalStore(tmp_path / "pending_journals.json")
-
-    def boom(*a, **k):
-        raise OSError("disk full")
-
-    store.record_failure = boom  # type: ignore[method-assign]
-    store.mark_completed = boom  # type: ignore[method-assign]
-    assert _handle(_env_for(_result()), _retry_settings(), _FakeDispatch([_GPU_ERR]), _Audit(), store) is True
-    assert _handle(_env_for(_result()), _retry_settings(), _FakeDispatch(["ok"]), _Audit(), store) is True
-
-
-def test_corrupt_store_is_quarantined_not_overwritten(tmp_path) -> None:
-    path = tmp_path / "pending_journals.json"
-    path.write_text("{not json")
-    store = PendingJournalStore(path)
-    assert store.pending() == []
-    assert list(tmp_path.glob("pending_journals.json.corrupt-*"))
-
-
-def test_start_drain_runs_one_at_a_time() -> None:
-    from app.world_pulse_journal import start_world_pulse_retry_drain
-
-    async def scenario() -> None:
-        gate = asyncio.Event()
-        started = []
-
-        async def drain():
-            started.append(1)
-            await gate.wait()
-
-        t1 = start_world_pulse_retry_drain(None, drain, enabled=True, has_due=lambda: True)
-        await asyncio.sleep(0)
-        t2 = start_world_pulse_retry_drain(t1, drain, enabled=True, has_due=lambda: True)
-        assert t2 is t1 and started == [1]
-        gate.set()
-        await t1
-        assert start_world_pulse_retry_drain(t1, drain, enabled=True, has_due=lambda: False) is None
-        assert start_world_pulse_retry_drain(None, drain, enabled=False, has_due=lambda: True) is None
-
-    asyncio.run(scenario())
-
-
-def test_scheduler_loop_starts_world_pulse_retry_drain() -> None:
-    """Static guard: deleting the drain call from _scheduler_loop would leave failed
-    composes queued forever with every other test still green."""
-    import ast
+def test_actions_no_longer_composes_world_pulse_in_process() -> None:
     import inspect
 
     from app import main as actions_main
 
-    tree = ast.parse(inspect.getsource(actions_main))
-    loops = [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "_scheduler_loop"]
-    assert len(loops) == 1
-    called = {
-        n.func.id
-        for n in ast.walk(loops[0])
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-    }
-    assert {"start_world_pulse_retry_drain", "drain_pending_world_pulse_journals"} <= called
+    src = inspect.getsource(actions_main)
+    assert "merge_world_pulse_curiosity_into_draft" not in src
+    assert "world_pulse_result" not in src

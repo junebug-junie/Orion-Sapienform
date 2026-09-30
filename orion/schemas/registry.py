@@ -751,6 +751,7 @@ from orion.schemas.workflow_execution import (
     WorkflowScheduleSpecV1,
 )
 from orion.schemas.reading_turn import ReadingTurnRequestV1, ReadingTurnResultV1
+from orion.schemas.journal_compose_run import JournalComposeRunBriefV1
 from orion.schemas.reverie_visual_run import ReverieVisualStepRequestV1, ReverieVisualStepResultV1
 from orion.schemas.reading import (
     ReadingRequestedV1, ReadingToolBindingV1, ReadingToolRequestV1, ReadingToolResultV1, ReadingLifecycleV1
@@ -988,6 +989,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "AttentionSelfModelV1": AttentionSelfModelV1,
     "AttentionSchemaV1": AttentionSchemaV1,
     "DurableRunRequestV1": DurableRunRequestV1,
+    "JournalComposeRunBriefV1": JournalComposeRunBriefV1,
     "DurableRunReceiptV1": DurableRunReceiptV1,
     "ResourceEventV1": ResourceEventV1,
     "GpuLeaseRequestV1": GpuLeaseRequestV1,

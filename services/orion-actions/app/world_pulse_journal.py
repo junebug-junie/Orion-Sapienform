@@ -1,56 +1,46 @@
+"""World-pulse run result -> the world-news journal, composed as an admitted durable run.
+
+Before 2026-09-30 this composed the journal in-process with one direct cortex call; a busy fast GPU
+lane at 06:00 local (``gpu_pool_unavailable:deadline``) failed it and nothing retried, so the daily
+world-news email stopped after 2026-09-24. Now orion-actions only *submits* a ``journal.compose``
+durable run (orion/schemas/journal_compose_run.py) through cortex-orch's durable ingress. The run
+holds a GPU pool hold, so a busy pool is a wait (bounded by ``deadline_at`` = next local midnight,
+so it can never spend tomorrow's one world_pulse email), and orion-durable-runs publishes the
+journal write itself. The existing post-persist email path here is unchanged.
+
+Idempotent by construction: run_id, correlation_id and entry_id are derived from the world-pulse
+run_id, and the brief is a pure function of the run result, so a redelivered run result resubmits
+the identical request -- durable-runs' store answers it with the existing run (ON CONFLICT), never
+a second run or a second journal entry.
+"""
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import Awaitable, Callable
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
+from uuid import NAMESPACE_URL, uuid4, uuid5
 from zoneinfo import ZoneInfo
-from datetime import datetime, timedelta, timezone
-from uuid import UUID
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.journaler import JournalTriggerV1, build_world_pulse_reflective_trigger, cooldown_key_for_trigger
+from orion.journaler import JournalTriggerV1, build_world_pulse_reflective_trigger
+from orion.schemas.durable_run import DurableRunRequestV1
+from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW, JournalComposeRunBriefV1
+from orion.schemas.resource_admission import ResourceRequirementV1
 from orion.schemas.world_pulse import WorldPulseRunResultV1
 
-from .pending_journal_store import PendingJournalStore
 from .settings import Settings
 
 logger = logging.getLogger("orion-actions.world_pulse_journal")
 
-DispatchJournalFn = Callable[..., Awaitable[bool]]
 AuditFn = Callable[..., Awaitable[None]]
+# (request) -> None when durable-runs confirmed THIS run is registered, else why not.
+SubmitFn = Callable[[DurableRunRequestV1], Awaitable[str | None]]
 AUDIT_ACTION = "journal.world_pulse_digest"
-GAVE_UP_AUDIT_ACTION = "world_pulse_journal_gave_up"
-WORLD_PULSE_RUN_RESULT_KIND = "world.pulse.run.result.v1"
-
-# Substrings of a compose failure that mean "try again later", not "this can never
-# work". gpu_pool_unavailable:* is the live 2026-09-25..29 failure (fast GPU lane
-# congested at 06:00 local). Timeouts and empty/unparseable LLM output are also
-# transient. Anything else (bad trigger, disabled journaling, schema errors) is not
-# retried -- retrying a deterministic failure just burns GPU time.
-# An error raised during/after the journal write publish is never reported here at
-# all (main._dispatch_journal suppresses on_failure once publish was attempted), so a
-# broad "timeout" match cannot turn a landed write into a duplicate.
-_RETRYABLE_ERROR_MARKERS: tuple[str, ...] = (
-    "gpu_pool_unavailable",
-    "gpu_pool_recalled",
-    "pool_unreachable",
-    "gateway_capacity_rejected",
-    "timeout",
-    "timed out",
-    "cortex_orch_decode_failed",
-    "cortex_orch_missing_final_text",
-    "journal_draft_parse_failed",
-    "journal_draft_missing_required_key",
-    "journal_draft_invalid_type",
-)
-
-
-def is_retryable_journal_error(exc: BaseException) -> bool:
-    if isinstance(exc, TimeoutError):
-        return True
-    text = str(exc).lower()
-    return any(marker in text for marker in _RETRYABLE_ERROR_MARKERS)
+RUN_ID_PREFIX = "world-pulse-journal:"
+# Submission is one short receipt RPC (no GPU); a few quick tries ride out a cortex/durable restart.
+SUBMIT_BACKOFF_SEC: tuple[float, ...] = (0.0, 5.0, 15.0)
 
 
 def world_pulse_journal_skip_reason(
@@ -76,14 +66,108 @@ def build_world_pulse_journal_trigger(result: WorldPulseRunResultV1) -> JournalT
     return build_world_pulse_reflective_trigger(result)
 
 
+def world_pulse_journal_run_id(world_pulse_run_id: str) -> str:
+    return f"{RUN_ID_PREFIX}{world_pulse_run_id}"
+
+
+def next_local_midnight(now: datetime, tz_name: str) -> datetime:
+    tz = ZoneInfo(tz_name)
+    local = now.astimezone(tz)
+    return datetime.combine(local.date() + timedelta(days=1), time(0, 0), tzinfo=tz).astimezone(timezone.utc)
+
+
+def build_world_pulse_journal_run_request(
+    result: WorldPulseRunResultV1,
+    *,
+    settings: Settings,
+    llm_route: str | None,
+    now: datetime,
+) -> DurableRunRequestV1:
+    wp_run_id = result.run.run_id
+    trigger = build_world_pulse_journal_trigger(result)
+    route = llm_route or "quick_background"
+    brief = JournalComposeRunBriefV1(
+        trigger=trigger,
+        entry_id=str(uuid5(NAMESPACE_URL, f"orion:journal:world_pulse_digest:{wp_run_id}")),
+        author=settings.actions_journal_author,
+        session_id=settings.actions_journal_session_id,
+        user_id=settings.actions_recipient_group,
+        recall_profile=settings.actions_journal_world_pulse_recall_profile,
+        llm_route=route,
+        timeout_sec=float(settings.actions_exec_timeout_seconds),
+        world_pulse_result=result.model_dump(mode="json"),
+    )
+    return DurableRunRequestV1(
+        run_id=world_pulse_journal_run_id(wp_run_id),
+        workflow=JOURNAL_COMPOSE_WORKFLOW,
+        correlation_id=str(uuid5(NAMESPACE_URL, f"orion:world_pulse_journal_run:{wp_run_id}")),
+        brief=brief,
+        # The pool places it by route (gpu_pool.yaml routes: quick_background -> class fast,
+        # on_unavailable: wait). Background priority; the deadline keeps it inside today's
+        # email slot (durable-runs keeps the FIRST submission's deadline on a resubmit).
+        admission=ResourceRequirementV1(
+            resource=f"llm.route.{route}",
+            preferred_lane=route,
+            priority="background",
+            deadline_at=next_local_midnight(now, settings.actions_daily_timezone),
+        ),
+    )
+
+
+async def submit_durable_run_via_cortex(
+    *,
+    bus: Any,
+    source: ServiceRef,
+    request: DurableRunRequestV1,
+    request_channel: str,
+    timeout_sec: float = 20.0,
+) -> str | None:
+    """One kickoff RPC through cortex-orch's durable ingress (same shape as cortex-exec's
+    durable_kickoff.submit_durable_run). None only when the receipt names THIS run, workflow and
+    resource; otherwise the reason. Never raises."""
+    reply_channel = f"orion:cortex:result:world-pulse-journal:{uuid4()}"
+    payload = {
+        "mode": "brain",
+        "context": {
+            "messages": [{"role": "user", "content": "Compose the world-pulse journal."}],
+            "user_message": "Compose the world-pulse journal.",
+            "session_id": request.brief.session_id,
+            "metadata": {"durable_run": request.model_dump(mode="json", exclude_none=True)},
+        },
+    }
+    envelope = BaseEnvelope(kind="cortex.orch.request", source=source, correlation_id=request.correlation_id,
+                            reply_to=reply_channel, payload=payload)
+    try:
+        raw = await bus.rpc_request(request_channel, envelope, reply_channel=reply_channel, timeout_sec=timeout_sec)
+        decoded = bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
+        result = decoded.envelope.payload if decoded.ok and decoded.envelope is not None else None
+    except Exception as exc:  # noqa: BLE001
+        return f"{type(exc).__name__}: {exc}"[:300]
+    if not isinstance(result, dict):
+        return "undecodable_reply"
+    if result.get("status") != "accepted":
+        error = result.get("error") if isinstance(result.get("error"), dict) else {}
+        return f"not_accepted:{result.get('status') or 'no_status'}:{error.get('message') or error.get('type') or ''}"[:300]
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    receipt = metadata.get("durable_run") if isinstance(metadata.get("durable_run"), dict) else {}
+    if receipt.get("run_id") != request.run_id:
+        return "receipt_run_id_mismatch"
+    if receipt.get("workflow_kind", receipt.get("workflow")) != request.workflow:
+        return "receipt_workflow_mismatch"
+    if request.admission is not None and receipt.get("requested_resource") != request.admission.resource:
+        return "receipt_resource_mismatch"
+    return None
+
+
 async def handle_world_pulse_run_result_journal(
     env: BaseEnvelope,
     *,
     settings: Settings,
-    dispatch_journal: DispatchJournalFn,
+    submit: SubmitFn,
     audit: AuditFn,
-    retry_store: PendingJournalStore | None = None,
+    llm_route: str | None,
     now_fn: Callable[[], datetime] | None = None,
+    sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
 ) -> bool:
     try:
         result = WorldPulseRunResultV1.model_validate(env.payload)
@@ -104,6 +188,8 @@ async def handle_world_pulse_run_result_journal(
     )
     if skip == "world_pulse_journal_disabled":
         return True
+    if skip is None and not settings.actions_journaling_enabled:
+        skip = "journaling_disabled"
     if skip is not None:
         await audit(
             env,
@@ -114,240 +200,23 @@ async def handle_world_pulse_run_result_journal(
         )
         return True
 
-    retry_on = retry_store is not None and settings.actions_world_pulse_journal_retry_enabled
-    run_id = result.run.run_id
-    if retry_on and retry_store.is_completed(run_id):
-        # A retry (or an earlier delivery) already wrote this run's journal; a
-        # redelivered run result must not produce a second entry.
-        await audit(
-            env,
-            status="skipped",
-            event_id=run_id,
-            action_name=AUDIT_ACTION,
-            reason="world_pulse_journal_already_written",
-        )
-        return True
-
-    now = now_fn or (lambda: datetime.now(timezone.utc))
-    failure: list[BaseException] = []
-
-    async def _on_failure(exc: BaseException) -> None:
-        failure.append(exc)
-
-    trigger = build_world_pulse_journal_trigger(result)
-    kwargs = {"on_failure": _on_failure} if retry_on else {}
-    ok = await dispatch_journal(
-        env,
-        trigger=trigger,
-        audit_action=AUDIT_ACTION,
-        dedupe_key=cooldown_key_for_trigger(trigger),
-        world_pulse_result=result,
-        **kwargs,
-    )
-    if not retry_on:
-        return True
-    if ok:
-        try:
-            retry_store.mark_completed(run_id, now=now())
-        except Exception:
-            logger.exception("world_pulse_journal_retry_store_write_failed run_id=%s op=mark_completed", run_id)
-        return True
-    if failure and is_retryable_journal_error(failure[0]):
-        try:
-            entry = retry_store.record_failure(
-                run_id=run_id,
-                payload=result.model_dump(mode="json"),
-                correlation_id=str(env.correlation_id),
-                error=str(failure[0]),
-                now=now(),
-            )
-        except Exception:
-            logger.exception("world_pulse_journal_retry_store_write_failed run_id=%s op=record_failure", run_id)
-            return True
-        if entry is not None:
-            logger.warning(
-                "world_pulse_journal_retry_enqueued run_id=%s attempts=%s next_at=%s error=%s",
-                run_id,
-                entry.attempts,
-                entry.next_at,
-                entry.last_error,
-            )
-            await audit(
-                env,
-                status="retry_scheduled",
-                event_id=run_id,
-                action_name=AUDIT_ACTION,
-                reason=entry.last_error,
-                extra={"attempts": entry.attempts, "next_at": entry.next_at},
-            )
+    now = (now_fn or (lambda: datetime.now(timezone.utc)))()
+    request = build_world_pulse_journal_run_request(result, settings=settings, llm_route=llm_route, now=now)
+    error: str | None = None
+    for delay in SUBMIT_BACKOFF_SEC:
+        if delay:
+            await sleep(delay)
+        error = await submit(request)
+        if error is None:
+            break
+    if error is None:
+        logger.info("world_pulse_journal_durable_submitted run_id=%s entry_id=%s deadline_at=%s",
+                    request.run_id, request.brief.entry_id, request.admission.deadline_at)
+        await audit(env, status="submitted", event_id=request.run_id, action_name=AUDIT_ACTION,
+                    extra={"durable_run_id": request.run_id, "entry_id": request.brief.entry_id,
+                           "deadline_at": request.admission.deadline_at.isoformat()})
+    else:
+        logger.error("world_pulse_journal_durable_submit_failed run_id=%s error=%s", request.run_id, error)
+        await audit(env, status="failed", event_id=request.run_id, action_name=AUDIT_ACTION,
+                    reason=f"durable_submit_failed:{error}")
     return True
-
-
-async def drain_pending_world_pulse_journals(
-    *,
-    store: PendingJournalStore,
-    settings: Settings,
-    dispatch_journal: DispatchJournalFn,
-    audit: AuditFn,
-    source: ServiceRef,
-    now: datetime,
-    now_after_dispatch: Callable[[], datetime] | None = None,
-) -> list[tuple[str, str]]:
-    """Retry due pending world_pulse_digest composes. Returns [(run_id, outcome)].
-
-    Outcomes: completed, rescheduled, gave_up, dropped_already_written,
-    dropped_not_dispatched (journaling disabled / cooldown -- nothing to retry),
-    dropped_invalid_payload, gave_up_non_retryable.
-    """
-    outcomes: list[tuple[str, str]] = []
-    if not settings.actions_world_pulse_journal_retry_enabled:
-        return outcomes
-    max_age = timedelta(hours=float(settings.actions_world_pulse_journal_retry_max_age_hours))
-    tz = ZoneInfo(settings.actions_daily_timezone)
-    for entry in store.due(now):
-        run_id = entry.run_id
-        if store.is_completed(run_id):
-            store.remove(run_id)
-            outcomes.append((run_id, "dropped_already_written"))
-            continue
-        # Reuse the original correlation_id so retries join the first attempt's trace.
-        env_kwargs: dict = {}
-        try:
-            env_kwargs["correlation_id"] = UUID(entry.correlation_id)
-        except (TypeError, ValueError):
-            pass
-        env = BaseEnvelope(
-            kind=WORLD_PULSE_RUN_RESULT_KIND,
-            source=source,
-            payload=entry.payload,
-            **env_kwargs,
-        )
-        age = now - entry.first_failed_at_dt
-        # The world_pulse_digest email cap is one per *local* day, keyed at persist
-        # time. A retry landing after local midnight would spend tomorrow's slot and
-        # silence tomorrow's real digest, so a stale run is abandoned instead.
-        crossed_day = now.astimezone(tz).date() != entry.first_failed_at_dt.astimezone(tz).date()
-        if age > max_age or crossed_day:
-            store.remove(run_id)
-            give_up_reason = "max_age_exceeded" if age > max_age else "crossed_local_day"
-            logger.warning(
-                "world_pulse_journal_gave_up run_id=%s reason=%s attempts=%s age_hours=%.2f last_error=%s",
-                run_id,
-                give_up_reason,
-                entry.attempts,
-                age.total_seconds() / 3600.0,
-                entry.last_error,
-            )
-            await audit(
-                env,
-                status="failed",
-                event_id=run_id,
-                action_name=GAVE_UP_AUDIT_ACTION,
-                reason=f"{give_up_reason}:{entry.last_error}",
-                extra={"attempts": entry.attempts, "first_failed_at": entry.first_failed_at},
-            )
-            outcomes.append((run_id, "gave_up"))
-            continue
-        try:
-            result = WorldPulseRunResultV1.model_validate(entry.payload)
-        except Exception:
-            store.remove(run_id)
-            logger.warning("world_pulse_journal_retry_dropped_invalid_payload run_id=%s", run_id)
-            outcomes.append((run_id, "dropped_invalid_payload"))
-            continue
-
-        failure: list[BaseException] = []
-
-        async def _on_failure(exc: BaseException, _sink: list[BaseException] = failure) -> None:
-            _sink.append(exc)
-
-        trigger = build_world_pulse_journal_trigger(result)
-        ok = await dispatch_journal(
-            env,
-            trigger=trigger,
-            audit_action=AUDIT_ACTION,
-            dedupe_key=cooldown_key_for_trigger(trigger),
-            world_pulse_result=result,
-            on_failure=_on_failure,
-        )
-        done_at = datetime.now(timezone.utc) if now_after_dispatch is None else now_after_dispatch()
-        if ok:
-            store.mark_completed(run_id, now=done_at)
-            logger.info(
-                "world_pulse_journal_retry_succeeded run_id=%s attempts=%s",
-                run_id,
-                entry.attempts,
-            )
-            outcomes.append((run_id, "completed"))
-        elif not failure:
-            # Not dispatched at all: journaling disabled, or the key is in cooldown /
-            # in flight (another path already has it). Nothing left for us to retry.
-            store.remove(run_id)
-            logger.info("world_pulse_journal_retry_dropped_not_dispatched run_id=%s", run_id)
-            outcomes.append((run_id, "dropped_not_dispatched"))
-        elif is_retryable_journal_error(failure[0]):
-            bumped = store.record_failure(
-                run_id=run_id,
-                payload=entry.payload,
-                correlation_id=entry.correlation_id,
-                error=str(failure[0]),
-                now=done_at,
-            )
-            await audit(
-                env,
-                status="retry_scheduled",
-                event_id=run_id,
-                action_name=AUDIT_ACTION,
-                reason=str(failure[0])[:500],
-                extra={
-                    "attempts": bumped.attempts if bumped else entry.attempts,
-                    "next_at": bumped.next_at if bumped else "",
-                },
-            )
-            logger.warning(
-                "world_pulse_journal_retry_rescheduled run_id=%s attempts=%s next_at=%s error=%s",
-                run_id,
-                bumped.attempts if bumped else entry.attempts,
-                bumped.next_at if bumped else "",
-                str(failure[0])[:200],
-            )
-            outcomes.append((run_id, "rescheduled"))
-        else:
-            store.remove(run_id)
-            logger.warning(
-                "world_pulse_journal_gave_up run_id=%s attempts=%s reason=non_retryable error=%s",
-                run_id,
-                entry.attempts + 1,
-                str(failure[0])[:200],
-            )
-            await audit(
-                env,
-                status="failed",
-                event_id=run_id,
-                action_name=GAVE_UP_AUDIT_ACTION,
-                reason=f"non_retryable:{str(failure[0])[:500]}",
-                extra={"attempts": entry.attempts + 1, "non_retryable": True},
-            )
-            outcomes.append((run_id, "gave_up_non_retryable"))
-    return outcomes
-
-
-def start_world_pulse_retry_drain(
-    current: "asyncio.Task[Any] | None",
-    make_drain: Callable[[], Coroutine[Any, Any, Any]],
-    *,
-    enabled: bool,
-    has_due: Callable[[], bool],
-) -> "asyncio.Task[Any] | None":
-    """Called once per scheduler tick. Starts one background drain when retry is
-    enabled, something is due, and no drain is already running; returns the task to
-    keep tracking (the running one, a new one, or None)."""
-    if current is not None and not current.done():
-        return current
-    if current is not None:
-        exc = None if current.cancelled() else current.exception()
-        if exc is not None:
-            logger.error("world_pulse_journal_retry_drain_failed error=%r", exc)
-    if not enabled or not has_due():
-        return None
-    return asyncio.create_task(make_drain(), name="orion-actions-world-pulse-journal-retry")

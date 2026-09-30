@@ -24,7 +24,6 @@ _BLANK_ENV_BOOL_FIELDS = (
     "actions_world_pulse_run_dry_run",
     "actions_world_pulse_journal_enabled",
     "actions_world_pulse_journal_allow_dry_run",
-    "actions_world_pulse_journal_retry_enabled",
     "actions_skills_scheduler_enabled",
     "actions_skills_run_on_startup",
     "actions_skills_notify_enabled",
@@ -135,13 +134,6 @@ class Settings(BaseSettings):
     actions_world_pulse_run_dry_run: bool = Field(True, alias="ACTIONS_WORLD_PULSE_RUN_DRY_RUN")
     actions_world_pulse_journal_enabled: bool = Field(False, alias="ACTIONS_WORLD_PULSE_JOURNAL_ENABLED")
     actions_world_pulse_journal_allow_dry_run: bool = Field(False, alias="ACTIONS_WORLD_PULSE_JOURNAL_ALLOW_DRY_RUN")
-    # Retry a world_pulse_digest compose that failed retryably (gpu_pool_unavailable,
-    # timeout, empty/invalid decode) from a restart-durable queue next to
-    # scheduler_cursors.json, backoff 5/15/45/120 min, give up after MAX_AGE_HOURS.
-    actions_world_pulse_journal_retry_enabled: bool = Field(True, alias="ACTIONS_WORLD_PULSE_JOURNAL_RETRY_ENABLED")
-    actions_world_pulse_journal_retry_max_age_hours: float = Field(
-        12.0, gt=0.0, alias="ACTIONS_WORLD_PULSE_JOURNAL_RETRY_MAX_AGE_HOURS"
-    )
     actions_journal_world_pulse_recall_profile: str = Field(
         "journal.world_pulse.grounded.v1",
         alias="ACTIONS_JOURNAL_WORLD_PULSE_RECALL_PROFILE",

@@ -54,6 +54,26 @@ workflow. The last field comes from the existing persisted `run.started` event,
 not config or a guessed elapsed-time threshold. Failed/completed events carry
 the actual hold-fenced turn correlation. Queue cancellation is not completion.
 
+### Admitted journal compose (`journal.compose`, 2026-09-30)
+
+One journal entry, composed under a GPU pool hold (`app/journal_compose_graph.py`, contract
+`orion/schemas/journal_compose_run.py`): `resource_request -> resource_wait -> compose -> publish -> finish`.
+Admission-only (the request validator refuses it without `admission`). `compose` sends the
+`journal.compose` cortex verb (`orion.journaler.build_compose_request`) with `options.gpu_lease`, so
+the gateway attaches the call to the hold; `llm_route` stays the brief's route (the hold's role is
+never a route). Waiting for the hold is never an attempt -- a busy pool at 06:00 local is a
+checkpointed wait bounded by `admission.deadline_at`. A failed compose (non-ok, empty or unparseable
+draft, transport) is one bounded attempt (`DURABLE_RUNS_RETRY_MAX_ATTEMPTS`). `publish` releases the
+hold, then publishes `journal.entry.write.v1` with the brief's fixed `entry_id` and the checkpointed
+`created_at`; a publish failure raises and the driver's bounded checkpoint resume retries publish
+without recomposing (same write, sql-writer upserts by entry_id). First producer: orion-actions'
+world-pulse journal (`trigger_kind=world_pulse_digest`, run_id `world-pulse-journal:<world-pulse run_id>`,
+deadline = next local midnight). Finish detail: `line=journal`, `entry_id`, `trigger_kind`,
+`published`, `attempts`.
+
+Deploy order (additive `Literal`/brief on `extra="forbid"` models): orion-durable-runs, then
+orion-cortex-orch (it validates `DurableRunRequestV1`), then the producer.
+
 ### Admitted visual reverie (`reverie.visual`, 2026-09-28)
 
 One image per run, checkpointed after every stage

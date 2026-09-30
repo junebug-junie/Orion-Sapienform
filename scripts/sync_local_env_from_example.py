@@ -181,8 +181,6 @@ SYNC_PREFIXES = (
     "AUTONOMY_GOAL_RETENTION_",
     "AUTONOMY_GOAL_MAX_ACTIVE_",
     "ACTIONS_DAILY_GOAL_ARCHIVE_",
-    # World-pulse journal retry queue (2026-09-29): no existing prefix matched.
-    "ACTIONS_WORLD_PULSE_JOURNAL_RETRY_",
     # Transport substrate stack (PR #648 / M3–M7)
     "ENABLE_TRANSPORT_",
     # llm_inference grammar lane (2026-09-25): gateway emitter, substrate reducer,

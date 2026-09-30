@@ -10,7 +10,7 @@ import requests
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Dict
+from typing import Any, Callable, Dict
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -38,7 +38,6 @@ from orion.journaler import (
     build_write_payload,
     cooldown_key_for_trigger,
     draft_from_cortex_result,
-    merge_world_pulse_curiosity_into_draft,
     resolve_policy,
 )
 from orion.schemas.actions.daily import DailyMetacogV1, DailyPulseV1
@@ -46,16 +45,10 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorS
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.notify import NotificationRecord, NotificationRequest
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
-from orion.schemas.world_pulse import WorldPulseRunResultV1
 from .capability_gap_journal import build_daily_seed_payload, collect_capability_gaps
 from .perception_gap_journal import collect_perception_gaps
 from .walkway_forecast import collect_walkway_jobs, run_walkway_tick
-from .world_pulse_journal import (
-    drain_pending_world_pulse_journals,
-    handle_world_pulse_run_result_journal,
-    start_world_pulse_retry_drain,
-)
-from .pending_journal_store import PendingJournalStore, pending_journal_store_path_for
+from .world_pulse_journal import handle_world_pulse_run_result_journal, submit_durable_run_via_cortex
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
     SKILL_BIOMETRICS_SNAPSHOT_V1,
@@ -1136,15 +1129,12 @@ async def lifespan(app: FastAPI):
         ensure_github_compactor_daily_schedule(workflow_schedule_store)
     except Exception:
         logger.exception("github_compactor_schedule_bootstrap_failed")
-    _scheduler_cursor_path = resolve_scheduler_cursor_store_path(
-        settings.actions_scheduler_cursor_store_path or None,
-        workflow_schedule_store_path=settings.actions_workflow_schedule_store_path,
+    scheduler_cursor_store = SchedulerCursorStore(
+        resolve_scheduler_cursor_store_path(
+            settings.actions_scheduler_cursor_store_path or None,
+            workflow_schedule_store_path=settings.actions_workflow_schedule_store_path,
+        )
     )
-    scheduler_cursor_store = SchedulerCursorStore(_scheduler_cursor_path)
-    # Restart-durable retry queue for world_pulse_digest composes that failed
-    # retryably (gpu_pool_unavailable / timeout / empty decode); drained by
-    # _scheduler_loop. Lives next to scheduler_cursors.json on the same bind mount.
-    pending_journal_store = PendingJournalStore(pending_journal_store_path_for(_scheduler_cursor_path))
     for _ck, _cv in scheduler_cursor_store.all().items():
         if _ck == SCHEDULER_CURSOR_JOURNAL_KEY:
             last_journal_run = _cv
@@ -1225,8 +1215,6 @@ async def lifespan(app: FastAPI):
         parent: BaseEnvelope,
         *,
         trigger,
-        world_pulse_result: WorldPulseRunResultV1 | None = None,
-        progress: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         journal_llm_route = _normalized_llm_route(settings.actions_journal_llm_route, settings.actions_llm_route)
         tk = str(getattr(trigger, "trigger_kind", "") or "")
@@ -1275,8 +1263,6 @@ async def lifespan(app: FastAPI):
         if not orch_payload.get("ok", False):
             raise RuntimeError(f"journal_compose_failed:{orch_payload.get('error') or orch_payload.get('status')}")
         draft = draft_from_cortex_result(orch_payload)
-        if world_pulse_result is not None:
-            draft = merge_world_pulse_curiosity_into_draft(draft, world_pulse_result)
         write = build_write_payload(
             draft,
             trigger=trigger,
@@ -1284,11 +1270,6 @@ async def lifespan(app: FastAPI):
             author=settings.actions_journal_author,
         )
         write_env = parent.derive_child(kind=JOURNAL_WRITE_KIND, source=src, payload=write.model_dump(mode="json"), reply_to=None)
-        if progress is not None:
-            # Past this point the write may have landed even if publish raises
-            # (e.g. redis delivered, then timed out reading the reply). Callers
-            # that retry must not treat an error from here on as "nothing written".
-            progress["write_publish_attempted"] = True
         await hunter.bus.publish(settings.actions_journal_write_channel, write_env)
         return {
             "draft": draft.model_dump(mode="json"),
@@ -1303,17 +1284,7 @@ async def lifespan(app: FastAPI):
         audit_action: str,
         dedupe_key: str,
         reason: str | None = None,
-        world_pulse_result: WorldPulseRunResultV1 | None = None,
-        on_failure: Callable[[BaseException], Awaitable[None]] | None = None,
     ) -> bool:
-        """Returns True only when the journal was composed and its write published.
-
-        False covers three different outcomes (journaling disabled, cooldown/in-flight
-        dedupe, compose error). Callers that need to tell a compose *error* apart --
-        the world_pulse retry path -- pass `on_failure`, which is awaited with the
-        exception only when compose failed *before* the write publish was attempted
-        (an error during/after publish is ambiguous and not reported, so a retry can
-        never duplicate a written entry). Other callers are unaffected."""
         if not settings.actions_journaling_enabled:
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action, reason="journaling_disabled")
             return False
@@ -1323,15 +1294,12 @@ async def lifespan(app: FastAPI):
 
         acquired = False
         t0 = time.monotonic()
-        progress: dict[str, Any] = {}
         try:
             await sem.acquire()
             acquired = True
             result = await _run_journal(
                 parent,
                 trigger=trigger,
-                world_pulse_result=world_pulse_result,
-                progress=progress,
             )
             # Notification dispatch (email/in-app) happens exactly once, from the
             # post-persist consumer (_handle_journal_created) after the SQL write is
@@ -1365,19 +1333,6 @@ async def lifespan(app: FastAPI):
                 extra={"duration_ms": dt_ms},
             )
             logger.exception("Journal dispatch failed action=%s corr=%s", audit_action, parent.correlation_id)
-            if on_failure is not None and progress.get("write_publish_attempted"):
-                # Ambiguous: the journal write may already be persisted. Retrying
-                # could write a second entry, so do not report this as retryable.
-                logger.warning(
-                    "journal_write_publish_error_not_retried action=%s corr=%s",
-                    audit_action,
-                    parent.correlation_id,
-                )
-            elif on_failure is not None:
-                try:
-                    await on_failure(exc)
-                except Exception:
-                    logger.exception("journal_on_failure_callback_failed action=%s", audit_action)
             return False
         finally:
             if acquired:
@@ -1720,12 +1675,20 @@ async def lifespan(app: FastAPI):
         )
 
     async def _handle_world_pulse_run_result_journal(env: BaseEnvelope) -> bool:
+        # Submitted as an admitted journal.compose durable run (GPU pool hold, restart-durable,
+        # deadline = next local midnight); orion-durable-runs composes and publishes the write.
+        # This service no longer composes world_pulse_digest in-process.
         return await handle_world_pulse_run_result_journal(
             env,
             settings=settings,
-            dispatch_journal=_dispatch_journal,
+            submit=lambda request: submit_durable_run_via_cortex(
+                bus=_actions_rpc_bus,
+                source=src,
+                request=request,
+                request_channel=settings.cortex_request_channel,
+            ),
             audit=_audit,
-            retry_store=pending_journal_store,
+            llm_route=_normalized_llm_route(settings.actions_journal_llm_route, settings.actions_llm_route),
         )
 
     async def _handle_journal_collapse_stored(env: BaseEnvelope) -> bool:
@@ -1977,7 +1940,6 @@ async def lifespan(app: FastAPI):
 
     async def _scheduler_loop() -> None:
         nonlocal last_skill_run_monotonic, last_journal_run
-        world_pulse_retry_task: asyncio.Task | None = None
         while True:
             try:
                 now_utc = datetime.now(timezone.utc)
@@ -2356,23 +2318,6 @@ async def lifespan(app: FastAPI):
                             correlation_id=str(env.correlation_id),
                             restart_dedupe_source="durable" if SCHEDULER_CURSOR_JOURNAL_KEY in cursor_keys_at_startup else "memory",
                         )
-
-                # Retry failed world_pulse_digest composes in a background task (at
-                # most one in flight) so a slow compose on a congested GPU lane does
-                # not stall this tick's workflow claims / attention signals.
-                world_pulse_retry_task = start_world_pulse_retry_drain(
-                    world_pulse_retry_task,
-                    lambda: drain_pending_world_pulse_journals(
-                        store=pending_journal_store,
-                        settings=settings,
-                        dispatch_journal=_dispatch_journal,
-                        audit=_audit,
-                        source=src,
-                        now=datetime.now(timezone.utc),
-                    ),
-                    enabled=settings.actions_world_pulse_journal_retry_enabled,
-                    has_due=lambda: bool(pending_journal_store.due(datetime.now(timezone.utc))),
-                )
 
                 for claimed in workflow_schedule_store.claim_due(now_utc=now_utc, limit=settings.actions_workflow_schedule_claim_batch_size):
                     dispatch_env = BaseEnvelope(kind=WORKFLOW_TRIGGER_KIND, source=src, correlation_id=str(uuid4()), payload={})

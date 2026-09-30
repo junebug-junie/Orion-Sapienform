@@ -1,19 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import secrets
 from contextlib import asynccontextmanager
-from typing import Literal, Optional
 
-from fastapi import FastAPI, Header
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 from loguru import logger
-from pydantic import BaseModel, ConfigDict
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter
 from orion.schemas.gpu_pool import GPU_POOL_ACTUATE_REQUEST_CHANNEL
 
-from . import actuator_bus, lane_control, gpu2, pool_fence
+from . import actuator_bus, pool_fence
 from .settings import settings
 
 heartbeat_chassis: HeartbeatOnly | None = None
@@ -55,9 +51,9 @@ async def lifespan(app: FastAPI):
     try:
         interrupted = await asyncio.to_thread(pool_fence.recover_interrupted)
         if interrupted:
-            logger.warning(f"[HOST] gpu2_pool_action_interrupted action_id={interrupted['action_id']}")
+            logger.warning(f"[HOST] gpu_pool_action_interrupted action_id={interrupted['action_id']}")
     except Exception as exc:  # noqa: BLE001 -- the fence re-reads (and fails closed) per request
-        logger.error(f"[HOST] gpu2_pool_fence_recover_failed error={exc}")
+        logger.error(f"[HOST] gpu_pool_fence_recover_failed error={exc}")
     if settings.ORION_BUS_ENABLED:
         try:
             actuator_chassis = build_actuator_chassis()
@@ -95,59 +91,3 @@ app = FastAPI(title="Orion GPU Lane Controller", version=settings.SERVICE_VERSIO
 @app.get("/health")
 async def health():
     return {"ok": True, "service": settings.SERVICE_NAME, "version": settings.SERVICE_VERSION}
-
-
-@app.get("/v1/gpu-lane/status")
-async def get_status():
-    # get_status() shells out to `docker compose ps` twice, synchronously
-    # (subprocess.run with a 30s timeout each) -- uvicorn runs this service
-    # single-process/single-event-loop (no --workers), so calling it inline
-    # would freeze every other concurrent request, including /health, for
-    # up to 60s on a slow or hung docker call. Review finding, fixed here.
-    return await asyncio.to_thread(lane_control.get_status)
-
-
-class GpuLaneFlipRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    target: Literal["affect", "agent"]
-
-
-def _authorized(authorization: Optional[str]) -> bool:
-    # Fail closed: an unset GPU_LANE_CONTROLLER_TOKEN rejects every flip
-    # request rather than disabling auth -- an operator who forgot to set
-    # the token gets a clear 503, not a silently-open control-plane route.
-    token = str(settings.GPU_LANE_CONTROLLER_TOKEN or "").strip()
-    if not token:
-        return False
-    presented = str(authorization or "").strip()
-    if presented.lower().startswith("bearer "):
-        presented = presented[7:].strip()
-    return secrets.compare_digest(presented, token)
-
-
-@app.post("/v1/gpu-lane/flip")
-async def flip(req: GpuLaneFlipRequest, authorization: Optional[str] = Header(default=None)):
-    if not str(settings.GPU_LANE_CONTROLLER_TOKEN or "").strip():
-        return JSONResponse(
-            {"ok": False, "error": "GPU_LANE_CONTROLLER_TOKEN is not set on this service -- flip disabled"},
-            status_code=503,
-        )
-    if not _authorized(authorization):
-        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
-
-    result = await lane_control.flip(req.target)
-    status = result.get("status")
-    if status == "busy":
-        return JSONResponse(result, status_code=409)
-    ok = status in ("success", "noop")
-    return JSONResponse(result, status_code=200 if ok else 502)
-
-
-@app.get("/v1/gpu-slots/{slot}/status")
-async def slot_status(slot: str):
-    if slot == "circe-gpu1":
-        return await asyncio.to_thread(lane_control.get_status)
-    if slot == "circe-gpu2":
-        return await gpu2.status()
-    return JSONResponse({"error": "unknown_slot"}, status_code=404)

@@ -1,10 +1,10 @@
 """Stage 5.4 gate: nothing calls the durable-runs /capacity permit broker any more.
 
 World-model and the visual chain (the only two callers left after stage 4) now take GPU pool
-leases/holds. The broker itself (orion/durable_admission/capacity*.py, durable-runs /capacity) is
-deleted in 5.6; until then this proves it has no client, so zero new durable_gateway_permits rows
-is the expected live state after deploy -- not a quiet failure. Kill means kill: no service may
-grow a new caller or a fallback to it.
+leases/holds. Stage 5.6 deleted the broker itself (the capacity store and client, the durable-runs
+/capacity routes, the Capacity*V1 schemas), so the allow-list below is empty: no non-test file may
+name a client, a route, the old package or its env keys. Kill means kill: no service may grow a new
+caller, a fallback, or a second broker.
 
 Also pins the other half of 5.4: the pool's visual_baseline swap guard and its thought
 /visual-chain/activity read are gone from the pool.
@@ -15,17 +15,12 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-# The broker, its schemas, and their own tests/evals: deleted together in 5.6.
-ALLOWED = (
-    "orion/durable_admission/",
-    "orion/schemas/resource_admission.py",
-    "orion/schema_skew_discovery.py",
-    "orion/tests/test_capacity_client.py",
-    "orion/gpu_pool/tests/",
-    "services/orion-durable-runs/",
-)
+# Stage 5.6: empty. The broker, its schemas, tests and evals are deleted; nothing is exempt.
+ALLOWED: tuple[str, ...] = ()
 # A client: importing the permit client, constructing a permit, or POSTing to the routes.
-CALLER = re.compile(r"capacity_client|GpuCapacityPermit|/capacity/(acquire|renew|release)|:8121/capacity|8124/capacity")
+CALLER = re.compile(r"capacity_client|GpuCapacityPermit|/capacity/(acquire|renew|release)|:8121/capacity|8124/capacity"
+                    r"|orion\.durable_admission|orion/durable_admission/|PostgresCapacityStore|Capacity(Acquire|Token|Permit)V1"
+                    r"|DURABLE_RUNS_CAPACITY_|[\"']/capacity[\"']")
 
 
 def _sources():
@@ -51,7 +46,7 @@ def test_no_service_calls_the_capacity_permit_broker():
         text = path.read_text(errors="ignore")
         if CALLER.search(text):
             callers.append(rel)
-    assert callers == [], f"/capacity permit callers remain (stage 5.4 removed them): {callers}"
+    assert callers == [], f"/capacity permit broker or callers remain (5.4 removed callers, 5.6 the broker): {callers}"
 
 
 def test_world_and_diffusion_env_templates_carry_no_permit_keys():
@@ -70,3 +65,22 @@ def test_pool_no_longer_reads_the_visual_chain():
         text = (ROOT / rel).read_text()
         assert "GPU_POOL_VISUAL_ACTIVITY_URL" not in text and "visual_activity_url" not in text, rel
         assert "/visual-chain/activity" not in text or rel.endswith("guards.py"), rel   # guards.py docstring names it
+
+
+def test_the_broker_package_and_its_tables_left_the_code():
+    """5.6: the package is gone (the run registry moved to orion/durable_runs), and no durable-runs
+    code, eval or env template reads or writes the four dropped tables."""
+    assert not (ROOT / "orion" / "durable_admission").exists()
+    assert (ROOT / "orion" / "durable_runs" / "registry_store.py").is_file()
+    dropped = re.compile(r"durable_gateway_permits|durable_resource_demands|durable_resource_leases|durable_elastic_slot")
+    hits = []
+    for base in ("services/orion-durable-runs/app", "services/orion-durable-runs/evals", "orion/durable_runs"):
+        for path in (ROOT / base).rglob("*.py"):
+            # Module docstrings may name them as deleted (registry_store's does); code and SQL must not.
+            code = path.read_text(errors="ignore")
+            if code.lstrip().startswith('"""'):
+                code = code.split('"""', 2)[-1]
+            code = "\n".join(line for line in code.splitlines() if not line.lstrip().startswith("#"))
+            if dropped.search(code):
+                hits.append(path.relative_to(ROOT).as_posix())
+    assert hits == [], hits

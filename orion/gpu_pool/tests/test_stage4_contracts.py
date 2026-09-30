@@ -102,11 +102,12 @@ def test_the_hold_ref_is_the_only_run_lease_after_4_6():
         assert field not in admission.ResourceRequirementV1.model_fields
         with pytest.raises(ValidationError):   # extra="forbid": a producer still sending one is refused
             admission.ResourceRequirementV1(**{field: None})
-    permit = dict(request_id="r", correlation_id="c", lane="world", backend_key="http://w", max_inflight=1,
-                  budget_sec=1.0)
-    assert admission.CapacityAcquireV1(**permit).lease is None
-    with pytest.raises(ValidationError):
-        admission.CapacityAcquireV1(**permit, lease={"lease_id": "legacy"})
+    # Stage 5.6: the /capacity permit contracts are gone with the broker, and were never registered.
+    for name in ("CapacityAcquireV1", "CapacityTokenV1", "CapacityPermitV1", "CapacityAcquireResultV1",
+                 "CapacityRenewResultV1", "CapacityReleaseResultV1"):
+        assert not hasattr(admission, name), name
+        with pytest.raises(ValueError):
+            resolve(name)
 
 
 # --- pool events / card state ----------------------------------------------------------------

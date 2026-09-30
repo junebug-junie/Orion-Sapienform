@@ -194,7 +194,6 @@ def test_admission_runtime_routes_self_sense_workflow():
 
     settings = SimpleNamespace(
         service_name="orion-durable-runs",
-        lease_seconds=90,
         lease_heartbeat_sec=15,
         admission_tick_sec=1,
         retry_max_attempts=1, hold_max_takebacks=12,

@@ -1,4 +1,4 @@
-"""Stage 4.2: the pool-generation fence for gpu2 -- the only gpu2 authority since stage 4.6.
+"""Stage 4.2: the pool-generation fence -- the only actuation authority since stage 4.6.
 
 The thing that says "this transition is still the current intent". Two checks, both local to circe:
 
@@ -14,11 +14,12 @@ Spec: docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuati
 ("Stage 4 bridge (Option A)").
 
 Stage 5.2 (docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md,
-Decision 2): ``resolve()`` also returns a ``LaunchPlan`` for any swap seat *without* bridge verbs,
+Decision 2): ``resolve()`` returns a ``LaunchPlan`` for a swap seat,
 built only from this checkout's ``launch`` blocks (compose file, service, profile, env var names) plus
 the card ``index`` and a profile from the role's ``launch.profiles`` allow-list. The request names a
-role and a profile, never a container, path or env value. Executed by app/launch_exec.py. Seats that
-still carry ``swap.load``/``swap.unload`` keep the stage-4 bridge until 5.3 removes the verbs.
+role and a profile, never a container, path or env value. Executed by app/launch_exec.py. Stage 5.6
+deleted the stage-4 gpu2 bridge (``swap.load``/``swap.unload`` verbs, BRIDGE_TARGETS, gpu2.py): a
+LaunchPlan is the only thing a load/unload resolves to.
 """
 from __future__ import annotations
 
@@ -34,9 +35,6 @@ from orion.gpu_pool.config import DrainSpec, PoolConfig, launch_digest, load_poo
 
 from .settings import settings
 
-# Stage-4 bridge verbs (config/gpu_pool.yaml roles.<seat>.swap.load/unload) -> gpu2.transition target.
-# Deleted in 5.6; a seat without them gets a LaunchPlan instead (stage 5.2).
-BRIDGE_TARGETS = {"gpu2/agent": "agent-burst", "gpu2/restore": "diffusion"}
 MAX_RECORDED_ACTIONS = 50
 
 _file_lock = threading.Lock()
@@ -123,10 +121,10 @@ def role_plans(cfg: PoolConfig) -> dict[str, RolePlan]:
 
 
 def resolve(cfg: PoolConfig, *, role: str, action: str, cards: list[str], digest: str | None,
-            profile: str | None = None) -> str | LaunchPlan | None:
-    """What to run for a pool request, or raise Refusal: a gpu2.transition target (stage-4 bridge
-    seat), a LaunchPlan (any other swap seat), or None for ``status``. ``digest=None`` skips the
-    digest check (``status`` is a read and must still answer from a diverged checkout)."""
+            profile: str | None = None) -> LaunchPlan | None:
+    """What to run for a pool request, or raise Refusal: a LaunchPlan for a swap seat's load/unload,
+    or None for ``status``. ``digest=None`` skips the digest check (``status`` is a read and must still
+    answer from a diverged checkout)."""
     spec = cfg.roles.get(role)
     if spec is None:
         raise Refusal("unknown_role")
@@ -145,14 +143,6 @@ def resolve(cfg: PoolConfig, *, role: str, action: str, cards: list[str], digest
         # Residents are started only as a seat's evictions (restore), never loaded on their own:
         # a direct load could put them on a card a loaded seat still holds.
         raise Refusal("not_a_swap_seat")
-    if spec.swap.bridged:
-        if profile is not None:
-            raise Refusal("bridge_cannot_set_profile")   # the fixed gpu2 transitions have no model choice
-        verb = spec.swap.load if action == "load" else spec.swap.unload
-        target = BRIDGE_TARGETS.get(verb or "")
-        if target is None:
-            raise Refusal("bridge_verb_unsupported")
-        return target
     return build_plan(cfg, role, profile)
 
 
@@ -163,7 +153,7 @@ def _empty() -> dict[str, Any]:
 
 
 def read_state() -> dict[str, Any]:
-    path = Path(settings.GPU2_POOL_FENCE_STATE_PATH)
+    path = Path(settings.GPU_POOL_FENCE_STATE_PATH)
     with _file_lock:
         if not path.exists():
             return _empty()
@@ -175,7 +165,7 @@ def read_state() -> dict[str, Any]:
 
 def write_state(state: dict[str, Any]) -> None:
     """Atomic replace + fsync: the generation must be durable before any container is touched."""
-    path = Path(settings.GPU2_POOL_FENCE_STATE_PATH)
+    path = Path(settings.GPU_POOL_FENCE_STATE_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with _file_lock:
@@ -226,10 +216,9 @@ async def authority(req, *, require_drained=True):
 
 
 def _authority(req, check_digest=True):
-    """gpu2.authority(): the transition in progress must still be the
-    newest generation accepted for gpu2, and the checkout must still match the digest it was
-    accepted under. Drain/idle *safety* stays in gpu2.transition; whether-to-act (thermal, visual
-    baseline, lease recall) is pool policy and is not re-asked here."""
+    """The action in progress must still be the newest generation accepted for its card set,
+    and the checkout must still match the digest it was accepted under. Drain/idle *safety* stays in
+    launch_exec; whether-to-act (thermal, lease recall) is pool policy and is not re-asked here."""
     state = read_state()
     flight = state.get("in_flight") or {}
     if flight.get("action_id") != req.operation_id or flight.get("generation") != req.generation:

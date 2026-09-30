@@ -139,24 +139,17 @@ class LaunchSpec(BaseModel):
 class SwapSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
     evicts: list[str] | Literal["all"]
-    # Stage-4 bridge verbs (the controller maps them to its fixed gpu2 transitions); deleted in
-    # stage 5. A seat without them must carry a `launch` on itself and every role it evicts.
-    load: str | None = None
-    unload: str | None = None
+    # Stage 5.6 deleted the stage-4 bridge verbs (`load`/`unload`); extra="forbid" refuses a YAML
+    # that still carries them. A seat is actuated only through the `launch` on itself and every
+    # role it evicts.
     after_wait_sec: float | None = Field(None, ge=0)   # per-seat override of defaults.swap_after_wait_sec
     guards: list[SwapGuard] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _bridge_pair(self):
-        if (self.load is None) != (self.unload is None):
-            raise ValueError("swap.load and swap.unload come as a pair")
+    def _unique_guards(self):
         if len(set(self.guards)) != len(self.guards):
             raise ValueError("swap.guards has duplicates")
         return self
-
-    @property
-    def bridged(self) -> bool:
-        return self.load is not None
 
 
 class RoleSpec(BaseModel):
@@ -263,12 +256,7 @@ class PoolConfig(BaseModel):
                     if card in self.cards and self.cards[card].index is None:
                         errors.append(f"role {name}: has a launch but card {card} has no index")
         for name, role in self.roles.items():
-            if role.swap is not None and role.swap.bridged and role.launch is not None and role.launch.profiles:
-                # The pool sends launch.profiles[0] on every load, and the controller refuses any
-                # profile for a bridged seat (bridge_cannot_set_profile): every load would fail.
-                errors.append(f"role {name}: launch.profiles on a seat with load/unload bridge verbs; the bridge "
-                              f"cannot set a profile, so every load would be refused")
-            if role.swap is None or role.swap.bridged:
+            if role.swap is None:
                 continue
             if role.operator_only and role.launch is None:
                 # Operator-only seat nothing can load yet (experiment, stage 5 Decision 3). Stays
@@ -277,8 +265,8 @@ class PoolConfig(BaseModel):
                 continue
             unlaunched = [r for r in [name, *self.evicted_by(name)] if r in self.roles and self.roles[r].launch is None]
             if unlaunched:
-                errors.append(f"role {name}: swap seat has no load/unload bridge, so it and every role it "
-                              f"evicts need a launch; missing on {unlaunched}")
+                errors.append(f"role {name}: swap seat and every role it evicts need a launch; "
+                              f"missing on {unlaunched}")
         for name, act in self.actuators.items():
             if act.host != self.host.name:
                 errors.append(f"actuator {name}: host {act.host} is not the pool host {self.host.name}")
@@ -362,7 +350,7 @@ class PoolConfig(BaseModel):
 
 
 def launch_digest(cfg: PoolConfig, role: str) -> str:
-    """sha256 over what an actuation of ``role`` would touch: its launch, its swap bridge, and the
+    """sha256 over what an actuation of ``role`` would touch: its launch, its swap evictions, and the
     launch of every role it evicts. Pool and actuator each compute it from their own copy of
     config/gpu_pool.yaml; GpuActuateV1.launch_digest carries the pool's, and the actuator refuses on
     a mismatch (a stale checkout on one side must not start the wrong thing). Key order, comments
@@ -387,8 +375,11 @@ def launch_digest(cfg: PoolConfig, role: str) -> str:
     spec = cfg.roles[role]
     body = {
         "role": role, **one(role),
-        "swap": ({"load": spec.swap.load, "unload": spec.swap.unload, "evicts": sorted(evicted)}
-                 if spec.swap else None),
+        # "load"/"unload" are the stage-4 bridge verbs, deleted in 5.6 and always null since the 5.3
+        # cutover. The nulls stay in the hashed body so every digest keeps its deployed value: a pool
+        # and an actuator on either side of 5.6 still agree, and 5.6 needs no lockstep deploy
+        # (test_stage5_6_digest_is_unchanged_by_the_bridge_removal pins it).
+        "swap": ({"load": None, "unload": None, "evicts": sorted(evicted)} if spec.swap else None),
         "evicted": {r: one(r) for r in sorted(evicted)},
     }
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

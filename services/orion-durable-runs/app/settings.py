@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import Field, model_validator
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 from orion.schemas.durable_run import DURABLE_RUN_REQUEST_CHANNEL, DURABLE_RUN_STATE_CHANNEL
@@ -53,12 +53,7 @@ class Settings(BaseSettings):
     # Admitted runs (resource admission) are driven here on GPU pool holds (stage 4.5): the pool is
     # the only scheduler. The broker, widening and gpu2 elastic keys were deleted with the broker.
     admission_enabled: bool = Field(False, alias="DURABLE_RUNS_ADMISSION_ENABLED")
-    # Gateway capacity permits for world-model and the visual chain (/capacity). NOT GPU pool
-    # holds; stays until stage 5 moves those onto pool leases.
-    capacity_enabled: bool = Field(False, alias="DURABLE_RUNS_CAPACITY_ENABLED")
     admission_tick_sec: float = Field(5.0, gt=0.0, alias="DURABLE_RUNS_ADMISSION_TICK_SEC")
-    # Capacity permit TTL (/capacity). Admitted runs' holds use the pool's hold_lease_ttl_sec.
-    lease_seconds: float = Field(90.0, ge=15.0, alias="DURABLE_RUNS_LEASE_SECONDS")
     # How often a working run heartbeats its pool hold (must be at most half the pool's
     # hold_lease_ttl_sec, checked at startup) and how often a Door-A hold is kept alive.
     lease_heartbeat_sec: float = Field(15.0, gt=0.0, alias="DURABLE_RUNS_LEASE_HEARTBEAT_SEC")
@@ -105,12 +100,6 @@ class Settings(BaseSettings):
     # interpret, caption runs the vision caption). generate waits max(this, brief.timeout_sec).
     # A timeout is a retry (backoff, no attempt spent), bounded only by the run's deadline.
     reverie_visual_step_timeout_sec: float = Field(600.0, gt=0.0, alias="DURABLE_RUNS_REVERIE_VISUAL_STEP_TIMEOUT_SEC")
-
-    @model_validator(mode="after")
-    def valid_lease_heartbeat(self):
-        if self.lease_heartbeat_sec >= self.lease_seconds:
-            raise ValueError("lease heartbeat interval must be shorter than lease duration")
-        return self
 
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL

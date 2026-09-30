@@ -113,6 +113,6 @@ The shared-wrapper parse change only takes effect on the next `orion-llamacpp-ho
 
 ## PR link
 
-<link>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2420
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

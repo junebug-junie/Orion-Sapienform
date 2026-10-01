@@ -282,6 +282,10 @@ Loads are blocked -- reported as `swap_requested {actuated: false, reason}` -- b
 `guard:visual_baseline` was deleted in stage 5.4: a reverie-visual run's diffusion hold reclaims gpu2
 through the queue (owner reclaim) instead. Guards are read every
 `GPU_POOL_GUARD_REFRESH_SEC` outside the lease lock; a guard never read blocks.
+A blocked swap (load or unload, including an unload held back by `cooldown` after a refused or
+failed action) is reported **once per episode** -- same seat, action and reason -- not once per
+tick. A new reason, or the block clearing and recurring, is a new episode and is reported again.
+`swap_started`/`swapped`/`swap_failed` are never deduplicated (stage 6.1).
 
 The Hub GPU-pool panel shows each card's `swap_state` (fault in red), the action in flight or last
 finished, cooldown/residency, which guard blocks, and every hold with the calls running in it.

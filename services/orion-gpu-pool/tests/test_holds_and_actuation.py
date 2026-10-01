@@ -843,3 +843,94 @@ def test_min_ctx_hold_loads_gpu2_once_seen_even_after_a_pool_restart():
         [load] = actuations(rt2)
         assert (load.role, load.action) == (SEAT, "load")
     run(go())
+
+
+# --- stage 6.1: a blocked swap is reported once per episode -----------------------------------
+async def loaded_idle_seat_with_a_refused_unload(rt, clock):
+    """The 2026-09-30 08:45 shape: agent-gpu2 loaded and idle, its idle unload refused by the
+    actuator, so every tick the scheduler asks for the unload again while the card cools down."""
+    home, waiting = await demand_gpu2(rt, clock)
+    [load] = actuations(rt)
+    await result(rt, load, "accepted")
+    rt._world.up.add(SEAT)
+    rt._world.up.discard("diffusion")
+    await result(rt, load, "succeeded", observed={SEAT: "running", "diffusion": "exited"})
+    await step(rt, clock, 30, beat=[home.lease_id, waiting.lease_id])
+    await rt.release(waiting.lease_id, "ok")
+    await step(rt, clock, CFG.defaults.swap_idle_unload_sec + 5, beat=[home.lease_id], every=10)
+    unload = actuations(rt)[-1]
+    assert unload.action == "unload"
+    await result(rt, unload, "refused", reason="upstream_not_idle:agent-gpu2")
+    assert rt.cards["gpu2"].cooldown_until > clock()
+    return home
+
+
+def blocked(rt):
+    return [(e["reason"], e["detail"]["action"]) for e in rt.bus.events("swap_requested")]
+
+
+def test_cooldown_blocked_unload_is_reported_once_per_episode_not_every_tick():
+    """Live 2026-09-30 08:45-08:55 UTC: 628 swap_requested{reason=cooldown} rows, one per 1 s tick.
+    The runtime rewrote the scheduler's SwapUnload into SwapBlocked(cooldown) and remembered it
+    under the rewritten key, but the tick's keep-set used the original SwapUnload key, so the
+    memory was wiped every tick and the next tick reported it again."""
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        home = await loaded_idle_seat_with_a_refused_unload(rt, clock)
+        grammar_before = len(rt.bus.grammar())
+        await step(rt, clock, 60, beat=[home.lease_id], every=1)        # 60 ticks inside the cooldown
+        assert blocked(rt) == [("cooldown", "unload")]                 # one episode, one event
+        assert len(rt.bus.grammar()) - grammar_before == 1              # and one grammar atom
+        n_actuations = len(actuations(rt))
+
+        # reason change inside the block is a new episode: pause, then resume while still cooling
+        await rt.control(GpuPoolControlV1(verb="pause_actuation", actor="juniper"))
+        await step(rt, clock, 5, beat=[home.lease_id], every=1)
+        assert blocked(rt) == [("cooldown", "unload"), ("actuation_paused", "unload")]
+        await rt.control(GpuPoolControlV1(verb="resume_actuation", actor="juniper"))
+        await step(rt, clock, 5, beat=[home.lease_id], every=1)
+        assert blocked(rt) == [("cooldown", "unload"), ("actuation_paused", "unload"), ("cooldown", "unload")]
+        assert len(actuations(rt)) == n_actuations                     # nothing was sent while blocked
+
+        # the block clears: the unload really goes out (never suppressed), is refused again, and
+        # the new cooldown is a new episode -> reported again, once
+        started = len(rt.bus.events("swap_started"))
+        await step(rt, clock, CFG.defaults.swap_cooldown_sec, beat=[home.lease_id], every=10)
+        assert len(rt.bus.events("swap_started")) == started + 1
+        again = actuations(rt)[-1]
+        assert again.action == "unload" and len(actuations(rt)) == n_actuations + 1
+        await result(rt, again, "refused", reason="upstream_not_idle:agent-gpu2")
+        await step(rt, clock, 30, beat=[home.lease_id], every=1)
+        assert blocked(rt).count(("cooldown", "unload")) == 3
+    run(go())
+
+
+def test_scheduler_blocked_load_is_still_reported_once_per_episode():
+    """The scheduler's own SwapBlocked(cooldown) after a refused load stays edge-triggered."""
+    async def go():
+        rt, clock = make()
+        await boot(rt)
+        home, _ = await demand_gpu2(rt, clock)
+        [msg] = actuations(rt)
+        await result(rt, msg, "refused", reason="launch_digest_mismatch")
+        await step(rt, clock, 60, beat=[home.lease_id], every=1)
+        assert blocked(rt) == [("cooldown", "load")]
+    run(go())
+
+
+def test_a_paused_swap_whose_wanted_reason_changes_is_a_new_episode():
+    """The episode key is the reason actually reported plus the scheduler's own reason: while paused,
+    an idle unload that becomes a max_hold unload is new information, a repeat is not."""
+    from orion.gpu_pool.scheduler import SwapUnload
+    async def go():
+        rt, _ = make()
+        await boot(rt)
+        await rt.control(GpuPoolControlV1(verb="pause_actuation", actor="juniper"))
+        k1 = await rt._swap(SwapUnload(SEAT, "idle"))
+        assert await rt._swap(SwapUnload(SEAT, "idle")) == k1
+        await rt._swap(SwapUnload(SEAT, "max_hold"))
+        got = [(e["reason"], e["detail"]["wanted"]) for e in rt.bus.events("swap_requested")]
+        assert got == [("actuation_paused", "idle"), ("actuation_paused", "max_hold")]
+        assert actuations(rt) == []
+    run(go())

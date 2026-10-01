@@ -589,8 +589,10 @@ class PoolRuntime:
                     await self._report_serialized(d, by_id.get(d.lease_id))
                     continue
                 if isinstance(d, (SwapLoad, SwapUnload, SwapBlocked)):
-                    swaps.add(self._swap_key(d))
-                    await self._swap(d)
+                    # Keep the key _swap actually reported under: it may rewrite the decision
+                    # (a cooled-down unload becomes SwapBlocked(cooldown)). Keeping the scheduler's
+                    # own key here wiped that memory every tick -- 628 events in 10 min on 09-30.
+                    swaps.add(await self._swap(d))
                     continue
                 event: dict[str, Any] = {"type": _EVENT_FOR[type(d)], "reason": getattr(d, "reason", None)}
                 if isinstance(d, Grant):
@@ -668,31 +670,33 @@ class PoolRuntime:
         self._serialized_reported.add(key)   # only once sent: a failed publish is retried next tick
 
     @staticmethod
-    def _swap_key(d: SwapLoad | SwapUnload | SwapBlocked) -> tuple:
-        return (type(d).__name__, d.role, d.reason if isinstance(d, SwapBlocked) else None)
+    def _swap_key(role: str, action: str, reason: str, wanted: str) -> tuple:
+        """One reporting episode: seat + action + the reason reported + the scheduler's own reason.
+        Never the guard's state text or anything else that can change tick to tick (a key that
+        flips re-fires every tick)."""
+        return (role, action, reason, wanted)
 
-    async def _swap(self, d: SwapLoad | SwapUnload | SwapBlocked) -> None:
+    async def _swap(self, d: SwapLoad | SwapUnload | SwapBlocked) -> tuple:
         """A seat with a launch block is actuated. While actuation is paused, for a seat with no launch
         block, and for every blocked load, the decision is reported as ``swap_requested {actuated:
-        false}`` instead (edge-triggered: once when it starts, again if it recurs later)."""
+        false}`` instead -- once per episode (same seat, action and reason); a new reason, or the block
+        clearing and recurring, is a new episode. Returns the episode key the caller must keep alive
+        for this tick."""
+        action = "unload" if isinstance(d, SwapUnload) else "load"
         if d.role in self._reconciling and not isinstance(d, SwapBlocked):
-            return   # the actuator has not said yet what the card holds: decide again next tick
+            # the actuator has not said yet what the card holds: decide again next tick
+            return self._swap_key(d.role, action, "reconciling", d.reason)
         paused = self.paused is not None and isinstance(d, (SwapLoad, SwapUnload))
         if isinstance(d, (SwapLoad, SwapUnload)) and d.role in self.actuated and not paused:
             now = self.now()
             if not any(c.cooldown_until and c.cooldown_until > now for c in self._seat_cards(d.role)):
                 await self._begin_actuation(d)
-                return
+                return self._swap_key(d.role, action, "actuated", d.reason)
             # Backoff after a refused/unanswered action. The scheduler already reports blocked
             # LOADS; an unload has no scheduler-side cooldown, and without this a dead actuator
             # would get a fresh unload every actuate_ack_sec.
-            d = SwapBlocked(d.role, "cooldown", "unload" if isinstance(d, SwapUnload) else "load")
-        key = self._swap_key(d)
-        if key in self._swap_requested:
-            return
-        self._swap_requested.add(key)
-        detail: dict[str, Any] = {"action": "unload" if isinstance(d, SwapUnload) else "load",
-                                  "actuated": False, "mode": self.mode}
+            d = SwapBlocked(d.role, "cooldown", action)
+        detail: dict[str, Any] = {"action": action, "actuated": False, "mode": self.mode}
         reason = d.reason
         if isinstance(d, SwapBlocked):
             detail.update(blocked=True, guard_state=d.detail)
@@ -702,9 +706,15 @@ class PoolRuntime:
         elif d.role not in self.actuated:
             reason = f"not_actuatable:{d.role}"
             detail.update(wanted=d.reason)
+        key = self._swap_key(d.role, action, reason, d.reason)
+        if key in self._swap_requested:
+            return key
         await self._emit(GpuPoolEventV1(
             event="swap_requested", role=d.role, cards=list(self.cfg.roles[d.role].cards), reason=reason,
             detail=detail))
+        # After the emit: an emit that raises is retried next tick (publish errors are swallowed inside).
+        self._swap_requested.add(key)
+        return key
 
     # --- actuation engine -----------------------------------------------------------------
     def _seat_cards(self, seat: str) -> list[CardLive]:

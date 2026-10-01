@@ -110,7 +110,7 @@ def test_a_full_run_walks_every_node_in_order_and_journals_once() -> None:
     assert len(world.journal_entries) == 1
     entry = world.journal_entries[0]
     assert entry.source_ref == f"curiosity:{req.run_id}" and entry.source_kind == "self_study"
-    assert "Offered 12 of 40 approved concepts" in entry.body and "Wrote to its own graph: Finding 3, Prior 1" in entry.body
+    assert "Offered 12 of 40 saved concepts" in entry.body and "Wrote to its own graph: Finding 3, Prior 1" in entry.body
     detail = finish_detail(final)
     assert detail["reach_out"] is True and detail["finding_text"] == "found it" and detail["attempts"] == 1
     snap = asyncio.run(graph.aget_state(_cfg(req.run_id)))

@@ -10,7 +10,19 @@ Subscribes to `orion:memory:turn:persisted` (sql-writer post-commit outbox), cla
 | `graph_draft` | Legacy path: LLM `memory_graph_suggest` + pending graph draft insert (manual bridge only) |
 | `skip_only` | Run gate for traceability; always mark window skipped — no crystallization or graph draft |
 
-Gate thresholds: `MEMORY_CONSOLIDATION_MIN_NOVELTY` (default `0.35`), `MEMORY_CONSOLIDATION_MIN_SIGNIFICANCE` (default `0.40`). Both floors require the window not be all low-info-social (`is_low_info_social` on every turn's prompt and response) as corroboration — a bare novelty/significance float alone is not sufficient, since a noisy classifier score on a short greeting-only turn was previously enough to crystallize it (`repair_signal` and `substantive_shift` are unaffected; they already require an independent shift-kind classification).
+Gate thresholds: `MEMORY_CONSOLIDATION_MIN_NOVELTY` (default `0.35`), `MEMORY_CONSOLIDATION_MIN_SIGNIFICANCE` (default `0.40`).
+
+**Junk check runs first (memory redesign Stage 0A).** Before any other rule, the gate judges each turn's *user prompt alone* (`orion/memory/intake_junk.py`): greetings/filler ("sup", "ty!", "you back?"; never anything with a negation, a non-English-script letter, or a question about a real topic) and Hub skill commands (aliases from the real workflow registry, `orion/cognition/workflows/registry.py`: "Run github compactor.", "Do a journal pass.", "Compact the last 24 hours of chat into a memory digest."; a command followed by real content, like "Do a journal pass about my labs", is a memory) are junk. A window whose prompts are all junk is skipped (`low_info_social` / `hub_command`), even with a repair signal or a high novelty score. Orion's reply is no longer part of this judgment: it is almost never small talk, so "prompt AND reply are low-info" admitted every greeting. A kept window's row summary is its last *non-junk* prompt, so ["Headed to Austin…", "sup yo"] is saved as the Austin line, not "sup yo".
+
+`repair_signal` now means real repair pressure: the Hub only emits the grammar atom at or above the repair contract's `concrete_bias` level (0.45, `orion.substrate.appraisal.contract.REPAIR_SIGNAL_LEVEL_FLOOR`), not whenever an appraisal ran (~96% of turns before).
+
+Replay eval over 30 days of real chat windows (fixture redacted: only junk and spec-quoted lines are verbatim):
+
+```bash
+python services/orion-memory-consolidation/evals/run_intake_gate_replay_eval.py            # replay fixture
+python services/orion-memory-consolidation/evals/run_intake_gate_replay_eval.py --refresh  # re-capture, read-only
+pytest services/orion-memory-consolidation/evals -q
+```
 
 Grammar repair evidence (read-only): `MEMORY_CONSOLIDATION_FETCH_GRAMMAR_EVIDENCE=true` queries `grammar_events` by `hub.chat:{NODE_NAME}:{correlation_id}` trace. Optional override DSN: `MEMORY_CONSOLIDATION_GRAMMAR_DSN`.
 

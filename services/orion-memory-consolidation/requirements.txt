@@ -8,3 +8,4 @@ psycopg2-binary==2.9.9
 rdflib==7.0.0
 chromadb==0.4.24
 numpy==1.26.4
+requests==2.32.3

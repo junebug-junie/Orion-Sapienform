@@ -303,6 +303,8 @@ async def _publish_unified_turn_chat_grammar(
         from scripts.grammar_publish import publish_hub_chat_grammar_trace
         from scripts.pre_turn_appraisal_wiring import repair_pressure_grammar_scalars
 
+        from orion.substrate.appraisal.contract import is_repair_signal
+
         repair_pressure_level, repair_pressure_confidence = repair_pressure_grammar_scalars(
             pre_turn_bundle=repair_bundle,
             substrate_summary=None,
@@ -314,7 +316,13 @@ async def _publish_unified_turn_chat_grammar(
             word_count=len((user_message or "").split()),
             repair_pressure_level=repair_pressure_level,
             repair_pressure_confidence=repair_pressure_confidence,
-            has_repair_signal=repair_bundle is not None,
+            # Real repair pressure only (the level at which the repair
+            # contract steers the reply), not "an appraisal ran" -- that
+            # was true for ~96% of turns and fed nearly every chat window
+            # into memory as a "repair". The sub-floor reading still
+            # travels on its own atom.
+            has_repair_signal=is_repair_signal(repair_pressure_level),
+            has_repair_pressure_reading=repair_bundle is not None,
             stance_disposition=stance_disposition,
             stance_disposition_reasons=stance_disposition_reasons,
             stance_boundary_register=stance_boundary_register,

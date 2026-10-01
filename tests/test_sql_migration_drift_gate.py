@@ -538,19 +538,20 @@ def test_commit_times_use_the_merge_time_not_the_branch_commit_time(tmp_path):
     assert first == last == datetime(2026, 2, 10, tzinfo=timezone.utc)
 
 
+@pytest.fixture(scope="module")
+def corpus():
+    try:
+        times = d.commit_times(REPO_ROOT)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"git history unavailable: {exc}")
+    if len(times) < 100:
+        pytest.skip("shallow history")
+    return d.load_files(REPO_ROOT, times, now=NOW, include_uncommitted=False)
+
+
 class TestRealCommitOrder:
     """Review finding 5: real_corpus() replays by FILE NAME. These replay the real corpus in the
     real first-parent order when history is available (CI static gates fetch full history)."""
-
-    @pytest.fixture(scope="class")
-    def corpus(self):
-        try:
-            times = d.commit_times(REPO_ROOT)
-        except Exception as exc:  # noqa: BLE001
-            pytest.skip(f"git history unavailable: {exc}")
-        if len(times) < 100:
-            pytest.skip("shallow history")
-        return d.load_files(REPO_ROOT, times, now=NOW, include_uncommitted=False)
 
     def test_real_order_fully_applied_is_green_and_gpu_legacy_is_superseded(self, corpus):
         r = d.evaluate(corpus, fully_applied(corpus), now=NOW, window_days=None)

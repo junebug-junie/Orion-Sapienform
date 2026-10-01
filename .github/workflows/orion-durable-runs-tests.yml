@@ -137,7 +137,10 @@ jobs:
         run: python services/orion-durable-runs/evals/deploy_order_skew.py
 
   gateway:
-    name: Gateway — shared capacity and transport lifecycle
+    # Renamed in GPU pool stage 6.6: the gateway's /capacity broker and shared-capacity
+    # lifecycle were deleted in stages 4.6/5.6; this job now runs the gateway suite (pool
+    # dispatch, passthrough, transport).
+    name: Gateway — GPU pool dispatch and transport
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

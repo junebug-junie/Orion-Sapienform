@@ -88,3 +88,15 @@ def test_journal_body_is_never_trimmed_but_card_prose_is():
     out = mr.assemble(SPEC, _inputs(1), [{**_digest(["#0"], body), "card_summary": "y" * 5000}], None, window_label="d")
     assert out["digest"]["journal_body"] == body
     assert len(out["digest"]["card_summary"]) < 5000 and "card_summary" in out["trimmed_fields"]
+
+
+def test_digest_request_turns_thinking_off_through_the_forwarded_switch():
+    """Live 2026-09-30 corr 2af9b6ea: thinking stayed on (48k chars reasoning, cut at 16000
+    tokens) because the old ``reasoning.effort=none`` option had no consumer. cortex-exec only
+    forwards ``chat_template_kwargs`` to the gateway."""
+    for spec in mr.SPECS.values():
+        payload = mr.build_digest_request_payload(spec, {"items": []}, workflow_id="w",
+                                                  correlation_id="c", session_id="s")
+        req = CortexClientRequest.model_validate(payload)
+        assert req.options["chat_template_kwargs"] == {"enable_thinking": False}
+        assert "reasoning" not in req.options

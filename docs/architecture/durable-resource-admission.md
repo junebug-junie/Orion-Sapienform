@@ -1,5 +1,8 @@
 # Durable resource admission: implementation evidence and ADR
 
+> **SUPERSEDED by the GPU pool (2026-10-01, stage 6.6).** durable resource admission (`durable_admission_*`, the gateway `/capacity` broker and lease validation) was replaced by `orion-gpu-pool` leases and deleted in stages 4.6-5.6. `durable_admission_runs` and `durable_resource_events` are still live tables (see the stage 6 spec), but the admission logic described here is not. Current design: `docs/superpowers/specs/2026-09-24-gpu-pool-design.md` and `docs/superpowers/specs/2026-09-30-gpu-pool-stage6-telemetry-reducers-lockdown.md`. Not deleted: it holds incident evidence.
+
+
 ## Evidence before implementation (2026-09-12)
 
 The existing service `services/orion-durable-runs` already depends on

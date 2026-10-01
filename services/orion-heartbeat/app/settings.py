@@ -109,5 +109,13 @@ class Settings(BaseSettings):
     # events rather than unbounded memory growth.
     absorb_queue_maxsize: int = Field(10_000, alias="HEARTBEAT_ABSORB_QUEUE_MAXSIZE")
 
+    # Wall-clock window for organ occupancy (dark_seats / organ_fire_counts /
+    # organ_distinctness). Replaces the old 64-event count window, which read
+    # rare organs as dark by sampling. Must be long enough that a rare-but-
+    # healthy organ (cortex-orch ~26/h) usually fires inside it; dark_seats is
+    # still only a "silent this window" fact -- use organ_seconds_since_last_fire
+    # to tell dark from rare.
+    organ_fire_window_sec: float = Field(300.0, alias="HEARTBEAT_ORGAN_FIRE_WINDOW_SEC")
+
 
 settings = Settings()

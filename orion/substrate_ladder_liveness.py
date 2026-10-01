@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Iterable, Mapping, Optional, Sequence
 
 from orion import schema_skew_discovery as ssd
+from orion.sql_migration_drift import DriftReport, alert_lines
 
 # ---------------------------------------------------------------------------
 # 1. Ladder freshness
@@ -428,6 +429,13 @@ class LadderReport:
     rungs: list[RungResult] = field(default_factory=list)
     skew: list[SkewResult] = field(default_factory=list)
     cannot_check: list[str] = field(default_factory=list)
+    # Merged hand-applied SQL migrations vs the live schema (orion/sql_migration_drift.py).
+    # None = the section did not run this tick (skipped or could not check).
+    migrations: Optional[DriftReport] = None
+
+    @property
+    def red_migrations(self) -> list:
+        return self.migrations.red_files if self.migrations is not None else []
 
     @property
     def red_rungs(self) -> list[RungResult]:
@@ -439,12 +447,13 @@ class LadderReport:
 
     @property
     def red(self) -> bool:
-        return bool(self.red_rungs or self.red_skew)
+        return bool(self.red_rungs or self.red_skew or self.red_migrations)
 
     def red_keys(self) -> list[str]:
         """Stable identifiers for debounce: one per failing rung / skewed container."""
         keys = [f"rung:{r.rung}" for r in self.red_rungs]
         keys += [s.key for s in self.red_skew]
+        keys += [f.key for f in self.red_migrations]
         return sorted(set(keys))
 
     def green_keys(self) -> list[str]:
@@ -467,6 +476,10 @@ class LadderReport:
             s.key for s in self.skew
             if not s.red and s.status not in ("unknown", "not_running", "no_writer") and s.key not in red
         })
+        # Only files the migration section actually evaluated this tick; a tick where it
+        # could not run leaves migrations=None, so a DB blip cannot re-arm a delivered card.
+        if self.migrations is not None:
+            keys += self.migrations.green_keys()
         return sorted(keys)
 
     def severity(self) -> str:
@@ -490,6 +503,8 @@ class LadderReport:
                 seen.add(s.key)
                 lines.append(f"- {s.container} ({s.service_dir}) reading {s.schema} from {s.producer or '?'}: {s.detail}")
             lines.append("Rebuild/redeploy those readers; a forbid-model change is a consumer-first migration.")
+        if self.red_migrations:
+            lines += alert_lines(self.migrations)
         return "\n".join(lines)
 
     def to_dict(self) -> dict:
@@ -517,6 +532,19 @@ class LadderReport:
                     "detail": s.detail,
                 }
                 for s in self.skew
+            ],
+            "migrations": None if self.migrations is None else [
+                {
+                    "file": f.name,
+                    "status": f.status,
+                    "red": f.red,
+                    "in_window": f.in_window,
+                    "changed_at": f.changed_at.isoformat(),
+                    "problems": [{"kind": p.kind, "name": p.name, "status": p.status} for p in f.problems],
+                    "apply": f.apply_command() if f.red else None,
+                }
+                for f in self.migrations.files
+                if f.in_window
             ],
         }
 

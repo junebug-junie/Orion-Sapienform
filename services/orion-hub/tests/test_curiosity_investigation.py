@@ -320,7 +320,7 @@ def test_the_journal_records_what_was_offered() -> None:
     bus = _FakeBus()
     assert asyncio.run(_loop(bus).tick()) is None
     body = bus.journal[0][1].payload["body"]
-    assert "Offered 4 of 268 approved concepts" in body
+    assert "Offered 4 of 268 saved concepts" in body
     assert "sampled at random" in body
     assert "14 harness steps" in body
 

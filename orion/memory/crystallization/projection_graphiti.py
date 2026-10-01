@@ -20,6 +20,10 @@ class GraphitiProjectionResult:
     synced_at: datetime | None = None
     canonical_mutated: bool = False
     remote_response: dict[str, Any] | None = None
+    # Set when the adapter call failed (DNS, connection, HTTP error, bad JSON).
+    # Callers surface it; before this the failure lived only in a warning log
+    # and an approval looked exactly like a success with no episode.
+    error: str | None = None
 
 
 class GraphitiAdapter:
@@ -68,7 +72,7 @@ class GraphitiAdapter:
                 data = resp.json()
         except Exception as exc:
             logger.warning("graphiti_sync_failed id=%s error=%s", crystallization.crystallization_id, exc)
-            return GraphitiProjectionResult()
+            return GraphitiProjectionResult(error=f"{type(exc).__name__}: {exc}")
 
         if data.get("skipped"):
             return GraphitiProjectionResult(
@@ -119,7 +123,7 @@ class GraphitiAdapter:
                 data = resp.json()
         except Exception as exc:
             logger.warning("graphiti_sync_failed id=%s error=%s", crystallization.crystallization_id, exc)
-            return GraphitiProjectionResult()
+            return GraphitiProjectionResult(error=f"{type(exc).__name__}: {exc}")
 
         if data.get("skipped"):
             return GraphitiProjectionResult(

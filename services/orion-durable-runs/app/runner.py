@@ -652,13 +652,20 @@ class DurableRunner:
         undecodable reply, non-ok result, and anything ``strict_final_text`` refuses -- so an
         admitted graph node counts it as an attempt instead of finishing on it. ``gpu_lease``
         attaches the call to the run's pool hold (``options.gpu_lease``); ``llm_route`` stays the
-        brief's route."""
+        brief's route.
+
+        Thinking is OFF (``chat_template_kwargs.enable_thinking=False``, the repo's standard
+        switch): these are prose verbs whose answer IS the output, and hidden reasoning counts
+        against ``max_tokens``. Live 2026-09-30, the first orion_day note spent all 12000 tokens
+        (32k chars) planning and emitted no note -> ``verb_truncated_at_max`` on every attempt.
+        A future caller that needs reasoning must not reuse this helper as is."""
         request = CortexClientRequest(
             mode="brain",
             route_intent="none",
             verb=verb,
             options={
                 "policy_dispatch_only": True,
+                "chat_template_kwargs": {"enable_thinking": False},
                 **({"llm_route": llm_route} if llm_route else {}),
                 **({"gpu_lease": gpu_lease.model_dump(mode="json")} if gpu_lease is not None else {}),
             },

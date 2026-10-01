@@ -403,6 +403,15 @@ No PR in this sequence adds a database migration. Schema and contract changes:
   - a registry check;
   - consumer-first deploy: every reader of `orion:gpu_pool:state` (Hub, gateway) before the pool.
 
+## Juniper's answers (2026-10-01, "hit it" = take the recommendations)
+
+1. **Keep one slot free for one-off calls?** Decide after 7.1's measurements. 7.3 makes it a setting either way.
+2. **If the #27148 leak reproduces**, turn the idle-slot RAM prompt cache off on every multi-slot lane, metacog/fast included. Privacy over cache reuse.
+3. **The #2434 gpu0 default** merged with #2434. It is fixed by 7.0 (Bonsai never on gpu0; gpu1 and gpu2 only).
+4. **6.2's 48 h checkpoint finishes before 7.2 changes gpu2's model or slots.**
+
+Also decided: HTTP passthrough calls stay out of `inference_failure_pressure` (6.2 ships record-only).
+
 ## Missing questions (Juniper only)
 
 1. **D1:** two holds per agent card (runs first), or keep one slot always free for one-off calls

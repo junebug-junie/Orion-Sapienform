@@ -158,7 +158,12 @@ offline synthetic/replay calibration. Busy-state behavior (`redundant`,
   (`n_trajectories`/`seeds`, for forensic replay), and substrate health
   (`max_bond`/`norm`, aggregated across all trajectories).
 - `GET /h1` — latest ensemble H1 result. Headline proprioception:
-  `dark_seats` (organs silent in the last 64 absorbs), `smear`/`smeared`
+  `dark_seats` (organs with zero fires in the last `HEARTBEAT_ORGAN_FIRE_WINDOW_SEC`
+  seconds, default 300, pruned by wall clock; an empty window reads unknown --
+  `dark_seats=[]`, `organ_fire_counts={}`, `organ_distinctness=null` -- never
+  all-dark; `organ_last_fired_at` / `organ_seconds_since_last_fire` /
+  `fire_window_sec` tell a dark organ from a merely rare one, null = never seen
+  since boot), `smear`/`smeared`
   (far/near entropy on the current profile), `organ_distinctness` (occupancy
   concentration). Also `verdict`, `mean_ratio`/`std_ratio` (mean saturates
   under real traffic — secondary), `bulk_penetration_depth`, `tick_count`,

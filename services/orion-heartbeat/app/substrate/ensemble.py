@@ -102,6 +102,10 @@ class EnsembleH1ResultV1:
     organ_distinctness: float | None = None
     smear: float | None = None
     smeared: bool | None = None
+    # Additive recency so "dark" can be told from "rare". None/empty = unknown.
+    organ_last_fired_at: dict[str, str | None] = field(default_factory=dict)
+    organ_seconds_since_last_fire: dict[str, float | None] = field(default_factory=dict)
+    fire_window_sec: float | None = None
 
 
 class EnsembleSubstrate:

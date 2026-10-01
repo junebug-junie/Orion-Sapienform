@@ -22,7 +22,11 @@
 #
 # Runbook (verify + rollback): docs/runbooks/2026-10-01-circe-llm-port-firewall.md
 #
-# Usage (as root on circe):  circe_llm_port_gate.sh apply|remove|status
+# Usage (as root on circe):  circe_llm_port_gate.sh install|uninstall|apply|remove|status
+#   One line from athena, nothing else to paste:
+#     ssh -t circe@circe sudo /mnt/scripts/Orion-Sapienform/scripts/ops/circe_llm_port_gate.sh install
+#   install   = copy this script + the systemd unit into place, enable it (applies now and every boot), show status
+#   uninstall = stop + disable the unit (removes the rules), delete the installed copies
 # DRY_RUN=1 prints the commands instead of running them (no root needed; used by the tests).
 set -euo pipefail
 
@@ -72,7 +76,25 @@ apply_family() {
   run "$ipt" -w -t mangle -I PREROUTING 1 -p tcp -m multiport --dports "$PORTS" -m addrtype --dst-type LOCAL -j "$CHAIN"
 }
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SBIN=/usr/local/sbin/orion-llm-port-gate
+UNIT=/etc/systemd/system/orion-llm-port-gate.service
+
 case "${1:-}" in
+  install)
+    run install -m 0755 "$HERE/circe_llm_port_gate.sh" "$SBIN"
+    run install -m 0644 "$HERE/orion-llm-port-gate.service" "$UNIT"
+    run systemctl daemon-reload
+    # restart, not just enable --now: re-applies the rules when the script changed on a re-install
+    run systemctl enable orion-llm-port-gate.service
+    run systemctl restart orion-llm-port-gate.service
+    run "$SBIN" status
+    ;;
+  uninstall)
+    run systemctl disable --now orion-llm-port-gate.service || true
+    run rm -f "$SBIN" "$UNIT"
+    run systemctl daemon-reload
+    ;;
   apply)
     apply_family iptables "$ATHENA_V4/32"
     apply_family ip6tables "$ATHENA_V6/128"
@@ -87,5 +109,5 @@ case "${1:-}" in
       run "$ipt" -w -t mangle -L "$CHAIN" -v -n
     done
     ;;
-  *) echo "usage: $0 apply|remove|status   (DRY_RUN=1 to print only)" >&2; exit 2 ;;
+  *) echo "usage: $0 install|uninstall|apply|remove|status   (DRY_RUN=1 to print only)" >&2; exit 2 ;;
 esac

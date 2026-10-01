@@ -91,16 +91,11 @@ ssh juniper@carbon-x1 'curl -sS -m 5 http://100.112.254.99:8011/health'
 
 ## 1. Install [GO, Juniper, sudo]
 
-On circe, after this PR merges:
+After circe's checkout has the script (it does from #2453 on):
 
 ```bash
-ssh circe@circe
-cd /mnt/scripts/Orion-Sapienform && git pull --ff-only
-sudo install -m 0755 scripts/ops/circe_llm_port_gate.sh /usr/local/sbin/orion-llm-port-gate
-sudo install -m 0644 scripts/ops/orion-llm-port-gate.service /etc/systemd/system/orion-llm-port-gate.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now orion-llm-port-gate.service
-sudo /usr/local/sbin/orion-llm-port-gate status
+# one line, from athena (asks for circe's sudo password once):
+ssh -t circe@circe sudo /mnt/scripts/Orion-Sapienform/scripts/ops/circe_llm_port_gate.sh install
 ```
 
 `status` should show, for both iptables and ip6tables: the `-j ORION-LLM-GATE` jump as the
@@ -147,10 +142,8 @@ gets through.
 SSH is never affected (the rules only touch the ports above), so rollback is always reachable.
 
 ```bash
-sudo systemctl disable --now orion-llm-port-gate.service   # ExecStop runs `remove`
-sudo /usr/local/sbin/orion-llm-port-gate remove            # belt and braces; safe to repeat
-sudo rm -f /etc/systemd/system/orion-llm-port-gate.service /usr/local/sbin/orion-llm-port-gate
-sudo systemctl daemon-reload
+# one line, from athena (stopping the unit runs `remove`):
+ssh -t circe@circe sudo /mnt/scripts/Orion-Sapienform/scripts/ops/circe_llm_port_gate.sh uninstall
 sudo iptables -t mangle -S PREROUTING | grep ORION-LLM-GATE  # prints nothing
 sudo ip6tables -t mangle -S PREROUTING | grep ORION-LLM-GATE # prints nothing
 ```

@@ -15,8 +15,10 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-# Stage 5.6: empty. The broker, its schemas, tests and evals are deleted; nothing is exempt.
-ALLOWED: tuple[str, ...] = ()
+# Stage 5.6: the broker, its schemas, tests and evals are deleted. The only exemption is the
+# stage 6.6 dead-key reporter, which names retired keys (DURABLE_RUNS_CAPACITY_*) precisely so it
+# can delete them from live .env files -- a removal list, not a caller.
+ALLOWED: tuple[str, ...] = ("scripts/report_dead_env_keys.py",)
 # A client: importing the permit client, constructing a permit, or POSTing to the routes.
 CALLER = re.compile(r"capacity_client|GpuCapacityPermit|/capacity/(acquire|renew|release)|:8121/capacity|8124/capacity"
                     r"|orion\.durable_admission|orion/durable_admission/|PostgresCapacityStore|Capacity(Acquire|Token|Permit)V1"

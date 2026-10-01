@@ -15,9 +15,8 @@ from typing import Any, List
 
 import pytest
 
-from orion.curiosity.write_stamp import WriteStamper
 from orion.harness import fcc_motor as motor
-from tests.test_curiosity_write_stamp import FakeGraph
+from orion.curiosity.tests.fake_worldview_graph import FakeGraph
 
 
 class _Stream:
@@ -107,6 +106,7 @@ async def test_hop_written_without_written_at_is_stamped_after_its_tool_result(m
     events = await _drain()
 
     assert events[-1]["type"] == "final"
+    assert graph.closed is True
     assert stamped_before_next_step["v"] is not None
     assert graph.props(created["hop"])["written_at_source"] == "harness_stamp"
     assert graph.props(legacy).get("written_at") is None
@@ -117,7 +117,10 @@ async def test_unflagged_write_still_stamped_at_turn_end(monkeypatch) -> None:
     """A write the GRAPH.QUERY check cannot see (e.g. a script) gets the end-of-turn stamp."""
     graph = FakeGraph()
     legacy = graph.create("Hop", run_id="old", n=1)
-    lines = [json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}}),
+    lines = [json.dumps({"type": "assistant", "message": {"content": [
+                 {"type": "tool_use", "id": "s1", "name": "Bash", "input": {"command": "python3 write_graph.py"}}]}}),
+             json.dumps({"type": "user", "message": {"content": [
+                 {"type": "tool_result", "tool_use_id": "s1", "content": "ok"}]}}),
              json.dumps({"type": "result", "result": "hi", "session_id": "s"})]
     created: dict[str, int] = {}
     proc = _Proc(_Stream(lines, lambda i: created.setdefault("hop", graph.create("Finding", run_id="new")) if i == 0 else None))
@@ -137,14 +140,66 @@ async def test_reading_only_turn_never_touches_the_graph(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_graph_unreachable_at_turn_start_does_not_break_the_turn(monkeypatch) -> None:
+async def test_graph_unreachable_at_turn_start_fails_closed(monkeypatch) -> None:
+    """No baseline -> no stamp ever this turn, even once the graph comes back."""
     graph = FakeGraph()
     graph.fail = True
-    proc = _Proc(_Stream(LINES))
+    created: dict[str, int] = {}
+
+    def on_line(i: int) -> None:
+        if i == 0:
+            graph.fail = False  # recovered after the baseline already failed
+        if i == 1:
+            created["hop"] = graph.create("Hop", run_id="new", n=1)
+
+    proc = _Proc(_Stream(LINES, on_line))
     _patch_motor(monkeypatch, proc, graph)
     events = await _drain()
     assert events[-1]["type"] == "final"
+    assert [c for c in graph.calls if c[0] == "GRAPH.QUERY"] == []
+    assert graph.props(created["hop"]).get("written_at") is None
 
 
-def test_motor_uses_the_curiosity_stamper() -> None:
-    assert motor.WriteStamper is WriteStamper
+@pytest.mark.asyncio
+async def test_timed_out_turn_still_stamps_at_turn_end(monkeypatch) -> None:
+    """The kill path: a node written before the stream stalls is stamped on the way out."""
+    graph = FakeGraph()
+    legacy = graph.create("Hop", run_id="old", n=1)
+    created: dict[str, int] = {}
+
+    class _Hang(_Stream):
+        async def readline(self) -> bytes:
+            if self._i >= len(self._lines):
+                await asyncio.sleep(3600)
+            return await super().readline()
+
+    tool_use_no_graph = json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "t9", "name": "Bash", "input": {"command": "python3 write_graph.py"}}]}})
+
+    def on_line(i: int) -> None:
+        if i == 0:
+            created["hop"] = graph.create("Hop", run_id="new", n=1)
+
+    proc = _Proc(_Hang([tool_use_no_graph], on_line))
+    _patch_motor(monkeypatch, proc, graph)
+    events = []
+    async for ev in motor.run_fcc_turn(
+        prompt="hi", correlation_id="corr-stamp-to", workspace="/tmp",
+        fcc_server_url="http://127.0.0.1:8082", auth_token="tok", claude_bin="claude",
+        timeout_sec=0.3,
+    ):
+        events.append(ev)
+    assert events[-1]["type"] == "error"
+    assert graph.props(created["hop"])["written_at_source"] == "harness_stamp"
+    assert graph.props(legacy).get("written_at") is None
+
+
+@pytest.mark.asyncio
+async def test_toolless_turn_skips_the_turn_end_write(monkeypatch) -> None:
+    graph = FakeGraph()
+    lines = [json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}}),
+             json.dumps({"type": "result", "result": "hi", "session_id": "s"})]
+    proc = _Proc(_Stream(lines))
+    _patch_motor(monkeypatch, proc, graph)
+    await _drain()
+    assert [c for c in graph.calls if c[0] == "GRAPH.QUERY"] == []

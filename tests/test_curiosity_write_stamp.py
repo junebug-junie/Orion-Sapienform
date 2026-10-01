@@ -7,61 +7,18 @@ no `written_at` because the kickoff prompt's example used to omit it.
 from __future__ import annotations
 
 import os
-import re
-from typing import Any
 
 import pytest
 
+from orion.curiosity.tests.fake_worldview_graph import FakeGraph
 from orion.curiosity.write_stamp import (
     STAMP_SOURCE,
     STAMPED_LABELS,
     WriteStamper,
-    baseline_cypher,
     completed_tool_use_ids,
     graph_write_tool_use_ids,
     stamp_cypher,
 )
-
-
-class FakeGraph:
-    """Executes exactly the two queries WriteStamper issues, over a node table."""
-
-    def __init__(self) -> None:
-        self.nodes: list[dict[str, Any]] = []
-        self.calls: list[tuple[str, str]] = []
-        self.clock = 1_000
-        self.fail = False
-
-    def create(self, label: str, **props: Any) -> int:
-        node_id = len(self.nodes)
-        self.nodes.append({"id": node_id, "labels": [label], "props": dict(props)})
-        return node_id
-
-    def _unstamped(self) -> list[dict[str, Any]]:
-        return [
-            n for n in self.nodes
-            if n["props"].get("written_at") is None and any(l in STAMPED_LABELS for l in n["labels"])
-        ]
-
-    def execute_command(self, cmd: str, graph: str, cypher: str) -> Any:
-        if self.fail:
-            raise ConnectionError("falkordb down")
-        self.calls.append((cmd, cypher))
-        if cypher == baseline_cypher():
-            assert cmd == "GRAPH.RO_QUERY"
-            return [["id"], [[n["id"]] for n in self._unstamped()], []]
-        match = re.match(r"CYPHER baseline=\[([0-9,]*)\] ", cypher)
-        assert match and cmd == "GRAPH.QUERY", cypher
-        baseline = {int(x) for x in match.group(1).split(",") if x}
-        self.clock += 1
-        hit = [n for n in self._unstamped() if n["id"] not in baseline]
-        for n in hit:
-            n["props"]["written_at"] = self.clock
-            n["props"]["written_at_source"] = STAMP_SOURCE
-        return [["stamped"], [[len(hit)]], []]
-
-    def props(self, node_id: int) -> dict[str, Any]:
-        return self.nodes[node_id]["props"]
 
 
 def test_new_unstamped_hop_is_stamped_and_legacy_hop_is_not() -> None:
@@ -163,6 +120,13 @@ def test_graph_write_detection_from_stream_events() -> None:
         ]},
     }
     assert graph_write_tool_use_ids(assistant) == {"w1"}
+    lower = {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "w2", "name": "Bash",
+         "input": {"command": "redis-cli graph.query orion_worldview 'CREATE (:Hop {n:2})'"}},
+        {"type": "tool_use", "id": "r2", "name": "Bash",
+         "input": {"command": "redis-cli graph.ro_query orion_worldview 'MATCH (h) RETURN h'"}},
+    ]}}
+    assert graph_write_tool_use_ids(lower) == {"w2"}
     user = {"type": "user", "message": {"content": [
         {"type": "tool_result", "tool_use_id": "w1", "content": "ok"},
     ]}}

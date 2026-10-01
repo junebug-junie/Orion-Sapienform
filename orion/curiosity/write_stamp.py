@@ -22,6 +22,12 @@ stream-json loop (`orion/harness/fcc_motor.py`). So the motor:
   3. runs the same stamp once more when the turn ends (catches a write the
      command check missed, e.g. a script; that stamp is turn-end time).
 
+Known gaps, all in the safe direction (a node stays unstamped, never faked):
+a write still in flight when a killed turn's end stamp runs (`redis-cli` is a
+grandchild of `claude`), a node whose in-turn stamp failed on a FalkorDB error,
+and a new node that reuses the internal id of a legacy node deleted mid-turn.
+Each is then in every later turn's baseline and stays unstamped for good.
+
 Legacy unstamped nodes are never touched: their real write time is unknown and
 stamping them now would fake it. Without a baseline (graph unreachable at turn
 start) nothing is stamped at all -- fail closed, never guess.
@@ -96,7 +102,7 @@ class WriteStamper:
         self.stamped_total = 0
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str], *, socket_timeout: float = 3.0) -> Optional["WriteStamper"]:
+    def from_env(cls, env: Mapping[str, str], *, socket_timeout: float = 1.0) -> Optional["WriteStamper"]:
         """None unless every curiosity graph key is present (the kill switch)."""
         host = str(env.get("ORION_CURIOSITY_GRAPH_HOST") or "").strip()
         port = str(env.get("ORION_CURIOSITY_GRAPH_PORT") or "").strip()
@@ -121,6 +127,15 @@ class WriteStamper:
             logger.warning("write_stamp_client_failed err=%s", exc)
             return None
         return cls(client=client, graph_name=graph)
+
+    def close(self) -> None:
+        """Release the per-turn connection pool; never raises."""
+        try:
+            close = getattr(self._client, "close", None)
+            if callable(close):
+                close()
+        except Exception:  # noqa: BLE001
+            pass
 
     @property
     def armed(self) -> bool:
@@ -158,7 +173,7 @@ def graph_write_tool_use_ids(event: Mapping[str, Any]) -> set[str]:
     """Ids of Bash tool calls in an assistant event whose command runs GRAPH.QUERY.
 
     Read-only inspection of the command, used only to decide WHEN to stamp. A
-    miss costs latency, not correctness: the end-of-turn stamp still runs.
+    miss costs accuracy (the end-of-turn stamp is later), never legacy safety.
     `GRAPH.RO_QUERY` does not contain the substring and cannot write."""
     if str(event.get("type") or "") != "assistant":
         return set()
@@ -168,7 +183,8 @@ def graph_write_tool_use_ids(event: Mapping[str, Any]) -> set[str]:
         if not isinstance(block, dict) or block.get("type") != "tool_use" or block.get("name") != "Bash":
             continue
         command = (block.get("input") or {}).get("command") if isinstance(block.get("input"), dict) else None
-        if isinstance(command, str) and "GRAPH.QUERY" in command and block.get("id"):
+        # redis-cli commands are case-insensitive; `graph.ro_query` still does not match.
+        if isinstance(command, str) and "graph.query" in command.lower() and block.get("id"):
             out.add(str(block["id"]))
     return out
 

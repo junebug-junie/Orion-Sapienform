@@ -1051,6 +1051,7 @@ async def run_fcc_turn(
     # mistaken for a legacy node.
     stamper = await _arm_write_stamper(env, reading_only=reading_only, correlation_id=correlation_id)
     pending_graph_writes: set[str] = set()
+    saw_tool_use = False
     if stream_read_limit < 65536:
         stream_read_limit = 65536
 
@@ -1145,6 +1146,8 @@ async def run_fcc_turn(
                 continue
             steps_seen += 1
             if stamper is not None:
+                if _extract_tool_name(parsed):
+                    saw_tool_use = True
                 pending_graph_writes |= graph_write_tool_use_ids(parsed)
                 finished = completed_tool_use_ids(parsed) & pending_graph_writes
                 if finished:
@@ -1216,11 +1219,16 @@ async def run_fcc_turn(
         _turn_lock.__exit__(None, None, None)
         if stamper is not None:
             # Every exit path, including kills and timeouts: a write the
-            # command check missed still gets a (turn-end) stamp.
+            # command check missed still gets a (turn-end) stamp. Skipped when
+            # the turn ran no tool at all -- it cannot have written the graph,
+            # and a plain chat reply should not wait on a graph write.
             try:
-                await _run_write_stamp(stamper, correlation_id=correlation_id, phase="turn_end")
-            except (Exception, asyncio.CancelledError):  # noqa: BLE001
+                if saw_tool_use:
+                    await _run_write_stamp(stamper, correlation_id=correlation_id, phase="turn_end")
+            except Exception:  # noqa: BLE001 -- cancellation must propagate
                 logger.warning("write_stamp_turn_end_failed corr=%s", correlation_id, exc_info=True)
+            finally:
+                stamper.close()
         if mcp_config_path is not None:
             from orion.fcc.mcp_config import cleanup_mcp_config
 

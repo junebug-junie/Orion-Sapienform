@@ -191,6 +191,6 @@ docker logs --since 24h orion-llm-gateway 2>&1 | grep llm_gateway_lane_sender | 
 
 ## PR link
 
-(filled in after creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2448
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

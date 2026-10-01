@@ -51,14 +51,64 @@ def test_calm_hop_passes_and_only_quiet_hours_are_judged():
     report, g = _grade(rows)
     assert report["overall"] == "PASS"
     assert g["orion:exec:request:LLMGatewayService"].verdict == "PASS"
-    assert "rests where it should" in mod.render(report)
+    assert "would not raise a false alert at rest" in mod.render(report)
 
 
-def test_quiet_hour_z_or_ratio_out_of_band_fails():
-    _, g = _grade([_row(h, z=0.8, ratio=1.0) for h in range(7, 12)])
-    assert g["orion:exec:request:LLMGatewayService"].verdict == "FAIL"
-    _, g = _grade([_row(h, z=0.0, ratio=1.4) for h in range(7, 12)])
-    assert "slow-vs-best ratio was 1.40" in g["orion:exec:request:LLMGatewayService"].sentence
+K = "orion:exec:request:LLMGatewayService"
+
+
+def _rows_with(z=0.0, ratio=1.0, floor=1000.0, baseline=None, excluded=False):
+    rows = [_row(h, z=z, ratio=ratio, floor=floor, excluded=excluded) for h in range(7, 12)]
+    for r in rows:
+        r["baseline_ms"] = baseline if baseline is not None else floor * ratio
+    return rows
+
+
+def test_z_below_the_spike_line_is_a_note_not_a_fail():
+    # 2026-09-30 live: nights carry different load (recall z -1.27) -- not an alert risk.
+    _, g = _grade(_rows_with(z=0.8))
+    assert g[K].verdict == "PASS" and "nights run slower" in g[K].sentence
+
+
+def test_rest_that_already_reads_like_a_spike_fails():
+    _, g = _grade(_rows_with(z=3.2))
+    assert g[K].verdict == "FAIL" and "reads like a spike" in g[K].sentence
+    _, g = _grade(_rows_with(z=-3.2))
+    assert g[K].verdict == "FAIL"
+
+
+def test_immaterial_ratio_is_a_note_not_a_fail():
+    # 2026-09-30 live: orion:state:request 59 ms vs 23 ms best (ratio 2.8, 36 ms gap).
+    _, g = _grade(_rows_with(ratio=2.8, floor=23.0, baseline=59.0))
+    assert g[K].verdict == "PASS" and "under the gate's 250 ms floor" in g[K].sentence
+
+
+def test_ratio_between_band_and_saturation_line_is_a_note():
+    _, g = _grade(_rows_with(ratio=1.4, floor=2000.0, baseline=2800.0))
+    assert g[K].verdict == "PASS" and "below the gate's 2x saturation line" in g[K].sentence
+
+
+def test_material_saturation_at_rest_fails():
+    _, g = _grade(_rows_with(ratio=2.4, floor=1000.0, baseline=2400.0))
+    assert g[K].verdict == "FAIL" and "reads as saturated" in g[K].sentence
+
+
+def test_gate_rules_are_overridable_to_match_live_config():
+    rows = _rows_with(ratio=2.4, floor=1000.0, baseline=2400.0)
+    r = mod.grade(rows, saturation_ratio=3.0)
+    assert {g.ident.split("|")[2]: g for g in r["keys"]}[K].verdict == "PASS"
+    r = mod.grade(_rows_with(ratio=2.8, floor=23.0, baseline=59.0), min_excess_ms=10.0)
+    assert {g.ident.split("|")[2]: g for g in r["keys"]}[K].verdict == "FAIL"
+
+
+def test_excluded_hops_never_decide_the_overall_verdict():
+    rows = _rows_with(z=5.0, excluded=True)
+    calm = _rows_with()
+    for r in calm:
+        r["key"] = "orion:exec:request:RecallService"
+    report = mod.grade(rows + calm)
+    assert report["overall"] == "PASS"
+    assert mod.grade(rows)["overall"] == "NO_DATA"
 
 
 def test_quiet_hour_boundaries_are_07_to_11_utc():
@@ -116,9 +166,10 @@ def test_json_string_columns_from_postgres_are_read():
 def test_cli_on_jsonl_fixture(tmp_path, capsys):
     p = tmp_path / "rows.jsonl"
     p.write_text("\n".join(json.dumps(_row(h, excluded=True)) for h in range(7, 12)))
-    assert mod.main(["--input", str(p)]) == 0
+    # only excluded hops -> nothing can alert -> NO_DATA (exit 3), shown not counted
+    assert mod.main(["--input", str(p)]) == 3
     out = capsys.readouterr().out
-    assert "Overall: PASS" in out and "excluded: measured, never triggers" in out
+    assert "Overall: NO_DATA" in out and "excluded: measured, never triggers" in out
     assert "provisional" in out  # < 7 days
 
 

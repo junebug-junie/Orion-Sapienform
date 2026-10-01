@@ -74,9 +74,10 @@ from .settings import settings
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
 
 from .daily_retry_gate import (
+    DAILY_ATTEMPT_STATE_FILENAME,
     DailyAttemptGate,
     DailyAttemptResult,
-    gave_up_cursor_key,
+    GaveUp,
     run_gated_daily_tick,
 )
 from .scheduler_cursor_store import (
@@ -717,6 +718,7 @@ def daily_failure_notify_request(
     attempts: int,
     error: str | None,
     correlation_id: str,
+    failure_class: str | None = None,
 ) -> NotificationRequest:
     """The one warning a night when a scheduled daily report stops retrying.
 
@@ -728,7 +730,7 @@ def daily_failure_notify_request(
     body = (
         f"Orion's {label} for {report_date} was not written. It failed {attempts} time(s) "
         f"and will not retry until the next scheduled day ({action_name}, scheduled {scheduled_local_date}). "
-        f"Last error: {err}"
+        f"Last error ({failure_class or 'unclassified'}): {err}"
     )
     return NotificationRequest(
         source_service=settings.service_name,
@@ -748,6 +750,7 @@ def daily_failure_notify_request(
             "report_date": report_date,
             "scheduled_local_date": scheduled_local_date,
             "attempts": attempts,
+            "failure_class": failure_class,
             "error": err,
             "preview_text": body[:280],
         },
@@ -1284,9 +1287,6 @@ async def lifespan(app: FastAPI):
     # Read-failure attempts per local date for the walkway journal (bounded
     # retry; see walkway_forecast.run_walkway_tick).
     walkway_read_attempts: dict[str, int] = {}
-    # Bounded nightly retries for daily_pulse_v1 / daily_metacog_v1.
-    daily_attempt_gate = DailyAttemptGate()
-    daily_last_failure: dict[str, str] = {}
     last_skill_run_monotonic: float | None = None
     last_journal_run: str | None = None
     workflow_schedule_store = WorkflowScheduleStore(
@@ -1322,10 +1322,11 @@ async def lifespan(app: FastAPI):
         else:
             last_daily_run[_ck] = _cv
     cursor_keys_at_startup = frozenset(scheduler_cursor_store.all().keys())
-    for _job in (ACTION_DAILY_PULSE_V1, ACTION_DAILY_METACOG_V1):
-        _gave_up_date = scheduler_cursor_store.get(gave_up_cursor_key(_job))
-        if _gave_up_date:
-            daily_attempt_gate.mark_gave_up(_job, _gave_up_date)
+    # Bounded nightly retries for daily_pulse_v1 / daily_metacog_v1, persisted
+    # next to the scheduler cursors (app/daily_retry_gate.py).
+    daily_attempt_gate = DailyAttemptGate(
+        state_path=scheduler_cursor_store.path.parent / DAILY_ATTEMPT_STATE_FILENAME,
+    )
 
     async def _audit(
         parent: BaseEnvelope,
@@ -1525,17 +1526,23 @@ async def lifespan(app: FastAPI):
                 sem.release()
             journal_deduper.release(dedupe_key)
 
-    async def _execute_daily(parent: BaseEnvelope, *, action_name: str, window: DailyWindow, dedupe_key: str) -> bool:
-        # A real failure leaves its reason here; a dedupe skip leaves nothing, so
-        # the scheduler's retry gate (daily_retry_gate.py) does not count it.
-        daily_last_failure.pop(action_name, None)
+    async def _execute_daily(
+        parent: BaseEnvelope, *, action_name: str, window: DailyWindow, dedupe_key: str
+    ) -> DailyAttemptResult:
+        # The outcome is returned, never left in shared state: a concurrent manual
+        # run must not be able to overwrite a scheduled run's failure reason.
+        # Structural rule (pinned by test_daily_retry_gate): the dedupe skip below
+        # is the ONLY non-attempt; every other path ends at `return outcome`, which
+        # starts as an attempted failure and becomes a success only when the
+        # report was delivered. An early return added later cannot turn a failure
+        # into a free retry.
         if not deduper.try_acquire(dedupe_key):
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=action_name, reason="deduped")
-            return False
+            return DailyAttemptResult(completed=False, attempted=False, failure_reason="deduped")
 
         t0 = time.monotonic()
         acquired = False
-        completed = False
+        outcome = DailyAttemptResult(completed=False, attempted=True, failure_reason="daily_execute_no_outcome")
         try:
             await sem.acquire()
             acquired = True
@@ -1699,19 +1706,19 @@ async def lifespan(app: FastAPI):
             if generic_ok and chat_ok:
                 deduper.mark_done(dedupe_key)
                 await _audit(parent, status="completed", event_id=dedupe_key, action_name=action_name, extra=extra)
-                completed = True
+                outcome = DailyAttemptResult(completed=True)
             else:
                 reason = None
                 if accepted and not accepted.ok:
                     reason = accepted.detail
                 elif chat_message_accepted and not chat_message_accepted.ok:
                     reason = chat_message_accepted.detail
-                daily_last_failure[action_name] = f"notify_failed:{reason or 'unknown'}"
+                outcome = DailyAttemptResult(completed=False, failure_reason=f"notify_failed:{reason or 'unknown'}")
                 await _audit(parent, status="failed", event_id=dedupe_key, action_name=action_name, reason=reason, extra=extra)
 
         except Exception as exc:
             dt_ms = int((time.monotonic() - t0) * 1000)
-            daily_last_failure[action_name] = str(exc) or exc.__class__.__name__
+            outcome = DailyAttemptResult(completed=False, failure_reason=str(exc) or exc.__class__.__name__)
             await _audit(
                 parent,
                 status="failed",
@@ -1725,7 +1732,7 @@ async def lifespan(app: FastAPI):
             if acquired:
                 sem.release()
             deduper.release(dedupe_key)
-        return completed
+        return outcome
 
     async def _handle_collapse(env: BaseEnvelope) -> None:
         try:
@@ -1798,7 +1805,7 @@ async def lifespan(app: FastAPI):
         override_date = payload.get("date") if isinstance(payload.get("date"), str) else settings.actions_daily_run_once_date
         window = build_daily_window(tz_name=settings.actions_daily_timezone, override_date=override_date)
         dedupe_key = _daily_pulse_dedupe_key(window) if action_name == ACTION_DAILY_PULSE_V1 else _daily_metacog_dedupe_key(window)
-        ok = await _execute_daily(env, action_name=action_name, window=window, dedupe_key=dedupe_key)
+        ok = (await _execute_daily(env, action_name=action_name, window=window, dedupe_key=dedupe_key)).completed
         if ok:
             tz = ZoneInfo(settings.actions_daily_timezone)
             today_iso = datetime.now(timezone.utc).astimezone(tz).date().isoformat()
@@ -2163,6 +2170,9 @@ async def lifespan(app: FastAPI):
         orch_payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
         return _extract_skill_result_from_orch(orch_payload)
 
+    # Last outcome logged per job, so the per-tick INFO log fires on change only.
+    daily_tick_last_logged: dict[str, tuple[str, str]] = {}
+
     async def _scheduled_daily_tick(
         *,
         action_name: str,
@@ -2173,13 +2183,11 @@ async def lifespan(app: FastAPI):
     ) -> str:
         """Scheduled daily_pulse_v1 / daily_metacog_v1 run, with bounded retries.
 
-        At most MAX_DAILY_ATTEMPTS tries per scheduled local date (backoff in
-        between). After the last failure: one audit row (status=gave_up), one
-        warning notification naming the error, and a persisted give-up marker.
-        The done-today cursor is still only set on success.
+        Retry policy by failure class lives in app/daily_retry_gate.py. After the
+        last allowed failure for a date: one audit row (status=gave_up), one
+        warning notification naming the error. The done-today cursor is still
+        only set on success.
         """
-        if not due:
-            return "not_due"
         window = build_daily_window(now_utc=now_utc, tz_name=settings.actions_daily_timezone, override_date=forced_date)
         key = _daily_pulse_dedupe_key(window) if action_name == ACTION_DAILY_PULSE_V1 else _daily_metacog_dedupe_key(window)
         trigger_kind = (
@@ -2195,11 +2203,7 @@ async def lifespan(app: FastAPI):
         )
 
         async def _execute() -> DailyAttemptResult:
-            ok = await _execute_daily(env, action_name=action_name, window=window, dedupe_key=key)
-            if ok:
-                return DailyAttemptResult(completed=True)
-            reason = daily_last_failure.get(action_name)
-            return DailyAttemptResult(completed=False, attempted=reason is not None, failure_reason=reason)
+            return await _execute_daily(env, action_name=action_name, window=window, dedupe_key=key)
 
         async def _on_completed(scheduled_local_date: str) -> None:
             cursor = scheduler_cursor_completed_local_date(
@@ -2216,30 +2220,41 @@ async def lifespan(app: FastAPI):
                 restart_dedupe_source="durable" if action_name in cursor_keys_at_startup else "memory",
             )
 
-        async def _on_gave_up(scheduled_local_date: str, attempts: int, reason: str | None) -> None:
-            scheduler_cursor_store.set_last_completed(gave_up_cursor_key(action_name), scheduled_local_date)
+        async def _on_gave_up(gave_up: GaveUp) -> None:
+            # The report covers the local day before the scheduled date unless
+            # an operator forced a date (build_daily_window's rule).
+            report_date = forced_date or (
+                datetime.strptime(gave_up.local_date, "%Y-%m-%d").date() - timedelta(days=1)
+            ).isoformat()
             logger.warning(
-                "daily_job_gave_up action=%s local_date=%s attempts=%s report_date=%s error=%s",
+                "daily_job_gave_up action=%s local_date=%s attempts=%s failure_class=%s report_date=%s error=%s",
                 action_name,
-                scheduled_local_date,
-                attempts,
-                window.request_date,
-                reason,
+                gave_up.local_date,
+                gave_up.attempts,
+                gave_up.failure_class,
+                report_date,
+                gave_up.reason,
             )
             await _audit(
                 env,
                 status="gave_up",
                 event_id=key,
                 action_name=action_name,
-                reason=reason,
-                extra={"attempts": attempts, "scheduled_local_date": scheduled_local_date, "report_date": window.request_date},
+                reason=gave_up.reason,
+                extra={
+                    "attempts": gave_up.attempts,
+                    "failure_class": gave_up.failure_class,
+                    "scheduled_local_date": gave_up.local_date,
+                    "report_date": report_date,
+                },
             )
             req = daily_failure_notify_request(
                 action_name=action_name,
-                report_date=window.request_date,
-                scheduled_local_date=scheduled_local_date,
-                attempts=attempts,
-                error=reason,
+                report_date=report_date,
+                scheduled_local_date=gave_up.local_date,
+                attempts=gave_up.attempts,
+                failure_class=gave_up.failure_class,
+                error=gave_up.reason,
                 correlation_id=str(env.correlation_id),
             )
             try:
@@ -2251,14 +2266,18 @@ async def lifespan(app: FastAPI):
             job_key=action_name,
             due=due,
             local_date=local_date,
-            now_monotonic=time.monotonic(),
+            now=time.time(),
             gate=daily_attempt_gate,
             execute=_execute,
             on_completed=_on_completed,
             on_gave_up=_on_gave_up,
         )
-        if outcome not in ("not_due", "completed"):
-            logger.info(
+        if outcome != "not_due":
+            state = (local_date, outcome)
+            changed = daily_tick_last_logged.get(action_name) != state
+            daily_tick_last_logged[action_name] = state
+            logger.log(
+                logging.INFO if changed else logging.DEBUG,
                 "daily_job_tick action=%s local_date=%s outcome=%s attempts=%s",
                 action_name,
                 local_date,
@@ -2266,6 +2285,8 @@ async def lifespan(app: FastAPI):
                 daily_attempt_gate.attempts(action_name, local_date),
             )
         return outcome
+
+    app.state.scheduled_daily_tick = _scheduled_daily_tick
 
     async def _scheduler_loop() -> None:
         nonlocal last_skill_run_monotonic, last_journal_run

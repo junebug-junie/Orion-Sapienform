@@ -23,7 +23,8 @@ from app.executor import (  # noqa: E402
     _enforce_daily_metacog_prompt_budget,
     _render_prompt,
 )
-from app.settings import settings as exec_settings  # noqa: E402
+from app.actions_skill_registry import ActionsSkillRegistry  # noqa: E402
+from app.settings import Settings as ExecSettings  # noqa: E402
 from orion.cognition.daily_metacog_budget import (  # noqa: E402
     DAILY_METACOG_PROMPT_MAX_CHARS,
     _render_simple,
@@ -75,7 +76,10 @@ def _scaled_manifest(factor: int):
 
 
 def test_settings_default_matches_shared_budget_constant() -> None:
-    assert int(exec_settings.daily_metacog_prompt_max_chars) == DAILY_METACOG_PROMPT_MAX_CHARS
+    # The FIELD default, not the env-loaded value: a local .env override must
+    # not make this parity check pass or fail.
+    default = ExecSettings.model_fields["daily_metacog_prompt_max_chars"].default
+    assert int(default) == DAILY_METACOG_PROMPT_MAX_CHARS
 
 
 def test_digest_ceiling_is_read_from_recall_profile() -> None:
@@ -133,3 +137,31 @@ def test_grown_manifest_still_fits(factor: int) -> None:
     assert count == len(listed_ids) > 0
     if count < len(read_only_ids):
         assert catalog.splitlines()[-1] == f"(+{len(read_only_ids) - count} more not listed)"
+
+
+# --- read-only labelling (review finding 4) ---------------------------------
+
+WORLD_CHANGING = ("skills.docker.compose_service_bringup.v1", "skills.imagination.render_scene.v1")
+
+
+def test_world_changing_skills_are_not_labelled_read_only() -> None:
+    by_id = {m.skill_id: m for m in load_skill_manifest()}
+    compose = by_id["skills.docker.compose_service_bringup.v1"]
+    assert (compose.read_only, compose.idempotent, compose.risk_class) == (False, False, "state_change")
+    render = by_id["skills.imagination.render_scene.v1"]
+    assert (render.read_only, render.idempotent, render.risk_class) == (False, False, "benign_actuation")
+
+
+def test_world_changing_skills_are_not_offered_to_metacog() -> None:
+    catalog, _count = build_daily_metacog_skill_catalog(load_skill_manifest())
+    for sid in WORLD_CHANGING:
+        assert sid not in catalog
+
+
+def test_shared_manifest_and_cortex_exec_registry_classify_every_skill_identically() -> None:
+    """The two classifier copies must not drift (builder_prune was fixed in one only)."""
+    verbs_dir = ROOT / "orion" / "cognition" / "verbs"
+    fields = ("family", "read_only", "idempotent", "risk_class", "requires_confirmation", "requires_execute_opt_in")
+    shared = {m.skill_id: tuple(getattr(m, f) for f in fields) for m in load_skill_manifest(verbs_dir=verbs_dir)}
+    exec_side = {m.skill_id: tuple(getattr(m, f) for f in fields) for m in ActionsSkillRegistry(verbs_dir=verbs_dir).list()}
+    assert shared == exec_side

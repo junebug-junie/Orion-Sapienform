@@ -4,8 +4,9 @@ One row per ``orion_self_shed`` request (active, settled or refused). Read by th
 restart cannot reset the daily cap or orphan an active shed), by execution-dispatch to settle the
 dispatch, and by the feedback runtime for the manipulation check.
 
-The table is created lazily (``CREATE TABLE IF NOT EXISTS`` under a short ``lock_timeout``), never at
-pool boot on the lease path; the same DDL is in
+The table is created lazily (``CREATE TABLE IF NOT EXISTS`` under a short, transaction-local
+``lock_timeout``) when the pool starts and again on a set after a ledger failure -- never inside a
+lease RPC, and a failure never blocks the lease path; the same DDL is in
 services/orion-sql-db/manual_migration_gpu_pool_orion_shed_v1.sql for the operator. A ledger that cannot
 be created or written refuses every ``set`` (orion/gpu_pool/orion_shed.py), and the lease path is never
 affected. Schema-qualified on purpose: the pool's search_path puts the checkpoint schema first.
@@ -56,11 +57,13 @@ class PostgresOrionShedLedger:
     async def ensure(self) -> bool:
         try:
             async with self.pool.connection() as conn:
-                await conn.execute(f"SET lock_timeout = '{int(self.lock_timeout_ms)}ms'")
-                for stmt in (s.strip() for s in DDL.split(";")):
-                    if stmt:
-                        await conn.execute(stmt)
-                await conn.execute("RESET lock_timeout")
+                # SET LOCAL inside one transaction: the timeout can never leak to a pooled connection
+                # the lease path reuses, even when a CREATE fails.
+                async with conn.transaction():
+                    await conn.execute(f"SET LOCAL lock_timeout = '{int(self.lock_timeout_ms)}ms'")
+                    for stmt in (s.strip() for s in DDL.split(";")):
+                        if stmt:
+                            await conn.execute(stmt)
             self._ready = True
         except Exception as exc:  # noqa: BLE001 -- the caller refuses every set until it can
             logger.warning("gpu_pool_orion_shed_ledger_ensure_failed err=%s", str(exc)[:300])

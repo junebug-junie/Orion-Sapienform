@@ -75,8 +75,9 @@ class ProposalTemplateV1(BaseModel):
     # no separate affordance registry. Validated below: a workspace.winner template with an empty
     # list is refused at load.
     binds_to_nodes: list[str] = Field(default_factory=list)
-    # Per-template override of ORION_DISPATCH_HOLDBACK_FRACTION (design D3, amended): the share of
-    # ELIGIBLE decisions withheld as a randomized control. None -> the global value.
+    # Per-template randomized holdback (design D3, amended): the share of ELIGIBLE decisions withheld
+    # as a control. None -> no per-template holdback (only the global per-tick
+    # ORION_DISPATCH_HOLDBACK_FRACTION, which never writes a world control row, still applies).
     holdback_fraction: float | None = Field(default=None, ge=0.0, le=0.5)
 
     @model_validator(mode="after")

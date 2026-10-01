@@ -239,6 +239,11 @@ class Settings(BaseSettings):
     # The shed RPC (orion:gpu_pool:shed:request) and the TTL it asks for (the pool caps it anyway).
     orion_gpu_pool_shed_rpc_timeout_sec: float = Field(5.0, gt=0, alias="ORION_GPU_POOL_SHED_RPC_TIMEOUT_SEC")
     orion_shed_ttl_sec: float = Field(900.0, gt=0, le=3600, alias="ORION_SHED_TTL_SEC")
+    # Mirrors of the pool's caps (GPU_POOL_ORION_SHED_MIN_GAP_SEC / _MAX_SEC_PER_DAY), applied BEFORE the
+    # randomized draw so both arms come from the same population: a decision the pool would refuse is
+    # neither treated nor control. The pool still enforces its own values; keep the two equal.
+    orion_shed_min_gap_sec: float = Field(900.0, ge=0, alias="ORION_SHED_MIN_GAP_SEC")
+    orion_shed_max_sec_per_day: float = Field(3600.0, ge=0, alias="ORION_SHED_MAX_SEC_PER_DAY")
 
     @property
     def world_actions_allowed(self) -> frozenset[str] | None:

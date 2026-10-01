@@ -413,7 +413,9 @@ def build_proposal_frame(
 
     world = _build_workspace_candidates(
         policy=policy, workspace=workspace, field_tick_id=field.tick_id, now=generated_at, warnings=warnings)
-    active = (baseline + world + active)[: max(0, policy.limits.max_candidates)]
+    # World candidates ride OUTSIDE max_candidates: proposing one must never push an existing field
+    # candidate out of the frame (the proposal flag is meant to be record-only on its own).
+    active = (baseline + active)[: max(0, policy.limits.max_candidates)] + world
     suppressed = suppressed[: policy.limits.max_suppressed]
 
     overall_risk = _overall_risk(active)

@@ -99,6 +99,20 @@ def test_winner_unbindable_reasons(proj, reason):
     assert winner is None and reason in why
 
 
+def test_binding_follows_the_selected_loops_node_not_any_coalition_member():
+    proj = _projection()
+    proj["attended_node_ids"] = ["node:substrate.execution", CABINET_NODE_ID]
+    winner, why = bind_workspace_winner(proj, broadcast_log_id="b", binds_to_nodes=[CABINET_NODE_ID], now=NOW)
+    assert winner is None and "node_not_bound" in why
+
+
+def test_world_candidates_never_push_field_candidates_out_of_the_frame():
+    without = build_proposal_frame(field=_loaded_field(), attention=_loaded_attention(), policy=POLICY, now=NOW)
+    with_world = _proposal_frame()
+    field_ids = lambda f: [c.proposal_id for c in f.candidates if c.attention_winner is None]
+    assert field_ids(with_world) == field_ids(without)
+
+
 def test_winner_binds_within_90s_with_dwell_2():
     winner, why = bind_workspace_winner(_projection(age_sec=89, dwell=2), broadcast_log_id="broadcast-1",
                                         binds_to_nodes=[CABINET_NODE_ID], now=NOW)

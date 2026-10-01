@@ -45,6 +45,8 @@ def _worker(monkeypatch, **env) -> ExecutionDispatchRuntimeWorker:
     s.load_dispatch_result_by_dispatch_id = MagicMock(return_value=None)
     s.insert_world_episode = MagicMock(return_value=True)
     s.record_world_settlement = MagicMock()
+    s.load_world_admission_inputs = MagicMock(return_value=([], []))
+    s.world_episode_arm = MagicMock(return_value="treated")
     w._derive_motor_budget = MagicMock(return_value=None)
     fake_bus = MagicMock()
     fake_bus.connect, fake_bus.close, fake_bus.publish = AsyncMock(), AsyncMock(), AsyncMock()
@@ -94,7 +96,7 @@ async def test_treated_precommits_before_the_rpc_and_records_the_shed(monkeypatc
         return _active()
 
     w._shed_rpc = rpc
-    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.99)   # not held back
+    w._stable_draw = lambda dispatch_id: 0.99   # not held back
     out = await w._send_prepared_candidates(_frame(_shed_candidate()))
     assert order == ["episode:treated", "result:None", "rpc", "result:oshed_1"]   # precommit first
     final = w._store.save_dispatch_result.call_args.kwargs
@@ -108,7 +110,7 @@ async def test_treated_precommits_before_the_rpc_and_records_the_shed(monkeypatc
 async def test_holdback_writes_a_control_episode_and_sends_nothing(monkeypatch):
     w = _worker(monkeypatch)
     w._shed_rpc = AsyncMock(side_effect=AssertionError("a control must not shed"))
-    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.1)    # < 0.5 -> held back
+    w._stable_draw = lambda dispatch_id: 0.1    # < 0.5 -> held back
     out = await w._send_prepared_candidates(_frame(_shed_candidate()))
     row = w._store.insert_world_episode.call_args.args[0]
     assert row["arm"] == "control" and row["open_loop_id"] == "open-loop-c"
@@ -132,7 +134,7 @@ async def test_no_precommit_no_action(monkeypatch):
     w = _worker(monkeypatch)
     w._store.insert_world_episode.side_effect = RuntimeError("ledger down")
     w._shed_rpc = AsyncMock(side_effect=AssertionError("must not shed without a precommit"))
-    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.99)
+    w._stable_draw = lambda dispatch_id: 0.99
     out = await w._send_prepared_candidates(_frame(_shed_candidate()))
     assert "world_episode_precommit_failed" in out.dispatched_candidates[0].dispatch_error
     w._store.save_dispatch_result.assert_not_called()
@@ -142,7 +144,7 @@ async def test_no_precommit_no_action(monkeypatch):
 async def test_rpc_failure_keeps_the_row_pending_for_the_ledger_to_settle(monkeypatch):
     w = _worker(monkeypatch)
     w._shed_rpc = AsyncMock(side_effect=TimeoutError("no reply"))
-    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.99)
+    w._stable_draw = lambda dispatch_id: 0.99
     out = await w._send_prepared_candidates(_frame(_shed_candidate()))
     final = w._store.save_dispatch_result.call_args.kwargs["result_json"]["settlement"]
     assert final["state"] == SHED_PENDING and "rpc_error" in final
@@ -155,7 +157,7 @@ async def test_replay_sends_nothing_twice(monkeypatch):
     w._store.load_dispatch_result_by_dispatch_id = MagicMock(return_value={"result_id": "result:dispatch:shed:1",
                                                                           "status": "pending", "result_json": {}})
     w._shed_rpc = AsyncMock(side_effect=AssertionError("replay must not resend"))
-    monkeypatch.setattr(worker_mod.random, "random", lambda: 0.99)
+    w._stable_draw = lambda dispatch_id: 0.99
     await w._send_prepared_candidates(_frame(_shed_candidate()))
     w._store.insert_world_episode.assert_not_called()
 
@@ -191,3 +193,49 @@ def test_settle_rules_terminal_states_and_orphan():
     orphan = settle_shed_result(result_json=pending, pool_row=None, now=decided + timedelta(seconds=1201))
     assert orphan.terminal == "settlement_timeout"
     assert settle_shed_result(result_json=pending, pool_row=None, now=decided + timedelta(seconds=1100)) is None
+
+
+def test_the_draw_is_stable_per_decision_and_roughly_half():
+    draws = [ExecutionDispatchRuntimeWorker._stable_draw(f"dispatch:{i}") for i in range(2000)]
+    assert ExecutionDispatchRuntimeWorker._stable_draw("dispatch:7") == draws[7]
+    assert 0.45 < sum(d < 0.5 for d in draws) / len(draws) < 0.55
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("inputs,refusal", [
+    ((["dispatch:old"], []), "world_action_in_flight"),
+    (([], [{"decided_at": NOW - timedelta(minutes=20), "settlement_state": "expired", "settlement": {}}]), "pool_gap"),
+    (([], [{"decided_at": NOW - timedelta(hours=h), "settlement_state": "expired", "settlement": {}} for h in (2, 4, 6, 8)]),
+     "pool_daily_cap"),
+    (([], [{"decided_at": NOW - timedelta(minutes=40), "settlement_state": "refused:disabled", "settlement": {}}]),
+     "pool_refusing:disabled"),
+])
+async def test_admission_is_checked_before_the_draw_so_neither_arm_is_recorded(monkeypatch, inputs, refusal):
+    w = _worker(monkeypatch)
+    w._store.load_world_admission_inputs = MagicMock(return_value=inputs)
+    w._shed_rpc = AsyncMock(side_effect=AssertionError("must not act"))
+    w._stable_draw = lambda dispatch_id: 0.1
+    out = await w._send_prepared_candidates(_frame(_shed_candidate()))
+    assert out.blocked_candidates[0].blocked_by == [refusal]
+    w._store.insert_world_episode.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_two_world_candidates_in_one_tick_only_one_decides(monkeypatch):
+    w = _worker(monkeypatch)
+    w._shed_rpc = AsyncMock(return_value=_active("dispatch:shed:1"))
+    w._stable_draw = lambda dispatch_id: 0.99
+    out = await w._send_prepared_candidates(_frame(_shed_candidate("dispatch:shed:1"), _shed_candidate("dispatch:shed:2")))
+    assert [c.blocked_by for c in out.blocked_candidates] == [["world_action_in_flight"]]
+    assert w._shed_rpc.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_replay_of_a_control_decision_never_sheds(monkeypatch):
+    w = _worker(monkeypatch)
+    w._store.insert_world_episode = MagicMock(return_value=False)
+    w._store.world_episode_arm = MagicMock(return_value="control")
+    w._shed_rpc = AsyncMock(side_effect=AssertionError("never shed on a control row"))
+    w._stable_draw = lambda dispatch_id: 0.99
+    out = await w._send_prepared_candidates(_frame(_shed_candidate()))
+    assert out.dispatched_candidates[0].dispatch_error == "world_episode_recorded_as_control"

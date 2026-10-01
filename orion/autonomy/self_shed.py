@@ -73,9 +73,12 @@ def bind_workspace_winner(
     dwell = int(projection.get("dwell_ticks") or 0)
     if dwell < WINNER_MIN_DWELL_TICKS:
         return None, f"winner_unbindable:dwell_{dwell}"
+    # attended_node_ids IS the selected loop's source_refs ([node_id] + contributing ids): its first
+    # node ref is the node the selected loop is about. Binding to any other member would answer a
+    # different loop than the one the action's verdict is written on.
     attended = [str(n) for n in projection.get("attended_node_ids") or []]
-    node = next((n for n in attended if n in set(binds_to_nodes)), None)
-    if node is None:
+    node = next((n for n in attended if n.startswith("node:")), None)
+    if node is None or node not in set(binds_to_nodes):
         return None, "winner_unbindable:node_not_bound"
     if not broadcast_log_id:
         return None, "winner_unbindable:no_broadcast_log_row"

@@ -1252,6 +1252,7 @@ def load_recent_loop_outcomes(loop_ids: list[str]) -> dict[str, dict[str, Any]]:
             SELECT DISTINCT ON (loop_id) loop_id, verdict, note, created_at
             FROM attention_loop_outcome
             WHERE loop_id IN :ids
+              AND verdict <> 'acted'   -- Orion's non-final verdict never hides a human one
             ORDER BY loop_id, created_at DESC
             """
         ).bindparams(bindparam("ids", expanding=True))

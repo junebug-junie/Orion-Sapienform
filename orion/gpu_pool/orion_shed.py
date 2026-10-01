@@ -350,6 +350,9 @@ class OrionShedController:
         now = self.now()
         dt = 0.0 if self._last_tick is None else max(0.0, (now - self._last_tick).total_seconds())
         self._last_tick = now
+        horizon = now - timedelta(seconds=DAY_SEC + self.caps.max_ttl_sec)
+        for sid in [k for k, r in self._recent.items() if r.state != "active" and r.requested_at < horizon]:
+            self._recent.pop(sid, None)   # bounded: only the window the caps read
         rec = self.active
         if rec is None:
             return

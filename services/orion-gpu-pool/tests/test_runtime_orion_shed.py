@@ -247,3 +247,14 @@ def test_ledger_down_at_boot_recovers_on_the_next_set():
         ledger.available = True
         assert (await rt.orion_shed_request(req(dispatch_id="d2"))).state == "active"
     run(go())
+
+
+def test_open_ac_incident_refuses_even_without_a_shed_request():
+    async def go():
+        rt, _ = pool()
+        await boot(rt)
+        await rt.handle_incident(incident(rt, requested=False))
+        assert (await rt.orion_shed_request(req())).refusal == "reflex_active"
+        await rt.handle_incident(incident(rt, status="resolved", requested=False))
+        assert (await rt.orion_shed_request(req(dispatch_id="d2"))).state == "active"
+    run(go())

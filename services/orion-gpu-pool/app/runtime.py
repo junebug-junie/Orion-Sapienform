@@ -197,6 +197,9 @@ class PoolRuntime:
         self._shed_active: str | None = None      # last logged active reason (edge-triggered log)
         # Orion's learned shed (attend-to-act A1): the lower-precedence ``orion_self_shed`` reason, its
         # caps, ledger and manipulation check. GPU_POOL_ORION_SHED_ENABLED=false refuses every set.
+        # Open cabinet-AC (rule=cooling) incidents, whether or not they currently request a shed: the
+        # learned action's premise is "AC healthy", so an open one refuses orion_self_shed outright.
+        self._open_ac_incidents: set[str] = set()
         self.orion_shed = OrionShedController(
             board=self.shed_board, ledger=orion_shed_ledger or MemoryOrionShedLedger(),
             caps=orion_shed_caps or OrionShedCaps(), enabled=orion_shed_enabled,
@@ -655,6 +658,11 @@ class PoolRuntime:
         asserts ``cooling_incident`` this tick -- the action's premise (AC healthy) is gone."""
         async with self._locked("incident"):
             did = self.on_incident(ev)
+            if ev.rule == "cooling":
+                if ev.status == "open":
+                    self._open_ac_incidents.add(ev.incident_id)
+                else:
+                    self._open_ac_incidents.discard(ev.incident_id)
             if ev.rule == "cooling" and ev.status == "open":
                 if await self.orion_shed.preempt_by_reflex(ev.incident_id):
                     did = f"{did}+orion_shed_preempted"
@@ -666,7 +674,8 @@ class PoolRuntime:
             live = await self.store.live_leases()
             background_live = sum(1 for r in live if r.get("priority") == "background")
             view = self.shed_board.view(self.now(), True)
-            reflex_active = any(r["name"] == "cooling_incident" and r["active"] for r in view.reasons)
+            reflex_active = bool(self._open_ac_incidents) or any(
+                r["name"] == "cooling_incident" and r["active"] for r in view.reasons)
             return await self.orion_shed.handle(req, background_live=background_live, reflex_active=reflex_active)
 
     def shed_view(self):

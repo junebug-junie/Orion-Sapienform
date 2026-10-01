@@ -2364,8 +2364,49 @@ class ExecutionDispatchRuntimeWorker:
             "proposal_id": candidate.source_proposal_id, "decision_id": candidate.source_decision_id,
             "dispatch_frame_id": frame.frame_id, "eligibility": world.get("eligibility") or {},
             "expected_effect": candidate.expected_effect.model_dump(mode="json") if candidate.expected_effect else None,
+            "settlement": {"ttl_sec": ttl},
             "scoring_due_at": now + timedelta(seconds=ttl + self.WORLD_SCORING_TAIL_SEC),
         }
+
+    @staticmethod
+    def _stable_draw(dispatch_id: str) -> float:
+        """Uniform [0, 1) from the dispatch id: a crash-and-replay of the same decision always lands in
+        the same arm (a re-roll could send a shed on a row already recorded as control)."""
+        import hashlib
+
+        return int(hashlib.sha256(dispatch_id.encode()).hexdigest()[:13], 16) / float(16 ** 13)
+
+    def _world_admission_refusal(self, template: str, now: datetime) -> str | None:
+        """Arm-symmetric admission, BEFORE the draw: anything the pool would refuse, and anything
+        still in flight, is neither treated nor control. Fails closed on a read error."""
+        try:
+            in_flight, treated = self._store.load_world_admission_inputs(template=template, now=now)
+        except Exception:
+            logger.warning("world_action_admission_unreadable template=%s", template, exc_info=True)
+            return "world_ledger_unavailable"
+        if in_flight:
+            return "world_action_in_flight"
+        ttl = float(self._settings.orion_shed_ttl_sec)
+        used, last_end, last_refusal = 0.0, None, None
+        for row in treated:
+            state = str(row.get("settlement_state") or "")
+            if state.startswith("refused"):
+                last_refusal = (row["decided_at"], state)
+                continue
+            settlement = row.get("settlement") or {}
+            check = settlement.get("manipulation_check") or {}
+            start = datetime.fromisoformat(check["started_at"]) if check.get("started_at") else row["decided_at"]
+            end = datetime.fromisoformat(check["ended_at"]) if check.get("ended_at") else start + timedelta(seconds=ttl)
+            used += max(0.0, (min(end, now) - start).total_seconds())
+            last_end = end if last_end is None else max(last_end, end)
+        if last_refusal and (now - last_refusal[0]).total_seconds() < 3600 and last_refusal[1].split(":", 1)[-1] in (
+                "disabled", "lever_disabled", "ledger_unavailable"):
+            return f"pool_refusing:{last_refusal[1].split(':', 1)[-1]}"
+        if last_end is not None and (now - last_end).total_seconds() < float(self._settings.orion_shed_min_gap_sec):
+            return "pool_gap"
+        if float(self._settings.orion_shed_max_sec_per_day) - used < min(ttl, 300.0):
+            return "pool_daily_cap"
+        return None
 
     def _world_action_holdback(self, frame, to_send):
         """Freshness gate + per-template holdback for world candidates. Returns (to_send, frame)."""
@@ -2375,7 +2416,14 @@ class ExecutionDispatchRuntimeWorker:
         now = datetime.now(timezone.utc)
         max_age = float(self._settings.orion_world_action_eligibility_max_age_sec)
         withheld: list = []
+        # At most one world decision per template per tick (in flight is re-checked below too).
+        seen: set[str] = set()
         for c in world:
+            template = str((c.world_action or {}).get("template") or "")
+            if template in seen:
+                withheld.append((c, "world_action_in_flight", "second_world_candidate_this_tick"))
+                continue
+            seen.add(template)
             eligibility = dict((c.world_action or {}).get("eligibility") or {})
             evaluated = eligibility.get("evaluated_at")
             try:
@@ -2385,8 +2433,12 @@ class ExecutionDispatchRuntimeWorker:
             if age > max_age:
                 withheld.append((c, "world_eligibility_stale", f"world_eligibility_age_sec:{age:.0f}"))
                 continue
+            refusal = self._world_admission_refusal(template, now)
+            if refusal is not None:
+                withheld.append((c, refusal, "world_admission"))
+                continue
             fraction = float((c.world_action or {}).get("holdback_fraction") or 0.0)
-            if fraction > 0.0 and random.random() < fraction:
+            if fraction > 0.0 and self._stable_draw(c.dispatch_id) < fraction:
                 # The control arm. Its precommit row is the ONLY record a held-back decision leaves,
                 # so a failed write means this is not a control -- say so instead of pretending.
                 try:
@@ -2433,7 +2485,11 @@ class ExecutionDispatchRuntimeWorker:
                                                 "result_ref": existing["result_id"]})
         ttl = float(self._settings.orion_shed_ttl_sec)
         try:
-            self._store.insert_world_episode(self._world_episode_row(frame, candidate, arm="treated", now=now))
+            inserted = self._store.insert_world_episode(self._world_episode_row(frame, candidate, arm="treated", now=now))
+            if not inserted and self._store.world_episode_arm(candidate.dispatch_id) != "treated":
+                # A replay of a decision already recorded as control: never shed on a control row.
+                return candidate.model_copy(update={"dispatch_status": "dispatched", "dispatched_at": now,
+                                                    "dispatch_error": "world_episode_recorded_as_control"})
         except Exception as exc:
             # No precommit, no action: an unrecorded treatment cannot be learned from.
             logger.warning("world_action_precommit_failed dispatch_id=%s", candidate.dispatch_id, exc_info=True)

@@ -79,15 +79,18 @@ def insert_decision(conn, row: dict[str, Any]) -> bool:
 
     cols = ("episode_id", "template", "dispatch_kind", "target_id", "arm", "decided_at", "open_loop_id",
             "broadcast_log_id", "node_id", "proposal_id", "decision_id", "dispatch_frame_id", "eligibility",
-            "expected_effect", "scoring_due_at")
+            "expected_effect", "settlement", "scoring_due_at")
     vals = {c: row.get(c) for c in cols}
-    for c in ("eligibility", "expected_effect"):
+    # Both arms carry the clock they are scored on (ttl_sec), so a TTL change cannot split the arms.
+    vals["settlement"] = vals["settlement"] or {}
+    for c in ("eligibility", "expected_effect", "settlement"):
         vals[c] = None if vals[c] is None else json.dumps(vals[c], default=str)
     if row.get("arm") not in ARMS:
         raise ValueError(f"arm must be one of {ARMS}")
     res = conn.execute(text(
         f"INSERT INTO {TABLE} ({', '.join(cols)}) VALUES ("
-        + ", ".join(f"CAST(:{c} AS jsonb)" if c in ("eligibility", "expected_effect") else f":{c}" for c in cols)
+        + ", ".join(f"CAST(:{c} AS jsonb)" if c in ("eligibility", "expected_effect", "settlement") else f":{c}"
+                    for c in cols)
         + ") ON CONFLICT (episode_id) DO NOTHING RETURNING episode_id"), vals).fetchone()
     return res is not None
 
@@ -97,7 +100,7 @@ def record_settlement(conn, *, episode_id: str, shed_id: str | None, state: str,
 
     conn.execute(text(
         f"UPDATE {TABLE} SET shed_id = COALESCE(:shed_id, shed_id), settlement_state = :state, "
-        "settlement = CAST(:settlement AS jsonb), updated_at = now() WHERE episode_id = :episode_id"),
+        "settlement = settlement || CAST(:settlement AS jsonb), updated_at = now() WHERE episode_id = :episode_id"),
         {"episode_id": episode_id, "shed_id": shed_id, "state": state,
          "settlement": json.dumps(settlement, default=str)})
 
@@ -113,6 +116,24 @@ def record_score(conn, *, episode_id: str, outcome: dict[str, Any], loop_outcome
         {"episode_id": episode_id, "outcome": json.dumps(outcome, default=str), "loop": loop_outcome_id,
          "at": scored_at}).fetchone()
     return res is not None
+
+
+def arm_of(conn, episode_id: str) -> str | None:
+    from sqlalchemy import text
+
+    value = conn.execute(text(f"SELECT arm FROM {TABLE} WHERE episode_id = :e"), {"e": episode_id}).scalar()
+    return None if value is None else str(value)
+
+
+def recent_treated(conn, *, template: str, since: datetime) -> list[dict[str, Any]]:
+    """Treated episodes decided since ``since`` (for the arm-symmetric gap / daily-cap check)."""
+    from sqlalchemy import text
+
+    rows = conn.execute(text(
+        f"SELECT episode_id, decided_at, settlement_state, settlement FROM {TABLE} "
+        "WHERE template = :t AND arm = 'treated' AND decided_at >= :since ORDER BY decided_at"),
+        {"t": template, "since": since}).mappings().fetchall()
+    return [dict(r) for r in rows]
 
 
 def in_flight(conn, *, template: str, now: datetime) -> list[str]:

@@ -33,34 +33,44 @@ through the pool is the CI check `scripts/check_circe_worker_refs.py`.
   ufw enforces nothing. `nftables`, `firewalld` and `netfilter-persistent` are inactive.
   `iptables v1.8.10 (nf_tables)`.
 - The worker ports are **docker-published** (`0.0.0.0:8011->8080/tcp`). IPv4 traffic to them is
-  rewritten (DNAT) before the host's INPUT chain, so a ufw rule would never see it. Docker's
-  supported hook for that path is the `DOCKER-USER` chain, so that is where the rules go. They match
-  on the connection's *original* destination port (conntrack `--ctorigdstport`), because after the
-  rewrite the port is the container's (8080/6700), not 8011.
-- IPv6 `[::]:8011` is served by docker's userland proxy (docker has no IPv6 enabled on circe), which
-  is the INPUT chain, so IPv6 gets a plain INPUT drop for anything but loopback.
+  rewritten (DNAT) before the host's INPUT chain, so a ufw rule would never see it.
+- The rules therefore go in the `mangle` table's PREROUTING chain. It runs before that rewrite,
+  so the plain host port (8011) still matches, and it catches both paths a connection can take
+  (rewrite -> FORWARD, and docker's userland proxy -> INPUT, which is how IPv6 `[::]:8011` is
+  served). Docker's own hook, `DOCKER-USER` in FORWARD, was rejected: it only works while docker's
+  jump sits above tailscale's `ts-forward` (which accepts everything arriving on `tailscale0`), and
+  both insert themselves at position 1 when they start, so a tailscaled restart would silently open
+  the gate. Neither docker nor tailscaled writes to mangle PREROUTING (UNVERIFIED on circe itself:
+  reading it needs sudo; step 1 prints it).
+- circe's own containers are allowed by interface (`docker0`, `br-*`), not by address range,
+  because docker's address pools can move into 192.168.x.
 - Listening right now: 8011, 8012, 8013, 8014, 8015, 8090. (8016/8017/8099 are only up while their
   seats are loaded; the rules cover them anyway.)
 
 The rules live in `scripts/ops/circe_llm_port_gate.sh` (`apply` / `remove` / `status`; `DRY_RUN=1`
-prints the commands without running them). A systemd unit re-applies them whenever docker starts,
-because nothing persists iptables rules across a reboot on circe.
+prints the commands without running them). A systemd unit applies them at every boot, because nothing persists
+iptables rules across a reboot on circe.
 
 ## The exact rules
 
-`DRY_RUN=1 scripts/ops/circe_llm_port_gate.sh apply` prints (after a cleanup pass that removes any
-earlier copy):
+`DRY_RUN=1 scripts/ops/circe_llm_port_gate.sh apply` prints (after a cleanup pass that deletes
+every earlier jump to the chain, whatever port list it had, and the chain itself):
 
 ```bash
-iptables -N ORION-LLM-GATE
-iptables -A ORION-LLM-GATE -s 100.92.216.81/32 -j RETURN
-iptables -A ORION-LLM-GATE -s 172.16.0.0/12 -j RETURN
-iptables -A ORION-LLM-GATE -s 127.0.0.0/8 -j RETURN
-iptables -A ORION-LLM-GATE -j DROP
-iptables -I DOCKER-USER 1 -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport 8011:8017 -j ORION-LLM-GATE
-iptables -I DOCKER-USER 1 -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport 8090 -j ORION-LLM-GATE
-iptables -I DOCKER-USER 1 -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport 8099 -j ORION-LLM-GATE
-ip6tables -I INPUT 1 -p tcp -m multiport --dports 8011:8017,8090,8099 ! -i lo -m comment --comment orion-llm-port-gate -j DROP
+iptables -w -t mangle -N ORION-LLM-GATE
+iptables -w -t mangle -A ORION-LLM-GATE -i lo -j RETURN
+iptables -w -t mangle -A ORION-LLM-GATE -i docker0 -j RETURN
+iptables -w -t mangle -A ORION-LLM-GATE -i br-+ -j RETURN
+iptables -w -t mangle -A ORION-LLM-GATE -s 100.92.216.81/32 -j RETURN
+iptables -w -t mangle -A ORION-LLM-GATE -j DROP
+iptables -w -t mangle -I PREROUTING 1 -p tcp -m multiport --dports 8011:8017,8090,8099 -m addrtype --dst-type LOCAL -j ORION-LLM-GATE
+ip6tables -w -t mangle -N ORION-LLM-GATE
+ip6tables -w -t mangle -A ORION-LLM-GATE -i lo -j RETURN
+ip6tables -w -t mangle -A ORION-LLM-GATE -i docker0 -j RETURN
+ip6tables -w -t mangle -A ORION-LLM-GATE -i br-+ -j RETURN
+ip6tables -w -t mangle -A ORION-LLM-GATE -s fd7a:115c:a1e0::733:d851/128 -j RETURN
+ip6tables -w -t mangle -A ORION-LLM-GATE -j DROP
+ip6tables -w -t mangle -I PREROUTING 1 -p tcp -m multiport --dports 8011:8017,8090,8099 -m addrtype --dst-type LOCAL -j ORION-LLM-GATE
 ```
 
 ## 0. Before (read-only, no sudo)
@@ -93,8 +103,9 @@ sudo systemctl enable --now orion-llm-port-gate.service
 sudo /usr/local/sbin/orion-llm-port-gate status
 ```
 
-`status` should show the three `-j ORION-LLM-GATE` lines at the top of `DOCKER-USER`, the four-line
-`ORION-LLM-GATE` chain, and the `orion-llm-port-gate` DROP line in the IPv6 INPUT chain.
+`status` should show, for both iptables and ip6tables: the `-j ORION-LLM-GATE` jump as the
+**first** line of mangle PREROUTING (if anything sits above it with `-j ACCEPT`, the gate is
+bypassed -- tell the agent), and the five-line `ORION-LLM-GATE` chain.
 
 The script is copied to `/usr/local/sbin` on purpose: root should not execute a file the `circe`
 user can edit in the checkout.
@@ -123,7 +134,8 @@ ssh circe@circe 'docker exec orion-circe-gpu-lane-controller python3 -c "import 
 Drop counters move only when something other than athena/circe tries (run on circe):
 
 ```bash
-sudo iptables -L ORION-LLM-GATE -v -n
+sudo iptables -t mangle -L ORION-LLM-GATE -v -n
+sudo iptables -t mangle -S PREROUTING | head -3   # our jump must still be first
 ```
 
 End to end: one Hub chat turn answers, and the Hub GPU pool panel still shows every seat with a
@@ -139,22 +151,27 @@ sudo systemctl disable --now orion-llm-port-gate.service   # ExecStop runs `remo
 sudo /usr/local/sbin/orion-llm-port-gate remove            # belt and braces; safe to repeat
 sudo rm -f /etc/systemd/system/orion-llm-port-gate.service /usr/local/sbin/orion-llm-port-gate
 sudo systemctl daemon-reload
-sudo iptables -S DOCKER-USER                               # back to docker's default (-j RETURN only)
+sudo iptables -t mangle -S PREROUTING | grep ORION-LLM-GATE  # prints nothing
+sudo ip6tables -t mangle -S PREROUTING | grep ORION-LLM-GATE # prints nothing
 ```
 
 To let one more host in without removing the gate (e.g. a laptop running a benchmark), add a
 RETURN line above the DROP and remember it is not persistent:
 
 ```bash
-sudo iptables -I ORION-LLM-GATE 1 -s <host-tailnet-ip>/32 -j RETURN
+sudo iptables -t mangle -I ORION-LLM-GATE 1 -s <host-tailnet-ip>/32 -j RETURN
 ```
 
 ## Known gaps
 
 - Same-source blindness: any athena container can still reach the workers. The CI gate covers
   in-repo code; nothing covers an ad-hoc `curl` on athena.
-- UNVERIFIED: whether a bare `dockerd` restart (not a reboot) keeps rules inside `DOCKER-USER`.
-  The unit is `PartOf=docker.service`, so it is stopped and re-applied with docker either way.
+- UNVERIFIED: that no other tool (a future tailscale netfilter mode, a VPN) inserts an ACCEPT above
+  our jump in mangle PREROUTING. The verify step checks the order; re-check after tailscale upgrades.
+- Rules are applied once per boot (`WantedBy=multi-user.target`, `Before=docker.service`). Docker
+  and tailscaled restarts do not touch the mangle table, so no re-apply hook is needed.
+- Container-to-container calls by name on the internal port (`atlas-chat:8080`) never touch a host
+  port, so no host firewall sees them. The CI gate flags those names in code.
 - 192.168.1.x LAN clients lose access too. Checked 2026-10-01: no tracked file and no live `.env`
   on athena or circe uses circe's LAN addresses (192.168.1.22/.24) for these ports, and every live
   `.env` key holding a tailnet worker address is a dead key except thought's

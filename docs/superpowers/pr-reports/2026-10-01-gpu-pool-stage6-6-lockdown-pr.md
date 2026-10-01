@@ -8,17 +8,22 @@ deleted was still sitting in the live `.env` files on both hosts. This PR closes
 deploying anything.
 
 - **CI port gate** (`scripts/check_circe_worker_refs.py`, new step in `orion-static-gates`): fails
-  on any circe worker address (100.112.254.99 / `circe` / `circe.*` + a worker port, or a worker
-  container name) outside the pool, the gateway, the actuator and the worker services. Ports are
-  read from `config/gpu_pool.yaml` and the worker services' `*_HOST_PORT` keys, so a new seat is
-  covered with no edit. Every allow entry must match something, and so must every zone.
+  on any circe worker address (100.112.254.99, the LAN addresses, `circe` / `circe.*` + a worker
+  port, or a worker container name with any prefix and any port) anywhere in the repo outside
+  the pool, the gateway, the actuator and the worker services. Ports are
+  read from `config/gpu_pool.yaml` and the worker services' `*_HOST_PORT` keys, worker names from
+  the seat compose files, so a new seat is covered with no edit. Every allow entry must match something, and so must every zone.
 - **Dead env key tool** (`scripts/report_dead_env_keys.py`): lists keys in a live `.env` that are
   not in `.env_example` and that no code reads (comments and docstrings don't count). `--apply`
-  writes `.env.bak.<UTC ts>` first. `--known-only` limits it to the keys the pool PRs deleted.
-  Secret-named and NEVER_SYNC keys are never removed unless explicitly listed dead.
+  writes `.env.bak.<UTC ts>` first and by default removes only the keys the pool PRs deleted
+  (`KNOWN_DEAD`); the code-scan verdicts need `--include-heuristic`. It refuses to apply when the
+  code tree is on a different commit than the checkout holding the `.env` files. Secret-named,
+  NEVER_SYNC and image/library keys (`LLAMA_ARG_*`, `HF_*`, `CUDA_*`, ...) are never removed unless
+  explicitly listed dead.
 - **circe firewall** (`scripts/ops/circe_llm_port_gate.sh` + systemd unit, runbook
   `docs/runbooks/2026-10-01-circe-llm-port-firewall.md`): only athena, circe's own containers and
-  loopback may open connections to the worker ports and the actuator. Commands printed for
+  loopback may open connections to the worker ports and the actuator. Rules sit in mangle
+  PREROUTING, before docker's DNAT and out of the docker/tailscale FORWARD ordering race. Commands printed for
   Juniper; nothing applied.
 - **CI job rename**: "Gateway — shared capacity and transport lifecycle" is now "Gateway — GPU pool
   dispatch and transport" (the capacity broker it named was deleted in 4.6/5.6).
@@ -246,39 +251,47 @@ orion-world-model  (/mnt/scripts/Orion-Sapienform/services/orion-world-model/.en
 
 ### `--apply` commands [GO, Juniper]
 
-Order matters: apply only after the deploys that stopped reading these keys are live (the
-rollback image of a service may still read its own deleted keys). Pool keys first:
+Run each from the checkout that holds the `.env` files, after that checkout is pulled to a main
+that includes this PR and the deploys that stopped reading these keys are live (a service's
+rollback image may still read its own deleted keys). `--apply` touches only `KNOWN_DEAD` keys
+unless `--include-heuristic` is given.
 
 ```bash
 # athena
 cd /mnt/scripts/Orion-Sapienform && git pull --ff-only
-python3 scripts/report_dead_env_keys.py --known-only            # review
-python3 scripts/report_dead_env_keys.py --known-only --apply    # writes services/*/.env.bak.<ts>
-python3 scripts/report_dead_env_keys.py                          # review the rest, then --apply if happy
+python3 scripts/report_dead_env_keys.py --known-only                  # review
+python3 scripts/report_dead_env_keys.py --apply                       # pool keys; writes services/*/.env.bak.<ts>
+python3 scripts/report_dead_env_keys.py                               # review the rest
+python3 scripts/report_dead_env_keys.py --apply --include-heuristic   # only if the rest looks right
 
 # circe
-ssh circe@circe 'cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && python3 scripts/report_dead_env_keys.py --known-only --apply'
+ssh circe@circe 'cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && python3 scripts/report_dead_env_keys.py --apply'
 ```
 
 Removing a key from a `.env` changes nothing in a running container until it is recreated, and
 every affected settings model is `extra="ignore"`, so a recreate is also a no-op for these keys.
-`LLM_LANE_*` is excluded until the 6.4 lane census.
+`LLM_LANE_*` is excluded (deleting the lane keys is its own 6.4 follow-up).
 
 ## Circe firewall [GO, Juniper, sudo]
 
 Full runbook with verify and rollback: `docs/runbooks/2026-10-01-circe-llm-port-firewall.md`.
-Rules (from `DRY_RUN=1 scripts/ops/circe_llm_port_gate.sh apply`):
+Rules (from `DRY_RUN=1 scripts/ops/circe_llm_port_gate.sh apply`, after a cleanup pass):
 
 ```bash
-iptables -N ORION-LLM-GATE
-iptables -A ORION-LLM-GATE -s 100.92.216.81/32 -j RETURN
-iptables -A ORION-LLM-GATE -s 172.16.0.0/12 -j RETURN
-iptables -A ORION-LLM-GATE -s 127.0.0.0/8 -j RETURN
-iptables -A ORION-LLM-GATE -j DROP
-iptables -I DOCKER-USER 1 -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport 8011:8017 -j ORION-LLM-GATE
-iptables -I DOCKER-USER 1 -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport 8090 -j ORION-LLM-GATE
-iptables -I DOCKER-USER 1 -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport 8099 -j ORION-LLM-GATE
-ip6tables -I INPUT 1 -p tcp -m multiport --dports 8011:8017,8090,8099 ! -i lo -m comment --comment orion-llm-port-gate -j DROP
+iptables -w -t mangle -N ORION-LLM-GATE
+iptables -w -t mangle -A ORION-LLM-GATE -i lo -j RETURN
+iptables -w -t mangle -A ORION-LLM-GATE -i docker0 -j RETURN
+iptables -w -t mangle -A ORION-LLM-GATE -i br-+ -j RETURN
+iptables -w -t mangle -A ORION-LLM-GATE -s 100.92.216.81/32 -j RETURN
+iptables -w -t mangle -A ORION-LLM-GATE -j DROP
+iptables -w -t mangle -I PREROUTING 1 -p tcp -m multiport --dports 8011:8017,8090,8099 -m addrtype --dst-type LOCAL -j ORION-LLM-GATE
+ip6tables -w -t mangle -N ORION-LLM-GATE
+ip6tables -w -t mangle -A ORION-LLM-GATE -i lo -j RETURN
+ip6tables -w -t mangle -A ORION-LLM-GATE -i docker0 -j RETURN
+ip6tables -w -t mangle -A ORION-LLM-GATE -i br-+ -j RETURN
+ip6tables -w -t mangle -A ORION-LLM-GATE -s fd7a:115c:a1e0::733:d851/128 -j RETURN
+ip6tables -w -t mangle -A ORION-LLM-GATE -j DROP
+ip6tables -w -t mangle -I PREROUTING 1 -p tcp -m multiport --dports 8011:8017,8090,8099 -m addrtype --dst-type LOCAL -j ORION-LLM-GATE
 ```
 
 Install on circe after merge:
@@ -293,7 +306,8 @@ sudo systemctl enable --now orion-llm-port-gate.service
 sudo /usr/local/sbin/orion-llm-port-gate status
 ```
 
-Verify: from athena `curl -sS -m 5 http://100.112.254.99:8011/health` still answers; from
+Verify: `status` shows the `-j ORION-LLM-GATE` jump as the first line of mangle PREROUTING in
+both families; from athena `curl -sS -m 5 http://100.112.254.99:8011/health` still answers; from
 carbon-x1 the same curl times out; `docker exec orion-circe-gpu-lane-controller` reaching
 `100.112.254.99:8011/health` still works. Rollback:
 
@@ -304,9 +318,10 @@ sudo rm -f /etc/systemd/system/orion-llm-port-gate.service /usr/local/sbin/orion
 sudo systemctl daemon-reload
 ```
 
-Why `DOCKER-USER` and not ufw: the ports are docker-published, so IPv4 traffic is DNAT'd before
-INPUT and ufw never sees it; ufw is also disabled on circe. Matching is on conntrack's original
-destination port because after DNAT the port is the container's (8080/6700).
+Why mangle PREROUTING: the ports are docker-published, so IPv4 traffic is DNAT'd before INPUT and
+ufw (disabled on circe anyway) never sees it. Docker's `DOCKER-USER` hook only works while docker's
+FORWARD jump sits above tailscale's `ts-forward`, and a tailscaled restart flips that. PREROUTING
+runs before DNAT, matches the host port directly, and covers the docker-proxy (IPv6) path too.
 
 ## Schema / bus / API changes
 
@@ -324,7 +339,15 @@ destination port because after DNAT the port is the container's (8080/6700).
 ## Tests run
 
 ```text
-REVIEW_PLACEHOLDER_TESTS
+/mnt/scripts/Orion-Sapienform/.venv/bin/python -m pytest tests/test_check_circe_worker_refs.py \
+  tests/test_report_dead_env_keys.py tests/test_circe_llm_port_gate.py -q -p no:cacheprovider
+87 passed in 16.05s
+python scripts/check_circe_worker_refs.py            -> PASS (6 allowed hits, 4 allow entries, 12 zones)
+python scripts/check_circe_worker_refs.py --live-env -> PASS; 6 live keys, 5 dead + 1 allowed
+python scripts/check_chat_route_poachers.py          -> PASS
+python scripts/check_scripts_dir_no_stdlib_shadow.py -> clean
+python scripts/check_definition_drift.py             -> No definition changes
+bash -n scripts/ops/circe_llm_port_gate.sh           -> ok (shellcheck not installed)
 ```
 
 ## Evals run
@@ -343,7 +366,48 @@ circe firewall: DRY_RUN only (tests); applying it needs sudo on circe.
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER_FINDINGS
+Code review ran in a subagent against this diff. Every finding was fixed.
+
+- Finding (must): the firewall lived in `DOCKER-USER`, which tailscale's `ts-forward` (accept-all
+  for `tailscale0`) jumps ahead of whenever tailscaled restarts after docker. That would silently
+  reopen the gate to every tailnet host.
+  - Fix: rules moved to mangle PREROUTING (before DNAT, plain host port, no conntrack, no
+    docker/tailscale rules there). The unit applies them once per boot, not tied to docker.
+  - Evidence: `test_apply_allows_local_and_athena_then_drops_for_both_families` asserts no
+    `DOCKER-USER`/`FORWARD` rule; the runbook's verify step checks the jump is first.
+- Finding (should): `remove` deleted jumps by exact port text, so a port-list change left old jumps
+  behind and the next `apply` failed with an empty, fail-open chain.
+  - Fix: delete every jump by chain name (parse `-S PREROUTING`); `-w` on every call.
+  - Evidence: `test_remove_deletes_jumps_by_chain_name_not_by_port_list`.
+- Finding (should): bridges were allowed by `172.16.0.0/12`; docker pools can move into 192.168.x.
+  - Fix: allow `-i docker0` and `-i br-+` instead. Evidence: same apply test.
+- Finding (should): the gate missed `orion-atlas-llamacpp-chat:8080` (compose default name),
+  `${PROJECT}-...`, `bonsai-worker`, `dsv41-flash`, `diffusion-host`.
+  - Fix: names are read from the seat compose files' service keys and `container_name`, matched
+    with any prefix and any port. Evidence: `test_other_address_shapes_are_caught` (12 shapes x 5
+    locations), `test_worker_names_come_from_the_seat_compose_files`.
+- Finding (should): the gate scanned only four top-level dirs and a narrow suffix list, and not
+  circe's LAN addresses.
+  - Fix: whole repo minus hidden/excluded dirs; templates, units, ini, txt added; 192.168.1.22/.24
+    added. Evidence: the shapes test covers `deploy/`, `Makefile`, templates, `mesh-utilities/`.
+- Finding (should): the dead-key tool treated `--` lines as comments everywhere, hiding compose
+  `command:` flag lines like `--max-rows ${KEY}`.
+  - Fix: `--` is a comment only in `.sql`. Evidence: `test_double_dash_flag_lines_read_keys_outside_sql`.
+- Finding (should): keys read only by the image or libraries (`LLAMA_ARG_*`, `HF_*`, `CUDA_*`,
+  `TZ`, ...) would look dead.
+  - Fix: added to `PROTECTED_PATTERNS`, and `--apply` now removes only `KNOWN_DEAD` unless
+    `--include-heuristic`. Evidence: `test_image_and_library_keys_are_protected`,
+    `test_apply_defaults_to_known_dead_only`.
+- Finding (should): the code tree (often a worktree) and the live `.env` checkout could be on
+  different commits. Confirmed live during this PR: before merging main, the report flagged
+  `HEARTBEAT_ORGAN_FIRE_WINDOW_SEC`, a key a newer main reads.
+  - Fix: `--apply` refuses on a HEAD mismatch unless `--allow-tree-mismatch`.
+    Evidence: `test_apply_refuses_when_code_tree_is_on_another_commit`.
+- Nits fixed: v6 allows athena's tailnet address; one port list drives both families (tested
+  equal); ops zones listed explicitly; atomic `.env` rewrite; multi-line quoted values are never
+  half-removed (`test_multiline_value_is_never_half_removed`); file size cap raised to 4 MB;
+  docstring notes that `.env.bak.*` holds secrets. Kept as documented: ALLOW keys are per file +
+  host + port, not per line.
 
 ## Restart required
 
@@ -358,14 +422,16 @@ No restart required.
 - Severity: medium. Concern: `--apply` deletes lines from live `.env` files; a key read only by
   dynamically built names (`os.getenv(f"{x}_URL")`) would look dead. Mitigation: backup first,
   `.env_example` keys are never dead, `FOO_` prefix strings keep their whole family alive,
-  `--known-only` for the first pass, orphan files never edited.
-- Severity: low. Concern: UNVERIFIED whether a bare `dockerd` restart keeps `DOCKER-USER` rules.
-  Mitigation: the unit is `PartOf=docker.service`, so it re-applies with docker.
+  `--apply` is KNOWN_DEAD-only by default and refuses a code/env commit mismatch, orphan files
+  never edited.
+- Severity: low. Concern: UNVERIFIED that nothing on circe inserts an ACCEPT above the gate's jump
+  in mangle PREROUTING (reading it needs sudo). Mitigation: the runbook's verify step checks the
+  order; re-check after tailscale upgrades.
 - Severity: low. Concern: 192.168.1.x LAN clients lose access to the worker ports. Mitigation:
   none found in the repo or live `.env` files; the runbook has a one-line RETURN escape.
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2453
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

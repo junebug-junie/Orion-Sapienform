@@ -56,6 +56,23 @@ _STOPWORDS = frozenset(
     }
 )
 
+# Words that open an acknowledgement ("thanks for those updates", "huh? sorry,
+# not following"). An ack with one content word after it is still an ack.
+# Greetings ("hey", "hi") are deliberately NOT here: "hey, I'm pregnant" opens
+# with a greeting and is the most important thing said all week.
+_ACK_OPENERS = frozenset(
+    {
+        "thanks", "thank", "thx", "ty", "tysm", "ok", "okay", "kk", "cool",
+        "nice", "great", "awesome", "haha", "lol", "hehe", "huh", "hmm", "yup",
+        "yep", "yeah", "sure", "gotcha",
+    }
+)
+
+# Words that make a prompt a question even without a "?".
+_QUESTION_OPENERS = frozenset(
+    {"what", "whats", "what's", "how", "hows", "how's", "which", "who", "where", "why", "when"}
+)
+
 _WORD_RE = re.compile(r"[a-z0-9']+")
 
 
@@ -70,15 +87,19 @@ def _content_words(words: list[str]) -> list[str]:
 def is_low_info_prompt(prompt: str) -> bool:
     """True for a user prompt with nothing in it to remember.
 
-    Three rules, each narrow on purpose (lean toward remembering):
+    Four rules, each narrow on purpose (lean toward remembering):
 
     1. The existing courtesy check (`is_low_info_social`): "hi", "thanks".
     2. Nothing but greetings, filler and function words: "sup yo", "ty!",
        "howdy, how goes it".
     3. A short question with at most one content word: "hey, which queue?",
-       "what else is on your mind?". A question asks; it does not tell Orion
-       anything. A short *statement* is kept -- "I've got the blues." has one
-       content word and is real.
+       "what else is on your mind?", "what's crackalacking". A question asks;
+       it does not tell Orion anything.
+    4. A short acknowledgement with at most one content word: "thanks for
+       those updates", "huh? sorry, not following."
+
+    A short *statement* is kept -- "I've got the blues." and "sleepy" have one
+    content word each and are real.
     """
     text = str(prompt or "").strip()
     if is_low_info_social(text):
@@ -87,7 +108,12 @@ def is_low_info_prompt(prompt: str) -> bool:
     content = _content_words(words)
     if not content:
         return True
-    if text.endswith("?") and len(content) <= 1 and len(words) <= 8:
+    short = len(content) <= 1 and len(words) <= 8
+    if not short:
+        return False
+    if text.endswith("?") or words[0] in _QUESTION_OPENERS:
+        return True
+    if words[0] in _ACK_OPENERS:
         return True
     return False
 

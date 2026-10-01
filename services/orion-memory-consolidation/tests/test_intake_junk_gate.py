@@ -116,3 +116,26 @@ def test_long_orion_reply_does_not_rescue_a_greeting():
     # talk, so every greeting passed.
     long_reply = "Here is a long and genuinely substantive reply " * 10
     assert _gate([_turn("sup", response=long_reply)]).action == "skip"
+
+
+@pytest.mark.parametrize("prompt", ["thanks for those updates", "what's crackalacking"])
+def test_short_ack_or_wh_question_is_junk(prompt):
+    assert prompt_junk_reason(prompt) == "low_info_social"
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    ["sleepy", "hey, I'm pregnant", "ok, mom died", "thanks, my labs came back fine", "Do you believe in god(s)?"],
+)
+def test_short_real_statement_survives_the_ack_and_question_rules(prompt):
+    assert prompt_junk_reason(prompt) is None
+
+
+def test_row_summary_skips_a_trailing_greeting():
+    # The gate keeps ["Headed to Austin...", "sup yo"] for the Austin line; the
+    # row used to be summarised by the last prompt, i.e. saved as "sup yo".
+    from orion.memory.crystallization.intake_consolidation_window import _window_summary
+
+    turns = [_turn(REAL[0]), _turn("sup yo"), _turn("Run github compactor.")]
+    assert _window_summary(turns) == REAL[0]
+    assert _window_summary([_turn("hi"), _turn("")]) == "hi"  # all junk: unchanged fallback

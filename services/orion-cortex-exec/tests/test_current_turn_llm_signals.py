@@ -505,3 +505,48 @@ def test_probe_rpc_uses_its_own_rpc_health_hop_label():
     assert asyncio.run(signals_module._llm_call(_Bus(), prompt="hi")) == "[]"
     assert seen["health_label"] == signals_module.PROBE_HEALTH_LABEL == "current_turn_probe"
     assert signals_module.PROBE_HEALTH_LABEL in DEFAULT_EXCLUDE_LABELS
+
+
+# --- human-turn gate --------------------------------------------------------
+
+from app.current_turn_llm_signals import (  # noqa: E402
+    SKIPPED_NOT_HUMAN_TURN,
+    human_chat_turn_reason,
+    mark_current_turn_llm_skipped,
+)
+from orion.substrate.attention.policy import direct_answer_cause  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "ctx,expected",
+    [
+        ({"verb": "stance_react", "stance_inputs": {"utterance_origin": "juniper"}}, (True, "utterance_origin_juniper")),
+        ({"verb": "chat_general"}, (True, "chat_entry_verb")),
+        ({"verb": "chat_quick", "options": {"chat_quick_full_stance": True}}, (True, "chat_entry_verb")),
+        ({"verb": "stance_react", "stance_inputs": {"utterance_origin": "orion"}}, (False, "utterance_origin_orion")),
+        ({"verb": "stance_react", "stance_inputs": {}}, (False, "unified_turn_without_human_origin")),
+        ({"verb": "journal.compose"}, (False, "non_chat_verb:journal.compose")),
+        ({"verb": "skills.imagination.render_scene.v1"}, (False, "non_chat_verb:skills.imagination.render_scene.v1")),
+        ({}, (False, "non_chat_verb:none")),
+        ({"verb": "chat_general", "options": {"policy_dispatch_only": True}}, (False, "policy_dispatch")),
+        ({"verb": "chat_general", "policy_dispatch_only": True}, (False, "policy_dispatch")),
+    ],
+)
+def test_human_chat_turn_reason(ctx, expected) -> None:
+    assert human_chat_turn_reason(ctx) == expected
+
+
+def test_skipped_state_is_distinct_and_fails_closed() -> None:
+    ctx = {"user_message": "Compose today's journal entry."}
+    mark_current_turn_llm_skipped(ctx, "non_chat_verb:journal.compose")
+    assert ctx["current_turn_llm_signals"] == []
+    read = ctx["current_turn_llm_read"]
+    assert read == {
+        "ok": False,
+        "wants_direct_answer": None,
+        "skipped": SKIPPED_NOT_HUMAN_TURN,
+        "skip_reason": "non_chat_verb:journal.compose",
+    }
+    # Not "found nothing" (that would be ok=True) and not "wants a direct answer"
+    # ("judged"): the policy treats it like any missing read.
+    assert direct_answer_cause(ctx, ctx["user_message"]) == "unavailable"

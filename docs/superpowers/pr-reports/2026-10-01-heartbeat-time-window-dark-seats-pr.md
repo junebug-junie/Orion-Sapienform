@@ -1,7 +1,7 @@
 ## Summary
 
 - Heartbeat organ occupancy (`dark_seats`, `organ_fire_counts`, `organ_distinctness`) now uses a wall-clock window (default 300 s, `HEARTBEAT_ORGAN_FIRE_WINDOW_SEC`) instead of the last 64 absorbed events.
-- Empty window reads unknown (`dark_seats=[]`, `organ_fire_counts={}`, `organ_distinctness=null`), never all-dark.
+- Empty window, or the first full window after a restart (warm-up), reads unknown (`dark_seats=[]`, `organ_fire_counts={}`, `organ_distinctness=null`), never all-dark.
 - Pruning happens on every read by clock, so silence is detected with no incoming events.
 - New additive /h1 fields: `organ_last_fired_at`, `organ_seconds_since_last_fire`, `fire_window_sec` so a consumer can tell dark from merely rare. Last-fire survives pruning; null = never seen since boot.
 - Memory bounded: 50,000 timestamps per organ max.
@@ -42,7 +42,7 @@ orion-heartbeat only: `app/substrate/proprioception.py`, `ensemble.py`, `reconst
 ## Tests run
 
 ```text
-PYTHONPATH=. pytest services/orion-heartbeat/tests -q -> 124 passed
+PYTHONPATH=. pytest services/orion-heartbeat/tests -q -> 126 passed
 python3 scripts/check_env_template_parity.py -> PASS
 ```
 
@@ -58,7 +58,15 @@ Not run (no restart permitted).
 
 ## Review findings fixed
 
-See PR comment / below if any.
+- Finding (medium): empty-window branch dropped recency fields, so "silent 40 min" looked like "just booted".
+  - Fix: recency is reported on the unknown reading too (null after fresh boot).
+  - Evidence: `test_wall_clock_expiry_with_no_incoming_events`.
+- Finding (medium): after restart one organ firing made the other four read dark.
+  - Fix: `warm` flag; unknown until process uptime >= window.
+  - Evidence: `test_warmup_after_restart_reads_unknown_not_dark`.
+- Finding (low): wall clock can step backward.
+  - Fix: window uses `time.monotonic`; `time.time` only for `last_fired_at`.
+- Finding (low, not fixed): attention_self_model and hub ignore the recency fields. Follow-up: have them surface `organ_seconds_since_last_fire`.
 
 ## Restart required
 
@@ -68,8 +76,8 @@ scripts/safe_docker_build.sh heartbeat up -d --build   # run from the deploying 
 
 ## Risks / concerns
 
-- Severity: low. Concern: a 300 s window still reads cortex-orch dark ~55% of the time at 26/h (mean gap ~140 s, so roughly 12% per 5 min; check `organ_seconds_since_last_fire`). Mitigation: consumers should use recency, or raise the window.
-- A restart empties the window (unknown for up to 5 min).
+- Severity: low. Concern: at ~26/h cortex-orch still reads dark about 11% of 5-min windows by chance (Poisson, mean 2.2 per window); use `organ_seconds_since_last_fire`. Mitigation: consumers should use recency, or raise the window.
+- A restart reads unknown for the first window (5 min).
 
 ## PR link
 

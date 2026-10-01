@@ -145,7 +145,8 @@ class _Clock:
 
 def test_rare_organ_not_dark_when_it_fired_inside_window() -> None:
     clock = _Clock()
-    w = OrganFireWindow(window_sec=300, clock=clock)
+    w = OrganFireWindow(window_sec=300, clock=clock, wall_clock=clock)
+    clock.t += 300  # past warm-up
     w.record("orion-cortex-orch")
     for _ in range(500):  # flood from a busy organ; count window of 64 would evict orch
         w.record("orion-biometrics")
@@ -156,7 +157,8 @@ def test_rare_organ_not_dark_when_it_fired_inside_window() -> None:
 
 def test_organ_flagged_dark_after_window_passes_with_recency() -> None:
     clock = _Clock()
-    w = OrganFireWindow(window_sec=300, clock=clock)
+    w = OrganFireWindow(window_sec=300, clock=clock, wall_clock=clock)
+    clock.t += 300  # past warm-up
     w.record("orion-cortex-orch")
     w.record("orion-bus")
     clock.t += 200
@@ -175,7 +177,7 @@ def test_organ_flagged_dark_after_window_passes_with_recency() -> None:
 
 
 def test_empty_window_is_unknown_not_all_dark() -> None:
-    w = OrganFireWindow(window_sec=300, clock=_Clock())
+    w = OrganFireWindow(window_sec=300, clock=_Clock(), wall_clock=_Clock())
     snap = w.snapshot()
     reading = compute_proprioception(
         fire_counts=snap.counts, mean_profile=[1.0] * 9, fire_snapshot=snap
@@ -187,7 +189,7 @@ def test_empty_window_is_unknown_not_all_dark() -> None:
 
 def test_wall_clock_expiry_with_no_incoming_events() -> None:
     clock = _Clock()
-    w = OrganFireWindow(window_sec=60, clock=clock)
+    w = OrganFireWindow(window_sec=60, clock=clock, wall_clock=clock)
     w.record("orion-hub")
     assert w.counts()["orion-hub"] == 1
     clock.t += 61  # no record() calls at all
@@ -199,12 +201,54 @@ def test_wall_clock_expiry_with_no_incoming_events() -> None:
     )
     assert reading.dark_seats == []  # whole window empty -> unknown
     assert reading.organ_distinctness is None
-    # recency survives pruning
+    # recency survives pruning AND is reported on the empty-window reading
     assert snap.seconds_since_last_fire["orion-hub"] == pytest.approx(61)
+    assert reading.organ_seconds_since_last_fire["orion-hub"] == pytest.approx(61)
+    assert reading.organ_last_fired_at["orion-hub"] is not None
 
 
 def test_window_memory_is_bounded() -> None:
-    w = OrganFireWindow(window_sec=300, clock=_Clock(), max_events_per_organ=10)
+    w = OrganFireWindow(window_sec=300, clock=_Clock(), wall_clock=_Clock(), max_events_per_organ=10)
     for _ in range(1000):
         w.record("orion-bus")
     assert w.counts()["orion-bus"] == 10
+
+
+def test_warmup_after_restart_reads_unknown_not_dark() -> None:
+    clock = _Clock()
+    w = OrganFireWindow(window_sec=300, clock=clock, wall_clock=clock)
+    clock.t += 10
+    w.record("orion-biometrics")  # only one organ has spoken since boot
+    snap = w.snapshot()
+    assert snap.warm is False
+    reading = compute_proprioception(
+        fire_counts=snap.counts, mean_profile=[1.0] * 9, fire_snapshot=snap
+    )
+    assert reading.dark_seats == []
+    assert reading.organ_distinctness is None
+    clock.t += 300
+    w.record("orion-biometrics")
+    snap = w.snapshot()
+    assert snap.warm is True
+    reading = compute_proprioception(
+        fire_counts=snap.counts, mean_profile=[1.0] * 9, fire_snapshot=snap
+    )
+    assert "orion-hub" in reading.dark_seats
+
+
+def test_h1_result_carries_recency_fields() -> None:
+    from dataclasses import asdict
+
+    from app.substrate.ensemble import EnsembleConfig, EnsembleSubstrate
+    from app.substrate.reconstruction import compute_h1_ensemble
+
+    clock = _Clock()
+    w = OrganFireWindow(window_sec=300, clock=clock, wall_clock=clock)
+    clock.t += 300
+    w.record("orion-bus")
+    snap = w.snapshot()
+    ens = EnsembleSubstrate(config=EnsembleConfig(n_trajectories=2), base_seed=9)
+    d = asdict(compute_h1_ensemble(ens, fire_counts=snap.counts, fire_snapshot=snap))
+    assert d["fire_window_sec"] == 300
+    assert d["organ_seconds_since_last_fire"]["orion-bus"] == pytest.approx(0)
+    assert d["organ_last_fired_at"]["orion-hub"] is None

@@ -15,6 +15,7 @@ from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, Tuple
 
 from orion.fcc.claude_spawn import claude_permission_argv, extend_mcp_argv, setting_sources_argv
 from orion.fcc.turn_lock import turn_in_progress
+from orion.curiosity.write_stamp import WriteStamper, completed_tool_use_ids, graph_write_tool_use_ids
 from orion.fcc.context_budget import (
     annotate_harness_step,
     apply_context_overflow_hint,
@@ -869,6 +870,37 @@ def _build_subprocess_env(
     return env
 
 
+async def _arm_write_stamper(
+    fcc_env: Dict[str, str], *, reading_only: bool, correlation_id: str
+) -> Optional[WriteStamper]:
+    """A baselined stamper for this turn, or None (no graph creds, or unreachable).
+
+    Reading-only turns never get the curiosity credentials, so they cannot
+    write the graph and get no stamper."""
+    if reading_only:
+        return None
+    stamper = WriteStamper.from_env(fcc_env)
+    if stamper is None:
+        return None
+    if not await asyncio.to_thread(stamper.take_baseline):
+        logger.warning(
+            "write_stamp_disarmed corr=%s -- no baseline, so this turn's graph "
+            "writes will not be stamped (legacy nodes cannot be told apart)",
+            correlation_id,
+        )
+        return None
+    return stamper
+
+
+async def _run_write_stamp(stamper: WriteStamper, *, correlation_id: str, phase: str) -> None:
+    count = await asyncio.to_thread(stamper.stamp)
+    if count:
+        logger.info(
+            "write_stamp_applied corr=%s phase=%s stamped=%s total=%s graph=%s",
+            correlation_id, phase, count, stamper.stamped_total, stamper.graph_name,
+        )
+
+
 async def run_fcc_turn(
     *,
     prompt: str,
@@ -1013,6 +1045,12 @@ async def run_fcc_turn(
     pressure_chars = context_pressure_threshold_chars(lane_n_ctx)
 
     context_nudge_sent = False
+    # `written_at` on the run nodes Orion writes into its own graph is enforced
+    # here, not by the prompt: see orion/curiosity/write_stamp.py. Baseline is
+    # taken BEFORE the subprocess exists, so nothing this turn writes can be
+    # mistaken for a legacy node.
+    stamper = await _arm_write_stamper(env, reading_only=reading_only, correlation_id=correlation_id)
+    pending_graph_writes: set[str] = set()
     if stream_read_limit < 65536:
         stream_read_limit = 65536
 
@@ -1106,6 +1144,12 @@ async def run_fcc_turn(
             if parsed.get("type") == "system" and parsed.get("subtype") == "thinking_tokens":
                 continue
             steps_seen += 1
+            if stamper is not None:
+                pending_graph_writes |= graph_write_tool_use_ids(parsed)
+                finished = completed_tool_use_ids(parsed) & pending_graph_writes
+                if finished:
+                    pending_graph_writes -= finished
+                    await _run_write_stamp(stamper, correlation_id=correlation_id, phase="tool_result")
 
             step = build_step_frame(parsed)
             step = annotate_harness_step(step, accumulated_chars=budget_chars, max_chars=ceiling_chars)
@@ -1170,6 +1214,13 @@ async def run_fcc_turn(
     finally:
         _unregister_process(correlation_id)
         _turn_lock.__exit__(None, None, None)
+        if stamper is not None:
+            # Every exit path, including kills and timeouts: a write the
+            # command check missed still gets a (turn-end) stamp.
+            try:
+                await _run_write_stamp(stamper, correlation_id=correlation_id, phase="turn_end")
+            except (Exception, asyncio.CancelledError):  # noqa: BLE001
+                logger.warning("write_stamp_turn_end_failed corr=%s", correlation_id, exc_info=True)
         if mcp_config_path is not None:
             from orion.fcc.mcp_config import cleanup_mcp_config
 

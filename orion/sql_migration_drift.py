@@ -14,16 +14,25 @@ HOW IT DECIDES
    ``ALTER TABLE t ADD COLUMN a, ADD COLUMN b`` yields both columns. Statements inside a
    ``DO $$ ... $$`` block are guarded by plpgsql ``IF``s, so their effects are *conditional*:
    reported, never alarmed on.
-3. The whole corpus is replayed in the order the files were first committed (ties by name),
+3. The whole corpus is replayed in the order the files LANDED ON THE REF (``git log
+   --first-parent``, so a PR merge time, not the feature-branch commit time; ties by name),
    giving the schema the repo *expects* right now. That is what makes an intentional drop in a
    later migration (GPU pool stage 5.6, the action-outcome index swap) read as "superseded"
    instead of "missing".
 4. Expected state is diffed against ``information_schema`` / ``pg_index`` / ``pg_class``. Each
    difference is blamed on the file that last set the object's expected state; it is RED only
-   if that file changed on the checked ref within the recency window (default 30 days), so
-   migrations for long-retired tables do not page anyone.
+   if that file landed/changed on the checked ref within the recency window (default 30 days),
+   so migrations for long-retired tables do not page anyone -- OR if the caller says it was
+   already carded (``sticky_keys``): a file that went red stays red until it is actually
+   applied, it does not quietly age out of the window.
 5. A file with no schema effects but with INSERT/UPDATE/DELETE is a DATA migration: the database
    cannot tell us whether it ran. It is listed as "verify manually", never as applied or missing.
+
+Known limits (stated, not hidden): columns declared inline in ``CREATE TABLE`` are not tracked
+individually, so restating ``CREATE TABLE IF NOT EXISTS t (..., new_col ...)`` for a table that
+already exists adds nothing and is NOT caught -- add columns with ``ALTER TABLE ... ADD COLUMN``.
+``EXECUTE '<sql string>'`` inside plpgsql is not parsed. Views and functions are not tracked
+(none in the corpus as of 2026-10-01).
 
 Escape hatches live INSIDE migration files (an exception in someone's head is drift with an alibi):
     -- ORION-MIGRATION-NOT-A-MIGRATION: <why>          (file is a dump/scratch, ignore it)
@@ -137,7 +146,8 @@ def split_statements(sql: str) -> list[Statement]:
         if c == "$":
             m = _DOLLAR_TAG.match(sql, i)
             prev = buf[-1] if buf else " "
-            if m and not (prev.isalnum() or prev == "_"):
+            glued_keyword = re.search(r"(?:^|[^A-Za-z0-9_])(as|do)$", "".join(buf[-4:]), re.I)
+            if m and (not (prev.isalnum() or prev == "_") or glued_keyword):
                 tag = m.group(0)
                 end = sql.find(tag, m.end())
                 end = n if end < 0 else end
@@ -206,7 +216,8 @@ _CREATE_TABLE = re.compile(
 _CREATE_SEQUENCE = re.compile(
     rf"^create (?:(?:temp|temporary|unlogged) )?sequence (?:if not exists )?(?P<name>{_QID})", re.I
 )
-_ALTER_TABLE = re.compile(rf"^alter table (?:if exists )?(?:only )?(?P<table>{_QID}) (?P<actions>.*)$", re.I | re.S)
+_ALTER_TABLE = re.compile(rf"^alter table (?P<if_exists>if exists )?(?:only )?(?P<table>{_QID}) (?P<actions>.*)$", re.I | re.S)
+_ALTER_RENAME = re.compile(rf"^alter (?P<kind>index|sequence) (?P<if_exists>if exists )?(?P<name>{_QID}) rename to (?P<new>{_ID})$", re.I)
 _DROP_MANY = re.compile(
     r"^drop (?P<kind>table|index|sequence) (?:concurrently )?(?:if exists )?(?P<names>.*?)(?: (?:cascade|restrict))?$",
     re.I | re.S,
@@ -272,9 +283,19 @@ def _classify(text: str, conditional: bool, pm: ParsedMigration) -> bool:
             if re.fullmatch(_QID, raw):
                 pm.effects.append(Effect("drop", kind, _bare(raw), None, conditional))
         return True
+    m = _ALTER_RENAME.match(text)
+    if m:
+        cond = conditional or bool(m["if_exists"])
+        kind = m["kind"].lower()
+        pm.effects.append(Effect("drop", kind, _bare(m["name"]), None, cond))
+        pm.effects.append(Effect("create", kind, m["new"].lower(), None, cond))
+        return True
     m = _ALTER_TABLE.match(text)
     if m:
         table = _bare(m["table"])
+        # ALTER TABLE IF EXISTS: the author expected the table might be absent, so nothing it
+        # adds can be required.
+        conditional = conditional or bool(m["if_exists"])
         recognised = False
         for action in _split_top_level_commas(m["actions"]):
             a = _ADD.match(action)
@@ -398,10 +419,15 @@ class FileResult:
     data_statements: int = 0
     marker_error: Optional[str] = None
     header_script: Optional[str] = None
+    sticky: bool = False   # already carded: stays red past the window until actually applied
+
+    @property
+    def broken(self) -> bool:
+        return self.status in ("MISSING", "INVALID")
 
     @property
     def red(self) -> bool:
-        return self.in_window and self.status in ("MISSING", "INVALID")
+        return self.broken and (self.in_window or self.sticky)
 
     @property
     def key(self) -> str:
@@ -442,7 +468,13 @@ class DriftReport:
         return sorted(f.key for f in self.red_files)
 
     def green_keys(self) -> list[str]:
-        return sorted(f.key for f in self.files if f.in_window and not f.red)
+        """Files verifiably fine this tick (any window): forgetting a delivered key needs proof
+        it was applied, never merely that it aged out."""
+        return sorted(f.key for f in self.files if not f.broken)
+
+    def old_broken(self) -> list[FileResult]:
+        """Drift outside the window that was never carded: reported, not alarmed."""
+        return [f for f in self.files if f.broken and not f.red]
 
     def verify_manually(self) -> list[FileResult]:
         return [f for f in self.files if f.in_window and f.status == "DATA"]
@@ -454,6 +486,7 @@ def evaluate(
     *,
     now: Optional[datetime] = None,
     window_days: Optional[int] = DEFAULT_WINDOW_DAYS,
+    sticky_keys: Iterable[str] = (),
 ) -> DriftReport:
     """Replay the corpus in commit order, diff the expected schema against ``live``."""
     now = now or datetime.now(timezone.utc)
@@ -499,8 +532,13 @@ def evaluate(
     for f in ordered:
         for e in parsed[f.name].effects:
             seq += 1
-            final[(e.kind, e.name)] = (e.op, seq, f.name, e.conditional, e.table)
-            if e.kind == "table" and e.op == "drop":
+            key = (e.kind, e.name)
+            if e.conditional and key in final and not final[key][3]:
+                # A guarded (DO-block IF / ALTER ... IF EXISTS) effect may not have run, so it
+                # cannot overturn an unconditional expectation either way.
+                continue
+            final[key] = (e.op, seq, f.name, e.conditional, e.table)
+            if e.kind == "table" and e.op == "drop" and not e.conditional:
                 table_drops.setdefault(e.name, []).append((seq, f.name))
 
     problems: dict[str, list[ObjectFinding]] = {}
@@ -538,10 +576,12 @@ def evaluate(
             continue
         problems.setdefault(blamed, []).append(finding)
 
+    sticky = set(sticky_keys)
     results: list[FileResult] = []
     for f in sorted(files, key=lambda f: f.name):
         in_window = cutoff is None or f.changed_at >= cutoff
         r = FileResult(name=f.name, in_window=in_window, changed_at=f.changed_at, status="APPLIED")
+        r.sticky = f"migration:{f.name}" in sticky
         if f.name in skipped:
             r.status = "SKIPPED"
             r.info.append(skipped[f.name])
@@ -594,9 +634,15 @@ def _all_dropped_elsewhere(name: str, pm: ParsedMigration, dropped_later_by: dic
 
 
 def commit_times(repo: Path, ref: str = "HEAD", subdir: Path = MIGRATION_SUBDIR) -> dict[str, tuple[datetime, datetime]]:
-    """basename -> (first commit time, last commit time) on ``ref``. One git call (~0.2s)."""
+    """basename -> (first landed, last changed) on ``ref``. One git call (~0.2s).
+
+    ``--first-parent --diff-merges=first-parent``: this repo merges PRs with merge commits, and a
+    plain ``git log`` reports the feature-branch commit time -- up to 10 days before the file
+    reached main on the real corpus, which would shrink or erase its alarm window and misorder
+    the replay. First-parent times mean "when it landed on ``ref``"."""
     out = subprocess.run(
-        ["git", "-C", str(repo), "log", "--format=@%ct", "--name-only", ref, "--", str(subdir)],
+        ["git", "-C", str(repo), "log", "--first-parent", "--diff-merges=first-parent",
+         "--format=@%ct", "--name-only", ref, "--", str(subdir)],
         capture_output=True, text=True, check=True, timeout=60,
     ).stdout
     times: dict[str, tuple[datetime, datetime]] = {}
@@ -618,22 +664,31 @@ def commit_times(repo: Path, ref: str = "HEAD", subdir: Path = MIGRATION_SUBDIR)
     return times
 
 
-def load_files(repo: Path, times: dict[str, tuple[datetime, datetime]], now: Optional[datetime] = None) -> list[MigrationFile]:
-    """Every *.sql in the migration dir. A file git has never seen (uncommitted) is treated as
-    brand new -- newest in replay order and inside any window."""
+def load_files(repo: Path, times: dict[str, tuple[datetime, datetime]], now: Optional[datetime] = None,
+               *, include_uncommitted: bool = True) -> list[MigrationFile]:
+    """Every *.sql in the migration dir. A file git has never seen on the ref (uncommitted) is
+    treated as brand new -- newest in replay order and inside any window -- unless
+    ``include_uncommitted`` is False (the watch: it alarms on MERGED migrations only)."""
     now = now or datetime.now(timezone.utc)
     files = []
     for p in sorted((repo / MIGRATION_SUBDIR).glob(MIGRATION_GLOB)):
+        if p.name not in times and not include_uncommitted:
+            continue
         added, changed = times.get(p.name, (now, now))
         files.append(MigrationFile(p.name, p.read_text(errors="replace"), added, changed))
     return files
 
 
+# pg_catalog, not information_schema: information_schema filters by the caller's privileges, so a
+# non-superuser DSN would hide tables/columns and every one would read as MISSING.
 LIVE_STATE_SQL = {
-    "tables": "SELECT table_name FROM information_schema.tables "
-              "WHERE table_schema NOT IN ('pg_catalog','information_schema')",
-    "columns": "SELECT table_name, column_name FROM information_schema.columns "
-               "WHERE table_schema NOT IN ('pg_catalog','information_schema')",
+    "tables": "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+              "WHERE c.relkind IN ('r','p','v','m','f') "
+              "AND n.nspname NOT IN ('pg_catalog','information_schema') AND n.nspname NOT LIKE 'pg_toast%'",
+    "columns": "SELECT c.relname, a.attname FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid "
+               "JOIN pg_namespace n ON n.oid = c.relnamespace "
+               "WHERE a.attnum > 0 AND NOT a.attisdropped AND c.relkind IN ('r','p','v','m','f') "
+               "AND n.nspname NOT IN ('pg_catalog','information_schema')",
     "indexes": "SELECT c.relname, i.indisvalid FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid "
                "JOIN pg_namespace n ON n.oid = c.relnamespace "
                "WHERE n.nspname NOT IN ('pg_catalog','information_schema')",
@@ -657,10 +712,11 @@ def load_live_state(conn) -> LiveState:
 
 
 def check_repo(conn, repo: Path, *, ref: str = "HEAD", window_days: Optional[int] = DEFAULT_WINDOW_DAYS,
-               now: Optional[datetime] = None) -> DriftReport:
+               now: Optional[datetime] = None, sticky_keys: Iterable[str] = (),
+               include_uncommitted: bool = False) -> DriftReport:
     times = commit_times(repo, ref)
-    files = load_files(repo, times, now)
-    return evaluate(files, load_live_state(conn), now=now, window_days=window_days)
+    files = load_files(repo, times, now, include_uncommitted=include_uncommitted)
+    return evaluate(files, load_live_state(conn), now=now, window_days=window_days, sticky_keys=sticky_keys)
 
 
 def alert_lines(report: DriftReport) -> list[str]:
@@ -676,7 +732,7 @@ def alert_lines(report: DriftReport) -> list[str]:
 
 def iter_human(report: DriftReport, quiet: bool = False) -> Iterable[str]:
     for f in report.files:
-        if quiet and not f.red and not (f.in_window and f.status in ("DATA", "CONDITIONAL")):
+        if quiet and not f.red and not f.broken and not (f.in_window and f.status in ("DATA", "CONDITIONAL")):
             continue
         if not f.in_window and not quiet and f.status in ("APPLIED", "SUPERSEDED", "SKIPPED", "UNKNOWN"):
             continue

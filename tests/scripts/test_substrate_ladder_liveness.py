@@ -812,3 +812,22 @@ def test_migration_section_is_in_json_and_human_output(capsys):
     out = capsys.readouterr().out
     assert f"RED migration {_HW}" in out and "apply:" in out
     assert out.strip().endswith("RED")
+
+
+def test_the_watch_keeps_a_carded_migration_red_past_the_window(tmp_path, monkeypatch):
+    """Review finding 1: the delivered-card list is passed as sticky keys, so a carded file
+    stays red until applied instead of ageing out with its debounce key stuck."""
+    cli = _load_cli()
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"notified_keys": [f"migration:{_HW}", "rung:attention"]}))
+    seen = {}
+
+    def fake_check_repo(conn, repo, **kw):
+        seen.update(kw)
+        return _migration_report(hw_present=True)
+
+    monkeypatch.setattr(cli.drift, "check_repo", fake_check_repo)
+    args = type("A", (), {"repo": str(REPO), "migration_days": 30, "state_file": str(state)})()
+    cli.check_migrations(None, args, ll.LadderReport())
+    assert seen["sticky_keys"] == [f"migration:{_HW}"]
+    assert cli._delivered_migration_keys(str(tmp_path / "absent.json")) == []

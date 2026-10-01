@@ -328,11 +328,13 @@ class TestStatusRules:
         assert by_name(r, "params.sql").status == "UNKNOWN"
         assert not r.red
 
-    def test_green_keys_cover_only_in_window_files(self):
+    def test_green_keys_need_proof_of_apply_not_ageing_out(self):
         new = mf("new.sql", "create table a (id int);", changed=NOW)
-        old = mf("old.sql", "create table b (id int);")
-        r = d.evaluate([new, old], live(tables={"a", "b"}), now=NOW)
-        assert r.green_keys() == ["migration:new.sql"]
+        old_ok = mf("old_ok.sql", "create table b (id int);")
+        old_missing = mf("old_missing.sql", "create table c (id int);")
+        r = d.evaluate([new, old_ok, old_missing], live(tables={"a", "b"}), now=NOW)
+        assert r.green_keys() == ["migration:new.sql", "migration:old_ok.sql"]
+        assert [f.name for f in r.old_broken()] == ["old_missing.sql"]
 
     def test_an_uncommitted_file_is_treated_as_new(self, tmp_path):
         (tmp_path / d.MIGRATION_SUBDIR).mkdir(parents=True)
@@ -431,3 +433,163 @@ def test_commit_times_reads_first_and_last_commit():
         pytest.skip("shallow history")
     first, last = times["manual_migration_hardware_watch_v1.sql"]
     assert first <= last
+
+
+# ------------------------------------------------------ review regressions (2026-10-01)
+
+
+class TestReviewRegressions:
+    def test_a_carded_file_stays_red_after_the_window_until_applied(self):
+        """Review finding 1: red used to depend only on wall-clock age, so an unapplied, already
+        carded migration went quiet on day 31 and its debounce key was never released."""
+        f = mf("n.sql", "alter table t add column z int;", changed=NOW - timedelta(days=31))
+        assert not d.evaluate([f], live(tables={"t"}), now=NOW).red
+        stuck = d.evaluate([f], live(tables={"t"}), now=NOW, sticky_keys=["migration:n.sql"])
+        assert stuck.red_keys() == ["migration:n.sql"]
+        applied = d.evaluate([f], live(tables={"t"}, columns={"t.z"}), now=NOW, sticky_keys=["migration:n.sql"])
+        assert not applied.red and "migration:n.sql" in applied.green_keys()
+
+    def test_a_conditional_drop_does_not_switch_off_a_tables_columns(self):
+        """Review finding 3: a guarded DROP TABLE in a DO block cascaded and hid a missing column."""
+        a = mf("a.sql", "create table t (id int); alter table t add column c int;", added=NOW - timedelta(days=5), changed=NOW)
+        b = mf("b.sql", "do $$ begin if false then drop table t; end if; end $$;", added=NOW - timedelta(days=1), changed=NOW)
+        r = d.evaluate([a, b], live(tables={"t"}), now=NOW)
+        assert r.red_keys() == ["migration:a.sql"]
+        assert [p.name for p in by_name(r, "a.sql").problems] == ["t.c"]
+
+    def test_a_conditional_drop_of_a_service_created_table_does_not_cascade(self):
+        """Same, for a table no migration created (service code creates it at boot): the guarded
+        drop is the first thing the replay knows about the table."""
+        a = mf("a.sql", "alter table t add column c int;", added=NOW - timedelta(days=5), changed=NOW)
+        b = mf("b.sql", "do $$ begin if false then drop table t; end if; end $$;", added=NOW - timedelta(days=1), changed=NOW)
+        assert d.evaluate([a, b], live(tables={"t"}), now=NOW).red_keys() == ["migration:a.sql"]
+
+    def test_a_conditional_create_does_not_mask_an_unconditional_drop(self):
+        a = mf("a.sql", "drop table if exists t;", added=NOW - timedelta(days=5), changed=NOW)
+        b = mf("b.sql", "do $$ begin if false then create table t (id int); end if; end $$;",
+               added=NOW - timedelta(days=1), changed=NOW)
+        assert d.evaluate([a, b], live(tables={"t"}), now=NOW).red_keys() == ["migration:a.sql"]
+
+    def test_alter_index_and_sequence_rename_are_tracked(self):
+        """Review finding 4: an unparsed ALTER INDEX ... RENAME TO was a permanent false RED."""
+        a = mf("a.sql", "create index i1 on t (c); create sequence s1;", added=NOW - timedelta(days=5), changed=NOW)
+        b = mf("b.sql", "alter index i1 rename to i2; alter sequence s1 rename to s2;",
+               added=NOW - timedelta(days=1), changed=NOW)
+        r = d.evaluate([a, b], live(indexes={"i2": True}, sequences={"s2"}), now=NOW)
+        assert not r.red, [x.summary() for x in r.red_files]
+        assert d.evaluate([a, b], live(sequences={"s2"}), now=NOW).red_keys() == ["migration:b.sql"]
+
+    def test_alter_table_if_exists_is_conditional(self):
+        """Review nit 6: the author said the table may be absent; its columns cannot be required."""
+        pm = d.parse_migration("alter table if exists t add column c int;")
+        assert [(e.name, e.conditional) for e in pm.effects] == [("t.c", True)]
+        assert not d.evaluate([mf("m.sql", "alter table if exists t add column c int;", changed=NOW)], live(), now=NOW).red
+
+    def test_dollar_quote_glued_to_as_or_do(self):
+        """Review nit 7: AS$$ / DO$$ leaked a function body into the outer parse."""
+        sql = ("create function f() returns void language plpgsql AS$$ begin; create table fake (id int); end $$;\n"
+               "DO$$ begin create table guarded (id int); end $$;\n"
+               "create table real_t (id int);")
+        pm = d.parse_migration(sql)
+        assert {(e.name, e.conditional) for e in pm.effects} == {("guarded", True), ("real_t", False)}
+
+    def test_the_watch_ignores_never_committed_files(self, tmp_path):
+        """Review nit 9: an untracked .sql in the deploy checkout would be red every tick."""
+        (tmp_path / d.MIGRATION_SUBDIR).mkdir(parents=True)
+        (tmp_path / d.MIGRATION_SUBDIR / "scratch.sql").write_text("create table t (id int);")
+        assert d.load_files(tmp_path, {}, now=NOW, include_uncommitted=False) == []
+
+    def test_live_state_reads_pg_catalog_not_information_schema(self):
+        """Review nit 10: information_schema filters by privilege; a non-superuser DSN would read
+        every table as MISSING."""
+        assert all("information_schema." not in q for q in d.LIVE_STATE_SQL.values())
+
+
+def _git(repo, *args, env=None):
+    import os
+    import subprocess
+    e = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+             GIT_COMMITTER_EMAIL="t@t", **(env or {}))
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, env=e)
+
+
+def test_commit_times_use_the_merge_time_not_the_branch_commit_time(tmp_path):
+    """Review finding 2: plain git log reported the feature-branch commit time (up to 10 days
+    before the file reached main on the real corpus). A file committed on a branch on day 1 and
+    merged on day 40 must be dated day 40."""
+    repo = tmp_path / "r"
+    (repo / d.MIGRATION_SUBDIR).mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "README").write_text("x")
+    _git(repo, "add", ".")
+    t0 = "2026-01-01T00:00:00+00:00"
+    _git(repo, "commit", "-q", "-m", "root", env={"GIT_AUTHOR_DATE": t0, "GIT_COMMITTER_DATE": t0})
+    _git(repo, "switch", "-q", "-c", "feat")
+    (repo / d.MIGRATION_SUBDIR / "m.sql").write_text("create table t (id int);")
+    _git(repo, "add", ".")
+    t1 = "2026-01-02T00:00:00+00:00"
+    _git(repo, "commit", "-q", "-m", "add m", env={"GIT_AUTHOR_DATE": t1, "GIT_COMMITTER_DATE": t1})
+    _git(repo, "switch", "-q", "main")
+    (repo / "README").write_text("y")
+    _git(repo, "commit", "-q", "-am", "main moves", env={"GIT_AUTHOR_DATE": t1, "GIT_COMMITTER_DATE": t1})
+    t40 = "2026-02-10T00:00:00+00:00"
+    _git(repo, "merge", "-q", "--no-ff", "-m", "Merge feat", "feat", env={"GIT_AUTHOR_DATE": t40, "GIT_COMMITTER_DATE": t40})
+    first, last = d.commit_times(repo)["m.sql"]
+    assert first == last == datetime(2026, 2, 10, tzinfo=timezone.utc)
+
+
+class TestRealCommitOrder:
+    """Review finding 5: real_corpus() replays by FILE NAME. These replay the real corpus in the
+    real first-parent order when history is available (CI static gates fetch full history)."""
+
+    @pytest.fixture(scope="class")
+    def corpus(self):
+        try:
+            times = d.commit_times(REPO_ROOT)
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"git history unavailable: {exc}")
+        if len(times) < 100:
+            pytest.skip("shallow history")
+        return d.load_files(REPO_ROOT, times, now=NOW, include_uncommitted=False)
+
+    def test_real_order_fully_applied_is_green_and_gpu_legacy_is_superseded(self, corpus):
+        r = d.evaluate(corpus, fully_applied(corpus), now=NOW, window_days=None)
+        assert not r.red, [f.summary() for f in r.red_files]
+        assert by_name(r, "manual_migration_gateway_capacity_v1.sql").status == "SUPERSEDED"
+        assert by_name(r, "manual_migration_gpu2_elastic_v1.sql").status == "SUPERSEDED"
+
+    def test_real_order_incident_replay_is_red(self, corpus):
+        state = fully_applied(corpus)
+        state.tables.discard("hardware_watch_incident")
+        r = d.evaluate(corpus, state, now=NOW, window_days=None)
+        assert "migration:manual_migration_hardware_watch_v1.sql" in r.red_keys()
+
+
+class TestIncidentFilesDeclareWhatAHumanReadThemToDeclare:
+    """Hand-written expectations, NOT derived from the parser (fully_applied() is built from the
+    same parser, so a parser that missed a create would remove it from both sides)."""
+
+    def _objs(self, name):
+        pm = d.parse_migration((MIG_DIR / name).read_text())
+        return {(e.op, e.kind, e.name, e.conditional) for e in pm.effects}
+
+    def test_hardware_watch_v1(self):
+        objs = self._objs("manual_migration_hardware_watch_v1.sql")
+        assert ("create", "table", "hardware_watch_incident", False) in objs
+        assert all(not c for *_, c in objs)
+
+    def test_pe_baseline_v3(self):
+        assert self._objs("manual_migration_node_prediction_error_baseline_v3_last_value_observed_at.sql") == {
+            ("create", "column", "substrate_node_prediction_error_baseline.last_value_observed_at", False)}
+
+    def test_pe_reset_is_data_only(self):
+        pm = d.parse_migration((MIG_DIR / "manual_migration_chat_projection_pe_baseline_v3_reset.sql").read_text())
+        assert pm.effects == [] and pm.data_statements == 1
+
+    def test_gpu_stage5_drops_exactly_the_legacy_objects(self):
+        assert self._objs("manual_migration_gpu_pool_stage5_drop_legacy_tables.sql") == {
+            ("drop", "table", "durable_gateway_permits", False),
+            ("drop", "table", "durable_resource_leases", False),
+            ("drop", "table", "durable_resource_demands", False),
+            ("drop", "table", "durable_elastic_slot", False),
+            ("drop", "sequence", "durable_resource_fencing_generation", False)}

@@ -537,6 +537,18 @@ def build_report(args) -> ll.LadderReport:
     return report
 
 
+def _delivered_migration_keys(state_file: str) -> list[str]:
+    """Migration keys already carded (read-only, no lock). A carded file stays red until it is
+    actually applied instead of silently ageing out of the window with its card muted. An
+    unreadable state degrades to plain window behaviour; notify() reports the state problem."""
+    try:
+        with open(state_file, encoding="utf-8") as fh:
+            keys = json.load(fh).get("notified_keys", [])
+        return [k for k in keys if isinstance(k, str) and k.startswith("migration:")]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def check_migrations(conn, args, report: ll.LadderReport) -> None:
     """Merged hand-applied SQL migrations vs the live schema (PR #2400 / #2424 incidents).
 
@@ -546,7 +558,8 @@ def check_migrations(conn, args, report: ll.LadderReport) -> None:
     """
     try:
         report.migrations = drift.check_repo(
-            conn, Path(args.repo), ref="HEAD", window_days=args.migration_days or None
+            conn, Path(args.repo), ref="HEAD", window_days=args.migration_days or None,
+            sticky_keys=_delivered_migration_keys(getattr(args, "state_file", None) or default_state_file()),
         )
     except Exception as exc:  # noqa: BLE001 - one bad section must not hide the rest
         report.cannot_check.append(f"migrations: {exc.__class__.__name__}: {str(exc).strip()}")
@@ -645,6 +658,9 @@ def print_human(report: ll.LadderReport, verbose: bool = False) -> None:
         for f in m.red_files:
             print(f"RED migration {f.summary()}")
             print(f"    apply: {f.apply_command()}")
+        for f in m.old_broken():
+            print(f"warn old migration {f.summary()} (last changed {f.changed_at:%Y-%m-%d}, "
+                  f"outside the {m.window_days}-day window, never carded)")
         for f in m.verify_manually():
             print(f"warn migration {f.name}: data-only (no schema objects) -- verify manually")
         for f in in_window:

@@ -1,0 +1,16 @@
+# circe only. Installed by docs/runbooks/2026-10-01-circe-llm-port-firewall.md (GPU pool stage 6.6).
+# Re-applies the DOCKER-USER rules whenever docker (re)starts; stopping the unit removes them.
+[Unit]
+Description=Orion: only athena may reach circe's LLM worker ports (GPU pool stage 6.6)
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/orion-llm-port-gate apply
+ExecStop=/usr/local/sbin/orion-llm-port-gate remove
+
+[Install]
+WantedBy=docker.service

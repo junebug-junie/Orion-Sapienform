@@ -7,7 +7,7 @@ import os
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 from uuid import uuid4
 
@@ -666,6 +666,12 @@ class BiometricsSubstrateWorker:
             self._tasks.append(
                 asyncio.create_task(
                     self._rpc_delivery_tick_loop(), name="substrate-rpc-delivery-tick"
+                )
+            )
+        if s.enable_cabinet_heat_attention:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._cabinet_heat_tick_loop(), name="substrate-cabinet-heat-tick"
                 )
             )
         # World-model publish tick: the first real producer for
@@ -1541,6 +1547,55 @@ class BiometricsSubstrateWorker:
             )
         except Exception:
             logger.exception("substrate_rpc_delivery_tick_failed")
+
+    def _cabinet_heat_tick(self) -> None:
+        """Write node:substrate.cabinet's prediction_error: the cabinet warming error.
+
+        Clock-driven and written EVERY tick (a calm 0.0 included), same rule as biometrics: a node
+        written only when non-zero would hold its last high-water mark forever. A missing or stale
+        reading writes nothing and says so -- "no reading" is not "calm". Fail-open.
+        """
+        from orion.autonomy.cabinet_heat import CABINET_NODE_ID, read_cabinet_heat
+
+        try:
+            now = datetime.now(timezone.utc)
+            # Two hours of history so the thermal gate's hysteresis state is real, not reset by the
+            # window edge (re-arm at 28.0 C needs to know the cabinet was elevated before).
+            points = self._store.load_cabinet_points(since=now - timedelta(hours=2), until=now)
+            reading = read_cabinet_heat(
+                points, now, rise_threshold_c=float(self._settings.cabinet_heat_rise_threshold_c)
+            )
+            if reading.thermal_state == "unknown":
+                logger.info("substrate_cabinet_heat_tick_unmeasured rows=%d", len(points))
+                return
+            self._write_prediction_error_node(
+                node_id=CABINET_NODE_ID,
+                error=reading.warming_error,
+                now=now,
+                reducer_key="cabinet_heat",
+            )
+            logger.info(
+                "substrate_cabinet_heat_tick_completed temp_c=%.2f state=%s rise_c=%s "
+                "threshold_c=%.2f warming_error=%.3f cabinet_heat_pressure=%s",
+                reading.temp_c, reading.thermal_state, reading.rise_c,
+                reading.rise_threshold_c, reading.warming_error, reading.pressure,
+            )
+        except Exception:
+            logger.exception("substrate_cabinet_heat_tick_failed")
+
+    async def _cabinet_heat_tick_loop(self) -> None:
+        interval = float(self._settings.cabinet_heat_tick_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._cabinet_heat_tick)
+            except Exception:
+                logger.exception("substrate_cabinet_heat_tick_loop_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
 
     async def _rpc_delivery_tick_loop(self) -> None:
         interval = float(self._settings.rpc_delivery_tick_interval_sec)

@@ -606,3 +606,26 @@ and measured result durations still apply. Request IDs and the typed visual outc
 survive the verb boundary. `render_scene` no longer predicts resource pressure;
 ordinary extras without a justified signal remain unmeasurable. This is not an
 image-quality or continuity reward.
+
+
+## World actions (attend-to-act loop, 2026-10-01)
+
+`shed_background_gpu` is the first SELF_REVERSIBLE_SCOPE route (`config/execution_dispatch/...`
+`template_to_cortex.shed_background_gpu`, executor key `orion.gpu_pool.shed.v1` -> one
+`orion:gpu_pool:shed:request` RPC). Gated three ways: `mode.allow_self_reversible_dispatch` (yaml),
+`ORION_WORLD_ACTIONS_ENABLED` and the template in `ORION_WORLD_ACTIONS_ALLOWED` (both OFF by default;
+blocked candidates say `world_actions_disabled` / `world_action_not_allowed`). Per decision:
+eligibility snapshot older than `ORION_WORLD_ACTION_ELIGIBILITY_MAX_AGE_SEC` -> `world_eligibility_stale`;
+template holdback 0.5 -> control episode row, nothing sent; treated -> precommit row in
+`substrate_world_action_episodes` + `shed_pending` result BEFORE the RPC, latency = RPC wall time (the
+allocator's cost), settled from the pool ledger by `_reconcile_shed_settlements`
+(`orion/execution_dispatch/shed_settlement.py`; orphan at t0 + TTL + 300 s).
+
+Before the treated/control draw, `_world_admission_refusal` drops (records, never decides) anything
+still in flight or that the pool would refuse (`pool_gap`, `pool_daily_cap`, `pool_refusing:*`, using
+`ORION_SHED_MIN_GAP_SEC` / `ORION_SHED_MAX_SEC_PER_DAY`, which must mirror the pool's caps), so both
+arms come from one population. The draw is a hash of `dispatch_id` (a replay lands in the same arm).
+Dependencies: the feedback runtime's `ORION_WORLD_SETTLEMENT_SCORING_ENABLED` must be on -- an unscored
+episode stays "in flight" (6 h horizon), so with scoring off the action fires at most once per 6 h.
+The global per-tick `ORION_DISPATCH_HOLDBACK_FRACTION` (live 0.0) still applies after the per-template
+draw and writes no world control row; the real treated rate is 0.5 x (1 - that fraction).

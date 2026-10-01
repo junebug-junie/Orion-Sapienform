@@ -362,6 +362,49 @@ class ProposalRuntimeStore:
                 },
             )
 
+    # --- attend-to-act loop: workspace winner + world-action eligibility inputs -------------------
+    def load_broadcast_projection(self) -> tuple[dict | None, str | None]:
+        """The workspace winner (singleton projection) and its broadcast-log row id."""
+        with self._engine.connect() as conn:
+            proj = conn.execute(text(
+                "SELECT projection_json FROM substrate_attention_broadcast_projection "
+                "ORDER BY generated_at DESC LIMIT 1")).scalar()
+            if not proj:
+                return None, None
+            proj = proj if isinstance(proj, dict) else json.loads(proj)
+            log_id = conn.execute(text(
+                "SELECT log_id FROM substrate_attention_broadcast_log WHERE generated_at = :g LIMIT 1"),
+                {"g": proj.get("generated_at")}).scalar()
+            return proj, (str(log_id) if log_id else None)
+
+    def load_cabinet_points(self, *, since: datetime, until: datetime) -> list:
+        from orion.autonomy.cabinet_heat import load_cabinet_points
+
+        with self._engine.connect() as conn:
+            return load_cabinet_points(conn, since=since, until=until)
+
+    def load_background_occupancy(self) -> tuple[int, int]:
+        """(granted, queued) background leases in the GPU pool's projection."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT status, count(*) FROM gpu_pool_leases WHERE priority = 'background' "
+                "AND status IN ('granted', 'recalling', 'queued', 'backlogged', 'retry_wait') GROUP BY status"
+            )).fetchall()
+        counts = {str(r[0]): int(r[1]) for r in rows}
+        return counts.get("granted", 0) + counts.get("recalling", 0), sum(
+            counts.get(k, 0) for k in ("queued", "backlogged", "retry_wait"))
+
+    def load_world_episodes_in_flight(self, *, template: str, now: datetime) -> list[str]:
+        from orion.autonomy import world_episodes
+
+        with self._engine.connect() as conn:
+            # No ledger table yet means no world decision has ever been made (execution dispatch
+            # creates it on the first one), so nothing can be in flight. Any OTHER read failure
+            # raises and the caller fails closed.
+            if conn.execute(text("SELECT to_regclass(:t)"), {"t": world_episodes.TABLE}).scalar() is None:
+                return []
+            return world_episodes.in_flight(conn, template=template, now=now)
+
     def baseline_eligibility(self, activity, *, now, policy):
         """Serialize scheduler replicas on one durable checkpoint row."""
         from orion.reverie.baseline import schedule

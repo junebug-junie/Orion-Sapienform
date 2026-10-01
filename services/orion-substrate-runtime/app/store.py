@@ -174,6 +174,13 @@ def _cursor_lag_seconds(last_created_at: datetime | None) -> float:
 
 
 class BiometricsSubstrateStore:
+    def load_cabinet_points(self, *, since: datetime, until: datetime) -> list:
+        """athena's cabinet_temp_c readings (orion/autonomy/cabinet_heat.py's shared read)."""
+        from orion.autonomy.cabinet_heat import load_cabinet_points
+
+        with self._engine.connect() as conn:
+            return load_cabinet_points(conn, since=since, until=until)
+
     def __init__(self, postgres_uri: str) -> None:
         self._engine: Engine = create_engine(
             postgres_uri,

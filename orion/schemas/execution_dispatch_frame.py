@@ -53,6 +53,8 @@ class ExecutionDispatchCandidateV1(BaseModel):
         # and costs a physical resource to make. Closed Literal, same as
         # `maintain`: a new kind is a deliberate schema change, not a config typo.
         "express",
+        # 2026-10-01: attend-to-act loop A1 -- executed by a GPU-pool shed RPC, not cortex-exec.
+        "self_regulate",
     ]
 
     target_id: str
@@ -88,6 +90,11 @@ class ExecutionDispatchCandidateV1(BaseModel):
     # failure. Optional so every frame stored before this patch still
     # parses.
     expected_effect: ExpectedEffectV1 | None = None
+
+    # 2026-10-01 (attend-to-act loop): set only for a world action -- the workspace winner it is
+    # bound to, the eligibility snapshot at proposal time, and the template's holdback fraction.
+    # Additive on an extra="forbid" model: consumer-first rollout.
+    world_action: dict[str, object] | None = None
 
     @model_validator(mode="after")
     def _dispatched_requires_evidence(self) -> "ExecutionDispatchCandidateV1":

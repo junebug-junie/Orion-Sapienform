@@ -8,6 +8,7 @@ from orion.execution_dispatch.envelopes import build_cortex_request_envelope
 from orion.execution_dispatch.policy import (
     EXPRESS_SCOPE,
     MAINTENANCE_SCOPE,
+    SELF_REVERSIBLE_SCOPE,
     CortexRouteTemplateV1,
     DispatchLimitsV1,
     ExecutionDispatchPolicyV1,
@@ -320,6 +321,19 @@ def build_expected_effect(
     )
 
 
+def _world_action_block(candidate: ProposalCandidateV1) -> dict[str, object]:
+    """What the dispatch runtime needs to run, hold back and settle a world action, carried from
+    the proposal: the winner it answers to and the eligibility snapshot at proposal time."""
+    winner = candidate.attention_winner
+    eligibility = dict(candidate.world_eligibility or {})
+    return {
+        "template": candidate.execution_intent.get("template"),
+        "attention_winner": winner.model_dump(mode="json") if winner is not None else None,
+        "eligibility": eligibility,
+        "holdback_fraction": eligibility.get("holdback_fraction"),
+    }
+
+
 def build_execution_dispatch_frame(
     *,
     policy_frame: PolicyDecisionFrameV1,
@@ -330,7 +344,11 @@ def build_execution_dispatch_frame(
     override_dispatch_mode: str | None = None,
     prev_starvation_counts: dict[str, int] | None = None,
     effect_posteriors: dict[TreatedCellKey, EffectPosterior] | None = None,
+    world_actions_allowed: frozenset[str] | None = None,
 ) -> ExecutionDispatchFrameV1:
+    """``world_actions_allowed``: template keys a SELF_REVERSIBLE_SCOPE route may dispatch for
+    (ORION_WORLD_ACTIONS_ENABLED + ORION_WORLD_ACTIONS_ALLOWED, resolved by the runtime). None means
+    world actions are disabled: every such candidate is blocked ``world_actions_disabled``."""
     generated_at = now or datetime.now(timezone.utc)
     dispatch_mode = _resolve_dispatch_mode(policy=policy, override_dispatch_mode=override_dispatch_mode)
     proposals = _proposal_by_id(proposal_frame)
@@ -488,7 +506,22 @@ def build_execution_dispatch_frame(
             # outward action must be switchable without also switching docker
             # pruning, and neither should be able to ride on the other's gate.
             or (route.allowed_scope == EXPRESS_SCOPE and policy.mode.allow_express_dispatch)
+            or (route.allowed_scope == SELF_REVERSIBLE_SCOPE and policy.mode.allow_self_reversible_dispatch)
         )
+        if scope_allowed and route.allowed_scope == SELF_REVERSIBLE_SCOPE:
+            # The operational switch for world actions (kill means kill: an unnamed template, or the
+            # master switch off, blocks the candidate with a visible reason, never a silent drop).
+            template_key = candidate.execution_intent.get("template", "")
+            world_block = (
+                "world_actions_disabled" if world_actions_allowed is None
+                else None if template_key in world_actions_allowed else "world_action_not_allowed"
+            )
+            if world_block is None and (candidate.attention_winner is None or not candidate.world_eligibility):
+                world_block = "world_action_missing_winner_or_eligibility"
+            if world_block is not None:
+                blocked.append(make_blocked(decision, candidate, reasons=[world_block],
+                                            blocked_by=[world_block], dispatch_kind=route.dispatch_kind))
+                continue
         if not scope_allowed:
             blocked.append(
                 make_blocked(
@@ -631,8 +664,11 @@ def build_execution_dispatch_frame(
             reasons=[
                 "approved_maintenance_dispatch_v1"
                 if route.allowed_scope == MAINTENANCE_SCOPE
+                else "approved_self_reversible_dispatch_v1"
+                if route.allowed_scope == SELF_REVERSIBLE_SCOPE
                 else "approved_read_only_dispatch_v1"
             ],
+            world_action=_world_action_block(candidate) if route.allowed_scope == SELF_REVERSIBLE_SCOPE else None,
             evidence_refs=list(decision.evidence_refs),
             risk_score=decision.risk_score,
             confidence_score=decision.confidence_score,

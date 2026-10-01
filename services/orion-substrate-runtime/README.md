@@ -1365,3 +1365,12 @@ deleted.
 - Before/after replay over the live projections:
   `scripts/analysis/replay_route_chat_prediction_error_definitions.py`; numbers in
   `docs/superpowers/pr-reports/2026-09-25-route-pe-touched-runs-and-topic-coherence-pr.md`.
+
+
+## Cabinet warming -> workspace attention (attend-to-act loop, 2026-10-01)
+
+`SUBSTRATE_CABINET_HEAT_ATTENTION_ENABLED` (OFF; Juniper flips): every 30 s writes
+`node:substrate.cabinet`'s `prediction_error` = the cabinet warming error
+(`orion/autonomy/cabinet_heat.py`: non-zero only while elevated AND rising >= 0.5 C / 15 min, via the
+shared `orion.hardware_watch.rules.cabinet_rise_c`), so the existing dynamics engine admits it to the
+broadcast. Replay: `scripts/analysis/replay_attention_eligibility.py --hours 72`.

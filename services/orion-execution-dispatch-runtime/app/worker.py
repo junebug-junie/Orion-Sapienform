@@ -38,7 +38,12 @@ from orion.execution_dispatch.builder import (
     build_unevaluable_execution_dispatch_frame,
 )
 from orion.execution_dispatch.cortex_client import ExecutionDispatchCortexClient
-from orion.execution_dispatch.policy import load_execution_dispatch_policy
+from orion.execution_dispatch.policy import SHED_EXECUTOR_VERB, load_execution_dispatch_policy
+from orion.execution_dispatch.shed_settlement import SHED_PENDING, settle_shed_result
+from orion.schemas.gpu_pool import (
+    GPU_POOL_SHED_REPLY_PREFIX, GPU_POOL_SHED_REQUEST_CHANNEL, GPU_POOL_SHED_REQUEST_KIND,
+    GpuPoolShedReasonRequestV1, GpuPoolShedResultV1,
+)
 from orion.execution_dispatch.visual_settlement import (
     RENDER_SCENE_VERB,
     SETTLEMENT_NOT_SUBMITTED,
@@ -363,6 +368,10 @@ class ExecutionDispatchRuntimeWorker:
             except Exception:
                 logger.exception("execution_dispatch_visual_settlement_failed")
             try:
+                await self._reconcile_shed_settlements()
+            except Exception:
+                logger.exception("execution_dispatch_shed_settlement_failed")
+            try:
                 await asyncio.wait_for(
                     self._stop.wait(),
                     timeout=float(self._settings.execution_dispatch_poll_interval_sec),
@@ -610,6 +619,9 @@ class ExecutionDispatchRuntimeWorker:
             # {} -- cold priors, honestly flagged via ExpectedEffectV1.
             # cold_start -- and never stalls a dispatch tick.
             effect_posteriors=self._load_effect_posteriors(),
+            # Attend-to-act loop: None while ORION_WORLD_ACTIONS_ENABLED is off -> every
+            # SELF_REVERSIBLE_SCOPE candidate is blocked `world_actions_disabled` on the frame.
+            world_actions_allowed=getattr(self._settings, "world_actions_allowed", None),
             # NOTE: updated_baseline deliberately does NOT carry
             # starvation_counts -- this frame computes its own fresh map and
             # model_copy would otherwise stamp the previous tick's map back
@@ -1299,6 +1311,11 @@ class ExecutionDispatchRuntimeWorker:
                 }
             )
 
+        # WORLD ACTIONS (attend-to-act loop): eligibility freshness, then the per-template randomized
+        # holdback -- drawn ONLY here, among decisions that already passed every gate (eligibility,
+        # policy, allocator, risk budget), so treated and control rows come from one population.
+        to_send, frame = self._world_action_holdback(frame, to_send)
+
         if not to_send:
             return self._abandon_tick_without_sending(frame, baseline_fields)
 
@@ -1792,6 +1809,8 @@ class ExecutionDispatchRuntimeWorker:
         candidate: ExecutionDispatchCandidateV1,
     ) -> ExecutionDispatchCandidateV1:
         now = datetime.now(timezone.utc)
+        if candidate.cortex_verb == SHED_EXECUTOR_VERB:
+            return await self._send_shed(bus, frame, candidate, now=now)
         if candidate.cortex_verb == "skills.imagination.render_scene.v1":
             candidate = candidate.model_copy(update={"visual_outcome": "unknown"})
         result_id = f"result:{candidate.dispatch_id}"
@@ -2324,6 +2343,248 @@ class ExecutionDispatchRuntimeWorker:
                     settled.result_json["settlement"].get("reason"),
                     settled.latency_ms,
                 )
+        finally:
+            await bus.close()
+        return settled_count
+
+    # --- attend-to-act loop: world actions ------------------------------------------------------
+    WORLD_HOLDBACK_REASON = "world_action_holdback"
+    # t0 -> t0 + TTL + 5 min: both arms score on this clock (design, "Settle rule").
+    WORLD_SCORING_TAIL_SEC = 300.0
+
+    def _world_episode_row(self, frame, candidate, *, arm: str, now: datetime) -> dict:
+        world = dict(candidate.world_action or {})
+        winner = dict(world.get("attention_winner") or {})
+        ttl = float(self._settings.orion_shed_ttl_sec)
+        return {
+            "episode_id": candidate.dispatch_id, "template": world.get("template") or "",
+            "dispatch_kind": candidate.dispatch_kind, "target_id": candidate.target_id, "arm": arm,
+            "decided_at": now, "open_loop_id": winner.get("open_loop_id"),
+            "broadcast_log_id": winner.get("broadcast_log_id"), "node_id": winner.get("node_id"),
+            "proposal_id": candidate.source_proposal_id, "decision_id": candidate.source_decision_id,
+            "dispatch_frame_id": frame.frame_id, "eligibility": world.get("eligibility") or {},
+            "expected_effect": candidate.expected_effect.model_dump(mode="json") if candidate.expected_effect else None,
+            "settlement": {"ttl_sec": ttl},
+            "scoring_due_at": now + timedelta(seconds=ttl + self.WORLD_SCORING_TAIL_SEC),
+        }
+
+    @staticmethod
+    def _stable_draw(dispatch_id: str) -> float:
+        """Uniform [0, 1) from the dispatch id: a crash-and-replay of the same decision always lands in
+        the same arm (a re-roll could send a shed on a row already recorded as control)."""
+        import hashlib
+
+        return int(hashlib.sha256(dispatch_id.encode()).hexdigest()[:13], 16) / float(16 ** 13)
+
+    def _world_admission_refusal(self, template: str, now: datetime) -> str | None:
+        """Arm-symmetric admission, BEFORE the draw: anything the pool would refuse, and anything
+        still in flight, is neither treated nor control. Fails closed on a read error."""
+        try:
+            in_flight, treated = self._store.load_world_admission_inputs(template=template, now=now)
+        except Exception:
+            logger.warning("world_action_admission_unreadable template=%s", template, exc_info=True)
+            return "world_ledger_unavailable"
+        if in_flight:
+            return "world_action_in_flight"
+        ttl = float(self._settings.orion_shed_ttl_sec)
+        used, last_end, last_refusal = 0.0, None, None
+        for row in treated:
+            state = str(row.get("settlement_state") or "")
+            if state.startswith("refused"):
+                last_refusal = (row["decided_at"], state)
+                continue
+            settlement = row.get("settlement") or {}
+            check = settlement.get("manipulation_check") or {}
+            start = datetime.fromisoformat(check["started_at"]) if check.get("started_at") else row["decided_at"]
+            end = datetime.fromisoformat(check["ended_at"]) if check.get("ended_at") else start + timedelta(seconds=ttl)
+            used += max(0.0, (min(end, now) - start).total_seconds())
+            last_end = end if last_end is None else max(last_end, end)
+        if last_refusal and (now - last_refusal[0]).total_seconds() < 3600 and last_refusal[1].split(":", 1)[-1] in (
+                "disabled", "lever_disabled", "ledger_unavailable"):
+            return f"pool_refusing:{last_refusal[1].split(':', 1)[-1]}"
+        if last_end is not None and (now - last_end).total_seconds() < float(self._settings.orion_shed_min_gap_sec):
+            return "pool_gap"
+        if float(self._settings.orion_shed_max_sec_per_day) - used < min(ttl, 300.0):
+            return "pool_daily_cap"
+        return None
+
+    def _world_action_holdback(self, frame, to_send):
+        """Freshness gate + per-template holdback for world candidates. Returns (to_send, frame)."""
+        world = [c for c in to_send if c.world_action]
+        if not world:
+            return to_send, frame
+        now = datetime.now(timezone.utc)
+        max_age = float(self._settings.orion_world_action_eligibility_max_age_sec)
+        withheld: list = []
+        # At most one world decision per template per tick (in flight is re-checked below too).
+        seen: set[str] = set()
+        for c in world:
+            template = str((c.world_action or {}).get("template") or "")
+            if template in seen:
+                withheld.append((c, "world_action_in_flight", "second_world_candidate_this_tick"))
+                continue
+            seen.add(template)
+            eligibility = dict((c.world_action or {}).get("eligibility") or {})
+            evaluated = eligibility.get("evaluated_at")
+            try:
+                age = (now - datetime.fromisoformat(str(evaluated))).total_seconds()
+            except (TypeError, ValueError):
+                age = float("inf")
+            if age > max_age:
+                withheld.append((c, "world_eligibility_stale", f"world_eligibility_age_sec:{age:.0f}"))
+                continue
+            refusal = self._world_admission_refusal(template, now)
+            if refusal is not None:
+                withheld.append((c, refusal, "world_admission"))
+                continue
+            fraction = float((c.world_action or {}).get("holdback_fraction") or 0.0)
+            if fraction > 0.0 and self._stable_draw(c.dispatch_id) < fraction:
+                # The control arm. Its precommit row is the ONLY record a held-back decision leaves,
+                # so a failed write means this is not a control -- say so instead of pretending.
+                try:
+                    self._store.insert_world_episode(self._world_episode_row(frame, c, arm="control", now=now))
+                    withheld.append((c, self.WORLD_HOLDBACK_REASON, f"holdback_fraction:{fraction:.2f}"))
+                except Exception:
+                    logger.warning("world_action_control_unrecorded dispatch_id=%s", c.dispatch_id, exc_info=True)
+                    withheld.append((c, "world_action_holdback_unrecorded", f"holdback_fraction:{fraction:.2f}"))
+                logger.info("world_action_holdback dispatch_id=%s fraction=%.2f", c.dispatch_id, fraction)
+        if not withheld:
+            return to_send, frame
+        ids = {c.dispatch_id for c, _, _ in withheld}
+        blocked = [c.model_copy(update={"dispatch_status": "blocked", "blocked_by": [reason],
+                                        "reasons": list(c.reasons) + [reason, note]})
+                   for c, reason, note in withheld]
+        frame = frame.model_copy(update={
+            "candidates": [c for c in frame.candidates if c.dispatch_id not in ids],
+            "blocked_candidates": list(frame.blocked_candidates) + blocked,
+            "blocked_count": len(frame.blocked_candidates) + len(blocked),
+        })
+        return [c for c in to_send if c.dispatch_id not in ids], frame
+
+    async def _shed_rpc(self, bus, req: GpuPoolShedReasonRequestV1) -> GpuPoolShedResultV1:
+        reply_channel = f"{GPU_POOL_SHED_REPLY_PREFIX}{uuid4().hex}"
+        env = BaseEnvelope(kind=GPU_POOL_SHED_REQUEST_KIND, source=ServiceRef(name=self._settings.service_name),
+                           correlation_id=str(uuid4()), reply_to=reply_channel,
+                           payload=req.model_dump(mode="json"))
+        raw = await bus.rpc_request(GPU_POOL_SHED_REQUEST_CHANNEL, env, reply_channel=reply_channel,
+                                    timeout_sec=float(self._settings.orion_gpu_pool_shed_rpc_timeout_sec))
+        decoded = bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
+        if not decoded.ok:
+            raise RuntimeError(f"shed_reply_decode_failed:{decoded.error}")
+        return GpuPoolShedResultV1.model_validate(decoded.envelope.payload)
+
+    async def _send_shed(self, bus, frame, candidate, *, now: datetime):
+        """Treated arm: precommit (episode row + shed_pending result) BEFORE the RPC, then one shed RPC.
+        Idempotent: a replayed tick finds its result row and sends nothing (the pool is idempotent per
+        dispatch_id too). The outcome is emitted once, at settlement (_reconcile_shed_settlements)."""
+        result_id = f"result:{candidate.dispatch_id}"
+        existing = self._store.load_dispatch_result_by_dispatch_id(candidate.dispatch_id)
+        if existing is not None:
+            self._record_dispatch_status(existing["status"], live=False)
+            return candidate.model_copy(update={"dispatch_status": "dispatched", "dispatched_at": now,
+                                                "result_ref": existing["result_id"]})
+        ttl = float(self._settings.orion_shed_ttl_sec)
+        try:
+            inserted = self._store.insert_world_episode(self._world_episode_row(frame, candidate, arm="treated", now=now))
+            if not inserted and self._store.world_episode_arm(candidate.dispatch_id) != "treated":
+                # A replay of a decision already recorded as control: never shed on a control row.
+                return candidate.model_copy(update={"dispatch_status": "dispatched", "dispatched_at": now,
+                                                    "dispatch_error": "world_episode_recorded_as_control"})
+        except Exception as exc:
+            # No precommit, no action: an unrecorded treatment cannot be learned from.
+            logger.warning("world_action_precommit_failed dispatch_id=%s", candidate.dispatch_id, exc_info=True)
+            return candidate.model_copy(update={"dispatch_status": "dispatched", "dispatched_at": now,
+                                                "dispatch_error": f"world_episode_precommit_failed:{exc}"[:500]})
+        settlement = {"state": SHED_PENDING, "kind": "orion_self_shed", "decided_at": now.isoformat(),
+                      "ttl_sec": ttl, "episode_id": candidate.dispatch_id}
+        self._store.save_dispatch_result(
+            result_id=result_id, dispatch_id=candidate.dispatch_id, frame_id=frame.frame_id, status="pending",
+            result_json={"settlement": settlement, "evidence_refs": [result_id], "latency_ms": None,
+                         "expected_effect": candidate.expected_effect.model_dump(mode="json") if candidate.expected_effect else None},
+            raw_len=0, latency_ms=None, dispatch_kind=candidate.dispatch_kind, target_id=candidate.target_id)
+        world = dict(candidate.world_action or {})
+        winner = dict(world.get("attention_winner") or {})
+        req = GpuPoolShedReasonRequestV1(
+            action="set", dispatch_id=candidate.dispatch_id, ttl_sec=ttl,
+            correlation={"open_loop_id": winner.get("open_loop_id"), "broadcast_log_id": winner.get("broadcast_log_id"),
+                         "proposal_id": candidate.source_proposal_id, "decision_id": candidate.source_decision_id,
+                         "dispatch_frame_id": frame.frame_id})
+        started = perf_counter()
+        error: str | None = None
+        out: GpuPoolShedResultV1 | None = None
+        try:
+            out = await self._shed_rpc(bus, req)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"[:500]
+            logger.warning("world_action_shed_rpc_failed dispatch_id=%s error=%s", candidate.dispatch_id, error)
+        # The motor cost the allocator charges: the executor's wall time (one RPC), never the TTL.
+        latency_ms = (perf_counter() - started) * 1000.0
+        settlement = {**settlement, "rpc_ms": round(latency_ms, 1)}
+        if out is not None:
+            settlement.update({"shed_id": out.shed_id, "pool_state": out.state, "refusal": out.refusal,
+                               "valid_until": out.valid_until.isoformat() if out.valid_until else None})
+        if error:
+            settlement["rpc_error"] = error   # the pool may still have started it: settle from its ledger
+        self._store.save_dispatch_result(
+            result_id=result_id, dispatch_id=candidate.dispatch_id, frame_id=frame.frame_id, status="pending",
+            result_json={"settlement": settlement, "evidence_refs": [result_id], "latency_ms": latency_ms,
+                         "expected_effect": candidate.expected_effect.model_dump(mode="json") if candidate.expected_effect else None},
+            raw_len=0, latency_ms=latency_ms, dispatch_kind=candidate.dispatch_kind, target_id=candidate.target_id)
+        try:
+            self._store.record_world_settlement(episode_id=candidate.dispatch_id, shed_id=out.shed_id if out else None,
+                                                state=(out.state if out else "rpc_error"), settlement=settlement)
+        except Exception:
+            logger.warning("world_action_settlement_record_failed dispatch_id=%s", candidate.dispatch_id, exc_info=True)
+        self._record_dispatch_status("pending")
+        logger.info("world_action_shed_sent dispatch_id=%s shed_id=%s state=%s refusal=%s rpc_ms=%.0f open_loop_id=%s",
+                    candidate.dispatch_id, out.shed_id if out else None, out.state if out else "rpc_error",
+                    out.refusal if out else error, latency_ms, winner.get("open_loop_id"))
+        update = {"dispatch_status": "dispatched", "dispatched_at": now, "result_ref": result_id}
+        if error:
+            update["dispatch_error"] = error
+        return candidate.model_copy(update=update)
+
+    async def _reconcile_shed_settlements(self, *, now: datetime | None = None) -> int:
+        """Settle shed_pending results from the pool's ledger (or orphan them). Outcome published
+        BEFORE the conditional update, same crash-safety rule as the render path."""
+        if not self._settings.enable_execution_dispatch_runtime:
+            return 0
+        mono = self._monotonic()
+        next_at = getattr(self, "_shed_settlement_next_at", None)
+        if next_at is not None and mono < next_at:
+            return 0
+        self._shed_settlement_next_at = mono + VISUAL_SETTLEMENT_RECONCILE_INTERVAL_SEC
+        rows = await asyncio.to_thread(self._store.load_pending_shed_settlements, limit=VISUAL_SETTLEMENT_BATCH)
+        now = now or datetime.now(timezone.utc)
+        decided = [(row, s) for row in rows
+                   if (s := settle_shed_result(result_json=row.get("result_json") or {}, pool_row=row.get("pool_row"),
+                                               now=now)) is not None]
+        if not decided:
+            return 0
+        bus = OrionBusAsync(url=self._settings.orion_bus_url, enabled=self._settings.orion_bus_enabled)
+        await bus.connect()
+        settled_count = 0
+        try:
+            for row, settled in decided:
+                if not await self._publish_action_outcome(
+                        bus, action_id=str(row["dispatch_id"]), kind=str(row.get("dispatch_kind") or "self_regulate"),
+                        summary=settled.summary, success=settled.success, visual_outcome=None, observed_at=now):
+                    continue
+                if not await asyncio.to_thread(self._store.settle_shed_dispatch_result, result_id=str(row["result_id"]),
+                                               status=settled.status, result_json=settled.result_json):
+                    continue
+                try:
+                    await asyncio.to_thread(
+                        self._store.record_world_settlement, episode_id=str(row["dispatch_id"]),
+                        shed_id=(row.get("pool_row") or {}).get("shed_id"), state=settled.terminal,
+                        settlement=settled.result_json["settlement"])
+                except Exception:
+                    logger.warning("world_action_settlement_record_failed dispatch_id=%s", row["dispatch_id"], exc_info=True)
+                settled_count += 1
+                logger.info("world_action_shed_settled dispatch_id=%s terminal=%s drain=%s withheld=%s",
+                            row["dispatch_id"], settled.terminal,
+                            settled.result_json["settlement"]["manipulation_check"].get("drain"),
+                            settled.result_json["settlement"]["manipulation_check"].get("grants_withheld"))
         finally:
             await bus.close()
         return settled_count

@@ -37,6 +37,10 @@ from orion.gpu_pool.scheduler import (
     Abort, Backlog, CardLive, DeadLetter, Expire, Grant, LeaseView, Recall, Requeue, RoleLive,
     Serialized, Shed, SwapBlocked, SwapLoad, SwapUnload, Unavailable, schedule,
 )
+from orion.gpu_pool.orion_shed import (
+    SHED_DECISION_REASON as ORION_SHED_DECISION_REASON, MemoryOrionShedLedger, OrionShedCaps,
+    OrionShedController, OrionShedLedger,
+)
 from orion.gpu_pool.shed import ShedBoard, ShedSignal
 from orion.schemas.hardware_watch import HardwareWatchIncidentV1
 from orion.gpu_pool.config import SWAP_GUARDS
@@ -44,8 +48,8 @@ from orion.schemas.gpu_pool import (
     GPU_ACTUATE_KIND, GPU_POOL_ACTUATE_REQUEST_CHANNEL, GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND,
     GPU_POOL_STATE_CHANNEL, GPU_POOL_STATE_KIND,
     DiscoveredRoleV1, GpuActuateResultV1, GpuActuateV1, GpuCardStateV1, GpuLeaseGrantV1, GpuLeaseReplyV1,
-    GpuLeaseRequestV1, GpuLeaseRowV1, GpuPoolControlReplyV1, GpuPoolControlV1, GpuPoolEventV1, GpuPoolStateV1,
-    LlmWorkerAnnounceV1,
+    GpuLeaseRequestV1, GpuLeaseRowV1, GpuPoolControlReplyV1, GpuPoolControlV1, GpuPoolEventV1,
+    GpuPoolShedReasonRequestV1, GpuPoolShedResultV1, GpuPoolStateV1, LlmWorkerAnnounceV1,
 )
 
 logger = logging.getLogger("orion-gpu-pool.runtime")
@@ -149,7 +153,8 @@ class PoolRuntime:
                  mode: str = "enforce", service_name: str = "orion-gpu-pool",
                  announce_stale_sec: float = 120.0, probe_interval_sec: float = 15.0,
                  state_publish_sec: float = 5.0, replay_payload_max_bytes: int = 262144,
-                 shed_enabled: bool = False):
+                 shed_enabled: bool = False, orion_shed_enabled: bool = False,
+                 orion_shed_caps: OrionShedCaps | None = None, orion_shed_ledger: OrionShedLedger | None = None):
         if mode not in POOL_MODES:
             raise ValueError(f"GPU_POOL_MODE must be one of {POOL_MODES}, got {mode!r}")
 
@@ -190,6 +195,15 @@ class PoolRuntime:
         self.shed_enabled = shed_enabled
         self._shed_reported: set[tuple] = set()   # (lease_id, reason) already reported
         self._shed_active: str | None = None      # last logged active reason (edge-triggered log)
+        # Orion's learned shed (attend-to-act A1): the lower-precedence ``orion_self_shed`` reason, its
+        # caps, ledger and manipulation check. GPU_POOL_ORION_SHED_ENABLED=false refuses every set.
+        # Open cabinet-AC (rule=cooling) incidents, whether or not they currently request a shed: the
+        # learned action's premise is "AC healthy", so an open one refuses orion_self_shed outright.
+        self._open_ac_incidents: set[str] = set()
+        self.orion_shed = OrionShedController(
+            board=self.shed_board, ledger=orion_shed_ledger or MemoryOrionShedLedger(),
+            caps=orion_shed_caps or OrionShedCaps(), enabled=orion_shed_enabled,
+            lever_enabled=lambda: self.shed_enabled, now=lambda: self.now())
         self._started = False
         self._recent_actions: dict[str, list[str]] = {}
         self._ctx_saved: dict[str, int] = {}
@@ -233,6 +247,8 @@ class PoolRuntime:
                            seat, act.get("action_id"), self.cards[self.cfg.roles[seat].cards[0]].swap_state)
             await self._send_status(seat, act, reason="pool_restart")
         await self._reconcile_idle_seats("boot")
+        for did in await self.orion_shed.boot():
+            logger.warning("gpu_pool_orion_shed_boot %s enabled=%s", did, self.orion_shed.enabled)
 
     def _thread(self, lease_id: str) -> dict:
         return {"configurable": {"thread_id": f"gpu_pool:{lease_id}"}}
@@ -567,6 +583,10 @@ class PoolRuntime:
                 await self._resume(row["lease_id"], {"type": "cancel", "reason": "config_removed"})
                 continue
             rows.append(row)
+        try:
+            await self.orion_shed.expire_due()
+        except Exception:  # noqa: BLE001 -- bookkeeping must never stop the pool
+            logger.exception("gpu_pool_orion_shed_expire_failed")
         shed = self.shed_view()
         t = time.monotonic()
         decisions = schedule(self.cfg, self.roles, self.cards, [self._view(r) for r in rows], self.now(),
@@ -606,6 +626,11 @@ class PoolRuntime:
         self._swap_requested &= swaps
         self._serialized_reported &= serialized
         self._shed_reported &= shed_now
+        try:
+            await self.orion_shed.on_tick(
+                live_rows=rows, withheld_lease_ids={lid for lid, why in shed_now if why == ORION_SHED_DECISION_REASON})
+        except Exception:  # noqa: BLE001 -- bookkeeping must never stop the pool
+            logger.exception("gpu_pool_orion_shed_tick_failed")
         await self._touch_swap_seats(rows)
 
     # --- U4 shed ------------------------------------------------------------------------
@@ -626,6 +651,32 @@ class PoolRuntime:
             {"subject": ev.subject, "open_reason": ev.open_reason, "shed_reason": ev.shed.reason,
              "cabinet_temp_c": ev.shed.cabinet_temp_c}))
         return "set"
+
+    async def handle_incident(self, ev: HardwareWatchIncidentV1) -> str:
+        """on_incident + the learned action's rule: an OPEN cabinet AC (``cooling``) incident drops any
+        active ``orion_self_shed`` at once (settles ``preempted_by_reflex``), whether or not the reflex
+        asserts ``cooling_incident`` this tick -- the action's premise (AC healthy) is gone."""
+        async with self._locked("incident"):
+            did = self.on_incident(ev)
+            if ev.rule == "cooling":
+                if ev.status == "open":
+                    self._open_ac_incidents.add(ev.incident_id)
+                else:
+                    self._open_ac_incidents.discard(ev.incident_id)
+            if ev.rule == "cooling" and ev.status == "open":
+                if await self.orion_shed.preempt_by_reflex(ev.incident_id):
+                    did = f"{did}+orion_shed_preempted"
+            return did
+
+    async def orion_shed_request(self, req: GpuPoolShedReasonRequestV1) -> GpuPoolShedResultV1:
+        """The shed RPC. Under the runtime lock: it reads live leases and changes the board."""
+        async with self._locked("orion_shed"):
+            live = await self.store.live_leases()
+            background_live = sum(1 for r in live if r.get("priority") == "background")
+            view = self.shed_board.view(self.now(), True)
+            reflex_active = bool(self._open_ac_incidents) or any(
+                r["name"] == "cooling_incident" and r["active"] for r in view.reasons)
+            return await self.orion_shed.handle(req, background_live=background_live, reflex_active=reflex_active)
 
     def shed_view(self):
         """The board as the scheduler will use it now; logs when the active reason changes."""
@@ -1374,7 +1425,8 @@ class PoolRuntime:
                 hold_lease_id=r.get("hold_lease_id")) for r in rows] if include_leases else [],
             queue_depth=queue, backlog_depth=backlog, swap_guards=dict(self.guard_states),
             actuation_paused=self._paused_detail() if self.paused is not None else None,
-            shed=self.shed_board.view(self.now(), self.shed_enabled).as_dict(),
+            shed={**self.shed_board.view(self.now(), self.shed_enabled).as_dict(),
+                  "orion_self_shed": self.orion_shed.health()},
             config=self.cfg.model_dump(mode="json", by_alias=True, exclude={"digest"}) if include_config else None,
             config_yaml=self.cfg.source_text if include_config else None,
             history_lease_id=history_for,

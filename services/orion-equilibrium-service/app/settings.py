@@ -222,8 +222,9 @@ class Settings(BaseSettings):
     # rpc_transport_timeout atom for that same timeout is dropped
     # (app/transport_timeout_owner.py). (The pooled rpc_health legacy timeout
     # branch was retired 2026-09-29; the atom owns timeouts while EMIT is off.)
-    # On since 2026-10-01: the first graded night (gate-rule grading) passed 10
-    # of 11 hops, and every would-emit row matched a real timeout.
+    # On since 2026-10-01: the first graded night passed 11 of 11 hops that can
+    # alert (no spike/saturation opened at rest), and every would-emit row
+    # matched a real timeout.
     transport_baseline_emit: bool = Field(
         True, alias="EQUILIBRIUM_TRANSPORT_BASELINE_EMIT"
     )

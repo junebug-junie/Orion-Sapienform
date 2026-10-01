@@ -57,10 +57,12 @@ def test_calm_hop_passes_and_only_quiet_hours_are_judged():
 K = "orion:exec:request:LLMGatewayService"
 
 
-def _rows_with(z=0.0, ratio=1.0, floor=1000.0, baseline=None, excluded=False):
-    rows = [_row(h, z=z, ratio=ratio, floor=floor, excluded=excluded) for h in range(7, 12)]
+def _rows_with(z=0.0, ratio=1.0, floor=1000.0, fast=None, would=None, excluded=False):
+    rows = [_row(h, z=z, ratio=ratio, floor=floor, excluded=excluded, would=would) for h in range(7, 12)]
     for r in rows:
-        r["baseline_ms"] = baseline if baseline is not None else floor * ratio
+        # baseline_ms is the guarded FAST mean: on a step it stays near the floor
+        # while level (ratio) rises. Default it there so tests cannot lean on it.
+        r["baseline_ms"] = fast if fast is not None else floor
     return rows
 
 
@@ -70,39 +72,57 @@ def test_z_below_the_spike_line_is_a_note_not_a_fail():
     assert g[K].verdict == "PASS" and "nights run slower" in g[K].sentence
 
 
-def test_rest_that_already_reads_like_a_spike_fails():
-    _, g = _grade(_rows_with(z=3.2))
-    assert g[K].verdict == "FAIL" and "reads like a spike" in g[K].sentence
-    _, g = _grade(_rows_with(z=-3.2))
-    assert g[K].verdict == "FAIL"
+def test_a_spike_the_gate_opened_at_rest_fails():
+    _, g = _grade(_rows_with(z=3.2, would={"spike:open": 1, "spike:close": 1}))
+    assert g[K].verdict == "FAIL" and "opened 5 spike/saturation" in g[K].sentence  # one per quiet hour
+
+
+def test_high_z_without_an_opened_spike_is_a_note():
+    # review finding: negative z can never fire; a positive z on a tiny-ms hop is immaterial
+    _, g = _grade(_rows_with(z=-3.5))
+    assert g[K].verdict == "PASS" and "faster" in g[K].sentence
+    _, g = _grade(_rows_with(z=3.5, floor=30.0))
+    assert g[K].verdict == "PASS" and "opened no spike at rest" in g[K].sentence
+
+
+def test_timeouts_at_rest_are_real_events_not_rest_failures():
+    _, g = _grade(_rows_with(would={"timeout:open": 2, "zero_success:open": 1}))
+    assert g[K].verdict == "PASS"
 
 
 def test_immaterial_ratio_is_a_note_not_a_fail():
-    # 2026-09-30 live: orion:state:request 59 ms vs 23 ms best (ratio 2.8, 36 ms gap).
-    _, g = _grade(_rows_with(ratio=2.8, floor=23.0, baseline=59.0))
+    # 2026-09-30 live: orion:state:request ~59 ms vs 23 ms best (ratio 2.8, ~41 ms gap).
+    _, g = _grade(_rows_with(ratio=2.8, floor=23.0))
     assert g[K].verdict == "PASS" and "under the gate's 250 ms floor" in g[K].sentence
 
 
 def test_ratio_between_band_and_saturation_line_is_a_note():
-    _, g = _grade(_rows_with(ratio=1.4, floor=2000.0, baseline=2800.0))
+    _, g = _grade(_rows_with(ratio=1.4, floor=2000.0))
     assert g[K].verdict == "PASS" and "below the gate's 2x saturation line" in g[K].sentence
 
 
-def test_material_saturation_at_rest_fails():
-    _, g = _grade(_rows_with(ratio=2.4, floor=1000.0, baseline=2400.0))
-    assert g[K].verdict == "FAIL" and "reads as saturated" in g[K].sentence
+def test_material_saturation_at_rest_fails_even_when_fast_stayed_low():
+    # review finding: on a step, the guarded fast mean stays near the floor while
+    # the level rises -- the gap must come from floor*(ratio-1), not baseline_ms.
+    _, g = _grade(_rows_with(ratio=2.4, floor=1000.0, fast=1100.0))
+    assert g[K].verdict == "FAIL" and "reads as saturated" in g[K].sentence and "1400 ms" in g[K].sentence
+
+
+def test_ratio_below_band_reads_as_faster_not_negative_ms():
+    _, g = _grade(_rows_with(ratio=0.6))
+    assert g[K].verdict == "PASS" and "faster than its recorded best" in g[K].sentence
 
 
 def test_gate_rules_are_overridable_to_match_live_config():
-    rows = _rows_with(ratio=2.4, floor=1000.0, baseline=2400.0)
+    rows = _rows_with(ratio=2.4, floor=1000.0)
     r = mod.grade(rows, saturation_ratio=3.0)
     assert {g.ident.split("|")[2]: g for g in r["keys"]}[K].verdict == "PASS"
-    r = mod.grade(_rows_with(ratio=2.8, floor=23.0, baseline=59.0), min_excess_ms=10.0)
+    r = mod.grade(_rows_with(ratio=2.8, floor=23.0), min_excess_ms=10.0)
     assert {g.ident.split("|")[2]: g for g in r["keys"]}[K].verdict == "FAIL"
 
 
 def test_excluded_hops_never_decide_the_overall_verdict():
-    rows = _rows_with(z=5.0, excluded=True)
+    rows = _rows_with(z=5.0, excluded=True, would={"spike:open": 3})
     calm = _rows_with()
     for r in calm:
         r["key"] = "orion:exec:request:RecallService"

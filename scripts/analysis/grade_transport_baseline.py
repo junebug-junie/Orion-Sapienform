@@ -23,12 +23,22 @@ transport-ewma-baseline-design.md, made runnable:
     * a quiet-hour z of 0.5-3: nights carry different load than the all-hours
       baseline (recall runs faster at night, z -1.27). The +/-0.5 band was the
       spec's guess, not a calibrated value; the gate only fires at z >= SPIKE_Z.
-  So: a ratio is a problem only at/above the gate's own SATURATION_RATIO (2.0)
-  AND with a material gap -- between the 0.8-1.3 band and 2.0, or with an
-  immaterial gap, it is a NOTE;
-  a z is a problem only at |z| >= SPIKE_Z (rest already reads like a spike);
-  a z beyond +/-0.5 below that is reported as a NOTE (night vs day load), not a
-  FAIL; excluded hops are shown but never decide the overall verdict. The
+  So the rest-state FAILs are:
+    * the gate itself opened a spike or saturation episode during quiet hours
+      (``would_emit_by_condition`` -- the gate's own decision, with its own
+      materiality and sustain rules applied, counted whether EMIT is on or off);
+    * the typical quiet-hour ratio is at/above the gate's SATURATION_RATIO with
+      a material gap. The gap is ``floor_ms * (ratio - 1)``: the ratio is
+      exp(level - floor), so this is the gate's own level-minus-floor. (Not
+      ``baseline_ms - floor_ms``: baseline_ms is the guarded fast mean, which by
+      design does not absorb a step change -- it would hide exactly the
+      saturation this check exists for.)
+  Everything else is a NOTE: z of any size without an opened spike (negative z
+  can never fire; a positive z on a tiny-ms hop is immaterial), and ratios
+  between the 0.8-1.3 band and the saturation line. Scope, stated: this grades
+  "would it false-alert at rest", not "is the hop drifting" -- slow creep under
+  the saturation line is caught only by the floor-rise check below. Excluded
+  hops are shown but never decide the overall verdict. The
   would-emit table (which pairs with live timeouts) stays the EMIT evidence.
 - No hop's floor may rise more than 1.5x without a ``regime_shift`` in between.
   Only upward moves are flagged: the floor follows improvements quickly by
@@ -175,10 +185,20 @@ def floor_rises(rows: list[dict]) -> list[str]:
 
 
 def _excess_ms(r: dict) -> float | None:
-    base, floor = r.get("baseline_ms"), r.get("floor_ms")
-    if base is None or floor is None:
+    """The gate's saturation gap, exp(level) - exp(floor) = floor * (ratio - 1)."""
+    floor, ratio = r.get("floor_ms"), r.get("saturation_ratio_p50")
+    if floor is None or ratio is None:
         return None
-    return float(base) - float(floor)
+    return float(floor) * (float(ratio) - 1.0)
+
+
+_REST_ALERT_CONDITIONS = ("spike:open", "saturation:open")
+
+
+def _quiet_rest_alerts(quiet: list[dict]) -> int:
+    return sum(
+        int(_dict(r.get("would_emit_by_condition")).get(c, 0) or 0) for r in quiet for c in _REST_ALERT_CONDITIONS
+    )
 
 
 def grade_key(
@@ -210,22 +230,30 @@ def grade_key(
     problems: list[str] = []
     gradable = z is not None or ratio is not None
     if gradable:
+        rest_alerts = _quiet_rest_alerts(quiet)
+        if rest_alerts:
+            problems.append(
+                f"the gate itself opened {rest_alerts} spike/saturation episode(s) during quiet hours"
+            )
         if z is None:
             problems.append("its quiet-hour z was missing")
-        elif abs(z) >= spike_z:
-            problems.append(
-                f"at rest it already reads like a spike: typical quiet-hour z {z:+.2f} (gate fires at {spike_z:g})"
+        elif z >= spike_z and not rest_alerts:
+            g.notes.append(
+                f"quiet-hour z {z:+.2f} is past the spike line, but the gate opened no spike at rest "
+                "(not material or not sustained)"
             )
-        elif abs(z) > Z_BAND:
+        elif abs(z) > Z_BAND and not rest_alerts:
             g.notes.append(
                 f"nights run {'slower' if z > 0 else 'faster'} than its all-hours baseline "
-                f"(quiet-hour z {z:+.2f}) -- a load difference, below the gate's spike line"
+                f"(quiet-hour z {z:+.2f}) -- a load difference"
             )
         lo, hi = RATIO_BAND
         excess = g.excess_ms_median
         if ratio is None:
             problems.append("its quiet-hour slow-vs-best ratio was missing")
-        elif not (lo <= ratio <= hi):
+        elif ratio < lo:
+            g.notes.append(f"at rest it runs faster than its recorded best (ratio {ratio:.2f})")
+        elif ratio > hi:
             material = excess is None or excess >= min_excess_ms
             if ratio >= saturation_ratio and material:
                 gap = "unknown ms" if excess is None else f"{excess:.0f} ms"

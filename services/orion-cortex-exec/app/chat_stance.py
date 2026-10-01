@@ -50,7 +50,11 @@ from .attention_frame import attention_frame_enabled, build_attention_frame
 from .autonomy_slice import build_autonomy_slice
 from .attention_schema_publish import publish_attention_schema
 from .chat_attention_salience_trace import persist_chat_attention_salience_trace
-from .current_turn_llm_signals import populate_current_turn_llm_signals
+from .current_turn_llm_signals import (
+    human_chat_turn_reason,
+    mark_current_turn_llm_skipped,
+    populate_current_turn_llm_signals,
+)
 
 from .endogenous_runtime import (
     consume_endogenous_runtime_for_reflective_review,
@@ -2634,8 +2638,26 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
         # try/except: populate_current_turn_llm_signals() is fail-open by
         # contract and never raises, but this call happens before the frame
         # build itself, so a bug here must not skip the frame build outright.
+        #
+        # Only on turns with a real human message. Orion's own turns
+        # (journal.compose, metacognition, render_scene, outreach, ...) also
+        # build stance, and the probe runs on route `chat` -- interactive
+        # priority, gpu0's owner class -- so each one made the gpu-pool recall
+        # borrowed gpu0 holds from durable runs (live 2026-09-30: ~1,600
+        # chat-class admits, 248 recalled/owner_waiting, 2 of 202 recall
+        # triggers were real chat messages).
+        is_human, human_reason = human_chat_turn_reason(ctx)
         try:
-            await populate_current_turn_llm_signals(ctx)
+            if is_human:
+                await populate_current_turn_llm_signals(ctx)
+            else:
+                mark_current_turn_llm_skipped(ctx, human_reason)
+                logger.info(
+                    "current_turn_llm_signals_skipped corr=%s verb=%s reason=%s",
+                    ctx.get("correlation_id") or ctx.get("trace_id"),
+                    ctx.get("verb"),
+                    human_reason,
+                )
         except Exception as exc:
             logger.warning("current_turn_llm_signals_populate_call_failed error=%s", exc)
             ctx["current_turn_llm_signals"] = []

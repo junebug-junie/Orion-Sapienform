@@ -77,8 +77,11 @@ jobs:
       # from host cron, not here.
       # Includes discovery of every cross-service forbid schema: fails when a
       # strict schema some service validates has no found or declared writer.
+      # Also the merged-SQL-migration-applied section the same watch runs: replays
+      # PR #2424 (missing table) and PR #2400 (missing column) red over the real
+      # services/orion-sql-db corpus, and the data-only reset as verify-manually.
       - name: Substrate ladder liveness logic replays the 09-20 incident red
-        run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py tests/scripts/test_schema_skew_discovery.py -q
+        run: python -m pytest tests/scripts/test_substrate_ladder_liveness.py tests/scripts/test_schema_skew_discovery.py tests/test_sql_migration_drift_gate.py -q
 
       # Host-cron watchdogs: an escalation failure (unusable dedupe state,
       # orion-notify refused) must exit 4 and still card, never exit 0/1 with

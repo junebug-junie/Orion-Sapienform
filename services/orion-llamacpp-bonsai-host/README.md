@@ -51,7 +51,8 @@ gpu0 is chat's card. Bonsai does not take it and does not evict chat
 (Juniper, 2026-09-30). The target cards are the agent cards, gpu1 and gpu2
 (`docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md`).
 `BONSAI_CUDA_VISIBLE_DEVICES` has no compose default, so a missing value fails
-`up` instead of picking a card, and
+every compose command for this service (including `down`) instead of picking a
+card, and
 `tests/test_bonsai_contract.py::test_no_bonsai_config_targets_chats_card` fails
 if any Bonsai config points at chat's card.
 
@@ -67,10 +68,17 @@ gpu2 is not free either. The pool lends it to `agent-gpu2` and diffusion, and
 this worker is not a pool role, so the lane controller does not know Bonsai is
 there. If it launches its Q4 worker (17.6 GB) or diffusion onto a card already
 holding Bonsai's ~24 GB, one side runs out of memory. For a bake-off on gpu2:
-wait until the `agent-gpu2` seat has unloaded (`nvidia-smi -i 2` shows no
-process), then pause pool actuation (`scripts/gpu_pool_pause.py pause`) so
-nothing is launched onto it, and resume when Bonsai is down. Pausing does not
-unload a worker that is already running.
+wait until the `agent-gpu2` seat has unloaded and diffusion is not resident
+(`nvidia-smi -i 2` shows no agent or diffusion process; the small world-model
+lane may stay), then pause pool actuation so nothing is launched onto it, and
+resume when Bonsai is down. Pausing does not unload a worker that is already
+running.
+
+```bash
+ORION_BUS_URL=redis://100.92.216.81:6379/0 PYTHONPATH=. .venv/bin/python scripts/gpu_pool_pause.py pause
+# ... bake-off ...
+ORION_BUS_URL=redis://100.92.216.81:6379/0 PYTHONPATH=. .venv/bin/python scripts/gpu_pool_pause.py resume
+```
 
 ### This service is a bake-off tool
 

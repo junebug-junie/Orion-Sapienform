@@ -104,7 +104,8 @@ def test_profile_launch_argv(monkeypatch):
 
 
 def test_never_auto_deployed():
-    """Manual only: it defaults to gpu0, chat's card, so a post-merge `up` would fight chat."""
+    """Manual only: it borrows a pool card (gpu1/gpu2) the lane controller does not know it holds,
+    so a post-merge `up` would collide with pool launches."""
     common = REPO / "mesh-utilities" / "common"
     service = "orion-llamacpp-bonsai-host"
     for include in common.glob("include_services*"):

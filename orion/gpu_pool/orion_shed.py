@@ -199,7 +199,9 @@ class OrionShedController:
 
     # --- lifecycle ---------------------------------------------------------------------
     async def boot(self) -> list[str]:
-        """Load the last day; settle or re-install what a previous process left active."""
+        """Load the last day; settle or re-install what a previous process left active.
+        Also the retry path: a set that finds the ledger down re-runs this before refusing, so a
+        ledger that was unavailable at pool boot does not refuse every set for the process's life."""
         did: list[str] = []
         try:
             self.ledger_ok = await self.ledger.ensure()
@@ -273,20 +275,26 @@ class OrionShedController:
                 return found.to_result()
             await self._end(rec, "cancelled", f"clear_by:{req.actor}")
             return rec.to_result()
-        # set -- idempotent per dispatch_id: a replayed request returns the original record.
-        try:
-            existing = await self.ledger.by_dispatch(req.dispatch_id) if self.ledger_ok else None
-        except Exception:  # noqa: BLE001
-            existing, self.ledger_ok = None, False
-        if existing is not None:
-            return OrionShedRecord.from_row(existing).to_result()
+        # set
         now = self.now()
         rec = OrionShedRecord(shed_id=f"oshed_{uuid4().hex[:20]}", dispatch_id=req.dispatch_id, state="refused",
                               requested_at=now, correlation=dict(req.correlation),
                               background_live_at_start=background_live)
         if not self.ledger_ok:
+            await self.boot()   # retry: ensure the table and reload the 24 h history the caps need
+        if not self.ledger_ok:
             rec.refusal = "ledger_unavailable"
             return rec.to_result(ok=False)
+        # Idempotent per dispatch_id: a replayed request returns the original record.
+        try:
+            existing = await self.ledger.by_dispatch(req.dispatch_id)
+        except Exception:  # noqa: BLE001
+            existing = None
+            self.ledger_ok = False
+            rec.refusal = "ledger_unavailable"
+            return rec.to_result(ok=False)
+        if existing is not None:
+            return OrionShedRecord.from_row(existing).to_result()
         refusal, ttl = refusal_for_set(now=now, records=self._recent.values(), caps=self.caps,
                                        requested_ttl=req.ttl_sec, enabled=self.enabled,
                                        lever_enabled=self.lever_enabled(), reflex_active=reflex_active)

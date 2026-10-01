@@ -236,3 +236,14 @@ def test_state_snapshot_carries_the_orion_shed_health():
         assert shed["orion_self_shed"]["active"]["state"] == "active"
         assert shed["orion_self_shed"]["caps"]["max_sec_per_day"] == 3600
     run(go())
+
+
+def test_ledger_down_at_boot_recovers_on_the_next_set():
+    async def go():
+        ledger = MemoryOrionShedLedger(available=False)
+        rt, _ = pool(ledger=ledger)
+        await boot(rt)
+        assert (await rt.orion_shed_request(req(dispatch_id="d1"))).refusal == "ledger_unavailable"
+        ledger.available = True
+        assert (await rt.orion_shed_request(req(dispatch_id="d2"))).state == "active"
+    run(go())

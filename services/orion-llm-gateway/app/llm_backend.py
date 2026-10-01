@@ -16,7 +16,7 @@ from app.vision import (
 )
 from orion.core.bus.async_service import OrionBusAsync
 
-from . import pool_placement, upstream_cancel
+from . import lane_senders, pool_placement, upstream_cancel
 from .ctx_overflow import CONTEXT_OVERFLOW_ERROR, is_context_overflow
 from .models import ChatBody, ChatMessage
 from .settings import settings
@@ -1324,9 +1324,14 @@ def plan_llm_chat(body: ChatBody) -> ChatDispatchPlan:
     """Lane routing (when enabled) to a route name, then the route's pool class. Cheap, no I/O."""
     pool_routes = pool_placement.pool_routes()
     lane_routing = bool(getattr(settings, "llm_lane_routing_enabled", False))
+    # Stage 6.4 census: what this call would route to with lane routing deleted.
+    census = {"source": body.source, "lane": lane_senders.lane_field(body.options),
+              "route_in": body.route, "route_without_lane_routing": _resolve_route(body)[0],
+              "corr": body.trace_id}
+    on_hold = (body.options or {}).get("gpu_lease") is not None
     # A call under a GPU pool hold ref keeps the caller's route: the run's lane was already
     # decided, lane routing must not move it.
-    if lane_routing and (body.options or {}).get("gpu_lease") is None:
+    if lane_routing and not on_hold:
         decision = resolve_llm_lane_route(
             body.options,
             body.route,
@@ -1346,6 +1351,7 @@ def plan_llm_chat(body: ChatBody) -> ChatDispatchPlan:
             decision.reason,
             decision.fallback_used,
         )
+        lane_senders.record(**census, route_chosen=decision.route_table_key, lane_routing="applied")
         if decision.route_table_key is None:
             logger.info(
                 "llm_gateway_lane_rejected corr=%s trace_id=%s requested_lane=%s status=%s reason=%s",
@@ -1366,6 +1372,9 @@ def plan_llm_chat(body: ChatBody) -> ChatDispatchPlan:
                 },
             ))
         body = body.model_copy(update={"route": decision.route_table_key})
+    else:
+        lane_senders.record(**census, route_chosen=census["route_without_lane_routing"],
+                            lane_routing="skipped_hold" if lane_routing else "disabled")
 
     route, route_source = _resolve_route(body)
     spec = pool_routes.get(route)

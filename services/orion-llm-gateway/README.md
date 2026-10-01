@@ -66,6 +66,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | :--- | :--- |
 | `GET /health` | Service liveness and configured route keys. |
 | `GET /routes` | **Compatibility view generated from orion-gpu-pool state** (removed in stage 6). Same shape as before: per-route `id`, `served_by`, `backend`, `status` (`up`/`down`/`operator_closed`/`unknown`), `model` (discovered model file), `n_ctx` (discovered ctx per slot), `vision`, `upstream`, `gate_open`. `unknown` for every route when the pool cannot be reached -- never a fabricated `up`. |
+| `GET /debug/lane-senders` | GPU pool stage 6.4 census, in-process since boot: every bus call that carries a lane (`options.llm_lane` / `options.execution_lane`) or that lane routing re-routes, by caller `source` + lane + `route_in` + `route_chosen` (today) + `route_without_lane_routing` (after `lane_routes.py` is deleted). `rerouted_total == 0` with `uptime_sec >= 86400` means deleting lane routing changes nothing; otherwise every `rerouted: true` row needs an answer first. Each recorded call also logs `llm_gateway_lane_sender` (survives a restart). |
 | `GET /v1/models` | Anthropic-compatible model list from configured route keys (FCC / Claude Code). |
 | `GET /v1/messages` | Anthropic Messages endpoint liveness (same as HEAD). |
 | `POST /v1/messages` | Anthropic Messages passthrough to the pool-granted llama.cpp role's `/v1/messages` (lease holder `http:anthropic`). |

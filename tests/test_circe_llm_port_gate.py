@@ -78,3 +78,19 @@ def test_bad_mode_exits_2() -> None:
 
 def test_script_parses() -> None:
     subprocess.run(["bash", "-n", str(_SCRIPT)], check=True)
+
+
+def test_install_is_one_command_that_places_enables_reapplies_and_shows_status() -> None:
+    out = _dry("install")
+    assert out[0].startswith("install -m 0755 ") and out[0].endswith("/usr/local/sbin/orion-llm-port-gate")
+    assert out[1].endswith("/etc/systemd/system/orion-llm-port-gate.service")
+    assert out[2:] == [
+        "systemctl daemon-reload",
+        "systemctl enable orion-llm-port-gate.service",
+        "systemctl restart orion-llm-port-gate.service",  # a re-install re-applies changed rules
+        "/usr/local/sbin/orion-llm-port-gate status",
+    ]
+
+
+def test_uninstall_stops_the_unit_which_removes_the_rules() -> None:
+    assert _dry("uninstall")[0] == "systemctl disable --now orion-llm-port-gate.service"

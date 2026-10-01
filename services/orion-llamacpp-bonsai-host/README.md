@@ -27,7 +27,7 @@ DeepSeek soak (`Dockerfile.dsv41-porte`).
 | Build | CUDA 12.8, `CMAKE_CUDA_ARCHITECTURES=70`, `GGML_CUDA_FA_ALL_QUANTS=ON` |
 | Image | `llamacpp-bonsai-prism:server-local-volta` |
 | Profile | `ternary-bonsai2-27b-pq2-v100-32gb-circe-np4` |
-| Card / port | gpu2 (`BONSAI_CUDA_VISIBLE_DEVICES=2`), host port `8017` |
+| Card / port | gpu0, chat's card (`BONSAI_CUDA_VISIBLE_DEVICES=0`), host port `8017` |
 
 ## Build and run (on Circe, from a worktree)
 
@@ -38,44 +38,53 @@ docker image inspect orion-llamacpp-host:0.1.0 >/dev/null
 # 2. Compile the fork for Volta (a long build; the llama.cpp CUDA compile dominates).
 services/orion-llamacpp-bonsai-host/scripts/build-bonsai-volta.sh
 
-# 3. Only while gpu2 is free (see below).
+# 3. Free gpu0 first (see below).
 scripts/safe_docker_build.sh orion-llamacpp-bonsai-host up -d
 curl -fsS http://localhost:8017/health
 ```
 
 The first boot downloads the 7.21 GB GGUF into `${LLM_CACHE_DIR}/gguf`.
 
-## gpu2 is borrowed: out-of-memory risk for the whole run
+## gpu0 is chat's card: stopping chat takes more than chat
 
-`orion-gpu-lane-controller` owns gpu2 (`config/gpu_pool.yaml`: `agent-gpu2`,
-which diffusion reclaims). This worker is **not** in the pool, and the pool
-has no verb that reserves a whole card for an outside worker. So the
-controller does not know Bonsai is there. If an agent backlog passes its swap
-wait, or a diffusion request lands, it will launch its own worker (17.6 GB+)
-or diffusion (about 24 GB) onto a card already holding Bonsai's roughly 24 GB,
-and one side runs out of memory. Checking `nvidia-smi -i 2` before `up` only
-covers the start.
+Bonsai needs a whole 32 GB card. gpu0 belongs to the chat worker, and chat
+has no pool launch block (`config/gpu_pool.yaml`), so the lane controller
+never restarts it on its own. While it is down:
 
-For a bake-off, pick one:
+- chat requests wait (`on_unavailable: wait`);
+- agent, metacog and fast lose their last fallback, since all three list
+  `chat` as an overflow role;
+- **do not lend gpu0.** It is `lendable: true`, and a lent gpu0 looks free to
+  the pool for agent work while Bonsai holds it.
 
-- Run it in a window with no image generation and no agent backlog, and
-  watch `nvidia-smi -i 2`.
-- Stop the controller for the duration. This also stops every other pool
-  swap, including gpu1's affect/agent flips.
+```bash
+docker stop orion-circe-atlas-llamacpp-chat
+scripts/safe_docker_build.sh orion-llamacpp-bonsai-host up -d
+# ... test ...
+scripts/safe_docker_build.sh orion-llamacpp-bonsai-host down
+docker start orion-circe-atlas-llamacpp-chat
+```
 
 The worker announces `LLM_ROLE=bonsai-bakeoff`, which is not a pool role, so
 the pool's discovery view lists it under `unclaimed`. It does not use
 `experiment`: that role belongs to the DeepSeek soak, and announcements are
 keyed by role, so the two would overwrite each other. No traffic is routed
 here. The pool and the gateway build URLs from configured role ports, never
-from announcements.
+from announcements. `restart: "no"` keeps it from coming back after a reboot
+and holding gpu0 when chat should.
 
-`restart: "no"` keeps the worker from coming back on its own after a reboot.
-Stop it when done:
+Manual only (Juniper, 2026-09-30). It is in no host's auto-rebuild list:
+absent from `mesh-utilities/common/include_services_circe.txt`, and listed in
+`exclude_services.txt`. A merge never starts it on gpu0 over chat. Run
+`up -d --build` by hand; the `build:` section rebuilds with the current
+wrapper and profiles, reusing the cached fork compile.
 
-```bash
-scripts/safe_docker_build.sh orion-llamacpp-bonsai-host down
-```
+## The image carries its own wrapper and profiles
+
+The image is `FROM orion-llamacpp-host:0.1.0` for the Python deps only. It
+copies `services/orion-llamacpp-host/app`, `config/` and `orion/` fresh, because
+the base image's baked copies are only as new as its last rebuild. On circe
+(2026-09-30) they lacked this profile and the fork build-number fix.
 
 ## New-service `.env`
 
@@ -90,11 +99,13 @@ cp services/orion-llamacpp-bonsai-host/.env_example services/orion-llamacpp-bons
 
 - `ctx_size: 262144`, `n_parallel: 4`. llama-server divides the context
   across slots, so each run gets 65,536 tokens.
-- VRAM, **UNVERIFIED on Volta**: 7.21 GB of weights, plus about 16 GiB of f16
-  KV cache at Prism's stated ~64 KB per token, comes to about 24 GiB before
-  compute buffers.
-- `reasoning: auto`. Prism: `--reasoning on` overrides a client's
-  `reasoning_effort: "none"`.
+- VRAM on circe gpu0: 24.1-24.3 GB with flash attention on (two hand
+  readings), 27.2-28.6 GB with it off (sampled every second). That covers all four 65K slots, whether idle or
+  full.
+- `reasoning: auto`. To turn thinking off per request, send
+  `chat_template_kwargs: {"enable_thinking": false}`. This template rejects
+  `reasoning_effort: "none"` with HTTP 500, despite Prism's docs, and
+  `reasoning_budget: 0` does not stop thinking.
 - `reasoning_effort: medium`. The template accepts only `low`, `medium` and
   `xhigh`. `high` returns HTTP 500, and `low` behaves like `xhigh`.
 - `preserve_thinking: false`. Prism: re-rendering earlier reasoning into later
@@ -102,10 +113,13 @@ cp services/orion-llamacpp-bonsai-host/.env_example services/orion-llamacpp-bons
   exactly the cost four slots would multiply. **UNVERIFIED** that the Bonsai
   template honours this kwarg the way Qwen3.8's does.
 - `n_predict: 16384`. Smaller output caps end generation mid-thought.
-- `flash_attn: off`, matching the live Qwen3.8-27B agent lane on the same
-  hardware. The wrapper only emits `--flash-attn off` when the binary reports
-  a build number above b5332. That number is `git rev-list --count`, so the
-  Dockerfile uses a blobless clone, not `--depth 1`, and asserts the number.
+- `flash_attn: on`. Measured on circe: at 61K tokens of context, decode is
+  32.3 tok/s with it on against 17.6 off, and it uses about 4 GB less memory.
+  The one cost is that exactly two concurrent runs get 23 tok/s each, against
+  41 with it off. See `docs/2026-09-30-ternary-bonsai2-27b-1xv100-circe.md`.
+  The wrapper only emits `--flash-attn` for binaries it reads as newer than
+  b5332. That number is `git rev-list --count`, so the Dockerfile uses a
+  blobless clone, not `--depth 1`, and asserts the number.
 
 ## Bake-off measurements
 

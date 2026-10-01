@@ -24,6 +24,10 @@ def test_dockerfile_pins_prism_fork_for_volta():
     # Prism: CUDA 13.3 builds segfault; host nvcc 13.x dropped sm_70.
     assert "nvidia/cuda:12.8.1-devel-ubuntu24.04" in text
     assert "orion-llamacpp-host:0.1.0" in text
+    # Base image supplies deps only; its baked wrapper/profiles can predate this profile.
+    final = text.split("FROM ${HOST_IMAGE}", 1)[1]
+    for copy in ("COPY services/orion-llamacpp-host/app /app/app", "COPY config /app/config", "COPY orion /app/orion"):
+        assert copy in final
     # Build number = rev-list count; a shallow clone reports 1 and the wrapper
     # then drops --flash-attn off (main.py is_b5332_compatible).
     code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
@@ -34,7 +38,8 @@ def test_dockerfile_pins_prism_fork_for_volta():
 def test_compose_stays_off_shared_image_and_pool_ports():
     compose = yaml.safe_load((HOST / "docker-compose.yml").read_text(encoding="utf-8"))
     svc = compose["services"]["bonsai-worker"]
-    assert "build" not in svc  # built by scripts/build-bonsai-volta.sh only
+    # Auto-rebuild runs `up -d --build`: without a build section it only restarts a stale image.
+    assert svc["build"]["dockerfile"] == "services/orion-llamacpp-bonsai-host/Dockerfile"
     assert "llamacpp-bonsai-prism" in svc["image"]
     assert svc["restart"] == "no"
     env = "\n".join(svc["environment"])
@@ -94,4 +99,18 @@ def test_profile_launch_argv(monkeypatch):
     assert kwargs["reasoning_effort"] == "medium"
     assert kwargs["preserve_thinking"] is False
     assert flag("--n-predict") == "16384"
-    assert flag("--flash-attn") == "off"
+    # Measured win on circe gpu0 2026-09-30; see the field note.
+    assert flag("--flash-attn") == "on"
+
+
+def test_never_auto_deployed():
+    """Manual only: it defaults to gpu0, chat's card, so a post-merge `up` would fight chat."""
+    common = REPO / "mesh-utilities" / "common"
+    service = "orion-llamacpp-bonsai-host"
+    for include in common.glob("include_services*"):
+        files = include.rglob("*.txt") if include.is_dir() else [include]
+        for f in files:
+            lines = {l.strip() for l in f.read_text(encoding="utf-8").splitlines()}
+            assert service not in lines, f
+    excludes = (common / "exclude_services.txt").read_text(encoding="utf-8").splitlines()
+    assert service in {l.strip() for l in excludes}

@@ -12,6 +12,9 @@ on:
       - "config/llm_profiles.yaml"
       - "services/orion-llamacpp-host/**"
       - "services/orion-llamacpp-bonsai-host/**"
+      # bonsai is manual-only: its test guards the auto-rebuild host lists
+      - "mesh-utilities/common/include_services*"
+      - "mesh-utilities/common/exclude_services.txt"
       # every pool migration: tests/test_schema_drift_gate.py holds them against the boot self-heal list
       - "services/orion-sql-db/manual_migration_gpu_pool_*.sql"
       # stage 5.4: world-model takes a pool lease (the "world" job below)
@@ -83,6 +86,9 @@ on:
       - "config/llm_profiles.yaml"
       - "services/orion-llamacpp-host/**"
       - "services/orion-llamacpp-bonsai-host/**"
+      # bonsai is manual-only: its test guards the auto-rebuild host lists
+      - "mesh-utilities/common/include_services*"
+      - "mesh-utilities/common/exclude_services.txt"
       - "services/orion-hub/scripts/gpu_pool_routes.py"
       - "services/orion-hub/static/js/gpu_pool*.js"
       - "scripts/check_gpu_pool_config.py"

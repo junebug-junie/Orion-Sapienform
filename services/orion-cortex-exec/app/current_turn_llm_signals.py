@@ -148,8 +148,10 @@ def human_chat_turn_reason(ctx: dict[str, Any]) -> tuple[bool, str]:
     - ``stance_inputs["utterance_origin"]`` -- set by the Hub's unified turn
       (orion/hub/turn_orchestrator.py). Only the two human entry points pass
       "juniper" (websocket chat and HTTP /api/chat); curiosity passes "orion";
-      endogenous outreach, autonomous reading and collapse-mirror replies pass
-      nothing. Rides to cortex-exec inside the stance_react request context
+      endogenous outreach and autonomous reading pass nothing. Collapse-mirror
+      replies also pass nothing: Juniper wrote the entry, but it is a form
+      submission framed into a prompt, not a chat message, so it is skipped on
+      purpose. Rides to cortex-exec inside the stance_react request context
       (services/orion-thought/app/bus_listener.py::build_stance_react_context).
     - ``ctx["verb"]`` (the plan verb, set by router.py) for the legacy chat path,
       which predates utterance_origin: a chat entry verb is a human turn unless
@@ -158,7 +160,11 @@ def human_chat_turn_reason(ctx: dict[str, Any]) -> tuple[bool, str]:
       journaler and the capability bridge).
 
     Everything else (journal.compose, log_orion_metacognition, render_scene,
-    harness_finalize_reflect, reverie, ...) is Orion's own work.
+    harness_finalize_reflect, reverie, ...) is treated as not-a-chat-turn.
+    Known consequence: legacy-lane turns whose plan verb is rewritten away from
+    a chat verb (Hub auto-route depth 1/2, single-verb override) and the
+    harness finalize leg of a Juniper turn also skip; their frames carry
+    debug.turn_read_skipped so they are not mistaken for probe failures.
     """
     stance_inputs = ctx.get("stance_inputs") if isinstance(ctx.get("stance_inputs"), dict) else {}
     origin = str(stance_inputs.get("utterance_origin") or "").strip().lower()

@@ -2646,8 +2646,8 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
         # borrowed gpu0 holds from durable runs (live 2026-09-30: ~1,600
         # chat-class admits, 248 recalled/owner_waiting, 2 of 202 recall
         # triggers were real chat messages).
-        is_human, human_reason = human_chat_turn_reason(ctx)
         try:
+            is_human, human_reason = human_chat_turn_reason(ctx)
             if is_human:
                 await populate_current_turn_llm_signals(ctx)
             else:

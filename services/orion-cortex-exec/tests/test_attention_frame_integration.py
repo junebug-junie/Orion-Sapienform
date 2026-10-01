@@ -212,6 +212,10 @@ async def test_real_chat_turn_calls_probe(monkeypatch) -> None:
         {"verb": "stance_react", "stance_inputs": {"user_message": "x"}},
         # A unified turn Orion started (curiosity investigation).
         {"verb": "stance_react", "stance_inputs": {"user_message": "x", "utterance_origin": "orion"}},
+        # A collapse-mirror reply: unified turn, no utterance_origin (skipped on purpose).
+        {"verb": "stance_react", "stance_inputs": {"user_message": "Juniper just submitted this Collapse Mirror"}},
+        # Harness finalize leg of a turn: no stance_inputs, non-chat verb.
+        {"verb": "harness_finalize_reflect"},
         # A scheduled workflow sent as chat_general by orion-actions' scheduler.
         {"verb": "chat_general", "options": {"source": "orion-actions", "policy_dispatch_only": True}},
     ],

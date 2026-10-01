@@ -42,6 +42,29 @@ HOST_MUTATING_SKILL_MARKERS = (
     "refresh_service_envs",
 )
 
+# 2026-10-01: skills that change the world but are not in the host-mutating
+# list above. Both fell through to the `read_only` default, so the daily
+# selector could offer them as "read-only skill probes" (daily pulse picked
+# compose_service_bringup as one on 2026-08-30).
+#
+# STATE_CHANGING: changes host/runtime state. compose_service_bringup runs
+# `docker compose build` + `up -d`. Deliberately NOT added to
+# HOST_MUTATING_SKILL_MARKERS: that would also move its family to
+# runtime_housekeeping and change which skill cortex-exec's capability bridge
+# resolves for the system_inspection family (assess_runtime_state). The real
+# runtime gate stays SKILLS_ALLOW_DOCKER_COMPOSE_BRINGUP in cortex-exec.
+STATE_CHANGING_SKILL_MARKERS = (
+    "compose_service_bringup",
+)
+
+# ACTUATING: acts outward without mutating the host. render_scene spends GPU
+# watts on circe and persists a new image through orion-thought's chain; it is
+# not an observation, so it is neither read-only nor idempotent.
+ACTUATING_SKILL_MARKERS = (
+    "notify",
+    "render_scene",
+)
+
 
 def _is_host_mutating_skill(skill_id: str) -> bool:
     sid = str(skill_id or "").lower()
@@ -104,7 +127,9 @@ def _risk_for_skill(skill_id: str) -> tuple[str, bool, bool]:
     # traces normalized as non-side-effecting too.
     if _is_host_mutating_skill(sid):
         return "high_impact", False, False
-    if "notify" in sid:
+    if any(marker in sid for marker in STATE_CHANGING_SKILL_MARKERS):
+        return "state_change", False, False
+    if any(marker in sid for marker in ACTUATING_SKILL_MARKERS):
         return "benign_actuation", False, False
     return "read_only", True, True
 

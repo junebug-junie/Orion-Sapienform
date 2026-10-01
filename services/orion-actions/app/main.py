@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import uvicorn
 from fastapi import FastAPI
 
+from orion.cognition.daily_metacog_budget import build_daily_metacog_skill_catalog
 from orion.cognition.skills_manifest import build_compact_skill_catalog, load_skill_manifest
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -72,6 +73,13 @@ from .logic import (
 from .settings import settings
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
 
+from .daily_retry_gate import (
+    DAILY_ATTEMPT_STATE_FILENAME,
+    DailyAttemptGate,
+    DailyAttemptResult,
+    GaveUp,
+    run_gated_daily_tick,
+)
 from .scheduler_cursor_store import (
     SchedulerCursorStore,
     resolve_scheduler_cursor_store_path,
@@ -113,6 +121,23 @@ _SKILL_MANIFEST = load_skill_manifest()
 _SKILL_IDS = {item.skill_id for item in _SKILL_MANIFEST}
 _READ_ONLY_SKILL_IDS = {item.skill_id for item in _SKILL_MANIFEST if item.read_only}
 _SKILLS_CATALOG_COMPACT = build_compact_skill_catalog()
+# daily_metacog_v1 has a hard prompt budget in cortex-exec; the full JSON catalog
+# above pushed it over from 2026-09-03 and the report failed every night. Metacog
+# gets a one-line-per-read-only-skill catalog sized from the template + the max
+# recall digest (orion/cognition/daily_metacog_budget.py). Pulse keeps the JSON.
+_DAILY_METACOG_SKILLS_CATALOG, _DAILY_METACOG_SKILLS_CATALOG_COUNT = build_daily_metacog_skill_catalog(_SKILL_MANIFEST)
+
+
+def _daily_skills_catalog_context(action_name: str) -> dict[str, Any]:
+    if action_name == ACTION_DAILY_METACOG_V1:
+        return {
+            "skills_catalog_count": _DAILY_METACOG_SKILLS_CATALOG_COUNT,
+            "skills_catalog_compact": _DAILY_METACOG_SKILLS_CATALOG,
+        }
+    return {
+        "skills_catalog_count": len(_SKILL_MANIFEST),
+        "skills_catalog_compact": _SKILLS_CATALOG_COMPACT,
+    }
 
 
 def _runtime_identity() -> dict[str, str]:
@@ -293,6 +318,26 @@ def _extract_plan_final_text(result_payload: dict[str, Any]) -> str:
                     if isinstance(raw_text, str) and raw_text.strip():
                         return raw_text.strip()
     return ""
+
+
+def _plan_failure_detail(result_payload: dict[str, Any], *, max_chars: int = 500) -> str | None:
+    """Why a plan produced no text, from the step that failed.
+
+    Without this, a cortex-exec step failure (e.g. daily_metacog_prompt_over_limit)
+    reached orion-actions only as ``cortex_exec_missing_final_text`` and the real
+    cause lived only in cognition_traces.steps[].error.
+    """
+    result = result_payload.get("result") if isinstance(result_payload, dict) else None
+    if not isinstance(result, dict):
+        return None
+    steps = result.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if isinstance(step, dict) and step.get("error"):
+                return f"step={step.get('step_name') or '?'} error={str(step['error'])[:max_chars]}"
+    if result.get("error"):
+        return f"error={str(result['error'])[:max_chars]}"
+    return None
 
 
 def _json_loads_strict(text: str) -> dict[str, Any]:
@@ -662,6 +707,53 @@ def durable_failure_notify_request(item: dict) -> NotificationRequest | None:
         context={"workflow_id": workflow_id, "status": "failed", "execution_source": "durable_run",
                  "durable_run_id": item["durable_run_id"], "notify_on": item.get("notify_on"),
                  "preview_text": body[:280]},
+    )
+
+
+def daily_failure_notify_request(
+    *,
+    action_name: str,
+    report_date: str,
+    scheduled_local_date: str,
+    attempts: int,
+    error: str | None,
+    correlation_id: str,
+    failure_class: str | None = None,
+) -> NotificationRequest:
+    """The one warning a night when a scheduled daily report stops retrying.
+
+    Durable and queryable in notify_requests (event_kind ``orion.daily.failed``);
+    the error text is the step error cortex-exec returned (see _plan_failure_detail).
+    """
+    label = "Daily Metacog" if action_name == "daily_metacog_v1" else "Daily Pulse"
+    err = (error or "unknown")[:600]
+    body = (
+        f"Orion's {label} for {report_date} was not written. It failed {attempts} time(s) "
+        f"and will not retry until the next scheduled day ({action_name}, scheduled {scheduled_local_date}). "
+        f"Last error ({failure_class or 'unclassified'}): {err}"
+    )
+    return NotificationRequest(
+        source_service=settings.service_name,
+        event_kind="orion.daily.failed",
+        severity="warning",
+        title=f"Orion — {label} failed",
+        body_text=body,
+        body_md=body,
+        recipient_group=settings.actions_recipient_group,
+        session_id=settings.actions_session_id,
+        correlation_id=correlation_id,
+        dedupe_key=f"actions:{action_name}:failed:{scheduled_local_date}",
+        dedupe_window_seconds=86400,
+        tags=["actions", "daily", "failed", action_name],
+        context={
+            "action_name": action_name,
+            "report_date": report_date,
+            "scheduled_local_date": scheduled_local_date,
+            "attempts": attempts,
+            "failure_class": failure_class,
+            "error": err,
+            "preview_text": body[:280],
+        },
     )
 
 
@@ -1230,6 +1322,11 @@ async def lifespan(app: FastAPI):
         else:
             last_daily_run[_ck] = _cv
     cursor_keys_at_startup = frozenset(scheduler_cursor_store.all().keys())
+    # Bounded nightly retries for daily_pulse_v1 / daily_metacog_v1, persisted
+    # next to the scheduler cursors (app/daily_retry_gate.py).
+    daily_attempt_gate = DailyAttemptGate(
+        state_path=scheduler_cursor_store.path.parent / DAILY_ATTEMPT_STATE_FILENAME,
+    )
 
     async def _audit(
         parent: BaseEnvelope,
@@ -1297,7 +1394,8 @@ async def lifespan(app: FastAPI):
         payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
         final_text = _extract_plan_final_text(payload)
         if not final_text:
-            raise RuntimeError("cortex_exec_missing_final_text")
+            detail = _plan_failure_detail(payload)
+            raise RuntimeError(f"cortex_exec_missing_final_text {detail}" if detail else "cortex_exec_missing_final_text")
         return final_text, payload
 
     async def _run_journal(
@@ -1428,14 +1526,23 @@ async def lifespan(app: FastAPI):
                 sem.release()
             journal_deduper.release(dedupe_key)
 
-    async def _execute_daily(parent: BaseEnvelope, *, action_name: str, window: DailyWindow, dedupe_key: str) -> bool:
+    async def _execute_daily(
+        parent: BaseEnvelope, *, action_name: str, window: DailyWindow, dedupe_key: str
+    ) -> DailyAttemptResult:
+        # The outcome is returned, never left in shared state: a concurrent manual
+        # run must not be able to overwrite a scheduled run's failure reason.
+        # Structural rule (pinned by test_daily_retry_gate): the dedupe skip below
+        # is the ONLY non-attempt; every other path ends at `return outcome`, which
+        # starts as an attempted failure and becomes a success only when the
+        # report was delivered. An early return added later cannot turn a failure
+        # into a free retry.
         if not deduper.try_acquire(dedupe_key):
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=action_name, reason="deduped")
-            return False
+            return DailyAttemptResult(completed=False, attempted=False, failure_reason="deduped")
 
         t0 = time.monotonic()
         acquired = False
-        completed = False
+        outcome = DailyAttemptResult(completed=False, attempted=True, failure_reason="daily_execute_no_outcome")
         try:
             await sem.acquire()
             acquired = True
@@ -1449,8 +1556,7 @@ async def lifespan(app: FastAPI):
                 "recipient_group": settings.actions_recipient_group,
                 "session_id": settings.actions_session_id,
                 "trace_id": str(parent.correlation_id),
-                "skills_catalog_count": len(_SKILL_MANIFEST),
-                "skills_catalog_compact": _SKILLS_CATALOG_COMPACT,
+                **_daily_skills_catalog_context(action_name),
             }
             parse_retry_used = False
             skill_validation_retry_used = False
@@ -1600,17 +1706,19 @@ async def lifespan(app: FastAPI):
             if generic_ok and chat_ok:
                 deduper.mark_done(dedupe_key)
                 await _audit(parent, status="completed", event_id=dedupe_key, action_name=action_name, extra=extra)
-                completed = True
+                outcome = DailyAttemptResult(completed=True)
             else:
                 reason = None
                 if accepted and not accepted.ok:
                     reason = accepted.detail
                 elif chat_message_accepted and not chat_message_accepted.ok:
                     reason = chat_message_accepted.detail
+                outcome = DailyAttemptResult(completed=False, failure_reason=f"notify_failed:{reason or 'unknown'}")
                 await _audit(parent, status="failed", event_id=dedupe_key, action_name=action_name, reason=reason, extra=extra)
 
         except Exception as exc:
             dt_ms = int((time.monotonic() - t0) * 1000)
+            outcome = DailyAttemptResult(completed=False, failure_reason=str(exc) or exc.__class__.__name__)
             await _audit(
                 parent,
                 status="failed",
@@ -1624,7 +1732,7 @@ async def lifespan(app: FastAPI):
             if acquired:
                 sem.release()
             deduper.release(dedupe_key)
-        return completed
+        return outcome
 
     async def _handle_collapse(env: BaseEnvelope) -> None:
         try:
@@ -1697,7 +1805,7 @@ async def lifespan(app: FastAPI):
         override_date = payload.get("date") if isinstance(payload.get("date"), str) else settings.actions_daily_run_once_date
         window = build_daily_window(tz_name=settings.actions_daily_timezone, override_date=override_date)
         dedupe_key = _daily_pulse_dedupe_key(window) if action_name == ACTION_DAILY_PULSE_V1 else _daily_metacog_dedupe_key(window)
-        ok = await _execute_daily(env, action_name=action_name, window=window, dedupe_key=dedupe_key)
+        ok = (await _execute_daily(env, action_name=action_name, window=window, dedupe_key=dedupe_key)).completed
         if ok:
             tz = ZoneInfo(settings.actions_daily_timezone)
             today_iso = datetime.now(timezone.utc).astimezone(tz).date().isoformat()
@@ -2062,6 +2170,124 @@ async def lifespan(app: FastAPI):
         orch_payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
         return _extract_skill_result_from_orch(orch_payload)
 
+    # Last outcome logged per job, so the per-tick INFO log fires on change only.
+    daily_tick_last_logged: dict[str, tuple[str, str]] = {}
+
+    async def _scheduled_daily_tick(
+        *,
+        action_name: str,
+        due: bool,
+        local_date: str,
+        now_utc: datetime,
+        forced_date: str | None,
+    ) -> str:
+        """Scheduled daily_pulse_v1 / daily_metacog_v1 run, with bounded retries.
+
+        Retry policy by failure class lives in app/daily_retry_gate.py. After the
+        last allowed failure for a date: one audit row (status=gave_up), one
+        warning notification naming the error. The done-today cursor is still
+        only set on success.
+        """
+        window = build_daily_window(now_utc=now_utc, tz_name=settings.actions_daily_timezone, override_date=forced_date)
+        key = _daily_pulse_dedupe_key(window) if action_name == ACTION_DAILY_PULSE_V1 else _daily_metacog_dedupe_key(window)
+        trigger_kind = (
+            "orion.actions.trigger.daily_pulse.v1"
+            if action_name == ACTION_DAILY_PULSE_V1
+            else "orion.actions.trigger.daily_metacog.v1"
+        )
+        env = BaseEnvelope(
+            kind=trigger_kind,
+            source=src,
+            correlation_id=str(uuid4()),
+            payload={"date": window.request_date},
+        )
+
+        async def _execute() -> DailyAttemptResult:
+            return await _execute_daily(env, action_name=action_name, window=window, dedupe_key=key)
+
+        async def _on_completed(scheduled_local_date: str) -> None:
+            cursor = scheduler_cursor_completed_local_date(
+                forced_date=forced_date,
+                window_request_date=window.request_date,
+                scheduled_local_date=scheduled_local_date,
+            )
+            last_daily_run[action_name] = cursor
+            scheduler_cursor_store.set_last_completed(action_name, cursor)
+            _scheduler_daily_structured_log(
+                job_key=action_name,
+                local_date=cursor,
+                correlation_id=str(env.correlation_id),
+                restart_dedupe_source="durable" if action_name in cursor_keys_at_startup else "memory",
+            )
+
+        async def _on_gave_up(gave_up: GaveUp) -> None:
+            # The report covers the local day before the scheduled date unless
+            # an operator forced a date (build_daily_window's rule).
+            report_date = forced_date or (
+                datetime.strptime(gave_up.local_date, "%Y-%m-%d").date() - timedelta(days=1)
+            ).isoformat()
+            logger.warning(
+                "daily_job_gave_up action=%s local_date=%s attempts=%s failure_class=%s report_date=%s error=%s",
+                action_name,
+                gave_up.local_date,
+                gave_up.attempts,
+                gave_up.failure_class,
+                report_date,
+                gave_up.reason,
+            )
+            await _audit(
+                env,
+                status="gave_up",
+                event_id=key,
+                action_name=action_name,
+                reason=gave_up.reason,
+                extra={
+                    "attempts": gave_up.attempts,
+                    "failure_class": gave_up.failure_class,
+                    "scheduled_local_date": gave_up.local_date,
+                    "report_date": report_date,
+                },
+            )
+            req = daily_failure_notify_request(
+                action_name=action_name,
+                report_date=report_date,
+                scheduled_local_date=gave_up.local_date,
+                attempts=gave_up.attempts,
+                failure_class=gave_up.failure_class,
+                error=gave_up.reason,
+                correlation_id=str(env.correlation_id),
+            )
+            try:
+                await asyncio.to_thread(notify.send, req)
+            except Exception:
+                logger.warning("daily_job_gave_up_notify_failed action=%s", action_name, exc_info=True)
+
+        outcome = await run_gated_daily_tick(
+            job_key=action_name,
+            due=due,
+            local_date=local_date,
+            now=time.time(),
+            gate=daily_attempt_gate,
+            execute=_execute,
+            on_completed=_on_completed,
+            on_gave_up=_on_gave_up,
+        )
+        if outcome != "not_due":
+            state = (local_date, outcome)
+            changed = daily_tick_last_logged.get(action_name) != state
+            daily_tick_last_logged[action_name] = state
+            logger.log(
+                logging.INFO if changed else logging.DEBUG,
+                "daily_job_tick action=%s local_date=%s outcome=%s attempts=%s",
+                action_name,
+                local_date,
+                outcome,
+                daily_attempt_gate.attempts(action_name, local_date),
+            )
+        return outcome
+
+    app.state.scheduled_daily_tick = _scheduled_daily_tick
+
     async def _scheduler_loop() -> None:
         nonlocal last_skill_run_monotonic, last_journal_run
         while True:
@@ -2173,32 +2399,15 @@ async def lifespan(app: FastAPI):
                     minute_local=settings.actions_daily_pulse_minute_local,
                     last_ran_date=last_daily_run.get(ACTION_DAILY_PULSE_V1),
                 )
-                if settings.actions_daily_pulse_enabled and (
-                    pulse_should_run or (settings.actions_daily_run_on_startup and ACTION_DAILY_PULSE_V1 not in last_daily_run)
-                ):
-                    window = build_daily_window(now_utc=now_utc, tz_name=settings.actions_daily_timezone, override_date=forced_date)
-                    key = _daily_pulse_dedupe_key(window)
-                    env = BaseEnvelope(
-                        kind="orion.actions.trigger.daily_pulse.v1",
-                        source=src,
-                        correlation_id=str(uuid4()),
-                        payload={"date": window.request_date},
-                    )
-                    pulse_ok = await _execute_daily(env, action_name=ACTION_DAILY_PULSE_V1, window=window, dedupe_key=key)
-                    if pulse_ok:
-                        pulse_cursor = scheduler_cursor_completed_local_date(
-                            forced_date=forced_date,
-                            window_request_date=window.request_date,
-                            scheduled_local_date=pulse_local_date,
-                        )
-                        last_daily_run[ACTION_DAILY_PULSE_V1] = pulse_cursor
-                        scheduler_cursor_store.set_last_completed(ACTION_DAILY_PULSE_V1, pulse_cursor)
-                        _scheduler_daily_structured_log(
-                            job_key=ACTION_DAILY_PULSE_V1,
-                            local_date=pulse_cursor,
-                            correlation_id=str(env.correlation_id),
-                            restart_dedupe_source="durable" if ACTION_DAILY_PULSE_V1 in cursor_keys_at_startup else "memory",
-                        )
+                await _scheduled_daily_tick(
+                    action_name=ACTION_DAILY_PULSE_V1,
+                    due=settings.actions_daily_pulse_enabled and (
+                        pulse_should_run or (settings.actions_daily_run_on_startup and ACTION_DAILY_PULSE_V1 not in last_daily_run)
+                    ),
+                    local_date=pulse_local_date,
+                    now_utc=now_utc,
+                    forced_date=forced_date,
+                )
 
                 world_pulse_should_run, world_pulse_date = should_run_daily(
                     now_utc=now_utc,
@@ -2243,32 +2452,15 @@ async def lifespan(app: FastAPI):
                     minute_local=settings.actions_daily_metacog_minute_local,
                     last_ran_date=last_daily_run.get(ACTION_DAILY_METACOG_V1),
                 )
-                if settings.actions_daily_metacog_enabled and (
-                    meta_should_run or (settings.actions_daily_run_on_startup and ACTION_DAILY_METACOG_V1 not in last_daily_run)
-                ):
-                    window = build_daily_window(now_utc=now_utc, tz_name=settings.actions_daily_timezone, override_date=forced_date)
-                    key = _daily_metacog_dedupe_key(window)
-                    env = BaseEnvelope(
-                        kind="orion.actions.trigger.daily_metacog.v1",
-                        source=src,
-                        correlation_id=str(uuid4()),
-                        payload={"date": window.request_date},
-                    )
-                    meta_ok = await _execute_daily(env, action_name=ACTION_DAILY_METACOG_V1, window=window, dedupe_key=key)
-                    if meta_ok:
-                        meta_cursor = scheduler_cursor_completed_local_date(
-                            forced_date=forced_date,
-                            window_request_date=window.request_date,
-                            scheduled_local_date=meta_local_date,
-                        )
-                        last_daily_run[ACTION_DAILY_METACOG_V1] = meta_cursor
-                        scheduler_cursor_store.set_last_completed(ACTION_DAILY_METACOG_V1, meta_cursor)
-                        _scheduler_daily_structured_log(
-                            job_key=ACTION_DAILY_METACOG_V1,
-                            local_date=meta_cursor,
-                            correlation_id=str(env.correlation_id),
-                            restart_dedupe_source="durable" if ACTION_DAILY_METACOG_V1 in cursor_keys_at_startup else "memory",
-                        )
+                await _scheduled_daily_tick(
+                    action_name=ACTION_DAILY_METACOG_V1,
+                    due=settings.actions_daily_metacog_enabled and (
+                        meta_should_run or (settings.actions_daily_run_on_startup and ACTION_DAILY_METACOG_V1 not in last_daily_run)
+                    ),
+                    local_date=meta_local_date,
+                    now_utc=now_utc,
+                    forced_date=forced_date,
+                )
 
                 walkway_should_run, walkway_local_date = should_run_daily(
                     now_utc=now_utc,

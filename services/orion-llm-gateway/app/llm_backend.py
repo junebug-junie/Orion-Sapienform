@@ -1325,9 +1325,10 @@ def plan_llm_chat(body: ChatBody) -> ChatDispatchPlan:
     pool_routes = pool_placement.pool_routes()
     lane_routing = bool(getattr(settings, "llm_lane_routing_enabled", False))
     # Stage 6.4 census: what this call would route to with lane routing deleted.
+    without = _resolve_route(body)[0]
     census = {"source": body.source, "lane": lane_senders.lane_field(body.options),
-              "route_in": body.route, "route_without_lane_routing": _resolve_route(body)[0],
-              "corr": body.trace_id}
+              "route_in": body.route, "corr": body.trace_id,
+              "route_without_lane_routing": without if without in pool_routes else f"rejected:{without}"}
     on_hold = (body.options or {}).get("gpu_lease") is not None
     # A call under a GPU pool hold ref keeps the caller's route: the run's lane was already
     # decided, lane routing must not move it.
@@ -1373,7 +1374,7 @@ def plan_llm_chat(body: ChatBody) -> ChatDispatchPlan:
             ))
         body = body.model_copy(update={"route": decision.route_table_key})
     else:
-        lane_senders.record(**census, route_chosen=census["route_without_lane_routing"],
+        lane_senders.record(**census, route_chosen=without if without in pool_routes else None,
                             lane_routing="skipped_hold" if lane_routing else "disabled")
 
     route, route_source = _resolve_route(body)

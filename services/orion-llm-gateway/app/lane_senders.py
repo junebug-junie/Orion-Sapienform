@@ -30,7 +30,7 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger("orion-llm-gateway.lane_senders")
 
-_MAX_ROWS = 64  # a caller cycling sources/lanes must not grow this without bound
+_MAX_ROWS = 64  # (+2 overflow rows) a caller cycling sources/lanes must not grow this without bound
 _MAX_FIELD = 48
 
 _lock = threading.Lock()
@@ -55,23 +55,48 @@ def _clean(value: Any, default: str = "-") -> str:
 
 
 def lane_field(options: Optional[Dict[str, Any]]) -> Optional[str]:
-    """The lane exactly as sent, keyed by which field carried it (``llm_lane`` wins, as in
-    lane_routes.resolve_llm_lane_route). None when the call names no lane."""
-    opts = options if isinstance(options, dict) else {}
-    for key in ("llm_lane", "execution_lane"):
-        raw = opts.get(key)
-        if raw is not None and str(raw).strip():
-            return f"{key}={_clean(raw).lower()}"
-    return None
+    """The lane exactly as sent, keyed by the field lane_routes.resolve_llm_lane_route reads
+    (``options.get("llm_lane") or options.get("execution_lane")``, same truthiness). None when
+    the call names no lane. Never raises: it runs on the request path."""
+    try:
+        opts = options if isinstance(options, dict) else {}
+        for key in ("llm_lane", "execution_lane"):
+            raw = opts.get(key)
+            if raw:
+                return f"{key}={_clean(raw).lower()}"
+        return None
+    except Exception:  # noqa: BLE001 -- instrumentation must never fail a call
+        return None
+
+
+def _is_rejected(route: str) -> bool:
+    return route == "rejected" or route.startswith("rejected:")
 
 
 def record(*, source: Optional[str], lane: Optional[str], route_in: Optional[str],
            route_chosen: Optional[str], route_without_lane_routing: Optional[str],
            lane_routing: str, corr: Optional[str] = None) -> None:
-    """One planned call. ``lane_routing`` is ``applied`` / ``skipped_hold`` / ``disabled``."""
-    chosen = _clean(route_chosen, "rejected")
-    without = _clean(route_without_lane_routing)
-    rerouted = chosen != without
+    """One planned call. ``lane_routing`` is ``applied`` / ``skipped_hold`` / ``disabled``.
+
+    ``route_chosen`` None means lane routing refused the call; ``route_without_lane_routing``
+    is passed as ``rejected:<name>`` by the caller when that name is not a pool route (the call
+    would fail after the deletion, not move). Never raises: it runs on the request path."""
+    try:
+        _record(source=source, lane=lane, route_in=route_in, route_chosen=route_chosen,
+                route_without_lane_routing=route_without_lane_routing,
+                lane_routing=lane_routing, corr=corr)
+    except Exception:  # noqa: BLE001 -- instrumentation must never fail a call
+        logger.debug("lane_senders.record failed", exc_info=True)
+
+
+def _record(*, source: Optional[str], lane: Optional[str], route_in: Optional[str],
+            route_chosen: Optional[str], route_without_lane_routing: Optional[str],
+            lane_routing: str, corr: Optional[str]) -> None:
+    chosen_raw = "rejected" if route_chosen is None else str(route_chosen)
+    without_raw = str(route_without_lane_routing or "-")
+    # Compare untruncated; both sides failing is not a behaviour change worth an answer.
+    rerouted = chosen_raw != without_raw and not (_is_rejected(chosen_raw) and _is_rejected(without_raw))
+    chosen, without = _clean(chosen_raw), _clean(without_raw)
     with _lock:
         _state["requests_total"] += 1
         if lane is None and not rerouted:
@@ -84,15 +109,16 @@ def record(*, source: Optional[str], lane: Optional[str], route_in: Optional[str
             if lane is None:
                 _state["rerouted_without_lane_total"] += 1
         _state["last_recorded_at"] = now
-        row_fields = {"source": _clean(source, "unknown"), "lane": lane or "none",
-                      "route_in": _clean(route_in), "route_chosen": chosen,
-                      "route_without_lane_routing": without, "lane_routing": lane_routing,
-                      "rerouted": rerouted}
+        row_fields: Dict[str, Any] = {
+            "source": _clean(source, "unknown"), "lane": lane or "none", "route_in": _clean(route_in),
+            "route_chosen": chosen, "route_without_lane_routing": without,
+            "lane_routing": lane_routing, "rerouted": rerouted}
         key = " ".join(f"{k}={v}" for k, v in row_fields.items())
         rows: Dict[str, Any] = _state["by_sender"]
         if key not in rows and len(rows) >= _MAX_ROWS:
-            key = "other"
-            row_fields = {"source": "other"}
+            # Overflow keeps the rerouted split, so a reroute is never hidden in an anonymous row.
+            key = f"other rerouted={rerouted}"
+            row_fields = {"source": "other", "rerouted": rerouted}
         row = rows.setdefault(key, {**row_fields, "requests": 0, "last_at": None})
         row["requests"] += 1
         row["last_at"] = now

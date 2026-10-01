@@ -450,6 +450,6 @@ ORION_PG_DSN=... python orion/autonomy/evals/run_attend_act_loop_eval.py --live 
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2461
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

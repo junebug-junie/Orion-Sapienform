@@ -1,0 +1,133 @@
+"""Is a user prompt worth remembering on its own? (memory intake, Stage 0A)
+
+The consolidation gate used to judge a window by the user's prompt AND Orion's
+reply together. Orion's reply is almost never small talk, so "sup", "hi" and
+"Run github compactor." all passed as substantive and became memories. This
+module judges the user's prompt alone and answers one narrow question: is it a
+greeting/filler, or a Hub skill command? Anything else is left for the rest of
+the gate to judge -- this filter only removes, it never admits.
+
+Commands come from the real Hub workflow registry
+(`orion.cognition.workflows.registry`), not a hand-kept list, so a new skill
+alias is filtered the day it ships.
+
+Design spec: docs/superpowers/specs/2026-09-30-memory-episode-redesign-design.md
+(Stage 0, "stop command and greeting turns entering").
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Literal
+
+from orion.memory.low_info_social import is_low_info_social
+
+JunkReason = Literal["low_info_social", "hub_command"]
+
+# Greetings, acknowledgements and filler. A prompt made only of these (plus
+# stopwords) carries nothing to remember.
+_FILLER = frozenset(
+    {
+        "hi", "hey", "hello", "yo", "sup", "hiya", "howdy", "heya", "morning",
+        "evening", "afternoon", "night", "gm", "gn",
+        "thanks", "thank", "thx", "ty", "tysm", "cheers",
+        "ok", "okay", "kk", "yep", "yup", "yeah", "yes", "no", "nope", "nah",
+        "sure", "cool", "nice", "great", "awesome", "lol", "haha", "hehe",
+        "hmm", "hm", "oh", "ah", "oooh", "ooh", "wow", "woot", "meh",
+        "orion", "juniper", "friend", "buddy", "dude", "bruh",
+        "good", "fine", "well", "doing", "going", "goes", "things",
+        "again", "too", "also", "just", "so", "sooo",
+    }
+)
+
+# Plain English function words. Deliberately small and boring: content words
+# (queue, Austin, labs, mom) are never in here.
+_STOPWORDS = frozenset(
+    {
+        "a", "an", "the", "and", "or", "but", "if", "then", "so", "to", "of",
+        "in", "on", "at", "for", "with", "from", "by", "about", "as", "into",
+        "i", "im", "i'm", "ive", "i've", "me", "my", "you", "your", "you're",
+        "youre", "we", "us", "our", "it", "its", "it's", "this", "that",
+        "these", "those", "there", "here", "is", "are", "was", "were", "be",
+        "been", "am", "do", "does", "did", "have", "has", "had", "got", "get",
+        "what", "whats", "what's", "which", "who", "how", "hows", "how's",
+        "why", "when", "where", "else", "any", "some", "all", "up", "out",
+        "now", "still", "can", "could", "would", "will", "should", "not",
+    }
+)
+
+_WORD_RE = re.compile(r"[a-z0-9']+")
+
+
+def _words(text: str) -> list[str]:
+    return _WORD_RE.findall(str(text or "").lower())
+
+
+def _content_words(words: list[str]) -> list[str]:
+    return [w for w in words if w not in _FILLER and w not in _STOPWORDS]
+
+
+def is_low_info_prompt(prompt: str) -> bool:
+    """True for a user prompt with nothing in it to remember.
+
+    Three rules, each narrow on purpose (lean toward remembering):
+
+    1. The existing courtesy check (`is_low_info_social`): "hi", "thanks".
+    2. Nothing but greetings, filler and function words: "sup yo", "ty!",
+       "howdy, how goes it".
+    3. A short question with at most one content word: "hey, which queue?",
+       "what else is on your mind?". A question asks; it does not tell Orion
+       anything. A short *statement* is kept -- "I've got the blues." has one
+       content word and is real.
+    """
+    text = str(prompt or "").strip()
+    if is_low_info_social(text):
+        return True
+    words = _words(text)
+    content = _content_words(words)
+    if not content:
+        return True
+    if text.endswith("?") and len(content) <= 1 and len(words) <= 8:
+        return True
+    return False
+
+
+# How many words a command may carry beyond its alias ("please", "now", a
+# greeting) and still be a command rather than a sentence that mentions one.
+_COMMAND_SLACK_WORDS = 3
+
+
+def hub_command_workflow(prompt: str) -> str | None:
+    """The Hub workflow id when the prompt IS a skill command, else None.
+
+    `resolve_user_workflow_invocation` matches an alias anywhere in the text,
+    which is right for routing but too loose for memory: "I keep wondering
+    what have we been building, and whether it matters" contains an alias and
+    is not a command. So the prompt must be the alias plus a few words at most.
+    The time-bounded journal command ("journal the last 34 minutes") has no
+    fixed alias; its own resolver already requires the prompt to start with
+    the command verb, so it is accepted as-is.
+    """
+    try:
+        from orion.cognition.workflows.registry import resolve_user_workflow_invocation
+    except Exception:  # pragma: no cover - registry import failure must not break intake
+        return None
+    match = resolve_user_workflow_invocation(prompt or "")
+    if match is None:
+        return None
+    if match.matched_alias.endswith("_v1"):
+        # Synthetic alias of the time-bounded journal resolver.
+        return match.workflow_id if len(_words(prompt)) <= 12 else None
+    extra = len(match.normalized_prompt.split()) - len(match.matched_alias.split())
+    if extra <= _COMMAND_SLACK_WORDS:
+        return match.workflow_id
+    return None
+
+
+def prompt_junk_reason(prompt: str) -> JunkReason | None:
+    """Why this prompt should not become a memory on its own, or None."""
+    if hub_command_workflow(prompt) is not None:
+        return "hub_command"
+    if is_low_info_prompt(prompt):
+        return "low_info_social"
+    return None

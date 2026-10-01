@@ -75,6 +75,7 @@ def build_chat_turn_grammar_events(
     repair_pressure_confidence: float = 0.0,
     repair_pressure_dims: dict[str, float] | None = None,
     has_repair_signal: bool = False,
+    has_repair_pressure_reading: bool = False,
     stance_disposition: str | None = None,
     stance_disposition_reasons: list[str] | None = None,
     stance_boundary_register: bool = False,
@@ -195,6 +196,49 @@ def build_chat_turn_grammar_events(
                 root_event_id=root_id,
                 layer=repair_signal_atom.layer,
                 dimensions=repair_signal_atom.dimensions,
+            )
+        )
+
+    # A repair appraisal ran but stayed below the repair floor
+    # (orion.substrate.appraisal.contract.REPAIR_SIGNAL_LEVEL_FLOOR). Not a
+    # repair signal, so no `repair_signal` atom -- that atom's presence is read
+    # as "a repair happened" by memory consolidation
+    # (orion/memory/consolidation_grammar.py) and PCR recall. The measured level
+    # still travels, on its own atom, so the chat projection's
+    # `repair_pressure_level` (and chat_prediction_error, which diffs it) keeps
+    # reading the same number it did when every appraisal emitted a
+    # `repair_signal` atom.
+    if has_repair_pressure_reading and repair_signal_atom is None:
+        reading_atom = GrammarAtomV1(
+            atom_id=atom_id("repair_pressure_reading"),
+            trace_id=trace_id,
+            atom_type="observation",
+            semantic_role="repair_pressure_reading",
+            layer="organ_signal",
+            dimensions=["repair", "pressure"],
+            summary=(
+                f"Repair pressure below signal floor level={repair_pressure_level:.2f} "
+                f"confidence={repair_pressure_confidence:.2f}"
+            ),
+            text_value=None,
+            confidence=repair_pressure_confidence,
+            salience=repair_pressure_level,
+            uncertainty=uncertainty_from_inverse_confidence(repair_pressure_confidence),
+            source_event_id=turn_id,
+            payload_ref=f"hub.repair_pressure:{turn_id}",
+        )
+        events.append(
+            _event(
+                event_kind="atom_emitted",
+                trace_id=trace_id,
+                emitted_at=emitted_at,
+                observed_at=observed_at_,
+                provenance=provenance,
+                atom=reading_atom,
+                parent_event_id=root_id,
+                root_event_id=root_id,
+                layer=reading_atom.layer,
+                dimensions=reading_atom.dimensions,
             )
         )
 

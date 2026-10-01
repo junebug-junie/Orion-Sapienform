@@ -13,6 +13,8 @@ from pydantic import ValidationError
 
 from orion.cognition.cortex_payload_extract import (
     cortex_exec_failure_detail,
+    cortex_payload_truncated,
+    extract_cortex_answer_text,
     extract_cortex_payload_text,
     looks_like_error_text,
 )
@@ -831,6 +833,19 @@ async def emit_verdict_molecule(
     return molecule
 
 
+# orion_response_repair is a prose rewrite of the motor draft, so the model's
+# answer IS the output and hidden reasoning only burns budget. Live 2026-09-28..30
+# on the thinking-on agent lane (Qwen3.8-27B): no max_tokens here meant cortex-exec's
+# llm_chat_general_max_tokens (8000) and 10 of 27 calls spent all of it reasoning,
+# 9 returning content="" (cognition_traces corr 0ba83fec-e66d-5685-9182-d9f867fc81c2).
+# Budget sized from real data (14 days): non-empty repair outputs p50 678 / p99 5466 /
+# max 6602 chars; observed ~3.3 chars/token -> max ~2000 tokens. 3072 covers that with
+# margin; a longer rewrite is cut at finish_reason=length and refused below
+# (extract_response_repair_text), never shipped half-written.
+RESPONSE_REPAIR_MAX_TOKENS = 3072
+RESPONSE_REPAIR_CHAT_TEMPLATE_KWARGS: dict[str, Any] = {"enable_thinking": False}
+
+
 def build_response_repair_context(
     *,
     correlation_id: str,
@@ -856,6 +871,10 @@ def build_response_repair_context(
         "llm_lane": lane,
         **({"gpu_lease": gpu_lease.model_dump(mode="json")} if gpu_lease else {}),
         "allow_chat_fallback": False,
+        # Read by cortex-exec: ctx.max_tokens wins in _resolve_llm_chat_max_tokens,
+        # chat_template_kwargs is forwarded to the gateway -> llama.cpp payload.
+        "max_tokens": RESPONSE_REPAIR_MAX_TOKENS,
+        "chat_template_kwargs": dict(RESPONSE_REPAIR_CHAT_TEMPLATE_KWARGS),
         "metadata": {
             "correlation_id": correlation_id,
             "mode": "brain",
@@ -894,18 +913,29 @@ def build_response_repair_plan_request(
 
 
 def extract_response_repair_text(result: dict[str, Any]) -> str:
-    """Extract repair-pass user-visible text; refuse error-shaped payloads."""
-    text = extract_cortex_payload_text(result)
+    """Extract repair-pass user-visible text.
+
+    Refuses (ValueError -> HarnessFinalizeFailedError, the existing failure
+    path) on: no answer text even when reasoning exists -- a reasoning model's
+    chain-of-thought is never Orion's reply -- error-shaped text, and a reply
+    cut off at max_tokens (finish_reason=length; live a84fc74a shipped a
+    51-char fragment)."""
+    text = extract_cortex_answer_text(result)
     if text:
         if looks_like_error_text(text):
             raise ValueError(
                 f"orion_response_repair returned error-shaped text: {_excerpt(text, max_len=200)}"
             )
+        if cortex_payload_truncated(result):
+            raise ValueError("orion_response_repair reply truncated at max_tokens (finish_reason=length)")
         return text
 
     detail = cortex_exec_failure_detail(result)
     if detail:
         raise ValueError(f"orion_response_repair exec failed: {detail}")
+    if extract_cortex_payload_text(result):
+        # Only reasoning came back: the answer is empty.
+        raise ValueError("orion_response_repair returned reasoning only, empty answer")
     raise ValueError("orion_response_repair exec result missing final_text")
 
 

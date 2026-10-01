@@ -119,8 +119,8 @@ def build_digest_request_payload(
 ) -> dict[str, Any]:
     """The ``CortexClientRequest`` (as a dict) for one digest call through cortex-orch.
 
-    Same verb/options the orch-local path sent (brain lane, JSON object, reasoning off,
-    ``max_tokens``), plus ``options.gpu_lease`` so cortex-exec forwards the run's hold and the
+    Same verb/options the orch-local path sent (brain lane, JSON object, ``max_tokens``), with
+    thinking off through ``chat_template_kwargs``, plus ``options.gpu_lease`` so cortex-exec forwards the run's hold and the
     gateway attaches the call to it instead of queueing behind it. No ``workflow_request`` and no
     ``durable_run`` key in metadata: cortex-orch must execute the verb, not re-enter a workflow.
     """
@@ -130,7 +130,12 @@ def build_digest_request_payload(
         "workflow_id": workflow_id,
         "response_format": {"type": "json_object"},
         "return_json": True,
-        "reasoning": {"effort": "none"},
+        # Thinking OFF via the switch cortex-exec actually forwards to the gateway -> llama.cpp.
+        # The old ``"reasoning": {"effort": "none"}`` here had no consumer anywhere: live
+        # 2026-09-30 corr 2af9b6ea spent 16000 tokens (48k chars of reasoning_content) and was
+        # cut off at finish_reason=length; 0db311e7 (09-25) capped at 8000 with content="".
+        # With thinking off the same verb finishes in ~1200-1400 tokens (07f394ac, 383796de).
+        "chat_template_kwargs": {"enable_thinking": False},
         "timeout_sec": float(timeout_sec),
         "max_tokens": int(DIGEST_MAX_TOKENS),
         "llm_route": llm_route,

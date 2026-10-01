@@ -12,7 +12,9 @@ Driven by scripts/bench/stage7_1_bakeoff.sh on circe; runnable alone against any
 Bench (check 1): per depth, 1 run alone and 2 runs at once. Prefill is timed on a cold prompt; decode
 is timed on a second, warm request of the same prompt (its prefix is in the slot), so two runs really
 decode together at that depth instead of one decoding while the other still prefills.
-Pass: total decode tok/s of 2 runs >= 1.3x the tok/s of 1 run, at every depth.
+Pass: 2 runs' combined decode rate (generated tokens of both / wall span of the pair) >= 1.3x one
+run's server-measured decode tok/s, at every depth. A depth only counts when both warm decodes hit
+the cache and their windows overlap >= 90%; otherwise it is INVALID and the verdict INCOMPLETE.
 
 Canary (check 2): conversations that each carry their own random nonces (a document codeword and
 per-tool-call ledger values). Two shapes: simultaneous pairs, and 4 conversations interleaved over
@@ -24,6 +26,9 @@ Two detectors, as in the 2026-10-01 metacog/fast probe:
   2. the server's reused-token count (timings.cache_n) exceeds what any previously sent prompt
      really shares with this one (token LCP via /apply-template + /tokenize, plus the previous
      reply's length when that prompt is a full prefix of this one).
+Detector 2 only catches the server CLAIMING more reuse than is possible. The upstream #27148 report
+shows the opposite (cached_tokens 0 on the corrupted reply), so the verdict rests on detector 1.
+Detector 1 is only trusted when the model repeats its own nonce on >= 80% of recall turns (else WEAK).
 """
 from __future__ import annotations
 
@@ -42,6 +47,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 PASS_RATIO = 1.3
+MIN_OVERLAP = 0.9   # a 2-run decode only counts if the two windows overlap this much
 SPEC_DEPTHS = (14_000, 32_000, 61_000, 100_000)
 NONCE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # no 0/O/1/I: survives a model retyping it
 NONCE_PREFIX = "NX"
@@ -79,6 +85,13 @@ def foreign_nonces(text: str, own_conv: str, registry: dict[str, str]) -> list[d
             if registry[n] != own_conv]
 
 
+def window_overlap(windows: list[tuple[float, float]]) -> float:
+    """Shared time of the windows / their total span (1.0 = they ran exactly together)."""
+    start, end = max(w[0] for w in windows), min(w[1] for w in windows)
+    span = max(w[1] for w in windows) - min(w[0] for w in windows)
+    return max(0.0, end - start) / span if span > 0 else 0.0
+
+
 def lcp(a: list[int], b: list[int]) -> int:
     n = min(len(a), len(b))
     i = 0
@@ -105,16 +118,21 @@ def legit_reuse_bound(tokens: list[int], history: list[tuple[list[int], int]], f
 
 def pass_rule(depth_rows: list[dict[str, Any]], depths: tuple[int, ...] = SPEC_DEPTHS,
               ratio: float = PASS_RATIO) -> dict[str, Any]:
-    """Acceptance check 1. Each row: {depth, n1_tps, n2_total_tps}. PASS only if every spec depth is
-    present and measured and 2 runs give >= ratio x the tok/s of 1 run at each."""
+    """Acceptance check 1. Each row: {depth, n1_tps, n2_wall_aggregate_tps, valid}. PASS only if every
+    planned depth is present, valid, and 2 runs' combined rate is >= ratio x 1 run's.
+
+    The 2-run number is generated tokens of both / the pair's wall span, never the sum of each
+    request's own predicted_per_second: that sum reads ~2x even when the two decodes did not overlap.
+    A row whose warm decodes missed the cache or barely overlapped is INVALID (``valid`` False)."""
     by_depth = {int(r["depth"]): r for r in depth_rows}
     per, missing, failing = [], [], []
     for d in depths:
         r = by_depth.get(d)
-        one, two = (r or {}).get("n1_tps"), (r or {}).get("n2_total_tps")
-        if not r or not one or two is None:
+        one, two = (r or {}).get("n1_tps"), (r or {}).get("n2_wall_aggregate_tps")
+        if not r or not one or two is None or r.get("valid") is False:
             missing.append(d)
-            per.append({"depth": d, "ratio": None, "pass": False})
+            per.append({"depth": d, "ratio": None, "pass": False,
+                        "why": (r or {}).get("invalid_reason") or ("not measured" if r else "not run")})
             continue
         q = two / one
         ok = q >= ratio
@@ -155,6 +173,8 @@ def canary_verdict(records: list[dict[str, Any]], *, turns_target: int, min_own_
             reasons.append(f"own-nonce recall {own_rate} < {min_own_recall}: detector not shown to see nonces")
         if lcp_checked == 0:
             reasons.append("no request had its cache_n checked against the true shared prefix")
+        if not any(r.get("reasoning_chars") for r in sent if r.get("think")):
+            reasons.append("no thinking turn returned reasoning text: bleed into reasoning was never checked")
         verdict = "WEAK" if reasons else "PASS"
     return {"verdict": verdict, "reasons": reasons, "requests": len(records), "errors": errors,
             "conversation_turns": convo_turns, "turns_target": turns_target,
@@ -242,12 +262,16 @@ class Server:
         with urllib.request.urlopen(self.url + path, timeout=30) as r:
             return json.load(r)
 
-    def tokens_of(self, messages: list[dict], tools: list | None = None) -> list[int] | None:
-        """Prompt token ids exactly as the server renders them; None if the build lacks the endpoints."""
+    def tokens_of(self, messages: list[dict], tools: list | None = None,
+                  template_kwargs: dict | None = None) -> list[int] | None:
+        """Prompt token ids as the server renders them for the same request (same tools, same
+        chat_template_kwargs); None if the build lacks the endpoints."""
         try:
             body: dict[str, Any] = {"messages": messages}
             if tools:
                 body["tools"] = tools
+            if template_kwargs:
+                body["chat_template_kwargs"] = template_kwargs
             prompt = self.post("/apply-template", body)["prompt"]
             return self.post("/tokenize", {"content": prompt})["tokens"]
         except Exception:  # noqa: BLE001 -- recorded as lcp_unchecked, never fatal
@@ -293,7 +317,7 @@ def _depth_prompt(srv: Server, rng: random.Random, depth: int, wpt: float) -> tu
     words = int((depth - 60) * wpt)
     for _ in range(3):   # measure, correct once or twice: the target is prompt tokens, not words
         msgs = [{"role": "system", "content": head}, {"role": "user", "content": filler(rng, words) + tail}]
-        toks = srv.tokens_of(msgs)
+        toks = srv.tokens_of(msgs, template_kwargs={"enable_thinking": False})
         n = len(toks) if toks else depth
         if abs(n - depth) <= max(64, depth * 0.01):
             return msgs, n
@@ -346,16 +370,26 @@ def bench_depth(srv: Server, rng: random.Random, depth: int, wpt: float, reps: i
     def ok(r: dict) -> bool:
         return not r.get("error") and r.get("predicted_tps")
     n1 = [r["predicted_tps"] for r in one_warm if ok(r)]
-    n2_sums, n2_wall = [], []
+    n2_sums, n2_wall, overlaps = [], [], []
     for pair in two_warm:
         if all(ok(r) for r in pair):
             n2_sums.append(sum(r["predicted_tps"] for r in pair))
             span = max(r["t_end"] for r in pair) - min(r["t_start"] for r in pair)
             n2_wall.append(sum(r["predicted_n"] for r in pair) / span if span > 0 else None)
+            overlaps.append(window_overlap([(r["t_start"], r["t_end"]) for r in pair]))
     # A warm decode only measures "decoding at depth" if its prompt came from the slot's cache.
     warm_hits = [(r.get("cache_n") or 0) >= 0.9 * ((r.get("cache_n") or 0) + (r.get("prompt_n") or 0))
                  for r in one_warm + [x for p in two_warm for x in p] if ok(r)]
+    hit = all(warm_hits) if warm_hits else False
+    min_overlap = min(overlaps) if overlaps else None
+    invalid = None
+    if not hit:
+        invalid = "a warm decode missed the slot cache (it prefilled during the other's decode)"
+    elif min_overlap is None or min_overlap < MIN_OVERLAP:
+        invalid = f"the two decodes overlapped only {min_overlap} of their span (< {MIN_OVERLAP})"
     row = {"depth": depth, "prompt_tokens": {"n1": na, "n2": [nb1, nb2]},
+           "valid": invalid is None, "invalid_reason": invalid,
+           "n2_min_overlap": None if min_overlap is None else round(min_overlap, 3),
            "n1_tps": round(statistics.median(n1), 2) if n1 else None,
            "n2_total_tps": round(statistics.median(n2_sums), 2) if n2_sums else None,
            "n2_wall_aggregate_tps": round(statistics.median([x for x in n2_wall if x]), 2) if any(n2_wall) else None,
@@ -363,13 +397,14 @@ def bench_depth(srv: Server, rng: random.Random, depth: int, wpt: float, reps: i
            "n1_prefill_s": round((one_cold.get("prompt_ms") or 0) / 1000, 1) if not one_cold.get("error") else None,
            "n2_prefill_s": [round((r.get("prompt_ms") or 0) / 1000, 1) for r in two_cold],
            "n2_prefill_wall_s": round(max(r.get("t_end", 0) for r in two_cold) - min(r.get("t_start", 0) for r in two_cold), 1),
-           "warm_decodes_hit_cache": all(warm_hits) if warm_hits else False,
+           "warm_decodes_hit_cache": hit,
            "raw": {"n1_cold": one_cold, "n1_warm": one_warm, "n2_cold": two_cold, "n2_warm": two_warm}}
-    if row["n1_tps"] and row["n2_total_tps"]:
-        row["ratio"] = round(row["n2_total_tps"] / row["n1_tps"], 3)
-    log(f"  => n1 {row['n1_tps']} tok/s | n2 total {row['n2_total_tps']} (wall {row['n2_wall_aggregate_tps']}) "
-        f"| ratio {row.get('ratio')} | prefill n1 {row['n1_prefill_s']}s n2 {row['n2_prefill_s']}s "
-        f"| warm cache hits {row['warm_decodes_hit_cache']}")
+    if row["n1_tps"] and row["n2_wall_aggregate_tps"]:
+        row["ratio"] = round(row["n2_wall_aggregate_tps"] / row["n1_tps"], 3)
+    log(f"  => n1 {row['n1_tps']} tok/s | n2 combined {row['n2_wall_aggregate_tps']} (sum of per-run "
+        f"{row['n2_total_tps']}) | ratio {row.get('ratio')} | overlap {row['n2_min_overlap']} "
+        f"| prefill n1 {row['n1_prefill_s']}s n2 {row['n2_prefill_s']}s | warm cache hits {hit}"
+        + (f" | INVALID: {invalid}" if invalid else ""))
     return row
 
 
@@ -393,10 +428,11 @@ def run_bench(args: argparse.Namespace) -> int:
             rows.append({"depth": d, "skipped": f"exceeds ctx/slot {n_ctx}"})
             continue
         rows.append(bench_depth(srv, rng, d, wpt, args.reps, args.decode_tokens, log))
-        _dump(args.out, {"server": _server_info(props, args.url), "depths": rows, "complete": False})
+        _dump(args.out, {"server": _server_info(props, args.url), "planned_depths": depths, "depths": rows,
+                         "complete": False})
     verdict = pass_rule([r for r in rows if not r.get("skipped")], tuple(depths))
-    _dump(args.out, {"server": _server_info(props, args.url), "depths": rows, "complete": True,
-                     "pass_rule": verdict})
+    _dump(args.out, {"server": _server_info(props, args.url), "planned_depths": depths, "depths": rows,
+                     "complete": True, "pass_rule": verdict})
     log(f"bench verdict: {verdict['verdict']} {verdict['per_depth']}")
     return 0
 
@@ -465,13 +501,14 @@ class Canary:
 
     def _send(self, c: Convo, phase: str, kind: str, messages: list[dict], think: bool, max_tokens: int,
               expects_own: bool) -> dict[str, Any]:
-        tokens = self.srv.tokens_of(messages, TOOLS)
+        kwargs = thinking_kwargs(think, self.think_effort)
+        tokens = self.srv.tokens_of(messages, TOOLS, kwargs)
         if tokens is not None and self.n_ctx and len(tokens) + max_tokens + 64 > self.n_ctx:
             c.full = True
             return {"skipped": "conversation reached slot ctx"}
         body = {"messages": messages, "max_tokens": max_tokens, "temperature": 0.6, "top_p": 0.95,
                 "cache_prompt": True, "tools": TOOLS, "tool_choice": "auto",
-                "chat_template_kwargs": thinking_kwargs(think, self.think_effort)}
+                "chat_template_kwargs": kwargs}
         resp, wall, err = self.srv.chat(body)
         msg = ((resp or {}).get("choices") or [{}])[0].get("message") or {}
         timings = (resp or {}).get("timings") or {}
@@ -551,8 +588,9 @@ class Canary:
         """Token count of the template header any two of this client's prompts share (two throwaway
         conversations, never sent)."""
         a, b = self.new_convo("H"), self.new_convo("H")
-        ta = self.srv.tokens_of(a.messages + [{"role": "user", "content": "x"}], TOOLS)
-        tb = self.srv.tokens_of(b.messages + [{"role": "user", "content": "x"}], TOOLS)
+        kw = thinking_kwargs(False, None)
+        ta = self.srv.tokens_of(a.messages + [{"role": "user", "content": "x"}], TOOLS, kw)
+        tb = self.srv.tokens_of(b.messages + [{"role": "user", "content": "x"}], TOOLS, kw)
         self.floor = lcp(ta, tb) if ta and tb else 0
         return self.floor
 
@@ -580,7 +618,8 @@ def run_canary(args: argparse.Namespace) -> int:
                  think_effort=args.think_effort, log=log, out=args.out)
     log(f"shared template header (legit reuse floor): {can.measure_floor()} tokens")
     deadline = time.time() + args.deadline_min * 60
-    meta = {"server": _server_info(props, args.url), "doc_tokens": args.doc_tokens,
+    target = 2 * args.pair_turns + 4 * args.interleave_turns
+    meta = {"server": _server_info(props, args.url), "doc_tokens": args.doc_tokens, "turns_target": target,
             "plan": {"pairs_turns_per_conv": args.pair_turns, "interleave_turns_per_conv": args.interleave_turns,
                      "fresh_every": args.fresh_every}}
     stopped_early = None
@@ -629,7 +668,6 @@ def run_canary(args: argparse.Namespace) -> int:
         [t.start() for t in ths]
         [t.join() for t in ths]
 
-    target = 2 * args.pair_turns + 4 * args.interleave_turns
     verdict = canary_verdict(can.records, turns_target=target)
     if stopped_early:
         verdict["stopped_early"] = stopped_early
@@ -653,15 +691,26 @@ def summarize(results_dir: Path) -> dict[str, Any]:
     for label, p in passes.items():
         b, c = p.get("bench") or {}, p.get("canary") or {}
         rows = [r for r in b.get("depths") or [] if not r.get("skipped")]
-        depths = tuple(r["depth"] for r in b.get("depths") or [])
+        depths = tuple(b.get("planned_depths") or SPEC_DEPTHS)
+        bench = pass_rule(rows, depths) if b else {"verdict": "NOT_RUN"}
+        if b and not b.get("complete"):
+            bench = {**bench, "verdict": "INCOMPLETE", "why": "bench did not finish (interrupted?)"}
+        if c and c.get("complete"):
+            canary = c.get("verdict")
+        elif c:
+            canary = {**canary_verdict(c.get("records") or [], turns_target=int(c.get("turns_target") or 400)),
+                      "verdict": "INCOMPLETE"}
+            canary["reasons"] = ["canary did not finish (interrupted?)"] + canary["reasons"]
+        else:
+            canary = {"verdict": "NOT_RUN"}
         out["passes"][label] = {
             "server": b.get("server") or c.get("server"),
-            "bench": pass_rule(rows, depths) if b else {"verdict": "NOT_RUN"},
+            "bench": bench,
             "bench_rows": [{k: r.get(k) for k in ("depth", "n1_tps", "n2_total_tps", "n2_wall_aggregate_tps",
-                                                  "ratio", "n1_prefill_s", "n2_prefill_s", "warm_decodes_hit_cache",
+                                                  "ratio", "n2_min_overlap", "valid", "invalid_reason",
+                                                  "n1_prefill_s", "n2_prefill_s", "warm_decodes_hit_cache",
                                                   "skipped")} for r in b.get("depths") or []],
-            "canary": (c.get("verdict") or canary_verdict(c.get("records") or [], turns_target=1)) if c
-            else {"verdict": "NOT_RUN"},
+            "canary": canary,
         }
     return out
 
@@ -673,16 +722,17 @@ def field_note_table(summary: dict[str, Any]) -> str:
         lines.append(f"### {label}: {s.get('model_path')} build {s.get('build_info')}, "
                      f"{s.get('slots')} slots x {s.get('ctx_per_slot')}")
         lines.append("")
-        lines.append("| Depth | 1 run tok/s | 2 runs total tok/s (wall) | Ratio | Pass (>= 1.3) | Prefill 1 run (s) | Prefill 2 runs (s) |")
-        lines.append("|---:|---:|---:|---:|:--:|---:|---:|")
+        lines.append("| Depth | 1 run tok/s | 2 runs combined tok/s (sum of per-run) | Ratio | Overlap | Pass (>= 1.3) | Prefill 1 run (s) | Prefill 2 runs (s) |")
+        lines.append("|---:|---:|---:|---:|---:|:--:|---:|---:|")
         per = {x["depth"]: x for x in p["bench"].get("per_depth") or []}
         for r in p["bench_rows"]:
             if r.get("skipped"):
-                lines.append(f"| {r['depth']:,} | skipped: {r['skipped']} | | | | | |")
+                lines.append(f"| {r['depth']:,} | skipped: {r['skipped']} | | | | | | |")
                 continue
             ok = per.get(r["depth"], {}).get("pass")
-            lines.append(f"| {r['depth']:,} | {r.get('n1_tps')} | {r.get('n2_total_tps')} ({r.get('n2_wall_aggregate_tps')}) "
-                         f"| {r.get('ratio')} | {'yes' if ok else 'NO'} | {r.get('n1_prefill_s')} | {r.get('n2_prefill_s')} |")
+            mark = "yes" if ok else ("INVALID" if r.get("valid") is False else "NO")
+            lines.append(f"| {r['depth']:,} | {r.get('n1_tps')} | {r.get('n2_wall_aggregate_tps')} ({r.get('n2_total_tps')}) "
+                         f"| {r.get('ratio')} | {r.get('n2_min_overlap')} | {mark} | {r.get('n1_prefill_s')} | {r.get('n2_prefill_s')} |")
         lines.append("")
         lines.append(f"Bench verdict: **{p['bench'].get('verdict')}**")
         c = p["canary"]
@@ -701,6 +751,25 @@ def run_summarize(args: argparse.Namespace) -> int:
     (d / "summary.json").write_text(json.dumps(s, indent=1))
     (d / "fieldnote_draft.md").write_text("# Stage 7.1 bake-off: draft table\n\n" + field_note_table(s) + "\n")
     print(field_note_table(s))
+    return 0
+
+
+def paused_by(pool: dict[str, Any] | None, actor: str) -> str:
+    """'mine' / 'other' / 'running' / 'unknown' (pool unreadable). Cleanup resumes only on 'mine'."""
+    if not isinstance(pool, dict) or "cards" not in pool:
+        return "unknown"
+    p = pool.get("actuation_paused")
+    if not p:
+        return "running"
+    return "mine" if p.get("by") == actor else "other"
+
+
+def run_paused_by(args: argparse.Namespace) -> int:
+    try:
+        pool = json.loads(Path(args.pool_json).read_text())
+    except Exception:  # noqa: BLE001 -- unreadable = unknown
+        pool = None
+    print(paused_by(pool, args.actor))
     return 0
 
 
@@ -757,12 +826,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--actor", default="stage7-1-bakeoff")
     p.add_argument("--bake-port-busy", action="store_true")
     p.set_defaults(fn=run_preflight)
+    p = sub.add_parser("paused-by")
+    p.add_argument("--pool-json", required=True)
+    p.add_argument("--actor", default="stage7-1-bakeoff")
+    p.set_defaults(fn=run_paused_by)
     p = sub.add_parser("bench")
     p.add_argument("--url", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--log")
     p.add_argument("--depths", default=",".join(str(d) for d in SPEC_DEPTHS))
-    p.add_argument("--reps", type=int, default=2)
+    p.add_argument("--reps", type=int, default=3)
     p.add_argument("--decode-tokens", type=int, default=512)
     p.add_argument("--seed", type=int)
     p.set_defaults(fn=run_bench)

@@ -17,10 +17,10 @@ reasons combine lives here.
 - ``enabled=False`` (GPU_POOL_SHED_ENABLED) turns the whole lever off: nothing is blocked, the
   signals are still shown so an operator can see what would have been shed.
 
-Extension point: Orion's learned "shed background GPU" action (attend-to-act loop) is one more
-``SHED_REASONS`` entry with a higher precedence number, e.g.
-``"orion_shed_background": ShedReasonSpec("orion_shed_background", 10, ("background",), ...)``,
-plus a producer that calls ``ShedBoard.set``. The reflex ``cooling_incident`` keeps precedence 0.
+Orion's learned "shed background GPU" action (attend-to-act loop A1, amended 2026-09-29) is the
+one lower-precedence reason, ``orion_self_shed``: precedence 1, background only, set and cleared
+by ``orion/gpu_pool/orion_shed.py`` through the pool's shed RPC -- never by an incident, and the
+RPC can never name ``cooling_incident``. The reflex ``cooling_incident`` keeps precedence 0.
 """
 from __future__ import annotations
 
@@ -43,6 +43,12 @@ SHED_REASONS: dict[str, ShedReasonSpec] = {
     "cooling_incident": ShedReasonSpec(
         "cooling_incident", 0, ("background", "system"),
         "orion-hardware-watch: the cabinet AC incident is open and the cabinet is warming (reflex)"),
+    # Background only, never system: system work is Orion's own cognition/execution; shedding it on a
+    # routine warm afternoon is the self-DOS failure mode (design, "Background only, not system").
+    "orion_self_shed": ShedReasonSpec(
+        "orion_self_shed", 1, ("background",),
+        "Orion's learned action: the cabinet is elevated and rising with the AC healthy; no new "
+        "background grants for a bounded TTL (caps enforced by the pool)"),
 }
 
 

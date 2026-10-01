@@ -63,6 +63,72 @@ def _unique(rows: list[dict], key: str) -> tuple[list[dict], list[str]]:
     return [by_id[k] for k in sorted(by_id) if k not in conflicts], sorted(conflicts)
 
 
+WINNER_MAX_AGE_SEC = 90.0
+ORION_TERMINAL_VERDICTS = ("resolved", "dismissed")
+
+
+def _world_links(bundle: dict, sources: dict, did: str, candidate: dict, issues: list[str]) -> dict | None:
+    """The two attend-to-act links for a motor episode that is a world action (design D4).
+
+    ``attention_winner``: the episode names a broadcast row whose selected loop is the episode's loop
+    and that was <= 90 s old when the action was decided. ``loop_outcome``: Orion wrote its own
+    non-final ``acted`` verdict for that loop, for this episode. A ``resolved``/``dismissed`` by Orion
+    is an issue (acting must never silence the loop). Also upgrades ``expectation_precommitted``
+    when the episode row (written before the RPC) carries the expected effect."""
+    rows = [r for r in sources.get("world_episodes", []) if str(r.get("episode_id")) == did]
+    if not rows:
+        return None
+    ep = rows[0]
+    loop_id, log_id = ep.get("open_loop_id"), ep.get("broadcast_log_id")
+    out_issues: list[str] = []
+    links: dict = {}
+    b_rows = [b for b in sources.get("broadcast_rows", []) if b.get("log_id") == log_id]
+    decided = stamp(ep.get("decided_at"))
+    if not loop_id or not log_id:
+        links["attention_winner"] = _link("missing", [], "World episode carries no workspace winner.")
+    elif not b_rows:
+        links["attention_winner"] = _presence(bundle, "broadcast_rows", [], "Broadcast row not loaded or pruned.")
+    else:
+        b = b_rows[0]
+        age = None
+        if decided and stamp(b.get("generated_at")):
+            age = (datetime.fromisoformat(decided) - datetime.fromisoformat(stamp(b["generated_at"]))).total_seconds()
+        if b.get("selected_open_loop_id") != loop_id:
+            out_issues.append("winner_loop_mismatch")
+            links["attention_winner"] = _link("missing", [], "Broadcast row selected a different loop.")
+        elif age is None or age > WINNER_MAX_AGE_SEC or age < 0:
+            out_issues.append("winner_stale_at_bind")
+            links["attention_winner"] = _link("missing", [], "Winner older than 90 s when the action was decided.")
+        else:
+            links["attention_winner"] = _link("observed", [_ref("sql:substrate_attention_broadcast_log", log_id)],
+                                              "Workspace winner the action bound to; binding is not causation.")
+    verdicts = [o for o in sources.get("loop_outcomes", []) if o.get("loop_id") == loop_id]
+    if any(o.get("actor") == "orion" and o.get("verdict") in ORION_TERMINAL_VERDICTS for o in verdicts):
+        out_issues.append("orion_wrote_terminal_verdict")
+    acted = [o for o in verdicts if o.get("actor") == "orion" and o.get("verdict") == "acted"
+             and str(o.get("episode_id") or "") == did]
+    if ep.get("arm") == "control":
+        links["loop_outcome"] = _link("observed" if not acted else "missing", [],
+                                      "Control arm: Orion did not act, so no acted verdict may exist.")
+        if acted:
+            out_issues.append("acted_verdict_on_control_arm")
+    else:
+        links["loop_outcome"] = _presence(bundle, "loop_outcomes", [_ref("sql:attention_loop_outcome", o["outcome_id"]) for o in acted],
+                                          "Orion's non-final acted verdict; the loop keeps competing.")
+    sent = stamp(candidate.get("dispatched_at"))
+    if ep.get("expected_effect_recorded") and decided and (sent is None or decided <= sent):
+        links["expectation_precommitted"] = _link("observed", [_ref("sql:substrate_world_action_episodes", did)],
+                                                  "Episode row with the expected effect written before the shed RPC.")
+        # The frame still lands after the send, but the claim was already durable on the episode row.
+        resolved = ["expectation_frame_inserted_after_result"]
+    else:
+        resolved = []
+    if ep.get("posterior_from_reflex_overlap"):
+        out_issues.append("reflex_overlap_reached_posterior")
+    summary = {k: ep.get(k) for k in ("arm", "template", "settlement_state", "excluded_reason", "overlap")}
+    return {"links": links, "summary": summary, "issues": out_issues, "resolved_issues": resolved}
+
+
 def reconstruct(bundle: dict) -> dict:
     """Rebuild from a bounded snapshot. No network, inference, writes or clock reads."""
     sources: dict[str, list[dict]] = {}
@@ -73,7 +139,11 @@ def reconstruct(bundle: dict) -> dict:
             "result_sample": "result_id", "outcome_sample": "dispatch_id"}
     # Older captures predate these sources: retain their original report shape,
     # without interpreting missing capture fields as empty live queries.
-    for key, identity in (("ask_commits", "help_id"), ("brief_decisions", "receipt_id")):
+    for key, identity in (("ask_commits", "help_id"), ("brief_decisions", "receipt_id"),
+                          # Attend-to-act loop (2026-10-01): the world-action episode ledger, the
+                          # broadcast rows it binds to, and Orion's loop verdicts.
+                          ("world_episodes", "episode_id"), ("broadcast_rows", "log_id"),
+                          ("loop_outcomes", "outcome_id")):
         if key in bundle:
             keys[key] = identity
     for source, key in keys.items():
@@ -181,6 +251,7 @@ def reconstruct(bundle: dict) -> dict:
         if expected and result_times and frame_times and min(frame_times) > min(result_times):
             issues.append("expectation_frame_inserted_after_result")
         refs = [_ref("sql:substrate_execution_dispatch_frames", f["frame_id"]) for f in frames]
+        world = _world_links(bundle, sources, did, candidate, issues) if "world_episodes" in keys else None
         episodes.append({
             "episode_id": "motor:" + did, "lane": "motor", "verdict": "UNVERIFIED",
             "outcome_path": "visual" if visual else "field_or_undeclared",
@@ -201,6 +272,11 @@ def reconstruct(bundle: dict) -> dict:
             "outcomes": [{"id": o["id"], "signal_id": o.get("signal_id"), "arm": o.get("arm"), "observed_at": stamp(o.get("observed_at")), "frame_dispatch_count": o.get("frame_dispatch_count")} for o in outcomes],
             "issues": sorted(set(issues)),
         })
+        if world is not None:
+            episodes[-1]["links"].update(world["links"])
+            episodes[-1]["world"] = world["summary"]
+            episodes[-1]["issues"] = sorted((set(episodes[-1]["issues"]) | set(world["issues"]))
+                                            - set(world["resolved_issues"]))
 
     return {"report_version": "agency_episode_audit.v1", "captured_at": stamp(bundle.get("captured_at")),
             "scope": "Bounded samples, not a complete history; graph and SQL are not an atomic cross-store snapshot.",

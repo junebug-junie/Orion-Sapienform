@@ -43,6 +43,10 @@ class PolicyDecisionV1(BaseModel):
         # allowable independently. Like the note above, this literal DESCRIBES;
         # the real gate is builder.py's scope check plus mode.allow_express_dispatch.
         "approved_express",
+        # 2026-10-01 (attend-to-act loop A1): a bounded, self-reverting action on Orion's own
+        # resources. Describes, does not authorize: dispatch still requires
+        # ORION_WORLD_ACTIONS_ENABLED + the template in ORION_WORLD_ACTIONS_ALLOWED.
+        "approved_self_reversible",
         "requires_operator_review",
         "deferred",
         "rejected",
@@ -83,6 +87,8 @@ class PolicyDecisionV1(BaseModel):
         # 0 reaching a policy frame -- because the config rule shipped before
         # these two literals did.
         "express_bounded",
+        # 2026-10-01: lands with the scope value below in the same changeset (see the trap above).
+        "self_reversible",
     ] = "observe_only"
 
     risk_score: float = Field(ge=0.0, le=1.0)
@@ -112,6 +118,8 @@ class PolicyDecisionV1(BaseModel):
         # entire policy runtime. Caught in review before merge; reproduced
         # live, then fixed. See test_maintain_candidate_survives_policy_evaluation.
         "maintenance_bounded",
+        # 2026-10-01: attend-to-act loop A1, paired with the autonomy tier above.
+        "self_reversible",
     ] = "none"
 
     reasons: list[str] = Field(default_factory=list)

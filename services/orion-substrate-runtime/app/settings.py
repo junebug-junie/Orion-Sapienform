@@ -125,6 +125,21 @@ class Settings(BaseSettings):
         "log_orion_metacognition,gpu_pool_wait,current_turn_probe",
         alias="SUBSTRATE_RPC_DELIVERY_EXCLUDE_LABELS",
     )
+    # Cabinet warming -> the workspace competition (attend-to-act loop; orion/autonomy/cabinet_heat.py).
+    # Writes node:substrate.cabinet's prediction_error = the cabinet warming error (non-zero only while
+    # the cabinet is ELEVATED and RISING >= the threshold within 15 min), so the EXISTING dynamics
+    # engine (prediction_error -> dynamic_pressure) admits it to the broadcast like every other
+    # prediction-error node. Needs SUBSTRATE_WRITE_PREDICTION_ERROR_NODES and the dynamics tick.
+    # OFF in code and in .env_example: it changes what wins Orion's attention -- Juniper flips it.
+    enable_cabinet_heat_attention: bool = Field(
+        False, alias="SUBSTRATE_CABINET_HEAT_ATTENTION_ENABLED"
+    )
+    cabinet_heat_tick_interval_sec: float = Field(
+        30.0, alias="SUBSTRATE_CABINET_HEAT_TICK_INTERVAL_SEC"
+    )
+    cabinet_heat_rise_threshold_c: float = Field(
+        0.5, ge=0.0, alias="SUBSTRATE_CABINET_HEAT_RISE_THRESHOLD_C"
+    )
     rpc_health_snapshot_channel: str = Field(
         "orion:rpc_health:snapshot", alias="SUBSTRATE_RPC_HEALTH_SNAPSHOT_CHANNEL"
     )

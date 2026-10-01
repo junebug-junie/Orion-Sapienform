@@ -810,6 +810,85 @@ class FeedbackRuntimeStore:
                     len(control_cells or {}),
                 )
 
+    # --- attend-to-act loop: settle-time world scoring ---------------------------------------
+    def load_world_episodes_due(self, *, now: datetime, limit: int = 20) -> list[dict]:
+        """Unscored episodes whose window has closed. [] while the ledger does not exist yet
+        (execution dispatch creates it on its first world decision)."""
+        from orion.autonomy import world_episodes
+
+        with self._engine.connect() as conn:
+            if conn.execute(text("SELECT to_regclass(:t)"), {"t": world_episodes.TABLE}).scalar() is None:
+                return []
+            rows = world_episodes.due_for_scoring(conn, now=now, limit=limit)
+        for row in rows:
+            for key in ("eligibility", "expected_effect", "settlement", "outcome"):
+                if isinstance(row.get(key), str):
+                    row[key] = json.loads(row[key])
+        return rows
+
+    def load_cabinet_points(self, *, since: datetime, until: datetime) -> list:
+        from orion.autonomy.cabinet_heat import load_cabinet_points
+
+        with self._engine.connect() as conn:
+            return load_cabinet_points(conn, since=since, until=until)
+
+    def load_hardware_incidents_opened(self, *, since: datetime, until: datetime) -> list[dict]:
+        """hardware_watch_incident rows that OPENED in the window (overlap tags). Raises when the
+        table cannot be read: a scorer that cannot see incidents must not score as if none opened."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT incident_id, rule, subject, opened_at FROM hardware_watch_incident "
+                "WHERE opened_at >= :since AND opened_at <= :until"), {"since": since, "until": until}).mappings().all()
+        return [dict(r) for r in rows]
+
+    def load_loop_salience(self, *, open_loop_id: str, since: datetime) -> float | None:
+        """The loop's salience on the newest broadcast tick that still carries it (the 'next tick')."""
+        with self._engine.connect() as conn:
+            value = conn.execute(text(
+                "SELECT (ol->>'salience')::float FROM substrate_attention_broadcast_log l, "
+                "jsonb_array_elements(l.projection_json->'frame'->'open_loops') ol "
+                "WHERE l.generated_at >= :since AND ol->>'id' = :loop ORDER BY l.generated_at DESC LIMIT 1"),
+                {"since": since, "loop": open_loop_id}).scalar()
+        return None if value is None else float(value)
+
+    def save_world_score(self, *, episode_id: str, score, scored_at: datetime) -> bool:
+        """One transaction: ledger row (+ posterior for a treated, scorable row) or control cell, the
+        episode's score, and Orion's non-final `acted` loop verdict. Idempotent on the episode."""
+        from orion.autonomy import world_episodes
+        from orion.core.ids import stable_hash_id
+
+        outcome = dict(score.outcome)
+        loop_outcome_id = None
+        with self._engine.begin() as conn:
+            if score.record is not None:
+                self._write_action_outcomes(conn, [score.record])
+                outcome["outcome_row_id"] = conn.execute(text(
+                    "SELECT id FROM substrate_action_outcomes WHERE dispatch_id = :d AND signal_id = :s "
+                    "AND dispatch_frame_id = :f"), {"d": score.record.dispatch_id, "s": score.record.signal_id,
+                                                      "f": score.record.dispatch_frame_id}).scalar()
+            if score.control_cell is not None:
+                key, cell = score.control_cell
+                self._write_control_cells(conn, {key: cell}, dispatch_frame_id=f"world_settle:{episode_id}")
+            lo = score.loop_outcome
+            if lo is not None:
+                if lo.get("verdict") != "acted" or lo.get("actor") != "orion":
+                    raise ValueError("the world settle path may only write Orion's non-final 'acted' verdict")
+                loop_outcome_id = stable_hash_id("loopoutcome", [lo["loop_id"], "acted", "orion", episode_id])
+                conn.execute(text(
+                    """
+                    INSERT INTO attention_loop_outcome
+                        (outcome_id, loop_id, theme_key, verdict, actor, note, salience_at_close,
+                         weights_version, features_at_close, created_at)
+                    VALUES (:outcome_id, :loop_id, :loop_id, 'acted', 'orion', :note, :salience,
+                            'gwt-coalition-v1', CAST(:features AS jsonb), :created_at)
+                    ON CONFLICT (outcome_id) DO NOTHING
+                    """), {"outcome_id": loop_outcome_id, "loop_id": lo["loop_id"], "note": lo.get("note", "")[:500],
+                             "salience": max(0.0, min(1.0, float(lo.get("salience_at_close") or 0.0))),
+                             "features": json.dumps(lo.get("features_at_close") or {}, default=str),
+                             "created_at": scored_at})
+            return world_episodes.record_score(conn, episode_id=episode_id, outcome=outcome,
+                                               loop_outcome_id=loop_outcome_id, scored_at=scored_at)
+
     @staticmethod
     def _write_action_outcomes(conn, records: list[ActionOutcomeRecordV1]) -> None:
         """Append scored outcomes and advance the posteriors they produced.

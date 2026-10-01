@@ -250,6 +250,25 @@ urgent work: it validates pool events against the priority list.
 Nothing sends urgent work yet (Plan 3 adds the trigger). A live pause smoke is **UNVERIFIED**: it
 would pause a real background run, so it waits for Juniper's approval.
 
+## Orion's learned shed (`orion_self_shed`, attend-to-act loop A1)
+
+One more named reason on the U4 shed lever, below the reflex: `orion_self_shed`, precedence 1,
+blocks NEW `background` grants only (never system, interactive, urgent; running work finishes;
+nothing recalled). Set by execution-dispatch's `shed_background_gpu` action over
+`orion:gpu_pool:shed:request` (`GpuPoolShedReasonRequestV1`, set/clear/status; the schema refuses
+`cooling_incident`). Code: `orion/gpu_pool/orion_shed.py`; ledger `public.gpu_pool_orion_shed`
+(`app/orion_shed_store.py`, migration `services/orion-sql-db/manual_migration_gpu_pool_orion_shed_v1.sql`).
+
+- Caps, enforced here: `GPU_POOL_ORION_SHED_MAX_TTL_SEC` (900), `..._MAX_SEC_PER_DAY` (3600, rolling
+  24 h, survives a restart), `..._MIN_GAP_SEC` (900, end of one to start of the next), one at a time.
+- Refused: `disabled` (`GPU_POOL_ORION_SHED_ENABLED=false`, the default), `lever_disabled`
+  (`GPU_POOL_SHED_ENABLED=false`), `reflex_active`, `already_active`, `min_gap`, `daily_cap`,
+  `ledger_unavailable` (fail closed).
+- Terminal: `expired` (TTL), `cancelled` (clear verb, or the kill switch at boot),
+  `preempted_by_reflex` (a cooling incident OPENED -- the AC is no longer healthy).
+- Manipulation check on the record: `drained_at`, `grants_withheld`, `delayed_grant_sec`.
+- `/health` and the pool state carry `shed.orion_self_shed` (caps, 24 h use, the active record).
+
 ## Swap actuation (stage 4.3; config-armed since 5.7)
 
 Every swap seat with a `launch:` block is actuated (see "Mode and the emergency stop"). For such a

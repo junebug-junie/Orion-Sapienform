@@ -22,6 +22,7 @@ DecisionLiteral = Literal[
     "approved_maintenance",
     # 2026-08-30: first outward kind -- see policy_decision_frame.py.
     "approved_express",
+    "approved_self_reversible",
     "requires_operator_review",
     "deferred",
     "rejected",
@@ -39,6 +40,9 @@ def _policy_gate_for_decision(
         # policy_gate's own Literal: this decision IS an execution-policy
         # judgement, and it is emphatically not `read_only`, which is the
         # value it would otherwise have silently inherited.
+        return "execution_policy"
+    if decision == "approved_self_reversible":
+        # Same reasoning as approved_maintenance: an execution-policy judgement, never read_only.
         return "execution_policy"
     if decision == "requires_operator_review":
         return "operator_review"

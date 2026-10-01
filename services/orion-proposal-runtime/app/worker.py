@@ -9,7 +9,12 @@ from orion.reverie.baseline import load_baseline_policy
 from orion.schemas.reverie_visual import VisualActivityV1
 from pathlib import Path
 
-from orion.proposals.builder import build_proposal_frame
+from datetime import timedelta
+
+from orion.autonomy.cabinet_heat import read_cabinet_heat
+from orion.autonomy.self_shed import HardwareWatchView, bind_workspace_winner, evaluate_shed_eligibility
+from orion.proposals.builder import WorkspaceWinnerContext, build_proposal_frame
+from orion.proposals.policy import WORKSPACE_WINNER_BINDING
 from orion.proposals.templates import FORBIDDEN_TRANSPORT_PROPOSAL_KEYS, TRANSPORT_PROPOSAL_TEMPLATE_KEYS
 from orion.proposals.policy import load_proposal_policy
 
@@ -47,6 +52,47 @@ class ProposalRuntimeWorker:
                 continue
             except asyncio.CancelledError:
                 break
+
+    def _workspace_context(self, now: datetime) -> WorkspaceWinnerContext:
+        """Read the workspace winner; only when it binds to a world template, read the world.
+
+        The projection read is one row; the expensive reads (cabinet history, hardware-watch /health,
+        pool occupancy, episode ledger) happen only for a template whose winner actually binds. Every
+        read failure lands in the snapshot as a refusal, never as a silent allow."""
+        projection, log_id = self._store.load_broadcast_projection()
+        eligibility: dict[str, dict] = {}
+        for key, template in self._policy.proposal_templates.items():
+            if template.target_binding != WORKSPACE_WINNER_BINDING:
+                continue
+            winner, _why = bind_workspace_winner(projection, broadcast_log_id=log_id,
+                                                 binds_to_nodes=template.binds_to_nodes, now=now)
+            if winner is None:
+                continue
+            eligibility[key] = self._shed_eligibility(key, template, now)
+        return WorkspaceWinnerContext(projection=projection, broadcast_log_id=log_id, eligibility=eligibility)
+
+    def _shed_eligibility(self, key: str, template, now: datetime) -> dict:
+        points = self._store.load_cabinet_points(since=now - timedelta(hours=2), until=now)
+        cabinet = read_cabinet_heat(points, now, rise_threshold_c=float(self._settings.world_action_rise_threshold_c))
+        try:
+            with urlopen(self._settings.hardware_watch_health_url, timeout=2.0) as response:
+                hw = HardwareWatchView.from_health(json.load(response), now=now)
+        except Exception as exc:
+            hw = HardwareWatchView.from_health(None, now=now, error=f"{type(exc).__name__}"[:80])
+        try:
+            granted, queued = self._store.load_background_occupancy()
+        except Exception:
+            logger.warning("world_action_pool_occupancy_unavailable", exc_info=True)
+            granted, queued = None, None
+        try:
+            in_flight = self._store.load_world_episodes_in_flight(template=key, now=now)
+        except Exception:
+            # No ledger means we cannot prove nothing is in flight: fail closed.
+            logger.warning("world_action_episode_ledger_unavailable", exc_info=True)
+            in_flight = ["episode_ledger_unavailable"]
+        return evaluate_shed_eligibility(
+            cabinet=cabinet, hardware_watch=hw, background_granted=granted, background_queued=queued,
+            in_flight_episode_ids=in_flight, holdback_fraction=float(template.holdback_fraction or 0.0), now=now)
 
     def _tick(self) -> None:
         # 2026-07-22 (SelfStateV1 burn): polls FieldStateV1 directly instead of
@@ -148,6 +194,15 @@ class ProposalRuntimeWorker:
                 baseline_reason = "visual_activity_unavailable"
                 logger.warning("visual_baseline_activity_unavailable", exc_info=True)
 
+        workspace = None
+        if getattr(self._settings, "workspace_winner_proposals_enabled", False):
+            try:
+                workspace = self._workspace_context(datetime.now(timezone.utc))
+            except Exception:
+                # A world-action read must never break proposal generation; the frame says so.
+                logger.warning("workspace_winner_context_failed", exc_info=True)
+                workspace = WorkspaceWinnerContext(projection=None, broadcast_log_id=None)
+
         frame = build_proposal_frame(
             field=field,
             attention=attention,
@@ -155,6 +210,7 @@ class ProposalRuntimeWorker:
             previous_frame=previous,
             external_candidates=external_candidates or None,
             baseline_eligibility=eligibility,
+            workspace=workspace,
         )
         if baseline_reason:
             frame.warnings.append(baseline_reason)

@@ -39,6 +39,11 @@ class ProposalCandidateV1(BaseModel):
         # and costs a physical resource to make. Closed Literal, same as
         # `maintain`: a new kind is a deliberate schema change, not a config typo.
         "express",
+        # 2026-10-01 (attend-to-act loop A1): Orion's first WORLD-facing kind whose effect is
+        # physical and self-reverting: it changes Orion's own resource use (GPU pool shed reason,
+        # bounded TTL, pool-enforced caps) and is scored on a real sensor (cabinet air). Its own
+        # kind so policy and dispatch can allow it independently of maintain/express.
+        "self_regulate",
     ]
 
     title: str
@@ -91,6 +96,10 @@ class ProposalCandidateV1(BaseModel):
         "operator_review",
         "autonomy_policy",
         "execution_policy",
+        # 2026-10-01: a bounded, auto-reverting action on Orion's own resources. Allowed by
+        # execution dispatch only while ORION_WORLD_ACTIONS_ENABLED and the template is named in
+        # ORION_WORLD_ACTIONS_ALLOWED; no per-action operator approval (Juniper's approval is the flag).
+        "self_reversible",
     ] = "read_only"
 
     execution_intent: dict[str, str] = Field(default_factory=dict)
@@ -105,6 +114,36 @@ class ProposalCandidateV1(BaseModel):
     # fallback. Set to the recognized binding path string when resolution
     # succeeded; None when the candidate used the template's literal target.
     binding_resolved_from: str | None = None
+
+    # 2026-10-01 (attend-to-act loop D1): the WORKSPACE winner this candidate is bound to
+    # (``workspace.winner`` binding), or None for every other candidate. Additive on an
+    # extra="forbid" model: a consumer-first rollout (readers deploy before this writer).
+    attention_winner: "AttentionWinnerRefV1 | None" = None
+    # What the builder saw when it judged a world action eligible (thermal verdict and reading age,
+    # rise and threshold, hardware-watch health + open incidents, background leases, holdback
+    # fraction). Control-arm rows carry the same snapshot so both arms are comparable.
+    world_eligibility: dict[str, object] | None = None
+
+
+class AttentionWinnerRefV1(BaseModel):
+    """The workspace broadcast winner a proposal binds to (design D1).
+
+    Bindable only when the projection is <= 90 s old, the coalition held >= 2 ticks and an action
+    was selected. ``open_loop_id`` is the attention loop the action answers to; it is also the
+    ``attention_loop_outcome.loop_id`` Orion's non-final ``acted`` verdict is written under."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    broadcast_log_id: str
+    open_loop_id: str
+    node_id: str
+    generated_at: datetime
+    dwell_ticks: int = Field(ge=0)
+    selected_action_type: str
+    age_sec: float = Field(ge=0.0)
+
+
+ProposalCandidateV1.model_rebuild()
 
 
 class ProposalFrameV1(BaseModel):

@@ -1,13 +1,12 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 685,
+  "metric_count": 687,
   "_last_change": {
-    "change_count": 3,
-    "high_severity_count": 2,
+    "change_count": 2,
+    "high_severity_count": 0,
     "changes": [
-      "high   removed metric://bus_channel/orion-harness-governor/orion:gpu_pool:state:request",
-      "high   routing_changed metric://bus_channel/orion-gpu-pool/orion:gpu_pool:state:reply:* (declared_consumers: ['orion-harness-gove\u2026 -> ['orion-cortex-exec', 'orion-harness-gove\u2026)",
-      "medium added metric://bus_channel/orion-cortex-exec/orion:gpu_pool:state:request"
+      "medium added metric://bus_channel/orion-execution-dispatch-runtime/orion:gpu_pool:shed:request",
+      "medium added metric://bus_channel/orion-gpu-pool/orion:gpu_pool:shed:reply:*"
     ]
   },
   "definitions": {
@@ -1557,6 +1556,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-execution-dispatch-runtime/orion:gpu_pool:shed:request": {
+      "schema_id": "GpuPoolShedReasonRequestV1",
+      "all_producers": [
+        "orion-execution-dispatch-runtime"
+      ],
+      "declared_consumers": [
+        "orion-gpu-pool"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-feedback-runtime/orion:feedback:frame": {
       "schema_id": "FeedbackFrameV1",
       "all_producers": [
@@ -1662,6 +1672,17 @@
         "orion-llm-gateway",
         "orion-thought",
         "orion-world-model"
+      ],
+      "notes": "kind=result stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-gpu-pool/orion:gpu_pool:shed:reply:*": {
+      "schema_id": "GpuPoolShedResultV1",
+      "all_producers": [
+        "orion-gpu-pool"
+      ],
+      "declared_consumers": [
+        "orion-execution-dispatch-runtime"
       ],
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

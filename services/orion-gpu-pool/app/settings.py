@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     # U4 shed lever kill switch (orion/gpu_pool/shed.py). OFF in code: the pool still receives and
     # shows shed signals (orion-hardware-watch cooling incidents) but blocks nothing. ON in .env_example.
     shed_enabled: bool = Field(False, alias="GPU_POOL_SHED_ENABLED")
+    # Orion's learned shed (attend-to-act loop A1): the lower-precedence ``orion_self_shed`` reason.
+    # OFF in code AND in .env_example -- Juniper flips it. false refuses every set and settles any
+    # active Orion shed ``cancelled`` at boot; it never touches the reflex's cooling_incident.
+    orion_shed_enabled: bool = Field(False, alias="GPU_POOL_ORION_SHED_ENABLED")
+    # Caps, enforced in the pool (no caller can exceed them); orion_self_shed only, never the reflex.
+    orion_shed_max_ttl_sec: float = Field(900.0, gt=0, le=3600, alias="GPU_POOL_ORION_SHED_MAX_TTL_SEC")
+    orion_shed_max_sec_per_day: float = Field(3600.0, ge=0, alias="GPU_POOL_ORION_SHED_MAX_SEC_PER_DAY")
+    orion_shed_min_gap_sec: float = Field(900.0, ge=0, alias="GPU_POOL_ORION_SHED_MIN_GAP_SEC")
 
 
 @lru_cache

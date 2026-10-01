@@ -35,6 +35,7 @@ from orion.autonomy.prediction import EffectPosterior, score_observation
 from orion.feedback.extractors import PRESSURE_DELTA_EPSILON, is_visual_candidate, normalize_cortex_result_evidence
 from orion.field.pressure import field_pressures
 from orion.schemas.action_prediction import (
+    SETTLE_TIME_SIGNALS,
     ActionOutcomeRecordV1,
     PredictableSignal,
 )
@@ -294,6 +295,12 @@ def resolve_action_outcomes(
                 skipped[candidate.dispatch_id] = f"visual_non_observation:{visual_outcome or 'unknown'}"
                 continue
         signal = effect.signal_id
+        if signal in SETTLE_TIME_SIGNALS:
+            # A world signal on its own clock (t0 -> t0 + 20 min), scored at settle time by
+            # orion/feedback/world_settlement.py. Scoring it here would fold a ~30 s field window
+            # into the action's belief -- a null by construction (attend-to-act loop D3).
+            skipped[candidate.dispatch_id] = f"settle_time_signal:{signal}"
+            continue
         if not have_window:
             skipped[candidate.dispatch_id] = "missing_field_window"
             continue

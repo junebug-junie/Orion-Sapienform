@@ -43,6 +43,19 @@ class Settings(BaseSettings):
     # posture on the candidate; it NEVER lowers the operator_review gate — a human
     # still gates any reverie action. Arming it only signals dispatch intent to L9.
     reverie_autoaction_enabled: bool = Field(False, alias="ORION_REVERIE_AUTOACTION_ENABLED")
+    # Attend-to-act loop (docs/superpowers/specs/2026-09-29-attend-to-act-loop-design.md): build the
+    # workspace-winner-bound world candidates (today: shed_background_gpu). Record-only on its own:
+    # execution dispatch blocks every such candidate `world_actions_disabled` until Juniper sets
+    # ORION_WORLD_ACTIONS_ENABLED there. OFF in code, ON in .env_example.
+    workspace_winner_proposals_enabled: bool = Field(
+        False, alias="ORION_WORKSPACE_WINNER_PROPOSALS_ENABLED"
+    )
+    hardware_watch_health_url: str = Field(
+        "http://hardware-watch:8131/health", alias="ORION_HARDWARE_WATCH_HEALTH_URL"
+    )
+    world_action_rise_threshold_c: float = Field(
+        0.5, ge=0.0, alias="ORION_SHED_RISE_THRESHOLD_C"
+    )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
 

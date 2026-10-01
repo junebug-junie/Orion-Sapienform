@@ -12,12 +12,20 @@ the seats are speaking as one blob or as distinct organs.
 from __future__ import annotations
 
 import math
+import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Callable
 
 from .routing import ORGAN_SITE_MAP
 
-FIRE_WINDOW = 64
+# Wall-clock occupancy window. A 64-event COUNT window read rare organs as dark
+# by sampling (biometrics ~11k/h vs cortex-orch ~26/h) -- see settings
+# HEARTBEAT_ORGAN_FIRE_WINDOW_SEC.
+FIRE_WINDOW_SEC = 300.0
+# Hard memory bound per organ inside the window (oldest dropped first).
+MAX_EVENTS_PER_ORGAN = 50_000
 SMEAR_MIN = 0.5
 NEAR_FLOOR = 1e-6
 _NEAR_CUTS = (0, 1)
@@ -32,6 +40,22 @@ class ProprioceptionV1:
     organ_distinctness: float | None
     smear: float | None
     smeared: bool | None
+    # Additive: lets a consumer tell "dark" from "just rare". None = never
+    # seen since boot (not "never fires"). Empty window -> all dicts empty.
+    organ_last_fired_at: dict[str, str | None] = field(default_factory=dict)
+    organ_seconds_since_last_fire: dict[str, float | None] = field(default_factory=dict)
+    fire_window_sec: float | None = None
+
+
+@dataclass(frozen=True)
+class FireSnapshot:
+    window_sec: float
+    counts: dict[str, int]
+    last_fired_at: dict[str, str | None]
+    seconds_since_last_fire: dict[str, float | None]
+    # False until the process has been up for a full window: before that,
+    # a quiet organ may just not have had time to fire yet.
+    warm: bool = True
 
 
 def dark_seats(fire_counts: dict[str, int]) -> list[str]:
@@ -85,6 +109,7 @@ def compute_proprioception(
     *,
     fire_counts: dict[str, int] | None,
     mean_profile: list[float],
+    fire_snapshot: FireSnapshot | None = None,
 ) -> ProprioceptionV1:
     smear, smeared = profile_smear(mean_profile)
     if fire_counts is None:
@@ -96,29 +121,102 @@ def compute_proprioception(
             smeared=smeared,
         )
     counts = {name: max(0, int(fire_counts.get(name, 0) or 0)) for name in ORGAN_SITE_MAP}
+    cold = fire_snapshot is not None and not fire_snapshot.warm
+    if cold or sum(counts.values()) <= 0:
+        # Empty window (idle) or warm-up after restart is unknown, not
+        # "everyone is dark" and not a zero-count reading. Recency still
+        # reported (null after a fresh boot) so silent-for-40-min is visible.
+        return ProprioceptionV1(
+            dark_seats=[],
+            organ_fire_counts={},
+            organ_distinctness=None,
+            smear=smear,
+            smeared=smeared,
+            organ_last_fired_at=dict(fire_snapshot.last_fired_at) if fire_snapshot else {},
+            organ_seconds_since_last_fire=(
+                dict(fire_snapshot.seconds_since_last_fire) if fire_snapshot else {}
+            ),
+            fire_window_sec=fire_snapshot.window_sec if fire_snapshot else None,
+        )
     return ProprioceptionV1(
         dark_seats=dark_seats(counts),
         organ_fire_counts=counts,
         organ_distinctness=occupancy_distinctness(counts),
         smear=smear,
         smeared=smeared,
+        organ_last_fired_at=dict(fire_snapshot.last_fired_at) if fire_snapshot else {},
+        organ_seconds_since_last_fire=(
+            dict(fire_snapshot.seconds_since_last_fire) if fire_snapshot else {}
+        ),
+        fire_window_sec=fire_snapshot.window_sec if fire_snapshot else None,
     )
 
 
 class OrganFireWindow:
-    """Rolling last-N allowlisted absorbs. Unknown organs are ignored."""
+    """Rolling wall-clock window of allowlisted absorbs. Unknown organs ignored.
 
-    def __init__(self, maxlen: int = FIRE_WINDOW) -> None:
-        if maxlen < 1:
-            raise ValueError(f"maxlen must be >= 1, got {maxlen}")
-        self._events: deque[str] = deque(maxlen=maxlen)
+    Pruning is by clock on every read, so an organ that stops talking ages out
+    even when no events arrive. Memory is bounded by MAX_EVENTS_PER_ORGAN per
+    organ. ``last_fire`` outlives pruning (one float per organ) so a consumer
+    can see how long an organ has been quiet beyond the window.
+    """
+
+    def __init__(
+        self,
+        window_sec: float = FIRE_WINDOW_SEC,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
+        max_events_per_organ: int = MAX_EVENTS_PER_ORGAN,
+    ) -> None:
+        if window_sec <= 0:
+            raise ValueError(f"window_sec must be > 0, got {window_sec}")
+        if max_events_per_organ < 1:
+            raise ValueError("max_events_per_organ must be >= 1")
+        self.window_sec = float(window_sec)
+        self._clock = clock
+        self._wall_clock = wall_clock
+        self._started = clock()
+        self._events: dict[str, deque[float]] = {
+            name: deque(maxlen=max_events_per_organ) for name in ORGAN_SITE_MAP
+        }
+        # (monotonic, wall) of last fire; survives pruning.
+        self._last_fire: dict[str, tuple[float, float]] = {}
 
     def record(self, organ: str) -> None:
         if organ in ORGAN_SITE_MAP:
-            self._events.append(organ)
+            now = self._clock()
+            self._events[organ].append(now)
+            self._last_fire[organ] = (now, self._wall_clock())
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self.window_sec
+        for q in self._events.values():
+            while q and q[0] < cutoff:
+                q.popleft()
 
     def counts(self) -> dict[str, int]:
-        out = {name: 0 for name in ORGAN_SITE_MAP}
-        for organ in self._events:
-            out[organ] += 1
-        return out
+        self._prune(self._clock())
+        return {name: len(q) for name, q in self._events.items()}
+
+    def snapshot(self) -> FireSnapshot:
+        now = self._clock()
+        self._prune(now)
+        last_at: dict[str, str | None] = {}
+        since: dict[str, float | None] = {}
+        for name in ORGAN_SITE_MAP:
+            fired = self._last_fire.get(name)
+            if fired is None:
+                last_at[name] = None
+                since[name] = None
+            else:
+                mono, wall = fired
+                last_at[name] = datetime.fromtimestamp(wall, timezone.utc).isoformat()
+                since[name] = max(0.0, now - mono)
+        return FireSnapshot(
+            window_sec=self.window_sec,
+            counts={name: len(q) for name, q in self._events.items()},
+            last_fired_at=last_at,
+            seconds_since_last_fire=since,
+            warm=(now - self._started) >= self.window_sec,
+        )

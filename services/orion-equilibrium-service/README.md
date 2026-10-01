@@ -43,7 +43,7 @@ This section exists because design decisions for this system have historically o
 | `relational` | Real `repair_pressure_v2` appraisal | shared | live |
 | `telemetry_anomaly` | Trained autoencoder reconstruction-loss anomaly | shared | live (2026-07-21) |
 | `chat_turn` | Correlated `ThoughtEventV1` + `HarnessRunV1` (or a governor/stance-react timeout) | own (`EQUILIBRIUM_METACOG_CHAT_TURN_COOLDOWN_SEC`) | live (2026-07-23) |
-| `transport` | real per-call RPC timeout grammar events (Option C) + bus_synaptic; per-hop baseline gate episodes when `EQUILIBRIUM_TRANSPORT_BASELINE_EMIT` is on (Option A, pooled timeouts, retired 2026-09-29) | own (`EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC`) | **ships disabled**, not yet live-verified |
+| `transport` | per-hop baseline gate episodes (timeout / zero_success / spike / saturation / regime_shift) + real per-call RPC timeout grammar events for timeouts no gate window claims (pooled timeouts retired 2026-09-29; bus_synaptic retired 2026-09-30) | own (`EQUILIBRIUM_METACOG_TRANSPORT_COOLDOWN_SEC`) | live; gate emitting since 2026-10-01 |
 | `insight` | Sustained low→high recovery in `AttentionSelfModelV1.prediction_error_confidence` (`substrate_attention_self_model`) | own (`EQUILIBRIUM_METACOG_INSIGHT_COOLDOWN_SEC`) | **ships disabled**, not yet live-verified |
 | `flow` | Sustained high-confidence, low-variance plateau in the *same* field | own (`EQUILIBRIUM_METACOG_FLOW_COOLDOWN_SEC`) | **ships disabled**, not yet live-verified |
 
@@ -181,7 +181,7 @@ Log-only by default. Per-window lines: `transport_baseline_obs` (per-key z, rati
 | Env | Default | Purpose |
 |-----|---------|---------|
 | `EQUILIBRIUM_TRANSPORT_BASELINE_ENABLE` | `true` | Fold + persist + log. Publishes nothing on its own |
-| `EQUILIBRIUM_TRANSPORT_BASELINE_EMIT` | `false` | Publish episode triggers; the gate then owns every timeout it saw and the matching atom is dropped |
+| `EQUILIBRIUM_TRANSPORT_BASELINE_EMIT` | `true` (on since 2026-10-01) | Publish episode triggers; the gate then owns every timeout it saw and the matching atom is dropped |
 | `EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS` | `log_orion_metacognition,gpu_pool_wait,current_turn_probe` | Baselined but never trigger |
 | `EQUILIBRIUM_TRANSPORT_BASELINE_STATE_KEY` | `equilibrium:transport_baseline_state:v1` | Redis key for reducer state + config fingerprint |
 | `EQUILIBRIUM_TRANSPORT_BASELINE_MIN_CALLS` | `5` | Calls needed (pooled across windows if sparse) before latency is judged |

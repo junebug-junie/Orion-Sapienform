@@ -27,7 +27,7 @@ DeepSeek soak (`Dockerfile.dsv41-porte`).
 | Build | CUDA 12.8, `CMAKE_CUDA_ARCHITECTURES=70`, `GGML_CUDA_FA_ALL_QUANTS=ON` |
 | Image | `llamacpp-bonsai-prism:server-local-volta` |
 | Profile | `ternary-bonsai2-27b-pq2-v100-32gb-circe-np4` |
-| Card / port | gpu0, chat's card (`BONSAI_CUDA_VISIBLE_DEVICES=0`), host port `8017` |
+| Card / port | gpu1 or gpu2 only, never gpu0 (`BONSAI_CUDA_VISIBLE_DEVICES`, required, template `2`), host port `8017` |
 
 ## Build and run (on Circe, from a worktree)
 
@@ -38,32 +38,53 @@ docker image inspect orion-llamacpp-host:0.1.0 >/dev/null
 # 2. Compile the fork for Volta (a long build; the llama.cpp CUDA compile dominates).
 services/orion-llamacpp-bonsai-host/scripts/build-bonsai-volta.sh
 
-# 3. Free gpu0 first (see below).
+# 3. Only while gpu2's pool seat is idle (see below).
 scripts/safe_docker_build.sh orion-llamacpp-bonsai-host up -d
 curl -fsS http://localhost:8017/health
 ```
 
 The first boot downloads the 7.21 GB GGUF into `${LLM_CACHE_DIR}/gguf`.
 
-## gpu0 is chat's card: stopping chat takes more than chat
+## Cards: gpu1 or gpu2 only, never gpu0
 
-Bonsai needs a whole 32 GB card. gpu0 belongs to the chat worker, and chat
-has no pool launch block (`config/gpu_pool.yaml`), so the lane controller
-never restarts it on its own. While it is down:
+gpu0 is chat's card. Bonsai does not take it and does not evict chat
+(Juniper, 2026-09-30). The target cards are the agent cards, gpu1 and gpu2
+(`docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md`).
+`BONSAI_CUDA_VISIBLE_DEVICES` has no compose default, so a missing value fails
+every compose command for this service (including `down`) instead of picking a
+card, and
+`tests/test_bonsai_contract.py::test_no_bonsai_config_targets_chats_card` fails
+if any Bonsai config points at chat's card.
 
-- chat requests wait (`on_unavailable: wait`);
-- agent, metacog and fast lose their last fallback, since all three list
-  `chat` as an overflow role;
-- **do not lend gpu0.** It is `lendable: true`, and a lent gpu0 looks free to
-  the pool for agent work while Bonsai holds it.
+That test only covers the repo. A host `.env` written before this change can
+still say `0`, and the sync script does not overwrite existing values. Check
+it before `up`:
 
 ```bash
-docker stop orion-circe-atlas-llamacpp-chat
-scripts/safe_docker_build.sh orion-llamacpp-bonsai-host up -d
-# ... test ...
-scripts/safe_docker_build.sh orion-llamacpp-bonsai-host down
-docker start orion-circe-atlas-llamacpp-chat
+grep BONSAI_CUDA_VISIBLE_DEVICES services/orion-llamacpp-bonsai-host/.env
 ```
+
+gpu2 is not free either. The pool lends it to `agent-gpu2` and diffusion, and
+this worker is not a pool role, so the lane controller does not know Bonsai is
+there. If it launches its Q4 worker (17.6 GB) or diffusion onto a card already
+holding Bonsai's ~24 GB, one side runs out of memory. For a bake-off on gpu2:
+wait until the `agent-gpu2` seat has unloaded and diffusion is not resident
+(`nvidia-smi -i 2` shows no agent or diffusion process; the small world-model
+lane may stay), then pause pool actuation so nothing is launched onto it, and
+resume when Bonsai is down. Pausing does not unload a worker that is already
+running.
+
+```bash
+ORION_BUS_URL=redis://100.92.216.81:6379/0 PYTHONPATH=. .venv/bin/python scripts/gpu_pool_pause.py pause
+# ... bake-off ...
+ORION_BUS_URL=redis://100.92.216.81:6379/0 PYTHONPATH=. .venv/bin/python scripts/gpu_pool_pause.py resume
+```
+
+### This service is a bake-off tool
+
+It is retired in stage 7.6 of the stage 7 spec, once the Bonsai image lives in
+`orion-llamacpp-host` and the pool launches it on the agent cards itself.
+Until then it exists only for manual bake-offs.
 
 The worker announces `LLM_ROLE=bonsai-bakeoff`, which is not a pool role, so
 the pool's discovery view lists it under `unclaimed`. It does not use
@@ -71,11 +92,11 @@ the pool's discovery view lists it under `unclaimed`. It does not use
 keyed by role, so the two would overwrite each other. No traffic is routed
 here. The pool and the gateway build URLs from configured role ports, never
 from announcements. `restart: "no"` keeps it from coming back after a reboot
-and holding gpu0 when chat should.
+and holding a card the pool thinks is free.
 
 Manual only (Juniper, 2026-09-30). It is in no host's auto-rebuild list:
 absent from `mesh-utilities/common/include_services_circe.txt`, and listed in
-`exclude_services.txt`. A merge never starts it on gpu0 over chat. Run
+`exclude_services.txt`. A merge never starts it on its own. Run
 `up -d --build` by hand; the `build:` section rebuilds with the current
 wrapper and profiles, reusing the cached fork compile.
 
@@ -99,7 +120,8 @@ cp services/orion-llamacpp-bonsai-host/.env_example services/orion-llamacpp-bons
 
 - `ctx_size: 262144`, `n_parallel: 4`. llama-server divides the context
   across slots, so each run gets 65,536 tokens.
-- VRAM on circe gpu0: 24.1-24.3 GB with flash attention on (two hand
+- VRAM, measured on circe gpu0 during the 2026-09-30 bake-off (before the
+  gpu1/gpu2-only rule): 24.1-24.3 GB with flash attention on (two hand
   readings), 27.2-28.6 GB with it off (sampled every second). That covers all four 65K slots, whether idle or
   full.
 - `reasoning: auto`. To turn thinking off per request, send

@@ -33,7 +33,7 @@ from .llm_backend import (
 )
 from .anthropic_passthrough import register_anthropic_passthrough_routes
 from .openai_passthrough import register_openai_passthrough_routes
-from . import grammar_emit, pool_placement, routes_compat_reads, upstream_cancel
+from . import grammar_emit, lane_senders, pool_placement, routes_compat_reads, upstream_cancel
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
 from .resource_lease import ResourceLeaseRejected, gpu_lease_from_options
@@ -140,6 +140,12 @@ async def routes_catalog(request: Request) -> Dict[str, Any]:
 async def routes_compat_reads_debug() -> Dict[str, Any]:
     """Reads of ``GET /routes`` since this process started (see app/routes_compat_reads.py)."""
     return routes_compat_reads.snapshot()
+
+
+@app.get("/debug/lane-senders")
+async def lane_senders_debug() -> Dict[str, Any]:
+    """Calls carrying a lane, and calls lane routing re-routes, since boot (app/lane_senders.py)."""
+    return lane_senders.snapshot()
 
 
 def _cfg() -> ChassisConfig:

@@ -1,5 +1,8 @@
 # ADR: borrow a fixed GPU2 slot through durable admission
 
+> **SUPERSEDED by the GPU pool (2026-10-01, stage 6.6).** the gpu2 borrow is now the `agent-gpu2` seat in `config/gpu_pool.yaml` (swap evicts diffusion, `max_hold_sec`), actuated by `orion-gpu-lane-controller`'s generic `launch` executor. Durable admission, the `/capacity` permit and the gpu2 bridge were deleted in stages 4.6, 5.4 and 5.6. Current design: `docs/superpowers/specs/2026-09-24-gpu-pool-design.md` and `docs/superpowers/specs/2026-09-30-gpu-pool-stage6-telemetry-reducers-lockdown.md`. Not deleted: it holds incident evidence.
+
+
 Status: additive implementation; production activation UNVERIFIED.
 See [pre-edit evidence](gpu2-elastic-evidence.md) and
 [operator runbook](../runbooks/gpu2-elastic-admission.md).

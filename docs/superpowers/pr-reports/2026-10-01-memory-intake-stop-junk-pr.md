@@ -8,7 +8,7 @@ Part A of Stage 0 of the memory redesign (`docs/superpowers/specs/2026-09-30-mem
 - **Greetings and commands are judged on Juniper's words alone.** Before, the gate judged her prompt together with Orion's reply. Orion's reply is never small talk, so "sup" and "Run github compactor." passed as real content. Those checks now run first, before the repair shortcut. The command list comes from the Hub's real workflow registry, not a hand-written list.
 - **A kept window is summarised by its real content.** A window like "Headed to Austin…" followed by "sup yo" was saved under the summary "sup yo". The summary is now the last prompt that isn't a greeting or a command.
 - **Auto-saves leave an audit trail.** Every memory the policy saves on its own now gets an `auto_activate` history row (actor `system:formation_policy`). The reverie image seed still ignores these rows, and a test pins that.
-- **No more "Juniper approved" for auto-saved rows.** The self-study source text, the curiosity menu cards and the curiosity journal footer now say "auto-saved by policy, not reviewed by Juniper" (or "approved by Juniper" for the 37 she did approve).
+- **No more "Juniper approved" for auto-saved rows.** The self-study source text, the curiosity menu cards and the curiosity journal footer now say "auto-saved by policy, not reviewed by Juniper" They say "approved by Juniper" only when a real `op='approve'` history row exists (37 rows live).
 - **Graphiti writes can work, and a failure is visible.** The Hub uses host networking, so it cannot resolve the adapter's container name. It now uses `http://127.0.0.1:8640`. A failed write shows up in the approve response, the sync response and a red Hub status line, not only in a warning log.
 
 ## Outcome moved
@@ -17,13 +17,26 @@ Replay of 30 days of real chat intake windows (`services/orion-memory-consolidat
 
 | | Before | After |
 |---|---|---|
-| Windows admitted | 107 of 107 | 100 of 107 |
+| Windows admitted | 107 of 107 | 101 of 107 |
 | Rows summarised by a greeting or command | 23 | 0 |
 | Turns flagged as repair | 75.7% | 4.1% |
-| Austin, offsite, labs, family | kept | kept |
+| Austin and offsite (judged on real text) | kept | kept |
+| Labs and family (redacted in the fixture) | kept | kept, but see below |
+| 13 synthetic must-keep messages | — | 13 of 13 kept |
 
-- **The 7 dropped windows** are all commands and greetings: "Run github compactor." ×6 across windows, "Compact the last 24 hours of chat into a memory digest." ×3, "Do a journal pass." ×2, "hi", "hey, which queue?", "ty!", "sup".
-- **The spec's live check of "0 new active rows under 40 characters"** would still not pass: 11 kept rows have a short summary, for example "sleepy", "meow", "another test", "I've got the blues.", "no, that literal title is incorrect." These are short statements. The rule deliberately keeps short statements and only drops short questions and acknowledgements, following the spec's "lean toward remembering". If Juniper wants these gone, Stage 1's writer is the place to do it.
+- **The 6 dropped windows** are all commands and greetings: "Run github compactor." ×6 across windows, "Compact the last 24 hours of chat into a memory digest." ×3, "Do a journal pass." ×2, "ty!", "sup". The same result comes from the real, unredacted text of the same 107 windows.
+- **What the named keepers prove.** Only Austin and offsite are checked against their real text. Labs and family are stored as redacted placeholders, which the rule can never call junk. In the fixture they only prove the window was not dropped for some other reason.
+
+  The real protection against dropping messages like theirs is a synthetic, non-private set the eval judges on real text every run:
+  - non-Latin scripts: Cyrillic, Japanese, Hebrew, accented Spanish;
+  - short negations: "I'm not ok", "not good", "rough day";
+  - a command followed by real content: "Do a journal pass about my labs", "run a self review on my divorce";
+  - short questions about real things: "when is the surgery?", "where is mom?", "who is Sarah?";
+  - a greeting in front of real news: "hi, my son was diagnosed today".
+
+  All 13 are kept.
+- **The spec's live check of "0 new active rows under 40 characters"** would still not pass: 13 kept rows have a short summary, for example "sleepy", "meow", "another test", "I've got the blues.", "hey, which queue?". The rule keeps short statements and any question with a real topic in it, following Juniper's "over-index on remembering". If Juniper wants these gone, Stage 1's writer is the place to do it.
+- **The novelty and significance floors no longer decide anything.** After the junk check, every window with at least one non-junk prompt is proposed. The floors in `consolidation_gate.py` only choose which reason is recorded on the row. Whether a real window deserves a memory is now the Stage 1 writer's job; a note to that effect is in the gate code and in the spec's Stage 1 section.
 - The spec's ~96% repair figure counted grammar atoms. The replay's 75.7% counts turns that have an appraisal row. Both measure the same defect.
 
 ## Current architecture
@@ -103,9 +116,9 @@ All runs use `/mnt/scripts/Orion-Sapienform/.venv/bin/python` from the worktree.
 
 | Suite | Before | After |
 |---|---|---|
-| orion-memory-consolidation `tests` (+ `evals` after) | 119 passed | 197 passed |
+| orion-memory-consolidation `tests` (+ `evals` after) | 119 passed | 229 passed |
 | orion-hub targeted (grammar, turn orchestrator, crystallization UI, graphiti, curiosity) | 311 passed | 321 passed |
-| repo-root targeted (curiosity, crystallization, self-study, chat reducer) | 421 passed, 1 failed | 427 passed, 1 failed |
+| repo-root targeted (curiosity, crystallization, self-study, chat reducer) | 421 passed, 1 failed | 429 passed, 1 failed |
 | orion-thought `test_store.py` (+ reverie pin after) | 57 passed | 59 passed |
 | orion-cortex-exec self-study | 18 passed | 18 passed |
 
@@ -130,9 +143,11 @@ These failures also fail on a clean main worktree at `f44dc1127`, unchanged by t
 
 ```text
 python services/orion-memory-consolidation/evals/run_intake_gate_replay_eval.py
-  107 windows; old gate admitted 107 (23 rows summarised by junk); new: kept 100, dropped 7
+  107 windows; old gate admitted 107 (23 rows summarised by junk); new: kept 101, dropped 6
   repair-signal share 75.7% -> 4.1%; named keepers austin/offsite/labs/family: kept
-pytest services/orion-memory-consolidation/evals -q   -> 5 passed
+  (only austin/offsite judged on real text); synthetic keepers kept: 13/13
+same 107 windows replayed on their live, unredacted text: kept 101, dropped 6 (identical)
+pytest services/orion-memory-consolidation/evals -q   -> 7 passed
 ```
 
 **Fixture privacy.** A prompt is stored word for word only if the new rule calls it junk, or if the spec already quotes it (the Austin and offsite lines). Every other prompt is stored as `[redacted prompt: N chars]`. The labs and family keepers are checked by correlation id only.
@@ -150,7 +165,33 @@ Live DNS check from inside the running Hub container (read-only):
 
 ## Review findings fixed
 
-Review is run by the orchestrator after this report.
+The code review found that the junk filter dropped real messages. That contradicts Juniper's "over-index on remembering". Fixed in commit `977b03d61`.
+
+- **Finding:** non-Latin text was always dropped. The word pattern only knew `a-z`, so 'мама умерла сегодня', '母が亡くなった' and 'אמא שלי חולה' had "no words" and read as small talk.
+  - **Fix:** a Unicode-aware word pattern. Any letter the English word lists can't judge (any non-ASCII letter, including accented Latin) means the text is never junk.
+  - **Evidence:** `test_review_overdrop_cases_are_kept` and `test_non_latin_text_survives_…` (Cyrillic, Japanese, Hebrew, "Mamá está enferma", "café?").
+- **Finding:** short negative feelings were filler. "not" was a stopword, so "I'm not ok" and "not good" were dropped.
+  - **Fix:** negations (not, no, never, any "n't") count as content, and a prompt containing one is never junk.
+  - **Evidence:** the same test covers "I'm not ok", "not good", "not great", "I'm sad", "rough day", "I can't sleep" and "no".
+- **Finding:** a command with real content after it was dropped. "Do a journal pass about my labs" read as a command.
+  - **Fix:** the extra words beyond the command may only be politeness ("please", "now", "hey orion"), never content.
+  - **Evidence:** `test_command_with_content_is_not_a_command`. `test_command_with_only_politeness_is_still_a_command` shows "please run github compactor now" still drops.
+- **Finding:** short questions about real things were dropped ("when is the surgery?", "where is mom?").
+  - **Fix:** a question is junk only if every content word in it is social small talk (back, new, mind, happening, …).
+  - **Evidence:** `test_review_overdrop_cases_are_kept` covers the real questions, and `test_pure_social_question_is_still_junk` shows "you back?", "what's up?", "how are you?", "what's new?" and "what else is on your mind?" still drop.
+  - **Behavior change:** "hey, which queue?" is now kept. That moves the window "hi | hey, which queue?" from dropped to kept (7 drops become 6), and adds "hi Orion, how was your weekend?" to the short kept summaries. Both are questions about a real topic, which the review asked to keep. `test_review_change_is_the_only_new_keep` pins that this is the only window that changed.
+- **Finding:** the eval's labs and family keepers proved nothing, because redacted placeholders can never be judged junk.
+  - **Fix:** the report now says only 2 of the 4 named keepers are real checks. The eval adds 13 synthetic, non-private must-keep messages covering every finding above, plus "hi, my son was diagnosed today". The eval exits non-zero if any of them drops.
+  - **Evidence:** `test_synthetic_keepers_are_all_kept`; the replay prints "Synthetic keepers kept: 13/13".
+- **Finding (nit):** the novelty and significance floors can no longer fire.
+  - **Fix:** a note in `consolidation_gate.py`, in this report, and in the spec's Stage 1 section.
+  - **Evidence:** the diff to `docs/superpowers/specs/2026-09-30-memory-episode-redesign-design.md`.
+- **Finding (nit):** "approved by Juniper" was inferred from `approval_mode != auto_policy`.
+  - **Fix:** the menu cards and the "N approved by hand" count both read an `op='approve'` row from `memory_crystallization_history`. The self-study text now says the same. A `manual_required` row with no approval reads "no recorded approval from Juniper".
+  - **Evidence:**
+    - `test_manual_required_without_an_approve_row_is_not_called_approved`;
+    - `test_approval_is_read_from_history_in_both_queries`;
+    - a read-only live run of both queries: stance 36 approved, semantic and open_loop 0, and sample rows "Run github compactor." / "meow" with `juniper_approved=f`.
 
 ## Restart required
 

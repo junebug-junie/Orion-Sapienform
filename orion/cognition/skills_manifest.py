@@ -156,3 +156,75 @@ def build_compact_skill_catalog(*, verbs_dir: Path | None = None) -> str:
         for item in load_skill_manifest(verbs_dir=verbs_dir)
     ]
     return json.dumps(payload, ensure_ascii=True, sort_keys=True)
+
+
+def _short_purpose(entry: SkillManifestEntry, *, max_chars: int) -> str:
+    """First sentence of the description (falling back to the label), cut to max_chars."""
+    text = " ".join(str(entry.description or "").split())
+    if not text or text == f"Skill {entry.skill_id}":
+        text = str(entry.label or "").replace("Skills — ", "").strip()
+    for stop in (". ", "; ", " — ", " -- "):
+        idx = text.find(stop)
+        if idx > 0:
+            text = text[:idx]
+            break
+    text = text.rstrip(". ")
+    if len(text) > max_chars:
+        text = text[: max(0, max_chars - 3)].rstrip() + "..."
+    return text
+
+
+def build_bounded_skill_catalog(
+    *,
+    max_chars: int,
+    entries: list[SkillManifestEntry] | None = None,
+    read_only_only: bool = True,
+    purpose_chars: int = 60,
+    verbs_dir: Path | None = None,
+) -> tuple[str, int]:
+    """One line per skill (``skill_id: purpose``), total length <= max_chars.
+
+    Built for prompts with a hard char budget (daily_metacog_v1). The full JSON
+    catalog from ``build_compact_skill_catalog`` grows ~300 chars per skill and
+    pushed that prompt over its limit on 2026-09-03; this form grows ~100 chars
+    per skill and degrades in steps instead of failing:
+
+    1. ``skill_id: purpose`` for every skill, if it fits;
+    2. otherwise bare ``skill_id`` lines (ids are what the model must copy);
+    3. otherwise as many ids as fit, plus a ``(+N more not listed)`` line.
+
+    Returns ``(text, listed_count)`` where listed_count is how many skill ids the
+    text actually names, so a caller can report the true count to the model.
+    ``read_only_only`` defaults True because the daily selectors reject any
+    non-read-only id anyway (orion-actions ``_normalize_daily_skill_selection``).
+    """
+    items = entries if entries is not None else load_skill_manifest(verbs_dir=verbs_dir)
+    if read_only_only:
+        items = [item for item in items if item.read_only]
+    items = sorted(items, key=lambda item: item.skill_id)
+    budget = max(0, int(max_chars))
+
+    full = "\n".join(f"{item.skill_id}: {_short_purpose(item, max_chars=purpose_chars)}" for item in items)
+    if len(full) <= budget:
+        return full, len(items)
+
+    ids_only = "\n".join(item.skill_id for item in items)
+    if len(ids_only) <= budget:
+        return ids_only, len(items)
+
+    lines: list[str] = []
+    for idx, item in enumerate(items):
+        remaining = len(items) - idx - 1
+        tail = f"(+{remaining} more not listed)" if remaining else ""
+        candidate = "\n".join([*lines, item.skill_id, *([tail] if tail else [])])
+        if len(candidate) > budget:
+            break
+        lines.append(item.skill_id)
+    omitted = len(items) - len(lines)
+    if omitted:
+        lines.append(f"(+{omitted} more not listed)")
+    text = "\n".join(lines)
+    if len(text) > budget:
+        # Budget too small for even the overflow note: list nothing rather than overrun.
+        return "", 0
+    return text, len(lines) - (1 if omitted else 0)

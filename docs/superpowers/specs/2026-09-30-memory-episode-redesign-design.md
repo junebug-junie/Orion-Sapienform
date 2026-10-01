@@ -1,7 +1,7 @@
 # How Orion forms memories: episodes, Orion's own words, knowing whose words they are, and closing the loop
 
-Status: PROPOSAL, revision 2 (2026-09-30). Juniper has answered most of the open questions; see "Decisions".
-Date: 2026-09-30
+Status: **APPROVED (Juniper, 2026-10-01). Stage 0 in progress.** Revision 3 records her decisions on the revision-2 questions; see "Decisions". One question is still open: the reflection rows.
+Date: 2026-09-30 (rev 1-2), 2026-10-01 (rev 3)
 Evidence base: read-only live queries on the `conjourney` Postgres, FalkorDB `GRAPH.RO_QUERY`, `ssh circe@circe nvidia-smi`, and docker logs/inspect/env, all taken 2026-09-30 between 09:30 and 10:30 UTC. Code read against main @ a005658db.
 
 Related specs:
@@ -25,6 +25,14 @@ Anything not checked live is marked **UNVERIFIED**.
 5. **Stage 0 "metacog report"** is `daily_metacog_v1`. It has been failing on prompt size since 09-03.
 6. **Self-conclusions** are confirmed with Juniper through surfaces she already uses. Resolution is an event on the one existing open→resolved seam: attention loop outcomes. There is a second worked example: Orion's repeated "intake pipeline… stuck three days" outreach loop.
 7. **Juniper's answers** are folded in: the writer runs on the 27B at `system` priority; the reverie seed returns at Stage 2; the old-vs-new comparison is a report; the GPU question is dropped (the sale was deliberate; plan on 4 cards); retiring the reflection rows is still to be decided.
+
+## What changed in revision 3 (Juniper, 2026-10-01)
+
+1. **Self-conclusions and open questions are asked in the "Orion is asking" panel**, not Pending Attention. That panel has 0 rows today, so Stage 3 makes it live. Stage 3 includes the producer that puts cards into it.
+2. **The single resolution record is `AttentionLoopOutcomeV1`** on `orion:attention:loop_outcome`. Juniper answers in "Orion is asking" or in chat, and both paths emit that one event. A bridge in the Hub ask route is specified in section 5.
+3. **Boundary Rule 3 is adopted as written**, shadow first.
+4. **The test for which self-conclusions to ask about is adopted.** Ask Juniper only when a conclusion is about Orion's machinery, asks for direction, or is about the relationship. Private self-observations are not asked; they stay automatic and are labelled as Orion's own view.
+5. **Reflection rows:** still to be decided.
 
 ---
 
@@ -57,7 +65,10 @@ Orion does not form memories. It photocopies Juniper's last message, and the pho
 |---|---|
 | Episode boundary | Use the existing conversation wall clock and LLM boundary run. **No new timer** |
 | 27B priority | **Yes**: the memory writer runs at `system` priority, ahead of curiosity's background runs |
-| Orion's conclusions about itself | **Confirm with Juniper where relevant**: in chat when natural, in the Hub attention panel, in the Curiosity tab. When confirmed, record it as a **resolved tension** |
+| Orion's conclusions about itself | **Confirm with Juniper where relevant**: in chat when natural, in the **"Orion is asking"** panel, and visible in the Curiosity tab. When confirmed, record it as a **resolved tension** (2026-10-01: the panel is "Orion is asking") |
+| Which self-conclusions to ask about (2026-10-01) | **Adopted:** ask when the conclusion is about Orion's machinery, asks for direction, or is about the relationship. Private self-observations are not asked; they stay `auto`, labelled as Orion's own view |
+| Resolution seam (2026-10-01) | **`AttentionLoopOutcomeV1` on `orion:attention:loop_outcome` is the single resolution record.** "Orion is asking" and chat are where Juniper answers |
+| Boundary Rule 3 (2026-10-01) | **Adopted as written**, shadow first |
 | Reverie memory seed | **Revive at Stage 2** from validated shadow memories |
 | Daily old-vs-new comparison | **A report for now** (a Hub report page and a markdown artifact). No morning notification |
 | Retire the 356 inactive reflection rows | **Still to be decided** (open question 1) |
@@ -182,7 +193,7 @@ An **episode** is a maximal run of consecutive turns on one `source_platform`, w
 
 **Fix 2: one boundary score per turn.** A regression test must show that the score `should_close_window` sees equals the score persisted into `chat_history_log` for the same turn. Then find and fix the source of the second score.
 
-**Rule 3 (a change to `should_close_window`, tested in shadow before adoption):**
+**Rule 3 (a change to `should_close_window`; adopted by Juniper 2026-10-01, runs in shadow first):**
 - **long_gap, next_day or stale_thread → boundary.** This no longer also needs an LLM score. The wall clock's own meaning for these phases is "reorient", and with Defect 2 unfixed, the LLM condition has never been trustworthy.
 - **resumed_thread (20 min–3 h) → boundary only if the LLM score is ≥ `MEMORY_BOUNDARY_OVERRIDE_THRESHOLD` (0.92).** That knob already exists in settings and is currently unused.
 - **same_breath or short_pause → never a boundary.**
@@ -367,8 +378,13 @@ Juniper: "we have tensions and things in attention, not sure if that is the righ
 3. **Orion's last 3 unanswered messages are fed back in** as "your own recent unprompted notes" (`:997-1048`, `:1279-1287`). The topic therefore survived after the prior ids were marked used.
 4. **The curiosity content ids kept changing.** They rotate daily (`:633-664`), and the attention loop `open-loop-7376a3da4050` ("Execution prediction error") was never terminally resolved; it only `decayed_unattended` on 09-21. That kept supplying "new" content.
 
-**Decision for Juniper: one primary seam.** Recommended: **the attention loop outcome** (`AttentionLoopOutcomeV1`, verdict `resolved`/`dismissed`, `actor=juniper`, published on `orion:attention:loop_outcome` and persisted to `attention_loop_outcome`).
-- It is the only live seam with an open→resolved lifecycle, an existing Juniper surface (the Pending Attention panel), and an existing consumer that changes what Orion attends to.
+**Decision (Juniper, 2026-10-01): one resolution record, chosen for robustness.** The record is the attention loop outcome: `AttentionLoopOutcomeV1`, verdict `resolved`/`dismissed`, `actor=juniper`, persisted to `attention_loop_outcome` and published on `orion:attention:loop_outcome`. Juniper answers in the **"Orion is asking"** panel or in chat. Both write this one record (section 5).
+
+**Why this is the most robust option:**
+- **It is the only live seam where resolving something changes what Orion does.** It has an open→resolved lifecycle (49 Juniper verdicts already) and a consumer that already acts on it: a terminal verdict removes the loop from `open_loops`, so the curiosity seed it feeds disappears. Every other candidate is dead, has nothing to close, or has no consumer (table above).
+- **There is a single source of truth.** "Was this resolved, how, by whom, with what words" lives in one row. The memory, the question, the prior, the ask card and outreach are all *consumers* that derive their state from it. No store is written as a peer of another, so there is nothing to keep in sync and no split-brain. If any consumer's state disagrees, it can be rebuilt from `attention_loop_outcome`.
+- **The record survives a lost bus message.** It is a Postgres row written in the same transaction as the ask-card update (section 5). Pub/sub only wakes consumers up. Each consumer also catches up from the table using a cursor, so a missed publish delays the closure but never loses it.
+- **It is already Juniper-actor semantics.** `actor="juniper"` rows already mean "a human closed this". No new meaning has to be invented.
 - Three new consumers make it close *everything* the loop touched:
   1. **Memory:** the memory writer sets the memory's confirmation state.
   2. **Questions:** `curiosity_self_questions.status='answered'` for the linked question.
@@ -376,8 +392,9 @@ Juniper: "we have tensions and things in attention, not sure if that is the righ
 - **Rejected alternatives:**
   - substrate/drive tensions: dead or no lifecycle;
   - field tension: a scalar with nothing to close;
-  - `orion_ask` alone: no behavioral consumer;
-  - making `curiosity_self_questions` primary: no effect on attention or outreach.
+  - `orion_ask` as the record: it has no behavioral consumer. It is kept as the *surface* where Juniper answers;
+  - making `curiosity_self_questions` primary: no effect on attention or outreach;
+  - a new `ResolvedTensionV1` channel: it would duplicate a live closure path and create a second record to keep in sync.
 - `curiosity_self_questions` stays the home of *open questions*. It is closed as a **mirror** of the outcome, not as the primary seam.
 
 The three outreach defects that no resolution can fix are listed as required fixes in Stage 3: daydream-only content counts as talkable, Orion's own notes are echoed back, and content ids rotate.
@@ -396,7 +413,8 @@ The three outreach defects that no resolution can fix are listed as required fix
 | Graphiti | Fix the Hub URL and surface sync failures | Projection writer at Stage 2 |
 | pageindex | — | Document navigator at Stage 2 |
 | Chat compactor | — | Follow-up ticket: read episode memories; fix the Orion pronoun; stop writing cards at Stage 4 |
-| Hub crystallization UI | Send a reason | Becomes the fallback confirmation queue; a reason is required |
+| Hub crystallization UI | Send a reason | Retired at Stage 4; confirmations move to "Orion is asking" |
+| "Orion is asking" panel | — | **Stage 3:** gets the memory/question card producer, Confirm/Revise/Reject, the outcome bridge, and a top-level mount |
 
 **`daily_metacog_v1`** (the "metacog report" in Stage 0):
 - It is the nightly orion-actions report. It has failed since 2026-09-03 with `daily_metacog_prompt_over_limit chars≈8467 limit=8192`: the skills catalog alone is 6,126 characters, and adding the render_scene skill pushed it over.
@@ -452,7 +470,7 @@ episode_memory(
   occurred_at timestamptz NULL,
   stakes text NOT NULL,              -- low | high
   stakes_reason text NULL,           -- health | family | identity_conclusion_about_juniper | relationship | safety_location | orion_self_conclusion
-  confirmation_state text NOT NULL,  -- auto | pending_confirmation | confirmed | corrected | queued_for_review | rejected
+  confirmation_state text NOT NULL,  -- auto | pending_confirmation | confirmed | corrected | rejected
   confirmation_loop_id text NULL,    -- attention loop id carrying the confirmation request
   strength real NOT NULL, half_life_days real NULL,
   last_reinforced_at timestamptz NOT NULL, reinforcement_count int NOT NULL DEFAULT 0,
@@ -467,7 +485,7 @@ episode_memory_referent(memory_id uuid, referent_key text, role text, PRIMARY KE
 episode_memory_event(event_id uuid PK, memory_id uuid, op text, actor text, episode_id text NULL,
   outcome_id text NULL, evidence jsonb, reason text, created_at timestamptz)
   -- op: created | downgraded_voice | reinforced | superseded | confirm_asked | confirmed | revised
-  --     | rejected | queued_for_review | faded | expired | done | retired | recalled | projected
+  --     | rejected | ask_expired | faded | expired | done | retired | recalled | projected
 episode_memory_link(memory_id uuid, target_kind text, target_id text, target_voice text, target_channel text,
   via_referent text, relation text, created_by text, created_at timestamptz,
   PRIMARY KEY (memory_id, target_kind, target_id, via_referent))
@@ -496,14 +514,16 @@ A backstop also forces `high` for an `about_juniper` statement that contains a c
 - (b) it asks for a decision or direction;
 - (c) it is about the relationship.
 
-Everything else (for example "I notice I enjoy X") stays `auto` and is listed in the Hub, not queued.
+This rule was adopted by Juniper on 2026-10-01. Private self-observations (for example "I notice I enjoy X") are **not asked**. They stay `auto`, with voice `orion_thought`, and render as Orion's own view ("Something I was turning over on my own…" / "My own view: …").
 
-**Asking.** Each pending item gets a **confirmation loop** (section 5). The loop is surfaced:
-- **in chat when natural:** at most 1 per turn, only when its referents appear in the turn or it is at least 24 h old, never when the appraisal shows distress (how exactly is **UNVERIFIED**);
-- **in the Hub Pending Attention panel**, with Resolve and Dismiss;
-- **in the Curiosity tab's Self section**, for `line=self` items, as a read-only card linking to the Pending Attention action. The Hub does not write the worldview graph (`curiosity_routes.py:8-12`).
+**Asking.** Each pending item gets a **confirmation loop id** (`memory-confirm-<memory_id>`; section 5). It is surfaced in two places, plus a read-only view:
+- **The "Orion is asking" panel** is the primary surface (Juniper, 2026-10-01): `templates/index.html:654-664`, `static/js/vision-asks.js`, `scripts/ask_routes.py`, table `orion_ask`. It has **0 rows today**, so Stage 3 makes it live (section 5). The card offers **Confirm / Revise (note required) / Reject**.
+- **In chat when natural:** at most 1 per turn, only when its referents appear in the turn or it is at least 24 h old, never when the appraisal shows distress (how exactly is **UNVERIFIED**).
+- **The Curiosity tab's Self section** shows `line=self` items read-only, linking to the open ask. The Hub does not write the worldview graph (`curiosity_routes.py:8-12`).
 
-After 7 days or 2 unanswered asks, the item also goes to the Hub fallback queue (reason required).
+Open questions with `answer_via='conversation'` (section 8) use the same panel, with `source_kind='open_question'`.
+
+**When there is no answer:** the ask card expires after 7 days (`orion_ask.status='expired'`, an existing status). Orion may raise it once more in chat. After that the memory stays `pending_confirmation` and is only ever recalled with its "Unconfirmed" label. An expiry is not a resolution, and no outcome is written for it.
 
 **What an answer does:**
 
@@ -512,7 +532,7 @@ After 7 days or 2 unanswered asks, the item also goes to the Hub fallback queue 
 | Confirmed | `AttentionLoopOutcomeV1(verdict=resolved, features_at_close.resolution="confirmed")` | `confirmation_state=confirmed`, **voice → `worked_out_together`**, Juniper's words added as evidence, reinforced | Question → `answered`. The next self-inquiry run writes `:PriorRevision {to_status:"confirmed", confirmed_by:"juniper", outcome_id}` (worldview writes stay Orion-authored) | The loop is terminal, leaves `open_loops`, and outreach treats the topic as used |
 | Revised | `verdict=resolved, resolution="revised", note=<her words>` | The old memory becomes `corrected`/superseded. The next distill writes the revised memory as `worked_out_together` | Question → `answered`, with the note. `:PriorRevision → revised`, `confirmed_by:"juniper"` | Same as above |
 | Rejected | `verdict=dismissed, resolution="rejected"` | `rejected`: kept only as a do-not-remint marker, never recalled | `:Prior → refuted` (via self-inquiry); question → `parked`, note "rejected by Juniper" | Terminal |
-| Answered in chat | The next episode's distiller emits `confirms`/`corrects`/`rejects` with her quote. **Its persist node publishes the same outcome event** (`actor=juniper`, `features_at_close.via="chat"`, `evidence_turn_id`) | as above | as above | as above |
+| Answered in chat | The next episode's distiller emits `confirms`/`corrects`/`rejects` with her quote. **Its persist node writes the same outcome record** (`actor=juniper`, `features_at_close.via="chat"`, `evidence_turn_id`); the open ask card is closed by the Hub consumer | as above | as above | as above |
 
 ### 4. Fading and reinforcement
 
@@ -538,32 +558,50 @@ The rule: effective strength = `strength × 0.5^(days since last_reinforced_at /
 5. **Existing mechanism:** reuses the half-life idea from `dynamics`, with its input replaced.
 6. **Reversibility:** a column plus a job, recomputable from the event log.
 
-### 5. Resolution as an event (the confirmation loop)
+### 5. Resolution as an event: "Orion is asking" → one outcome record
 
-This follows event-substrate-first: event → schema → producer → consumer → trace.
+This follows event-substrate-first: event → schema → producer → consumer → trace. Juniper decided it on 2026-10-01. There is **one record**, `AttentionLoopOutcomeV1` in `attention_loop_outcome` (published on `orion:attention:loop_outcome`), and **two answer surfaces**: the "Orion is asking" panel and chat.
 
-- **Open.** When a memory becomes `pending_confirmation`, the persist node emits an `AttentionSalienceTraceV1` on the existing `orion:attention:salience:trace` channel:
-  - `loop_id = "memory-confirm-" + memory_id`;
-  - `theme_key = "memory_confirmation:" + top referent`;
-  - `description` = the statement, truncated to 200 characters, with `why_it_matters` explaining why it needs Juniper;
-  - **a new `scope="memory_confirmation"`**.
+**Open: the card producer.** This is new; today the only producer is vision, at `services/orion-sql-writer/app/vision_individuals.py:968`.
+- When a memory becomes `pending_confirmation`, the memory writer's persist node (orion-memory-consolidation) INSERTs an `orion_ask` row with:
+  - `ask_id` = uuid5(`loop_id`), so the insert is idempotent;
+  - `asked_of='juniper'`;
+  - `question` = the statement rendered in Orion's voice, plus "Is that right?";
+  - `evidence_refs` = the memory's evidence and the prior ids;
+  - `source_kind='memory_confirmation'`;
+  - `source_ref` = `loop_id = "memory-confirm-<memory_id>"`;
+  - `expires_at` = +7 d.
 
-  It records `confirm_asked`, with the `loop_id` written to `confirmation_loop_id`.
-- **Schema changes:**
-  - `AttentionSalienceTraceV1.scope` gains `memory_confirmation`;
-  - `card_kind_for_scope` (`attention_loops_store.py`) adds it to the **resolvable allowlist**. It is a discrete item that a human can close, which is exactly what the allowlist admits.
-  - Registry and channel docs are updated. The channel stays the same.
-  - Who persists these traces is **UNVERIFIED**: channels.yaml lists `consumer_services: []` for the trace channel, and orion-thought writes the table directly. Stage 3 either adds a persister or writes the row from the memory writer, and records which.
-- **Close.** Either Juniper presses Resolve/Dismiss in the Pending Attention panel (the existing `POST /api/attention/loops/{loop_id}/resolve|dismiss`, `attention_loops_routes.py:95-101`, which persists to `attention_loop_outcome` and publishes `AttentionLoopOutcomeV1` on `orion:attention:loop_outcome`), or the distiller detects her answer in chat and publishes the same event.
-  - **Add a "Revise" button** to the panel. It is resolve with `features_at_close.resolution="revised"` and a required note. The verdict enum does not change.
-- **Consumers** (all new, except the first):
-  1. `verdicts.load_terminal_verdict_loop_ids` (existing) takes the loop out of `open_loops`.
-  2. **orion-memory-consolidation** subscribes to `orion:attention:loop_outcome` for loop ids prefixed `memory-confirm-`. It updates `episode_memory` and writes an `episode_memory_event` carrying the `outcome_id`.
-  3. **Questions mirror:** the same consumer sets `curiosity_self_questions.status/resolved_at/resolution_ref=outcome_id` for questions linked to that memory.
-  4. **Worldview mirror:** the curiosity self-inquiry prompt reads Juniper outcomes on its `line=self` priors and writes the `:PriorRevision` itself.
-  5. **Outreach:** `fetch_recently_used_outreach_content_ids` also treats as used any prior, memory or loop id with a terminal outcome. `_prediction_error_candidates` honors terminal outcomes keyed on node id.
-- **Trace:** `outcome_id` and `correlation_id` appear in `attention_loop_outcome`, `episode_memory_event`, the question row and the `:PriorRevision`. A single SQL join shows the whole closure.
-- **channels.yaml** lists orion-memory-consolidation (and orion-hub for outreach) as consumers of `orion:attention:loop_outcome`, which today has `consumer_services: []`.
+  It also writes an `episode_memory_event` `confirm_asked`.
+- Open questions with `answer_via='conversation'` get the same treatment, with `source_kind='open_question'` and `loop_id = "question-<question_id>"`.
+- `source_kind` is free text with no constraint (checked live: the only constraint on `orion_ask` is the primary key), so no migration is needed.
+- There is no "ask opened" event today: producers insert and the Hub polls. That stays; the trace is the `confirm_asked` event.
+- **Cap:** at most 5 open memory or question cards at a time. The producer holds the rest until a slot frees, so the panel never becomes a wall.
+- **Making the panel visible.** It currently sits inside the Vision section (`index.html:654-664`, subtitle "Things Orion saw and wants your help naming"). Stage 3 mounts it at the top of the Hub home with a neutral subtitle. `GET /api/asks?status=open` already returns every `source_kind` without filtering.
+
+**Close: the bridge.** This is a change to the Hub ask route, `services/orion-hub/scripts/ask_routes.py`.
+- For `source_kind ∈ {memory_confirmation, open_question}`, the answer endpoint takes `{resolution: confirmed|revised|rejected|answered, note}`. `revised` needs a note. Free text on an open question counts as `answered`.
+- In **one transaction** it runs the existing conditional `UPDATE orion_ask … WHERE status='open'` (409 on a stale click) **and** INSERTs the `attention_loop_outcome` row:
+  - `outcome_id` = uuid5(`ask_id`);
+  - `loop_id` = `source_ref`;
+  - `verdict = resolved`, or `dismissed` for rejected;
+  - `actor = juniper`;
+  - `note` = her words;
+  - `features_at_close = {resolution, ask_id, via:"orion_is_asking", memory_id | question_id, prior_ids, related_loop_ids, node_ids}`.
+- After the commit it publishes `AttentionLoopOutcomeV1` on `orion:attention:loop_outcome` using the existing publisher (`attention_loops_routes.py:41` `publish_loop_outcome`). It also still publishes `OrionAskAnsweredV1` on `orion:ask:answered` as today. That event only describes what happened to the card, and its one consumer (`ask_answered_listener.py`) ignores these kinds.
+- **The chat path** writes the same row from the memory writer's persist node, with `via:"chat"` and `evidence_turn_id`. The outcome_id is uuid5(`loop_id` + `evidence_turn_id`), and the insert does nothing if a terminal outcome already exists for the loop, so the first answer wins.
+
+**Why no new attention scope is needed.** Revision 2 proposed a `memory_confirmation` scope so items could appear as Pending Attention cards. Now that the panel is "Orion is asking", that is unnecessary. The outcome row is keyed by `loop_id`, and `attention_loop_outcome` does not require a matching trace. Whether `load_terminal_verdict_loop_ids` tolerates a loop id that has no trace is **UNVERIFIED**; Stage 3 adds a test.
+
+**Consumers.** Each one listens to the channel and catches up from the table with a cursor, so a missed publish delays closure but never loses it.
+1. **Attention.** `verdicts.load_terminal_verdict_loop_ids` (existing, `attention_broadcast.py:210`) is extended to also treat each `features_at_close.related_loop_ids` entry as terminal. This is how the intake topic's `open-loop-7376a3da4050` leaves the frame.
+2. **Memory** (new, orion-memory-consolidation). Applies the table in section 3: confirm, relabel the voice to `worked_out_together`, revise, or reject. It writes an `episode_memory_event` carrying the `outcome_id`.
+3. **Questions** (same consumer). Sets `curiosity_self_questions.status='answered'` (or `parked` for rejected), with `resolved_at` and `resolution_ref=outcome_id`.
+4. **Priors** (curiosity self-inquiry). The next run reads Juniper outcomes whose `prior_ids` touch its `line=self` priors, and writes `:PriorRevision {to_status, confirmed_by:"juniper", outcome_id}` itself. Worldview writes stay Orion-authored.
+5. **Ask card** (Hub). On a chat-path outcome, it closes the matching open `orion_ask` row (`status='answered'`, `answer` = her quote).
+6. **Outreach** (Hub). `fetch_recently_used_outreach_content_ids` treats as used any prior, memory, loop or node id named in a terminal outcome. `_prediction_error_candidates` (`orion/substrate/endogenous_curiosity.py:356-362`) honors the `node_ids` the same way.
+
+**Trace:** `outcome_id` appears in `attention_loop_outcome`, `episode_memory_event`, the question row and the `:PriorRevision`, and `ask_id` appears in both the outcome and the card. A single SQL join shows the whole closure. `channels.yaml` lists orion-memory-consolidation and orion-hub as consumers of `orion:attention:loop_outcome`, which today has `consumer_services: []`.
 
 ### 6. Crosswalk (Stage 2)
 
@@ -687,9 +725,9 @@ ALTER TABLE curiosity_self_questions
 **Orion was right.** This spec verified the same facts independently: manual review, routing by kind, and a gate that admits almost anything.
 
 **Under the design:**
-1. **The conclusion gets a confirmation request.** The self-inquiry line moves the priors to supported, so a self-conclusion confirmation is created, with `stakes_reason=orion_self_conclusion`. It is relevant under rule (a), referents `service:orion-memory-consolidation`, and rule (b), it asks for direction. The memory writer creates `orion_view` memory S1, with voice `orion_thought`, channel `curiosity`, the statement written in Orion's words, and evidence = the prior ids plus the outreach turn ids. It is `pending_confirmation`, and a trace with `loop_id=memory-confirm-S1`, `scope=memory_confirmation` is emitted. It also opens question Q2: "What should replace the intake gate?" (`answer_via=conversation`, `linked_memory_id=S1`).
-2. **Juniper sees one item.** One card in Pending Attention, one line in the Curiosity tab's Self section, and one chance in chat. Not 12 messages.
-3. **She answers.** For example, she presses Revise with: "Yes, that's right. We're replacing it with the episode writer; see PR #2440." The Hub publishes `AttentionLoopOutcomeV1(loop_id=memory-confirm-S1, verdict=resolved, actor=juniper, features_at_close={resolution:"revised", prior_ids:[…]}, note=…)`.
+1. **The conclusion gets a confirmation request.** The self-inquiry line moves the priors to supported, so a self-conclusion confirmation is created, with `stakes_reason=orion_self_conclusion`. It is relevant under rule (a), referents `service:orion-memory-consolidation`, and rule (b), it asks for direction. The memory writer creates `orion_view` memory S1, with voice `orion_thought`, channel `curiosity`, the statement written in Orion's words, and evidence = the prior ids plus the outreach turn ids. It is `pending_confirmation`, and an `orion_ask` card is inserted with `source_kind=memory_confirmation`, `source_ref=memory-confirm-S1` and `features.related_loop_ids=[open-loop-7376a3da4050]`. It also opens question Q2: "What should replace the intake gate?" (`answer_via=conversation`, `linked_memory_id=S1`).
+2. **Juniper sees one item.** One card in "Orion is asking", one read-only line in the Curiosity tab's Self section, and one chance in chat. Not 12 messages.
+3. **She answers.** For example, she presses Revise on the card with: "Yes, that's right. We're replacing it with the episode writer; see PR #2440." In one transaction the Hub ask route closes the card and writes `AttentionLoopOutcomeV1(loop_id=memory-confirm-S1, verdict=resolved, actor=juniper, features_at_close={resolution:"revised", ask_id, prior_ids:[…], related_loop_ids:[open-loop-7376a3da4050], node_ids:[node:substrate.execution]}, note=…)`, then publishes it.
 4. **Consumers close everything:**
    - memory S1 becomes `confirmed` and the revised memory is written with voice `worked_out_together`;
    - Q2 becomes `answered` with `resolution_ref=outcome_id`;
@@ -730,8 +768,8 @@ ALTER TABLE curiosity_self_questions
   - (b) A wrong high-stakes fact. Mitigated by the stakes floor and confirmation.
   - (c) Losing memory at cutover. Mitigated by shadow-first rollout, the coverage eval, faded-not-deleted, and snapshots.
   - (d) GPU contention: about 2–8 min a day at `system` priority, visible in pool telemetry.
-  - (e) Nagging Juniper. Mitigated by at most 1 ask per turn and 2 asks per item, the Hub fallback, and closure that stops outreach.
-  - (f) A false closure, e.g. a chat answer misread as a confirmation. Mitigated by requiring Juniper's quote as evidence on chat-derived outcomes, and by Revise/Dismiss staying available in the panel.
+  - (e) Nagging Juniper. Mitigated by at most 1 ask per turn, 2 asks per item, at most 5 open cards, and closure that stops outreach.
+  - (f) A false closure, e.g. a chat answer misread as a confirmation. Mitigated by requiring Juniper's quote as evidence on chat-derived outcomes, and by the first terminal outcome per loop winning, with any later correction made by a new memory revision rather than by flipping the outcome.
 - **Rollback:**
   - Stages 1-3: `MEMORY_EPISODE_WRITER_ENABLED=false`; shadow tables can be dropped.
   - The new scope can be removed from the allowlist.
@@ -742,11 +780,13 @@ ALTER TABLE curiosity_self_questions
 
 ## Missing questions (for Juniper)
 
-1. **Retire the 356 inactive `reflection` rows** at Stage 4? (Still to be decided.)
-2. **Seam choice (G):** confirm the attention loop outcome as the single primary "resolved" seam, with memory, questions, priors and outreach as its consumers. The alternative would be a new `ResolvedTensionV1` channel; that is not recommended because it would duplicate an existing, live closure path.
-3. **Boundary Rule 3:** accept that a gap of more than 3 hours (long_gap) is always a boundary, without also requiring the LLM's YES? Recommend yes; it is tested in shadow first.
-4. **"Orion needs to tell me" panel:** no Hub surface has that name. The design uses **Pending Attention** (live, with Resolve/Dismiss, which she already uses: 30 resolved, 19 dismissed). The "Orion is asking" card (`orion_ask`, 0 rows, sitting in the Vision section) is the other candidate. Which one did she mean?
-5. **Self-conclusion relevance rule (3):** are the rules machinery, direction and relationship the right "where relevant" test?
+1. **Retire the 356 inactive `reflection` rows** at Stage 4? **Still to be decided.**
+
+Resolved on 2026-10-01 (kept here for the record):
+- Panel → "Orion is asking".
+- Resolution seam → `AttentionLoopOutcomeV1` as the single record.
+- Boundary Rule 3 → adopted, shadow first.
+- Self-conclusion test → machinery, direction or relationship; private observations stay automatic.
 
 ---
 
@@ -763,14 +803,14 @@ ALTER TABLE curiosity_self_questions
   - `EpisodeMemoryV1`
   - `MemoryEpisodeDistilledV1`
   - `DurableWorkflowV1` gains `memory.episode_distill` / `EpisodeDistillBriefV1`
-  - `AttentionSalienceTraceV1.scope` gains `memory_confirmation`
+  - `orion_ask.source_kind` gains the values `memory_confirmation` and `open_question` (free text, no migration). `AttentionLoopOutcomeV1.features_at_close` carries `resolution`, `ask_id`, `via`, `memory_id`/`question_id`, `prior_ids`, `related_loop_ids` and `node_ids`. The schema is unchanged, because `features_at_close` is a dict; registry docs are updated
   - `MemoryItemV1` gains voice fields (consumer-first rollout)
 - **Channels:** new `orion:memory:episode:closed` and `orion:memory:episode:distilled`. `orion:attention:loop_outcome` gains consumers (orion-memory-consolidation, orion-hub outreach).
 - **Chat turn contract:** `spark_meta.conversation_phase` is persisted on `chat.history` turns (Fix 1).
 - **GPU pool:** route `memory_distill: {class: agent, priority: system}`.
 - **Graphiti adapter:** writes an `EpisodicNode` per episode and sets validity; new `GET /v1/as_of`. Hub `.env_example` `GRAPHITI_ADAPTER_URL=http://127.0.0.1:8640`.
 - **pageindex:** per-document build endpoint; the fixes listed in C; the recall port changes to 8360.
-- **Hub:** Pending Attention "Revise" (resolve with a required note); a Curiosity Self-section card; a report page `/memory/episodes/report` (the daily comparison); the crystallization UI sends a reason.
+- **Hub:** in "Orion is asking", Confirm/Revise/Reject for the new kinds, the transactional outcome bridge in `ask_routes.py`, and a top-level mount; a Curiosity Self-section read-only card; a report page `/memory/episodes/report` (the daily comparison); the crystallization UI sends a reason.
 - **Env** (orion-memory-consolidation `.env_example`, then `python scripts/sync_local_env_from_example.py`; report any keys skipped by `SYNC_PREFIXES`):
   - `MEMORY_EPISODE_WRITER_ENABLED`
   - `MEMORY_EPISODE_DISTILL_ROUTE=memory_distill`
@@ -803,7 +843,8 @@ ALTER TABLE curiosity_self_questions
   - `services/orion-pageindex/app/*`, recall settings
   - `services/orion-thought/app/store.py` (reverie seed)
 - **Stage 3:**
-  - `orion/schemas/attention_salience.py`, `services/orion-hub/scripts/attention_loops_store.py`, `attention_loops_routes.py`, Hub JS (Revise)
+  - `services/orion-hub/scripts/ask_routes.py` (the bridge), `static/js/vision-asks.js` and `templates/index.html` (buttons, mount), `orion/schemas/ask.py` (docs), `orion/substrate/attention/verdicts.py` (`related_loop_ids`)
+  - the card producer in orion-memory-consolidation
   - `curiosity_atlas.html` (Self card)
   - the outcome consumer in orion-memory-consolidation
   - `orion/curiosity/self_question_pool.py`, `self_inquiry_prompt.py`
@@ -886,16 +927,20 @@ Evals are label-free. Juniper reads the report if she wants to; she never labels
    - `recalled` changes nothing;
    - a follow-up expires.
 2. **Strength after 14 d:** less than 30% of active memories above 0.95.
-3. **Resolution chain:** a Pending Attention Resolve, Revise or Dismiss on a `memory-confirm-*` loop produces, within 60 s:
-   - an `attention_loop_outcome` row;
+3. **Resolution chain:** Confirm, Revise or Reject on an "Orion is asking" card for a `memory-confirm-*` loop produces, in one transaction, the card update plus an `attention_loop_outcome` row. Then, within 60 s:
    - an `episode_memory_event` carrying the same `outcome_id`;
    - the linked question moved to `answered` or `parked`;
-   - the loop absent from the next attention frame.
+   - the `related_loop_ids` absent from the next attention frame.
+
+   Killing the bus during the test must still produce the same end state, through the consumers' table catch-up.
 
    The next self-inquiry run writes a `:PriorRevision` with `confirmed_by=juniper`. A chat answer produces the same chain with `via=chat` and Juniper's quote.
 4. **Loop replay** (worked example 2): replaying 09-26→09-29 outreach decisions against the new novelty rules gives at most 1 send on the intake topic after the confirmation loop opens and **0 after it resolves** (today: 12 sends). Live: after the first real self-conclusion resolution, 0 further sends on that topic for 7 days.
-5. **Confirmation discipline:** at most 1 pending item per chat turn and at most 2 asks per item before queueing. Hub queue decisions have a reason.
-6. **Chat stance budget:** at most 1 pending item, 1 open question and 2 due follow-ups per turn.
+5. **Confirmation discipline:** at most 1 pending item per chat turn; at most 2 asks per item (card plus one chat mention); at most 5 open memory/question cards at once; `revised` requires a note.
+6. **"Orion is asking" is live:**
+   - within 7 days of Stage 3 deploy, at least 1 `orion_ask` row with `source_kind ∈ {memory_confirmation, open_question}` exists, is visible at the top of the Hub home, and has a working Confirm/Revise/Reject (a UI interaction test, not just a page load);
+   - 100% of answered cards of these kinds have a matching `attention_loop_outcome` row (same `ask_id`), and 0 have an orphaned outcome.
+7. **Chat stance budget:** at most 1 pending item, 1 open question and 2 due follow-ups per turn.
 
 ### Stage 4: cutover
 - **Snapshot first:** `/tmp/memory-cutover/before.csv`, whose counts match the plan.

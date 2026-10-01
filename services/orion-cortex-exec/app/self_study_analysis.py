@@ -169,9 +169,12 @@ SOURCE_SPECS: Mapping[str, SourceSpec] = {
         numeric_columns=("salience",),
         category_columns=("kind", "status"),
         what_it_measures=(
-            "Crystallizations induced from memory -- one row per concept the "
-            "induction lane proposed, with the kind it was filed under and "
-            "whether it was accepted, is still proposed, or was rejected."
+            "Memory rows saved from chat windows (crystallizations) -- one row "
+            "per saved window, with the kind it was filed under and its status. "
+            "'active' does not mean Juniper approved it: most active rows were "
+            "auto-saved by policy and nobody reviewed them; only a few stances "
+            "were approved by her by hand. 'proposed' rows are waiting for "
+            "review and 'rejected' rows were turned down."
         ),
     ),
     "vision_events": SourceSpec(

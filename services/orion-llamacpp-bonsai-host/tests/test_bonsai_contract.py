@@ -104,7 +104,8 @@ def test_profile_launch_argv(monkeypatch):
 
 
 def test_never_auto_deployed():
-    """Manual only: it defaults to gpu0, chat's card, so a post-merge `up` would fight chat."""
+    """Manual only: it borrows a pool card (gpu1/gpu2) the lane controller does not know it holds,
+    so a post-merge `up` would collide with pool launches."""
     common = REPO / "mesh-utilities" / "common"
     service = "orion-llamacpp-bonsai-host"
     for include in common.glob("include_services*"):
@@ -114,3 +115,70 @@ def test_never_auto_deployed():
             assert service not in lines, f
     excludes = (common / "exclude_services.txt").read_text(encoding="utf-8").splitlines()
     assert service in {l.strip() for l in excludes}
+
+
+def _card_indices(pool: dict, role: str) -> set[int]:
+    return {int(pool["cards"][c]["index"]) for c in pool["roles"][role]["cards"]}
+
+
+def test_no_bonsai_config_targets_chats_card():
+    """Juniper, 2026-09-30: Bonsai runs on gpu1/gpu2 (the agent cards), never chat's gpu0.
+
+    Card indices come from config/gpu_pool.yaml, so a card move there moves this gate too.
+    """
+    import re
+
+    pool = yaml.safe_load((REPO / "config" / "gpu_pool.yaml").read_text(encoding="utf-8"))
+    chat = _card_indices(pool, "chat")
+    allowed = _card_indices(pool, "agent") | _card_indices(pool, "agent-gpu2")
+    assert chat and allowed and not (chat & allowed)
+
+    # Compose: required, no fallback that could land on any card.
+    compose = yaml.safe_load((HOST / "docker-compose.yml").read_text(encoding="utf-8"))
+    env = compose["services"]["bonsai-worker"]["environment"]
+    cuda = next(e.split("=", 1)[1] for e in env if e.startswith("CUDA_VISIBLE_DEVICES_OVERRIDE="))
+    assert re.fullmatch(r"\$\{BONSAI_CUDA_VISIBLE_DEVICES:\?[^}]+\}", cuda), cuda
+
+    # Operator template.
+    example = (HOST / ".env_example").read_text(encoding="utf-8")
+    vals = re.findall(r"^BONSAI_CUDA_VISIBLE_DEVICES=(.*)$", example, re.M)
+    assert len(vals) == 1, vals
+    devices = {int(d) for d in vals[0].split(",")}
+    assert devices and devices <= allowed and not (devices & chat), devices
+
+    # Every Bonsai profile's (doc-only) pin.
+    profiles = yaml.safe_load((REPO / "config" / "llm_profiles.yaml").read_text(encoding="utf-8"))["profiles"]
+    bonsai = {k: v for k, v in profiles.items() if "bonsai" in k.lower()}
+    assert PROFILE in bonsai
+    for name, cfg in bonsai.items():
+        ids = set((cfg.get("gpu") or {}).get("device_ids") or [])
+        assert ids <= allowed and not (ids & chat), (name, ids)
+
+
+def test_compose_refuses_to_start_without_a_card(tmp_path):
+    """`docker compose config` with no BONSAI_CUDA_VISIBLE_DEVICES must fail, not pick a card."""
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if not shutil.which("docker"):
+        pytest.skip("docker CLI not installed")
+    probe = subprocess.run(["docker", "compose", "version"], capture_output=True, text=True)
+    if probe.returncode != 0:
+        pytest.skip("docker compose plugin not installed")
+    envf = tmp_path / "empty.env"
+    envf.write_text("LLM_CACHE_DIR=/tmp\n", encoding="utf-8")
+    run = lambda extra: subprocess.run(  # noqa: E731
+        ["docker", "compose", "--env-file", str(envf), "-f", str(HOST / "docker-compose.yml"), "config"],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={"PATH": __import__("os").environ["PATH"], **extra},
+    )
+    missing = run({})
+    assert missing.returncode != 0
+    assert "never 0" in missing.stderr
+    ok = run({"BONSAI_CUDA_VISIBLE_DEVICES": "2"})
+    assert ok.returncode == 0, ok.stderr
+    assert "CUDA_VISIBLE_DEVICES_OVERRIDE: \"2\"" in ok.stdout or "CUDA_VISIBLE_DEVICES_OVERRIDE: '2'" in ok.stdout or "CUDA_VISIBLE_DEVICES_OVERRIDE: 2" in ok.stdout

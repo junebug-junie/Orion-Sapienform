@@ -101,11 +101,11 @@ def test_window_groups_by_node_and_counts_only_upstream_failures():
     t = [1000.0]
     rec = InferenceWindowRecorder(clock=lambda: t[0])
     ok = {"text": "fine", "raw": {"usage": {"prompt_tokens": 100, "completion_tokens": 20}}}
-    rec.record(ok, served_by="circe-worker-2", elapsed_s=0.5)
-    rec.record(ok, served_by="circe-worker-fast-1", elapsed_s=1.5)
-    rec.record({"text": "[Error: llamacpp timed out after waiting]", "raw": {}}, served_by="circe-worker-2", elapsed_s=30)
-    rec.record({"text": "", "raw": {"error": "gateway_overloaded"}}, served_by="circe-worker-2", elapsed_s=3)
-    rec.record({"text": "", "raw": {"error": "route_operator_closed"}}, served_by=None, elapsed_s=0)
+    rec.record(ok, served_by="circe-worker-2")
+    rec.record(ok, served_by="circe-worker-fast-1")
+    rec.record({"text": "[Error: llamacpp timed out after waiting]", "raw": {}}, served_by="circe-worker-2")
+    rec.record({"text": "", "raw": {"error": "gateway_overloaded"}}, served_by="circe-worker-2")
+    rec.record({"text": "", "raw": {"error": "route_operator_closed"}}, served_by=None)
     t[0] = 1060.0
     start, end, buckets = rec.drain()
     assert (start, end) == (1000.0, 1060.0)
@@ -122,7 +122,9 @@ def test_window_groups_by_node_and_counts_only_upstream_failures():
     assert circe["served"] == "2"
     assert circe["upstream_failed"] == "1"  # the timeout
     assert circe["refused"] == "1"  # overloaded is the gateway's doing, not the backend's
-    assert circe["p50_ms"] in {"500", "1500"}
+    # the mixed wait+model clock is retired (gpu-pool stage 6.2)
+    assert "p50_ms" not in circe and "p95_ms" not in circe
+    assert circe["roles"].startswith("ungranted[calls:4|")
     assert circe["prompt_tokens"] == "200"
     assert circe["completion_tokens"] == "40"
     assert circe["workers"] == "circe-worker-2|circe-worker-fast-1"
@@ -151,8 +153,8 @@ def test_empty_window_still_emits_completed_atom():
 def test_no_prompt_or_reply_text_leaves_the_gateway():
     rec = InferenceWindowRecorder(clock=lambda: 0.0)
     secret_reply = "SECRET-REPLY-TEXT"
-    rec.record({"text": secret_reply, "raw": {}}, served_by="circe-worker-2", elapsed_s=1)
-    rec.record({"text": "[Error: llamacpp failed: SECRET-ERR-DETAIL]", "raw": {}}, served_by="circe-worker-2", elapsed_s=1)
+    rec.record({"text": secret_reply, "raw": {}}, served_by="circe-worker-2")
+    rec.record({"text": "[Error: llamacpp failed: SECRET-ERR-DETAIL]", "raw": {}}, served_by="circe-worker-2")
     _, _, buckets = rec.drain()
     dumped = "".join(
         e.model_dump_json() for e in build_window_events(gateway_node="athena", window_start=0, window_end=1, buckets=buckets)
@@ -160,13 +162,17 @@ def test_no_prompt_or_reply_text_leaves_the_gateway():
     assert "SECRET" not in dumped
 
 
-def test_latency_samples_are_bounded():
+def test_clock_samples_are_bounded():
     rec = InferenceWindowRecorder(clock=lambda: 0.0)
     for i in range(2000):
-        rec.record({"text": "ok", "raw": {}}, served_by="circe-worker-2", elapsed_s=i / 1000)
+        clock = grammar_emit.CallClock()
+        clock.wait_ms, clock.model_ms, clock.role = i, 100, "chat"
+        rec.record({"text": "ok", "raw": {"timings": {"predicted_per_second": 30.0}}},
+                   served_by="circe-worker-2", timing=clock)
     _, _, buckets = rec.drain()
-    assert len(buckets["circe"].served_latency_ms) == 512
-    assert buckets["circe"].calls == 2000
+    role = buckets["circe"].roles["chat"]
+    assert len(role.wait_ms) == len(role.model_ms) == len(role.decode_tps) == 512
+    assert role.calls == buckets["circe"].calls == 2000
 
 
 class _FakeBus:
@@ -180,7 +186,7 @@ class _FakeBus:
 @pytest.mark.asyncio
 async def test_publisher_flushes_a_window_onto_the_grammar_channel():
     grammar_emit.reset_recorder_for_tests()
-    grammar_emit.get_recorder().record({"text": "ok", "raw": {}}, served_by="circe-worker-2", elapsed_s=0.2)
+    grammar_emit.get_recorder().record({"text": "ok", "raw": {}}, served_by="circe-worker-2")
     bus = _FakeBus()
     stop = asyncio.Event()
 

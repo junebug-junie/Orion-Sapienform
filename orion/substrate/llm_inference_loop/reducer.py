@@ -85,17 +85,28 @@ def reduce_llm_inference_trace_events(
     for target_id, state in states.items():
         existing = updated.nodes.get(target_id)
         operation = "create" if existing is None else "update"
-        history = fold_window(updated.recent_windows.get(target_id, []), windows[target_id])
-        updated.recent_windows[target_id] = history
-        reading = failure_reading(history)
-        state.inference_failure_pressure = reading.pressure
-        updated.nodes[target_id] = state
-        after = state.model_dump(mode="json")
         hints: dict[str, float] = {}
-        if state.inference_failure_pressure is not None:
-            hints["inference_failure_pressure"] = float(state.inference_failure_pressure)
-        after["pressure_hints"] = hints
-        after["failure_window"] = reading.as_dict()
+        if state.calls == 0:
+            # Only per-role clocks this window (HTTP passthroughs, or an ungranted call's wait:
+            # gpu-pool stage 6.2). Before 6.2 such a window produced no node atom at all, so the
+            # failure reading must not move: no fold (it would slide the rolling span forward on
+            # event time), no hint (the field keeps its last measured value), last reading kept.
+            state.inference_failure_pressure = existing.inference_failure_pressure if existing else None
+            updated.nodes[target_id] = state
+            after = state.model_dump(mode="json")
+            after["pressure_hints"] = hints
+            after["failure_window"] = None
+        else:
+            history = fold_window(updated.recent_windows.get(target_id, []), windows[target_id])
+            updated.recent_windows[target_id] = history
+            reading = failure_reading(history)
+            state.inference_failure_pressure = reading.pressure
+            updated.nodes[target_id] = state
+            after = state.model_dump(mode="json")
+            if state.inference_failure_pressure is not None:
+                hints["inference_failure_pressure"] = float(state.inference_failure_pressure)
+            after["pressure_hints"] = hints
+            after["failure_window"] = reading.as_dict()
         deltas.append(
             StateDeltaV1(
                 delta_id=stable_delta_id(

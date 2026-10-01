@@ -262,8 +262,8 @@ curl http://localhost:8210/health
 ## Inference grammar lane (the gateway reporting on itself)
 
 The code default is off; `.env_example` turns it on (`LLM_GATEWAY_GRAMMAR_ENABLED=true`,
-since 2026-09-25, together with the reducer and field flags). When on, every bus-RPC chat
-reply is classified by what actually happened (`app/grammar_emit.py::classify_outcome`):
+since 2026-09-25, together with the reducer and field flags). When on, every chat
+reply -- bus RPC and, since stage 6.2, the OpenAI/Anthropic HTTP passthroughs -- is classified by what actually happened (`app/grammar_emit.py::classify_outcome`):
 `served`, a backend failure (`upstream_timeout`, `upstream_connect`, `upstream_http_5xx`,
 `upstream_http_4xx`, `upstream_not_found`, `upstream_error`), a gateway refusal
 (`gateway_overloaded`, `gateway_capacity_rejected`, `resource_lease_rejected`,
@@ -279,9 +279,40 @@ Why here: a failed backend call comes back to the caller as an ordinary reply wh
 text is `[Error: ...]`, so the caller's RPC health counts it a success, and an idle,
 broken backend reads as calm GPU pressure. Only the gateway sees the call fail.
 
-Counts, latency percentiles and token totals only -- no prompt or reply text leaves
-the process. Only the bus path (`handle_chat`) is counted; the OpenAI/Anthropic HTTP
-passthroughs are not.
+Counts, clock percentiles and token totals only -- no prompt or reply text leaves
+the process. Both the bus path (`handle_chat`) and the HTTP passthroughs
+(`/v1/messages`, `/v1/chat/completions`, `app/passthrough_proxy.py`) are counted, once
+per call. A passthrough is classified by its upstream status (`classify_http_outcome`);
+a client that leaves while queued or mid-stream is `client_gone` (inspection only).
+Passthrough calls land in the per-role clocks only (`http_calls` says how many):
+the node-level counts behind `inference_failure_pressure` stay bus-RPC calls, since
+widening that live field channel's population is a metric-definition change, not
+part of stage 6.2.
+
+**Two clocks per granted role (gpu-pool stage 6.2, 2026-09-30).** Each call carries a
+`CallClock`: `wait` is GPU-pool acquire -> grant (the line), `model` is grant -> reply
+or stream end (the worker). The intervals are disjoint; a re-lease (context overflow)
+sums each. Each node atom carries
+`roles=<role>[calls:n|served:n|upstream_failed:n|refused:n|request_invalid:n|wait_p50_ms:..|wait_p95_ms:..|model_p50_ms:..|model_p95_ms:..|decode_tps_p50:..|decode_tps_n:n]...`
+keyed by the granted pool role (`chat`, `agent`, `agent-gpu2`, `metacog`, `fast`;
+`ungranted` for calls that never held a lease -- filed under the pool's host node, so
+the wait survives the reducer while the node counts stay unattributed). `wait` counts
+every call that waited;
+`model` and `decode_tps` count served calls only. `decode_tps` is llama.cpp's own
+`timings.predicted_per_second` (bus reply `raw`, passthrough body, or a stream's last
+chunk) -- never derived from wall time; absent, not 0, when not reported. The reducer
+puts these on `nodes.<llm_node>.by_role` in `substrate_llm_inference_projection`
+(debug only, no field channel). The old `p50_ms`/`p95_ms` (one clock from before the
+lease: queue wait + model time, per machine) are retired.
+
+Covariates, so a per-role baseline does not read normal slot sharing as a degraded
+worker (stage 7 input): `busy` is this gateway's calls in flight on the granted role
+at grant, this one included (`pool_placement.busy_at_grant`, counted from grant to
+lease release); decode speed is also split `decode_tps_solo_p50` (busy == 1) vs
+`decode_tps_shared_p50`; `slots` is the pool's discovered slot count for the role,
+read once per window from pool state (omitted when the pool is unreachable);
+`prompt_n`/`cache_n` sum llama.cpp's `timings.prompt_n` (prompt tokens processed)
+and `timings.cache_n` (reused from the KV cache) over served calls that reported both.
 
 What counts as a backend failure: only replies framed `[Error: ...` that are a
 timeout, refused/failed connection, HTTP 5xx, 404 or other backend error. Upstream
@@ -290,7 +321,14 @@ attachments are the caller's request, counted as `request_invalid`. A call that
 raises inside dispatch is counted as `gateway_exception` (unattributed). Known limits:
 - `upstream_timeout` includes calls whose read timeout was the caller's own leftover
   budget, so a short-budget caller on a busy-but-healthy lane can register one.
-- latency p50/p95 is the whole stay in the gateway (admission wait + generation).
+- `wait` is measured on the gateway's clock (acquire -> grant), not read from the
+  pool's `waited_ms`; the two should agree to within the bus round trip.
+- a streamed passthrough's `model` time runs to stream end, so a slow-reading client adds
+  its own time (`decode_tps` is unaffected). A call re-leased after a context overflow
+  sums both attempts under the final role.
+- a window with only per-role data (passthroughs, ungranted waits) sends a `calls=0`
+  node atom; the reducer updates `by_role` and leaves `inference_failure_pressure` and
+  its rolling span untouched.
 - the reducer keys state by serving node only; it assumes ONE gateway reports on a
   node (true today). A second gateway would overwrite the first's windows.
 - the publisher has no shutdown hook: the partial window at SIGTERM is lost, and a

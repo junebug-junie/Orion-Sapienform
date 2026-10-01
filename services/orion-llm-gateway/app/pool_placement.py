@@ -197,6 +197,77 @@ def estimate_min_ctx_tokens(messages: Iterable[Any], max_tokens: Any = None, *, 
 # ── leases ──────────────────────────────────────────────────────────────────────────────────
 
 
+# ── role occupancy (gpu-pool stage 6.2 + stage 7 C1) ────────────────────────────────────────
+# Calls this gateway has in flight on each granted role, counted from grant to release. At N>1
+# slots llama.cpp decodes every busy slot in one batch, so a call's decode speed depends on how
+# many others were decoding beside it: the inference report bands decode_tps by this, so ordinary
+# multi-slot sharing does not read as a degraded worker. Counted here, at the lease, because the
+# lease is released on every exit path (the pool's own accounting depends on it). Counts calls,
+# not the pool's leases: an idle durable-run hold holds a slot but decodes nothing.
+_role_in_flight: Dict[str, int] = {}
+_busy_at_grant: Dict[str, int] = {}
+_occupancy_lock = threading.Lock()
+
+
+def _occupancy_enter(role: str, lease_id: str) -> int:
+    with _occupancy_lock:
+        n = _role_in_flight.get(role, 0) + 1
+        _role_in_flight[role] = n
+        _busy_at_grant[lease_id] = n
+        return n
+
+
+def _occupancy_exit(role: str, lease_id: str) -> None:
+    with _occupancy_lock:
+        _busy_at_grant.pop(lease_id, None)
+        n = _role_in_flight.get(role, 0) - 1
+        if n > 0:
+            _role_in_flight[role] = n
+        else:
+            _role_in_flight.pop(role, None)
+
+
+def busy_at_grant(lease: Any) -> Optional[int]:
+    """This gateway's calls in flight on the lease's role at its grant, this one included."""
+    with _occupancy_lock:
+        return _busy_at_grant.get(str(getattr(lease, "lease_id", "") or ""))
+
+
+def role_in_flight() -> Dict[str, int]:
+    with _occupancy_lock:
+        return dict(_role_in_flight)
+
+
+async def role_slots() -> Dict[str, int]:
+    """The pool's discovered slot count per LLM role (cached pool state; {} when unreachable).
+    Read once per inference-report window, never on the serving path."""
+    state = await fetch_pool_state()
+    out: Dict[str, int] = {}
+    for role in (state or {}).get("roles") or []:
+        if isinstance(role, dict) and role.get("kind", "llm") == "llm":
+            try:
+                slots = int(role.get("slots") or 0)
+            except (TypeError, ValueError):
+                continue
+            if role.get("role") and slots > 0:
+                out[str(role["role"])] = slots
+    return out
+
+
+def pool_node() -> Optional[str]:
+    """The pool's host node (``host.name``, e.g. "circe"), or None if the config cannot load."""
+    try:
+        return str(pool_config().host.name or "").strip().lower() or None
+    except Exception:  # noqa: BLE001 -- telemetry attribution only
+        return None
+
+
+def reset_occupancy_for_tests() -> None:
+    with _occupancy_lock:
+        _role_in_flight.clear()
+        _busy_at_grant.clear()
+
+
 class PoolLease:
     """One pool lease whose release may happen in a different task (streaming responses)."""
 
@@ -214,6 +285,7 @@ class PoolLease:
         self.lease: Optional[Lease] = None
         self._cm: Any = None
         self._released = False
+        self._occupancy: Optional[tuple[str, str]] = None
 
     async def acquire(self) -> Lease:
         bus = get_bus()
@@ -244,6 +316,10 @@ class PoolLease:
             logger.warning("gpu_pool_lease_rpc_failed route=%s error=%s: %s", self.route, type(exc).__name__, exc)
             raise LeaseUnavailable(POOL_UNREACHABLE) from exc
         self._cm = cm
+        grant_role = str(getattr(self.lease.grant, "role", "") or "")
+        if grant_role:
+            self._occupancy = (grant_role, str(self.lease.lease_id))
+            _occupancy_enter(*self._occupancy)
         logger.info(
             "gpu_pool_lease_granted route=%s class=%s priority=%s holder=%s role=%s url=%s ctx_per_slot=%s "
             "min_ctx=%s corr=%s hold=%s",
@@ -263,6 +339,8 @@ class PoolLease:
         if self._cm is None or self._released:
             return
         self._released = True
+        if self._occupancy is not None:
+            _occupancy_exit(*self._occupancy)
         if error is None:
             await self._cm.__aexit__(None, None, None)
         else:

@@ -147,6 +147,7 @@ from orion.schemas.transport_projection import TransportBusProjectionV1, Transpo
 from orion.schemas.llm_inference_projection import (
     LlmInferenceNodeStateV1,
     LlmInferenceProjectionV1,
+    LlmInferenceRoleStateV1,
     LlmInferenceWindowCountV1,
 )
 from orion.schemas.agents.bound_capability import (
@@ -849,6 +850,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "TransportBusProjectionV1": TransportBusProjectionV1,
     "LlmInferenceNodeStateV1": LlmInferenceNodeStateV1,
     "LlmInferenceProjectionV1": LlmInferenceProjectionV1,
+    "LlmInferenceRoleStateV1": LlmInferenceRoleStateV1,
     "LlmInferenceWindowCountV1": LlmInferenceWindowCountV1,
     "CodebaseDeltaV1": CodebaseDeltaV1,
     "JuniperAffectiveStateV1": JuniperAffectiveStateV1,

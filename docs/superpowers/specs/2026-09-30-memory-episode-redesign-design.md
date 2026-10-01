@@ -832,6 +832,8 @@ Evals are label-free. Juniper reads the report if she wants to; she never labels
 5. **Labels:** the self-study and study_material wording no longer claims Juniper approved these rows.
 
 ### Stage 1: memory writer in shadow, with the reused boundary
+
+> **Note from Stage 0A (PR #2457).** After Stage 0A's junk check, the consolidation gate's novelty and significance floors (`MEMORY_CONSOLIDATION_MIN_NOVELTY`, `MEMORY_CONSOLIDATION_MIN_SIGNIFICANCE`, `orion/memory/consolidation_gate.py`) can no longer cause a skip. Every window with at least one non-junk prompt is proposed; the floors only choose the recorded reason. Deciding whether a non-junk window deserves a memory is therefore the Stage 1 writer's job, and nothing upstream of it does that today.
 1. **Boundary fixes:**
    - Fix 1: 100% of new chat and outreach turns carry `spark_meta.conversation_phase`;
    - Fix 2: the window score equals the chat-log score for every turn (a test plus a 48 h live check).

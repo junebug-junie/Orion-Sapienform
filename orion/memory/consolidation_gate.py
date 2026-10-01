@@ -101,6 +101,13 @@ def consolidation_memory_gate(
     # any content -- a noisy/high score on a low-info turn (e.g. "hi") was
     # sailing through to crystallization. The all-junk return above is the
     # corroboration: past it, at least one prompt has real content.
+    #
+    # NOTE (Stage 0A review): past the junk return, every window proposes --
+    # through one of the branches below or the `substantive_text` fallback.
+    # The novelty/significance floors can no longer cause a skip; they only
+    # choose the reason recorded on the row. Whether a non-junk window is
+    # worth a memory is the Stage 1 writer's judgment
+    # (docs/superpowers/specs/2026-09-30-memory-episode-redesign-design.md).
     if novelty_max >= min_novelty:
         return ConsolidationGateResult(
             action="propose",

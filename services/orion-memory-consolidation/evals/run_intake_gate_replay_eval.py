@@ -71,6 +71,32 @@ NAMED_KEEPERS: dict[str, str] = {
     "81bb95de-b559-43ab-8906-241d57972c56": "labs",
     "5f519ca1-b467-4e26-8ddc-402edad703a9": "family",
 }
+# What the named keepers can and cannot prove. Austin and offsite are stored
+# verbatim, so the replay really judges their text. Labs and family are
+# redacted placeholders, which the rule can never call junk -- in the fixture
+# they only prove the window was not dropped for some OTHER reason. The real
+# protection for content like theirs is SYNTHETIC_KEEPERS below.
+VERBATIM_KEEPERS = frozenset({"austin", "offsite"})
+
+# Synthetic, non-private messages that must always be kept: one per
+# over-dropping finding from the review of PR #2457, plus a greeting-prefixed
+# real message. Judged on their real text, every run.
+SYNTHETIC_KEEPERS: dict[str, str] = {
+    "мама умерла сегодня": "non_latin_cyrillic",
+    "母が亡くなった": "non_latin_cjk",
+    "אמא שלי חולה": "non_latin_hebrew",
+    "Mamá está enferma": "accented_latin",
+    "I'm not ok": "short_negation",
+    "not good": "short_negation",
+    "rough day": "short_feeling",
+    "Do a journal pass about my labs": "command_plus_content",
+    "run a self review on my divorce": "command_plus_content",
+    "when is the surgery?": "short_real_question",
+    "where is mom?": "short_real_question",
+    "who is Sarah?": "short_real_question",
+    "hi, my son was diagnosed today": "greeting_prefixed_real",
+}
+
 # Austin-day lines the spec (2026-09-30-memory-episode-redesign-design.md)
 # already quotes; safe to keep verbatim.
 PUBLIC_VERBATIM_IDS = {
@@ -265,6 +291,16 @@ def replay(windows: list[dict[str, Any]]) -> dict[str, Any]:
             label: ("kept" if "propose" in actions else ("dropped" if actions else "absent"))
             for label, actions in keeper_seen.items()
         },
+        "named_keepers_verbatim": sorted(VERBATIM_KEEPERS),
+        "synthetic_keepers": {
+            prompt: consolidation_memory_gate(
+                turns=[_gate_turn({"prompt": prompt})],
+                grammar_repair_signal=False,
+                min_novelty=MIN_NOVELTY,
+                min_significance=MIN_SIGNIFICANCE,
+            ).action.replace("propose", "kept").replace("skip", "dropped")
+            for prompt in SYNTHETIC_KEEPERS
+        },
         "kept_rows": kept,
         "dropped_rows": dropped,
     }
@@ -284,7 +320,16 @@ def _print(report: dict[str, Any]) -> None:
     )
     print(f"Kept rows whose summary is under 40 chars: {report['kept_under_40_chars']}")
     print(f"Kept rows whose summary is a greeting/command: {report['kept_with_junk_summary']}")
-    print(f"Named keepers: {report['named_keepers']}")
+    print(
+        f"Named keepers: {report['named_keepers']} "
+        f"(only {', '.join(report['named_keepers_verbatim'])} are judged on real text; "
+        "labs/family are redacted placeholders)"
+    )
+    synth = report["synthetic_keepers"]
+    print(f"Synthetic keepers kept: {sum(v == 'kept' for v in synth.values())}/{len(synth)}")
+    for prompt, verdict in synth.items():
+        if verdict != "kept":
+            print(f"  DROPPED synthetic keeper: {prompt!r}")
     print("\nDROPPED:")
     for d in report["dropped_rows"]:
         print(f"  {str(d['closed_at'])[:10]}  {d['reasons']}  {' | '.join(d['prompts'])[:110]}")
@@ -310,6 +355,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Fixture captured {fixture.get('captured_at')} ({fixture.get('lookback_days')} days)")
         _print(report)
     missing = [k for k, v in report["named_keepers"].items() if v != "kept"]
+    missing += [k for k, v in report["synthetic_keepers"].items() if v != "kept"]
     return 1 if missing else 0
 
 

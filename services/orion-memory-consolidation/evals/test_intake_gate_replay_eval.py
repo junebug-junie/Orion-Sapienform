@@ -38,7 +38,7 @@ def test_no_kept_row_is_summarised_by_a_greeting_or_command():
 
 def test_command_and_greeting_windows_are_dropped():
     dropped_prompts = {p for d in _report()["dropped_rows"] for p in d["prompts"]}
-    for junk in ("Run github compactor.", "Do a journal pass.", "sup", "hi", "ty!", "hey, which queue?",
+    for junk in ("Run github compactor.", "Do a journal pass.", "sup", "ty!",
                  "Compact the last 24 hours of chat into a memory digest."):
         assert junk in dropped_prompts, junk
 
@@ -54,3 +54,20 @@ def test_the_gate_still_keeps_most_windows():
     # conversation. A collapse here means the filter is eating content.
     report = _report()
     assert report["kept"] >= 0.8 * report["windows"]
+
+
+def test_synthetic_keepers_are_all_kept():
+    # Labs and family are redacted in the fixture and cannot be judged junk by
+    # construction; these synthetic messages are the real over-drop guard.
+    synth = _report()["synthetic_keepers"]
+    assert len(synth) == len(ev.SYNTHETIC_KEEPERS)
+    assert all(v == "kept" for v in synth.values()), synth
+
+
+def test_review_change_is_the_only_new_keep():
+    # The only window the review fixes newly keep is "hi | hey, which queue?":
+    # a short question with a real content word is now kept (finding 4).
+    report = _report()
+    assert report["dropped"] == 6
+    kept_prompts = [k["prompts"] for k in report["kept_rows"]]
+    assert ["hi", "hey, which queue?"] in kept_prompts

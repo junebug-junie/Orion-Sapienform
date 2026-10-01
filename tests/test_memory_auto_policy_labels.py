@@ -21,8 +21,9 @@ NOW = datetime(2026, 10, 1, tzinfo=timezone.utc)
 REPO = Path(__file__).resolve().parents[1]
 
 
-def _row(cid, mode):
+def _row(cid, mode, approved=False):
     return {
+        "juniper_approved": approved,
         "crystallization_id": cid,
         "kind": "semantic",
         "subject": "Run github compactor.",
@@ -52,13 +53,30 @@ def test_auto_policy_card_says_auto_saved_not_approved():
 
 
 def test_hand_approved_card_says_approved():
-    card = _material([_row("m", "manual_required")]).crystallizations[0]
+    card = _material([_row("m", "manual_required", approved=True)]).crystallizations[0]
     assert "approved by Juniper" in card.preview()
+
+
+def test_manual_required_without_an_approve_row_is_not_called_approved():
+    # Review of PR #2457: approval_mode says a row NEEDED review, not that it
+    # got one. Only an op='approve' history row counts.
+    card = _material([_row("m", "manual_required", approved=False)]).crystallizations[0]
+    assert "approved by Juniper" not in card.preview()
+    assert "no recorded approval" in card.preview()
+
+
+def test_approval_is_read_from_history_in_both_queries():
+    from orion.curiosity.study_material import APPROVED_COUNT_SQL
+
+    for sql in (APPROVED_COUNT_SQL, APPROVED_SAMPLE_SQL):
+        assert "memory_crystallization_history" in sql and "h.op = 'approve'" in sql
+    assert "<> 'auto_policy'" not in APPROVED_COUNT_SQL
 
 
 def test_card_without_the_column_claims_nothing():
     row = _row("x", None)
     del row["approval_mode"]
+    del row["juniper_approved"]
     card = _material([row]).crystallizations[0]
     assert card.approval_label is None
     assert "approved" not in card.preview()
@@ -100,3 +118,4 @@ def test_self_study_source_description_does_not_claim_approval():
     assert "accepted" not in text
     assert "auto-saved by policy" in text
     assert "does not mean Juniper approved" in text
+    assert "'approve'" in text  # approval is a history row, not an inference

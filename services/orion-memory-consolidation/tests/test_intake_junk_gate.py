@@ -19,7 +19,6 @@ GREETINGS = [
     "ty!",
     "yo",
     "sup yo",
-    "hey, which queue?",
     "howdy, how goes it",
     "Hey hey how are things going?",
     "what else is on your mind?",
@@ -107,7 +106,7 @@ def test_real_memory_window_still_proposes(prompt):
 
 
 def test_real_memory_next_to_a_greeting_still_proposes():
-    turns = [_turn("hey, which queue?"), _turn(REAL[0])]
+    turns = [_turn("sup yo"), _turn(REAL[0])]
     assert _gate(turns).action == "propose"
 
 
@@ -139,3 +138,50 @@ def test_row_summary_skips_a_trailing_greeting():
     turns = [_turn(REAL[0]), _turn("sup yo"), _turn("Run github compactor.")]
     assert _window_summary(turns) == REAL[0]
     assert _window_summary([_turn("hi"), _turn("")]) == "hi"  # all junk: unchanged fallback
+
+
+# --- Review of PR #2457: over-dropping. "Over-index on remembering." ---------
+
+# Finding 1: non-Latin scripts and accented Latin were read as "no words".
+NON_LATIN = ["мама умерла сегодня", "母が亡くなった", "אמא שלי חולה", "Mamá está enferma", "café?"]
+# Finding 2: negations were stopwords, so a short bad day read as filler.
+SHORT_FEELINGS = ["I'm not ok", "not good", "not great", "I'm sad", "rough day", "I can't sleep", "no"]
+# Finding 3: a command followed by real content is also a memory.
+COMMAND_PLUS_CONTENT = ["Do a journal pass about my labs", "run a self review on my divorce"]
+# Finding 4: short questions about real things are kept.
+REAL_QUESTIONS = ["when is the surgery?", "where is mom?", "who is Sarah?", "hey, which queue?"]
+# Still junk after the fixes.
+PURE_SOCIAL_QUESTIONS = ["you back?", "what's up?", "how are you?", "what's new?", "what else is on your mind?"]
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    NON_LATIN + SHORT_FEELINGS + COMMAND_PLUS_CONTENT + REAL_QUESTIONS
+    + ["hi, my son was diagnosed today", "please, my mom is sick"],
+)
+def test_review_overdrop_cases_are_kept(prompt):
+    assert prompt_junk_reason(prompt) is None
+    # And the window proposes, even with nothing else going for it.
+    assert _gate([_turn(prompt)]).action == "propose"
+
+
+@pytest.mark.parametrize("prompt", NON_LATIN)
+def test_non_latin_text_survives_even_alone_in_a_window_with_a_greeting(prompt):
+    assert _gate([_turn("hi"), _turn(prompt)]).action == "propose"
+
+
+@pytest.mark.parametrize("prompt", PURE_SOCIAL_QUESTIONS)
+def test_pure_social_question_is_still_junk(prompt):
+    assert prompt_junk_reason(prompt) == "low_info_social"
+
+
+@pytest.mark.parametrize(
+    "prompt", ["please run github compactor now", "hey orion, run github compactor please"]
+)
+def test_command_with_only_politeness_is_still_a_command(prompt):
+    assert prompt_junk_reason(prompt) == "hub_command"
+
+
+def test_command_with_content_is_not_a_command():
+    for prompt in COMMAND_PLUS_CONTENT:
+        assert hub_command_workflow(prompt) is None, prompt

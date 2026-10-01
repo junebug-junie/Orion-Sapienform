@@ -172,8 +172,9 @@ SOURCE_SPECS: Mapping[str, SourceSpec] = {
             "Memory rows saved from chat windows (crystallizations) -- one row "
             "per saved window, with the kind it was filed under and its status. "
             "'active' does not mean Juniper approved it: most active rows were "
-            "auto-saved by policy and nobody reviewed them; only a few stances "
-            "were approved by her by hand. 'proposed' rows are waiting for "
+            "auto-saved by policy and nobody reviewed them; a row was approved "
+            "by her only if memory_crystallization_history holds an 'approve' "
+            "entry for it. 'proposed' rows are waiting for "
             "review and 'rejected' rows were turned down."
         ),
     ),

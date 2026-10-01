@@ -23,8 +23,10 @@ THE TWO STORES.
   `memory_crystallizations`  -- memories saved from Orion's conversations.
       `status='active'` does NOT mean Juniper approved them: live 2026-09-30,
       706 of 743 active rows were auto-saved by policy
-      (`governance.approval_mode='auto_policy'`) and nobody reviewed them; 37
-      were approved by her by hand. Each card says which (`approval_label`).
+      (`governance.approval_mode='auto_policy'`) and nobody reviewed them.
+      "Approved by Juniper" is said only for rows with an `op='approve'`
+      entry in `memory_crystallization_history`. Each card says which
+      (`approval_label`).
       Rows still waiting for review, or rejected, are not offered.
 
   `memory_concept_relation_decisions` -- concept induction proper: judgements
@@ -74,19 +76,28 @@ class CrystallizationCard:
     # `governance.approval_mode`. None when the caller's row predates the
     # column -- then the card says nothing rather than guessing.
     approval_mode: str | None = None
+    # Whether `memory_crystallization_history` holds an `op='approve'` row for
+    # it -- the only actual record of Juniper approving something. None when
+    # the caller's row predates the column.
+    juniper_approved: bool | None = None
 
     @property
     def approval_label(self) -> str | None:
         """Who decided this row was worth keeping, in plain words.
 
+        "Approved by Juniper" is said only when an `op='approve'` history row
+        exists, never inferred from `approval_mode` (review of PR #2457: a
+        `manual_required` row is one that NEEDED review, not one that got it).
         `auto_policy` rows were saved by the formation policy and nobody
         looked at them; calling them approved is the false claim this label
         exists to stop (memory redesign Stage 0A).
         """
+        if self.juniper_approved:
+            return "approved by Juniper"
         if self.approval_mode == "auto_policy":
             return "auto-saved by policy, not reviewed by Juniper"
-        if self.approval_mode:
-            return "approved by Juniper"
+        if self.juniper_approved is False:
+            return "no recorded approval from Juniper"
         return None
 
     def preview(self) -> str:
@@ -189,7 +200,16 @@ def build_crystallization_card(row: Any) -> CrystallizationCard:
         salience=_as_float(row["salience"]),
         created_at=row["created_at"],
         approval_mode=_optional_str(row, "approval_mode"),
+        juniper_approved=_optional_bool(row, "juniper_approved"),
     )
+
+
+def _optional_bool(row: Any, key: str) -> bool | None:
+    try:
+        value = row[key]
+    except (KeyError, IndexError, TypeError):
+        return None
+    return None if value is None else bool(value)
 
 
 def _optional_str(row: Any, key: str) -> str | None:
@@ -223,9 +243,9 @@ def build_relation_card(row: Any) -> RelationCard:
 # --- SQL. Identifiers are literals here; only limits are parameters. --------
 #
 # `status = 'active'` is the saved filter, NOT an approval filter: most active
-# rows were auto-saved by policy and nobody reviewed them; only the
-# `approval_mode <> 'auto_policy'` ones were approved by Juniper by hand. The
-# per-row label comes from `governance.approval_mode` (see `approval_label`).
+# rows were auto-saved by policy and nobody reviewed them. Juniper's approval
+# is read from `memory_crystallization_history` (`op='approve'`), the only
+# record of it -- not inferred from `approval_mode` (see `approval_label`).
 
 # `kind='reflection'` is EXCLUDED from the sample, and this is not taste.
 # Those 356 rows are a materialised copy of `memory_concept_relation_decisions`
@@ -271,9 +291,10 @@ _SAMPLEABLE_KINDS = (
 APPROVED_COUNT_SQL = f"""
 SELECT m.kind,
        count(*) AS n,
-       count(*) FILTER (
-         WHERE m.governance ->> 'approval_mode' <> 'auto_policy'
-       ) AS manual_n
+       count(*) FILTER (WHERE EXISTS (
+         SELECT 1 FROM memory_crystallization_history h
+          WHERE h.crystallization_id = m.crystallization_id AND h.op = 'approve'
+       )) AS manual_n
 FROM memory_crystallizations m
 WHERE {_SAMPLEABLE_KINDS}
 GROUP BY m.kind
@@ -281,7 +302,11 @@ GROUP BY m.kind
 
 APPROVED_SAMPLE_SQL = f"""
 SELECT m.crystallization_id, m.kind, m.subject, m.summary, m.salience,
-       m.created_at, m.governance ->> 'approval_mode' AS approval_mode
+       m.created_at, m.governance ->> 'approval_mode' AS approval_mode,
+       EXISTS (
+         SELECT 1 FROM memory_crystallization_history h
+          WHERE h.crystallization_id = m.crystallization_id AND h.op = 'approve'
+       ) AS juniper_approved
 FROM memory_crystallizations m
 WHERE {_SAMPLEABLE_KINDS}
 ORDER BY random()

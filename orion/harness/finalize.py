@@ -842,6 +842,11 @@ async def emit_verdict_molecule(
 # max 6602 chars; observed ~3.3 chars/token -> max ~2000 tokens. 3072 covers that with
 # margin; a longer rewrite is cut at finish_reason=length and refused below
 # (extract_response_repair_text), never shipped half-written.
+# Depends on the backend honouring enable_thinking: the gateway forwards
+# chat_template_kwargs only for llamacpp / llama-cola (llm_backend.py). Live 7-day
+# repair traces that record a backend all say llamacpp. If this lane ever moves to
+# a backend that drops it, thinking stays on, 3072 starves, and repairs fail closed
+# (no reply) rather than leaking reasoning.
 RESPONSE_REPAIR_MAX_TOKENS = 3072
 RESPONSE_REPAIR_CHAT_TEMPLATE_KWARGS: dict[str, Any] = {"enable_thinking": False}
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Canonical home for this check (2026-08-19), promoted here from
@@ -73,6 +74,37 @@ def looks_like_error_text(text: str) -> bool:
 # request: repair Orion's draft reply to Juniper...").
 _REASONING_MESSAGE_FIELDS = ("reasoning_content", "reasoning", "reasoning_text")
 _REASONING_BLOCK_FIELDS = ("reasoning_content", "inline_think_content")
+
+
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+_THINK_CLOSE_RE = re.compile(r"</think>", re.IGNORECASE)
+
+
+def strip_inline_think(text: str) -> str:
+    """Drop inline ``<think>`` reasoning from a text field (same rules as cortex-exec's
+    router ``_strip_think_content``): whole blocks removed, a dangling ``</think>`` keeps only
+    what follows it, an unclosed ``<think>`` keeps only what precedes it."""
+    raw = str(text or "")
+    if "<think>" not in raw.lower() and not _THINK_CLOSE_RE.search(raw):
+        return raw.strip()
+    cleaned = _THINK_BLOCK_RE.sub(" ", raw)
+    if "<think>" not in cleaned.lower():
+        close = _THINK_CLOSE_RE.search(cleaned)
+        if close:
+            cleaned = cleaned[close.end():]
+    lowered = cleaned.lower()
+    if "<think>" in lowered:
+        cleaned = cleaned[: lowered.find("<think>")]
+    return cleaned.strip()
+
+
+def _answer_only(values: list[str]) -> list[str]:
+    out: list[str] = []
+    for value in values:
+        stripped = strip_inline_think(value)
+        if stripped:
+            out.append(stripped)
+    return out
 
 
 def _openai_choice_message_text(raw: Any, *, include_reasoning: bool = True) -> list[str]:
@@ -166,11 +198,19 @@ def extract_cortex_payload_text(raw: dict[str, Any], *, include_reasoning: bool 
     for field in ("final_text", "text", "content"):
         val = raw.get(field)
         if isinstance(val, str) and val.strip():
-            return val.strip()
+            if include_reasoning:
+                return val.strip()
+            answer = strip_inline_think(val)
+            if answer:
+                return answer
 
     steps = _sorted_steps(list(raw.get("steps") or raw.get("step_results") or []))
     for step in reversed(steps):
         candidates = _step_text_candidates(step, include_reasoning=include_reasoning)
+        if not include_reasoning:
+            # Inline <think> text in an answer field is reasoning too (llama.cpp with
+            # reasoning_format=none, or a template that keeps the tags in content).
+            candidates = _answer_only(candidates)
         if candidates:
             return candidates[-1]
 
@@ -184,7 +224,7 @@ def extract_cortex_payload_text(raw: dict[str, Any], *, include_reasoning: bool 
     if isinstance(meta, dict):
         preview = meta.get("structured_rejection_preview")
         if isinstance(preview, str) and preview.strip():
-            return preview.strip()
+            return preview.strip() if include_reasoning else strip_inline_think(preview)
 
     return ""
 

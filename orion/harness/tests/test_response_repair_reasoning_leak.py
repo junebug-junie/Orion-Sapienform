@@ -168,3 +168,34 @@ async def test_finalize_chain_never_ships_reasoning_as_final_text() -> None:
                 substrate_client=substrate_client,
             )
     assert "orion_response_repair" in seen_verbs
+
+
+def test_inline_think_in_content_is_never_the_reply() -> None:
+    """Review finding: reasoning delivered as inline <think> text inside content (llama.cpp
+    reasoning_format=none / thinking left on) must not slip through the answer-only path."""
+    think = "<think>We need answer user request: repair draft...</think>"
+    step = _gateway_step(content=think, reasoning="", finish_reason="stop")
+    step["result"]["LLMGatewayService"]["text"] = ""
+    step["result"]["LLMGatewayService"]["inline_think_content"] = "We need answer..."
+    payload = {"status": "success", "final_text": None, "steps": [step]}
+    assert extract_cortex_answer_text(payload) == ""
+    with pytest.raises(ValueError, match="reasoning only, empty answer"):
+        extract_response_repair_text(payload)
+
+    step["result"]["LLMGatewayService"]["raw"]["choices"][0]["message"]["content"] = think + "\n\nThe real reply."
+    step["result"]["LLMGatewayService"]["content"] = think + "\n\nThe real reply."
+    assert extract_response_repair_text(payload) == "The real reply."
+
+
+def test_top_level_truncation_flag_is_refused() -> None:
+    """Live shape: router-stripped top-level final_text fragment, truncation flagged only in
+    runtime diagnostics (no finish_reason in steps)."""
+    payload = {
+        "status": "success",
+        "final_text": "I checked rather than guessed — the mesh is up (90+…",
+        "steps": [],
+        "metadata": {"runtime_response_diagnostics": {"truncation_detected": True}},
+    }
+    assert cortex_payload_truncated(payload) is True
+    with pytest.raises(ValueError, match="truncated at max_tokens"):
+        extract_response_repair_text(payload)

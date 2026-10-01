@@ -421,3 +421,14 @@ Also decided: HTTP passthrough calls stay out of `inference_failure_pressure` (6
 3. **7.0:** fix #2434's gpu0 default inside #2434 before merge (recommended), or merge and follow up?
 4. **Order vs stage 6:** finish 6.2's 48 h checkpoint before 7.2 changes a role's model and slots
    (recommended), or restart the checkpoint after?
+
+## #27148 probe on metacog/fast (2026-10-01)
+
+**Did not reproduce.** 43 synthetic requests against circe metacog (:8012) and fast (:8013): 0 cross-conversation codewords, and server cache reuse (`timings.cache_n`) always equalled the true shared prefix (2,243 / 2,242 tokens in the shared-opening test).
+
+- Setup tested: b10398, Qwen3-8B (dense), `--parallel 4`, 4,096 tokens per slot, default 8 GiB RAM cache with idle-slot publishing on, `kv_unified=false`. This is the same config class as the upstream report.
+- The risky path did run: LRU slot picks over slots still holding unrelated conversations, and truly simultaneous pairs on metacog.
+- **This does not clear the multi-slot targets.** Upstream reproduced the bug on Qwen3.6-35B-A3B, a hybrid model whose running state can't be partly rolled back. The dense 8B always truncated cleanly. So the 7.1 canary must run on the exact models stage 7 makes multi-slot (Bonsai / the 27B on gpu2), with prompts at ≥4.5K tokens and tool-call turns.
+- Limits: small sample; prompts ≤3.2K tokens (slot size); no tool turns.
+- Mitigation if it ever reproduces: `--cache-ram 0 --no-cache-idle-slots`. This needs two new profile fields plus `append_flag` lines in `services/orion-llamacpp-host/app/main.py`, because there is no extra-args passthrough today.
+- Raw evidence: `/tmp/leak-probe-27148/` on athena.

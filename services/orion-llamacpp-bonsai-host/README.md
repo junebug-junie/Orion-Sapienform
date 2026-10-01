@@ -80,6 +80,11 @@ ORION_BUS_URL=redis://100.92.216.81:6379/0 PYTHONPATH=. .venv/bin/python scripts
 ORION_BUS_URL=redis://100.92.216.81:6379/0 PYTHONPATH=. .venv/bin/python scripts/gpu_pool_pause.py resume
 ```
 
+For the stage 7.1 bake-off (2 slots x 131K on gpu2, depth bench + #27148 bleed canary), use
+`scripts/bench/stage7_1_bakeoff.sh` instead of the manual steps above: it checks the seat is idle,
+pauses actuation, holds the diffusion role so diffusion-host cannot load next to Bonsai, forces
+card 2, and undoes all of it on every exit. Results: `docs/2026-10-01-gpu-pool-stage7-1-bakeoff.md`.
+
 ### This service is a bake-off tool
 
 It is retired in stage 7.6 of the stage 7 spec, once the Bonsai image lives in

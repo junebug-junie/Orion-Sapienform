@@ -27,6 +27,9 @@ on:
       - "services/orion-gpu-lane-controller/app/**"
       - "scripts/gpu_pool_actuator_probe.py"
       - "scripts/gpu_pool_pause.py"
+      # stage 7.1 bake-off tooling (bench + bleed canary + pool controls)
+      - "scripts/bench/stage7_1_*"
+      - "tests/scripts/test_stage7_1_bakeoff.py"
       # check_gpu_pool_config.py's launch-block check reads these (stage 4.1)
       - "services/orion-diffusion-host/docker-compose.yml"
       - "services/orion-diffusion-host/.env_example"
@@ -92,6 +95,8 @@ on:
       - "services/orion-hub/scripts/gpu_pool_routes.py"
       - "services/orion-hub/static/js/gpu_pool*.js"
       - "scripts/check_gpu_pool_config.py"
+      - "scripts/bench/stage7_1_*"
+      - "tests/scripts/test_stage7_1_bakeoff.py"
       - "services/orion-sql-db/manual_migration_gpu_pool_*.sql"
       - "services/orion-world-model/**"
       - "services/orion-diffusion-host/docker-compose.yml"
@@ -170,6 +175,10 @@ jobs:
         run: |
           python -m pip install -r services/orion-llamacpp-host/requirements.txt
           cd services/orion-llamacpp-host && python -m pytest tests/test_worker_announce.py -q -p no:cacheprovider
+      - name: Stage 7.1 bake-off tooling (dry-run trap always resumes the pool, pass rule, bleed detectors)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest tests/scripts/test_stage7_1_bakeoff.py -q -p no:cacheprovider
       - name: Bonsai fork worker contract (runs the llamacpp-host wrapper)
         env:
           LLM_PROFILE_NAME: ci

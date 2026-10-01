@@ -69,12 +69,32 @@ def test_planted_direct_call_in_settings_fails(tmp_path: Path) -> None:
         'BASE = "http://circe.tail1234.ts.net:8090/actuate"',
         'BASE = "http://orion-circe-atlas-llamacpp-chat:8080"',
         'BASE = "http://atlas-metacog:8080"',
+        'BASE = "http://orion-atlas-llamacpp-chat:8080"',       # compose default container name
+        'BASE = "http://${PROJECT}-atlas-llamacpp-chat:8080"',
+        'BASE = "http://orion-circe-bonsai-worker:8080"',
+        'BASE = "http://bonsai-worker:8080"',
+        'BASE = "http://dsv41-flash:8080"',
+        'BASE = "http://diffusion-host:6700"',
+        'BASE = "http://192.168.1.22:8011"',                   # circe LAN address
+        'BASE = "http://192.168.1.24:8090"',
     ],
 )
-def test_other_address_shapes_are_caught(tmp_path: Path, line: str) -> None:
+@pytest.mark.parametrize("where", ["orion/thing/client.py", "deploy/x/compose.yml", "Makefile",
+                                   "services/orion-hub/templates/x.html", "mesh-utilities/a.service"])
+def test_other_address_shapes_are_caught(tmp_path: Path, line: str, where: str) -> None:
     root = _tree(tmp_path)
-    _write(root, "orion/thing/client.py", line + "\n")
-    assert gate.scan_tree(root), line
+    _write(root, where, line + "\n")
+    assert gate.scan_tree(root), (line, where)
+
+
+def test_worker_names_come_from_the_seat_compose_files(tmp_path: Path) -> None:
+    root = _tree(tmp_path)
+    _write(root, "services/orion-llamacpp-bonsai-host/docker-compose.yml",
+           "services:\n  newseat-worker:\n    container_name: ${PROJECT:-orion}-newseat-llamacpp\n")
+    ident = gate.load_identity(root)
+    assert {"newseat-worker", "newseat-llamacpp"} <= set(ident.containers)
+    _write(root, "orion/c.py", 'U = "http://orion-newseat-llamacpp:8080"\n')
+    assert [(h.host, h.port) for h in gate.scan_tree(root)] == [("newseat-llamacpp", 8080)]
 
 
 def test_zones_comments_tests_and_non_worker_ports_are_ignored(tmp_path: Path) -> None:
@@ -85,6 +105,8 @@ def test_zones_comments_tests_and_non_worker_ports_are_ignored(tmp_path: Path) -
     _write(root, "services/orion-hub/static/js/a.test.js", 'const x = "http://circe:8011";\n')
     _write(root, "services/orion-hub/.env_example", "CIRCE_BIOMETRICS_BASE_URL=http://100.112.254.99:8100\n")
     _write(root, "services/orion-hub/app/b.py", 'X = "http://100.112.254.99:80111"\n')  # not 8011
+    _write(root, ".orion-smoke-logs/run.txt", "http://100.112.254.99:8011\n")  # hidden dir: tooling state
+    _write(root, "services/orion-hub/.env", "LIVE=http://100.112.254.99:8011\n")  # live env: --live-env only
     assert gate.scan_tree(root) == []  # the gateway zone's literal is not scanned either
 
 
@@ -130,8 +152,9 @@ def test_real_repo_fails_on_planted_settings_url(tmp_path: Path) -> None:
     # Copy only what the gate reads: every scanned file, the identity sources, one file per zone.
     wanted = set(gate.iter_scan_files(_REPO))
     wanted |= {_REPO / "config" / "gpu_pool.yaml"} | {_REPO / rel for rel in gate._HOST_PORT_SOURCES}
+    wanted |= {_REPO / rel for rel in gate._WORKER_COMPOSE_FILES}
     for zone in gate.ZONES:
-        wanted.add(next(p for top in gate._SCAN_ROOTS for p in gate._walk(_REPO / top)
+        wanted.add(next(p for p in gate._walk(_REPO)
                         if gate.fnmatch.fnmatchcase(p.relative_to(_REPO).as_posix(), zone)))
     for src in wanted:
         dst = root / src.relative_to(_REPO)

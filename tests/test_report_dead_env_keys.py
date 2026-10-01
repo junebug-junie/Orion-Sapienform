@@ -114,7 +114,7 @@ def test_apply_backs_up_and_removes_only_dead_lines(tmp_path: Path) -> None:
     root = _tree(tmp_path)
     env = root / "services/orion-x/.env"
     before = env.read_text()
-    assert tool.main(["--root", str(root), "--env-root", str(root), "--apply"]) == 0
+    assert tool.main(["--root", str(root), "--env-root", str(root), "--apply", "--include-heuristic"]) == 0
     (backup,) = list(env.parent.glob(".env.bak.*"))
     assert backup.read_text() == before
     after = env.read_text()
@@ -124,14 +124,14 @@ def test_apply_backs_up_and_removes_only_dead_lines(tmp_path: Path) -> None:
                  "LLM_LANE_DEFAULT=quick", "IN_EXAMPLE_ONLY=1"):
         assert kept in after
     # second run: nothing left to remove, no second backup
-    assert tool.main(["--root", str(root), "--env-root", str(root), "--apply"]) == 0
+    assert tool.main(["--root", str(root), "--env-root", str(root), "--apply", "--include-heuristic"]) == 0
     assert len(list(env.parent.glob(".env.bak.*"))) == 1
 
 
-def test_known_only_apply_leaves_unlisted_dead_keys(tmp_path: Path) -> None:
+def test_apply_defaults_to_known_dead_only(tmp_path: Path) -> None:
     root = _tree(tmp_path)
     env = root / "services/orion-x/.env"
-    assert tool.main(["--root", str(root), "--env-root", str(root), "--apply", "--known-only"]) == 0
+    assert tool.main(["--root", str(root), "--env-root", str(root), "--apply"]) == 0
     after = env.read_text()
     assert "GPU_LANE_CONTROLLER_TOKEN=" not in after and "HUB_LLM_GATEWAY_URL=" not in after
     assert "GONE_PLAIN_KEY=1" in after
@@ -192,3 +192,41 @@ def test_known_dead_keys_are_really_unread_in_this_tree() -> None:
             assert tool._match(key, tool.KNOWN_DEAD), f"{key} not covered by KNOWN_DEAD"
             assert key not in example, f"{service}: {key} is back in .env_example"
             assert not reads.reads(key), f"{service}: code reads {key} again"
+
+
+def test_double_dash_flag_lines_read_keys_outside_sql(tmp_path: Path) -> None:
+    rs = tool._text_reads("command: >\n  --max-rows ${ONLY_HERE_KEY:-1}\n")
+    assert rs.reads("ONLY_HERE_KEY")
+    assert not tool._text_reads("-- ONLY_HERE_KEY=true\n", sql=True).reads("ONLY_HERE_KEY")
+
+
+def test_image_and_library_keys_are_protected(tmp_path: Path) -> None:
+    root = _tree(tmp_path)
+    env = root / "services/orion-x/.env"
+    env.write_text(env.read_text() + "LLAMA_ARG_N_GPU_LAYERS=99\nHF_HOME=/x\nCUDA_VISIBLE_DEVICES=0\nTZ=UTC\n")
+    rep = _report(root)
+    for key in ("LLAMA_ARG_N_GPU_LAYERS", "HF_HOME", "CUDA_VISIBLE_DEVICES", "TZ"):
+        assert key not in rep.dead and key not in rep.protected
+
+
+def test_multiline_value_is_never_half_removed(tmp_path: Path) -> None:
+    root = _tree(tmp_path)
+    env = root / "services/orion-x/.env"
+    env.write_text('MULTI_GONE="line one\nGONE_PLAIN_KEY=inside the value\nend"\n' + env.read_text())
+    rep = _report(root)
+    assert "MULTI_GONE" in rep.protected and "MULTI_GONE" not in rep.dead
+    assert tool.main(["--root", str(root), "--env-root", str(root), "--apply", "--include-heuristic"]) == 0
+    after = env.read_text()
+    assert after.startswith('MULTI_GONE="line one\nGONE_PLAIN_KEY=inside the value\nend"\n')
+    assert "GONE_PLAIN_KEY=1" not in after   # the real key line further down is still removed
+
+
+def test_apply_refuses_when_code_tree_is_on_another_commit(tmp_path: Path, monkeypatch, capsys) -> None:
+    code = _tree(tmp_path / "code")
+    envs = _tree(tmp_path / "envs")
+    monkeypatch.setattr(tool, "_head", lambda p: "aaa" if p == code else "bbb")
+    before = (envs / "services/orion-x/.env").read_text()
+    assert tool.main(["--root", str(code), "--env-root", str(envs), "--apply"]) == 3
+    assert (envs / "services/orion-x/.env").read_text() == before
+    assert "refusing --apply" in capsys.readouterr().err
+    assert tool.main(["--root", str(code), "--env-root", str(envs), "--apply", "--allow-tree-mismatch"]) == 0

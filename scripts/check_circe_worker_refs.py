@@ -18,14 +18,19 @@ circe firewall in docs/runbooks/2026-10-01-circe-llm-port-firewall.md.
 What it flags, one line at a time (comment-only lines are skipped):
 
     <circe address>:<worker port>        100.112.254.99:8011, circe:8015, circe.<tailnet>.ts.net:8090
-    <worker container name>:<any port>   orion-circe-atlas-llamacpp-chat:8080, atlas-agent:8080
+    <worker container name>:<any port>   orion-atlas-llamacpp-chat:8080, ${PROJECT}-bonsai-worker:8080
 
 The circe address, its name and the worker ports are read from config/gpu_pool.yaml plus the
-*_HOST_PORT keys of the worker services' .env_example, so a new seat is covered with no edit here.
+*_HOST_PORT keys of the worker services' .env_example; worker names from the seat compose files'
+service keys and container_name. A new seat is covered with no edit here.
 
-What it scans: orion/, services/, scripts/, config/ (py, js, ts, sh, yml, yaml, toml, json,
-.env_example, Dockerfile) -- never a live `.env` unless --live-env is given (operator report).
-Excluded: tests/, evals/, docs/, graphify-out/, venv/, node_modules/, *.test.js.
+What it scans: the whole repo (code, config, compose, templates, units, .env_example, Dockerfile,
+Makefile) -- never a live `.env` unless --live-env is given (operator report). Excluded: hidden
+directories, tests/, evals/, docs/, bench/, graphify-out/, venv/, node_modules/, *.test.js.
+Addresses: circe's tailnet address and name (config/gpu_pool.yaml) and its LAN addresses.
+
+ALLOW keys are per file + host + port, not per line: a second call to an already-allowed address in
+the same file passes. Accepted -- every allowed file is small and reviewed with its entry.
 
 Zones (whole paths that ARE the pool, its dispatch, its actuator or the workers themselves) are
 not scanned. Each zone glob must still match a real file, so a renamed service shows up as stale.
@@ -71,7 +76,8 @@ ZONES: dict[str, str] = {
     "services/orion-diffusion-host/*": "the diffusion worker itself",
     # Operator tooling for the port gate itself: it must name the addresses it guards.
     "scripts/check_circe_worker_refs.py": "this gate (its docstring and ALLOW keys name the addresses)",
-    "scripts/ops/*": "the circe firewall for the same ports and its systemd unit (runbook 2026-10-01)",
+    "scripts/ops/circe_llm_port_gate.sh": "the circe firewall for the same ports (runbook 2026-10-01)",
+    "scripts/ops/orion-llm-port-gate.service": "its systemd unit",
 }
 
 # Hits outside the zones. Keys: "<repo-relative path>:<host>:<port>"; fnmatch globs allowed.
@@ -97,11 +103,25 @@ ALLOW: dict[str, str] = {
 
 _EXCLUDED_PARTS = {
     "tests", "evals", "docs", "graphify-out", "venv", ".venv", "node_modules", "__pycache__",
-    ".worktrees", ".claude", "bench",
+    ".worktrees", ".claude", "bench", ".git", ".github", ".pytest_cache", "site-packages",
 }
-_SUFFIXES = {".py", ".js", ".mjs", ".ts", ".sh", ".yml", ".yaml", ".toml", ".json", ".conf"}
+_SUFFIXES = {
+    ".py", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".sh", ".yml", ".yaml", ".toml", ".json",
+    ".conf", ".ini", ".cfg", ".txt", ".html", ".j2", ".jinja", ".jinja2", ".service", ".env_example",
+}
 _NAMES = {".env_example", "Dockerfile", "Makefile"}
-_SCAN_ROOTS = ("orion", "services", "scripts", "config")
+_MAX_FILE_BYTES = 4 * 1024 * 1024
+# circe's LAN addresses (eno1 / enp179s0, `ip -br addr` on circe 2026-10-01). config/gpu_pool.yaml
+# only names the tailnet address, but the worker ports listen on these too.
+_LAN_ADDRESSES = ("192.168.1.22", "192.168.1.24")
+# circe seat compose files: every compose service key and container_name in them is a worker name.
+_WORKER_COMPOSE_FILES = (
+    "services/orion-llamacpp-host/docker-compose.atlas-workers.yml",
+    "services/orion-llamacpp-host/docker-compose.dsv41.yml",
+    "services/orion-llamacpp-bonsai-host/docker-compose.yml",
+    "services/orion-diffusion-host/docker-compose.yml",
+    "services/orion-gpu-lane-controller/docker-compose.yml",
+)
 
 # Default worker identity if config/gpu_pool.yaml is unreadable (keeps the gate fail-closed).
 _DEFAULT_ADDRESS = "100.112.254.99"
@@ -112,11 +132,11 @@ _HOST_PORT_SOURCES = (
     "services/orion-gpu-lane-controller/.env_example",
 )
 _HOST_PORT_RE = re.compile(r"^([A-Z0-9_]*HOST_PORT)=\s*['\"]?(\d{2,5})['\"]?\s*(?:#.*)?$")
-# Worker container / compose service names. Any port: on circe's docker network a container
-# reaches the worker on its internal 8080, which no host-port list would catch.
-_CONTAINER_RE = re.compile(
-    r"(?<![\w.-])((?:orion-circe-)?atlas-llamacpp-[A-Za-z0-9-]+|atlas-(?:chat|agent|agent-burst|fast|metacog)"
-    r"|orion-circe-diffusion-host|orion-circe-gpu-lane-controller|[A-Za-z0-9-]*bonsai-host):(\d{2,5})\b"
+# Fallback worker names if the compose files are unreadable.
+_DEFAULT_CONTAINERS = (
+    "atlas-chat", "atlas-metacog", "atlas-fast", "atlas-agent", "atlas-agent-burst", "atlas-llamacpp-chat",
+    "atlas-llamacpp-metacog", "atlas-llamacpp-fast", "atlas-llamacpp-agent", "atlas-llamacpp-agent-burst",
+    "dsv41-flash", "bonsai-worker", "diffusion-host", "gpu-lane-controller",
 )
 
 
@@ -125,6 +145,10 @@ class Identity:
     address: str
     name: str
     ports: frozenset[int]
+    lan_addresses: tuple[str, ...] = _LAN_ADDRESSES
+    # Worker container / compose service names. Matched with ANY port: on circe's docker network a
+    # container reaches the worker on its internal 8080, which the firewall never sees (same bridge).
+    containers: tuple[str, ...] = _DEFAULT_CONTAINERS
 
 
 @dataclass(frozen=True)
@@ -173,13 +197,44 @@ def load_identity(root: pathlib.Path) -> Identity:
                 ports.add(int(m.group(2)))
     if not ports:  # fail closed: never scan with an empty port set
         ports = {8011, 8012, 8013, 8014, 8015, 8016, 8017, 8090, 8099}
-    return Identity(address=address, name=name, ports=frozenset(ports))
+    return Identity(address=address, name=name, ports=frozenset(ports), containers=_load_containers(root))
+
+
+def _load_containers(root: pathlib.Path) -> tuple[str, ...]:
+    """Compose service keys + container_name (the literal part after any `${...}-` prefix)."""
+    names: set[str] = set()
+    try:
+        import yaml
+
+        for rel in _WORKER_COMPOSE_FILES:
+            path = root / rel
+            if not path.is_file():
+                continue
+            for key, svc in ((yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("services") or {}).items():
+                names.add(str(key))
+                cname = str((svc or {}).get("container_name") or "")
+                literal = cname.rsplit("}", 1)[-1].lstrip("-")
+                if literal:
+                    names.add(literal)
+    except (OSError, ImportError, ValueError, TypeError, AttributeError):
+        pass
+    # Too-generic names would flag unrelated text; every real seat name has a dash.
+    names = {n for n in names if "-" in n and len(n) >= 8}
+    return tuple(sorted(names | set(_DEFAULT_CONTAINERS), key=len, reverse=True))
 
 
 def _address_re(ident: Identity) -> re.Pattern[str]:
     ports = "|".join(str(p) for p in sorted(ident.ports))
-    host = rf"{re.escape(ident.address)}|{re.escape(ident.name)}(?:\.[A-Za-z0-9-]+)*"
+    addrs = "|".join(re.escape(a) for a in (ident.address, *ident.lan_addresses))
+    host = rf"{addrs}|{re.escape(ident.name)}(?:\.[A-Za-z0-9-]+)*"
     return re.compile(rf"(?<![\w.-])({host}):({ports})(?!\d)")
+
+
+def _container_re(ident: Identity) -> re.Pattern[str]:
+    names = "|".join(re.escape(n) for n in ident.containers)
+    # Any prefix of name characters / compose interpolation: `orion-atlas-llamacpp-chat`,
+    # `${PROJECT:-orion}-bonsai-worker`, `orion-circe-diffusion-host`.
+    return re.compile(rf"(?<![\w.])(?:[\w${{}}:.-]*-)?({names}):(\d{{2,5}})(?!\d)")
 
 
 def _excluded(rel: pathlib.PurePath) -> bool:
@@ -196,24 +251,34 @@ def _zone_for(rel: str) -> str | None:
 def _walk(base: pathlib.Path):
     """os.walk with excluded directories pruned (node_modules etc. are never descended into)."""
     for dirpath, dirnames, filenames in os.walk(base):
-        dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_PARTS]
+        # Hidden directories (.git, .cursor, local smoke logs) are tooling state, not code.
+        dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_PARTS and not d.startswith(".")]
         for name in filenames:
             yield pathlib.Path(dirpath) / name
 
 
+def _scannable(path: pathlib.Path) -> bool:
+    name = path.name
+    if name == ".env" or name.startswith(".env.") and name != ".env_example":
+        return False  # live env files: only with --live-env
+    return path.suffix in _SUFFIXES or name in _NAMES or name.startswith(("docker-compose", "Dockerfile"))
+
+
 def iter_scan_files(root: pathlib.Path) -> list[pathlib.Path]:
+    """The whole repo minus excluded directories, zones and live .env files."""
     out: list[pathlib.Path] = []
-    for top in _SCAN_ROOTS:
-        base = root / top
-        if not base.is_dir():
+    for path in _walk(root):
+        if not _scannable(path):
             continue
-        for path in _walk(base):
-            if path.suffix not in _SUFFIXES and path.name not in _NAMES:
+        rel = path.relative_to(root)
+        if _excluded(rel) or _zone_for(rel.as_posix()):
+            continue
+        try:
+            if path.stat().st_size > _MAX_FILE_BYTES:
                 continue
-            rel = path.relative_to(root)
-            if _excluded(rel) or _zone_for(rel.as_posix()):
-                continue
-            out.append(path)
+        except OSError:
+            continue
+        out.append(path)
     return sorted(out)
 
 
@@ -221,14 +286,13 @@ def _is_comment(stripped: str) -> bool:
     return stripped.startswith("#") or stripped.startswith("//")
 
 
-_CONTAINER_HINTS = ("atlas-", "bonsai-host", "orion-circe-")
-
-
 def scan_text(text: str, rel: str, ident: Identity) -> list[Hit]:
-    # Cheap prefilter: most files never mention circe at all.
-    if ident.address not in text and ident.name not in text and not any(h in text for h in _CONTAINER_HINTS):
+    # Cheap prefilter: most files never mention circe or a worker at all.
+    needles = (ident.address, ident.name, *ident.lan_addresses, *ident.containers)
+    if not any(n in text for n in needles):
         return []
     addr_re = _address_re(ident)
+    container_re = _container_re(ident)
     hits: list[Hit] = []
     for lineno, raw in enumerate(text.splitlines(), 1):
         stripped = raw.strip()
@@ -236,7 +300,7 @@ def scan_text(text: str, rel: str, ident: Identity) -> list[Hit]:
             continue
         for m in addr_re.finditer(raw):
             hits.append(Hit(rel, lineno, m.group(1), int(m.group(2)), stripped[:200]))
-        for m in _CONTAINER_RE.finditer(raw):
+        for m in container_re.finditer(raw):
             hits.append(Hit(rel, lineno, m.group(1), int(m.group(2)), stripped[:200]))
     return hits
 
@@ -291,7 +355,7 @@ def classify(
 
 
 def stale_zones(root: pathlib.Path, zones: dict[str, str]) -> list[str]:
-    files = [p.relative_to(root).as_posix() for top in _SCAN_ROOTS if (root / top).is_dir() for p in _walk(root / top)]
+    files = [p.relative_to(root).as_posix() for p in _walk(root)] if root.is_dir() else []
     return [z for z in zones if not any(f == z or fnmatch.fnmatchcase(f, z) for f in files)]
 
 

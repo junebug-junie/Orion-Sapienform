@@ -18,47 +18,63 @@ sys.path.insert(0, str(_REPO / "scripts"))
 import check_circe_worker_refs as gate  # noqa: E402
 
 
-def _dry(mode: str) -> str:
+def _dry(mode: str) -> list[str]:
     env = {**os.environ, "DRY_RUN": "1"}
     out = subprocess.run(["bash", str(_SCRIPT), mode], env=env, capture_output=True, text=True, check=True)
-    return out.stdout
+    return out.stdout.splitlines()
 
 
-def _covered(text: str) -> set[int]:
+def _ports(lines: list[str], ipt: str) -> set[int]:
     ports: set[int] = set()
-    for spec in re.findall(r"--ctorigdstport (\S+)", text):
-        lo, _, hi = spec.partition(":")
-        ports.update(range(int(lo), int(hi or lo) + 1))
+    for line in lines:
+        if not line.startswith(f"{ipt} ") or "-I PREROUTING" not in line:
+            continue
+        for spec in re.search(r"--dports (\S+)", line).group(1).split(","):
+            lo, _, hi = spec.partition(":")
+            ports.update(range(int(lo), int(hi or lo) + 1))
     return ports
 
 
-def test_apply_allows_athena_and_local_then_drops() -> None:
-    out = _dry("apply").splitlines()
-    chain = [line for line in out if line.startswith("iptables -A ORION-LLM-GATE")]
-    assert chain == [
-        "iptables -A ORION-LLM-GATE -s 100.92.216.81/32 -j RETURN",
-        "iptables -A ORION-LLM-GATE -s 172.16.0.0/12 -j RETURN",
-        "iptables -A ORION-LLM-GATE -s 127.0.0.0/8 -j RETURN",
-        "iptables -A ORION-LLM-GATE -j DROP",
-    ]
-    # idempotent: apply starts by removing whatever an earlier apply left
-    assert out.index("iptables -F ORION-LLM-GATE || true") < out.index("iptables -N ORION-LLM-GATE")
-    assert any(line.startswith("ip6tables -I INPUT 1") and "! -i lo" in line for line in out)
+def test_apply_allows_local_and_athena_then_drops_for_both_families() -> None:
+    out = _dry("apply")
+    for ipt, athena in (("iptables", "100.92.216.81/32"), ("ip6tables", "fd7a:115c:a1e0::733:d851/128")):
+        chain = [line for line in out if line.startswith(f"{ipt} -w -t mangle -A ORION-LLM-GATE")]
+        assert chain == [
+            f"{ipt} -w -t mangle -A ORION-LLM-GATE -i lo -j RETURN",
+            f"{ipt} -w -t mangle -A ORION-LLM-GATE -i docker0 -j RETURN",
+            f"{ipt} -w -t mangle -A ORION-LLM-GATE -i br-+ -j RETURN",
+            f"{ipt} -w -t mangle -A ORION-LLM-GATE -s {athena} -j RETURN",
+            f"{ipt} -w -t mangle -A ORION-LLM-GATE -j DROP",
+        ]
+        jump = [line for line in out if line.startswith(f"{ipt} -w -t mangle -I PREROUTING 1")]
+        assert len(jump) == 1 and "--dst-type LOCAL" in jump[0] and jump[0].endswith("-j ORION-LLM-GATE")
+        # idempotent: every apply starts from a remove of whatever an earlier version left
+        assert out.index(f"{ipt} -w -t mangle -X ORION-LLM-GATE || true") < out.index(
+            f"{ipt} -w -t mangle -N ORION-LLM-GATE")
+    # never the FORWARD/DOCKER-USER path tailscale's ts-forward can jump ahead of
+    assert not any("DOCKER-USER" in line or "FORWARD" in line for line in out)
 
 
-def test_firewall_covers_every_worker_port_the_ci_gate_knows() -> None:
+def test_firewall_covers_every_worker_port_the_ci_gate_knows_in_both_families() -> None:
     ident = gate.load_identity(_REPO)
-    missing = set(ident.ports) - _covered(_dry("apply"))
-    assert not missing, f"ports the CI gate guards but the firewall does not: {sorted(missing)}"
+    out = _dry("apply")
+    for ipt in ("iptables", "ip6tables"):
+        missing = set(ident.ports) - _ports(out, ipt)
+        assert not missing, f"{ipt}: ports the CI gate guards but the firewall does not: {sorted(missing)}"
+    assert _ports(out, "iptables") == _ports(out, "ip6tables")
 
 
-def test_remove_deletes_everything_apply_adds() -> None:
-    out = _dry("remove")
-    assert "iptables -X ORION-LLM-GATE" in out
-    assert _covered(out) == _covered(_dry("apply"))
-    assert "ip6tables -D INPUT" in out
+def test_remove_deletes_jumps_by_chain_name_not_by_port_list() -> None:
+    out = "\n".join(_dry("remove"))
+    for ipt in ("iptables", "ip6tables"):
+        assert f'{ipt} -w -t mangle -S PREROUTING | grep -- "-j ORION-LLM-GATE"' in out
+        assert f"{ipt} -w -t mangle -X ORION-LLM-GATE" in out
 
 
 def test_bad_mode_exits_2() -> None:
     res = subprocess.run(["bash", str(_SCRIPT), "nope"], capture_output=True, text=True)
     assert res.returncode == 2
+
+
+def test_script_parses() -> None:
+    subprocess.run(["bash", "-n", str(_SCRIPT)], check=True)

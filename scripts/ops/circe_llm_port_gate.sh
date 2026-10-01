@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
 # circe LLM port gate (GPU pool stage 6.6, layer 2 of the port gate).
 #
-# Only athena (where orion-gpu-pool and orion-llm-gateway run) may open a NEW connection to
-# circe's llama.cpp worker ports, the diffusion host and the lane-controller actuator. Containers
-# on circe itself (docker bridges, e.g. the actuator's ready probe) and loopback stay allowed.
+# Only athena (where orion-gpu-pool and orion-llm-gateway run) may open a connection to circe's
+# llama.cpp worker ports, the diffusion host and the lane-controller actuator. circe's own
+# containers (docker bridges, e.g. the actuator's ready probe) and processes stay allowed.
 # Everything else -- other tailnet hosts, the 192.168.1.x LAN -- is dropped.
 #
 # This CANNOT tell the gateway from any other athena container: they all share athena's source IP.
 # It is defence in depth. The proof that callers go through the pool is the CI gate
 # scripts/check_circe_worker_refs.py.
 #
-# Why DOCKER-USER and not ufw: the ports are docker-published (`0.0.0.0:8011->8080`), so IPv4
-# traffic is DNAT'd in PREROUTING and goes through FORWARD, never INPUT, and ufw's INPUT rules do
-# not see it. Docker's documented hook for that path is the DOCKER-USER chain. Matching uses
-# conntrack's ORIGINAL destination port, because after DNAT the packet's port is the container's
-# (8080/6700), not 8011. IPv6 [::]:801x is served by docker-proxy (docker has no ipv6 enabled on
-# circe), which is INPUT, so v6 gets a plain INPUT drop for non-loopback.
+# Where the rules live, and why: the `mangle` table's PREROUTING chain. It runs before docker's
+# DNAT (so the plain host port 8011 still matches, no conntrack needed), and neither docker nor
+# tailscaled puts rules there. The obvious place, DOCKER-USER in the filter FORWARD chain, is only
+# reached if docker's jump sits above tailscale's `ts-forward` (which accepts everything arriving on
+# tailscale0); both insert at position 1 when they start, so a tailscaled restart would silently
+# open the gate. ufw is no use either: it is disabled on circe, and docker-published ports bypass
+# its INPUT rules. PREROUTING covers both paths a connection can take (DNAT->FORWARD and
+# docker-proxy->INPUT). Not covered: one container calling another by name on its internal port
+# (e.g. atlas-chat:8080) -- that never targets a host port; the CI gate is the fence for it.
 #
 # Runbook (verify + rollback): docs/runbooks/2026-10-01-circe-llm-port-firewall.md
 #
@@ -23,71 +26,66 @@
 # DRY_RUN=1 prints the commands instead of running them (no root needed; used by the tests).
 set -euo pipefail
 
-ATHENA_IP="${ORION_PORT_GATE_ALLOW_IP:-100.92.216.81}"
-# Worker ports: chat 8011, metacog 8012, fast 8013, diffusion 8014, agent 8015, agent-burst 8016,
-# bonsai 8017; lane controller 8090; experiment 8099. tests/test_circe_llm_port_gate.py keeps this
-# in step with config/gpu_pool.yaml and the worker services' *_HOST_PORT keys.
-PORT_RANGES=(8011:8017 8090 8099)
+ATHENA_V4="${ORION_PORT_GATE_ALLOW_V4:-100.92.216.81}"
+ATHENA_V6="${ORION_PORT_GATE_ALLOW_V6:-fd7a:115c:a1e0::733:d851}"   # athena `tailscale ip -6`
+# chat 8011, metacog 8012, fast 8013, diffusion 8014, agent 8015, agent-burst 8016, bonsai 8017;
+# lane controller 8090; experiment 8099. tests/test_circe_llm_port_gate.py keeps this in step
+# with the CI gate (config/gpu_pool.yaml + the worker services' *_HOST_PORT keys).
+PORTS="8011:8017,8090,8099"
 CHAIN=ORION-LLM-GATE
-V6_PORTS="8011:8017,8090,8099"
-V6_COMMENT="orion-llm-port-gate"
 
 run() {
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then printf '%s\n' "$*"; else "$@"; fi
+}
+
+# remove_family <iptables|ip6tables>: delete every jump to our chain (whatever port list an older
+# version used), then the chain itself. Safe to repeat.
+remove_family() {
+  local ipt="$1"
   if [[ "${DRY_RUN:-0}" == "1" ]]; then
-    printf '%s\n' "$*"
-  else
-    "$@"
+    printf '%s -w -t mangle -S PREROUTING | grep -- "-j %s" | (each line, -A -> -D) %s -w -t mangle\n' \
+      "$ipt" "$CHAIN" "$ipt"
+    printf '%s -w -t mangle -F %s || true\n%s -w -t mangle -X %s || true\n' "$ipt" "$CHAIN" "$ipt" "$CHAIN"
+    return
   fi
+  local rule
+  while read -r rule; do
+    [[ -z "$rule" ]] && continue
+    # shellcheck disable=SC2086  # iptables -S tokens, split on purpose
+    "$ipt" -w -t mangle ${rule/#-A/-D}
+  done < <("$ipt" -w -t mangle -S PREROUTING 2>/dev/null | grep -- "-j $CHAIN" || true)
+  "$ipt" -w -t mangle -F "$CHAIN" 2>/dev/null || true
+  "$ipt" -w -t mangle -X "$CHAIN" 2>/dev/null || true
 }
 
-quiet() {  # best-effort delete: absent rule/chain is fine
-  if [[ "${DRY_RUN:-0}" == "1" ]]; then
-    printf '%s || true\n' "$*"
-  else
-    "$@" >/dev/null 2>&1 || true
-  fi
-}
-
-remove() {
-  for range in "${PORT_RANGES[@]}"; do
-    # Loop: delete every copy, in case apply ran twice without remove.
-    if [[ "${DRY_RUN:-0}" == "1" ]]; then
-      quiet iptables -D DOCKER-USER -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport "$range" -j "$CHAIN"
-    else
-      while iptables -D DOCKER-USER -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport "$range" -j "$CHAIN" 2>/dev/null; do :; done
-    fi
-  done
-  quiet iptables -F "$CHAIN"
-  quiet iptables -X "$CHAIN"
-  if [[ "${DRY_RUN:-0}" == "1" ]]; then
-    quiet ip6tables -D INPUT -p tcp -m multiport --dports "$V6_PORTS" ! -i lo -m comment --comment "$V6_COMMENT" -j DROP
-  else
-    while ip6tables -D INPUT -p tcp -m multiport --dports "$V6_PORTS" ! -i lo -m comment --comment "$V6_COMMENT" -j DROP 2>/dev/null; do :; done
-  fi
-}
-
-apply() {
-  remove  # idempotent: start from nothing
-  run iptables -N "$CHAIN"
-  run iptables -A "$CHAIN" -s "${ATHENA_IP}/32" -j RETURN
-  run iptables -A "$CHAIN" -s 172.16.0.0/12 -j RETURN    # docker bridges on circe (actuator ready probe)
-  run iptables -A "$CHAIN" -s 127.0.0.0/8 -j RETURN
-  run iptables -A "$CHAIN" -j DROP
-  for range in "${PORT_RANGES[@]}"; do
-    run iptables -I DOCKER-USER 1 -p tcp -m conntrack --ctdir ORIGINAL --ctorigdstport "$range" -j "$CHAIN"
-  done
-  run ip6tables -I INPUT 1 -p tcp -m multiport --dports "$V6_PORTS" ! -i lo -m comment --comment "$V6_COMMENT" -j DROP
-}
-
-status() {
-  run iptables -S DOCKER-USER
-  run iptables -L "$CHAIN" -v -n
-  run ip6tables -S INPUT
+# apply_family <iptables|ip6tables> <athena address/prefix>
+apply_family() {
+  local ipt="$1" athena="$2"
+  remove_family "$ipt"
+  run "$ipt" -w -t mangle -N "$CHAIN"
+  run "$ipt" -w -t mangle -A "$CHAIN" -i lo -j RETURN
+  # circe's containers, matched by interface, not address: docker's address pools move.
+  run "$ipt" -w -t mangle -A "$CHAIN" -i docker0 -j RETURN
+  run "$ipt" -w -t mangle -A "$CHAIN" -i br-+ -j RETURN
+  run "$ipt" -w -t mangle -A "$CHAIN" -s "$athena" -j RETURN
+  run "$ipt" -w -t mangle -A "$CHAIN" -j DROP
+  run "$ipt" -w -t mangle -I PREROUTING 1 -p tcp -m multiport --dports "$PORTS" -m addrtype --dst-type LOCAL -j "$CHAIN"
 }
 
 case "${1:-}" in
-  apply) apply ;;
-  remove) remove ;;
-  status) status ;;
+  apply)
+    apply_family iptables "$ATHENA_V4/32"
+    apply_family ip6tables "$ATHENA_V6/128"
+    ;;
+  remove)
+    remove_family iptables
+    remove_family ip6tables
+    ;;
+  status)
+    for ipt in iptables ip6tables; do
+      run "$ipt" -w -t mangle -S PREROUTING
+      run "$ipt" -w -t mangle -L "$CHAIN" -v -n
+    done
+    ;;
   *) echo "usage: $0 apply|remove|status   (DRY_RUN=1 to print only)" >&2; exit 2 ;;
 esac

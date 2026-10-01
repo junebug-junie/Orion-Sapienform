@@ -23,6 +23,12 @@ expensive mistake):
   * A string constant ending in `_` (e.g. a `startswith("HUB_")` scan) makes every key under that
     prefix read.
 
+--apply removes only KNOWN_DEAD keys unless --include-heuristic is given, and refuses when the
+code tree is on a different commit than the checkout holding the .env files.
+
+`.env.bak.<ts>` backups hold the same secrets as `.env`. `.gitignore` covers them (`.env.*`); a
+`COPY . .` docker build is only safe if the service's `.dockerignore` excludes them too.
+
 Keys that are NEVER removed unless listed in KNOWN_DEAD below:
   secret-named keys and NEVER_SYNC_KEYS (both from sync_local_env_from_example.py). They are
   listed as "protected" so a human can decide.
@@ -36,7 +42,8 @@ is still read by code, or is back in .env_example, it is reported as a CONFLICT 
 Usage:
     python3 scripts/report_dead_env_keys.py                # --report (default), read-only
     python3 scripts/report_dead_env_keys.py --json
-    python3 scripts/report_dead_env_keys.py --apply        # writes .env.bak.<UTC ts>, then rewrites .env
+    python3 scripts/report_dead_env_keys.py --apply        # KNOWN_DEAD only; writes .env.bak.<UTC ts> first
+    python3 scripts/report_dead_env_keys.py --apply --include-heuristic   # also the code-scan verdicts
     python3 scripts/report_dead_env_keys.py --service orion-hub --service orion-thought
     python3 scripts/report_dead_env_keys.py --env-root /mnt/scripts/Orion-Sapienform
 
@@ -52,6 +59,7 @@ import ast
 import datetime as _dt
 import fnmatch
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -91,12 +99,24 @@ PROTECTED_PATTERNS: dict[str, str] = {
     "LLM_LANE_*": "excluded until the stage 6.4 lane census shows no caller sends options.lane",
     "COMPOSE_*": "read by docker compose itself, not by service code",
     "DOCKER_*": "read by docker / compose tooling",
+    # env_file passes the whole .env into the container: these are read by the image, CUDA, the
+    # llama.cpp server or third-party libraries, never named in repo code.
+    "LLAMA_ARG_*": "read by the llama.cpp server binary",
+    "HF_*": "read by huggingface libraries", "HUGGINGFACE_*": "read by huggingface libraries",
+    "TRANSFORMERS_*": "read by transformers", "TORCH_*": "read by torch", "PYTORCH_*": "read by torch",
+    "CUDA_*": "read by CUDA", "NVIDIA_*": "read by the nvidia container runtime", "NCCL_*": "read by NCCL",
+    "OMP_*": "read by OpenMP", "MKL_*": "read by MKL", "TZ": "read by libc", "LANG": "read by libc",
+    "LC_*": "read by libc", "PYTHON*": "read by the python interpreter", "PATH": "read by the shell",
+    "PG*": "read by libpq", "POSTGRES_*": "read by the postgres image", "GF_*": "read by the grafana image",
+    "NEO4J_*": "read by the neo4j image", "REDIS_*": "read by the redis image",
+    "UVICORN_*": "read by uvicorn", "GUNICORN_*": "read by gunicorn", "WEB_CONCURRENCY": "read by uvicorn",
+    "OLLAMA_*": "read by the ollama image", "VLLM_*": "read by vllm", "XDG_*": "read by libraries",
 }
 
 _EXCLUDED_PARTS = {"tests", "evals", "docs", "graphify-out", "venv", ".venv", "node_modules", "__pycache__"}
 _TEXT_SUFFIXES = {".yml", ".yaml", ".sh", ".js", ".mjs", ".ts", ".json", ".toml", ".conf", ".ini", ".cfg", ".sql", ".txt"}
 _TEXT_NAMES = {"Dockerfile", "Makefile", "entrypoint", ".env_example"}
-_MAX_FILE_BYTES = 512 * 1024
+_MAX_FILE_BYTES = 4 * 1024 * 1024  # bigger files are bundled data, not config readers
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _ENV_LINE_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
 
@@ -193,11 +213,13 @@ def _python_reads(text: str) -> ReadSet:
     return rs
 
 
-def _text_reads(text: str) -> ReadSet:
+def _text_reads(text: str, *, sql: bool = False) -> ReadSet:
     rs = ReadSet()
+    # `--` starts a comment only in SQL; in compose/shell it is a flag (`--max-rows ${KEY}`).
+    comment_marks = ("#", "//", "--") if sql else ("#", "//")
     for raw in text.splitlines():
         s = raw.strip()
-        if not s or s.startswith(("#", "//", "--")):
+        if not s or s.startswith(comment_marks):
             continue
         code = s.split(" #", 1)[0]
         for tok in _IDENT_RE.findall(code):
@@ -240,7 +262,7 @@ def _file_reads(p: pathlib.Path) -> ReadSet | None:
         except (UnicodeDecodeError, OSError):
             text = None
         if text is not None:
-            rs = _python_reads(text) if p.suffix == ".py" else _text_reads(text)
+            rs = _python_reads(text) if p.suffix == ".py" else _text_reads(text, sql=p.suffix == ".sql")
     _FILE_CACHE[p] = rs
     return rs
 
@@ -257,17 +279,36 @@ def reads_under(base: pathlib.Path, root: pathlib.Path) -> ReadSet:
     return rs
 
 
-def env_keys(path: pathlib.Path) -> list[tuple[int, str]]:
-    out: list[tuple[int, str]] = []
+def _opens_multiline(raw: str) -> str | None:
+    """The quote char if this KEY=value line opens a quoted value it does not close."""
+    value = raw.split("=", 1)[1].lstrip() if "=" in raw else ""
+    if value[:1] in ("'", '"') and value.count(value[0]) % 2 == 1:
+        return value[0]
+    return None
+
+
+def parse_env(path: pathlib.Path) -> list[tuple[int, str, bool]]:
+    """(line number, key, value spans several lines). Continuation lines are not keys."""
+    out: list[tuple[int, str, bool]] = []
     if not path.is_file():
         return out
+    open_quote: str | None = None
     for i, raw in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+        if open_quote:
+            if raw.count(open_quote) % 2 == 1:
+                open_quote = None
+            continue
         if raw.lstrip().startswith("#"):
             continue
         m = _ENV_LINE_RE.match(raw)
         if m:
-            out.append((i, m.group(1)))
+            open_quote = _opens_multiline(raw)
+            out.append((i, m.group(1), open_quote is not None))
     return out
+
+
+def env_keys(path: pathlib.Path) -> list[tuple[int, str]]:
+    return [(i, k) for i, k, _ in parse_env(path)]
 
 
 # ---- per-service verdict ------------------------------------------------------------------
@@ -300,11 +341,16 @@ def analyse(
     rep = ServiceReport(service=service, env_path=str(env_path))
     example = {k for _, k in env_keys(example_path)}
     seen: set[str] = set()
+    multiline = {k for _, k, multi in parse_env(env_path) if multi}
     for _, key in env_keys(env_path):
         if key in seen:
             continue
         seen.add(key)
         if _match(key, PROTECTED_PATTERNS):
+            continue
+        if key in multiline and key not in example and not reads.reads(key):
+            rep.protected.append(key)
+            rep.reasons[key] = "multi-line value: looks dead, remove by hand"
             continue
         known = _match(key, KNOWN_DEAD)
         in_example = key in example
@@ -396,13 +442,33 @@ def apply_removals(rep: ServiceReport, stamp: str, known_only: bool = False) -> 
     backup = path.with_name(f".env.bak.{stamp}")
     shutil.copy2(path, backup)
     kept: list[str] = []
+    open_quote: str | None = None
     for raw in path.read_text(encoding="utf-8").splitlines(keepends=True):
-        m = _ENV_LINE_RE.match(raw)
-        if m and not raw.lstrip().startswith("#") and m.group(1) in dead:
+        if open_quote:  # continuation of a multi-line value: never a key line
+            if raw.count(open_quote) % 2 == 1:
+                open_quote = None
+            kept.append(raw)
             continue
+        m = _ENV_LINE_RE.match(raw)
+        if m and not raw.lstrip().startswith("#"):
+            open_quote = _opens_multiline(raw)
+            if m.group(1) in dead and open_quote is None:
+                continue
         kept.append(raw)
-    path.write_text("".join(kept), encoding="utf-8")
+    # Atomic: a crash mid-write must not leave a half-written .env.
+    tmp = path.with_name(f".env.tmp.{stamp}")
+    tmp.write_text("".join(kept), encoding="utf-8")
+    shutil.copymode(path, tmp)
+    os.replace(tmp, path)
     return backup
+
+
+def _head(path: pathlib.Path) -> str | None:
+    try:
+        return subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True,
+                              text=True, timeout=10, check=True).stdout.strip() or None
+    except (subprocess.SubprocessError, OSError):
+        return None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -411,7 +477,12 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--report", action="store_true", help="list dead keys (default; read-only)")
     mode.add_argument("--apply", action="store_true", help="remove dead keys, after writing .env.bak.<ts>")
     ap.add_argument("--known-only", action="store_true",
-                    help="limit to KNOWN_DEAD keys (the GPU pool deletions); the safest first --apply")
+                    help="report only KNOWN_DEAD keys (the GPU pool deletions)")
+    ap.add_argument("--include-heuristic", action="store_true",
+                    help="with --apply: also remove keys found dead by the code scan, not just KNOWN_DEAD")
+    ap.add_argument("--allow-tree-mismatch", action="store_true",
+                    help="with --apply: allow the code tree (--root) to be on a different commit than the "
+                         "checkout holding the .env files")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--root", type=pathlib.Path, default=REPO, help="code tree (default: this checkout)")
     ap.add_argument("--env-root", type=pathlib.Path, default=None,
@@ -421,6 +492,16 @@ def main(argv: list[str] | None = None) -> int:
 
     root = args.root.resolve()
     env_root = (args.env_root or default_env_root(root)).resolve()
+    if args.apply:
+        # --apply deletes by default only KNOWN_DEAD keys; the heuristic needs an explicit opt-in.
+        args.known_only = not args.include_heuristic
+        # The verdict is about the code that READS these files. A feature worktree that removed a
+        # reader the running deploy still has would delete a live key.
+        if root != env_root and not args.allow_tree_mismatch and _head(root) != _head(env_root):
+            print(f"refusing --apply: code tree {root} (HEAD {_head(root)}) is not the commit of the checkout "
+                  f"holding the .env files {env_root} (HEAD {_head(env_root)}). Run from {env_root}, or pass "
+                  f"--allow-tree-mismatch.", file=sys.stderr)
+            return 3
     reports = build_reports(root, env_root, args.service)
     stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backups: dict[str, str] = {}

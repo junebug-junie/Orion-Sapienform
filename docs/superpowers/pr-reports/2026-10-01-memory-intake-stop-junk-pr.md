@@ -177,6 +177,6 @@ The Hub must be restarted for the Graphiti URL to change. Run these from a workt
 
 ## PR link
 
-(filled on open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2457
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -23,7 +23,11 @@ def _startup_source() -> str:
 def test_startup_binds_situation_stores_through_shared_helper() -> None:
     startup = _startup_source()
     assert "from orion.situational.state_buses import bind_situation_state_buses" in startup
-    assert "bind_situation_state_buses(bus)" in startup
+    # GPU pool stage 6.3: the runtime line's pool-state read is an RPC, so it rides the fork.
+    assert "bind_situation_state_buses(bus, rpc_bus=rpc_bus)" in startup
+    assert startup.index("rpc_bus = await fork_rpc_client(bus)") < startup.index(
+        "bind_situation_state_buses(bus, rpc_bus=rpc_bus)"
+    )
 
 
 def test_startup_does_not_bind_situation_stores_piecemeal() -> None:
@@ -33,5 +37,6 @@ def test_startup_does_not_bind_situation_stores_piecemeal() -> None:
         "bind_session_turn_phase_bus(",
         "bind_juniper_affect_state_bus(",
         "bind_identity_ask_cooldown_bus(",
+        "bind_runtime_route_view_bus(",
     ):
         assert piecemeal not in startup

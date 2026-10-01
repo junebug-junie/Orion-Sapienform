@@ -10354,7 +10354,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const entry = ((catalog && catalog.routes) || []).find(
       (r) => String(r.id || '').toLowerCase() === CHAT_LANE_LEND_ROUTE,
     );
-    return entry ? { open: entry.gate_open === true } : null;
+    // Only a real true/false moves the toggle. `gate_open: null` is the pool-unreachable
+    // catalog (GPU pool stage 6.3: every lane unknown) -- rendering that as "closed" would
+    // state a guess, so the toggle keeps its last known state instead.
+    return entry && typeof entry.gate_open === 'boolean' ? { open: entry.gate_open } : null;
   }
 
   async function toggleChatLaneLend() {

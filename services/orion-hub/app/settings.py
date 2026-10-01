@@ -109,11 +109,9 @@ class Settings(BaseSettings):
         alias="HUB_PROPOSAL_REVIEW_TIMEOUT_SEC",
     )
 
-    # --- LLM gateway route catalog (compute override) ---
-    HUB_LLM_GATEWAY_URL: str = Field(
-        default="http://orion-llm-gateway:8210",
-        alias="HUB_LLM_GATEWAY_URL",
-    )
+    # --- LLM gateway timeout (concept relation classifier) ---
+    # HUB_LLM_GATEWAY_URL was removed in GPU pool stage 6.3: its only reader was the Compute
+    # picker's GET /routes proxy, which now reads GPU pool state (scripts/llm_gateway_client.py).
     HUB_LLM_GATEWAY_TIMEOUT_SEC: float = Field(
         default=5.0,
         alias="HUB_LLM_GATEWAY_TIMEOUT_SEC",
@@ -125,7 +123,7 @@ class Settings(BaseSettings):
 
     # --- Runtime activity (header marquee + "what's running" modal) ---
     # Folds facts Hub already sees (curiosity durable-run transitions, harness
-    # turn handoffs + steps) with the LLM gateway's /admission + /routes into
+    # turn handoffs + steps) with the GPU pool's live state feed into
     # one snapshot served at /api/runtime-activity (+ SSE at .../stream).
     # See orion/hub/runtime_activity.py. Disabled = no gateway polling, no
     # startup backfill, routes answer 503; the in-process folds still run

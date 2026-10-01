@@ -1,9 +1,10 @@
 """Bind every Redis-backed situation store to this process's bus, in one call.
 
-`build_situation_for_ctx` reads three stores that each hold a module-level
+`build_situation_for_ctx` reads four stores that each hold a module-level
 bus handle and need it bound once per process: conversation phase
 (`session_turn_phase`), Juniper's latest affect read (`juniper_affect_state`),
-and the identity-ask cooldown (`identity_ask_cooldown`). Two processes build
+the identity-ask cooldown (`identity_ask_cooldown`), and the GPU pool route
+view behind the "which model am I" line (`runtime_route_view`, stage 6.3). Two processes build
 situation briefs -- orion-cortex-exec (legacy chat verbs) and orion-hub (every
 unified turn, via `orion.hub.turn_orchestrator`) -- and each used to bind the
 stores by hand. Hub bound only the affect store, so every unified turn read
@@ -23,10 +24,15 @@ from orion.core.bus.async_service import OrionBusAsync
 
 from .identity_ask_cooldown import bind_identity_ask_cooldown_bus
 from .juniper_affect_state import bind_juniper_affect_state_bus
+from .runtime_route_view import bind_runtime_route_view_bus
 from .session_turn_phase import bind_session_turn_phase_bus
 
 
-def bind_situation_state_buses(bus: OrionBusAsync) -> None:
+def bind_situation_state_buses(bus: OrionBusAsync, *, rpc_bus: OrionBusAsync | None = None) -> None:
+    """``rpc_bus``: the process's forked RPC client, when it has one. The runtime line's pool-state
+    read is a request/reply RPC, so it rides that (orion-hub forks one precisely so its long-lived
+    subscribers cannot steal replies); the Redis stores stay on ``bus``."""
     bind_session_turn_phase_bus(bus)
     bind_juniper_affect_state_bus(bus)
     bind_identity_ask_cooldown_bus(bus)
+    bind_runtime_route_view_bus(rpc_bus or bus)

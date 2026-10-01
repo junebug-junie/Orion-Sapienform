@@ -48,8 +48,6 @@ from .alexzhang_rlm_engine import (
     UnsupportedModeError,
 )
 from .llm_profile_resolver import (
-    LLMProfileSelection,
-    LLMProfileUnavailableError,
     resolve_llm_profile,
     selection_runtime_debug,
 )
@@ -375,51 +373,7 @@ class ContextExecRunner:
                 workspace_info=workspace_info,
             )
 
-        try:
-            profile_selection = await resolve_llm_profile(request.llm_profile)
-        except LLMProfileUnavailableError as exc:
-            failure_modes.append(str(exc))
-            runtime_debug = {
-                **selection_runtime_debug(
-                    LLMProfileSelection(
-                        requested=request.llm_profile,
-                        selected=str(request.llm_profile or settings.context_exec_default_llm_profile),
-                        route_used=str(request.llm_profile or settings.context_exec_default_llm_profile),
-                    )
-                ),
-                **self._engine_runtime_debug(
-                    engine_used=self.engine_selected,
-                    mode=request.mode,
-                ),
-                "correlation_id": request.correlation_id,
-            }
-            self._apply_workspace_debug(runtime_debug, workspace_info)
-            await events.finished(
-                run_id=run_id,
-                mode=request.mode,
-                status="error",
-                artifact_type=None,
-                schema_valid=False,
-                failure_modes=failure_modes,
-            )
-            run = ContextExecRunV1(
-                run_id=run_id,
-                status="error",
-                mode=request.mode,
-                text=request.text,
-                answer_contract=request.answer_contract.model_dump(mode="json")
-                if request.answer_contract
-                else None,
-                findings_bundle=None,
-                artifact_type=None,
-                artifact={},
-                final_text=build_final_text(request.mode, {}, status="error"),
-                verb_trace=verb_trace,
-                runtime_debug=runtime_debug,
-                failure_modes=failure_modes,
-            )
-            self._persist_run_ledger(run, request)
-            return run
+        profile_selection = await resolve_llm_profile(request.llm_profile)
 
         request = request.model_copy(update={"llm_profile": profile_selection.selected})
 
@@ -819,15 +773,7 @@ class ContextExecRunner:
     ) -> ContextExecRunV1:
         from .smolcode_engine import SmolagentsCodeEngine
 
-        try:
-            profile_selection = await resolve_llm_profile(request.llm_profile)
-        except LLMProfileUnavailableError as exc:
-            failure_modes.append(str(exc))
-            profile_selection = LLMProfileSelection(
-                requested=request.llm_profile,
-                selected="agent",
-                route_used="agent",
-            )
+        profile_selection = await resolve_llm_profile(request.llm_profile)
 
         request = request.model_copy(update={"llm_profile": profile_selection.selected})
         organ_runtime = OrganRuntime(

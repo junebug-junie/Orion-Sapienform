@@ -208,7 +208,6 @@ class SituationSettings:
     runtime_route: str
     runtime_ttl_seconds: int
     runtime_probe_timeout_sec: float
-    llm_gateway_base_url: str
     default_requestor: str
     presence_persist_allowed: bool
 
@@ -402,9 +401,6 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         runtime_probe_timeout_sec=float(
             getattr(settings, "orion_situation_runtime_probe_timeout_sec", 2.0)
         ),
-        llm_gateway_base_url=str(
-            getattr(settings, "cortex_exec_llm_gateway_url", "http://llm-gateway:8210")
-        ),
         default_requestor=str(getattr(settings, "orion_presence_default_requestor", "Juniper")),
         presence_persist_allowed=bool(getattr(settings, "orion_presence_persist_allowed", False)),
     )
@@ -435,11 +431,12 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     model is currently serving `chat`) ARE enabled -- weather now reads
     orion-hub's own ORION_SITUATION_WEATHER_* fields (added alongside this
     adapter's weather wiring; same provider/coordinates/TTL as cortex-exec's
-    already-configured values), and the runtime probe reuses
-    `HUB_LLM_GATEWAY_URL`, a host orion-hub already calls today (see
-    `/api/llm-routes`). Both `_build_environment_context` and
-    `_build_runtime_context` await their blocking `urlopen` calls via
-    `asyncio.to_thread` so a cache-miss fetch cannot stall the event loop.
+    already-configured values), and the runtime probe reads GPU pool state
+    over the bus RPC orion-hub binds for it (`bind_situation_state_buses`,
+    GPU pool stage 6.3; it no longer calls the gateway's GET /routes).
+    `_build_environment_context` awaits its blocking `urlopen` via
+    `asyncio.to_thread`, and the runtime read is an async RPC, so a cache-miss
+    fetch cannot stall the event loop.
 
     Affect (2026-08-25) IS enabled here, unlike perception/lab -- orion-hub
     is the MOST verified host for it, not the least: Hub owns the capture
@@ -564,7 +561,6 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_runtime_route="chat",
         orion_situation_runtime_ttl_seconds=120,
         orion_situation_runtime_probe_timeout_sec=2.0,
-        cortex_exec_llm_gateway_url=str(getattr(cfg, "HUB_LLM_GATEWAY_URL", "http://127.0.0.1:8210")),
         orion_presence_default_requestor=str(getattr(cfg, "ORION_PRESENCE_DEFAULT_REQUESTOR", "Juniper")),
         orion_presence_persist_allowed=bool(getattr(cfg, "ORION_PRESENCE_PERSIST_ALLOWED", False)),
     )
@@ -1230,26 +1226,25 @@ async def _build_cabinet_context(
     return ctx
 
 
-def _fetch_runtime_context(cfg: SituationSettings) -> RuntimeContextV1:
-    """Live read of what model is actually serving `cfg.runtime_route`.
+async def _fetch_runtime_context(cfg: SituationSettings) -> RuntimeContextV1:
+    """What model a call on `cfg.runtime_route` would land on right now, from GPU pool state.
 
-    Hits orion-llm-gateway's GET /routes (already health-cached there 15s;
-    see route_catalog.py's `_probe_model`) rather than probing the backend
-    directly -- the gateway already owns route->backend resolution, so this
-    reuses that instead of re-deriving it. Mirrors `_fetch_weather`'s shape:
-    a plain urlopen with a short timeout, raising on any failure so the
-    caller's try/except degrades to unavailable rather than partial/guessed
-    data.
+    GPU pool stage 6.3: this used to read orion-llm-gateway's GET /routes, a compatibility view
+    the gateway generated from pool state anyway and which stage 6.5 deletes. It now asks the
+    pool directly (`orion.situational.runtime_route_view`: one `orion:gpu_pool:state` RPC with
+    the pool's config) and builds the same per-route view (`orion.gpu_pool.route_view`). Raises
+    when the pool cannot be asked or the route is not in its config, so the caller's except
+    degrades to unavailable (and does not cache it) rather than stating a guessed model.
     """
-    url = f"{cfg.llm_gateway_base_url.rstrip('/')}/routes"
-    with urlopen(url, timeout=cfg.runtime_probe_timeout_sec) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
-    routes = payload.get("routes") if isinstance(payload, dict) else None
-    if not isinstance(routes, list):
-        raise ValueError("routes payload missing/malformed")
-    entry = next((r for r in routes if isinstance(r, dict) and r.get("id") == cfg.runtime_route), None)
+    from orion.gpu_pool.route_view import SOURCE_UNAVAILABLE, route_entry
+    from orion.situational.runtime_route_view import read_route_view
+
+    view = await read_route_view(timeout_sec=cfg.runtime_probe_timeout_sec)
+    if view.get("source") == SOURCE_UNAVAILABLE:
+        raise ValueError("gpu pool state unavailable")
+    entry = route_entry(view, cfg.runtime_route)
     if entry is None:
-        raise ValueError(f"route {cfg.runtime_route!r} not in /routes response")
+        raise ValueError(f"route {cfg.runtime_route!r} not in the GPU pool's routes")
     model_id = entry.get("model")
     return RuntimeContextV1(
         available=bool(entry.get("status") == "up" and isinstance(model_id, str) and model_id.strip()),
@@ -1257,7 +1252,7 @@ def _fetch_runtime_context(cfg: SituationSettings) -> RuntimeContextV1:
         model_id=model_id if isinstance(model_id, str) and model_id.strip() else None,
         served_by=entry.get("served_by"),
         backend=entry.get("backend"),
-        source="orion-llm-gateway",
+        source="gpu_pool",
     )
 
 
@@ -1289,7 +1284,7 @@ def _runtime_from_gpu_placement(
     """The model this turn runs on, from the lease it holds -- not the gateway's route table.
 
     Under the GPU pool a route's default worker is not necessarily where a call runs (an agent
-    call can be served by agent-gpu2 or chat), so ``_fetch_runtime_context``'s /routes answer is
+    call can be served by agent-gpu2 or chat), so ``_fetch_runtime_context``'s route answer is
     only a default. When the caller knows the turn's granted role, that is the fact; no network
     read happens here (the caller resolved role -> discovered profile). Spec:
     docs/superpowers/specs/2026-09-24-gpu-pool-design.md, reader impacts item 5."""
@@ -1327,14 +1322,9 @@ async def _build_runtime_context(cfg: SituationSettings, diagnostics: SituationD
         if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.runtime_ttl_seconds:
             return cached[1]
     try:
-        # `_fetch_runtime_context` is a plain blocking `urlopen` call (up to
-        # `runtime_probe_timeout_sec`). Offloaded to a thread rather than
-        # called inline -- this function runs inside `build_situation_for_ctx`,
-        # which orion-hub's `execute_unified_turn` now awaits directly on its
-        # single shared event loop (unlike cortex-exec, which already
-        # dedicates a worker per chat turn). A cache-miss call here must not
-        # stall every other concurrent WebSocket client's turn.
-        runtime_ctx = await asyncio.to_thread(_fetch_runtime_context, cfg)
+        # An async bus RPC (bounded by `runtime_probe_timeout_sec`), so a cache miss never blocks
+        # the shared event loop orion-hub's `execute_unified_turn` runs every client's turn on.
+        runtime_ctx = await _fetch_runtime_context(cfg)
         with _LOCK:
             _RUNTIME_CACHE[cache_key] = (datetime.now(timezone.utc), runtime_ctx)
         diagnostics.provider_status["runtime"] = "ok" if runtime_ctx.available else "unavailable"
@@ -1968,7 +1958,7 @@ def _runtime_line(runtime: RuntimeContextV1) -> Optional[str]:
     """What Orion may truthfully say about the model it runs on (GPU pool aware).
 
     A lease is a fact about this turn; the route table is only a default -- the pool places each
-    unleased call itself, so "you are running on X" from /routes would be a false statement about
+    unleased call itself, so "you are running on X" from the route view would be a false statement about
     Orion under spill (spec 2026-09-24-gpu-pool-design.md, reader impacts item 5)."""
     if runtime.placement == "lease" and runtime.granted_role:
         if runtime.available and runtime.model_id:

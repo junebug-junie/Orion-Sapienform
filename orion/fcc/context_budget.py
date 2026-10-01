@@ -43,8 +43,9 @@ def max_context_tokens(n_ctx: int | None = None) -> int:
     """Motor context ceiling: the live worker's own window when known, else env.
 
     `n_ctx` is the context size the route's llama.cpp worker was actually
-    STARTED with, read off `GET /routes` (see
-    `orion.harness.fcc_motor.probe_route_runtime`). It wins over the env
+    STARTED with, read from GPU pool state (`ctx_per_slot` of the role the
+    turn lands on, or of its granted role when it holds a lease -- see
+    `orion.harness.fcc_motor.probe_route_runtime` / `held_role_window`). It wins over the env
     ceiling because it is the number the upstream will actually enforce, and
     the env value is a single process-wide constant that cannot be right for
     more than one lane at a time: `chat`/`harness` serve 131072 while `agent`

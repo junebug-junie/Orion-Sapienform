@@ -24,7 +24,6 @@ def _disable_gateway_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.settings import settings as cfg
 
     monkeypatch.setattr(cfg, "context_exec_llm_gateway_url", "")
-    monkeypatch.setattr(cfg, "context_exec_llm_profile_fallback_enabled", False)
 
 
 def _selection(route: str = "chat") -> LLMProfileSelection:

@@ -98,12 +98,11 @@ class HarnessGovernorSettings(BaseSettings):
     )
 
     # orion-llm-gateway base URL, read directly from the environment by
-    # orion.harness.fcc_motor.probe_current_served_model (the pre-turn
-    # "what is this route's default backend" GET /routes read, used only when the
-    # turn holds no GPU pool lease; a held turn reads the pool's own state); mirrored here
-    # so operators see the effective value. Same default as the identical
-    # setting in orion-cortex-exec/.env_example -- both reach the same
-    # gateway on the shared app-net bridge network.
+    # orion.harness.fcc_motor.run_fcc_turn: a turn holding a GPU pool lease sends
+    # its Anthropic-compatible calls straight to the gateway (ANTHROPIC_BASE_URL)
+    # so the lease header is honoured. Mirrored here so operators see the
+    # effective value. (GPU pool stage 6.3 removed its other use, the pre-turn
+    # GET /routes read: the runner now reads pool state over the bus.)
     harness_llm_gateway_url: str = Field(
         "http://llm-gateway:8210", alias="HARNESS_LLM_GATEWAY_URL"
     )

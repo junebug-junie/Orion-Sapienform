@@ -31,7 +31,6 @@ def _clear_cache():
 def _settings(**over):
     base = dict(
         cortex_exec_admission_cue_enabled=True,
-        cortex_exec_llm_gateway_url="http://llm-gateway:8210",
         cortex_exec_admission_cue_window_s=21600.0,
         cortex_exec_admission_cue_ttl_sec=60.0,
     )

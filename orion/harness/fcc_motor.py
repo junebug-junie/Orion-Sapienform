@@ -12,7 +12,6 @@ import urllib.request
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, Tuple
 
-import httpx
 
 from orion.fcc.claude_spawn import claude_permission_argv, extend_mcp_argv, setting_sources_argv
 from orion.fcc.turn_lock import turn_in_progress
@@ -122,7 +121,7 @@ def _text_blocks_from_assistant(event: Dict[str, Any]) -> str:
 def _weights_file_basename(raw: str) -> str:
     """Reduce a served-model string to a basename with any weights-file
     extension stripped. Shared by both served-model paths (post-hoc
-    discovery from a completed turn, and the pre-turn /routes probe below)
+    discovery from a completed turn, and the pre-turn pool-state probe below)
     so a raw server-side filesystem path (e.g.
     "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf") never reaches a user-facing
     field or a prompt verbatim.
@@ -441,7 +440,7 @@ def label_to_claude_model_id(label: str, env: Dict[str, str]) -> str:
 
 # Backends orion-llm-gateway's anthropic_passthrough actually routes (see
 # services/orion-llm-gateway/app/anthropic_passthrough.py's
-# _ANTHROPIC_COMPAT_BACKENDS) -- the only ones GET /routes can answer for.
+# _ANTHROPIC_COMPAT_BACKENDS) -- the only ones the GPU pool's route view can answer for.
 _ROUTE_PROBE_BACKENDS = frozenset({"llamacpp", "llama-cpp"})
 
 
@@ -504,96 +503,91 @@ def resolve_fcc_route_key(
     return route_key
 
 
+def _positive_int(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
 async def probe_route_runtime(
     fcc_model_label: str | None,
     *,
     env: Dict[str, str] | None = None,
-    gateway_url: str | None = None,
-    timeout_sec: float = 2.0,
+    pool_state: Mapping[str, Any] | None = None,
 ) -> Tuple[Optional[str], Optional[int]]:
     """Orion capability: best-effort "what backend am I about to run on"
-    read, for injecting into the harness system prompt *before* a turn
-    starts.
+    read, for the harness system prompt and the motor's context budget,
+    *before* a turn starts.
 
     `_served_model_from_assistant` above only learns the truth from a
     turn's own stream-json output -- after the prompt was already sent, too
     late for self-context. This is the pre-turn equivalent: resolve
-    fcc_model_label (e.g. "MODEL_SONNET") through ~/.fcc/.env to an
-    orion-llm-gateway route key, then read that route's live-probed model
-    off GET /routes. Not a new probe -- route_catalog.py's `_probe_model`
-    already live-probes and caches this exact fact (15s TTL) for the Hub
-    route picker; this just reads it.
+    fcc_model_label (e.g. "MODEL_SONNET") through ~/.fcc/.env to a pool
+    route key, then read that route's model and per-slot window out of GPU
+    pool state (``orion.gpu_pool.route_view``: the role a call on that route
+    would land on right now, and the model/ctx the pool discovered there).
 
-    Fails open to None on: no label, missing/malformed env entry, a
-    non-llamacpp backend (MODEL_HAIKU's nvidia_nim route isn't in this
-    route table -- see _ROUTE_PROBE_BACKENDS), an unreachable gateway, a
-    non-2xx response, or a route id with no cached model yet (worker down).
+    GPU pool stage 6.3: this used to read orion-llm-gateway's GET /routes
+    over HTTP. It now reads the ``pool_state`` the caller already fetched
+    (HarnessRunner reads it once per turn over ``orion:gpu_pool:state``, with
+    the pool's config) -- no network read of its own.
+
+    Fails open to (None, None) on: no label, missing/malformed env entry, a
+    non-llamacpp backend (MODEL_HAIKU's nvidia_nim route is not a pool
+    route -- see _ROUTE_PROBE_BACKENDS), no pool state (pool unreachable),
+    or a route that is not up (worker down: no model, no window). A None
+    window means "fall back to the configured default", never "unlimited".
     A self-context probe must never block or fail a turn over a missing
     fact about itself.
     """
+    from orion.gpu_pool.route_view import SOURCE_UNAVAILABLE, build_route_view, route_entry
+
     label = str(fcc_model_label or "").strip()
     route_key = resolve_fcc_route_key(label, env=env)
-    if route_key is None:
+    if route_key is None or pool_state is None:
         return None, None
+    view = build_route_view(pool_state)
+    if view.get("source") == SOURCE_UNAVAILABLE:
+        return None, None
+    entry = route_entry(view, route_key)
+    if entry is None:
+        return None, None
+    n_ctx = _positive_int(entry.get("n_ctx"))
+    model = entry.get("model")
+    if isinstance(model, str) and model.strip():
+        return _weights_file_basename(model.strip()), n_ctx
+    return None, n_ctx
 
-    url = str(
-        gateway_url or os.environ.get("HARNESS_LLM_GATEWAY_URL", "http://llm-gateway:8210")
-    ).rstrip("/")
-    try:
-        async with httpx.AsyncClient(timeout=timeout_sec) as client:
-            response = await client.get(f"{url}/routes")
-            if response.status_code >= 400:
-                return None, None
-            payload = response.json()
-    except Exception:
-        logger.warning("probe_route_runtime failed label=%s route=%s", label, route_key, exc_info=True)
-        return None, None
 
-    routes = payload.get("routes") if isinstance(payload, dict) else None
-    if not isinstance(routes, list):
-        return None, None
-    for route in routes:
-        if not isinstance(route, dict) or route.get("id") != route_key:
-            continue
-        raw_ctx = route.get("n_ctx")
-        # Absent on an older gateway that predates this field, and null whenever the
-        # worker is down or answered an unexpected shape. Both mean "no ceiling known",
-        # which callers must treat as "fall back to the configured default" -- never as
-        # unlimited.
-        n_ctx = raw_ctx if isinstance(raw_ctx, int) and not isinstance(raw_ctx, bool) and raw_ctx > 0 else None
-        model = route.get("model")
-        if isinstance(model, str) and model.strip():
-            return _weights_file_basename(model.strip()), n_ctx
-        return None, n_ctx
-    return None, None
+def held_role_window(pool_state: Mapping[str, Any] | None, role: str | None) -> Optional[int]:
+    """Per-slot context of the pool role a held turn runs on (the grant, not the route default).
+
+    A turn holding a lease runs every call on its granted role, so that role's discovered
+    ``ctx_per_slot`` is the window it will really hit. None when unknown (no state, or the role is
+    not confirmed) -- the caller falls back to the configured ceiling."""
+    from orion.gpu_pool.placement import discovered_role
+
+    if not role:
+        return None
+    found = discovered_role(pool_state, role)
+    if found is None or found.status not in ("confirmed", "static"):
+        return None
+    return _positive_int(found.ctx_per_slot)
 
 
 async def probe_current_served_model(
     fcc_model_label: str | None,
     *,
     env: Dict[str, str] | None = None,
-    gateway_url: str | None = None,
-    timeout_sec: float = 2.0,
+    pool_state: Mapping[str, Any] | None = None,
 ) -> Optional[str]:
     """Just the served-model half of `probe_route_runtime`, for the prompt.
 
     Kept as its own name because that is what the harness prefix asks for, and
-    what `HarnessRunner.served_model_probe` injects and its tests assert.
-
-    NOTE: this is a SEPARATE HTTP call from the motor's own window probe -- the
-    runner calls this before the turn to build the prompt, the motor calls
-    `probe_route_runtime` inside the turn to size its budget, so a turn now
-    makes two `GET /routes` requests rather than one. Not deduplicated
-    deliberately: a module-level TTL cache here would leak state between the
-    existing `probe_current_served_model` tests, and the cost is small and
-    bounded -- the gateway serves /routes from its own 15s health cache, the
-    call has a 2s timeout, and it fails open to None on anything at all. Revisit
-    by threading the window down from the runner if this ever shows up in turn
-    latency; do not add a hidden cache.
+    what `HarnessRunner.served_model_probe` injects and its tests assert. The
+    runner reads pool state once per turn and hands the same state to this
+    and (via ``pool_state``) to the motor's window probe, so a turn makes one
+    pool read, not two.
     """
-    model, _ = await probe_route_runtime(
-        fcc_model_label, env=env, gateway_url=gateway_url, timeout_sec=timeout_sec
-    )
+    model, _ = await probe_route_runtime(fcc_model_label, env=env, pool_state=pool_state)
     return model
 
 
@@ -889,6 +883,7 @@ async def run_fcc_turn(
     reading_binding=None,
     reading_only=False,
     gpu_lease: dict | None = None,
+    pool_state: Mapping[str, Any] | None = None,
 ) -> AsyncIterator[Dict[str, object]]:
     """Orion capability: the actual FCC-Claude process.
 
@@ -913,10 +908,16 @@ async def run_fcc_turn(
 
     # The window the lane's worker is actually serving, so every budget below is the
     # ceiling THIS turn will really hit rather than the container's one-size default.
-    # Best-effort by construction: None (older gateway, worker down, non-llamacpp
-    # backend) falls the whole chain back to the env ceiling, exactly as before.
-    lane_n_ctx = await probe_route_runtime(label, env=env)
-    lane_n_ctx = lane_n_ctx[1]
+    # From the GPU pool state the runner read for this turn (stage 6.3; this used to be a
+    # GET /routes read): a held turn runs on its granted role, so that role's window; an
+    # unheld one, the role its route lands on right now. Best-effort by construction: None
+    # (pool unreachable, worker down, non-llamacpp backend) falls the whole chain back to the
+    # env ceiling, exactly as before.
+    held_role = str((gpu_lease or {}).get("role") or "").strip() or None
+    if held_role:
+        lane_n_ctx = held_role_window(pool_state, held_role)
+    else:
+        lane_n_ctx = (await probe_route_runtime(label, env=env, pool_state=pool_state))[1]
 
     # A lane can be too small to host this turn AT ALL, and that has to be said
     # before spawning rather than discovered as a provider error mid-stream.

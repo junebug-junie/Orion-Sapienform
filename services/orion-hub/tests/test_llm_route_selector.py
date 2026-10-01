@@ -160,57 +160,30 @@ def test_build_context_exec_request_sets_llm_profile() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_routes_normalizes_catalog() -> None:
+async def test_fetch_routes_normalizes_catalog(monkeypatch) -> None:
+    """The Compute catalog comes from GPU pool state (stage 6.3), not the gateway's GET /routes."""
+    from orion.gpu_pool.config import load_pool_config
     from scripts import llm_gateway_client as client
 
-    payload = {
-        "default_route": "chat",
-        "routes": [
-            {
-                "id": "chat",
-                "served_by": "atlas-worker-1",
-                "backend": "llamacpp",
-                "status": "up",
-                "latency_ms": 12,
-                "last_checked_at": "2026-06-14T00:00:00+00:00",
-            },
-            {
-                "id": "agent",
-                "served_by": "atlas-worker-agent-1",
-                "backend": "llamacpp",
-                "status": "down",
-                "latency_ms": None,
-                "last_checked_at": "2026-06-14T00:00:00+00:00",
-            },
-        ],
+    cfg = load_pool_config()
+    state = {
+        "generated_at": "2026-09-30T00:00:00Z",
+        "cards": [{"card": "gpu0", "vram_gb": 32, "lendable": True, "lent": False}],
+        "roles": [{"role": "chat", "kind": "llm", "cards": ["gpu0"], "url": "http://h:8011",
+                   "status": "confirmed", "model_file": "chat.gguf", "ctx_per_slot": 131072}],
+        "config": cfg.model_dump(mode="json", by_alias=True, exclude={"digest"}),
     }
 
-    class _Resp:
-        status = 200
+    async def _state(bus, **kw):
+        assert kw.get("include_config") is True
+        return state
 
-        async def json(self):
-            return payload
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return False
-
-    class _Session:
-        def get(self, url):
-            assert url.endswith("/routes")
-            return _Resp()
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return False
-
-    with patch.object(client.aiohttp, "ClientSession", return_value=_Session()):
-        result = await client.fetch_routes()
-    assert result["default_route"] == "chat"
+    monkeypatch.setattr("orion.gpu_pool.placement.fetch_pool_state", _state)
+    monkeypatch.setattr(client, "_rpc_bus", lambda: object())
+    client.reset_route_view_cache()
+    result = await client.fetch_routes()
+    client.reset_route_view_cache()
+    assert result["source"] == "gpu_pool"
     by_id = {r["id"]: r for r in result["routes"]}
     assert by_id["chat"]["status"] == "up"
     assert by_id["agent"]["status"] == "down"

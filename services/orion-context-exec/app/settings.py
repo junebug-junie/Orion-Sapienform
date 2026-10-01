@@ -151,10 +151,6 @@ class ContextExecSettings(BaseSettings):
         alias="CONTEXT_EXEC_ALLOWED_LLM_PROFILES",
     )
     context_exec_default_llm_profile: str = Field("chat", alias="CONTEXT_EXEC_DEFAULT_LLM_PROFILE")
-    context_exec_llm_profile_fallback_enabled: bool = Field(
-        False,
-        alias="CONTEXT_EXEC_LLM_PROFILE_FALLBACK_ENABLED",
-    )
     context_exec_llm_gateway_url: str = Field(
         "http://llm-gateway:8210",
         alias="CONTEXT_EXEC_LLM_GATEWAY_URL",

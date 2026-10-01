@@ -1769,12 +1769,11 @@ def _situation_time_context(now_local: datetime) -> TimeContextV1:
 
 @router.get("/api/llm-routes")
 async def api_llm_routes():
-    from .llm_gateway_client import LlmGatewayClientError, fetch_routes
+    # GPU pool state, not the gateway's retiring GET /routes (stage 6.3). Never raises: an
+    # unreachable pool comes back as every route "unknown" with source=gpu_pool_unavailable.
+    from .llm_gateway_client import fetch_routes
 
-    try:
-        return await fetch_routes()
-    except LlmGatewayClientError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return await fetch_routes()
 
 
 @router.get("/api/fcc-model-labels")

@@ -398,6 +398,11 @@ class ProposalRuntimeStore:
         from orion.autonomy import world_episodes
 
         with self._engine.connect() as conn:
+            # No ledger table yet means no world decision has ever been made (execution dispatch
+            # creates it on the first one), so nothing can be in flight. Any OTHER read failure
+            # raises and the caller fails closed.
+            if conn.execute(text("SELECT to_regclass(:t)"), {"t": world_episodes.TABLE}).scalar() is None:
+                return []
             return world_episodes.in_flight(conn, template=template, now=now)
 
     def baseline_eligibility(self, activity, *, now, policy):

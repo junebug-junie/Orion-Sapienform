@@ -3,8 +3,9 @@
 -- Spec: docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md (5.7)
 -- Runbook: docs/runbooks/2026-09-30-gpu-pool-stage5-7-enforce.md
 --
--- Additive only, safe on the live table. Apply BEFORE deploying a 5.7 pool: it refuses to boot
--- without these columns (app/store.py check_schema). The pool writes the same value to every card
+-- Additive only, safe on the live table. Since 2026-09-30 the pool also adds these columns itself
+-- at boot (app/store.py BOOT_ADDITIVE_COLUMNS, kept identical by tests/test_schema_drift_gate.py),
+-- so running this first is recommended, not required. The pool writes the same value to every card
 -- row; it reads "paused" if any row carries a timestamp.
 --
 -- lock_timeout: ADD COLUMN takes an ACCESS EXCLUSIVE lock for an instant (no rewrite: both columns

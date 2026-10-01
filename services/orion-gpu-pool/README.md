@@ -297,12 +297,12 @@ finished, cooldown/residency, which guard blocks, and every hold with the calls 
 #    GPU_POOL_LEASE_RETENTION_HOURS (default 7 days, the reach of backfill replay and the Hub
 #    walker). Dead letters are kept. Historical traffic lives in gpu_pool_events (sql-writer).
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_gpu_pool_v1.sql
-# 1b. stage 4.3 (additive, lock_timeout 5s, index CONCURRENTLY; a 4.3 pool refuses to boot
-#     without it). If the index build fails it leaves an INVALID index: DROP INDEX
-#     gpu_pool_leases_hold_idx; and re-run.
+# 1b/1c. stage 4.3 and 5.7 (additive). Still the recommended order -- but no longer a boot
+#     precondition: the pool adds these columns itself (see "Boot schema self-heal" below). Run
+#     1b anyway for its index (gpu_pool_leases_hold_idx, CONCURRENTLY), which boot never builds.
+#     If the index build fails it leaves an INVALID index: DROP INDEX gpu_pool_leases_hold_idx;
+#     and re-run.
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_gpu_pool_v2_holds.sql
-# 1c. stage 5.7 (additive, lock_timeout 5s; a 5.7 pool refuses to boot without it): the persisted
-#     emergency stop.
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_gpu_pool_v3_actuation_pause.sql
 # 2. equilibrium must exclude the queue-wait hop BEFORE the pool publishes rpc_health:
 #    EQUILIBRIUM_TRANSPORT_EXCLUDE_LABELS=log_orion_metacognition,gpu_pool_wait
@@ -310,6 +310,33 @@ psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_gpu_pool_v3_actua
 scripts/safe_docker_build.sh orion-gpu-pool up -d --build
 curl -s localhost:8127/health && curl -s localhost:8127/v1/pool | jq '.roles[] | {role, status, profile_name}'
 ```
+
+### Boot schema self-heal (since 2026-09-30)
+
+Every LLM call leases through this pool, so a pool that will not boot is a total LLM outage. That
+happened twice (2026-09-26 v2 `hold_lease_id`, 2026-09-30 v3 `actuation_paused_at`): the image was
+deployed before its additive migration and `check_schema` refused to start. Now, after taking the
+leader lock (single writer), the pool runs the missing `ALTER TABLE .. ADD COLUMN IF NOT EXISTS`
+statements itself -- `BOOT_ADDITIVE_COLUMNS` in `app/store.py`, one `ALTER TABLE` per table (atomic),
+stopping at the first lock failure, under `SET LOCAL lock_timeout` (3 s at boot, 300 ms on retries:
+a waiting ALTER queues the pool's own writes behind it) and `statement_timeout` 15 s.
+
+- **Lock not granted in time** (a `pg_dump`, a long transaction): the pool does **not** exit. It
+  serves **degraded**: the missing columns are held in memory for this process (holds, attach
+  idempotency, swap state and the emergency stop all still work), it logs
+  `gpu_pool_schema_degraded` at CRITICAL, retries in the background (5 s, 10 s, 30 s, 60 s, then
+  every 120 s), and on success writes the held values through (`gpu_pool_schema_recovered`). Until
+  then those values would not survive a restart. `/health` carries it:
+  `curl -s localhost:8127/health | jq .schema` -> `state` (`ok`/`degraded`), `missing`,
+  `in_memory`, `last_error`, `attempts`, `degraded_since`. Operator fix: run the migration named in
+  the log (the pool's own retry then finds nothing to do).
+- **Never applied at boot:** tables (v1), indexes, type changes, drops, or a missing column not in
+  the boot list. Those raise `SchemaNotHealable` and the pool refuses to boot, loudly, as before.
+- **Drift gate:** `tests/test_schema_drift_gate.py` fails if the boot list and the
+  `manual_migration_gpu_pool_v*.sql` `ADD COLUMN`s differ in either direction or in type/default,
+  if a column the store writes is created by neither v1 nor the boot list, or if a boot entry is not
+  additive (NOT NULL without a constant default, etc.). A new additive migration therefore needs
+  its boot entry in the same patch.
 
 circe's llama.cpp workers start announcing after they are recreated with the new compose
 (`LLM_ROLE`, `LLM_ANNOUNCE_PORT`); until then their roles read `silent`, which is correct.

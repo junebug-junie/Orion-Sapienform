@@ -11,6 +11,35 @@ transport-ewma-baseline-design.md, made runnable:
   across hourly rows, weighted by ``windows_evaluated`` (each row already holds
   the median of its own evaluated windows -- a median of medians, stated, not
   hidden).
+
+  2026-10-01 revision -- the grade asks the gate's own question, "would this
+  hop raise a false alert while things are calm?", using the gate's own rules,
+  instead of judging bands the gate itself ignores. The first live night
+  (2026-09-30) FAILED 12 of 17 hops, and every failure was one of:
+    * a ratio out of band on a tiny absolute gap (orion:state:request at 59 ms
+      vs a 23 ms best) -- the gate needs MIN_EXCESS_MS (250) of absolute excess
+      before saturation counts, so it could never alert on these;
+    * an excluded hop (measured, never triggers) -- it cannot alert at all;
+    * a quiet-hour z of 0.5-3: nights carry different load than the all-hours
+      baseline (recall runs faster at night, z -1.27). The +/-0.5 band was the
+      spec's guess, not a calibrated value; the gate only fires at z >= SPIKE_Z.
+  So the rest-state FAILs are:
+    * the gate itself opened a spike or saturation episode during quiet hours
+      (``would_emit_by_condition`` -- the gate's own decision, with its own
+      materiality and sustain rules applied, counted whether EMIT is on or off);
+    * the typical quiet-hour ratio is at/above the gate's SATURATION_RATIO with
+      a material gap. The gap is ``floor_ms * (ratio - 1)``: the ratio is
+      exp(level - floor), so this is the gate's own level-minus-floor. (Not
+      ``baseline_ms - floor_ms``: baseline_ms is the guarded fast mean, which by
+      design does not absorb a step change -- it would hide exactly the
+      saturation this check exists for.)
+  Everything else is a NOTE: z of any size without an opened spike (negative z
+  can never fire; a positive z on a tiny-ms hop is immaterial), and ratios
+  between the 0.8-1.3 band and the saturation line. Scope, stated: this grades
+  "would it false-alert at rest", not "is the hop drifting" -- slow creep under
+  the saturation line is caught only by the floor-rise check below. Excluded
+  hops are shown but never decide the overall verdict. The
+  would-emit table (which pairs with live timeouts) stays the EMIT evidence.
 - No hop's floor may rise more than 1.5x without a ``regime_shift`` in between.
   Only upward moves are flagged: the floor follows improvements quickly by
   design (90 s half-life down), and "busy quietly becoming normal" is the upward
@@ -45,6 +74,12 @@ LOCAL_TZ = ZoneInfo("America/Denver")
 QUIET_LOCAL_HOURS = frozenset({1, 2, 3, 4, 5})  # hours starting 01:00..05:00 local = 01:00-06:00
 Z_BAND = 0.5
 RATIO_BAND = (0.8, 1.3)
+# Mirror the gate's own firing rules (orion/metacog/transport_baseline.py
+# TransportBaselineConfig defaults; overridable from the CLI if the live
+# config differs).
+SPIKE_Z = 3.0
+SATURATION_RATIO = 2.0
+MIN_EXCESS_MS = 250.0
 FLOOR_RISE_LIMIT = 1.5
 DEFAULT_DSN = "postgresql://postgres:postgres@localhost:55432/conjourney"
 
@@ -104,7 +139,9 @@ class KeyGrade:
     quiet_hours_with_traffic: int
     z_median: float | None
     ratio_median: float | None
+    excess_ms_median: float | None = None
     floor_flags: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
     verdict: str = "NOT_GRADABLE"
     sentence: str = ""
 
@@ -147,7 +184,31 @@ def floor_rises(rows: list[dict]) -> list[str]:
     return flags
 
 
-def grade_key(ident: str, rows: list[dict]) -> KeyGrade:
+def _excess_ms(r: dict) -> float | None:
+    """The gate's saturation gap, exp(level) - exp(floor) = floor * (ratio - 1)."""
+    floor, ratio = r.get("floor_ms"), r.get("saturation_ratio_p50")
+    if floor is None or ratio is None:
+        return None
+    return float(floor) * (float(ratio) - 1.0)
+
+
+_REST_ALERT_CONDITIONS = ("spike:open", "saturation:open")
+
+
+def _quiet_rest_alerts(quiet: list[dict]) -> int:
+    return sum(
+        int(_dict(r.get("would_emit_by_condition")).get(c, 0) or 0) for r in quiet for c in _REST_ALERT_CONDITIONS
+    )
+
+
+def grade_key(
+    ident: str,
+    rows: list[dict],
+    *,
+    spike_z: float = SPIKE_Z,
+    saturation_ratio: float = SATURATION_RATIO,
+    min_excess_ms: float = MIN_EXCESS_MS,
+) -> KeyGrade:
     quiet = [
         r for r in rows
         if is_quiet_hour(r["hour_start"])
@@ -163,18 +224,53 @@ def grade_key(ident: str, rows: list[dict]) -> KeyGrade:
         quiet_hours_with_traffic=len({_ts(r["hour_start"]) for r in quiet}),
         z_median=z,
         ratio_median=ratio,
+        excess_ms_median=weighted_median((_excess_ms(r), r.get("windows_evaluated")) for r in quiet),
         floor_flags=floor_rises(rows),
     )
     problems: list[str] = []
     gradable = z is not None or ratio is not None
     if gradable:
-        if z is None or abs(z) > Z_BAND:
-            problems.append(f"its typical quiet-hour z was {'missing' if z is None else f'{z:+.2f}'} (needs within +/-{Z_BAND})")
-        lo, hi = RATIO_BAND
-        if ratio is None or not (lo <= ratio <= hi):
+        rest_alerts = _quiet_rest_alerts(quiet)
+        if rest_alerts:
             problems.append(
-                f"its typical quiet-hour slow-vs-best ratio was {'missing' if ratio is None else f'{ratio:.2f}'} (needs {lo}-{hi})"
+                f"the gate itself opened {rest_alerts} spike/saturation episode(s) during quiet hours"
             )
+        if z is None:
+            problems.append("its quiet-hour z was missing")
+        elif z >= spike_z and not rest_alerts:
+            g.notes.append(
+                f"quiet-hour z {z:+.2f} is past the spike line, but the gate opened no spike at rest "
+                "(not material or not sustained)"
+            )
+        elif abs(z) > Z_BAND and not rest_alerts:
+            g.notes.append(
+                f"nights run {'slower' if z > 0 else 'faster'} than its all-hours baseline "
+                f"(quiet-hour z {z:+.2f}) -- a load difference"
+            )
+        lo, hi = RATIO_BAND
+        excess = g.excess_ms_median
+        if ratio is None:
+            problems.append("its quiet-hour slow-vs-best ratio was missing")
+        elif ratio < lo:
+            g.notes.append(f"at rest it runs faster than its recorded best (ratio {ratio:.2f})")
+        elif ratio > hi:
+            material = excess is None or excess >= min_excess_ms
+            if ratio >= saturation_ratio and material:
+                gap = "unknown ms" if excess is None else f"{excess:.0f} ms"
+                problems.append(
+                    f"at rest it already reads as saturated: {ratio:.2f}x its best recent speed ({gap} above it; "
+                    f"the gate opens saturation at {saturation_ratio:g}x and {min_excess_ms:.0f} ms)"
+                )
+            elif not material:
+                g.notes.append(
+                    f"ratio {ratio:.2f} is out of band but only {excess:.0f} ms above its best "
+                    f"(under the gate's {min_excess_ms:.0f} ms floor, so it cannot alert)"
+                )
+            else:
+                g.notes.append(
+                    f"at rest it runs {ratio:.2f}x its best recent speed ({excess:.0f} ms above it) -- "
+                    f"above the {lo}-{hi} band but below the gate's {saturation_ratio:g}x saturation line"
+                )
     problems.extend(g.floor_flags)
     if not gradable and not g.floor_flags:
         g.verdict = "NOT_GRADABLE"
@@ -185,11 +281,13 @@ def grade_key(ident: str, rows: list[dict]) -> KeyGrade:
     g.verdict = "FAIL" if problems else "PASS"
     if g.verdict == "PASS":
         g.sentence = (
-            f"rests where it should: when things are quiet it reads z {z:+.2f} and runs at "
-            f"{ratio:.2f}x its best recent speed, and its baseline never crept up unannounced."
+            f"would not raise a false alert at rest: quiet-hour z {z:+.2f}, {ratio:.2f}x its best recent "
+            "speed, and its baseline never crept up unannounced."
         )
     elif g.verdict == "FAIL":
         g.sentence = "does not pass: " + "; ".join(problems) + "."
+    if g.notes:
+        g.sentence += " Note: " + "; ".join(g.notes) + "."
     return g
 
 
@@ -202,12 +300,22 @@ def would_emit_by_day(rows: list[dict]) -> dict[str, dict[str, int]]:
     return {d: dict(v) for d, v in sorted(out.items())}
 
 
-def grade(rows: list[dict]) -> dict[str, Any]:
+def grade(
+    rows: list[dict],
+    *,
+    spike_z: float = SPIKE_Z,
+    saturation_ratio: float = SATURATION_RATIO,
+    min_excess_ms: float = MIN_EXCESS_MS,
+) -> dict[str, Any]:
     by_key: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
         by_key[_ident(r)].append(r)
-    grades = [grade_key(k, v) for k, v in sorted(by_key.items())]
-    gradable = [g for g in grades if g.verdict != "NOT_GRADABLE"]
+    grades = [
+        grade_key(k, v, spike_z=spike_z, saturation_ratio=saturation_ratio, min_excess_ms=min_excess_ms)
+        for k, v in sorted(by_key.items())
+    ]
+    # Excluded hops are measured but can never trigger: shown, never decisive.
+    gradable = [g for g in grades if g.verdict != "NOT_GRADABLE" and not g.excluded]
     overall = "NO_DATA" if not gradable else ("PASS" if all(g.verdict == "PASS" for g in gradable) else "FAIL")
     hours = sorted({_ts(r["hour_start"]) for r in rows})
     return {
@@ -227,11 +335,12 @@ def render(report: dict[str, Any]) -> str:
     span = (report["last_hour"] - report["first_hour"]).total_seconds() / 86400.0 + 1 / 24
     counts = defaultdict(int)
     for g in report["keys"]:
-        counts[g.verdict] += 1
+        counts["EXCLUDED" if g.excluded and g.verdict != "NOT_GRADABLE" else g.verdict] += 1
     lines.append(
         f"Overall: {report['overall']}. {span:.1f} days of hourly readings "
         f"({report['first_hour']:%Y-%m-%d %H:00} to {report['last_hour']:%Y-%m-%d %H:00} UTC): "
-        f"{counts['PASS']} hops pass, {counts['FAIL']} fail, {counts['NOT_GRADABLE']} had no quiet-hour traffic."
+        f"{counts['PASS']} hops pass, {counts['FAIL']} fail, {counts['NOT_GRADABLE']} had no quiet-hour traffic, "
+        f"{counts['EXCLUDED']} excluded (measured, never trigger; not counted)."
     )
     if span < 7:
         lines.append("The spec asks for a full week; this is less, so treat the verdict as provisional.")
@@ -289,12 +398,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--days", type=int, default=7)
     ap.add_argument("--input", type=Path, default=None, help="JSONL rows instead of Postgres")
     ap.add_argument("--dsn", default=os.environ.get("POSTGRES_URI", DEFAULT_DSN))
+    ap.add_argument("--spike-z", type=float, default=SPIKE_Z, help="the gate's spike z (EQUILIBRIUM_TRANSPORT_BASELINE_SPIKE_Z)")
+    ap.add_argument(
+        "--saturation-ratio", type=float, default=SATURATION_RATIO,
+        help="the gate's saturation ratio (EQUILIBRIUM_TRANSPORT_BASELINE_SATURATION_RATIO)",
+    )
+    ap.add_argument(
+        "--min-excess-ms", type=float, default=MIN_EXCESS_MS,
+        help="the gate's materiality floor (EQUILIBRIUM_TRANSPORT_BASELINE_MIN_EXCESS_MS)",
+    )
     args = ap.parse_args(argv)
     rows = load_rows_jsonl(args.input) if args.input else load_rows_pg(args.dsn, args.days)
     if rows is None:
         print("Could not open a read-only Postgres session; nothing graded (UNVERIFIED).", file=sys.stderr)
         return 2
-    report = grade(rows)
+    report = grade(
+        rows, spike_z=args.spike_z, saturation_ratio=args.saturation_ratio, min_excess_ms=args.min_excess_ms
+    )
     sys.stdout.write(render(report))
     return {"PASS": 0, "NO_DATA": 3}.get(report["overall"], 1)
 

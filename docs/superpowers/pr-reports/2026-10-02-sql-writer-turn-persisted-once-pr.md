@@ -106,6 +106,6 @@ Independent of #2484's order. Deploying it before or after orion-memory-consolid
 
 ## PR link
 
-(filled after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2487
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

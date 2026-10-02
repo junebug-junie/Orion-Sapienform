@@ -44,7 +44,7 @@ _RECEIPT_NODE_IDS = {
     "node:substrate.route",
     "node:substrate.bus_synaptic",
     "node:substrate.codebase",
-    "node:substrate.vision",
+    # node:substrate.vision's tick was retired 2026-10-02 (vision_organ lane).
     "node:substrate.perception",
 }
 

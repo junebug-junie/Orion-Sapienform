@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     # services/orion-sql-db/manual_migration_storage_write_substrate_loop.sql first.
     enable_storage_write_reducer: bool = Field(False, alias="ENABLE_STORAGE_WRITE_REDUCER")
     storage_write_grammar_batch_limit: int = Field(200, alias="STORAGE_WRITE_GRAMMAR_BATCH_LIMIT")
+    # vision_organ lane (orion-vision-frame-router reporting on the eye, trace
+    # prefix vision.organ:). Off in code: needs
+    # services/orion-sql-db/manual_migration_vision_organ_substrate_loop.sql first.
+    # Successor of the retired SUBSTRATE_VISION_CHANNEL_TICK_* artifact tick.
+    enable_vision_organ_reducer: bool = Field(False, alias="ENABLE_VISION_ORGAN_REDUCER")
+    vision_organ_grammar_batch_limit: int = Field(200, alias="VISION_ORGAN_GRAMMAR_BATCH_LIMIT")
+    # No router window for this long -> capability:vision staleness 1.0 on a
+    # clock. 3x the router's 60 s window: one late window is not an outage.
+    vision_organ_silence_sec: float = Field(180.0, alias="VISION_ORGAN_SILENCE_SEC")
     transport_substrate_maturity: str = Field(
         "trace_only",
         alias="TRANSPORT_SUBSTRATE_MATURITY",
@@ -82,23 +91,10 @@ class Settings(BaseSettings):
     bus_synaptic_max_edge_age_sec: float = Field(
         3600.0, alias="SUBSTRATE_BUS_SYNAPTIC_MAX_EDGE_AGE_SEC"
     )
-    # Perceptual availability, feeding node:substrate.vision ->
-    # capability:vision so that capability has a real edge instead of a
-    # fabricated constant. A bus listener on the vision artifact channel feeds
-    # a clock-driven tick -- NOT a bus-cadence statistic, which was tried and
-    # deleted (it z-scored a fixed scheduler, and froze rather than rose when
-    # the eye went silent). Own flag and interval, like bus_synaptic, because
-    # it is a different question rather than another grammar-event domain.
-    # Deliberately NOT added to ACTIVE_INFERENCE_DOMAINS or to worker.py's
-    # _PREDICTION_ERROR_DOMAIN_NODE_IDS in this patch; see the perception
-    # design doc's metric gate, item 6.
-    enable_vision_channel_tick: bool = Field(
-        False, alias="SUBSTRATE_VISION_CHANNEL_TICK_ENABLED"
-    )
-    vision_channel_tick_interval_sec: float = Field(
-        30.0, alias="SUBSTRATE_VISION_CHANNEL_TICK_INTERVAL_SEC"
-    )
-    # The channel carrying the detector's real output. Chosen over
+    # The channel carrying the detector's real output, read by the perception
+    # prediction-error listener (P2). (The vision-channel availability tick that
+    # also read it was retired 2026-10-02: capability:vision is now fed by the
+    # frame router's own report, ENABLE_VISION_ORGAN_REDUCER below.) Chosen over
     # orion:vision:events (~11/hour -- far too sparse to read as liveness) and
     # over orion:vision:frames (0.1s, but pre-detector, so it stays healthy
     # while the eye is blind). Measured live 2026-08-13: one message every 5.0s.
@@ -489,7 +485,8 @@ class Settings(BaseSettings):
     # (the value this flag published for its first day live) was found
     # numerically incomparable to every other prediction_error domain's
     # min_error threshold and migrated to include stage 2. Own explicit
-    # flag, not piggybacked on SUBSTRATE_VISION_CHANNEL_TICK_ENABLED or
+    # flag, not piggybacked on SUBSTRATE_VISION_CHANNEL_TICK_ENABLED (retired
+    # 2026-10-02, see ENABLE_VISION_ORGAN_REDUCER) or
     # SUBSTRATE_WRITE_PREDICTION_ERROR_NODES -- same domain-independence
     # convention every tick in this file follows (bus_synaptic vs
     # vision_channel vs codebase all have their own flags despite

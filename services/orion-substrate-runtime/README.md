@@ -1034,7 +1034,46 @@ adding all 5 keys to `docker-compose.yml`'s `environment:` list; confirmed live 
 `services/orion-sql-db/manual_migration_substrate_turn_referent_v1.sql` before enabling
 `ORION_REVERIE_SEMANTIC_LIFT_ENABLED` on orion-thought.
 
+## Vision organ lane (capability:vision)
+
+The frame router (`services/orion-vision-frame-router`) reports on the eye once per
+60 s window: per camera stream, frames received, age of the newest frame, tasks sent
+to the vision host, failures by class (timeout, invalid reply, host `error_code`),
+and detection/caption yield. Trace prefix `vision.organ:`, source
+`orion-vision-frame-router`, cursor `vision_organ_grammar_reducer`, reducer
+`orion/substrate/vision_organ_loop/`, projection table
+`substrate_vision_organ_projection` (migration
+`services/orion-sql-db/manual_migration_vision_organ_substrate_loop.sql`).
+
+One delta per completed window lands on `node:substrate.vision_organ`:
+
+- `vision_frame_staleness` -> `capability:vision` pressure. Staleness of the freshest
+  stream (can Orion see at all). A configured stream that never sent a frame is aged
+  from router start, never read as calm. If the router stops reporting for
+  `VISION_ORGAN_SILENCE_SEC` (180 s), this tick writes 1.0 on a clock.
+- `vision_processing_failure_pressure` -> `capability:vision` reliability_pressure.
+  Rolling 600 s share of dispatched frames with no usable answer (`hop_pressure`
+  rule: `failures / max(attempts, 10)`, 0 until 2 failures). Absent when nothing was
+  dispatched.
+
+Per-stream status (`live` / `stale` / `never_seen`) and yield are on the projection
+and in each receipt's delta, not in the field.
+
+This replaced the `SUBSTRATE_VISION_CHANNEL_TICK_*` artifact tick (retired
+2026-10-02): it pooled detect artifacts from every camera, so one live camera hid
+every dead one -- `node:substrate.vision` read 0.0 on all 124,612 field ticks
+2026-09-29..10-02 while the carbon webcam sent nothing.
+`node:substrate.vision` is pruned from the field (`RETIRED_PSEUDO_NODES`).
+
+Flags: `ENABLE_VISION_ORGAN_REDUCER` (here), `VISION_ORGAN_GRAMMAR_ENABLED` (router),
+`ENABLE_VISION_ORGAN_FIELD_DIGESTION` (field digester). All off in code, on in the
+`.env_example` templates.
+
 ## Perceptual prediction error (P2)
+
+> 2026-10-02: `node:substrate.vision`, `_vision_channel_tick` and
+> `SUBSTRATE_VISION_CHANNEL_TICK_*` mentioned below are retired; see "Vision organ
+> lane" above. The comparisons are kept as history.
 
 `docs/superpowers/specs/2026-08-12-perception-frontier-design.md`'s P2: `surprise = 1 -
 cos(frame_embedding, EWMA_embedding)` per camera stream, feeding a new node,

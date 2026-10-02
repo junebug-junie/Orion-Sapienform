@@ -908,6 +908,14 @@ def bus_synaptic_prediction_error(edge_zscores: list[float]) -> float:
 # ---------------------------------------------------------------------------
 # capability:vision -- perceptual availability
 #
+# 2026-10-02: the node:substrate.vision tick that consumed this section was
+# retired. capability:vision is now fed by the frame router's own report
+# (orion/substrate/vision_organ_loop/), which still uses
+# vision_channel_staleness_pressure below, per camera stream. perceptual_yield /
+# perceptual_blindness_pressure have no runtime caller now; they are kept for
+# the per-stream day-shape yield prior, not wired anywhere. References below to
+# node:substrate.vision are history.
+#
 # 2026-08-13: an earlier draft of this node derived vision health from the bus
 # synaptic graph's `gap_zscore` over the orion:vision:* channels, reusing
 # bus_synaptic_prediction_error's counting rule. That was **deleted rather than

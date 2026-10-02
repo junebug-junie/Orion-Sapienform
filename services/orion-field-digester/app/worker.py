@@ -57,6 +57,8 @@ def delta_digestion_enabled(target_kind: str, settings: Any) -> bool:
         return bool(settings.enable_transport_field_digestion)
     if target_kind == "llm_inference_node":
         return bool(settings.enable_llm_inference_field_digestion)
+    if target_kind == "vision_organ":
+        return bool(settings.enable_vision_organ_field_digestion)
     if target_kind == "rpc_delivery":
         return bool(settings.enable_rpc_delivery_field_digestion)
     if target_kind == "storage_write":

@@ -80,7 +80,10 @@ RUNGS: tuple[Rung, ...] = (
     Rung("receipts:biometrics_node_reducer", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "biometrics_node_reducer"),
     Rung("receipts:substrate.bus_synaptic", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "substrate.bus_synaptic"),
     Rung("receipts:substrate.perception", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "substrate.perception"),
-    Rung("receipts:substrate.vision_channel", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "substrate.vision_channel"),
+    # The vision organ lane writes one receipt per 60 s router window, and a
+    # silence receipt on a clock when the router goes quiet, so it is steady
+    # either way. Replaced substrate.vision_channel (tick retired 2026-10-02).
+    Rung("receipts:vision_organ_reducer", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "vision_organ_reducer"),
     # The ladder proper, bottom to top.
     Rung("field_state", "substrate_field_state", "generated_at", _TICK),
     Rung("attention", "substrate_attention_frames", "generated_at", _TICK),

@@ -156,6 +156,11 @@ from orion.schemas.llm_inference_projection import (
     LlmInferenceRoleStateV1,
     LlmInferenceWindowCountV1,
 )
+from orion.schemas.vision_organ_projection import (
+    VisionOrganProjectionV1,
+    VisionOrganStreamStateV1,
+    VisionOrganWindowCountV1,
+)
 from orion.schemas.agents.bound_capability import (
     BoundCapabilityExecutionFailureV1,
     BoundCapabilityExecutionRequestV1,
@@ -862,6 +867,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "StorageWriteFamilyStateV1": StorageWriteFamilyStateV1,
     "StorageWriteWindowCountV1": StorageWriteWindowCountV1,
     "StorageWriteProjectionV1": StorageWriteProjectionV1,
+    "VisionOrganProjectionV1": VisionOrganProjectionV1,
+    "VisionOrganStreamStateV1": VisionOrganStreamStateV1,
+    "VisionOrganWindowCountV1": VisionOrganWindowCountV1,
     "LlmInferenceRoleStateV1": LlmInferenceRoleStateV1,
     "LlmInferenceWindowCountV1": LlmInferenceWindowCountV1,
     "CodebaseDeltaV1": CodebaseDeltaV1,

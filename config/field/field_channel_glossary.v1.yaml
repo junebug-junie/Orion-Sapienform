@@ -301,6 +301,16 @@ channels:
     category: infra_transport
     meaning: "Caller-side 'asked and got no answer in time' on node:substrate.rpc_delivery: the worst bus request channel's share of rpc_request() calls that hit the caller's own deadline over the last 10 minutes, timeouts / max(calls, 10), counted only once a channel has 2+ timeouts in the window, summed across every service's rpc-health snapshots. A deadline fires on a lost message and on a slow callee alike; on live data it is mostly slow LLM or cortex work. 0.0 means every counted call was answered in time; dropped (unmeasured) when no reading has arrived for 120 s."
 
+  - channel: vision_frame_staleness
+    level: [node]
+    category: sensor_trust_liveness
+    meaning: "Can Orion see at all, on node:substrate.vision_organ: staleness of the freshest camera stream the vision frame router reports (0.0 while any camera's newest frame is under 15 s old, ramping to 1.0 at 60 s). A configured camera that has sent nothing since the router started is aged from that start, never read as calm. 1.0 when no camera delivers or the router stops reporting for 180 s (written on a clock). Per-camera status lives on the vision organ projection. Dropped (unmeasured) when no reading has arrived for 300 s."
+
+  - channel: vision_processing_failure_pressure
+    level: [node]
+    category: task_execution
+    meaning: "Share of the frames the vision frame router handed to the vision host over the last 10 minutes that came back without a usable answer (timeout, invalid reply, ok=false), failures / max(attempts, 10), counted once 2+ failures are in the span; the worse of the pooled share and the worst single camera's. Absent when nothing was dispatched; dropped (unmeasured) when no reading has arrived for 300 s."
+
   - channel: field_coherence_warning
     level: [node]
     category: self_monitoring

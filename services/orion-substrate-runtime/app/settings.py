@@ -174,8 +174,11 @@ class Settings(BaseSettings):
     # broadcast consumer must be rebuilt BEFORE this is turned on. Apply
     # manual_migration_node_prediction_error_history_v1.sql first.
     pe_history_enabled: bool = Field(False, alias="SUBSTRATE_PE_HISTORY_ENABLED")
+    # Floor 25h: below that the prune would delete the readings the 24h and
+    # prior-24h windows need (0 would delete every row just written). Below
+    # 168 the 7-day fields silently cover less than 7 days after a restart.
     pe_history_retention_hours: float = Field(
-        168.0, alias="SUBSTRATE_PE_HISTORY_RETENTION_HOURS"
+        168.0, ge=25.0, alias="SUBSTRATE_PE_HISTORY_RETENTION_HOURS"
     )
     # Minimum |median_1h - median_prior_24h| before trend reads rising/settling
     # (the effective threshold is max(this, 0.5 * (p90_7d - p50_7d))). A knob,

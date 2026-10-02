@@ -321,7 +321,12 @@ broadcast still runs with `magnitude=None`.
 **Rollout order.** `OpenLoopV1` is `extra="forbid"`:
 
 1. Apply `services/orion-sql-db/manual_migration_node_prediction_error_history_v1.sql`.
-2. Rebuild `orion-thought` and `orion-hub`, which validate the broadcast.
+2. Rebuild `orion-thought` and `orion-hub`, which validate the broadcast
+   (`orion-thought/app/broadcast_reader.py`, `bus_listener.py` via
+   `StanceReactRequestV1`; `orion/hub/association.py`). The spec also names
+   orion-attention-runtime, which was checked on 2026-10-02. It reads the
+   projection with SQL jsonb paths and never validates it, and neither do
+   proposal-runtime or feedback-runtime, so none of them need a rebuild.
 3. Rebuild this service.
 4. Only then set the flag.
 

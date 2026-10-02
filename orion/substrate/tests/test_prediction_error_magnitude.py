@@ -235,3 +235,37 @@ def test_broadcast_attaches_magnitude_only_when_supplied():
     projection = broadcast_projection_from_frame(with_mag)
     dumped = projection.model_dump(mode="json")
     assert dumped["frame"]["open_loops"][0]["magnitude"]["band"] == mag.band
+
+
+def test_magnitude_never_changes_ranking_with_multiple_competitors():
+    """Give the LOWEST-pressure loop an 'unusual' magnitude and the highest a
+    'quiet' one: loop order, salience and the winner must be identical."""
+    nodes = [
+        _node(f"node:substrate.{name}", f"{name} prediction error",
+              dynamic_pressure=p, prediction_error=p,
+              dynamic_pressure_reason="prediction_error_seed",
+              contributing_turn_ids=[f"turn-{name}-{i}" for i in range(k)])
+        for name, p, k in (("chat", 0.9, 3), ("execution", 0.5, 2), ("route", 0.1, 1))
+    ]
+    hist = _series([0.0] * 300)
+    unusual = compute_prediction_error_magnitude(value=0.9, observed_at=NOW, history=hist, now=NOW)
+    quiet = compute_prediction_error_magnitude(value=0.0, observed_at=NOW, history=hist, now=NOW)
+    assert unusual.band == "unusual" and quiet.band == "quiet"
+    without = build_substrate_attention_frame(nodes=nodes, min_salience=0.05, now=NOW)
+    with_mag = build_substrate_attention_frame(
+        nodes=nodes, min_salience=0.05, now=NOW,
+        magnitude_by_node_id={
+            "node:substrate.route": unusual,
+            "node:substrate.execution": quiet,
+            "node:substrate.chat": quiet,
+        },
+    )
+    assert len(without.open_loops) == 3
+    assert [l.id for l in with_mag.open_loops] == [l.id for l in without.open_loops]
+    assert [l.salience for l in with_mag.open_loops] == [l.salience for l in without.open_loops]
+    assert with_mag.selected_action.open_loop_id == without.selected_action.open_loop_id
+    assert [a.model_dump() for a in with_mag.candidate_actions] == [
+        a.model_dump() for a in without.candidate_actions
+    ]
+    by_ref = {l.source_refs[0]: l.magnitude for l in with_mag.open_loops}
+    assert by_ref["node:substrate.route"] == unusual

@@ -180,3 +180,45 @@ def test_prune_is_throttled_and_uses_retention(monkeypatch):
     assert worker._store.prune_prediction_error_history.call_count == 1
     cutoff = worker._store.prune_prediction_error_history.call_args.kwargs["older_than"]
     assert before - timedelta(hours=168, seconds=5) <= cutoff <= datetime.now(timezone.utc) - timedelta(hours=168)
+
+
+def test_seed_failure_backs_off_instead_of_retrying_every_tick(monkeypatch):
+    worker = _make_worker(monkeypatch, history_enabled=True)
+    worker._store.fetch_prediction_error_history.side_effect = RuntimeError("no table")
+    node = _pe_node("node:substrate.chat", 0.14, OBSERVED)
+    _run_tick(worker, [node])
+    _run_tick(worker, [node])
+    _run_tick(worker, [node])
+    assert worker._store.fetch_prediction_error_history.call_count == 1
+    # After the retry window the seed is attempted again and recovers.
+    worker._pe_history_seed_failed_at -= timedelta(minutes=6)
+    worker._store.fetch_prediction_error_history.side_effect = None
+    worker._store.fetch_prediction_error_history.return_value = []
+    projection = _run_tick(worker, [node])
+    assert worker._store.fetch_prediction_error_history.call_count == 2
+    assert projection.frame.open_loops[0].magnitude is not None
+
+
+def test_far_future_reading_is_not_recorded_and_does_not_pin_last_observed(monkeypatch):
+    worker = _make_worker(monkeypatch, history_enabled=True)
+    future = datetime.now(timezone.utc) + timedelta(hours=2)
+    _run_tick(worker, [_pe_node("node:substrate.chat", 0.9, future)])
+    worker._store.save_prediction_error_history_samples.assert_not_called()
+    _run_tick(worker, [_pe_node("node:substrate.chat", 0.1, OBSERVED)])
+    assert worker._store.save_prediction_error_history_samples.call_args.args[0] == [
+        ("node:substrate.chat", OBSERVED, 0.1)
+    ]
+
+
+def test_retention_below_25_hours_is_rejected(monkeypatch):
+    import pytest
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://unused/unused")
+    monkeypatch.setenv("SUBSTRATE_PE_HISTORY_RETENTION_HOURS", "0")
+    import app.settings as settings_mod
+
+    settings_mod._settings = None
+    with pytest.raises(ValidationError):
+        settings_mod.get_settings()
+    settings_mod._settings = None

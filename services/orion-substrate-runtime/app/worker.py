@@ -3017,6 +3017,11 @@ class BiometricsSubstrateWorker:
     # getattr() because tests build the worker via __new__.
     _PE_HISTORY_NODE_PREFIX = "node:substrate."
     _PE_HISTORY_PRUNE_INTERVAL = timedelta(hours=1)
+    _PE_HISTORY_SEED_RETRY = timedelta(minutes=5)
+    # A reading stamped further ahead than this is treated as producer clock
+    # skew and not recorded: it would otherwise pin last_observed in the
+    # future and silently drop every correct reading until the clock caught up.
+    _PE_HISTORY_MAX_FUTURE_SKEW = timedelta(minutes=5)
 
     @staticmethod
     def _node_prediction_error_reading(node: Any) -> tuple[float, datetime] | None:
@@ -3058,7 +3063,21 @@ class BiometricsSubstrateWorker:
         s = self._settings
         cache: dict[str, deque] | None = getattr(self, "_pe_history_cache", None)
         if cache is None:
-            rows = self._store.fetch_prediction_error_history(since=now - WINDOW_7D)
+            # Back off after a failed seed (e.g. flag on before the migration):
+            # do not re-run a 7-day read and log a traceback every ~35 s tick.
+            failed_at = getattr(self, "_pe_history_seed_failed_at", None)
+            if failed_at is not None and now - failed_at < self._PE_HISTORY_SEED_RETRY:
+                return None
+            try:
+                rows = self._store.fetch_prediction_error_history(since=now - WINDOW_7D)
+            except Exception as exc:
+                if failed_at is None:
+                    logger.exception("substrate_pe_history_seed_failed")
+                else:
+                    logger.warning("substrate_pe_history_seed_failed err=%s", exc)
+                self._pe_history_seed_failed_at = now
+                return None
+            self._pe_history_seed_failed_at = None
             cache = {}
             for node_id, observed_at, value in rows:
                 if observed_at.tzinfo is None:
@@ -3083,6 +3102,13 @@ class BiometricsSubstrateWorker:
             if reading is None:
                 continue
             value, observed_at = reading
+            if observed_at > now + self._PE_HISTORY_MAX_FUTURE_SKEW:
+                logger.warning(
+                    "substrate_pe_history_future_reading_skipped node_id=%s observed_at=%s",
+                    node_id,
+                    observed_at.isoformat(),
+                )
+                continue
             current[node_id] = reading
             previous = last_observed.get(node_id)
             if previous is not None and previous >= observed_at:

@@ -84,7 +84,8 @@ Before this PR, a "memory" was Juniper's last message copied verbatim. After it,
   - `MEMORY_EPISODE_DISTILL_TIMEOUT_SEC=600.0`;
   - `MEMORY_EPISODE_DISTILL_MAX_TOKENS=4096`;
   - `MEMORY_EPISODE_DISTILL_DEADLINE_HOURS=20.0`;
-  - `CHANNEL_LLM_INTAKE`.
+  - `CHANNEL_LLM_INTAKE`;
+  - `MEMORY_EPISODE_RECONCILE_INTERVAL_SEC=900.0`, `MEMORY_EPISODE_DISTILL_MAX_ATTEMPTS=3` (review: reconciler).
 - **Added** (orion-memory-consolidation): `MEMORY_EPISODE_REPORT_ENABLED=true`, `MEMORY_EPISODE_REPORT_DIR=/data/memory-episode-reports`, `MEMORY_EPISODE_REPORT_TZ=America/Denver`.
 - `.env_example` and compose updated for both services.
 - **Local `.env` synced** with `python scripts/sync_local_env_from_example.py --all-keys orion-durable-runs orion-memory-consolidation` (written to the primary checkout). Pre-existing divergences (`POSTGRES_URI`, `DURABLE_RUNS_GRAPH_HOST`, `CONCEPT_RELATION_RESOLUTION_ENABLED`) were not touched.
@@ -153,31 +154,88 @@ Not built or deployed (instructed). Both migrations applied cleanly to a disposa
 
 ## Review findings fixed
 
-The orchestrator runs the review.
+Code review of Stage 1, 2026-10-02. Each fix has a regression test that fails on the code before it.
+
+- **BLOCKER: source monitoring went the wrong way.**
+  - **Finding:** `orion_read` / `orion_self_knowledge` were upgraded to `juniper_said` when only a Juniper prompt quote verified. The internal-channel check ran on the claimed voice, the channel was forced to `chat`, and quotes had no minimum length. The reported repro (a reverie "I dreamed that Juniper secretly wants to leave her job soon." with quote "I") was kept as `('juniper_said','chat')`.
+  - **Fix:** voices only move away from Juniper's (worked_out_together -> juniper_said -> orion_thought). `orion_read` / `orion_self_knowledge` become `orion_thought` (Orion's reply quoted) or are rejected (`voice_unsupported_by_evidence`). The internal-channel check runs on the claimed voice AND on the final voice and channel. The channel is never rewritten. Quotes need ≥3 words, or ≥15 characters in scripts written without spaces.
+  - **Evidence:** `orion/memory/episode/tests/test_validate_source_monitoring.py`: the exact repro, plus a 5 voices × 8 channels × 3 evidence-role matrix (120 cases). 37 tests failed before the fix; all pass after.
+- **SHOULD 1: the novel-word stakes backstop was a word list.**
+  - **Fix:** removed (no `intake_junk` / `_STOPWORDS` import). The self-conclusion upgrade is removed too. Stakes are the distiller's own field; `high` only means `pending_confirmation`. **Juniper is deciding the stakes policy.**
+  - **Evidence:** `test_stakes_are_the_distillers_own`, `test_no_word_list_is_imported`.
+- **SHOULD 2: fold quotes before matching.**
+  - **Fix:** NFKC, curly→straight quotes, dash variants, casefold and whitespace collapse, on both sides.
+  - **Evidence:** `test_quotes_are_folded_on_both_sides` (`don't` vs `don’t`, em/en dash, NBSP, full-width).
+  - **Eval:** re-validating the same 70 saved model answers gives 70 kept, 5 rejected (all `no_verified_quote`), identical to before. Folding rescued none of the five: they were stitched with "..." or invented (one shares 5 characters with its turn). One memory moved worked_out_together → orion_thought (its prompt quote was under 3 words). Juniper voice on an internal channel: 0. LIVE_RERUN_PLACEHOLDER
+- **SHOULD 3a: Fix 2's live effect, stated honestly.**
+  - **Fix:** a correction section in `docs/superpowers/pr-reports/2026-10-02-memory-episode-boundary-pr.md`.
+  - **What it says:** Fix 2 changes live inputs: the novelty and significance the crystallization gate reads (`consolidation_gate.py`), the provenance values `intake_consolidation_window.py` copies, the `chat_history_log` scores, and the turn-change signal count.
+  - **Evidence:** measured on 107 closing turns, mean novelty 0.930 vs 0.651 and significance 0.472 vs 0.554. Live window closing is unchanged.
+- **SHOULD 3b: sql-writer double publish at the source.** Separate PR #2487:
+  - every subscriber enumerated; none relies on two copies;
+  - the guards listed, with which can be retired;
+  - the turn envelope (with `spark_meta`) wins over the row read-back.
+- **SHOULD 4: lost close events and failed runs.**
+  - **Fix:** `services/orion-durable-runs/app/episode_distill_reconcile.py`, a 15 min loop. Closed direct episodes with no `episode_distill_run` (15 min grace, 72 h lookback, 10 per pass) are resubmitted as ordinary admitted durable runs:
+    - the base id when there was no attempt (lost event);
+    - `memdistill-<ep>-a<N>` when every attempt failed and the latest is over 1 h old;
+    - at most `MEMORY_EPISODE_DISTILL_MAX_ATTEMPTS=3`.
+  - No side queue; idempotent run ids.
+  - **Evidence:** `test_episode_distill_reconcile.py`: a decision matrix plus a Postgres pass (lost → base, failed → a2; busy, done, fresh and skipped untouched; a second pass submits nothing).
+- **SHOULD 5: pin to the 27B on gpu1.**
+  - **Fix:** a dedicated pool class `memory_distill: {roles: [agent]}` (gpu1 only); route `{class: memory_distill, priority: system}`.
+  - **Evidence:** `orion/gpu_pool/tests/test_memory_distill_placement.py`, which failed on the old config. In the golden route view, only the `memory_distill` entries change (lent-chat and gpu2-spill states now read `down`, not chat/gpu2). `check_gpu_pool_config` ok; `check_chat_route_poachers` PASS.
+- **SHOULD 6: run the Postgres-backed tests in CI.**
+  - **Fix:** `.github/workflows/orion-memory-episode-tests.yml` with a Postgres 16 service and `ORION_MEMORY_EPISODE_TEST_DATABASE_URL`. It fails if any test reports SKIPPED. Locally: 438 + 14 passed, 0 skipped.
+- **SHOULD 7: the deploy-order comment was backwards.**
+  - **Fix:** `orion/schemas/durable_run.py` now says consumer-first: sql-writer, gateway and gpu-pool BEFORE durable-runs.
+  - **Evidence:** `test_deploy_order_note.py`.
+- **Nit, daily report:**
+  - **Fix:** yesterday's file is rewritten each pass until every closed episode has a distill run, or 12 h after local midnight; then it is marked final.
+  - **Evidence:** `test_report_is_rewritten_until_every_episode_is_distilled`, which failed before.
+- **Nit, evidence primary key:**
+  - **Fix:** keyed on `quote_sha256`, with the full quote stored.
+  - **Evidence:** `test_a_3kb_quote_is_stored`. Before: `index row size 3952 exceeds btree version 4 maximum 2704`.
+- **Nit, #2479 migration:**
+  - **Fix:** the GIN index moves to `manual_migration_memory_episode_v1_gin.sql` (`CREATE INDEX CONCURRENTLY`, outside a transaction). Rollback scripts were added for both migrations.
+  - **Evidence:** `test_episode_migrations_pg.py` (apply → rollback → re-apply).
+- **Nit, outreach stamp:**
+  - **Fix:** removed the `client_meta.conversation_phase` write; nothing read it.
+  - **Evidence:** `test_outreach_writes_no_conversation_phase_nobody_reads`.
 
 ## Restart required
 
-Deploy order (each step only after the one before):
-1. #2479 deployed (its migration, orion-memory-consolidation, orion-hub). It is merged but NOT deployed.
-2. Apply `services/orion-sql-db/manual_migration_episode_memory_v1.sql`.
-3. orion-sql-writer (it validates `DurableRunStateV1`).
-4. orion-gpu-pool and orion-llm-gateway (they read `memory_distill` from their copies of `config/gpu_pool.yaml`; the gateway refuses an unknown route).
-5. orion-durable-runs.
-6. orion-memory-consolidation again (daily report, shared command detector).
-7. When convenient, rebuild orion-hub, orion-actions, orion-cortex-orch and orion-cortex-exec (they parse durable state rows).
+Deploy order (consumer-first; each step after the one before):
+1. #2479's migration, then its GIN index:
+   - `manual_migration_memory_episode_v1.sql`;
+   - `manual_migration_memory_episode_v1_gin.sql`, run with plain `psql -f` (outside a transaction).
+2. `manual_migration_episode_memory_v1.sql` (edited in this PR: `quote_sha256` key; not yet applied anywhere).
+3. orion-sql-writer. With #2487 merged, deploy that build; it is independent but natural here.
+4. orion-gpu-pool and orion-llm-gateway (the `memory_distill` class and route).
+5. orion-durable-runs (the subscriber, the graph and the reconciler).
+6. orion-memory-consolidation (#2479's shadow plus the daily report).
+7. orion-hub (#2479's stamp; the outreach stamp is removed).
+8. When convenient, rebuild orion-actions, orion-cortex-orch and orion-cortex-exec (they parse durable state rows).
 
 ```bash
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_memory_episode_v1.sql
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_memory_episode_v1_gin.sql
 docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_episode_memory_v1.sql
 scripts/safe_docker_build.sh orion-sql-writer up -d --build
 scripts/safe_docker_build.sh orion-gpu-pool up -d --build
 scripts/safe_docker_build.sh orion-llm-gateway up -d --build
 scripts/safe_docker_build.sh orion-durable-runs up -d --build
 scripts/safe_docker_build.sh orion-memory-consolidation up -d --build
+scripts/safe_docker_build.sh orion-hub up -d --build
 ```
+
+Rollback:
+- `MEMORY_EPISODE_WRITER_ENABLED=false` and `MEMORY_EPISODE_SHADOW_ENABLED=false`;
+- then `manual_migration_episode_memory_v1_rollback.sql` and `manual_migration_memory_episode_v1_rollback.sql`.
 
 ## Risks / concerns
 
-- **Severity:** medium. **Concern:** the spec's novel-word backstop pushes every `about_juniper` memory to high stakes. 11 of 11 had a paraphrase word not in their quote ("told", "draining" vs "drains"). At Stage 3 that would ask Juniper to confirm every self-description. **Mitigation:** shadow only; it is reported here. Proposed fix for Juniper to decide: compare against the full text of the cited turns, not only the quote, or drop the backstop and rely on the model's stakes plus the stakes floor.
+- **Severity:** (resolved) **Was:** the spec's novel-word backstop pushed every `about_juniper` memory to high stakes; removed in review. The old text follows for the record: 11 of 11 had a paraphrase word not in their quote ("told", "draining" vs "drains"). At Stage 3 that would ask Juniper to confirm every self-description. **Mitigation:** shadow only; it is reported here. Proposed fix for Juniper to decide: compare against the full text of the cited turns, not only the quote, or drop the backstop and rely on the model's stakes plus the stakes floor.
 - **Severity:** medium. **Concern:** run-to-run agreement on what a memory is about is low (referent Jaccard 0.25-0.875, target ≥ 0.8) at temperature 0.2. **Mitigation:** shadow only. Options: temperature 0, or the candidate referent list (empty in this eval because the shadow tables were empty).
 - **Severity:** medium. **Concern:** a run takes ~1.5-4.5 min of agent-lane time, about twice the spec's ~45 s estimate. At 1-2 episodes a day, that is ~3-9 min a day at system priority. **Mitigation:** one system driver at a time; the kill switch is `MEMORY_EPISODE_WRITER_ENABLED=false`.
 - **Severity:** low. **Concern:** the self-description ("introvert") was kept as its own memory in 1 of 2 Austin runs. **Mitigation:** reported. The daily report will show the live rate.

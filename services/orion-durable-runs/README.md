@@ -63,8 +63,8 @@ contracts `orion/schemas/memory_episode.py`, spec `docs/superpowers/specs/2026-0
 - **Trigger:** this service subscribes `orion:memory:episode:closed` (orion-memory-consolidation's
   Rule 3 shadow tracker) and submits the run itself through admission. `run_id = memdistill-<episode_id>`,
   so a re-delivered event is a duplicate the store refuses. Command-only and non-direct episodes get no run.
-- **Hold:** route `memory_distill` (`config/gpu_pool.yaml`: agent class, the 27B lanes) at
-  `priority: system`. System runs have their own driver slot (`MAX_CONCURRENT_SYSTEM_DRIVERS=1`), so a
+- **Hold:** route `memory_distill` (`config/gpu_pool.yaml`: its own class `memory_distill`, roles `[agent]`,
+  i.e. the 27B on gpu1 only -- never the gpu2 seat or the lent chat card) at `priority: system`. System runs have their own driver slot (`MAX_CONCURRENT_SYSTEM_DRIVERS=1`), so a
   distill run is not stuck behind four background turns, and the pool ranks it above background holds.
 - **distill:** ONE direct LLM gateway call (`orion:exec:request:LLMGatewayService`) with `options.gpu_lease`;
   not through cortex-orch (its recall step would mix retrieved memories into the evidence). JSON-object output,
@@ -73,6 +73,9 @@ contracts `orion/schemas/memory_episode.py`, spec `docs/superpowers/specs/2026-0
   checked against the turn's FULL text; voice downgraded when its evidence does not support it; internal channels
   never labelled as Juniper's words), then writes `episode_memory*`, `memory_tension_shadow` and
   `episode_distill_run` in one idempotent transaction. Rejected candidates go only to `episode_memory_event`.
+- **Reconciler** (`app/episode_distill_reconcile.py`, every `MEMORY_EPISODE_RECONCILE_INTERVAL_SEC`): closed
+  episodes with no `episode_distill_run` are resubmitted as ordinary durable runs -- the base id for a lost close
+  event, `memdistill-<episode>-a<N>` for a failed one older than 1 h, at most `MEMORY_EPISODE_DISTILL_MAX_ATTEMPTS`.
 - **Nothing live reads these tables.** The daily old-vs-new report (orion-memory-consolidation) does.
 - **Env:** `MEMORY_EPISODE_WRITER_ENABLED` (kill switch), `CHANNEL_MEMORY_EPISODE_CLOSED`,
   `MEMORY_EPISODE_DISTILL_ROUTE`, `MEMORY_EPISODE_DISTILL_TIMEOUT_SEC` (<= 900), `MEMORY_EPISODE_DISTILL_MAX_TOKENS`,

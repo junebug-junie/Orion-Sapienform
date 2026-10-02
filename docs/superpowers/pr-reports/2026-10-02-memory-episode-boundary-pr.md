@@ -1,5 +1,20 @@
 # Memory episodes, Stage 1 PR 1: boundary fixes and the episode close event
 
+## Correction (post-merge review, 2026-10-02, made in #2484)
+
+This report said live behavior is unchanged apart from the shadow. That was wrong. **Fix 2 changes live inputs.**
+
+- **What changed:** each turn is now judged once, against the previous turn. Before, the scores the live path used came from the second, self-comparing judgment.
+- **Where it shows** (`orion/memory/consolidation_gate.py` reads them):
+  - the novelty and `memory_significance_score` stored on every window turn, which the crystallization gate compares against `min_novelty` and `min_significance`;
+  - the boundary, significance and novelty values that `intake_consolidation_window.py` copies into a crystallization's provenance;
+  - the scores in `chat_history_log.spark_meta`;
+  - the number of `orion:signals:memory_consolidation` turn-change signals (the duplicate pass also emitted them).
+- **Measured** on the 107 window-closing turns of the last 30 days, where both judgments survive: mean novelty 0.930 (kept) vs 0.651 (old saved), mean significance 0.472 vs 0.554. For non-closing turns the first judgment was overwritten and cannot be recovered, so their shift is UNVERIFIED.
+- **Expected effect:** more turns clear the novelty floor and slightly fewer clear the significance floor, so the legacy intake's propose/skip mix moves. Live window **closing** is unchanged: it always used the first judgment.
+- **Outreach stamp:** removed in #2484. `client_meta.conversation_phase` had no reader (outreach never reaches consolidation, and consolidation reads `spark_meta`).
+- **GIN index:** moved to a separate `CREATE INDEX CONCURRENTLY` migration, plus rollback scripts (#2484).
+
 ## Summary
 
 - **Each chat turn now records the conversation clock (Fix 1).** When a turn is saved, it now carries how long it had been since Juniper last spoke, and which bucket that falls in (same breath, short pause, resumed thread, long gap, next day, stale). Before this, 0 of 3,586 turns carried it.
@@ -47,7 +62,7 @@ Smaller findings:
 - `orion/situational/context.py`: `classify_conversation_phase` (pure; `_build_conversation_phase` now uses it), `conversation_phase_stamp`, `read_conversation_phase_stamp` (read-only), and `build_situation_for_ctx(..., phase_stamp_out=)` with a correct stamp on cache hits.
 - `orion/hub/turn_orchestrator.py`: carries the stamp from the situation build into `spark_meta.conversation_phase` on the persisted unified turn.
 - `services/orion-hub/scripts/chat_history.py`: `publish_chat_turn` adds a read-only stamp when the turn has none (legacy WS/HTTP lanes; live today only for workflow commands).
-- `services/orion-hub/scripts/endogenous_outreach.py`: stamps outreach `client_meta.conversation_phase`. The stamp is isolated, so a failure never drops the message.
+- `services/orion-hub/scripts/endogenous_outreach.py`: stamped outreach `client_meta.conversation_phase` (REMOVED in #2484: no reader).
 - `services/orion-memory-consolidation/app/worker.py`: Fix 2 dedup, the shadow observe/publish (fail-open), the close audit, and the legacy view.
 - `services/orion-memory-consolidation/app/boundary.py`: `rule3_boundary`, `legacy_close_reason` (names the existing branches; behavior unchanged), `legacy_view`.
 - `services/orion-memory-consolidation/app/window_fetch.py`: `legacy_close_decision` returns the reason.

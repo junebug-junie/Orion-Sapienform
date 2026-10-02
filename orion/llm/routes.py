@@ -99,6 +99,9 @@ ACCEPTED_LLM_ROUTES: FrozenSet[str] = frozenset(
         "harness",
         "agent-burst",
         "chat-burst",
+        # Memory episode distiller (2026-10-02, spec 2026-09-30-memory-episode-redesign):
+        # agent class at system priority, its own name so pool telemetry can see it.
+        "memory_distill",
     }
 )
 
@@ -129,6 +132,7 @@ LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
     "harness",
     "agent-burst",
     "chat-burst",
+    "memory_distill",
 )
 
 if set(LLM_ROUTE_DISPLAY_ORDER) != set(ACCEPTED_LLM_ROUTES) or len(
@@ -201,7 +205,7 @@ if not METACOG_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
 # ordinary chooseable lane. `priority: "system"` is the route-table value that signals this; the
 # fail-safe/fail-open reasoning for keeping a *definitional* copy here, not just relying on the
 # route table, mirrors BACKGROUND_LLM_ROUTES above.
-SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset({"harness", "agent-burst", "chat-burst"})
+SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset({"harness", "agent-burst", "chat-burst", "memory_distill"})
 
 if not SYSTEM_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
     raise RuntimeError(

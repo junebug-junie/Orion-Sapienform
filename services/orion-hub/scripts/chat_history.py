@@ -392,9 +392,8 @@ async def read_conversation_phase_stamp_for_session(session_id: Optional[str]) -
 
     Memory episode boundary Fix 1: every persisted chat turn should carry
     ``conversation_phase``. The unified lane stamps it from its own situation
-    build; the legacy WS/HTTP lanes (live today only for workflow commands) and
-    Orion's unprompted outreach do not build one, so they read the clock here
-    without moving it. Fail-open: None on any error, never a guessed phase.
+    build; the legacy WS/HTTP lanes (live today only for workflow commands) do
+    not build one, so they read the clock here without moving it. Fail-open: None on any error, never a guessed phase.
     """
     try:
         from orion.situational.context import (

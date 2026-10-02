@@ -135,6 +135,21 @@
     "status": "up",
     "upstream": "http://h:8011",
     "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "memory_distill",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/agent.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "up",
+    "upstream": "http://h:8015",
+    "vision": false
    }
   ],
   "state": {
@@ -369,6 +384,21 @@
     "status": "operator_closed",
     "upstream": "http://h:8011",
     "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "memory_distill",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": "/models/gguf/agent.gguf",
+    "n_ctx": 8192,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "up",
+    "upstream": "http://h:8015",
+    "vision": false
    }
   ],
   "state": {
@@ -603,6 +633,21 @@
     "status": "down",
     "upstream": "http://h:8011",
     "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "memory_distill",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
    }
   ],
   "state": {
@@ -795,6 +840,21 @@
     "status": "operator_closed",
     "upstream": "http://100.112.254.99:8011",
     "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "memory_distill",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
    }
   ],
   "state": {
@@ -958,6 +1018,21 @@
     "status": "unknown",
     "upstream": "http://100.112.254.99:8015",
     "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "memory_distill",
+    "last_checked_at": null,
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "unknown",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
    }
   ],
   "state": null
@@ -1098,6 +1173,21 @@
     "status": "up",
     "upstream": "http://h:8011",
     "vision": false
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "memory_distill",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
    }
   ],
   "state": {
@@ -1276,6 +1366,21 @@
     "status": "operator_closed",
     "upstream": "http://h:8011",
     "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "memory_distill",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
    }
   ],
   "state": {
@@ -1453,6 +1558,21 @@
     "served_by": "circe-worker-chat",
     "status": "operator_closed",
     "upstream": "http://h:8011",
+    "vision": null
+   },
+   {
+    "backend": "llamacpp",
+    "gate_open": null,
+    "id": "memory_distill",
+    "last_checked_at": "2026-09-30T00:00:00Z",
+    "latency_ms": null,
+    "model": null,
+    "n_ctx": null,
+    "priority": "system",
+    "reserved_free_slots": null,
+    "served_by": "circe-worker-agent",
+    "status": "down",
+    "upstream": "http://h:8015",
     "vision": null
    }
   ],

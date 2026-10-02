@@ -358,6 +358,7 @@ def bare_runtime(holds, store=None):
     rt._outreach_loaded_at = None
     rt._abandons, rt._abandons_loaded_at, rt._abandoning = {}, None, {}
     rt._urgent_drivers = set()
+    rt._system_drivers = set()
     return rt
 
 
@@ -879,4 +880,26 @@ def test_the_take_back_limit_fails_the_run_instead_of_replaying_forever():
         world.grant()
         delta = await _turn_update(world.graph(saver, max_takebacks=2), {**initial(), "hold_takebacks": 1})
         assert delta["status"] == "retrying" and delta["hold_takebacks"] == 2 and "attempt" not in delta
+    asyncio.run(scenario())
+
+
+def test_a_system_run_is_driven_ahead_of_background_even_when_every_background_slot_is_busy():
+    """memory.episode_distill (2026-10-02) runs at "system" priority: it must reach the pool
+    while four background turns are already driving, and rank behind urgent."""
+    from app.admission_runtime import MAX_CONCURRENT_SYSTEM_DRIVERS
+
+    async def scenario():
+        rows = [_row(f"bg-{i}") for i in range(6)] + [_row("s-1", "system"), _row("s-2", "system"),
+                                                     _row("u-1", "urgent")]
+        rt = bare_runtime(Holds(), Store(rows))
+        order, gate = _driving(rt)
+        await rt.reconcile()
+        await _settle()
+        assert order[0] == "u-1"
+        assert order[1:1 + MAX_CONCURRENT_SYSTEM_DRIVERS] == ["s-1"]          # capped at one system driver
+        assert order[1 + MAX_CONCURRENT_SYSTEM_DRIVERS:] == [f"bg-{i}" for i in range(MAX_CONCURRENT_DRIVERS)]
+        assert "s-2" not in rt.active
+        gate.set()
+        await asyncio.gather(*rt.active.values())
+        assert rt.active == {} and rt._system_drivers == set()
     asyncio.run(scenario())

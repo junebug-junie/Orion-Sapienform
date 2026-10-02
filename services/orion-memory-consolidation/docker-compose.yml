@@ -28,6 +28,9 @@ services:
       - MEMORY_EPISODE_SHADOW_ENABLED=${MEMORY_EPISODE_SHADOW_ENABLED:-true}
       - CHANNEL_MEMORY_EPISODE_CLOSED=${CHANNEL_MEMORY_EPISODE_CLOSED:-orion:memory:episode:closed}
       - MEMORY_LEGACY_BOUNDARY_USE_PHASE=${MEMORY_LEGACY_BOUNDARY_USE_PHASE:-false}
+      - MEMORY_EPISODE_REPORT_ENABLED=${MEMORY_EPISODE_REPORT_ENABLED:-true}
+      - MEMORY_EPISODE_REPORT_DIR=${MEMORY_EPISODE_REPORT_DIR:-/data/memory-episode-reports}
+      - MEMORY_EPISODE_REPORT_TZ=${MEMORY_EPISODE_REPORT_TZ:-America/Denver}
       - MEMORY_SUGGEST_TIMEOUT_SEC=${MEMORY_SUGGEST_TIMEOUT_SEC:-120.0}
       - MEMORY_FAILED_RETRY_INTERVAL_SEC=${MEMORY_FAILED_RETRY_INTERVAL_SEC:-1800}
       - MEMORY_CONSOLIDATION_OUTPUT=${MEMORY_CONSOLIDATION_OUTPUT:-crystallization_propose}
@@ -49,8 +52,14 @@ services:
       - CONCEPT_RELATION_TIMEOUT_SEC=${CONCEPT_RELATION_TIMEOUT_SEC:-8.0}
     ports:
       - "${PORT:-8635}:8000"
+    volumes:
+      # Daily old-vs-new memory report (private conversation text; host-only, never in git).
+      - memory-episode-reports:/data/memory-episode-reports
     networks:
       - app-net
+
+volumes:
+  memory-episode-reports:
 
 networks:
   app-net:

@@ -19,7 +19,10 @@ class ResourceRequirementV1(BaseModel):
     resource: str = "llm.route.agent"
     mode: Literal["exclusive"] = "exclusive"
     lease_scope: Literal["run"] = "run"
-    priority: Literal["background", "urgent"] = "background"
+    # "system" (2026-10-02, memory episode redesign): ahead of background holds in the pool's
+    # queue and in durable-runs' driver order, below urgent. ADDITIVE on a forbid model: only
+    # orion-durable-runs submits it (memory.episode_distill), so deploy durable-runs first.
+    priority: Literal["background", "system", "urgent"] = "background"
     preferred_lane: str = "agent"
     requirements: dict[str, Any] = Field(default_factory=dict)
     deadline_at: datetime | None = None

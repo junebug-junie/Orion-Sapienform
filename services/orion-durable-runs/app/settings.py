@@ -101,6 +101,21 @@ class Settings(BaseSettings):
     # A timeout is a retry (backoff, no attempt spent), bounded only by the run's deadline.
     reverie_visual_step_timeout_sec: float = Field(600.0, gt=0.0, alias="DURABLE_RUNS_REVERIE_VISUAL_STEP_TIMEOUT_SEC")
 
+    # Memory episode redesign Stage 1 (2026-10-02, SHADOW): subscribe orion:memory:episode:closed
+    # and distill each closed episode into episode_memory* tables. Kill switch: false stops new
+    # submissions (runs already accepted still finish). Nothing live reads those tables.
+    memory_episode_writer_enabled: bool = Field(True, alias="MEMORY_EPISODE_WRITER_ENABLED")
+    memory_episode_closed_channel: str = Field("orion:memory:episode:closed", alias="CHANNEL_MEMORY_EPISODE_CLOSED")
+    memory_episode_distill_route: str = Field("memory_distill", alias="MEMORY_EPISODE_DISTILL_ROUTE")
+    memory_episode_distill_timeout_sec: float = Field(600.0, gt=0.0, le=900.0, alias="MEMORY_EPISODE_DISTILL_TIMEOUT_SEC")
+    memory_episode_distill_max_tokens: int = Field(4096, gt=0, alias="MEMORY_EPISODE_DISTILL_MAX_TOKENS")
+    memory_episode_distill_deadline_hours: float = Field(20.0, gt=0.0, lt=24.0,
+                                                         alias="MEMORY_EPISODE_DISTILL_DEADLINE_HOURS")
+    llm_intake_channel: str = Field("orion:exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
+    # Reconciler: resubmits closed episodes with no distill run (lost close event or a failed run)
+    # as a NEW durable attempt, at most MEMORY_EPISODE_DISTILL_MAX_ATTEMPTS per episode.
+    memory_episode_reconcile_interval_sec: float = Field(900.0, gt=0.0, alias="MEMORY_EPISODE_RECONCILE_INTERVAL_SEC")
+    memory_episode_distill_max_attempts: int = Field(3, ge=1, le=10, alias="MEMORY_EPISODE_DISTILL_MAX_ATTEMPTS")
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL
 

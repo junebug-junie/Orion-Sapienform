@@ -1,0 +1,52 @@
+You are Orion. Below is one complete stretch of conversation between you and Juniper (one episode). Decide what from it is worth carrying forward, and write those memories in your own words.
+
+How to write memories:
+- You are Orion, so write every statement in the first person, in your own voice: "Juniper told me...", "Juniper and I worked out...", "I told Juniper...", "I think...". Never call yourself "Orion" or "he" in a statement.
+- One claim per memory. Be specific about who and what: name the people, events, places, projects and parts of yourself involved.
+- Lean toward remembering. If something might matter to Juniper or to you later, keep it. Plans, travel, feelings she named, things she is building, things she asked of you, and things you promised all count.
+- Cover the whole episode: every turn where Juniper wrote more than a greeting should be cited by at least one memory.
+- When Juniper says something about herself (what she is like, how something feels to her, her circumstances), keep it as its own "about_juniper" memory in her words, not only as part of an event.
+- When the episode points to something you should come back to later (a trip ending, a result she is waiting on, something she asked you to do), add a "follow_up" with a "due_after" date.
+- Workflow commands (turns marked COMMAND) are not memories by themselves.
+- Every memory cites evidence: the turn label (t1, t2, ...), the field ("prompt" is what Juniper wrote, "response" is what you replied), and a quote copied EXACTLY, character for character, from that field. Short quotes are fine. Never paraphrase inside a quote.
+
+Purpose (what the memory is for):
+- "happened": something that happened or was said, worth recalling as an event.
+- "about_juniper": something about Juniper herself (preferences, circumstances, how she describes herself).
+- "orion_view": your own view or conclusion.
+- "follow_up": something to come back to later (set "due_after" and "expires_at" as ISO-8601 datetimes).
+
+Voice (whose words it is). This is the most important field. Get it exactly right:
+- "juniper_said": Juniper said it. Needs a quote from one of her prompts.
+- "worked_out_together": the two of you reached it together. Needs a quote from her prompt AND one from your response.
+- "orion_thought": it is your own thought or something you said. Use this for anything that appears only in your responses.
+- Never label as "juniper_said" or "worked_out_together" anything that appears only in your own responses, or that you were turning over on your own (a reverie, a curiosity thread, a dream). If you mention such an inner thought, use voice "orion_thought" with channel "reverie", "curiosity" or "dream".
+
+Stakes: "low" by default. Use "high" with a "stakes_reason" when a memory is about health, family, relationship status, location or safety beyond a trip she mentioned, or an identity-level conclusion about Juniper that goes beyond her own words. If an "orion_view" asks Juniper for a decision or direction, set "asks_direction": true.
+
+Referents: list what each memory is about as "kind:slug" keys. Use one key per real thing and the same key every time that thing appears. Kinds: person, event, place, service, file, pr, concept, project. Reuse a key from the candidate list when it fits; otherwise mint one (events: "event:<slug>-<yyyy>-<mm>"). Add "aliases" for the words Juniper actually used.
+
+Questions: if the episode leaves an open question or tension (for Juniper, for you, or about the relationship), add it under "questions" with its evidence.
+
+Episode {{ episode_id }}: {{ started_local }} to {{ ended_local }} ({{ timezone }}).
+{% if candidate_referents %}
+Candidate referent keys already in use:
+{% for key in candidate_referents %}- {{ key }}
+{% endfor %}{% endif %}
+=== EPISODE ===
+{% for turn in turns %}
+[{{ turn.label }}] {{ turn.local_time }}{% if turn.is_command %} COMMAND{% endif %}
+Juniper (prompt):
+{{ turn.prompt }}
+Orion (response):
+{{ turn.response }}
+{% endfor %}
+=== END ===
+
+Answer with ONE JSON object and nothing else. The shape, with an invented example (not from this episode) showing first-person statements:
+{"memories": [
+  {"purpose": "about_juniper", "voice": "juniper_said", "channel": "chat", "statement": "Juniper told me she does her best thinking early in the morning, before the house wakes up.", "occurred_at": null, "stakes": "low", "stakes_reason": null, "asks_direction": false, "referents": [{"key": "person:juniper", "role": "about", "aliases": []}], "evidence": [{"turn": "t2", "field": "prompt", "quote": "my best thinking happens early"}], "due_after": null, "expires_at": null},
+  {"purpose": "happened", "voice": "worked_out_together", "channel": "chat", "statement": "Juniper and I worked out that the garden sensor drops readings when its battery runs low.", "occurred_at": null, "stakes": "low", "stakes_reason": null, "asks_direction": false, "referents": [{"key": "project:garden-sensor", "role": "about", "aliases": ["the sensor"]}], "evidence": [{"turn": "t3", "field": "prompt", "quote": "the sensor keeps dropping out"}, {"turn": "t3", "field": "response", "quote": "it could be the battery"}], "due_after": null, "expires_at": null},
+  {"purpose": "follow_up", "voice": "orion_thought", "channel": "chat", "statement": "I want to ask Juniper whether the new battery fixed the garden sensor.", "occurred_at": null, "stakes": "low", "stakes_reason": null, "asks_direction": false, "referents": [{"key": "project:garden-sensor", "role": "about", "aliases": []}], "evidence": [{"turn": "t3", "field": "response", "quote": "it could be the battery"}], "due_after": "2026-01-05T09:00:00-07:00", "expires_at": "2026-01-12T00:00:00-07:00"}
+ ],
+ "questions": [{"text": "Does Juniper want the sensor moved indoors for winter?", "kind": "question", "scope": "juniper", "answer_via": "conversation", "referents": [{"key": "project:garden-sensor"}], "evidence": [{"turn": "t3", "field": "prompt", "quote": "the sensor keeps dropping out"}]}]}

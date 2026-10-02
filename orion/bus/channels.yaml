@@ -266,6 +266,9 @@ channels:
       # orion-affectgpt-worker. See services/orion-juniper-affective-state/
       # app/vision_backend.py.
       - "orion-juniper-affective-state"
+      # Added 2026-10-02: memory.episode_distill calls the gateway directly under its GPU
+      # pool hold (route memory_distill). services/orion-durable-runs/app/runner.py
+      - "orion-durable-runs"
     consumer_services: ["orion-llm-gateway"]
     single_consumer: true
     stability: "experimental"
@@ -291,7 +294,7 @@ channels:
     kind: "result"
     schema_id: "ChatResultPayload"
     producer_services: ["orion-llm-gateway"]
-    consumer_services: ["orion-cortex-exec", "orion-hub", "orion-memory-consolidation", "orion-dream"]
+    consumer_services: ["orion-cortex-exec", "orion-hub", "orion-memory-consolidation", "orion-dream", "orion-durable-runs"]
     stability: "experimental"
     since: "2026-01-08"
 
@@ -1886,10 +1889,8 @@ channels:
 
   # Memory episode redesign Stage 1 (spec 2026-09-30-memory-episode-redesign-design.md).
   # Shadow episodes closed under boundary Rule 3. Consumer: orion-durable-runs
-  # starts a memory.episode_distill run per closed episode. That subscriber
-  # ships in the stacked Stage 1 PR 2 (feat/memory-episode-distill-shadow);
-  # until it deploys, events go to no subscriber (pub/sub, harmless) and the
-  # memory_episode_shadow table is the durable record.
+  # submits one memory.episode_distill run per closed episode
+  # (services/orion-durable-runs/app/main.py, MEMORY_EPISODE_WRITER_ENABLED).
   - name: "orion:memory:episode:closed"
     kind: "event"
     schema_id: "MemoryEpisodeClosedV1"

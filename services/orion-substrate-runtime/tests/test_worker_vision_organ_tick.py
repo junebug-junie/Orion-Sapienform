@@ -55,6 +55,7 @@ def _worker(store: _Store, *, started: datetime) -> BiometricsSubstrateWorker:
     w._store = store
     w._process_started_at = started
     w._vision_organ_last_silence_write = None
+    w._vision_organ_last_silence_check = None
     return w
 
 

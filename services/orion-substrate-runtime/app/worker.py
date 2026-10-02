@@ -137,6 +137,10 @@ logger = logging.getLogger("orion.substrate.runtime")
 _PREDICTION_ERROR_NODE_FLAG = "SUBSTRATE_WRITE_PREDICTION_ERROR_NODES"
 
 _TRUTHY = {"1", "true", "yes", "on"}
+# How often an idle vision organ poll re-reads its projection to check for router
+# silence. Far below VISION_ORGAN_SILENCE_SEC (180 s), so the alarm is late by
+# at most this much.
+_VISION_ORGAN_SILENCE_CHECK_SEC = 10.0
 # Staleness gate for the cached drive state: a stalled drive publisher must not
 # keep forcing involuntary movement forever off a frozen snapshot. Fail-open
 # toward *not* moving.
@@ -457,8 +461,11 @@ class BiometricsSubstrateWorker:
         self._process_started_at: datetime = datetime.now(timezone.utc)
         self._sql_engine: Any = None
         self._bus_synaptic_client: Any = None
-        # Wall clock of the vision organ lane's last silence write (rate limit).
+        # Wall clock of the vision organ lane's last silence write (rate limit),
+        # and of its last idle silence check (the poll runs every second; the
+        # projection read behind the check does not need to).
         self._vision_organ_last_silence_write: datetime | None = None
+        self._vision_organ_last_silence_check: datetime | None = None
         # Orion embodiment (C producer): latest drive state cached off the bus,
         # mapped to one involuntary intent per dynamics tick. Default-off.
         self._latest_drive_state: DriveStateV1 | None = None
@@ -4027,7 +4034,10 @@ class BiometricsSubstrateWorker:
             return loaded or empty_vision_organ_projection(now=now)
 
         if not events:
-            self._vision_organ_silence_check(load_projection(), now=now)
+            last_check = getattr(self, "_vision_organ_last_silence_check", None)
+            if last_check is None or (now - last_check).total_seconds() >= _VISION_ORGAN_SILENCE_CHECK_SEC:
+                self._vision_organ_last_silence_check = now
+                self._vision_organ_silence_check(load_projection(), now=now)
             return None
 
         def process_batch(batch: list[GrammarEventV1]) -> None:

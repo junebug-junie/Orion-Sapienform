@@ -56,7 +56,7 @@ def _result():
                  evidence=[{"turn": "t2", "field": "prompt", "quote": "flying to Denver"}]),
         ],
         "questions": [{"text": "Is being away from home hard for Juniper?",
-                       "evidence": [{"turn": "t1", "field": "prompt", "quote": "work travel"}]}],
+                       "evidence": [{"turn": "t1", "field": "prompt", "quote": "days with work travel"}]}],
     })
     return validate_distillation(d, TURNS, episode_id="ep-pg")
 
@@ -121,5 +121,33 @@ def test_load_turns_sql_reads_full_text_in_time_order():
         turns = turns_from_rows([dict(r) for r in rows])
         assert [(t.correlation_id, t.is_command) for t in turns] == [("a", False), ("b", True)]
         assert turns[0].prompt == long_prompt
+
+    asyncio.run(_with_db(body))
+
+
+def test_a_3kb_quote_is_stored():
+    """The evidence key is a hash of the quote: a quote past the B-tree row limit still inserts."""
+    from orion.memory.episode.validate import EpisodeTurn
+
+    import hashlib
+
+    # Incompressible (hash chain), so Postgres cannot squeeze it under the index row limit.
+    big = " ".join(hashlib.sha256(str(i).encode()).hexdigest()[:12] for i in range(300))  # ~3.9 KB
+    assert len(big) > 3000
+    turns = [EpisodeTurn("t1", "c-big", big, "ok")]
+    d = EpisodeDistillationV1.model_validate({"memories": [
+        {"purpose": "happened", "voice": "juniper_said", "channel": "chat",
+         "statement": "Juniper pasted a very long list of words into chat.",
+         "evidence": [{"turn": "t1", "field": "prompt", "quote": big}]}]})
+    result = validate_distillation(d, turns, episode_id="ep-big")
+    assert len(result.memories) == 1
+
+    async def body(pool):
+        await persist_episode(pool, episode_id="ep-big", run_id="r", result=result, model_route="memory_distill",
+                              model=None, prompt_version="v2", usage={}, llm_latency_ms=None, hold_wait_ms=None,
+                              coverage=1.0)
+        async with pool.connection() as conn:
+            row = await (await conn.execute("SELECT length(quote) AS n FROM episode_memory_evidence")).fetchone()
+        assert row["n"] == len(big)
 
     asyncio.run(_with_db(body))

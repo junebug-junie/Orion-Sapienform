@@ -45,8 +45,10 @@ CREATE TABLE IF NOT EXISTS episode_memory_evidence (
     source_kind TEXT NOT NULL,             -- chat_prompt | chat_response
     source_id TEXT NOT NULL,               -- chat_history_log.correlation_id
     quote TEXT NOT NULL,
+    -- Keyed on a hash, not the quote: a quote can exceed the B-tree row limit (~2.7 KB).
+    quote_sha256 TEXT NOT NULL,
     verified BOOLEAN NOT NULL,
-    PRIMARY KEY (memory_id, source_kind, source_id, quote)
+    PRIMARY KEY (memory_id, source_kind, source_id, quote_sha256)
 );
 
 CREATE TABLE IF NOT EXISTS episode_memory_referent (

@@ -8,6 +8,7 @@ nothing twice. Invalid candidates land only in episode_memory_event as ``rejecte
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -25,8 +26,8 @@ INSERT INTO episode_memory (
 ON CONFLICT (memory_id) DO NOTHING
 """
 _INSERT_EVIDENCE = """
-INSERT INTO episode_memory_evidence (memory_id, source_kind, source_id, quote, verified)
-VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
+INSERT INTO episode_memory_evidence (memory_id, source_kind, source_id, quote, quote_sha256, verified)
+VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
 """
 _INSERT_REFERENT = """
 INSERT INTO episode_memory_referent (memory_id, referent_key, role) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING
@@ -83,7 +84,9 @@ async def persist_episode(
                     ),
                 )
                 for ev in m.evidence:
-                    await conn.execute(_INSERT_EVIDENCE, (m.memory_id, ev.source_kind, ev.source_id, ev.quote, ev.verified))
+                    await conn.execute(_INSERT_EVIDENCE, (m.memory_id, ev.source_kind, ev.source_id, ev.quote,
+                                                          hashlib.sha256(ev.quote.encode("utf-8")).hexdigest(),
+                                                          ev.verified))
                 for key, role in m.referents:
                     await conn.execute(_INSERT_REFERENT, (m.memory_id, key, role))
                 await conn.execute(

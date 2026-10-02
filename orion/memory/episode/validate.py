@@ -3,22 +3,21 @@
 The distiller decides what is worth remembering. This module never second-guesses that (no word
 lists, no "memorability" rules). It only checks things code can check exactly:
 
-* **Grounding.** Every quote must be a substring of the cited turn's FULL, untruncated field
-  (prompt or response). Revision 1 of the spec withdrew a false "the compactor invented this" claim
-  because a query cut the prompt at 160 characters; quotes are therefore checked against the whole
-  text, never a preview.
-* **Voice vs source.** ``juniper_said`` needs a verified quote from one of Juniper's prompts;
-  ``worked_out_together`` needs one from a prompt and one from a response. A memory whose evidence
-  does not support its voice is DOWNGRADED to the voice its evidence does support, and the
-  downgrade is logged. It is rejected only when no quote verifies at all.
-* **Source monitoring.** Nothing from an internal channel (reverie, curiosity, dream, ...) may be
-  labelled as something Juniper said or worked out together; that is rejected, not downgraded.
+* **Grounding.** Every quote must be found in the cited turn's FULL, untruncated field (prompt or
+  response), after folding typography on both sides (NFKC, curly quotes, dashes, case,
+  whitespace), and must be at least 3 words (15 characters for scripts without spaces). Revision 1
+  of the spec withdrew a false claim because a query cut a prompt at 160 characters.
+* **Voice vs source, one direction only.** A memory may lose Juniper's voice when its evidence does
+  not support it (worked_out_together -> juniper_said -> orion_thought), and the change is logged.
+  A voice that is not Juniper's is NEVER moved into hers; orion_read / orion_self_knowledge become
+  orion_thought (Orion's own reply quoted) or are rejected.
+* **Source monitoring on the final voice and channel.** Juniper's voice only arrives through chat:
+  a Juniper voice on an internal channel (reverie, curiosity, dream, ...) is rejected. The channel
+  is never rewritten.
 * **Structure.** Workflow-command turns produce no memories; a statement of five words or fewer,
   or a duplicate statement within the episode, is rejected.
-* **Stakes floor.** A high-stakes reason the model gives forces ``stakes=high`` (the model cannot
-  lower it). An ``about_juniper`` statement with a content word found in none of its quotes is
-  forced high (spec section 3 backstop). Orion's conclusions about its own machinery, about the
-  relationship, or asking for direction become ``orion_self_conclusion`` and pending confirmation.
+* **Stakes are the distiller's own field.** The stakes policy is Juniper's open decision (review of
+  2026-10-02 removed a word-list backstop); high stakes simply means pending confirmation.
 
 Rejected memories are returned (with their reason) for logging; they are never stored.
 """
@@ -26,16 +25,16 @@ Rejected memories are returned (with their reason) for logging; they are never s
 from __future__ import annotations
 
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 from orion.schemas.memory_episode import (
     DistilledMemoryV1,
     DistilledQuestionV1,
     DistillEvidenceV1,
-    DistillReferentV1,
     EpisodeDistillationV1,
 )
 
@@ -43,10 +42,6 @@ from orion.schemas.memory_episode import (
 MEMORY_ID_NAMESPACE = uuid.UUID("6f1c7b8e-2d0a-4c35-9a51-3e7d9b0c4a21")
 
 REFERENT_KINDS = frozenset({"person", "event", "place", "service", "file", "pr", "concept", "project"})
-SELF_MACHINERY_KINDS = frozenset({"service", "file", "pr", "concept"})
-HIGH_STAKES_REASONS = frozenset(
-    {"health", "family", "identity_conclusion_about_juniper", "relationship", "safety_location", "orion_self_conclusion"}
-)
 INTERNAL_CHANNELS = frozenset({"reverie", "curiosity", "dream", "journal", "topic_model"})
 JUNIPER_VOICES = frozenset({"juniper_said", "worked_out_together"})
 MIN_STATEMENT_WORDS = 6  # "0 statements of 5 words or fewer" (Stage 1 acceptance 7)
@@ -60,7 +55,6 @@ STRENGTH_BY_PURPOSE: dict[str, tuple[float, Optional[float]]] = {
 }
 
 _WS = re.compile(r"\s+")
-_WORD = re.compile(r"[a-z0-9][a-z0-9'\-]*")
 _SLUG_BAD = re.compile(r"[^a-z0-9]+")
 
 
@@ -109,7 +103,6 @@ class ValidatedMemory:
     referents: list[tuple[str, str]]
     evidence: list[VerifiedEvidence]
     events: list[MemoryEvent]
-    novel_words: list[str]
 
 
 @dataclass
@@ -146,21 +139,47 @@ def normalize_ws(text: str) -> str:
     return _WS.sub(" ", str(text or "")).strip()
 
 
+# Character folds applied to BOTH the quote and the source text before matching. Typography the
+# model or the keyboard may change without changing the words: curly vs straight quotes, dash
+# variants, non-breaking spaces, full-width forms (NFKC), and case.
+_FOLD = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'", "\u2032": "'",
+    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"', "\u2033": '"',
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2015": "-", "\u2212": "-",
+})
+MIN_QUOTE_WORDS = 3
+MIN_QUOTE_CHARS_UNSPACED = 15  # scripts written without spaces (CJK, Thai, ...)
+
+
+def fold_text(text: str) -> str:
+    return normalize_ws(unicodedata.normalize("NFKC", str(text or "")).translate(_FOLD)).casefold()
+
+
 def _clean_quote(quote: str) -> str:
     q = normalize_ws(quote)
     # Models often wrap a quote in quotation marks it did not copy from the source.
-    while len(q) >= 2 and q[0] == q[-1] and q[0] in "\"'`":
-        q = q[1:-1].strip()
-    for left, right in (("“", "”"), ("‘", "’")):
+    for left, right in (("\u201c", "\u201d"), ("\u2018", "\u2019")):
         if q.startswith(left) and q.endswith(right):
             q = q[1:-1].strip()
+    while len(q) >= 2 and q[0] == q[-1] and q[0] in "\"'`":
+        q = q[1:-1].strip()
     return q
 
 
-def quote_in_text(quote: str, text: str) -> bool:
-    """Exact substring of the FULL field, after collapsing whitespace runs on both sides."""
+def quote_long_enough(quote: str) -> bool:
+    """At least 3 words, or 15 characters of a script written without spaces. A one-letter quote
+    ("I") is a substring of almost anything and proves nothing."""
     q = _clean_quote(quote)
-    return bool(q) and q in normalize_ws(text)
+    if len(q.split()) >= MIN_QUOTE_WORDS:
+        return True
+    unspaced = any(ord(c) >= 0x2E80 for c in q)
+    return unspaced and len(q.replace(" ", "")) >= MIN_QUOTE_CHARS_UNSPACED
+
+
+def quote_in_text(quote: str, text: str) -> bool:
+    """Long-enough quote found in the FULL field after folding both sides (see fold_text)."""
+    q = _clean_quote(quote)
+    return bool(q) and quote_long_enough(q) and fold_text(q) in fold_text(text)
 
 
 def normalize_referent_key(raw: str) -> Optional[str]:
@@ -183,24 +202,6 @@ def _parse_dt(value: Any) -> Optional[datetime]:
     except ValueError:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-
-
-def _content_words(text: str) -> set[str]:
-    from orion.memory.intake_junk import _STOPWORDS  # reused as-is (frozen; never extended here)
-
-    return {w for w in _WORD.findall(str(text or "").lower()) if len(w) >= 3 and w not in _STOPWORDS}
-
-
-def novel_content_words(statement: str, quotes: Iterable[str], referents: Iterable[DistillReferentV1]) -> list[str]:
-    """Content words of the statement found in none of its quotes (nor its own referent names)."""
-    allowed: set[str] = set()
-    for q in quotes:
-        allowed |= _content_words(q)
-    for r in referents:
-        allowed |= _content_words(r.key.replace(":", " ").replace("-", " "))
-        for alias in r.aliases:
-            allowed |= _content_words(alias)
-    return sorted(_content_words(statement) - allowed)
 
 
 def memory_id_for(episode_id: str, purpose: str, statement: str) -> str:
@@ -228,8 +229,14 @@ def _verify(evidence: list[DistillEvidenceV1], by_label: dict[str, EpisodeTurn])
     return out
 
 
-def _supported_voice(voice: str, has_prompt: bool, has_response: bool) -> str:
-    """The strongest voice the verified evidence supports, starting from the claimed one."""
+def _supported_voice(voice: str, has_prompt: bool, has_response: bool) -> Optional[str]:
+    """The voice the verified evidence supports, moving only AWAY from Juniper's voice.
+
+    Juniper's voices can lose attribution (worked_out_together -> juniper_said -> orion_thought);
+    a voice that is not hers is never moved into hers. orion_read / orion_self_knowledge cannot be
+    supported by a chat episode (no reading or graphify source): they become orion_thought when
+    Orion's own reply is quoted, and None (reject) otherwise.
+    """
     if voice == "worked_out_together":
         if has_prompt and has_response:
             return voice
@@ -237,9 +244,7 @@ def _supported_voice(voice: str, has_prompt: bool, has_response: bool) -> str:
     if voice == "juniper_said":
         return voice if has_prompt else "orion_thought"
     if voice in ("orion_read", "orion_self_knowledge"):
-        # A chat episode has no reading or graphify source to cite; what Orion said in the turn is
-        # its own thought, what Juniper said is hers.
-        return "orion_thought" if has_response else "juniper_said"
+        return "orion_thought" if has_response else None
     return voice  # orion_thought: any verified quote supports it
 
 
@@ -265,7 +270,9 @@ def validate_distillation(
         if norm in seen_statements:
             rejections.append(Rejection("memory", idx, "duplicate_statement", raw))
             continue
-        if cand.channel in INTERNAL_CHANNELS and cand.voice in JUNIPER_VOICES:
+        if cand.voice in JUNIPER_VOICES and cand.channel != "chat":
+            # The CLAIM itself confuses an internal thought with Juniper's words; its statement is
+            # written that way too, so it is rejected, not relabelled.
             rejections.append(Rejection("memory", idx, "internal_channel_labelled_as_juniper", raw))
             continue
         checked = _verify(cand.evidence, by_label)
@@ -285,13 +292,18 @@ def validate_distillation(
         has_prompt = any(fld == "prompt" for _, _, fld in verified)
         has_response = any(fld == "response" for _, _, fld in verified)
         voice = _supported_voice(cand.voice, has_prompt, has_response)
+        if voice is None:
+            rejections.append(Rejection("memory", idx, "voice_unsupported_by_evidence", raw))
+            continue
+        channel = cand.channel  # never rewritten: an internal channel stays internal
+        # Source monitoring on the FINAL voice and channel: Juniper's voice only arrives through chat.
+        if voice in JUNIPER_VOICES and channel != "chat":
+            rejections.append(Rejection("memory", idx, "internal_channel_labelled_as_juniper", raw))
+            continue
         if voice != cand.voice:
             events.append(
                 MemoryEvent("downgraded_voice", f"{cand.voice}_not_supported_by_evidence", {"from": cand.voice, "to": voice})
             )
-        channel = cand.channel
-        if voice in JUNIPER_VOICES and channel != "chat":
-            channel = "chat"  # her words only ever arrive through chat in a chat episode
 
         referents: list[tuple[str, str]] = []
         for r in cand.referents:
@@ -302,21 +314,11 @@ def validate_distillation(
             if (key, r.role) not in referents:
                 referents.append((key, str(r.role or "about")))
 
+        # Stakes are the distiller's own field. The stakes policy (floor, backstops, which
+        # self-conclusions to ask about) is Juniper's open decision; the validator only checks
+        # evidence, voice and channel.
         stakes = cand.stakes
         stakes_reason = cand.stakes_reason
-        if stakes_reason in HIGH_STAKES_REASONS:
-            stakes = "high"
-        novel: list[str] = []
-        if cand.purpose == "about_juniper":
-            novel = novel_content_words(statement, [ev.quote for ev, _, _ in verified], cand.referents)
-            if novel:
-                stakes = "high"
-                stakes_reason = stakes_reason or "identity_conclusion_about_juniper"
-                events.append(MemoryEvent("stakes_raised", "novel_content_words", {"words": novel}))
-        if cand.purpose == "orion_view":
-            kinds = {k.split(":", 1)[0] for k, _ in referents}
-            if kinds & SELF_MACHINERY_KINDS or cand.asks_direction or stakes_reason == "relationship":
-                stakes, stakes_reason = "high", "orion_self_conclusion"
         confirmation_state = "pending_confirmation" if stakes == "high" else "auto"
         strength, half_life = STRENGTH_BY_PURPOSE[cand.purpose]
 
@@ -342,7 +344,6 @@ def validate_distillation(
                 referents=referents,
                 evidence=[ev for ev, _, _ in checked],
                 events=events,
-                novel_words=novel,
             )
         )
 

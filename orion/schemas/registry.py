@@ -97,6 +97,7 @@ from orion.schemas.memory_consolidation import (
     MemoryTurnPersistedV1,
 )
 from orion.schemas.memory_crystallization import ActiveMemoryPacketV1, MemoryCrystallizationV1
+from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND, MemoryEpisodeClosedV1
 from orion.schemas.context_exec import (
     BeliefProvenanceReportV1,
     ContextExecBudgetV1,
@@ -633,6 +634,7 @@ from orion.schemas.attention_frame import (
     AttentionBroadcastProjectionV1,
     AttentionFrameV1,
     AttentionSignalV1,
+    PredictionErrorMagnitudeV1,
     SalienceFeaturesV1,
     VoluntaryOverrideV1,
 )
@@ -1002,6 +1004,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "AttentionFrameV1": AttentionFrameV1,
     "AttentionSignalV1": AttentionSignalV1,
     "SalienceFeaturesV1": SalienceFeaturesV1,
+    "PredictionErrorMagnitudeV1": PredictionErrorMagnitudeV1,
     "AttentionBroadcastProjectionV1": AttentionBroadcastProjectionV1,
     "VoluntaryOverrideV1": VoluntaryOverrideV1,
     "AttentionSelfModelV1": AttentionSelfModelV1,
@@ -1473,6 +1476,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ChatHistorySparkMetaPatchV1": ChatHistorySparkMetaPatchV1,
     "MemoryConsolidationWindowV1": MemoryConsolidationWindowV1,
     "MemoryGraphSuggestDraftRecordV1": MemoryGraphSuggestDraftRecordV1,
+    # Memory episode redesign Stage 1 (2026-10-02). Registered in BOTH this
+    # dict and SCHEMA_REGISTRY below.
+    "MemoryEpisodeClosedV1": MemoryEpisodeClosedV1,
     "ContextExecRequestV1": ContextExecRequestV1,
     "ContextExecRunV1": ContextExecRunV1,
     "ContextExecOperatorSummaryV1": ContextExecOperatorSummaryV1,
@@ -1944,6 +1950,11 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "SystemOneAppraisalFrameV1": SchemaRegistration(
         model=SystemOneAppraisalFrameV1,
         kind="system_one.appraisal.frame.v1",
+    ),
+    # Memory episode redesign Stage 1 (2026-10-02). Also in `_REGISTRY`.
+    "MemoryEpisodeClosedV1": SchemaRegistration(
+        model=MemoryEpisodeClosedV1,
+        kind=MEMORY_EPISODE_CLOSED_KIND,
     ),
 }
 

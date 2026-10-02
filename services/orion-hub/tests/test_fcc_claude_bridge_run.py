@@ -192,3 +192,43 @@ async def test_cancel_turn_sigterms_active(monkeypatch: pytest.MonkeyPatch) -> N
     bridge._register_process("corr-x", proc)  # type: ignore[arg-type]
     assert await bridge.cancel_turn("corr-x") is True
     assert proc._terminated is True
+
+
+@pytest.mark.asyncio
+async def test_run_turn_rebases_context_on_cli_compaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After the CLI's compact_boundary the running total drops to the post-compaction
+    size and the "context nearly full" nudge can fire again (orion/harness/fcc_motor.py
+    does the same for the governor's kill)."""
+    import json
+
+    def _text(t: str) -> str:
+        return json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": t}]}})
+
+    lines = [
+        _text("a" * 80),
+        json.dumps({"type": "system", "subtype": "compact_boundary",
+                    "compact_metadata": {"trigger": "auto", "pre_tokens": 90}}),
+        _text("b" * 80),
+        json.dumps({"type": "result", "result": "done", "session_id": "s1"}),
+    ]
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        return _FakeProc(lines)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(bridge, "_preflight_fcc_server", lambda *a, **k: None)
+    monkeypatch.setenv("HARNESS_FCC_MAX_CONTEXT_TOKENS", "100")
+    monkeypatch.setenv("ORION_FCC_CHARS_PER_TOKEN", "1")
+    monkeypatch.setenv("HARNESS_FCC_CONTEXT_PRESSURE_PCT", "70")
+
+    events = [ev async for ev in bridge.run_turn(
+        prompt="hello", fcc_model_label="MODEL_HAIKU", correlation_id="corr-compact",
+        workspace="/tmp", fcc_server_url="http://127.0.0.1:8082", auth_token="tok",
+        claude_bin="claude", timeout_sec=30.0,
+    )]
+    steps = [e["step"] for e in events if e["type"] == "step"]
+    pressure = [s for s in steps if s.get("type") == "context_pressure"]
+    assert len(pressure) == 2  # once before compaction, re-armed once after
+    boundary = next(s for s in steps if (s.get("raw") or {}).get("subtype") == "compact_boundary")
+    assert boundary["context_obs"]["accumulated_chars"] == len("hello")
+    assert events[-1]["type"] == "final"

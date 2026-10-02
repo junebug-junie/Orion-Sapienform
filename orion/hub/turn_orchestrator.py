@@ -867,8 +867,12 @@ async def _build_situation_prompt_fragment(
             situation_ctx["gpu_placement"] = gpu_placement
         elif _harness_owns_model_line(payload):
             situation_ctx["runtime_line_owner"] = "harness"
+        # This turn's wall-clock reading, persisted on the chat turn as
+        # spark_meta.conversation_phase (memory episode boundary, Fix 1).
+        # Filled on a cache hit too -- see _phase_stamp_from_cached_brief.
+        phase_stamp: dict[str, Any] = {}
         situation_brief, situation_fragment = await build_situation_for_ctx(
-            situation_ctx, situation_runtime_ns
+            situation_ctx, situation_runtime_ns, phase_stamp_out=phase_stamp
         )
         if not situation_brief and not situation_fragment:
             return {
@@ -902,6 +906,7 @@ async def _build_situation_prompt_fragment(
             "source_summary": source_summary,
             "perception_enabled": perception_enabled,
             "diagnostics": diagnostics,
+            "conversation_phase": dict(phase_stamp) if phase_stamp else None,
         }
     except Exception:
         logger.warning("unified_turn_situation_context_failed corr=%s", correlation_id, exc_info=True)
@@ -1694,6 +1699,7 @@ async def execute_unified_turn(
             source_label=str(payload.get("chat_history_source") or "hub_orion"),
             fcc_model_label=resolved_model_label,
             client_meta=client_meta,
+            conversation_phase=situation_bundle.get("conversation_phase"),
         )
         degraded_frame = {
             "type": "turn_degraded",
@@ -1727,6 +1733,7 @@ async def execute_unified_turn(
         source_label=str(payload.get("chat_history_source") or "hub_orion"),
         fcc_model_label=resolved_model_label,
         client_meta=client_meta,
+        conversation_phase=situation_bundle.get("conversation_phase"),
     )
     await _finish_cockpit(run, success=True)
     return _success_frames(
@@ -1749,8 +1756,14 @@ async def _publish_unified_turn_chat_history(
     source_label: str = "hub_orion",
     fcc_model_label: str | None = None,
     client_meta: dict[str, Any] | None = None,
+    conversation_phase: dict[str, Any] | None = None,
 ) -> None:
     """Orion capability: unified-turn persistence after successful handoff.
+
+    ``conversation_phase`` (2026-10-02, memory episode boundary Fix 1): this
+    turn's wall-clock stamp from the situation build, persisted as
+    ``spark_meta.conversation_phase`` so orion-memory-consolidation's boundary
+    rule can read it. Before this, 0 of 3,586 window turns carried a phase.
 
     ``client_meta`` (2026-09-22): the reply stamp (`in_reply_to`,
     `in_reply_to_source`) computed by `websocket_handler` before the lane
@@ -1808,6 +1821,8 @@ async def _publish_unified_turn_chat_history(
         "harness_grounding_status": run.grounding_status,
         "chat_route": CHAT_ROUTE_UNIFIED_TURN_HARNESS,
     }
+    if isinstance(conversation_phase, dict) and conversation_phase.get("phase_change"):
+        spark_meta["conversation_phase"] = dict(conversation_phase)
 
     reasoning_trace: dict[str, Any] | None = None
     if run.reflection is not None:

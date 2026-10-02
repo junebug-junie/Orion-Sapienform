@@ -2753,6 +2753,19 @@ class EndogenousOutreach:
                 client_meta["source"] = str(source_tag)
             if provenance:
                 client_meta["outreach_provenance"] = dict(provenance)
+            # Memory episode boundary Fix 1: unprompted turns carry the wall
+            # clock too (time since Juniper last spoke), read without moving
+            # it. On client_meta because the assistant-only message envelope
+            # has no spark_meta; sql-writer persists client_meta as-is.
+            # Isolated: a stamp failure must never cost the message itself.
+            try:
+                from scripts.chat_history import read_conversation_phase_stamp_for_session
+
+                phase_stamp = await read_conversation_phase_stamp_for_session(session_id)
+            except Exception:  # noqa: BLE001
+                phase_stamp = None
+            if phase_stamp:
+                client_meta["conversation_phase"] = phase_stamp
             env = build_chat_history_envelope(
                 content=text,
                 role="assistant",

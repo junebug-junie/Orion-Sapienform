@@ -27,7 +27,7 @@ Requirements:
 1. Ship with `MESH_GUARDIAN_AUTO_REMEDIATE=false` (observe-only).
 2. Confirm Pending Attention cards on induced failures.
 3. Run live-stack acceptance (`scripts/smoke_mesh_guardian.sh` + Task 22 checklist in implementation plan).
-4. Enable `MESH_GUARDIAN_AUTO_REMEDIATE=true` only after evidence.
+4. Enable `MESH_GUARDIAN_AUTO_REMEDIATE=true` only after evidence. **Enabled 2026-10-02** after the docker CLI/compose/buildx fix and the worktree-deploy guard (PR #2475); compose `--dry-run` verified for every `auto_remediate` roster service.
 
 ## Probes
 

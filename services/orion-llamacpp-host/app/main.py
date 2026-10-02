@@ -251,6 +251,43 @@ def _resolve_runtime(profile: LLMProfile) -> Tuple[str, LlamaCppConfig, Dict[str
     return model_path, cfg, env
 
 
+STOCK_SERVER_BIN = "/app/llama-server"
+LEGACY_SERVER_BIN = "/app/llama.cpp/build/bin/llama-server"
+# PrismML's llama.cpp fork (Dockerfile.prism), next to the stock binary, with its own .so files.
+PRISM_SERVER_DIR = "/app/prism"
+
+
+def _server_bin(profile: LLMProfile, cfg: LlamaCppConfig) -> str:
+    """The llama-server binary this profile runs (``llamacpp.server_build``).
+
+    A ``prism`` profile never falls back to the stock binary: stock llama.cpp rejects Ternary-Bonsai
+    PQ2_0 weights or loads them and emits garbage (no Hadamard activation runtime)."""
+    if cfg.server_build == "prism":
+        prism = Path(PRISM_SERVER_DIR) / "llama-server"
+        if not prism.exists():
+            raise RuntimeError(
+                f"Profile '{profile.name}' needs llamacpp.server_build=prism but {prism} is missing: "
+                "this image was not built from services/orion-llamacpp-host/Dockerfile.prism"
+            )
+        return str(prism)
+    if Path(STOCK_SERVER_BIN).exists():
+        return STOCK_SERVER_BIN
+    return LEGACY_SERVER_BIN
+
+
+def _server_bin_env(server_bin: str, base: Optional[Dict[str, str]] = None) -> Optional[Dict[str, str]]:
+    """Env for running the fork: its own directory first on LD_LIBRARY_PATH, so it loads its sibling
+    libllama/libggml and never the stock ones in /app (an ABI mismatch). None for every other binary,
+    so stock lanes (chat/metacog/fast/agent) keep exactly the env they ran with before."""
+    parent = str(Path(server_bin).parent)
+    if parent != PRISM_SERVER_DIR:
+        return None
+    env = dict(base if base is not None else os.environ)
+    prev = env.get("LD_LIBRARY_PATH")
+    env["LD_LIBRARY_PATH"] = parent + (f":{prev}" if prev else "")
+    return env
+
+
 @lru_cache(maxsize=4)
 def _get_supported_llama_server_flags(server_bin: str) -> Optional[Set[str]]:
     """
@@ -264,6 +301,7 @@ def _get_supported_llama_server_flags(server_bin: str) -> Optional[Set[str]]:
             text=True,
             check=False,
             timeout=10,
+            env=_server_bin_env(server_bin),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("Could not inspect llama-server flags via --help: %s", exc)
@@ -291,6 +329,7 @@ def _get_llama_server_build(server_bin: str) -> Optional[int]:
             text=True,
             check=False,
             timeout=10,
+            env=_server_bin_env(server_bin),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning("Could not inspect llama-server build via --version: %s", exc)
@@ -316,10 +355,9 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
     _ensure_model_file(model_path, cfg)
     mmproj_path = _ensure_mmproj_file(cfg)
 
-    # llama-server binary inside your built image
-    server_bin = "/app/llama-server"
-    if not Path(server_bin).exists():
-        server_bin = "/app/llama.cpp/build/bin/llama-server"
+    # llama-server binary inside your built image (stock, or the Prism fork per profile)
+    server_bin = _server_bin(profile, cfg)
+    env = _server_bin_env(server_bin, env) or env
 
     cmd: List[str] = [
         server_bin,
@@ -397,6 +435,17 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
                 )
         else:
             append_flag("--flash-attn", cfg.flash_attn)
+    # #27148 mitigation (stage 7 D2): a privacy knob, so it fails closed -- a profile that asks
+    # for the RAM prompt cache off must not boot on a binary that silently keeps it on.
+    if cfg.cache_ram_mib is not None:
+        append_flag("--cache-ram", str(int(cfg.cache_ram_mib)))
+        if "--cache-ram" not in cmd:
+            raise RuntimeError(f"Profile '{profile.name}' sets cache_ram_mib but this llama-server has no --cache-ram")
+    if cfg.cache_idle_slots is not None:
+        idle_flag = "--cache-idle-slots" if cfg.cache_idle_slots else "--no-cache-idle-slots"
+        append_flag(idle_flag)
+        if idle_flag not in cmd:
+            raise RuntimeError(f"Profile '{profile.name}' sets cache_idle_slots but this llama-server has no {idle_flag}")
     if cfg.rope_scaling is not None:
         append_flag("--rope-scaling", cfg.rope_scaling)
     if cfg.rope_scale is not None:
@@ -711,9 +760,13 @@ async def _main_async():
     hb_task = asyncio.create_task(heartbeat_loop(settings))
 
     # Create subprocess
+    # The fork runs from its own directory: ggml's backend loader also searches the cwd, and /app
+    # holds the stock image's libggml-* variants.
+    cwd = PRISM_SERVER_DIR if str(Path(cmd[0]).parent) == PRISM_SERVER_DIR else None
     process = await asyncio.create_subprocess_exec(
         *cmd,
         env=env,
+        cwd=cwd,
         stdout=None, # Inherit
         stderr=None
     )

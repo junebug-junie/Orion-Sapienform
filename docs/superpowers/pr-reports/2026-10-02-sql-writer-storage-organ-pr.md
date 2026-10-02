@@ -291,6 +291,6 @@ select generated_at,
 
 ## PR link
 
-(added after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2482
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

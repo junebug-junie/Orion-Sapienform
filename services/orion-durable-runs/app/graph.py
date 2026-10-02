@@ -409,10 +409,16 @@ def _urgent_finish_detail(state: dict[str, Any]) -> dict[str, Any]:
     if urgent is None:
         return {}
     report = state.get("incident_report") or None
+    debug = state.get("debug") if isinstance(state.get("debug"), dict) else {}
     return {
         "urgent": urgent,
         "incident_report": report,
         "report_flag": None if report else (state.get("report_flag") or NO_STRUCTURED_VERDICT),
+        # Hub handed back Orion's unfinalized draft because the turn ran out of time or
+        # finalize failed (`curiosity_investigation.salvage_urgent_draft`): the report
+        # says so instead of presenting it as a finished answer.
+        **({"draft_salvaged": True, "salvaged_from_error": str(debug.get("salvaged_from_error") or "")[:300]}
+           if debug.get("draft_salvaged") else {}),
     }
 
 

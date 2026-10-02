@@ -103,6 +103,22 @@ URGENT_MAX_ATTEMPTS = 2
 URGENT_RETRY_BASE_SECONDS = 10.0
 
 
+def retry_cannot_finish(state: dict, retry_at: datetime) -> bool:
+    """A retry starting at ``retry_at`` cannot get a whole attempt before the run's deadline.
+
+    An attempt is ``brief.timeout_sec`` long, and the motor inside it is budgeted from that
+    same figure (Hub keeps a finalize reserve out of it), so a retry with less left than one
+    attempt is cut by ``workflow_deadline`` mid-motor and ends with nothing: run a153451fe423's
+    attempt 2 restarted from zero with ~290 s of a 900 s attempt left. Runs with no deadline
+    (or no timeout on the brief) always retry, as before."""
+    deadline = (state.get("admission") or {}).get("deadline_at")
+    timeout = (state.get("brief") or {}).get("timeout_sec")
+    if not deadline or not timeout:
+        return False
+    left = (datetime.fromisoformat(deadline) - retry_at).total_seconds()
+    return left < float(timeout)
+
+
 def retry_budget(admission: AdmissionDeps, state: dict) -> tuple[int, float]:
     """(max_attempts, retry_base_seconds) for this run."""
     if is_urgent(state):
@@ -199,13 +215,19 @@ def build_admitted_graph(deps: Deps, admission: AdmissionDeps, checkpointer: Any
             if attempt >= max_attempts:
                 released = await admission.release(dict(state), "attempt_failed")
                 return {**released, "status": "failed", "attempt": attempt, "last_error": error, **failed_meta}
+            delay = min(admission.retry_max_seconds, retry_base * 2 ** (attempt - 1))
+            retry_at = admission.now() + timedelta(seconds=delay)
+            if retry_cannot_finish(dict(state), retry_at):
+                # A doomed retry only burns the GPU until the deadline kills it: end now.
+                released = await admission.release(dict(state), "attempt_failed")
+                return {**released, "status": "failed", "attempt": attempt,
+                        "last_error": f"retry_skipped_insufficient_time: {error}"[:500], **failed_meta}
             # A hold the pool already re-queued meanwhile keeps its lease_id and place; one still
             # granted (at this generation or, since nothing heartbeats it through the backoff, a newer
             # one) is handed back.
             released = await admission.release(dict(state), "attempt_failed", keep_requeued=True)
-            delay = min(admission.retry_max_seconds, retry_base * 2 ** (attempt - 1))
             return {**released, "status": "retrying", "attempt": attempt, "last_error": error,
-                    "retry_node": None, "retry_at": (admission.now() + timedelta(seconds=delay)).isoformat(),
+                    "retry_node": None, "retry_at": retry_at.isoformat(),
                     **failed_meta}
 
     async def run_started(state: CuriosityRunState) -> dict:

@@ -225,7 +225,7 @@ def _terminal(status: str, node: str, detail: dict[str, Any]) -> tuple[str, Noti
     return kind, request
 
 
-def _final(rows: list[dict[str, Any]]) -> tuple[str, NotificationRequest]:
+def _final(rows: list[dict[str, Any]], **extra: Any) -> tuple[str, NotificationRequest]:
     report, flag = read_incident_report(_GraphReader(rows), RUN)
     detail = {
         "urgent": URGENT,
@@ -234,8 +234,15 @@ def _final(rows: list[dict[str, Any]]) -> tuple[str, NotificationRequest]:
         "finding_text": PROSE,
         "memory_recall": "SENTINEL_MEMORY",
         "chat_turns": "SENTINEL_CHAT",
+        **extra,
     }
     return _terminal("completed", "finish", detail)
+
+
+# The turn hit its limit (or finalize failed) and Hub handed back Orion's draft
+# (run a153451fe423): the notice must still carry their words, marked unfinished.
+SALVAGED = {"draft_salvaged": True, "salvaged_from_error": "finalize_reply_deadline"}
+UNFINISHED_LINE = "UNFINISHED: Orion's turn ended before their answer was finalized (finalize_reply_deadline)"
 
 
 def _watched(progress: Optional[dict[str, Any]], want: str, **incident_over: Any) -> tuple[str, NotificationRequest]:
@@ -274,6 +281,14 @@ CASES: list[tuple[str, Any, str, Optional[str], bool, tuple[str, ...]]] = [
     (
         "empty_evidence_report", lambda: _final([_row(evidence=None)]), "final", "FLAG: no_structured_verdict", True,
         (PROSE,),
+    ),
+    (
+        "salvaged_draft_no_report", lambda: _final([], **SALVAGED), "final", "FLAG: no_structured_verdict", True,
+        (UNFINISHED_LINE, PROSE),
+    ),
+    (
+        "salvaged_draft_with_report", lambda: _final([_row()], **SALVAGED), "final", None, False,
+        (UNFINISHED_LINE, PROSE),
     ),
     (
         "failed_run",

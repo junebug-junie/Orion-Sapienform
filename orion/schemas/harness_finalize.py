@@ -204,6 +204,11 @@ class HarnessRunRequestV1(BaseModel):
     # finalize via options.gpu_lease) attaches to it. The only run lease (stage 4.6).
     gpu_lease: GpuLeaseRefV1 | None = None
     inference_timeout_sec: float | None = Field(default=None, gt=0)
+    # Seconds, from receipt, the caller still waits for the reply (held curiosity turns:
+    # durable-runs releases the run's GPU hold at the same moment). When set, the governor
+    # bounds the finalize chain to what is left and otherwise replies with the draft on the
+    # failed-finalize path, rather than finalizing after nobody is listening. None = unbounded.
+    reply_budget_sec: float | None = Field(default=None, gt=0)
     reading_binding: ReadingToolBindingV1 | None = None
     reading_only: bool = False
     schema_version: Literal["harness.run.request.v1"] = "harness.run.request.v1"

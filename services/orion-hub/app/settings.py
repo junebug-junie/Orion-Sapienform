@@ -1058,6 +1058,16 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_URGENT_TIMEOUT_SEC: float = Field(
         default=1200.0, gt=0.0, alias="HUB_CURIOSITY_URGENT_TIMEOUT_SEC"
     )
+    # Held (GPU pool) curiosity turns: seconds of the turn's limit kept back from
+    # Orion's FCC motor so the harness can still finalize -- and reply -- while the run
+    # still holds its GPU. durable-runs stops the attempt and releases the hold at the
+    # turn's limit, so a motor allowed the whole limit always finalizes after the hold is
+    # gone (urgent run a153451fe423, 2026-10-01). 330 = ~60 s measured stance/recall
+    # before the motor starts + 261 s p90 harness finalize (63 turns, 2026-09-30..10-02),
+    # rounded up. A finalize that still overruns is cut and the draft handed back.
+    HUB_CURIOSITY_HELD_TURN_FINALIZE_RESERVE_SEC: float = Field(
+        default=330.0, ge=0.0, alias="HUB_CURIOSITY_HELD_TURN_FINALIZE_RESERVE_SEC"
+    )
     # Run still waiting for a GPU by then -> a "not investigated" report goes out.
     HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC: float = Field(
         default=120.0, gt=0.0, alias="HUB_CURIOSITY_URGENT_GRANT_WAIT_SEC"

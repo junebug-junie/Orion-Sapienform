@@ -1180,14 +1180,14 @@
     "id": "memory_distill",
     "last_checked_at": "2026-09-30T00:00:00Z",
     "latency_ms": null,
-    "model": "/models/gguf/chat.gguf",
-    "n_ctx": 8192,
+    "model": null,
+    "n_ctx": null,
     "priority": "system",
     "reserved_free_slots": null,
-    "served_by": "circe-worker-chat",
-    "status": "up",
-    "upstream": "http://h:8011",
-    "vision": false
+    "served_by": "circe-worker-agent",
+    "status": "down",
+    "upstream": "http://100.112.254.99:8015",
+    "vision": null
    }
   ],
   "state": {
@@ -1566,14 +1566,14 @@
     "id": "memory_distill",
     "last_checked_at": "2026-09-30T00:00:00Z",
     "latency_ms": null,
-    "model": "/models/gguf/agent-gpu2.gguf",
-    "n_ctx": 8192,
+    "model": null,
+    "n_ctx": null,
     "priority": "system",
     "reserved_free_slots": null,
-    "served_by": "circe-worker-agent-gpu2",
-    "status": "up",
-    "upstream": "http://h:8016",
-    "vision": false
+    "served_by": "circe-worker-agent",
+    "status": "down",
+    "upstream": "http://h:8015",
+    "vision": null
    }
   ],
   "state": {

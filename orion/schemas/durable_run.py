@@ -70,9 +70,10 @@ DurableWorkflowV1 = Literal[
     # rows for this workflow), then the producer (orion-actions); an old validator rejects it.
     "journal.compose",
     "orion_day.letter",
-    # Memory episode redesign Stage 1 (2026-10-02, shadow). ADDITIVE on Literal/forbid models:
-    # orion-durable-runs is both the producer (it subscribes orion:memory:episode:closed) and the
-    # runner, so deploy it before orion-sql-writer (validates DurableRunStateV1 rows).
+    # Memory episode redesign Stage 1 (2026-10-02, shadow). ADDITIVE on Literal/forbid models,
+    # consumer-first: deploy orion-sql-writer (validates DurableRunStateV1 rows) and
+    # orion-llm-gateway + orion-gpu-pool (know the memory_distill route) BEFORE orion-durable-runs,
+    # which both produces these runs (it subscribes orion:memory:episode:closed) and runs them.
     "memory.episode_distill",
 ]
 

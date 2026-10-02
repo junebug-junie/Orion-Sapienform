@@ -179,4 +179,4 @@ def test_the_hold_route_is_agent_class_at_system_priority():
 
     req = request_from_closed_event(CLOSED, settings=SETTINGS, now=T0)
     work_class, priority, _ = hold_placement(load_pool_config(), req.admission.model_dump(mode="json"))
-    assert (work_class, priority) == ("agent", "system")
+    assert (work_class, priority) == ("memory_distill", "system")

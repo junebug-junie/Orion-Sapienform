@@ -4277,7 +4277,6 @@ class BiometricsSubstrateWorker:
             process_batch=process_batch,
         )
 
-)
     def _vision_organ_silence_check(self, projection: Any, *, now: datetime) -> None:
         silence_sec = max(1.0, float(self._settings.vision_organ_silence_sec))
         age = silence_age_seconds(

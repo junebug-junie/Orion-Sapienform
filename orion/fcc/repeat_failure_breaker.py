@@ -22,7 +22,12 @@ Rules:
 - a call key that has EVER succeeded in this turn is never blocked;
 - different input (after normalization) is a different key;
 - applies to every tool (MCP, Bash, built-ins) -- the hook matcher is ``*``;
+- a successful file edit (Edit/Write/MultiEdit/NotebookEdit) resets all failure
+  counts: after a code change, re-running the same failing command is a fair retry;
 - fail-open: any error reading/parsing exits 0 (Claude Code proceeds).
+
+Out of scope: subagent (Task) calls, which Claude Code 2.x writes to separate
+transcripts, and MCP tools that report failure only in text with is_error=false.
 
 Stdlib-only on purpose: it runs as a separate Python process per tool call,
 by file path, so it must not import the orion package.
@@ -37,6 +42,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 DEFAULT_THRESHOLD = 3
+# A successful call to one of these changes the world the failing calls ran in,
+# so failure counts start over (edit -> re-run tests is not a stuck loop).
+_STATE_CHANGING_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 # Stable marker the harness motor greps for in tool_result errors to log the trace.
 BLOCK_MARKER = "[orion-repeat-failure-breaker]"
 _ERROR_SNIPPET_CHARS = 300
@@ -88,7 +96,7 @@ class CallHistory:
     """Per-key failure count, last error, and ever-succeeded flag for one session."""
 
     def __init__(self) -> None:
-        self._pending: Dict[str, str] = {}  # tool_use_id -> key
+        self._pending: Dict[str, Tuple[str, str]] = {}  # tool_use_id -> (tool_name, key)
         self.failures: Dict[str, int] = {}
         self.last_error: Dict[str, str] = {}
         self.succeeded: set[str] = set()
@@ -107,11 +115,14 @@ class CallHistory:
                 continue
             btype = block.get("type")
             if btype == "tool_use" and block.get("id") and isinstance(block.get("name"), str):
-                self._pending[str(block["id"])] = call_key(block["name"], block.get("input"))
+                self._pending[str(block["id"])] = (
+                    block["name"], call_key(block["name"], block.get("input"))
+                )
             elif btype == "tool_result":
-                key = self._pending.pop(str(block.get("tool_use_id") or ""), None)
-                if key is None:
+                pending = self._pending.pop(str(block.get("tool_use_id") or ""), None)
+                if pending is None:
                     continue
+                tool_name, key = pending
                 if block.get("is_error"):
                     self.failures[key] = self.failures.get(key, 0) + 1
                     text = _result_text(block.get("content")).strip()
@@ -119,6 +130,8 @@ class CallHistory:
                         self.last_error[key] = text
                 else:
                     self.succeeded.add(key)
+                    if tool_name in _STATE_CHANGING_TOOLS:
+                        self.failures.clear()
 
     def feed_all(self, entries: Iterable[Dict[str, Any]]) -> "CallHistory":
         for entry in entries:
@@ -129,8 +142,8 @@ class CallHistory:
 def read_transcript(path: str | Path) -> Iterable[Dict[str, Any]]:
     with open(path, "r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
-            line = line.strip()
-            if not line:
+            # Only tool_use/tool_result lines matter; skip parsing the rest.
+            if '"tool_use' not in line and '"tool_result"' not in line:
                 continue
             try:
                 entry = json.loads(line)
@@ -197,7 +210,11 @@ def hook_settings_json(*, threshold: int, python_bin: str) -> str:
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--threshold", type=int, default=DEFAULT_THRESHOLD)
-    args = parser.parse_args(argv)
+    try:
+        # argparse exits 2 on bad args -- the same code that blocks. Stay fail-open.
+        args = parser.parse_args(argv)
+    except SystemExit:
+        return 0
     try:
         payload = json.load(sys.stdin)
         if not isinstance(payload, dict):

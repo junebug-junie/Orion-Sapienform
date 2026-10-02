@@ -119,6 +119,25 @@ def test_bash_description_label_does_not_split_identical_calls():
     assert rfb.decide(h, "mcp__x__y", {"description": "d4"}, threshold=3) is None
 
 
+def test_successful_edit_resets_failure_counts():
+    """Edit -> re-run failing tests is a fair retry, not a stuck loop."""
+    cmd = {"command": "pytest tests/x.py"}
+    pairs = []
+    for i in range(3):
+        pairs += [("Bash", cmd, True), ("Edit", {"file_path": "/a.py", "old_string": str(i), "new_string": "y"}, False)]
+    assert rfb.decide(_hist(*pairs), "Bash", cmd, threshold=3) is None
+    # A failed edit does not reset.
+    pairs = []
+    for i in range(3):
+        pairs += [("Bash", cmd, True), ("Edit", {"file_path": "/a.py", "old_string": str(i)}, True)]
+    assert rfb.decide(_hist(*pairs), "Bash", cmd, threshold=3) is not None
+    # Nor does an unrelated successful read.
+    pairs = []
+    for i in range(3):
+        pairs += [("Bash", cmd, True), ("Read", {"file_path": f"/{i}"}, False)]
+    assert rfb.decide(_hist(*pairs), "Bash", cmd, threshold=3) is not None
+
+
 def test_threshold_zero_disables():
     cmd = {"command": "false"}
     h = _hist(*[("Bash", cmd, True)] * 5)
@@ -168,6 +187,9 @@ def test_hook_fails_open_on_missing_transcript_or_garbage(tmp_path):
     proc = subprocess.run([sys.executable, rfb.__file__], input=json.dumps(payload), capture_output=True, text=True)
     assert proc.returncode == 0
     proc = subprocess.run([sys.executable, rfb.__file__], input="not json", capture_output=True, text=True)
+    assert proc.returncode == 0
+    # Bad argv must not turn into argparse's exit 2 (= block every call).
+    proc = subprocess.run([sys.executable, rfb.__file__, "--threshold", "x"], input=json.dumps(payload), capture_output=True, text=True)
     assert proc.returncode == 0
 
 

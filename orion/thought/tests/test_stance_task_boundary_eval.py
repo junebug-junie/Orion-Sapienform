@@ -41,3 +41,9 @@ def test_rejects_ungrounded_evidence():
     raw = response()
     raw['evidence_refs'] = ['invented']
     assert not assess_response(raw, 'test')['valid_stance']
+
+
+def test_accepts_bare_turn_token_the_prompt_asks_for():
+    raw = response()
+    raw['evidence_refs'] = ['hub:turn']
+    assert assess_response(raw, 'test')['valid_stance']

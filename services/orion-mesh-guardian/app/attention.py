@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from uuid import uuid4
 
 from orion.notify.client import NotifyClient
 
 from .settings import Settings
+
+logger = logging.getLogger("orion.mesh.guardian.attention")
 
 
 class AttentionPublisher:
@@ -46,9 +49,19 @@ class AttentionPublisher:
             "reason": reason,
             **event_ctx,
         }
-        self._client.attention_request(
+        accepted = self._client.attention_request(
             message=body,
             severity=severity,
             require_ack=True,
             context=context,
         )
+        # NotifyClient swallows delivery errors and returns ok=False; without
+        # this check a card that never reached the Hub was indistinguishable
+        # from one that did.
+        if not getattr(accepted, "ok", False):
+            logger.error(
+                "attention card NOT delivered service=%s event=%s detail=%s",
+                service_id,
+                mesh_event,
+                getattr(accepted, "detail", None),
+            )

@@ -5,6 +5,9 @@ import logging
 import time
 from typing import Any
 
+from pathlib import Path
+
+from orion.bus.census import load_channel_catalog_names
 from orion.core.bus.async_service import OrionBusAsync
 
 from .attention import AttentionPublisher
@@ -13,6 +16,15 @@ from .probe import run_probe
 from .remediator import execute_remediation
 from .roster import NEVER_REMEDIATE_IDS, RosterDocument, RosterEntry, load_roster, validate_roster
 from .settings import Settings
+from .stability import (
+    AlertGate,
+    CounterRiseTracker,
+    CrashLoopTracker,
+    StabilityAlert,
+    graph_inflation_alert,
+    slow_consumer_alert,
+    snapshot_alerts,
+)
 from .state_machine import ServiceState, TransitionInput, transition
 from .state_store import load_all, save_one
 
@@ -31,6 +43,10 @@ class MeshGuardianService:
         self._tasks: list[asyncio.Task] = []
         self._equilibrium_queue: asyncio.Queue = asyncio.Queue(maxsize=8)
         self._equilibrium_task_alive = False
+        self._crash_loops = CrashLoopTracker()
+        self._bus_disconnects = CounterRiseTracker()
+        self._alert_gate = AlertGate()
+        self._falkordb = None
 
     async def start(self) -> None:
         if not self.settings.enabled:
@@ -54,6 +70,8 @@ class MeshGuardianService:
             asyncio.create_task(self._probe_loop(), name="mesh-guardian-probe"),
             asyncio.create_task(self._equilibrium_loop(), name="mesh-guardian-equilibrium"),
         ]
+        if self.settings.stability_enabled:
+            self._tasks.append(asyncio.create_task(self._stability_loop(), name="mesh-guardian-stability"))
 
     async def stop(self) -> None:
         self._stop.set()
@@ -62,6 +80,9 @@ class MeshGuardianService:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        if self._falkordb is not None:
+            await self._falkordb.aclose()
+            self._falkordb = None
         await self.bus.close()
 
     def equilibrium_subscriber_alive(self) -> bool:
@@ -211,3 +232,122 @@ class MeshGuardianService:
             except Exception:
                 logger.exception("probe loop error")
             await asyncio.sleep(self.settings.probe_interval_sec)
+
+    # --- host-wide stability checks (see app/stability.py) -------------------
+
+    async def _stability_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await self.run_stability_checks(time.time())
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("stability check cycle error")
+            await asyncio.sleep(self.settings.stability_interval_sec)
+
+    async def run_stability_checks(self, now: float) -> list[StabilityAlert]:
+        """One cycle. Each check is isolated: one unreachable source (FalkorDB
+        down, docker socket missing) must not blind the others."""
+        alerts: list[StabilityAlert] = []
+        summary: dict[str, object] = {}
+        checks = (
+            ("containers", self._check_crash_loops),
+            ("bus_redis", self._check_bus_redis),
+            ("falkordb", self._check_falkordb),
+        )
+        for name, check in checks:
+            try:
+                found, info = await check(now)
+                alerts.extend(found)
+                summary[name] = info
+            except Exception as exc:
+                summary[name] = f"error:{type(exc).__name__}"
+                logger.warning("stability check %s failed: %s", name, exc)
+        logger.info("stability cycle %s alerts=%d", summary, len(alerts))
+        for alert in self._alert_gate.admit(alerts, now):
+            logger.warning("stability alert kind=%s subject=%s: %s", alert.kind, alert.subject, alert.message)
+            await asyncio.to_thread(
+                self.attention.publish_transition,
+                service_id=alert.subject,
+                heartbeat_name="stability",
+                event={
+                    "severity": alert.severity,
+                    "message": alert.message,
+                    "context": {"event": alert.kind, **alert.context},
+                },
+            )
+        return alerts
+
+    async def _check_crash_loops(self, now: float) -> tuple[list[StabilityAlert], object]:
+        counts = await _docker_restart_counts()
+        info = {"containers": len(counts), "max_restarts": max(counts.values(), default=0)}
+        return self._crash_loops.observe(counts, now), info
+
+    async def _check_bus_redis(self, now: float) -> tuple[list[StabilityAlert], object]:
+        redis = self.bus.redis
+        if redis is None:
+            return [], "not_connected"
+        stats = await redis.info("stats")
+        total = int(stats.get("client_output_buffer_limit_disconnections", 0))
+        alerts = slow_consumer_alert("bus-redis", self._bus_disconnects.observe(total), total)
+        persistence = await redis.info("persistence")
+        alerts += snapshot_alerts("bus-redis", persistence, save_config=await _save_config(redis), now=now)
+        return alerts, {"disconnections": total, "bgsave_sec": persistence.get("rdb_current_bgsave_time_sec")}
+
+    async def _check_falkordb(self, now: float) -> tuple[list[StabilityAlert], object]:
+        if self._falkordb is None:
+            import redis.asyncio as aioredis
+
+            self._falkordb = aioredis.Redis.from_url(
+                self.settings.falkordb_uri,
+                socket_timeout=5.0,
+                socket_connect_timeout=5.0,
+                decode_responses=True,
+            )
+        persistence = await self._falkordb.info("persistence")
+        alerts = snapshot_alerts(
+            "falkordb", persistence, save_config=await _save_config(self._falkordb), now=now
+        )
+        result = await self._falkordb.execute_command(
+            "GRAPH.RO_QUERY", self.settings.falkordb_bus_graph, "MATCH (c:Channel) RETURN count(c)"
+        )
+        channel_nodes = int(result[1][0][0]) if result and len(result) > 1 and result[1] else 0
+        # The live repo checkout (mounted at /repo), not the copy baked into
+        # this image: a stale baked catalog is the exact failure this detects.
+        repo_catalog = Path(self.settings.orion_repo_root) / "orion" / "bus" / "channels.yaml"
+        catalog_size = len(load_channel_catalog_names(repo_catalog if repo_catalog.is_file() else None))
+        alerts += graph_inflation_alert(self.settings.falkordb_bus_graph, channel_nodes, catalog_size)
+        return alerts, {
+            "bgsave_sec": persistence.get("rdb_current_bgsave_time_sec"),
+            "channel_nodes": channel_nodes,
+            "catalog": catalog_size,
+        }
+
+
+async def _save_config(redis) -> str:
+    cfg = await redis.config_get("save")
+    value = cfg.get("save", cfg.get(b"save", ""))
+    return value.decode() if isinstance(value, bytes) else str(value)
+
+
+async def _docker_restart_counts() -> dict[str, int]:
+    proc = await asyncio.create_subprocess_exec(
+        "docker", "ps", "-aq", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    out, err = await asyncio.wait_for(proc.communicate(), timeout=20)
+    if proc.returncode:
+        raise RuntimeError(f"docker ps failed: {err.decode(errors='replace')[-200:]}")
+    ids = out.decode().split()
+    if not ids:
+        return {}
+    proc = await asyncio.create_subprocess_exec(
+        "docker", "inspect", "--format", "{{.Name}} {{.RestartCount}}", *ids,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    out, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
+    counts: dict[str, int] = {}
+    for line in out.decode().splitlines():
+        name, _, count = line.strip().rpartition(" ")
+        if name and count.isdigit():
+            counts[name.lstrip("/")] = int(count)
+    return counts

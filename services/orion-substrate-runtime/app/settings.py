@@ -272,6 +272,14 @@ class Settings(BaseSettings):
     attention_self_model_trend_window_ticks: int = Field(
         2, alias="SUBSTRATE_ATTENTION_SELF_MODEL_TREND_WINDOW_TICKS"
     )
+    # Omit a domain's prediction_error from the self-model's
+    # prediction_error_confidence (and trend buffer) when its Falkor node's
+    # temporal.observed_at is older than the shared 1800 s horizon
+    # (orion/substrate/prediction_error_freshness.py). Omit, not fade: a faded
+    # value reads as calm. false restores the old read-every-node behavior.
+    attention_self_model_omit_stale_pe: bool = Field(
+        True, alias="SUBSTRATE_ATTENTION_SELF_MODEL_OMIT_STALE_PE"
+    )
     # Same 168h (7-day) default as attention_broadcast_log_retention_hours
     # above -- covers this repo's default 48h analysis-window scripts with
     # margin.

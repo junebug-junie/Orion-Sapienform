@@ -380,6 +380,11 @@ brand-new table with exactly one writer.
   old default (10) and the offline replay script's own `PREDICTION_ERROR_TREND_WINDOW_TICKS=30`
   default on held-out TEST (61.9% vs 56.4% vs 54.2% reversion accuracy). See `app/settings.py`'s
   `attention_self_model_trend_window_ticks` docstring for the full numbers and methodology.
+- `SUBSTRATE_ATTENTION_SELF_MODEL_OMIT_STALE_PE` (default `true`): a domain whose prediction_error node
+  (`temporal.observed_at`) is older than 1800 s is left out of `prediction_error_confidence` and the trend
+  buffer ("no reading", not "calm"; not faded). The basis string records `from N of M domains` and which were
+  omitted with ages; missing `observed_at` is omitted as `age unknown`. All omitted -> confidence `None`
+  (equilibrium readers skip None rows). `false` restores read-every-node. Stored node values are untouched.
 - `SUBSTRATE_ATTENTION_SELF_MODEL_LOG_RETENTION_HOURS` (default `168.0`): append-only retention,
   matching `ORION_ATTENTION_BROADCAST_LOG_RETENTION_HOURS`'s own 7-day default.
 

@@ -58,7 +58,12 @@ def _make_worker(
 
 
 def _pe_node(node_id: str, error: float) -> SimpleNamespace:
-    return SimpleNamespace(node_id=node_id, metadata={"prediction_error": error})
+    # Fresh observed_at: nodes without one are omitted by the stale-reading rule.
+    return SimpleNamespace(
+        node_id=node_id,
+        metadata={"prediction_error": error},
+        temporal=SimpleNamespace(observed_at=datetime.now(timezone.utc)),
+    )
 
 
 def _fake_store(*extra_nodes: SimpleNamespace) -> MagicMock:

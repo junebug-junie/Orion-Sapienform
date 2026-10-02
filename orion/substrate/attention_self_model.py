@@ -468,6 +468,7 @@ def reduce_attention_self_model(
     prediction_error_by_domain: dict[str, float] | None = None,
     prediction_error_evidence_by_domain: dict[str, list[str]] | None = None,
     prediction_error_trend_by_domain: dict[str, float] | None = None,
+    prediction_error_omitted_by_domain: dict[str, float | None] | None = None,
     heartbeat_h1: dict | None = None,
 ) -> AttentionSelfModelV1:
     """Unify the GWT-dispatch lane and the general field lane into one
@@ -606,9 +607,28 @@ def reduce_attention_self_model(
     pe_confidence, pe_confidence_basis = _unconditional_prediction_error_confidence(
         prediction_error_by_domain
     )
+    # Stale-reading omission trace (carried in the existing basis string -- no
+    # schema change). Caller already dropped these domains from
+    # prediction_error_by_domain; {domain: age_sec | None(unknown)}.
+    omit_note = ""
+    if prediction_error_omitted_by_domain:
+        from orion.substrate.prediction_error_freshness import describe_omitted
+
+        n_used = len(
+            [d for d in (prediction_error_by_domain or {}) if d in ACTIVE_INFERENCE_DOMAINS]
+        )
+        n_total = n_used + len(prediction_error_omitted_by_domain)
+        omit_note = (
+            f" [from {n_used} of {n_total} domains; "
+            + describe_omitted(prediction_error_omitted_by_domain, n_total)
+            + "]"
+        )
+    if pe_confidence is None and omit_note:
+        # Unknown, not calm and not 1.0: confidence stays None, basis says why.
+        model.prediction_error_confidence_basis = "no current reading" + omit_note
     if pe_confidence is not None:
         model.prediction_error_confidence = _round_or_none(pe_confidence)
-        model.prediction_error_confidence_basis = pe_confidence_basis
+        model.prediction_error_confidence_basis = pe_confidence_basis + omit_note
         # Same ACTIVE_INFERENCE_DOMAINS filter the confidence scalar above was
         # computed from -- exposed so the scalar can explain itself instead of
         # being the only surviving trace of its own inputs (2026-07-31).

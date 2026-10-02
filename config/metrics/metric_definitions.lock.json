@@ -1,11 +1,13 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 688,
+  "metric_count": 690,
   "_last_change": {
-    "change_count": 1,
-    "high_severity_count": 0,
+    "change_count": 3,
+    "high_severity_count": 1,
     "changes": [
-      "medium added metric://bus_channel/orion-memory-consolidation/orion:memory:episode:closed"
+      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026ate-runtime'] -> \u2026ate-runtime', 'orion-vision-frame-router'])",
+      "medium added metric://field_channel/orion-field-digester/vision_frame_staleness",
+      "medium added metric://field_channel/orion-field-digester/vision_processing_failure_pressure"
     ]
   },
   "definitions": {
@@ -525,7 +527,8 @@
         "orion-harness-governor",
         "orion-hub",
         "orion-llm-gateway",
-        "orion-substrate-runtime"
+        "orion-substrate-runtime",
+        "orion-vision-frame-router"
       ],
       "declared_consumers": [
         "orion-equilibrium-service",
@@ -4237,6 +4240,16 @@
     },
     "metric://field_channel/orion-field-digester/turn_incompletion": {
       "meaning": "Did Hub fail to get a usable result back from the harness-governor RPC for this turn at all -- the one unified-turn failure mode where no governor-side grammar event exists. A distinct, worse severity than compliance_deficit's worst rank.",
+      "notes": "category=task_execution level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/vision_frame_staleness": {
+      "meaning": "Can Orion see at all, on node:substrate.vision_organ: staleness of the freshest camera stream the vision frame router reports (0.0 while any camera's newest frame is under 15 s old, ramping to 1.0 at 60 s). A configured camera that has sent nothing since the router started is aged from that start, never read as calm. 1.0 when no camera delivers or the router stops reporting for 180 s (written on a clock). Per-camera status lives on the vision organ projection. Dropped (unmeasured) when no reading has arrived for 300 s.",
+      "notes": "category=sensor_trust_liveness level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
+    "metric://field_channel/orion-field-digester/vision_processing_failure_pressure": {
+      "meaning": "Share of the frames the vision frame router handed to the vision host over the last 10 minutes that came back without a usable answer (timeout, invalid reply, ok=false), failures / max(attempts, 10), counted once 2+ failures are in the span; the worse of the pooled share and the worst single camera's. Absent when nothing was dispatched; dropped (unmeasured) when no reading has arrived for 300 s.",
       "notes": "category=task_execution level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },

@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     # services/orion-sql-db/manual_migration_llm_inference_substrate_loop.sql first.
     enable_llm_inference_reducer: bool = Field(False, alias="ENABLE_LLM_INFERENCE_REDUCER")
     llm_inference_grammar_batch_limit: int = Field(200, alias="LLM_INFERENCE_GRAMMAR_BATCH_LIMIT")
+    # storage_write lane (orion-sql-writer reporting on its own writes, trace
+    # prefix sql_writer.storage:). Off in code: needs
+    # services/orion-sql-db/manual_migration_storage_write_substrate_loop.sql first.
+    enable_storage_write_reducer: bool = Field(False, alias="ENABLE_STORAGE_WRITE_REDUCER")
+    storage_write_grammar_batch_limit: int = Field(200, alias="STORAGE_WRITE_GRAMMAR_BATCH_LIMIT")
     # vision_organ lane (orion-vision-frame-router reporting on the eye, trace
     # prefix vision.organ:). Off in code: needs
     # services/orion-sql-db/manual_migration_vision_organ_substrate_loop.sql first.

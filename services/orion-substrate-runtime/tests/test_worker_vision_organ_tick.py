@@ -19,7 +19,7 @@ for p in (str(REPO_ROOT), str(SUBSTRATE_ROOT)):
         sys.path.insert(0, p)
 
 import app.worker as worker_module
-from app.worker import REDUCER_SPECS, BiometricsSubstrateWorker
+from app.worker import REDUCER_SPEC_BY_KEY, REDUCER_SPECS, BiometricsSubstrateWorker
 from orion.schemas.vision_organ_projection import VisionOrganProjectionV1
 from orion.substrate.vision_organ_loop.constants import (
     VISION_ORGAN_GRAMMAR_CURSOR_NAME,
@@ -68,7 +68,7 @@ class _Clock:
 
 
 def test_spec_is_registered_with_its_own_cursor() -> None:
-    spec = REDUCER_SPECS[6]
+    spec = REDUCER_SPEC_BY_KEY["vision_organ"]
     assert spec.reducer_key == "vision_organ"
     assert spec.cursor_name == VISION_ORGAN_GRAMMAR_CURSOR_NAME
     assert spec.source_service == VISION_ORGAN_SOURCE_SERVICE

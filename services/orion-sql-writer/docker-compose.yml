@@ -66,6 +66,9 @@ services:
       - SQL_WRITER_FALLBACK_WATCH_INTERVAL_SEC=${SQL_WRITER_FALLBACK_WATCH_INTERVAL_SEC:-300}
       - SQL_WRITER_FALLBACK_WATCH_WINDOW_SEC=${SQL_WRITER_FALLBACK_WATCH_WINDOW_SEC:-86400}
       - SQL_WRITER_FALLBACK_WATCH_THRESHOLD_STEP=${SQL_WRITER_FALLBACK_WATCH_THRESHOLD_STEP:-5}
+      # storage-write organ (app/write_health.py) -> orion:grammar:event
+      - SQL_WRITER_WRITE_HEALTH_ENABLED=${SQL_WRITER_WRITE_HEALTH_ENABLED:-false}
+      - SQL_WRITER_WRITE_HEALTH_WINDOW_SEC=${SQL_WRITER_WRITE_HEALTH_WINDOW_SEC:-60}
       # "notify" is the compose SERVICE name; "orion-notify" (directory) and
       # "orion-athena-notify" (container_name) have both already broken this
       # exact URL elsewhere. See services/orion-notify-digest/.env_example.

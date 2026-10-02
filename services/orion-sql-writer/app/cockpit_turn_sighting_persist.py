@@ -12,6 +12,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app import write_health
 from app.models.cockpit_turn_sighting import CockpitTurnSightingSQL
 
 _EXPECTED_SCHEMA = "cockpit.hop.v1"
@@ -37,22 +38,29 @@ def _coerce_ts(raw: Any, fallback: datetime) -> datetime:
     return fallback
 
 
+def _reject(reason: str) -> bool:
+    # A rejected hop gets no fallback row; tell the storage-write organ it was
+    # lost, so it is not read as an idempotent duplicate (no-op when the organ is off).
+    write_health.mark_failed(f"validation error for cockpit hop: {reason}")
+    return False
+
+
 def append_cockpit_hop(sess: Session, payload: dict[str, Any]) -> bool:
     if not isinstance(payload, dict):
-        return False
+        return _reject("payload is not an object")
     schema = str(payload.get("schema_version") or "").strip()
     if schema and schema != _EXPECTED_SCHEMA:
-        return False
+        return _reject("schema_version mismatch")
     corr_id = str(payload.get("correlation_id") or "").strip()
     seq_raw = payload.get("seq")
     if not corr_id or seq_raw is None:
-        return False
+        return _reject("missing correlation_id or seq")
     try:
         seq = int(seq_raw)
     except (TypeError, ValueError):
-        return False
+        return _reject("seq is not an integer")
     if seq < 0:
-        return False
+        return _reject("negative seq")
 
     now = datetime.now(timezone.utc)
     values = {

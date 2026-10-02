@@ -209,6 +209,11 @@ SYNC_PREFIXES = (
     "TRANSPORT_SUBSTRATE_",
     # bus_fallback_log backlog watcher (orion-sql-writer)
     "SQL_WRITER_FALLBACK_WATCH_",
+    # storage-write organ (2026-10-02): sql-writer emitter, substrate reducer,
+    # field-digester gate. None matched an existing prefix.
+    "SQL_WRITER_WRITE_HEALTH_",
+    "ENABLE_STORAGE_WRITE_",
+    "STORAGE_WRITE_",
     "HUB_PROPOSAL_REVIEW_",
     # Runtime activity marquee (2026-09-09): its two keys matched no prefix and
     # were silently skipped on first sync; found by grepping the live .env after.

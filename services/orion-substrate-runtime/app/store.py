@@ -76,6 +76,13 @@ from orion.substrate.llm_inference_loop.constants import (
     LLM_INFERENCE_SOURCE_SERVICE,
     LLM_INFERENCE_TRACE_PREFIX,
 )
+from orion.schemas.storage_write_projection import StorageWriteProjectionV1
+from orion.substrate.storage_write_loop.constants import (
+    STORAGE_WRITE_GRAMMAR_CURSOR_NAME,
+    STORAGE_WRITE_PROJECTION_ID,
+    STORAGE_WRITE_SOURCE_SERVICE,
+    STORAGE_WRITE_TRACE_PREFIX,
+)
 
 EXECUTION_GRAMMAR_SOURCE_SERVICES = tuple(EXECUTION_SOURCE_SERVICES)
 
@@ -86,6 +93,7 @@ GRAMMAR_CURSOR_REGISTRY: dict[str, tuple[tuple[str, ...], str]] = {
     CHAT_GRAMMAR_CURSOR_NAME: ((CHAT_SOURCE_SERVICE,), "hub.chat:"),
     ROUTE_GRAMMAR_CURSOR_NAME: ((ROUTE_SOURCE_SERVICE,), ROUTE_TRACE_PREFIX),
     LLM_INFERENCE_GRAMMAR_CURSOR_NAME: ((LLM_INFERENCE_SOURCE_SERVICE,), LLM_INFERENCE_TRACE_PREFIX),
+    STORAGE_WRITE_GRAMMAR_CURSOR_NAME: ((STORAGE_WRITE_SOURCE_SERVICE,), STORAGE_WRITE_TRACE_PREFIX),
     VISION_ORGAN_GRAMMAR_CURSOR_NAME: ((VISION_ORGAN_SOURCE_SERVICE,), VISION_ORGAN_TRACE_PREFIX),
 }
 from orion.substrate.biometrics_loop.lineage import emission_touches_node, receipt_touches_node
@@ -492,6 +500,21 @@ class BiometricsSubstrateStore:
     def advance_llm_inference_cursor(self, *, event_id: str, created_at: datetime) -> None:
         self._advance_named_cursor(
             cursor_name=LLM_INFERENCE_GRAMMAR_CURSOR_NAME,
+            event_id=event_id,
+            created_at=created_at,
+        )
+
+    def fetch_storage_write_grammar_events(self, *, limit: int = 200) -> list[GrammarEventV1]:
+        return self._fetch_grammar_events(
+            cursor_name=STORAGE_WRITE_GRAMMAR_CURSOR_NAME,
+            source_services=(STORAGE_WRITE_SOURCE_SERVICE,),
+            trace_prefix=STORAGE_WRITE_TRACE_PREFIX,
+            limit=limit,
+        )
+
+    def advance_storage_write_cursor(self, *, event_id: str, created_at: datetime) -> None:
+        self._advance_named_cursor(
+            cursor_name=STORAGE_WRITE_GRAMMAR_CURSOR_NAME,
             event_id=event_id,
             created_at=created_at,
         )
@@ -1523,6 +1546,18 @@ class BiometricsSubstrateStore:
 
     def save_llm_inference_projection(self, projection: LlmInferenceProjectionV1) -> None:
         self._save_projection("substrate_llm_inference_projection", projection)
+
+    def load_storage_write_projection(
+        self, projection_id: str = STORAGE_WRITE_PROJECTION_ID
+    ) -> StorageWriteProjectionV1 | None:
+        return self._load_projection(
+            "substrate_storage_write_projection",
+            projection_id,
+            StorageWriteProjectionV1,
+        )
+
+    def save_storage_write_projection(self, projection: StorageWriteProjectionV1) -> None:
+        self._save_projection("substrate_storage_write_projection", projection)
 
     def load_vision_organ_projection(
         self, projection_id: str = VISION_ORGAN_PROJECTION_ID

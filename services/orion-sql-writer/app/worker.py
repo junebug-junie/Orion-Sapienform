@@ -6,6 +6,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import time
 import uuid
 from collections import deque
 from copy import deepcopy
@@ -237,6 +238,8 @@ except ImportError:
     normalize_spark_state_snapshot = None
     normalize_spark_telemetry = None
 
+from app import write_health
+
 logger = logging.getLogger("sql-writer")
 GrammarWorkItem = tuple[BaseEnvelope, GrammarEventV1, dict[str, Any], str]
 _GRAMMAR_EXECUTORS: list[concurrent.futures.ThreadPoolExecutor] | None = None
@@ -430,6 +433,7 @@ def _spawn_grammar_persist(
         if depth > _GRAMMAR_QUEUE_HIGH_WATER.get(shard, 0):
             _GRAMMAR_QUEUE_HIGH_WATER[shard] = depth
     except asyncio.QueueFull:
+        write_health.record_grammar([event.trace_id], "backpressure")
         logger.warning(
             "grammar_queue_full shard=%s event_id=%s trace_id=%s",
             shard,
@@ -2091,6 +2095,10 @@ def _normalize_calibration_profile_audit_payload(payload: Any) -> Dict[str, Any]
 
 
 def _write_fallback(kind: str, correlation_id: str, payload: Any, error: str = None) -> None:
+    # Every lost write on the envelope path ends here, so this is where the
+    # storage-write organ learns the class. No-op on the grammar path (no
+    # envelope outcome in context: those are recorded in the persist helpers).
+    write_health.mark_failed(error)
     sess = get_session()
     try:
         safe_payload = payload
@@ -2147,10 +2155,25 @@ async def _write(
         data.update(extra_fields)
 
     try:
-        return await asyncio.to_thread(_write_row, sql_model_cls, data)
+        written = await asyncio.to_thread(_write_row, sql_model_cls, data)
     except Exception as e:
         logger.error(f"Failed to write to primary table: {e}")
         raise
+    # _write_row returns False only for an idempotent duplicate skip.
+    write_health.mark_written(bool(written), getattr(sql_model_cls, "__tablename__", None))
+    return written
+
+
+def _grammar_persist_with_outcome(fn: Any, *args: Any) -> tuple[Any, dict[str, int] | None]:
+    """Run a grammar persist and read what it actually did, in the same executor
+    thread (the outcome is a thread-local; run_in_executor does not carry
+    contextvars). The persist functions return False/0 for a duplicate AND for a
+    swallowed statement cancel or integrity reject; only the outcome tells them apart."""
+    from app.grammar_ledger_handler import take_last_grammar_outcome
+
+    take_last_grammar_outcome()
+    result = fn(*args)
+    return result, take_last_grammar_outcome()
 
 
 async def _persist_grammar_trace_batch_envelope(
@@ -2168,10 +2191,21 @@ async def _persist_grammar_trace_batch_envelope(
     )
     loop = asyncio.get_running_loop()
     executor = _get_grammar_executors()[shard]
-    fut = loop.run_in_executor(executor, persist_grammar_trace_batch, events, shard)
+    fut = loop.run_in_executor(
+        executor, _grammar_persist_with_outcome, persist_grammar_trace_batch, events, shard
+    )
+    trace_ids = [e.trace_id for e in events]
+    started = time.perf_counter()
     try:
-        await asyncio.wait_for(fut, timeout=timeout_sec)
+        applied, outcome = await asyncio.wait_for(fut, timeout=timeout_sec)
+        if outcome is None:
+            n_applied = max(0, min(len(events), int(applied or 0)))
+            outcome = {"committed": n_applied, "duplicate": len(events) - n_applied}
+        write_health.record_grammar_outcome(
+            trace_id, outcome, latency_ms=(time.perf_counter() - started) * 1000.0
+        )
     except asyncio.TimeoutError:
+        write_health.record_grammar(trace_ids, "timeout")
         canceled = cancel_active_grammar_persist(shard)
         logger.error(
             "sql_writer_grammar_trace_batch_timeout shard=%s trace_id=%s events=%s timeout_sec=%s canceled=%s",
@@ -2197,6 +2231,7 @@ async def _persist_grammar_trace_batch_envelope(
                     exc,
                 )
     except Exception as exc:
+        write_health.record_grammar(trace_ids, write_health.classify_write_error(exc))
         logger.exception(
             "sql_writer_grammar_trace_batch_failed trace_id=%s events=%s error=%s",
             trace_id,
@@ -2227,10 +2262,19 @@ async def _persist_grammar_event_envelope(
     timeout_sec = float(settings.sql_writer_grammar_persist_timeout_sec)
     loop = asyncio.get_running_loop()
     executor = _get_grammar_executors()[shard]
-    fut = loop.run_in_executor(executor, persist_grammar_event, event, shard)
+    fut = loop.run_in_executor(
+        executor, _grammar_persist_with_outcome, persist_grammar_event, event, shard
+    )
+    started = time.perf_counter()
     try:
-        await asyncio.wait_for(fut, timeout=timeout_sec)
+        applied, outcome = await asyncio.wait_for(fut, timeout=timeout_sec)
+        if outcome is None:
+            outcome = {"committed" if applied else "duplicate": 1}
+        write_health.record_grammar_outcome(
+            event.trace_id, outcome, latency_ms=(time.perf_counter() - started) * 1000.0
+        )
     except asyncio.TimeoutError:
+        write_health.record_grammar([event.trace_id], "timeout")
         canceled = cancel_active_grammar_persist(shard)
         logger.error(
             "sql_writer_grammar_persist_timeout shard=%s event_id=%s trace_id=%s timeout_sec=%s canceled=%s",
@@ -2256,6 +2300,7 @@ async def _persist_grammar_event_envelope(
                 exc,
             )
     except Exception as exc:
+        write_health.record_grammar([event.trace_id], write_health.classify_write_error(exc))
         logger.exception(
             "sql_writer_grammar_persist_failed event_id=%s trace_id=%s error=%s",
             event.event_id,
@@ -2427,7 +2472,37 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
         return
 
     async with _get_write_semaphore():
-        await _handle_envelope_body(env, bus=bus)
+        outcome, token = (
+            write_health.begin_envelope(_write_family_for_kind(env.kind))
+            if write_health.is_enabled()
+            else (None, None)
+        )
+        started = time.perf_counter()
+        error: BaseException | None = None
+        try:
+            await _handle_envelope_body(env, bus=bus)
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            write_health.end_envelope(outcome, token, started=started, error=error)
+
+
+def _write_family_for_kind(kind: str) -> str:
+    """The table an envelope kind is written to: the storage-write organ's family.
+
+    Mirrors _handle_envelope_body's dispatch: the special-cased kinds first, then
+    the route map. A kind with no route reports as ``unrouted``."""
+    if kind == "chat.history.spark_meta.patch.v1":
+        return "chat_history_log"
+    if kind == VISION_CROP_OBSERVATION_KIND:
+        return "vision_crop_observation"
+    if kind == "spark.state.snapshot.v1":
+        return "spark_telemetry"
+    route_key = settings.route_map.get(kind)
+    if route_key and route_key in MODEL_MAP:
+        return str(getattr(MODEL_MAP[route_key][0], "__tablename__", route_key))
+    return "unrouted"
 
 
 async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) -> None:
@@ -2445,6 +2520,8 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
 
         try:
             n = await asyncio.to_thread(persist_crop_observation, payload)
+            if n:
+                write_health.mark_written(True)
             logger.info("Written %s -> vision_crop_observation rows=%s", env.kind, n)
         except Exception as exc:
             logger.error(

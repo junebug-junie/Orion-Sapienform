@@ -132,8 +132,8 @@ Order after merge (one line each):
 ```bash
 # 1. circe: build the image from a fresh worktree of main (touches no running container; ~CUDA compile)
 cd /mnt/scripts/Orion-Sapienform && git fetch origin && git worktree add --detach ../Orion-Sapienform-prism-build origin/main && ../Orion-Sapienform-prism-build/services/orion-llamacpp-host/scripts/build-prism-volta.sh
-# 2. circe: move the controller's checkout (compose + gpu_pool.yaml) to main
-cd /mnt/scripts/Orion-Sapienform && git pull --ff-only
+# 2. circe: only if the image exists, move the controller's checkout (compose + gpu_pool.yaml) to main
+docker image inspect orion-llamacpp-host-prism:0.1.0 >/dev/null && cd /mnt/scripts/Orion-Sapienform && git pull --ff-only
 # 3. athena: pull main (post-merge auto-rebuild redeploys orion-gpu-pool with the new config)
 cd /mnt/scripts/Orion-Sapienform && git pull --ff-only
 ```
@@ -142,14 +142,24 @@ No llamacpp-host container restarts: the pool starts `atlas-agent-burst` on its 
 waiting >= 1200 s). chat/metacog/fast/agent are untouched. If gpu2 is loaded with the Q4 at deploy time,
 it keeps serving Q4 until its idle unload; the following load is Bonsai.
 
-Between steps 2 and 3, agent-gpu2 loads are refused (`launch_digest_mismatch`) -- by design, gpu2 stays
-with diffusion. Running step 3 before step 1 would make the first load fail (`startup_failed`, image
+Between steps 2 and 3, agent-gpu2 loads and unloads are refused (`launch_digest_mismatch`) -- by design;
+whatever gpu2 holds at that moment stays. Diffusion's own digest does not move (pinned by a test), so
+nothing else is fenced. Keep the gap short. Running step 3 before step 1 would make the first load fail (`startup_failed`, image
 missing under `--no-build`), roll back to diffusion, and retry after the 600 s cooldown.
 
 ## Rollback
 
 Swap the two entries in `config/gpu_pool.yaml` `agent-gpu2.launch.profiles` (one-line PR), then the same
 steps 2 and 3. The image stays; the Q4 profile runs its stock binary.
+
+- It takes effect on the seat's **next load**. A seat already running Bonsai keeps it until the pool
+  unloads it (300 s idle, or 9000 s `max_hold_sec` after the load). The pool has no forced-unload verb
+  today (control verbs: lend/unlend/replay/cancel/backfill/hold/release/clear_fault/pause/resume) --
+  a follow-up worth having if a quality rollback ever needs to be immediate.
+- Second tier, if the prism image is missing or broken (reordering cannot help: both profiles use it):
+  point `atlas-agent-burst` back at `Dockerfile` / `orion-llamacpp-host:0.1.0` in
+  `docker-compose.atlas-workers.yml` with Q4 first (the `check_launch` gate enforces that pairing), then
+  steps 2 and 3.
 
 ## Post-deploy checks (an agent runs these from athena; nothing for Juniper)
 
@@ -246,7 +256,43 @@ ahead of 2026-10-01 01:27 UTC; its baseline is the 48 h checkpoint itself.
 
 ## Review findings fixed
 
-(filled after the review subagent)
+A review subagent read the full diff. No blockers. Fixed:
+
+- Finding: the probe's `/slots` idle check misses a durable run between tool steps (slots idle, seat held);
+  the probe would evict its cached prefix.
+  - Fix: the probe also reads the pool (`--pool-url`, default athena `127.0.0.1:8127`) and refuses or stops
+    while any `granted`/`recalling` lease is on agent-gpu2; it re-checks before and after every phase, and
+    work that overlapped a phase makes the run INCONCLUSIVE. Unreadable pool = refused.
+  - Evidence: `test_refuses_the_wrong_worker_or_a_busy_one[pool_leases]`, `..._inconclusive_not_pass[pool_busy_later]`.
+- Finding: the cache detector was off for the shared-prefix pair, where #27148's restore is most likely.
+  - Fix: every request is rendered and tokenized by the worker (`/apply-template` + `/tokenize`) before it
+    is sent; `cache_n` above the true token-level common prefix with any other probe prompt (+8) is a LEAK,
+    in every phase. This also replaces the guessed header/tools allowances. No computable prefix = INCONCLUSIVE.
+  - Evidence: `test_a_stale_tail_on_the_shared_prefix_pair_is_a_leak_even_unechoed`, `[no_tokenize]`.
+- Finding: an exception in a `together()` thread dropped the request silently, so a run could PASS short.
+  - Fix: `send` records every exception as an error; the summary requires records == dispatched requests.
+  - Evidence: `..._inconclusive_not_pass[error500]`, `[crash]`.
+- Finding: possibly-leaked real text written world-readable.
+  - Fix: evidence dir 0700, files 0600 (asserted in the honest-run test).
+- Finding: rollback limits undocumented (next load only; reordering cannot fix a missing image).
+  - Fix: Rollback section and README name both plus a second tier; deploy step 2 is gated on `docker image inspect`.
+- Finding: the prism image bakes its own copy of app/config, and a stock `build` skips it.
+  - Fix: README says to re-run `build-prism-volta.sh` on any wrapper/profile change for this seat; the
+    script prints the baked commit.
+- Finding: the fork runs with cwd `/app`, where ggml's backend loader could pick up stock `libggml-*`.
+  - Fix: the wrapper starts the fork with `cwd=/app/prism`.
+- Finding: the build script's sanity run used `--gpus all` (initializes chat's gpu0).
+  - Fix: `--gpus device=2`.
+- Finding: `preserve_thinking: true` reverses the bake-off without a Bonsai evidence pointer; the positive
+  `--cache-idle-slots` may not exist upstream.
+  - Fix: comments point at the M2 `cache_reuse` check and say only `false` is the mitigation.
+
+Checked and not changed:
+
+- "diffusion's launch digest also moves": it does not (diffusion evicts nothing); now pinned in
+  `test_profile_order_moves_the_launch_digest_so_pool_and_controller_deploy_together`.
+- Two-dot diff showing mesh-guardian deletions: a stale-base artifact; the branch is rebased onto current main.
+- The Dockerfile contract test is a string check by nature; the real proof is the build on circe (UNVERIFIED).
 
 ## Restart required
 

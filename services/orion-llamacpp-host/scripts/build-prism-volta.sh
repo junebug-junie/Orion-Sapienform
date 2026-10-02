@@ -35,8 +35,9 @@ docker build \
   -t "${IMAGE}" \
   .
 
+# gpu2 only (the seat's own card): never initialize CUDA on chat's gpu0 while it serves.
 echo "checking both binaries run in the final image"
-docker run --rm --gpus all --entrypoint /bin/sh "${IMAGE}" -c \
+docker run --rm --gpus device=2 --entrypoint /bin/sh "${IMAGE}" -c \
   'LD_LIBRARY_PATH=/app/prism${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} /app/prism/llama-server --version && /app/prism/llama-server --help >/dev/null'
-docker run --rm --gpus all --entrypoint /app/llama-server "${IMAGE}" --version
-echo "ok ${IMAGE}"
+docker run --rm --gpus device=2 --entrypoint /app/llama-server "${IMAGE}" --version
+echo "ok ${IMAGE} (commit $(git rev-parse --short HEAD) baked in: app, config/llm_profiles.yaml, orion)"

@@ -154,7 +154,8 @@ class LlamaCppConfig(BaseModel):
     # llama.cpp host-RAM prompt cache, the llama.cpp #27148 mitigation knobs (stage 7 spec D2).
     # Unset = the binary's defaults (8192 MiB, idle slots saved). cache_ram_mib 0 -> --cache-ram 0
     # disables the RAM cache; cache_idle_slots false -> --no-cache-idle-slots. Set only if the
-    # bleed canary reproduces (Juniper 2026-10-01: then on every multi-slot lane).
+    # bleed canary reproduces (Juniper 2026-10-01: then on every multi-slot lane). Only false is the
+    # mitigation; true emits --cache-idle-slots, which some builds lack (then the boot refuses).
     cache_ram_mib: Optional[int] = None
     cache_idle_slots: Optional[bool] = None
 

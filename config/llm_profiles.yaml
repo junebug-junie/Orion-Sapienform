@@ -2254,7 +2254,8 @@ profiles:
         reasoning_effort: "xhigh"
         # Parity with agent-flex (design doc question 3): the prompt cache misses the prior
         # assistant reply on both Qwen3.8 builds (79.4% vs 79.7% reuse), so false buys nothing
-        # Bonsai-specific. Revisit only if the 7.2 cache_n data says otherwise.
+        # Bonsai-specific. The bake-off profile used false (Prism KNOWN_ISSUES, Bonsai-demo #183);
+        # revisit with the 7.2 per-role cache_n/prompt_n reuse (PR report query M2, cache_reuse).
         preserve_thinking: true
       # Prism KNOWN_ISSUES: small output caps end generation mid-thought.
       n_predict: 16384

@@ -760,9 +760,13 @@ async def _main_async():
     hb_task = asyncio.create_task(heartbeat_loop(settings))
 
     # Create subprocess
+    # The fork runs from its own directory: ggml's backend loader also searches the cwd, and /app
+    # holds the stock image's libggml-* variants.
+    cwd = PRISM_SERVER_DIR if str(Path(cmd[0]).parent) == PRISM_SERVER_DIR else None
     process = await asyncio.create_subprocess_exec(
         *cmd,
         env=env,
+        cwd=cwd,
         stdout=None, # Inherit
         stderr=None
     )

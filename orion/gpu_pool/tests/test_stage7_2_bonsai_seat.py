@@ -160,6 +160,9 @@ def test_profile_order_moves_the_launch_digest_so_pool_and_controller_deploy_tog
     # The controller refuses a load whose digest differs from its checkout (launch_digest_mismatch):
     # this change and its rollback both need athena's pool and circe's checkout on the same commit.
     assert launch_digest(_reordered(), "agent-gpu2") != launch_digest(CFG, "agent-gpu2")
+    # Only agent-gpu2 is fenced: diffusion's digest covers its own launch and the roles IT evicts
+    # (none), so diffusion actuations keep working while athena and circe are on different commits.
+    assert launch_digest(_reordered(), "diffusion") == launch_digest(CFG, "diffusion")
     assert launch_digest(_reordered(), "agent") == launch_digest(CFG, "agent")
 
 

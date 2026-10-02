@@ -320,13 +320,23 @@ llama.cpp fork (b10750, sm_70) at `/app/prism/`. Every other worker stays on `or
   slot serves one-off agent calls.
 - **Rollback** = swap the two `profiles` entries (same image; the Q4 profile runs the stock binary). The
   edit moves agent-gpu2's launch digest, so athena's pool and circe's checkout must be on the same commit.
+  It takes effect on the seat's **next load**: a seat already running Bonsai keeps it until the pool
+  unloads it (300 s idle, or `max_hold_sec` 9000 s after load). There is no pool verb that forces an
+  unload today. If the prism image itself is missing or broken, reordering does not help (both profiles
+  use it): the second tier is pointing `atlas-agent-burst` back at `Dockerfile`/`orion-llamacpp-host:0.1.0`
+  in `docker-compose.atlas-workers.yml` with Q4 first (circe checkout + athena pool, same commit).
 - **Build first.** The lane controller starts the seat with `up --no-build`. On circe, from a worktree at
   the deployed commit: `services/orion-llamacpp-host/scripts/build-prism-volta.sh` (reads
   `LLAMACPP_IMAGE_TAG` from the `.env`, so the stock half matches the other workers).
+- **Rebuild it on every wrapper or profile change for this seat.** The image bakes `app/`, `config/` and
+  `orion/` like the stock one, but a stock `build` without `--profile agent-burst` skips it. Re-run
+  `build-prism-volta.sh` (the fork compile is layer-cached; only the copy layers rebuild).
 - **Prompt-cache knobs** (`cache_ram_mib`, `cache_idle_slots` -> `--cache-ram`, `--no-cache-idle-slots`):
   supported, unset. They fail closed if a profile sets one and the binary lacks the flag. After deploy,
   `scripts/probe_slot_bleed.py --url http://100.112.254.99:8016` runs the llama.cpp #27148 bleed canary
-  against the live seat (synthetic prompts, refuses unless the seat is Bonsai, multi-slot and idle).
+  against the live seat (synthetic prompts; refuses unless the seat is Bonsai and multi-slot, every slot is
+  idle, and the pool shows no active lease on agent-gpu2; checks cache reuse against the true token-level
+  common prefix via `/apply-template` + `/tokenize`; evidence is owner-only).
   If it reports LEAK, set `cache_idle_slots: false` on every multi-slot profile (Juniper, 2026-10-01).
 
 ---

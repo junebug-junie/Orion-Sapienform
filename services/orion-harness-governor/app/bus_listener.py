@@ -39,8 +39,10 @@ class SubstrateAppraisalUnavailableError(Exception):
 
 class FinalizeReplyDeadlineError(Exception):
     """The caller's reply budget (``HarnessRunRequestV1.reply_budget_sec``) ran out before
-    finalize could finish. Taken by the generic failed-finalize path, which replies with
-    ``draft_text`` while the caller is still waiting -- and, for a held curiosity turn,
+    finalize could finish. Caught by the generic ``except Exception`` path (not
+    HarnessFinalizeFailedError: the chain was cancelled, so its own failure artifacts and any
+    partial appraisal/reflection are not emitted -- the log line and ``grounding_status`` are
+    the trace), which replies with ``draft_text`` while the caller is still waiting -- and, for a held curiosity turn,
     while the run still holds its GPU (run a153451fe423 finalized after the hold was gone)."""
 
 

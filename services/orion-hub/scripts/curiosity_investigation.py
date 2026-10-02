@@ -585,14 +585,25 @@ def held_turn_fcc_budget_sec(turn_timeout_sec: float, reserve_sec: float) -> flo
     reserve that would leave the motor nothing is ignored rather than starving it."""
     turn = float(turn_timeout_sec)
     budget = turn - max(0.0, float(reserve_sec))
-    return budget if budget > 0 else turn
+    if budget > 0:
+        return budget
+    if reserve_sec > 0:
+        logger.warning(
+            "curiosity_held_turn_reserve_exceeds_turn turn_sec=%.0f reserve_sec=%.0f -- motor gets the whole "
+            "turn; finalize will be cut at the reply deadline and the draft returned", turn, reserve_sec,
+        )
+    return turn
 
 
 def salvage_urgent_draft(frame: Any) -> str:
-    """Orion's unfinalized draft from a `turn_error` frame (`partial_draft`), or ""."""
-    if not isinstance(frame, dict):
+    """Orion's unfinalized draft from a `turn_error` frame (`partial_draft`), or "".
+    A context-overflow frame's draft is not Orion's answer and is never salvaged."""
+    if not isinstance(frame, dict) or frame.get("context_overflow"):
         return ""
-    return str(frame.get("partial_draft") or "").strip()
+    draft = str(frame.get("partial_draft") or "").strip()
+    from orion.fcc.context_budget import is_context_overflow_text
+
+    return "" if is_context_overflow_text(draft) else draft
 
 
 def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
@@ -4059,6 +4070,9 @@ class CuriosityInvestigation:
         `False` from inside the tick, which already holds `_run_lock`
         (asyncio.Lock is not re-entrant)."""
         now = time.monotonic()
+        # durable-runs' attempt timer is already running: a held turn's limit counts from
+        # receipt, not from when `_generate` starts (hold fence, prompt read, lock wait).
+        received = now
         key = f"{request.run_id}:{request.correlation_id}"
         if request.gpu_lease is not None:
             # Stage 4: the pool is the fence. Refuse a hold that is gone, re-granted (stale
@@ -4101,7 +4115,7 @@ class CuriosityInvestigation:
                     # A hold's role (e.g. agent-gpu2) is not a route: FCC names the hold's
                     # work-class route and the gateway attaches every call to the hold.
                     **({"fcc_model_label": f"{FCC_LLAMACPP_MODEL_PREFIX}{GPU_LEASE_ROUTE}",
-                        "timeout_sec": request.timeout_sec}
+                        "timeout_sec": max(1.0, request.timeout_sec - (time.monotonic() - received))}
                        if request.gpu_lease is not None else {}),
                     **({"gpu_lease": request.gpu_lease} if request.gpu_lease is not None else {}),
                     **({"urgent": True} if request.urgent is not None else {}),

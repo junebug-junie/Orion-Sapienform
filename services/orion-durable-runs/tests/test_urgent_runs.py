@@ -661,3 +661,34 @@ def test_finish_detail_marks_a_salvaged_urgent_draft():
     assert detail["finding_text"] == "Orion's partial verdict"
     plain = finish_detail({**_state(urgent=True), "text": "done", "debug": {}})
     assert "draft_salvaged" not in plain
+
+
+def test_turn_limit_sent_to_hub_is_clamped_to_the_run_deadline():
+    # durable-runs' attempt timer is min(brief.timeout_sec, deadline - now); Hub must be told the
+    # same, or its finalize reserve lines up with a release that already happened.
+    from app.graph import attempt_timeout_sec
+
+    state = {**_state(urgent=True), "admission": {"deadline_at": (NOW + timedelta(seconds=600)).isoformat()}}
+    assert attempt_timeout_sec(state, 900.0, now=NOW) == 600.0
+    assert attempt_timeout_sec({**state, "admission": {}}, 900.0, now=NOW) == 900.0
+    late = {**state, "admission": {"deadline_at": (NOW - timedelta(seconds=5)).isoformat()}}
+    assert attempt_timeout_sec(late, 900.0, now=NOW) == 1.0
+
+    sent: list[CuriosityTurnRequestV1] = []
+    near = {**state, "admission": {"deadline_at": (datetime.now(timezone.utc) + timedelta(seconds=300)).isoformat()}}
+    asyncio.run(make_nodes(_turn_deps(sent))["harness_turn"](near))
+    assert 290.0 <= sent[0].timeout_sec <= 300.0
+
+
+def test_salvaged_draft_is_not_journaled_as_a_finished_investigation():
+    journaled: list[Any] = []
+    deps = _turn_deps([])
+
+    async def journal(entry):
+        journaled.append(entry)
+        return entry.entry_id
+
+    deps.publish_journal = journal
+    state = {**_state(urgent=True), "text": "half a verdict", "debug": {"draft_salvaged": True}}
+    assert asyncio.run(make_nodes(deps)["journal"](state)) == {"journal_entry_id": None}
+    assert journaled == []

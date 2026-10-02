@@ -118,3 +118,26 @@ def test_urgent_error_frame_carries_the_whole_draft():
     # Chat frames keep their old cap.
     chat = turn_orchestrator._harness_error_frame(_incident_run(), correlation_id="c")
     assert len(chat["partial_draft"]) == turn_orchestrator._PARTIAL_DRAFT_MAX_LEN
+
+
+def test_context_overflow_draft_is_never_salvaged():
+    assert ci.salvage_urgent_draft({"partial_draft": DRAFT, "context_overflow": True}) == ""
+    assert ci.salvage_urgent_draft({"partial_draft": DRAFT}) == DRAFT.strip()
+
+
+def test_held_turn_limit_counts_from_receipt(monkeypatch):
+    # durable-runs' timer started before Hub got the request: time spent fencing the hold
+    # comes out of the limit handed to _generate.
+    from unittest.mock import AsyncMock
+
+    from orion.schemas.durable_run import CuriosityTurnRequestV1
+
+    async def slow_fence(*_a, **_kw):
+        await asyncio.sleep(0.3)
+    monkeypatch.setattr(ci, "validate_hold_ref", slow_fence)
+    loop = _loop(_CortexBus(), kickoff_via_cortex=True)
+    loop._generate = AsyncMock(return_value=("grounded finding", {}))
+    req = CuriosityTurnRequestV1(run_id="a153451fe423", correlation_id="c", prompt="p", timeout_sec=900,
+                                 gpu_lease=_ref())
+    asyncio.run(loop._turn_result_for(req, hold_lock=False))
+    assert 899.0 < loop._generate.await_args.kwargs["timeout_sec"] <= 899.75

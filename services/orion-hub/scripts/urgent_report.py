@@ -101,7 +101,6 @@ def compose_urgent_report(
             flags.append(
                 f"FLAG: {report_flag} — Orion did not leave a usable IncidentReport; their own words are below."
             )
-
     elif kind == "failed":
         title = f"Urgent investigation failed — {label}"
         flags.append(f"investigation failed: {reason or 'unknown'}")

@@ -50,7 +50,7 @@ def test_held_turns_keep_their_timeout_and_do_not_hold_the_legacy_lock(monkeypat
 
         async def generate(prompt, corr, **kwargs):
             entered.add(corr)
-            assert kwargs["timeout_sec"] == 42
+            assert 41.0 < kwargs["timeout_sec"] <= 42  # counted from receipt
             assert "resource_lease" not in kwargs
             if len(entered) == 2:
                 both.set()

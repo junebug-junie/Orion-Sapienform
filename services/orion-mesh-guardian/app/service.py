@@ -284,9 +284,7 @@ class MeshGuardianService:
         return self._crash_loops.observe(counts, now), info
 
     async def _check_bus_redis(self, now: float) -> tuple[list[StabilityAlert], object]:
-        redis = self.bus.redis
-        if redis is None:
-            return [], "not_connected"
+        redis = self.bus.redis  # raises RuntimeError when not connected
         stats = await redis.info("stats")
         total = int(stats.get("client_output_buffer_limit_disconnections", 0))
         alerts = slow_consumer_alert("bus-redis", self._bus_disconnects.observe(total), total)
@@ -308,20 +306,26 @@ class MeshGuardianService:
         alerts = snapshot_alerts(
             "falkordb", persistence, save_config=await _save_config(self._falkordb), now=now
         )
-        result = await self._falkordb.execute_command(
-            "GRAPH.RO_QUERY", self.settings.falkordb_bus_graph, "MATCH (c:Channel) RETURN count(c)"
-        )
-        channel_nodes = int(result[1][0][0]) if result and len(result) > 1 and result[1] else 0
-        # The live repo checkout (mounted at /repo), not the copy baked into
-        # this image: a stale baked catalog is the exact failure this detects.
-        repo_catalog = Path(self.settings.orion_repo_root) / "orion" / "bus" / "channels.yaml"
-        catalog_size = len(load_channel_catalog_names(repo_catalog if repo_catalog.is_file() else None))
-        alerts += graph_inflation_alert(self.settings.falkordb_bus_graph, channel_nodes, catalog_size)
-        return alerts, {
-            "bgsave_sec": persistence.get("rdb_current_bgsave_time_sec"),
-            "channel_nodes": channel_nodes,
-            "catalog": catalog_size,
-        }
+        info: dict[str, object] = {"bgsave_sec": persistence.get("rdb_current_bgsave_time_sec")}
+        # Own try: a missing/renamed graph or a query timeout must not discard
+        # the snapshot alerts above (the stuck-save detector is the critical one).
+        try:
+            result = await self._falkordb.execute_command(
+                "GRAPH.RO_QUERY", self.settings.falkordb_bus_graph, "MATCH (c:Channel) RETURN count(c)"
+            )
+            channel_nodes = int(result[1][0][0]) if result and len(result) > 1 and result[1] else 0
+            # The live repo checkout (mounted at /repo), not the copy baked into
+            # this image: a stale baked catalog is the exact failure this detects.
+            repo_catalog = Path(self.settings.orion_repo_root) / "orion" / "bus" / "channels.yaml"
+            catalog_size = len(
+                await asyncio.to_thread(load_channel_catalog_names, repo_catalog if repo_catalog.is_file() else None)
+            )
+            alerts += graph_inflation_alert(self.settings.falkordb_bus_graph, channel_nodes, catalog_size)
+            info.update(channel_nodes=channel_nodes, catalog=catalog_size)
+        except Exception as exc:
+            info["graph"] = f"error:{type(exc).__name__}"
+            logger.warning("stability graph-inflation check failed: %s", exc)
+        return alerts, info
 
 
 async def _save_config(redis) -> str:
@@ -341,13 +345,19 @@ async def _docker_restart_counts() -> dict[str, int]:
     if not ids:
         return {}
     proc = await asyncio.create_subprocess_exec(
-        "docker", "inspect", "--format", "{{.Name}} {{.RestartCount}}", *ids,
+        "docker", "inspect", "--format", "{{.Id}} {{.Name}} {{.RestartCount}}", *ids,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     out, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
+    return _parse_restart_counts(out.decode())
+
+
+def _parse_restart_counts(text: str) -> dict[str, int]:
+    """``<id> /<name> <count>`` lines -> {"<name>@<id12>": count}. Keyed by id
+    too, so a container recreated under the same name starts a new history."""
     counts: dict[str, int] = {}
-    for line in out.decode().splitlines():
-        name, _, count = line.strip().rpartition(" ")
-        if name and count.isdigit():
-            counts[name.lstrip("/")] = int(count)
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[2].isdigit():
+            counts[f"{parts[1].lstrip('/')}@{parts[0][:12]}"] = int(parts[2])
     return counts

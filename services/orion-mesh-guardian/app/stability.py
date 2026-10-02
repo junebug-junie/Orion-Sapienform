@@ -52,8 +52,9 @@ class CrashLoopTracker:
 
     def observe(self, restart_counts: dict[str, int], now: float) -> list[StabilityAlert]:
         alerts: list[StabilityAlert] = []
-        for name, count in restart_counts.items():
-            samples = self._samples.setdefault(name, deque())
+        for key, count in restart_counts.items():
+            name = key.split("@", 1)[0]
+            samples = self._samples.setdefault(key, deque())
             if samples and count < samples[-1][1]:
                 samples.clear()
             samples.append((now, count))

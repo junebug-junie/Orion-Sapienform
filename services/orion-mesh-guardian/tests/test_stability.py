@@ -7,7 +7,7 @@ import pytest
 
 from app import service as service_module
 from app.attention import AttentionPublisher
-from app.service import MeshGuardianService
+from app.service import MeshGuardianService, _parse_restart_counts, _save_config
 from app.settings import Settings
 from app.stability import (
     CRASH_LOOP_WINDOW_SEC,
@@ -189,9 +189,13 @@ class TestServiceCycle:
         alerts = asyncio.run(guardian.run_stability_checks(T0))
 
         # Docker and the FalkorDB graph query both fail; the bus check must
-        # still run and report its stuck save.
-        assert [(a.subject, a.kind) for a in alerts] == [("bus-redis", "snapshot_stuck")]
-        assert [e["service_id"] for e in attention.events] == ["bus-redis"]
+        # still run, and FalkorDB's own stuck save must survive its graph
+        # query failing (review finding: one try used to discard both).
+        assert [(a.subject, a.kind) for a in alerts] == [
+            ("bus-redis", "snapshot_stuck"),
+            ("falkordb", "snapshot_stuck"),
+        ]
+        assert [e["service_id"] for e in attention.events] == ["bus-redis", "falkordb"]
 
     def test_alerts_become_attention_cards_once(self, monkeypatch) -> None:
         stuck = {"rdb_bgsave_in_progress": 1, "rdb_current_bgsave_time_sec": 138_655, "rdb_last_bgsave_status": "ok"}
@@ -235,3 +239,41 @@ class TestAttentionDeliveryIsChecked:
         with caplog.at_level(logging.ERROR, logger="orion.mesh.guardian.attention"):
             publisher.publish_transition(service_id="svc", heartbeat_name="stability", event={"context": {"event": "x"}})
         assert "NOT delivered" not in caplog.text
+
+
+class TestCollectorParsing:
+    def test_restart_counts_keyed_by_name_and_id(self) -> None:
+        text = (
+            "e653466f3601aaaa /orion-athena-bus-mirror 581\n"
+            "1234567890abcdef /orion-athena-hub 0\n"
+            "garbage line\n"
+        )
+        assert _parse_restart_counts(text) == {
+            "orion-athena-bus-mirror@e653466f3601": 581,
+            "orion-athena-hub@1234567890ab": 0,
+        }
+
+    def test_recreated_container_is_a_new_history(self) -> None:
+        tracker = CrashLoopTracker()
+        tracker.observe({"svc@old": 10}, T0)
+        # Same name, new id, count already at the old level: not 3 new restarts.
+        assert tracker.observe({"svc@new": 12}, T0 + 60) == []
+
+    def test_crash_loop_card_names_the_container_not_the_id(self) -> None:
+        tracker = CrashLoopTracker()
+        tracker.observe({"svc@abc": 0}, T0)
+        alerts = tracker.observe({"svc@abc": 3}, T0 + 600)
+        assert alerts[0].subject == "svc"
+        assert alerts[0].key == "crash_loop:svc"
+
+    def test_save_config_accepts_str_and_bytes(self) -> None:
+        class _Cfg:
+            def __init__(self, value):
+                self.value = value
+
+            async def config_get(self, key):
+                return self.value
+
+        assert asyncio.run(_save_config(_Cfg({"save": "3600 1"}))) == "3600 1"
+        assert asyncio.run(_save_config(_Cfg({b"save": b"3600 1"}))) == "3600 1"
+        assert asyncio.run(_save_config(_Cfg({"save": ""}))) == ""

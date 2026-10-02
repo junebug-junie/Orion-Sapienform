@@ -217,6 +217,6 @@ SELECT count(*) FILTER (WHERE (field_json->'node_vectors'->'node:substrate.visio
 
 ## PR link
 
-(filled in after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2483
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

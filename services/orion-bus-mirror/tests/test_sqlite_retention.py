@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 import pytest
 
-from app.main import _ensure_schema, _prune_old_bus_events
+from app import main as main_module
+from app.main import _ensure_schema, _prune_old_bus_events, _run_sqlite_retention_loop
 
 
 async def _insert_row(conn: aiosqlite.Connection, *, timestamp_iso: str) -> None:
@@ -86,3 +88,41 @@ class TestPruneOldBusEvents:
             assert deleted == 4
             cursor = await conn.execute("SELECT count(*) FROM bus_events")
             assert (await cursor.fetchone())[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_prunes_across_multiple_batches(self) -> None:
+        async with aiosqlite.connect(":memory:") as conn:
+            await _ensure_schema(conn)
+            now = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+            for hours_ago in range(25, 32):
+                await _insert_row(conn, timestamp_iso=(now - timedelta(hours=hours_ago)).isoformat())
+            await _insert_row(conn, timestamp_iso=(now - timedelta(hours=1)).isoformat())
+
+            deleted = await _prune_old_bus_events(conn, retention_hours=24.0, now=now, batch_size=3)
+
+            assert deleted == 7
+            cursor = await conn.execute("SELECT count(*) FROM bus_events")
+            assert (await cursor.fetchone())[0] == 1
+
+
+class TestRetentionLoop:
+    @pytest.mark.asyncio
+    async def test_prunes_immediately_on_start_not_after_first_interval(self, monkeypatch) -> None:
+        # Regression: sleep-first meant a process restarting more often than
+        # the interval never pruned at all (live 2026-10-02: 8 days of rows,
+        # 30.5GB file, against a 24h retention).
+        monkeypatch.setattr(main_module.settings, "MIRROR_SQLITE_PRUNE_INTERVAL_SEC", 3600.0)
+        async with aiosqlite.connect(":memory:") as conn:
+            await _ensure_schema(conn)
+            await _insert_row(conn, timestamp_iso=(datetime.now(timezone.utc) - timedelta(days=8)).isoformat())
+
+            task = asyncio.create_task(_run_sqlite_retention_loop(conn))
+            for _ in range(50):
+                await asyncio.sleep(0.01)
+                cursor = await conn.execute("SELECT count(*) FROM bus_events")
+                if (await cursor.fetchone())[0] == 0:
+                    break
+            task.cancel()
+
+            cursor = await conn.execute("SELECT count(*) FROM bus_events")
+            assert (await cursor.fetchone())[0] == 0

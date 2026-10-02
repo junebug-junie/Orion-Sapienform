@@ -45,7 +45,11 @@ async def _ensure_schema(conn: aiosqlite.Connection) -> None:
 
 
 async def _prune_old_bus_events(
-    conn: aiosqlite.Connection, *, retention_hours: float, now: Optional[datetime] = None
+    conn: aiosqlite.Connection,
+    *,
+    retention_hours: float,
+    now: Optional[datetime] = None,
+    batch_size: int = 20000,
 ) -> int:
     """Deletes ``bus_events`` rows older than ``retention_hours``, returns the
     number of rows deleted. Separated from the sleep-loop wrapper below so
@@ -63,11 +67,26 @@ async def _prune_old_bus_events(
     roughly 2x the file's size in free disk space during the operation --
     not something to run unattended inside this process). See README for the
     exact command.
+
+    Deletes in ``batch_size`` chunks, committing and yielding between them:
+    this shares ``conn`` with the message loop, and one multi-million-row
+    DELETE would stall every insert behind it long enough for Redis to cut
+    the pub/sub connection (client-output-buffer-limit). Rows are inserted in
+    time order, so a rowid-ordered scan finds the old ones first.
     """
     cutoff = ((now or datetime.now(timezone.utc)) - timedelta(hours=retention_hours)).isoformat()
-    cursor = await conn.execute("DELETE FROM bus_events WHERE timestamp < ?", (cutoff,))
-    await conn.commit()
-    return cursor.rowcount
+    total = 0
+    while True:
+        cursor = await conn.execute(
+            "DELETE FROM bus_events WHERE rowid IN "
+            "(SELECT rowid FROM bus_events WHERE timestamp < ? ORDER BY rowid LIMIT ?)",
+            (cutoff, batch_size),
+        )
+        await conn.commit()
+        total += cursor.rowcount
+        if cursor.rowcount < batch_size:
+            return total
+        await asyncio.sleep(0)
 
 
 async def _run_sqlite_retention_loop(conn: aiosqlite.Connection) -> None:
@@ -76,8 +95,11 @@ async def _run_sqlite_retention_loop(conn: aiosqlite.Connection) -> None:
     ``MIRROR_SQLITE_RETENTION_HOURS`` docstring for the incident history
     (98GB once, 4.4GB and climbing again as of this patch).
     """
+    # Prune first, then sleep: with sleep-first, a process that never lives a
+    # full interval never prunes. Live 2026-10-02: the mirror was restarting
+    # every ~20 min against a 3600s interval, so rows dated back 8 days and
+    # the file reached 30.5GB.
     while True:
-        await asyncio.sleep(settings.MIRROR_SQLITE_PRUNE_INTERVAL_SEC)
         try:
             deleted = await _prune_old_bus_events(conn, retention_hours=settings.MIRROR_SQLITE_RETENTION_HOURS)
             if deleted:
@@ -86,6 +108,7 @@ async def _run_sqlite_retention_loop(conn: aiosqlite.Connection) -> None:
             # an unhandled exception here would otherwise die silently (nothing
             # awaits this task directly) instead of just skipping one prune cycle.
             logger.warning("bus_mirror sqlite retention prune failed: {}", exc)
+        await asyncio.sleep(settings.MIRROR_SQLITE_PRUNE_INTERVAL_SEC)
 
 
 def _build_graph_writer() -> Optional[BusSynapticGraphWriter]:
@@ -99,7 +122,9 @@ def _build_graph_writer() -> Optional[BusSynapticGraphWriter]:
         logger.error("MIRROR_GRAPH_ENABLED=true but FALKORDB_URI is empty -- graph writer disabled")
         return None
     client = RedisGraphQueryClient(uri=settings.FALKORDB_URI, graph_name=settings.FALKORDB_BUS_GRAPH)
-    return BusSynapticGraphWriter(client, alpha=settings.MIRROR_GRAPH_EWMA_ALPHA)
+    writer = BusSynapticGraphWriter(client, alpha=settings.MIRROR_GRAPH_EWMA_ALPHA)
+    writer.ensure_indexes()
+    return writer
 
 
 async def _record_graph_event(

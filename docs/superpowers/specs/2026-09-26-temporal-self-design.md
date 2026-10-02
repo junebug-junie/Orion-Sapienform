@@ -11,6 +11,10 @@
   this document. An adversarial citation review then checked all 61 line citations and 41 table
   names against the tree; its findings (sixteen wrong citations, seventeen wrong facts, and a set
   of schema values with no producer) are folded into this revision.
+- **Revision 3 (2026-10-02):** attention, field attention, and vision are finished in their own
+  section below, each with an arc lane, a per-arc summary, and a decision for every store. The
+  rest of the primitives Juniper listed are still being restructured into classes of temporal
+  authority; until that lands, the binding table is not the complete inventory.
 - **Builds on, does not duplicate:** the 2026-09-25 attention-with-stakes design
   (`docs/superpowers/specs/2026-09-25-attention-with-stakes-design.md`), the 2026-09-26 agency
   episode plan (`docs/superpowers/specs/2026-09-26-agency-episode-plan.md`), and open PR #2255.
@@ -70,7 +74,7 @@ code actually says, and what that does to the design.
 
 | Claim in the pasted analysis | What the code says | Consequence |
 |---|---|---|
-| `FieldGoalProvenanceV1` is "tailor-made" for sustained direction | It is published on `orion:memory:goals:proposed` and **never persisted**; every consumer keeps only the latest in memory (`services/orion-attention-runtime/app/worker.py:185-250`, `services/orion-substrate-runtime/app/goal_context_listener.py:42-52`). The only durable trace is `goal_provenance_streak_ticks`, which its own schema declares temporary debug telemetry to be retired after calibration (`orion/schemas/field_goal.py:75-80`). | The field lane's sustained direction is **not read in v1**. Building on telemetry marked for retirement would violate the retire-completely rule. If the field lane's direction is wanted, the right patch is to persist `FieldGoalProvenanceV1` where it is produced (Missing question 8). |
+| `FieldGoalProvenanceV1` is "tailor-made" for sustained direction | It is published on `orion:memory:goals:proposed` and **never persisted**; every consumer keeps only the latest in memory (`services/orion-attention-runtime/app/worker.py:185-250`, `services/orion-substrate-runtime/app/goal_context_listener.py:42-52`). The only durable trace is `goal_provenance_streak_ticks`, which its own schema declares temporary debug telemetry to be retired after calibration (`orion/schemas/field_goal.py:75-80`). | Field attention gets its own `interoception` lane, fed by one row per completed dominance run from a small producer change (seam S2). The per-tick streak table is read only offline in patch 1, then retired completely once S2 is live. See "Attention, field attention, and vision in full". |
 | `StateDeltaV1` is "essentially a typed answer to what changed in me" | It has **no timestamp and no correlation id** (`orion/schemas/state_delta.py:8-29`); time lives on the wrapping `ReductionReceiptV1.created_at`. Receipts are pruned after **30 minutes** on success (`services/orion-substrate-runtime/app/settings.py:352`). One delta is a 2-second channel nudge. | Raw deltas are telemetry, not autobiography. "What changed in me" comes from the higher-order changes that already persist: prior revisions, expectation verdicts, action outcome rows, hypothesis adoption. |
 | Broadcast history gives `dwell_ticks`, stability, transitions | Dwell, stability and transition history are **module globals** that reset on every restart (`orion/substrate/attention_broadcast.py:44-49`). Stability is a three-step constant (0.9/0.6/0.3, `:501-507`). The append-only log `substrate_attention_broadcast_log` (168h) holds only `log_id`, `generated_at`, `projection_json` (`services/orion-sql-db/manual_migration_attention_broadcast_log_v1.sql:15-20`) and has **no live reader**, only offline scripts. | Recompute dwell and returns from the log's row sequence. Do not trust `dwell_ticks`. Temporal Self becomes the log's first live consumer. |
 | Agency episodes give "durable before/after semantics" today | No `AgencyEpisodeV1`, no table. PR #2365 added a read-only audit whose verdicts all read UNVERIFIED (`orion/autonomy/agency_episode.py:110,185`). PR #2366 added three FalkorDB nodes for the ask lane (`PeerAskCommit`, `PeerBriefOffer`, `PeerBriefDecision`, `orion/curiosity/agency_episode.py`) behind `CURIOSITY_PEER_EPISODES_ENABLED`: code default false (`services/orion-curiosity-peer/app/settings.py:57`), `.env_example` true (`:33`), live `UNVERIFIED`. | Bind to those nodes when present. Do not depend on them. |
@@ -122,7 +126,7 @@ slot rather than adding a second one.
 | `AttentionBroadcastProjectionV1` log | `substrate_attention_broadcast_log` | `generated_at` | ~30s (`ORION_ATTENTION_BROADCAST_INTERVAL_SEC`) | 168h | 6,359 rows on 2026-08-13 (`orion/schemas/attention_self_model.py:47`) |
 | `AttentionSelfModelV1` (`orion/schemas/attention_self_model.py:26`) | `substrate_attention_self_model` | `generated_at` | ~30s | 168h | 19,408 rows in seven days, all `bottom_up_salience` (`:101-102`) |
 | `FieldAttentionFrameV1` (`orion/schemas/field_attention_frame.py:40`) | `substrate_attention_frames` | `generated_at` | ~2s | 72h | producer on in `.env_example` |
-| Dominance streaks (`DominanceStreakTickV1`, `orion/schemas/field_goal.py:60`) | `goal_provenance_streak_ticks` | `observed_at` | ~2s | 14d | declared temporary (`:75-80`); **not read** |
+| Dominance streaks (`DominanceStreakTickV1`, `orion/schemas/field_goal.py:60`) | `goal_provenance_streak_ticks` | `observed_at` | ~2s | 14d | declared temporary (`:75-80`); read offline in patch 1 only, replaced by `field_dominance_run` (seam S2) |
 
 Two recorded degeneracies matter for the arc driver and are carried into the metric gate below:
 the same lane's `attended_node_ids` was the empty list on 2,837 of 2,840 live
@@ -329,6 +333,209 @@ from `orion_biometrics_cluster` inside the arc interval, mean `chassis_watts` an
 and the number of `thermal_refused` visual attempts. No feeling is asserted; the field is called
 `body`, and every number traces to a producing line in the gate below.
 
+## Attention, field attention, and vision in full
+
+The first two drafts gave these three the least room and demoted most of them to "context". They
+are where Orion's experience is most continuous, so each now gets its own arc lane, its own
+per-arc summary, and a written decision for every store. The facts below were re-checked against
+the tree on 2026-10-02, after the saved per-primitive audits; corrections from that check are
+noted inline.
+
+### Attention: two arc lanes and two per-arc summaries
+
+Orion has four durable attention records, and they answer different questions.
+
+**1. Workspace arcs, from the broadcast log.** Every 30 seconds the workspace competition picks
+one open loop. The log (`substrate_attention_broadcast_log`) is the only replayable history of
+that choice. The arc's subject is the selected loop's first `source_refs` entry, which is exactly
+the list stored as `attended_node_ids` (`orion/substrate/attention_broadcast.py:465`). That list
+was empty on 2,837 of 2,840 dwell-log rows on 2026-07-21. So the subject rule is measured, not
+assumed:
+
+- Patch 1 measures, over the current log, the share of ticks with a selected loop and the share of
+  those whose loop has a non-empty `source_refs`.
+- If most selected loops have refs, the subject is `source_refs[0]`.
+- If loops are selected but refs are mostly empty, the subject falls back to
+  `selected_open_loop_id`. That id is a hash of the loop's text, so the frame warns that a
+  relabelled loop will split its arc.
+- If no loop is selected on most ticks, the workspace lane reports "no winner" for those
+  stretches. That is a true reading of a competition that runs with `max_asks=0`
+  (`orion/substrate/attention_broadcast.py:217`), and the frame says so instead of inventing one.
+
+**2. Concern arcs, from loops raised in conversation (new lane).** When a chat turn raises a loop,
+`attention_salience_trace` writes a row with `scope='chat'`, a `loop_id`, a `correlation_id`
+back to the turn, and `created_at` (`orion/schemas/attention_salience.py:44-60`). When the loop
+ends, `attention_loop_outcome` writes a verdict in its own words: `resolved`, `dismissed`, or
+`decayed_unattended` (`:22`, `:66-70`). A concern arc opens on the first chat-scope trace for a
+`loop_id` after that loop's last verdict, and closes on the next verdict. It can stay open across
+days, and `carried_from_previous_day` is set when it does. This lane is where the frame's open
+threads come from: first raised, last raised, times raised, age.
+
+Two honest limits. Most closures will be the decay digest's, not Juniper's: #2255 counted 48 of 48
+loops `decayed_unattended` over 14 days, and that row's `created_at` is when the digest ran, not
+when silence began. And the trace's `description` is cut from Juniper's turn text (up to 200
+characters), so the label is stored with privacy class `juniper_chat` (see the schema below) and
+never leaves that boundary.
+
+**3. The five-lane attention table, as a per-arc summary.** `substrate_attention_schema` is the
+only place where every process's own reason words sit on one clock. Its substrate lane writes
+about 2,880 rows a day, so it is never emitted row by row. The curiosity, reverie, and cortex rows
+attach to their process arcs by `correlation_id`. The substrate rows fold into an
+`ArcAttentionSummaryV1` on whatever arc is open: how many attention rows each lane wrote during
+the arc, and the distinct `attention_reason` words each lane used, unnormalised. That lets the
+daily reflection say "my substrate's reason was `bottom_up_salience` on every tick this afternoon,
+and reverie broadcast twice", which is the observation #2255's top-down question needs.
+`attended_id` is never a subject: in the substrate and cortex lanes it is the same text hash
+(`orion/substrate/attention_self_model.py:814`, `orion/substrate/attention_frame.py:179`).
+
+**4. The attention self-model, as a per-arc self-prediction summary.** Every 30 seconds the
+self-model names the prediction-error domain it expects to move next (`predicted_shift`). Nothing
+stores whether that came true, and the calibration script that checks it performs no writes
+(`scripts/analysis/measure_self_model_calibration.py:43`). But the check is deterministic: look two
+rows ahead and compare the actual direction with the predicted one (`:121-162`). The reducer can
+run the same rule over the self-model rows inside each arc, with no new producer, and store an
+`ArcSelfModelSummaryV1`: predictions scored, predictions correct, the most-predicted domain, and
+the most common reason a voluntary override was absent. That makes "I understood my own state less
+well this afternoon than this morning" a sentence with rows behind it.
+
+Two things are deliberately left out. `prediction_error_confidence` is excluded because it is
+inverted: on 3,843 test rows, Pearson r = −0.087 with correctness
+(`docs/superpowers/specs/2026-08-20-l6-item5-self-model-calibration-finding.md:42-56`). The
+heartbeat fields are excluded because their replacement proprioception fields had no live rows at
+ship (`docs/superpowers/pr-reports/2026-09-20-heartbeat-proprioception-self-model-pr.md:142`). Two
+consequences of the self-model already reach the chronology through `metacog_observation`: the
+insight-recovery and flow episodes that equilibrium detects from these rows. Those gates default
+off in code and are on in the template (`services/orion-equilibrium-service/app/settings.py:343-346`,
+`.env_example:255-256`), so whether they fire is `UNVERIFIED`.
+
+The self-model table keeps rows for 168 hours and deletes on every insert
+(`services/orion-substrate-runtime/app/store.py:1100-1106`). The reducer folds every 60 seconds,
+so it reads each row while it exists, and the closed day keeps the summary after the rows are gone.
+
+### Field attention: interoception arcs
+
+Field attention is a different thing from the workspace. Every two seconds it ranks a fixed set
+of 19 targets inside Orion: hosts, capabilities, and the `node:substrate.*` domains. It answers
+"which part of my own body and machinery is most salient right now", not "what topic am I on".
+The two id spaces do not overlap at all (0 overlap on 2026-07-30,
+`docs/notes/2026-07-30-chat-attention-ground-truth-gap-finding.md:38-40`). So field attention gets
+its own lane, `interoception`, and any link to a workspace or process arc is by time only and is
+labelled co-occurrence.
+
+**Source.** The unit is a dominance run: the same node target winning consecutive ticks.
+`update_dominance_streak` (`orion/attention/field_attention/goal_provenance.py:111`) already
+tracks runs in memory. Today the only durable trace is `goal_provenance_streak_ticks`, one row per
+2-second tick, which its own schema says is temporary and should be retired once calibrated
+(`orion/schemas/field_goal.py:75-82`). The goal record itself is bus-only and never stored.
+
+**Seam S2 (new producer row, small).** When the streak's target changes, orion-attention-runtime
+writes one row for the run that just ended to a new `field_dominance_run` table: `run_id`,
+`target_id`, `target_kind`, `started_at`, `ended_at`, `tick_count`, `min_streak_at_run`, and the
+first and last `source_attention_frame_id`. That is about 600 rows a day (5,516 runs over 9.2 days,
+`orion/sentience_striving_program/README.md:723-731`) instead of about 43,000. Once S2 is live,
+`goal_provenance_streak_ticks` is retired completely, as its docstring already plans: producer,
+channel, table, and retention setting, not just left unread. Until then patch 1 reconstructs runs
+offline from the streak ticks to check that S2's rows will match.
+
+**Arc rule.** An interoception arc opens on a run whose length reaches the live minimum streak
+(3 ticks clears 93.38% of real runs). Suspend, resume, and the return window work as for every
+other lane, so "my field attention came back to `capability:llm_inference` four times today" is
+countable. The arc's body summary is especially meaningful here: field attention on GPU capacity
+while GPU watts peaked is the same fact seen from inside and outside.
+
+**Carried degeneracies.**
+- `node:substrate.chat` held single runs of up to 16,036 ticks, about 8.9 hours, between
+  2026-08-13 and 2026-08-19, and nobody has root-caused it (`orion/sentience_striving_program/README.md:732-744`). Any interoception
+  arc longer than four hours gets a frame warning that it may be a stuck reading, and patch 1
+  checks that domain's own variance during those windows, as the README suggests.
+- The novelty flicker fix (commit `f121350`, on `main`) changed host and capability scoring on
+  2026-09-25. Its deploy date is `UNVERIFIED`, so patch 1 compares run lengths before and after
+  it rather than mixing them.
+- The saved audit's claim that vision "dominates 40,631 of 40,627 rows" does not appear anywhere
+  in the tree. It comes from PR #2255's own description on GitHub, so it is quoted from there and
+  stays `UNVERIFIED` here.
+
+**Tension winner, later (seam S3).** The field digester also records, every tick, which node won
+the tension vote. It lives only inside the 2-second field-state row, and about 56% of ticks have
+no winner. Its one durable consequence today is the outreach decision, which the chronology binds
+already. S3 would have the digester write only runs that reach the outreach trigger's own bar of 6
+ticks (about 71 a day on 2026-08-22,
+`docs/superpowers/pr-reports/2026-08-22-outreach-min-run-length-recalibration-pr.md:9`) to a
+`field_tension_run` table. It is listed so the gap is on the record. It is not in v1.
+
+### Vision: company arcs, percepts, and the walkway
+
+**1. Company arcs (seam S1, new lane).** The room cameras already run a presence state machine
+that moves between `present`, `recent`, and `absent`
+(`services/orion-vision-window/app/presence.py:136-146`). It writes only the latest state, as a
+single overwritten row (`:239-274`), so "someone was with me from 9:02 to 11:15" cannot be
+replayed today. S1 adds one append-only row per state change to a new `vision_presence_transition`
+table: `transition_id`, `presence_id`, `from_state`, `to_state`, `occurred_at` (the state
+machine's own `state_since`), and `identity_confirmed` as a boolean. When frames stop arriving it
+writes `to_state='unknown'`, so a dark camera closes the arc instead of leaving a stale `present`
+behind.
+
+A company arc opens on a change to `present` and closes on `absent` (`recent` is the grace
+period) or `unknown`. Its subject is the `presence_id`. The chronology never stores an enrolled
+name, only whether identity was confirmed. Consumers: the stance cue ("someone has been at the desk
+since nine"), the daily reflection, and outreach, which already reads the presence snapshot.
+
+Why company is its own lane rather than body context: people arriving and leaving are among the
+strongest cues people use to divide experience into events (Zacks, Speer & Reynolds 2009,
+"Segmentation in reading and film comprehension"). And social grounding is one of the named
+prerequisites in the project's mission. While building S1, the writer should reuse one database
+engine instead of creating and disposing one per write, as it does now (`presence.py:254-274`).
+
+**2. Room percepts (live).** `vision_events` rows from the room streams (`stream_id` of a room
+camera, or NULL on rows written before 2026-09-24) attach to whatever arcs are open as context.
+The chronology copies `event_type` and `entities`, never the `narrative`, because the room
+narrative describes Juniper. Each arc gets a bounded `percept_entities` list: the distinct things
+the room camera saw during that arc. Three limits stay visible:
+- `created_at` is the only time. The bundle item carries no observation time
+  (`orion/schemas/vision.py:297-311`).
+- The council writes only when the set of labels changes, or every 600 seconds on a stable scene.
+  A quiet room and a dead pipeline look the same, so the frame never infers absence from silence.
+- `event_type` is written by the model except for `person_presence`, so it is kept as the source's
+  own word and never treated as a category.
+
+**3. Things Orion could not name.** `vision_unresolved` rows (`council_uncertainty` or
+`no_label`) are written for any stream, room included. They attach as context and feed curiosity,
+which already reads them as study material. The table comes from the walkway migration, so it has
+no rows until that migration is applied. For room streams the label is the reason and the stream
+only; the description and the image reference are never copied.
+
+**4. The walkway (merged, not live).** Expectation verdicts (`met`, `missed`, `unscorable`),
+attention-worthy sightings, and asks are all bound in code now. They light up on their own when
+rows appear. Rows need the deploy checklist (migration, rebuilding 13 services, setting
+`WALKWAY_RTSP_URL`, tracing the patio zone;
+`docs/superpowers/pr-reports/2026-09-24-walkway-camera-implementation-pr.md:14,157`). Verdicts also
+need at least 5 sightings of a subject over at least 5 distinct local days. Street sightings are the
+street's own episodes, so only rows that Orion's attention promoted (`event_type='attention_worthy'`)
+enter the chronology. That keeps neighbours out of Orion's autobiography by default.
+
+**5. Excluded, each with its reason.**
+- `vision_scene_inventory`: a 5-second census, about 17,000 rows a day per camera. Its
+  `camera_id` holds the camera's RTSP address with the password in 315,770 rows. It is never read,
+  and the leak is listed as a security follow-up.
+- `vision_object_inventory` and object-permanence transitions: times are quantized to the 30-minute
+  sweep, and transitions are only logged. Its module refused to publish them because nothing would
+  consume them (`services/orion-sql-writer/app/vision_object_permanence.py:54-64`). Temporal Self
+  could be that consumer later ("the cat came back"). It is bind_later, not v1.
+- Crop embeddings and raw frames: not experience records.
+
+`VISION_LOCAL_TZ` is a fourth day-boundary setting, alongside the three named in Missing
+question 3. The shared day helper must read the same zone.
+
+### Metric gate for the new numeric outputs
+
+| Output | Provenance | Independence | Theory anchor | Live sanity |
+|---|---|---|---|---|
+| Self-prediction accuracy per arc (`predictions_correct / predictions_scored`) | the calibration script's own rule, run in the reducer (`scripts/analysis/measure_self_model_calibration.py:121-162`) | no online equivalent exists; confidence is excluded, so it is not a transform of an existing field | prospective prediction scoring, the same anchor the agency plan uses; higher-order self-model calibration | `UNVERIFIED`. Patch 1 must reproduce the script's 66.0% test accuracy from the reducer's code on the same rows before this is bound. Rest state is `predictions_scored = 0`, not 0% |
+| Company arc duration and count | the presence state machine's `state_since` (`presence.py:144-146`) via S1 | the snapshot gives only the current `since_sec`; no history exists | event boundaries at character entrances and exits (Zacks et al. 2009) | `UNVERIFIED` until S1 ships. Known risk: `identity_uncertain` was never true in any presence row (`docs/superpowers/pr-reports/2026-08-29-identity-ask-no-visual-confirmation-pr.md:63-75`) |
+| Interoception run length, returns, dwell | `update_dominance_streak` via S2 | different targets from the workspace's `dwell_ticks`; zero id overlap | Event Segmentation Theory, as for the other lanes | 5,516 runs in 9.2 days; mega-streaks up to about 8.9 hours not root-caused |
+| Attention rows per lane, reason words per lane | row counts over `substrate_attention_schema` | a count, not a new sensor | none needed: it is a count of the source's own records | substrate lane ~2,880 rows a day; reverie's reason is the same word on almost every row |
+| Concern age, times raised | `attention_salience_trace.created_at`, `attention_loop_outcome.created_at` | no existing per-loop history across days | current concerns (Klinger 1975) | 48 of 48 loops decayed unattended in 14 days; closure time is the digest's detection time |
+
 ## Missing questions
 
 These are Juniper's calls. Each has a recommended default so patch 1 can start without waiting.
@@ -356,10 +563,13 @@ These are Juniper's calls. Each has a recommended default so patch 1 can start w
    `orion.schemas.attention_schema.clip`, never generated; and for cortex-turn attention rows the
    label is **not** copied, because `attended_label` there is an open-loop description built
    from chat text (`orion/substrate/attention_frame.py:196`) and could carry Juniper's words.
-8. **Field-lane direction.** Should `FieldGoalProvenanceV1` be persisted at its producer so the
-   field lane's sustained target can enter the chronology later? Recommended: yes, as its own
-   small patch in orion-attention-runtime, after `goal_provenance_streak_ticks`' calibration
-   decides `ORION_GOAL_PROVENANCE_MIN_STREAK` and the telemetry table is retired as planned.
+8. **Field-lane runs.** Persist dominance runs (seam S2) rather than every `FieldGoalProvenanceV1`
+   record? Recommended: runs. A goal record is emitted on every qualifying 2-second tick, so
+   persisting it would recreate the per-tick volume. One row per completed run is what the
+   interoception lane needs, and it lets the streak-tick table retire as planned.
+9. **Presence identity.** Should the chronology ever store who was present, or only whether
+   identity was confirmed? Recommended: only the boolean in v1. A consumer that needs the name
+   resolves it under the vision service's own access rules.
 
 ## Proposed schema / API changes
 
@@ -437,6 +647,9 @@ TemporalSelfEventV1                  # sparse: process boundaries, verdicts, def
     "visual_deferral", "gpu_wait", "dream_cycle", "dream_hypothesis", "expectation_verdict",
     "action_outcome", "prior_revision", "peer_ask", "metacog_observation",
     "consolidation_window_close", "attention_row",
+    # added in revision 3, see "Attention, field attention, and vision in full"
+    "attention_loop_raised", "attention_loop_verdict", "field_dominance_run",
+    "presence_transition", "vision_percept", "unresolved_percept", "attention_worthy_sighting",
   ]
   source_table: str
   source_ref: str                    # the row's own primary key, verbatim
@@ -444,6 +657,8 @@ TemporalSelfEventV1                  # sparse: process boundaries, verdicts, def
   subject_ref: str | None            # one canonical ref; None for context events
   related_refs: list[str]            # e.g. offered prior ids for a curiosity run; partner slug + session for town
   label: str                         # ≤ 300 chars from the source row's own label; "" where privacy forbids
+  privacy_class: Literal["orion_internal", "juniper_chat"]   # juniper_chat never leaves the chat boundary:
+                                     # filtered out of crystallization candidates, peer briefs, and published days
   verdict: str | None                # the source's own word (confirmed, missed, claim_upheld=false, ...); never normalised
   payload: dict[str, Any]            # bounded, documented per source_kind in sources.py
 
@@ -451,13 +666,15 @@ TemporalSelfArcV1
   schema_version: "temporal_self.arc.v1"
   arc_id: str                        # sha256(day_id, kind, subject_ref, first_evidence_ref)[:16]
   day_id: str
-  kind: Literal["attention", "conversation", "town", "curiosity", "reverie", "imagery", "sleep"]
+  kind: Literal["attention", "concern", "interoception", "company",
+                "conversation", "town", "curiosity", "reverie", "imagery", "sleep"]
   subject_ref: str
   subject_label: str
   began_at: datetime
   ended_at: datetime | None
   status: Literal["open", "suspended", "closed"]
-  closed_reason: Literal["process_ended", "day_boundary", "return_window_expired"] | None
+  closed_reason: Literal["process_ended", "verdict", "source_stale",
+                         "day_boundary", "return_window_expired"] | None
   attention_returns: int             # resumes after a suspension, same day
   cumulative_dwell_sec: float
   interruptions: list[str]           # arc_ids that suspended this one
@@ -469,7 +686,20 @@ TemporalSelfArcV1
   expectation_event_ids: list[str]   # events with a verdict committed or resolved inside the arc
   constraint_event_ids: list[str]    # visual_deferral / gpu_wait events inside the arc
   body: ArcBodySummaryV1 | None
+  attention: ArcAttentionSummaryV1 | None
+  self_model: ArcSelfModelSummaryV1 | None
+  percept_entities: list[str]        # distinct room-camera entities seen during the arc; capped 16
   reducer_version: str
+
+ArcAttentionSummaryV1                # folded from substrate_attention_schema rows inside the arc
+  rows_by_lane: dict[str, int]       # process -> row count
+  reasons_by_lane: dict[str, list[str]]   # process -> distinct attention_reason words, unnormalised
+
+ArcSelfModelSummaryV1                # folded from substrate_attention_self_model rows inside the arc
+  predictions_scored: int            # rows whose predicted_shift could be checked two rows ahead
+  predictions_correct: int           # same rule as scripts/analysis/measure_self_model_calibration.py:121-162
+  most_predicted_domain: str | None
+  override_absent_reason_mode: str | None
 
 ArcBodySummaryV1
   cluster_sample_count: int          # orion_biometrics_cluster rows in the interval
@@ -579,6 +809,14 @@ never by time, and never reopen a closed arc.
      by `created_at` inside the chain's window (point arc if the chain has one thought).
    - `imagery`: one `visual_run` event; duration from `attempt.started_at` when present.
    - `sleep`: one `dream_cycle` event from `started_at` to `ended_at`.
+   - `concern`: opens on the first `attention_loop_raised` for a `loop_id` after its last
+     verdict; closes with `verdict` on the next `attention_loop_verdict`; may span days.
+   - `interoception`: opens on a `field_dominance_run` whose `tick_count` reaches
+     `min_streak_at_run`; subject is the run's `target_id`; consecutive runs on the same target
+     within `R` minutes are returns, not new arcs.
+   - `company`: opens on a `presence_transition` to `present`; stays open through `recent`;
+     closes with `process_ended` on `absent` or `source_stale` on `unknown`; subject is the
+     `presence_id`.
 3. An arc *suspends* when a different subject satisfies rule 1, or when another process arc opens
    on the same lane. The suspending arc is appended to `interruptions`.
 4. A suspended arc *resumes* if its subject wins again within `R` minutes
@@ -598,6 +836,11 @@ never by time, and never reopen a closed arc.
    they are not `evidence_refs`.
 8. `attention_row` events from the curiosity and reverie lanes attach to their process arc by
    `correlation_id` (run id, chain id), not by time.
+9. Lanes overlap freely. A workspace arc, an interoception arc, a company arc, and a conversation
+   can all be open at once, because they are different questions about the same minutes. A link
+   between two lanes is by reference when one exists, and otherwise by time, labelled
+   co-occurrence. The workspace subject rule (source refs, loop id fallback, or "no winner") is set
+   by patch 1's measurement, as described in the attention section.
 
 ### Persistence (`services/orion-sql-db/manual_migration_temporal_self_v1.sql`, new)
 
@@ -726,6 +969,19 @@ results appended to this document. The outputs gated: `active_arc_age_sec`, `att
   `test_replay_identity.py`, `test_town_source_filter.py` (new).
 - `orion/temporal_self/evals/run_arc_precision_eval.py` and fixtures (new).
 
+**Seams S1 and S2 (producer rows, each its own small PR, any time after patch 1):**
+
+- S1: `services/orion-vision-window/app/presence.py` (append a transition row on each state
+  change and an `unknown` row when frames stop; reuse one engine),
+  `services/orion-sql-db/manual_migration_vision_presence_transition_v1.sql` (new), tests beside
+  the existing presence tests.
+- S2: `orion/attention/field_attention/goal_provenance.py` and
+  `services/orion-attention-runtime/app/worker.py`, `store.py` (write the completed run when the
+  streak target changes), `services/orion-sql-db/manual_migration_field_dominance_run_v1.sql`
+  (new); then retire `goal_provenance_streak_ticks` completely: its producer, the
+  `debug.attention.streak_tick.v1` channel entry, the sql-writer model and route, and its
+  retention setting.
+
 **Patch 3 (worker, migration, routes):**
 
 - `services/orion-consolidation-runtime/app/temporal_self_worker.py`, `temporal_self_store.py`
@@ -749,7 +1005,7 @@ results appended to this document. The outputs gated: `active_arc_age_sec`, `att
 `services/orion-thought/app/reverie.py` (recent closed arcs), `orion/substrate/system_one_appraisal.py`
 (numeric inputs, own gate, `QUESTION_SET_ID` bump), `services/orion-dream/app/replay.py`
 (candidates from closed arcs), `services/orion-hub/scripts/temporal_self_routes.py` and a tab,
-`services/orion-attention-runtime` (persist `FieldGoalProvenanceV1`, Missing question 8).
+seam S3 in `services/orion-field-digester` (tension runs of at least 6 ticks).
 
 ## Non-goals
 
@@ -758,8 +1014,11 @@ results appended to this document. The outputs gated: `active_arc_age_sec`, `att
   stored as fact, no cross-source verdict vocabulary.
 - No writes to any source table; no FalkorDB or Graphiti writes in v1. Ticks are never
   crystallized; at most one closed-day summary per day is a candidate for later crystallization.
-- No resurrection of `DriveStateV1`, `AutonomyStateV2`, `SelfStateV1`, or the world model; no
-  dependence on `goal_provenance_streak_ticks`, which is slated for retirement.
+- No resurrection of `DriveStateV1`, `AutonomyStateV2`, `SelfStateV1`, or the world model. The
+  per-tick `goal_provenance_streak_ticks` table is read only offline in patch 1 and is retired
+  completely once seam S2 is live.
+- No room-camera narrative text, enrolled names, scene-inventory rows, or street sightings that
+  Orion's attention did not promote, in the chronology.
 - No replacement of `EpisodeSummaryV1`, `ConsolidationFrameV1`, the attention schema, or memory
   consolidation windows. Each remains authoritative for what it already records.
 - No NPC-to-NPC town turns in the chronology, and no fix here for their leak into social memory.
@@ -803,7 +1062,13 @@ results appended to this document. The outputs gated: `active_arc_age_sec`, `att
    no stance decision that the eval scores.
 8. **Metric gate on live data (patch 1 exit).** The distributions in gate step 4 are recorded in
    this document, and `K` and `R` are set from them.
-9. **Operational.** Retention runs; the migration passes `check_sql_migrations_applied.py`; the
+9. **Attention, field attention, vision.** The reducer's self-prediction scoring reproduces the
+   calibration script's 66.0% test accuracy on the same rows before `ArcSelfModelSummaryV1` is
+   bound; a fixture day with a 9-hour single-target run yields one interoception arc and the
+   stuck-reading warning; a fixture with a dark camera closes the company arc with
+   `source_stale`; no event carries room narrative text or a person's name; `juniper_chat` events
+   never appear in a closed day's crystallization candidates.
+10. **Operational.** Retention runs; the migration passes `check_sql_migrations_applied.py`; the
    tolerant singleton loader is tested against a stale row; no module under
    `orion/temporal_self/` names a System One observational question (the existing
    no-consumers test stays green); the smoke script runs against the Tailscale bus URL only;
@@ -819,7 +1084,10 @@ results appended to this document. The outputs gated: `active_arc_age_sec`, `att
 | 4 | Daily metacog grounded on the closed day; stance cue in the `recent_attention` slot behind a flag | Metacog output cites arc ids; stance boundary eval unchanged |
 | 5 | Curiosity thread fact ("N minutes on this today"); reverie recent arcs | Kickoff prompt shows the fact from real rows; no steering language |
 | 6 | System One numeric inputs, own metric gate, `QUESTION_SET_ID` bump | Gate record; no-consumers test still guards the observational questions |
-| 7 | Dream replay from closed arcs; Hub tab; optional `TemporalHopV1` publication; persist `FieldGoalProvenanceV1` | Dream cycle cites arc ids; tab renders a real day |
+| 7 | Dream replay from closed arcs; Hub tab; optional `TemporalHopV1` publication | Dream cycle cites arc ids; tab renders a real day |
+| S1 | Room presence transitions in orion-vision-window (any time after patch 1) | Real `vision_presence_transition` rows across one day, including an `unknown` when a camera goes dark |
+| S2 | Dominance runs in orion-attention-runtime; retire the streak-tick table completely | Run rows match patch 1's offline reconstruction; streak-tick producer, channel, model and table gone |
+| S3 | Tension runs of at least 6 ticks in orion-field-digester (later) | About 70 rows a day; outreach decisions join by time |
 
 Start with patch 1. Its job is to find out whether the arcs this document describes exist in
 Orion's real rows, and how long they are, before a single table is created.
@@ -848,6 +1116,15 @@ as subject identity. A source not in this table is not read.
 | `peer_ask` | FalkorDB `PeerAskCommit` / `PeerBriefOffer` / `PeerBriefDecision` | `committed_at` etc. (epoch ms) | `help_id` | only when present; absent is fine |
 | `metacog_observation` | `orion_metacog` ⋈ `metacog_trigger` | `metacog_trigger.timestamp` (naive utcnow), else cast of `orion_metacog.timestamp` (TEXT) | None (context) | severity ∈ degraded / critical; `trigger_kind` in payload |
 | `consolidation_window_close` | `memory_consolidation_windows` | close time | None (closes the matching conversation arc) | one input, not the authority |
+| `attention_loop_raised` | `attention_salience_trace` where `scope='chat'` | `created_at` | `loop_id` | opens a concern arc; label `privacy_class=juniper_chat` |
+| `attention_loop_verdict` | `attention_loop_outcome` | `created_at` (digest detection time for `decayed_unattended`) | `loop_id` | verdict = resolved / dismissed / decayed_unattended |
+| `field_dominance_run` | `field_dominance_run` (seam S2) | `started_at` / `ended_at` | `target_id` | interoception arcs; before S2, reconstructed offline from `goal_provenance_streak_ticks` in patch 1 only |
+| `presence_transition` | `vision_presence_transition` (seam S1) | `occurred_at` | `presence_id` | company arcs; `identity_confirmed` boolean only |
+| `vision_percept` | `vision_events` from room streams (or NULL `stream_id`) | `created_at` (write time; no observation time exists) | None (context) | `event_type` and `entities` only, never `narrative`; folds into `percept_entities` |
+| `unresolved_percept` | `vision_unresolved` | `observed_at` | None (context) | reason = council_uncertainty / no_label; table needs the walkway migration |
+| `attention_worthy_sighting` | `vision_events` where `event_type='attention_worthy'` | sighting `started_at` via `evidence_refs`, else `created_at` | None (context) | walkway only; not live |
+| attention summary | `substrate_attention_schema` | per arc interval | none | rows and reason words per lane, never per row |
+| self-model summary | `substrate_attention_self_model` | per arc interval | none | the calibration script's two-rows-ahead rule; confidence excluded |
 | body summary | `orion_biometrics_cluster`; athena `orion_biometrics_summary`; `cabinet_ambient_spike`; `home_cooling_sample` | per arc interval | none | aggregated per arc, never per row |
 
 ## Follow-ups recommended outside this design (not filed; no issue tracker write was made)

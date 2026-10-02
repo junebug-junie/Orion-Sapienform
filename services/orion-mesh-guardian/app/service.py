@@ -46,6 +46,7 @@ class MeshGuardianService:
         self._crash_loops = CrashLoopTracker()
         self._bus_disconnects = CounterRiseTracker()
         self._alert_gate = AlertGate()
+        self._stability_cycles = 0
         self._falkordb = None
 
     async def start(self) -> None:
@@ -263,7 +264,11 @@ class MeshGuardianService:
             except Exception as exc:
                 summary[name] = f"error:{type(exc).__name__}"
                 logger.warning("stability check %s failed: %s", name, exc)
-        logger.info("stability cycle %s alerts=%d", summary, len(alerts))
+        # First cycle, then hourly at the default interval: live evidence the
+        # loop is running and what it reads, without a line every minute.
+        if self._stability_cycles % 60 == 0 or alerts:
+            logger.info("stability cycle %s alerts=%d", summary, len(alerts))
+        self._stability_cycles += 1
         for alert in self._alert_gate.admit(alerts, now):
             logger.warning("stability alert kind=%s subject=%s: %s", alert.kind, alert.subject, alert.message)
             await asyncio.to_thread(
@@ -334,22 +339,23 @@ async def _save_config(redis) -> str:
     return value.decode() if isinstance(value, bytes) else str(value)
 
 
-async def _docker_restart_counts() -> dict[str, int]:
-    proc = await asyncio.create_subprocess_exec(
-        "docker", "ps", "-aq", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    out, err = await asyncio.wait_for(proc.communicate(), timeout=20)
-    if proc.returncode:
-        raise RuntimeError(f"docker ps failed: {err.decode(errors='replace')[-200:]}")
-    ids = out.decode().split()
-    if not ids:
-        return {}
-    proc = await asyncio.create_subprocess_exec(
-        "docker", "inspect", "--format", "{{.Id}} {{.Name}} {{.RestartCount}}", *ids,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    out, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
-    return _parse_restart_counts(out.decode())
+async def _docker_restart_counts(socket_path: str = "/var/run/docker.sock", transport=None) -> dict[str, int]:
+    """Docker Engine API over the mounted socket, not the docker CLI: the CLI
+    is not in this image (Debian's docker.io package no longer ships it)."""
+    import httpx
+
+    transport = transport or httpx.AsyncHTTPTransport(uds=socket_path)
+    async with httpx.AsyncClient(transport=transport, base_url="http://docker", timeout=10.0) as client:
+        resp = await client.get("/containers/json", params={"all": "true"})
+        resp.raise_for_status()
+        lines = []
+        for container in resp.json():
+            detail = await client.get(f"/containers/{container['Id']}/json")
+            if detail.status_code != 200:
+                continue  # removed between list and inspect
+            body = detail.json()
+            lines.append(f"{body['Id']} {body['Name']} {body['RestartCount']}")
+    return _parse_restart_counts("\n".join(lines))
 
 
 def _parse_restart_counts(text: str) -> dict[str, int]:

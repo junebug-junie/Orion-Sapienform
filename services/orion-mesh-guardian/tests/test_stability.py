@@ -7,7 +7,7 @@ import pytest
 
 from app import service as service_module
 from app.attention import AttentionPublisher
-from app.service import MeshGuardianService, _parse_restart_counts, _save_config
+from app.service import MeshGuardianService, _docker_restart_counts, _parse_restart_counts, _save_config
 from app.settings import Settings
 from app.stability import (
     CRASH_LOOP_WINDOW_SEC,
@@ -277,3 +277,25 @@ class TestCollectorParsing:
         assert asyncio.run(_save_config(_Cfg({"save": "3600 1"}))) == "3600 1"
         assert asyncio.run(_save_config(_Cfg({b"save": b"3600 1"}))) == "3600 1"
         assert asyncio.run(_save_config(_Cfg({"save": ""}))) == ""
+
+
+def test_docker_restart_counts_reads_the_engine_api() -> None:
+    import httpx
+
+    containers = {
+        "aaaaaaaaaaaa1111": {"Name": "/orion-athena-bus-mirror", "RestartCount": 581},
+        "bbbbbbbbbbbb2222": {"Name": "/orion-athena-hub", "RestartCount": 0},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/containers/json":
+            assert request.url.params["all"] == "true"
+            return httpx.Response(200, json=[{"Id": cid} for cid in [*containers, "gone"]])
+        cid = request.url.path.split("/")[2]
+        if cid not in containers:
+            return httpx.Response(404, json={"message": "No such container"})
+        return httpx.Response(200, json={"Id": cid, **containers[cid]})
+
+    counts = asyncio.run(_docker_restart_counts(transport=httpx.MockTransport(handler)))
+
+    assert counts == {"orion-athena-bus-mirror@aaaaaaaaaaaa": 581, "orion-athena-hub@bbbbbbbbbbbb": 0}

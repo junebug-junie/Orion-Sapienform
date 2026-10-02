@@ -88,6 +88,6 @@ scripts/safe_docker_build.sh orion-substrate-runtime up -d --build substrate-run
 
 ## PR link
 
-(filled in on the PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2488
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

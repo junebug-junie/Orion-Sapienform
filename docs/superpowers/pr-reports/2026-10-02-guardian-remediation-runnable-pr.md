@@ -83,3 +83,7 @@ Auto-remediation stays off (`MESH_GUARDIAN_AUTO_REMEDIATE=false`) until Juniper 
 - **Medium: llm-gateway's live container is named `orion-llm-gateway`.** It was deployed with `PROJECT=orion`, not `orion-athena`, which predates this change. Any recreate, whether by remediation or by hand, renames it to `orion-athena-llm-gateway`. Check that nothing addresses it by the old name before enabling remediation.
 - **Low: tier 2 builds from the shared checkout.** If main has uncommitted dirt, the build bakes it in. The deploy-origin guard does not cover that case.
 - **Low: the docker CLI is 26.1.5 (API 1.45) and the host daemon is 29.1.3 (minimum API 1.44).** That is a narrow margin. The self-check logs the error if a future daemon upgrade breaks it.
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/2475

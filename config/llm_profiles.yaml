@@ -2214,3 +2214,88 @@ profiles:
       re-processed per step (prompt-cache reuse), and peak VRAM.
       Runs on Volta (circe gpu0, 2026-09-30); results in
       docs/2026-09-30-ternary-bonsai2-27b-1xv100-circe.md.
+
+  ternary-bonsai2-27b-pq2-v100-32gb-circe-agent:
+    display_name: "Ternary Bonsai 2 27B – PQ2_0 (PrismML fork, 1x V100 32GB, Circe agent-gpu2, 2 x 131K)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "ternary-bonsai-2-27b-pq2_0"
+
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      # Doc-only: the lane controller sets CUDA_VISIBLE_DEVICES_OVERRIDE from config/gpu_pool.yaml
+      # (agent-gpu2 -> gpu2, index 2). Never gpu0 (chat's card, Juniper 2026-09-30).
+      device_ids: [2]
+      # Per session (= per llama.cpp slot), same as the Q4 agent-flex lane it replaces on this seat.
+      max_model_len: 131072
+      max_batch_tokens: 1024
+      max_concurrent_requests: 2
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      # GPU pool stage 7.2 (docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md):
+      # the first entry of agent-gpu2's launch.profiles. Runs on the PrismML fork inside the
+      # orion-llamacpp-host-prism image (Dockerfile.prism); stock llama.cpp rejects PQ2_0.
+      server_build: prism
+      model_root: "/models/gguf"
+      hf_repo_id: "prism-ml/Ternary-Bonsai-2-27B-gguf"
+      hf_filename: "Ternary-Bonsai-2-27B-PQ2_0.gguf"
+      host: "0.0.0.0"
+      port: 8080
+
+      # llama-server splits --ctx-size evenly across --parallel: 262144 / 2 = 131072 per slot,
+      # the per-session context the harness budgets for (agent-lane prompts: p95 68K, max 82K).
+      # Total KV equals the measured 4 x 65K layout: ~24.1 GB with flash attention on (circe,
+      # 2026-09-30). The pool reads slots/ctx from /props (discovery) -- nothing in gpu_pool.yaml.
+      # H1 is unchanged (one durable-run hold per role): the second slot serves one-off calls.
+      ctx_size: 262144
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 2
+      batch_size: 1024
+
+      # Prism KNOWN_ISSUES (2026-09-23): `--reasoning on` overrides a client's thinking-off
+      # request, so leave the server at auto. Bonsai's template rejects reasoning_effort "none"
+      # and "high" (HTTP 500); per-request `enable_thinking: false` works.
+      reasoning: "auto"
+      reasoning_format: "deepseek"
+      chat_template_kwargs:
+        # Parity with the Q4 agent-flex lane (stage 7 spec D7): xhigh, bounded by n_predict.
+        reasoning_effort: "xhigh"
+        # Parity with agent-flex (design doc question 3): the prompt cache misses the prior
+        # assistant reply on both Qwen3.8 builds (79.4% vs 79.7% reuse), so false buys nothing
+        # Bonsai-specific. The bake-off profile used false (Prism KNOWN_ISSUES, Bonsai-demo #183);
+        # revisit with the 7.2 per-role cache_n/prompt_n reuse (PR report query M2, cache_reuse).
+        preserve_thinking: true
+      # Prism KNOWN_ISSUES: small output caps end generation mid-thought.
+      n_predict: 16384
+      no_context_shift: true
+      # Measured on circe 2026-09-30: 61K-depth decode 32.3 (on) vs 17.6 (off) tok/s,
+      # VRAM 24.1 vs 27.2-28.6 GB. Cost: 2 concurrent runs at 4 x 65K dropped to 23.4 tok/s each.
+      flash_attn: "on"
+
+      # llama.cpp #27148 (RAM prompt cache restoring another conversation into a slot): left at
+      # the binary's defaults. The 2026-10-01 probe did not reproduce on metacog/fast; Juniper's
+      # rule is to set `cache_idle_slots: false` on every multi-slot lane only if it reproduces.
+      # services/orion-llamacpp-host/scripts/probe_slot_bleed.py checks this seat after deploy.
+
+      # Same sampling as agent-flex (Unsloth thinking-mode defaults for Qwen3.8).
+      temperature: 1.0
+      top_k: 20
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 0.0
+
+    notes: |
+      GPU pool stage 7.2: agent-gpu2's first launch profile (config/gpu_pool.yaml). The seat's
+      previous profile, qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex, stays second in that list
+      as the rollback: swap the two entries and the pool's next load serves the Q4 27B again, on
+      the same image's stock binary.
+      Quality: hard depth test 19/20 vs Q4 20/20 (docs/2026-09-30-ternary-bonsai2-27b-1xv100-circe.md).
+      Acceptance (design doc): turn_ok within 5 points of Q4 over >= 1 day or 30 turns, read a
+      sample of curiosity findings by hand.

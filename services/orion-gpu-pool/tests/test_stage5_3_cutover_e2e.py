@@ -34,7 +34,8 @@ from tests.test_runtime import CFG
 
 REPO = Path(__file__).resolve().parents[3]
 CTL_DIR = REPO / "services" / "orion-gpu-lane-controller"
-DEFAULT_27B = "qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex"
+# agent-gpu2's committed default (first launch.profiles entry): Ternary-Bonsai since stage 7.2.
+SEAT_DEFAULT = "ternary-bonsai2-27b-pq2-v100-32gb-circe-agent"
 
 
 def _controller():
@@ -194,7 +195,7 @@ def test_load_then_busy_unload_then_unload_through_the_generic_path(tmp_path, mo
 
         # --- load ---------------------------------------------------------------------------
         [load] = actuations(rt)
-        assert (load.action, load.profile) == ("load", DEFAULT_27B)
+        assert (load.action, load.profile) == ("load", SEAT_DEFAULT)
         assert [(r.status, r.phase) for r in circe.results] == [
             ("accepted", None), ("progress", "draining"), ("progress", "stopping"),
             ("progress", "starting"), ("progress", "ready_wait"), ("succeeded", None)]
@@ -202,11 +203,11 @@ def test_load_then_busy_unload_then_unload_through_the_generic_path(tmp_path, mo
         up = circe.docker.calls[-1]
         assert up["profile"] == "agent-burst"
         assert up["env"]["ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES"] == "2"
-        assert up["env"]["ATLAS_AGENT_BURST_PROFILE_NAME"] == DEFAULT_27B
+        assert up["env"]["ATLAS_AGENT_BURST_PROFILE_NAME"] == SEAT_DEFAULT
         card = rt.cards["gpu2"]
         assert SEAT in card.swapped_in and card.swap_state == "idle"
         [sw] = rt.bus.events("swapped")
-        assert sw["detail"]["profile"] == DEFAULT_27B and sw["detail"]["observed"] == {
+        assert sw["detail"]["profile"] == SEAT_DEFAULT and sw["detail"]["observed"] == {
             SEAT: "running", "diffusion": "exited"}
         await step(rt, clock, 30, beat=[home.lease_id, waiting.lease_id])   # discovery confirms the 27B
         assert (await rt.store.lease(waiting.lease_id))["role"] == SEAT
@@ -276,7 +277,7 @@ def test_failed_load_is_rolled_back_and_the_pool_cools_down(tmp_path, monkeypatc
         assert circe.docker.calls[-1]["env"]["CUDA_VISIBLE_DEVICES"] == "2"
         [failed] = rt.bus.events("swap_failed")
         assert failed["reason"] == "model_readiness_timeout:agent-gpu2"
-        assert failed["detail"]["restored"] is True and failed["detail"]["profile"] == DEFAULT_27B
+        assert failed["detail"]["restored"] is True and failed["detail"]["profile"] == SEAT_DEFAULT
         card = rt.cards["gpu2"]
         assert card.swap_state == "idle" and SEAT not in card.swapped_in
         assert card.cooldown_until is not None and card.cooldown_until > clock()

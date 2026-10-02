@@ -27,6 +27,8 @@ lx = bus.launch_exec
 VISION_PROFILE = "qwen3-vl-8b-vision-test"
 ALT_27B = "gemma-27b-alt-test"
 DEFAULT_27B = "qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex"
+# The committed agent-gpu2 default (first launch.profiles entry) since stage 7.2.
+LIVE_DEFAULT = "ternary-bonsai2-27b-pq2-v100-32gb-circe-agent"
 LLAMA = "services/orion-llamacpp-host/docker-compose.atlas-workers.yml"
 LLAMA_ENV = "services/orion-llamacpp-host/.env"
 
@@ -573,13 +575,14 @@ def test_unload_rechecks_the_fence_between_idle_check_and_stop(world):
 # --- stage 5.3: the committed config/gpu_pool.yaml takes the generic path ------------------------
 
 def test_live_config_load_is_generic_with_the_default_profile(world, monkeypatch):
-    """Acceptance 1 (controller side): the committed YAML loads the 27B through launch_exec -- drain
-    and stop diffusion, then `up` atlas-agent-burst with the card index and the allow-listed default
-    profile as compose interpolation variables -- and never through the gpu2 bridge."""
+    """Acceptance 1 (controller side): the committed YAML loads the seat's default profile (stage 7.2:
+    Ternary-Bonsai) through launch_exec -- drain and stop diffusion, then `up` atlas-agent-burst with
+    the card index and the allow-listed default profile as compose interpolation variables -- and
+    never through the gpu2 bridge."""
     world.write(real_config())
-    assert world.cfg.load_profile("agent-gpu2") == DEFAULT_27B
+    assert world.cfg.load_profile("agent-gpu2") == LIVE_DEFAULT
     world.start(running=["diffusion-host"])
-    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], profile=DEFAULT_27B))
+    sink = world.handle(world.payload("agent-gpu2", ["gpu2"], profile=LIVE_DEFAULT))
     assert statuses(sink) == [("accepted", None), ("progress", "draining"), ("progress", "stopping"),
                               ("progress", "starting"), ("progress", "ready_wait"), ("succeeded", None)]
     assert world.docker.mutations() == [("stop", "diffusion-host"), ("up", "atlas-agent-burst")]
@@ -587,7 +590,7 @@ def test_live_config_load_is_generic_with_the_default_profile(world, monkeypatch
     assert up["compose"] == LLAMA and up["profile"] == "agent-burst"
     assert up["args"] == ["-d", "--no-build", "--no-deps"]
     assert {k: v for k, v in up["env"].items() if k.startswith("ATLAS_AGENT_BURST_")} == {
-        "ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES": "2", "ATLAS_AGENT_BURST_PROFILE_NAME": DEFAULT_27B}
+        "ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES": "2", "ATLAS_AGENT_BURST_PROFILE_NAME": LIVE_DEFAULT}
     assert ("diffusion-host", "/v1/lifecycle/drain", {"draining": True}) in world.http.posts
     assert sink[-1].observed == {"agent-gpu2": "running", "diffusion": "exited"}
 

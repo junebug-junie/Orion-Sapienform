@@ -1,6 +1,6 @@
 # Memory episodes, Stage 1 PR 2: the shadow memory writer
 
-Stacked on #2479 (boundary fixes and the episode close event). Merge #2479 first.
+Follows #2479 (boundary fixes and the episode close event), merged 2026-10-02 05:16 UTC.
 
 ## Summary
 
@@ -96,9 +96,10 @@ Before this PR, a "memory" was Juniper's last message copied verbatim. After it,
 ```text
 pytest orion/memory/episode/tests orion/llm/tests orion/gpu_pool/tests orion/situational/tests \
        services/orion-memory-consolidation/tests services/orion-memory-consolidation/evals
-  (ORION_MEMORY_EPISODE_TEST_DATABASE_URL -> disposable postgres:16-alpine)       -> 750 passed
+  (ORION_MEMORY_EPISODE_TEST_DATABASE_URL -> disposable postgres:16-alpine)       -> 761 passed (after merging main)
 PYTHONPATH=. pytest services/orion-durable-runs/tests  -> 260 passed, 71 skipped (main: 253 passed, 71 skipped)
-pytest services/orion-llm-gateway/tests               -> 378 passed
+pytest services/orion-llm-gateway/tests               -> 384 passed
+pytest services/orion-gpu-pool/tests                  -> 147 passed, 15 skipped
 Postgres-backed (skipped in CI without the env var): store persist + replay, the load SQL on full text,
   the daily report, the PR 1 boundary tests.
 Static gates: check_metric_lineage --gate PASS; check_definition_drift --gate PASS after re-lock
@@ -157,7 +158,7 @@ The orchestrator runs the review.
 ## Restart required
 
 Deploy order (each step only after the one before):
-1. `#2479` deployed (migration, orion-memory-consolidation, orion-hub).
+1. #2479 deployed (its migration, orion-memory-consolidation, orion-hub). It is merged but NOT deployed.
 2. Apply `services/orion-sql-db/manual_migration_episode_memory_v1.sql`.
 3. orion-sql-writer (it validates `DurableRunStateV1`).
 4. orion-gpu-pool and orion-llm-gateway (they read `memory_distill` from their copies of `config/gpu_pool.yaml`; the gateway refuses an unknown route).

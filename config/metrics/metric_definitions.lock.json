@@ -3,10 +3,10 @@
   "metric_count": 689,
   "_last_change": {
     "change_count": 2,
-    "high_severity_count": 1,
+    "high_severity_count": 2,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026y', 'orion-substrate-run\u2026 -> \u2026y', 'orion-sql-writer', 'orion-substrate-run\u2026)",
-      "medium added metric://field_channel/orion-field-digester/write_failure_pressure"
+      "high   routing_changed metric://bus_channel/orion-agent-council/orion:exec:request:LLMGatewayService (all_producers: \u2026am', 'orion-hub', 'orion\u2026 -> \u2026am', 'orion-durable-runs', 'orion-hub', 'orion\u2026)",
+      "high   routing_changed metric://bus_channel/orion-llm-gateway/orion:exec:result:LLMGatewayService:* (declared_consumers: \u2026am', 'orion-hub', 'orion\u2026 -> \u2026am', 'orion-durable-runs', 'orion-hub', 'orion\u2026)"
     ]
   },
   "definitions": {
@@ -406,6 +406,7 @@
         "orion-agent-council",
         "orion-cortex-exec",
         "orion-dream",
+        "orion-durable-runs",
         "orion-hub",
         "orion-juniper-affective-state",
         "orion-memory-consolidation",
@@ -2389,6 +2390,7 @@
       "declared_consumers": [
         "orion-cortex-exec",
         "orion-dream",
+        "orion-durable-runs",
         "orion-hub",
         "orion-memory-consolidation"
       ],

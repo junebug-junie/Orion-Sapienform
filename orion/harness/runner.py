@@ -45,6 +45,7 @@ from orion.gpu_pool.placement import (
     placement_from_route_default,
 )
 from orion.harness.grammar_publish import publish_harness_step_grammar
+from orion.harness.cut_short import TurnFindings, build_cut_short_draft, is_cut_short_code
 from orion.harness.last_tool_fetch_cache import publish_last_tool_fetch, read_last_tool_fetch
 from orion.harness.attachment_staging import describe_for_prompt
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
@@ -79,6 +80,11 @@ class HarnessMotorResult:
     exit_code: int | None = None
     compliance_verdict: str = "completed"
     grounding_status: str = "grounded"
+    # Set to the motor error code when the motor stopped a still-working turn
+    # (orion/harness/cut_short.py::CUT_SHORT_CODES) and the draft was built from
+    # the turn's own findings. The governor keeps the cut-short marker on the
+    # final text so finalize/repair cannot present it as a finished answer.
+    cut_short_reason: str | None = None
     draft_molecule: HarnessDraftMoleculeV1 | None = None
     grammar_collector: HarnessGrammarCollector | None = None
     # Wall time for the FCC leg ALONE -- the motor loop, not the turn. This is
@@ -488,6 +494,8 @@ class HarnessRunner:
         reading_tracker = ReadingReceiptTracker(
             getattr(request, "reading_binding", None)
         )
+        turn_findings = TurnFindings()
+        cut_short_reason: str | None = None
 
         async for event in self.fcc_runner(
             **({"gpu_lease": request.gpu_lease.model_dump(mode="json")}
@@ -512,6 +520,7 @@ class HarnessRunner:
                 # numerator and denominator over the same population.
                 progress_frame = is_progress_frame(step)
                 if not progress_frame:
+                    turn_findings.observe(step)
                     step_chars = measure_step_payload_chars(step)
                     step_char_sum += step_chars
                     step_char_max = max(step_char_max, step_chars)
@@ -589,7 +598,32 @@ class HarnessRunner:
                 # signal, e.g. a Hub cancel's SIGKILL); keep it instead of None.
                 if isinstance(err_meta, dict) and isinstance(err_meta.get("exit_code"), int):
                     exit_code = err_meta["exit_code"]
-                if partial:
+                cut_short_draft = (
+                    build_cut_short_draft(
+                        error_code=error_code,
+                        step_count=step_count,
+                        findings=turn_findings,
+                        last_text=partial,
+                    )
+                    if is_cut_short_code(error_code)
+                    else ""
+                )
+                if cut_short_draft:
+                    # The motor stopped a still-working turn. Its `llm_response` is
+                    # only the LAST text fragment -- on a long investigation, a
+                    # lead-in like "Let me check X:". Build the draft from what the
+                    # turn actually recorded instead, plainly marked as cut short.
+                    draft_text = cut_short_draft
+                    compliance_verdict = "partial"
+                    grounding_status = error_code
+                    cut_short_reason = error_code
+                elif is_cut_short_code(error_code):
+                    # Cut short with nothing recorded: no findings to stand behind
+                    # a draft, so the motor failed -- never a lone lead-in line.
+                    compliance_verdict = "failed"
+                    grounding_status = error_code
+                    motor_failed = True
+                elif partial:
                     draft_text = apply_context_overflow_hint(partial)
                     compliance_verdict = "partial"
                     grounding_status = error_code or "partial"
@@ -771,6 +805,7 @@ class HarnessRunner:
             exit_code=exit_code,
             compliance_verdict=compliance_verdict,
             grounding_status=grounding_status,
+            cut_short_reason=cut_short_reason,
             draft_molecule=molecule,
             grammar_collector=collector,
             tool_provenance_audit=tool_provenance_audit,

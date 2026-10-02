@@ -55,11 +55,17 @@ def test_compose_stays_off_shared_image_and_pool_ports():
     assert f"BONSAI_PROFILE_NAME={PROFILE}" in example
 
 
-def test_shared_llamacpp_host_does_not_reference_the_fork():
+def test_shared_llamacpp_host_keeps_the_fork_off_every_lane_but_agent_gpu2():
+    """Stage 7.2 moved the fork into orion-llamacpp-host as Dockerfile.prism for atlas-agent-burst
+    (pool role agent-gpu2) only. The stock image, its compose and every other atlas worker stay off it."""
     shared = HOST.parent / "orion-llamacpp-host"
-    for name in ("Dockerfile", "docker-compose.yml", "docker-compose.atlas-workers.yml", ".env_example"):
-        text = (shared / name).read_text(encoding="utf-8")
-        assert "bonsai" not in text.lower(), name
+    for name in ("Dockerfile", "docker-compose.yml", ".env_example"):
+        text = (shared / name).read_text(encoding="utf-8").lower()
+        assert "bonsai" not in text and "prism" not in text, name
+    workers = yaml.safe_load((shared / "docker-compose.atlas-workers.yml").read_text(encoding="utf-8"))["services"]
+    for name, svc in workers.items():
+        uses_fork = "prism" in (str(svc["build"]["dockerfile"]) + str(svc["image"])).lower()
+        assert uses_fork == (name == "atlas-agent-burst"), name
 
 
 def test_profile_launch_argv(monkeypatch):

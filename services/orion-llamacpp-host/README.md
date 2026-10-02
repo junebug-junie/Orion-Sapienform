@@ -303,6 +303,32 @@ Important characteristics of this compose file:
 
 This is the repo's best current Atlas pattern, but it is still **operator-edited compose**, not a full deployment system.
 
+## agent-gpu2 on Ternary-Bonsai (GPU pool stage 7.2)
+
+`atlas-agent-burst` (pool role `agent-gpu2`, gpu2, port 8016) runs its own image,
+`orion-llamacpp-host-prism:0.1.0`, built from `Dockerfile.prism`: the stock image plus PrismML's
+llama.cpp fork (b10750, sm_70) at `/app/prism/`. Every other worker stays on `orion-llamacpp-host:0.1.0`.
+
+- **The profile picks the binary.** `llamacpp.server_build: prism` runs `/app/prism/llama-server` with
+  `/app/prism` first on `LD_LIBRARY_PATH`; unset runs the stock `/app/llama-server` with an untouched env.
+  A `prism` profile on an image without the fork refuses to boot (no fallback: stock llama.cpp garbles PQ2_0).
+  `scripts/check_gpu_pool_config.py` refuses a `prism` launch profile on a service not built from `Dockerfile.prism`.
+- **The pool picks the profile.** `config/gpu_pool.yaml` `agent-gpu2.launch.profiles` is
+  `[ternary-bonsai2-27b-pq2-v100-32gb-circe-agent, qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex]`; the pool
+  sends the first. Bonsai runs 2 slots x 131072 (`ctx_size 262144`, `--parallel 2`), flash attention on.
+  The pool discovers the slots from `/props`. One durable-run hold per role is unchanged, so the second
+  slot serves one-off agent calls.
+- **Rollback** = swap the two `profiles` entries (same image; the Q4 profile runs the stock binary). The
+  edit moves agent-gpu2's launch digest, so athena's pool and circe's checkout must be on the same commit.
+- **Build first.** The lane controller starts the seat with `up --no-build`. On circe, from a worktree at
+  the deployed commit: `services/orion-llamacpp-host/scripts/build-prism-volta.sh` (reads
+  `LLAMACPP_IMAGE_TAG` from the `.env`, so the stock half matches the other workers).
+- **Prompt-cache knobs** (`cache_ram_mib`, `cache_idle_slots` -> `--cache-ram`, `--no-cache-idle-slots`):
+  supported, unset. They fail closed if a profile sets one and the binary lacks the flag. After deploy,
+  `scripts/probe_slot_bleed.py --url http://100.112.254.99:8016` runs the llama.cpp #27148 bleed canary
+  against the live seat (synthetic prompts, refuses unless the seat is Bonsai, multi-slot and idle).
+  If it reports LEAK, set `cache_idle_slots: false` on every multi-slot profile (Juniper, 2026-10-01).
+
 ---
 
 ## Runtime endpoints

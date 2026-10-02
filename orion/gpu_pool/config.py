@@ -616,7 +616,26 @@ def check_launch(cfg: PoolConfig, root: str | Path) -> list[str]:
         for profile in launch.profiles if known_profiles is not None else []:
             if profile not in known_profiles:
                 problems.append(f"{where}.profiles: {profile} is not a profile in config/llm_profiles.yaml")
+                continue
+            # Stage 7.2: a profile on the PrismML fork (llamacpp.server_build: prism) only boots in an
+            # image that carries it; the wrapper refuses otherwise, so a load would fail on circe.
+            build = _profile_server_build(root, profile)
+            dockerfile = str((service.get("build") or {}).get("dockerfile") or "") \
+                if isinstance(service.get("build"), dict) else ""
+            if build == "prism" and not dockerfile.endswith(PRISM_DOCKERFILE):
+                problems.append(f"{where}.profiles: {profile} needs llamacpp.server_build=prism but "
+                                f"{launch.service} builds from {dockerfile or '(no build section)'}, "
+                                f"not {PRISM_DOCKERFILE}")
     return problems
+
+
+PRISM_DOCKERFILE = "Dockerfile.prism"
+
+
+def _profile_server_build(root: Path, profile: str) -> str | None:
+    data = yaml.safe_load((root / "config" / "llm_profiles.yaml").read_text()) or {}
+    llamacpp = ((data.get("profiles") or {}).get(profile) or {}).get("llamacpp") or {}
+    return llamacpp.get("server_build")
 
 
 def _pinned_device_ids(service: dict[str, Any], cuda_env: str) -> list[str]:

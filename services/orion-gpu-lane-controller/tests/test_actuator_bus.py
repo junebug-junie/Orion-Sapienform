@@ -389,7 +389,7 @@ def test_real_config_launch_blocks_resolve_to_launch_plans():
     from orion.gpu_pool.config import PoolConfig
     cfg = load_pool_config(REPO_ROOT / "config" / "gpu_pool.yaml")
     profile = cfg.load_profile("agent-gpu2")
-    assert profile == "qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex"
+    assert profile == "ternary-bonsai2-27b-pq2-v100-32gb-circe-agent"   # stage 7.2 (Q4 is the 2nd entry)
     for action in ("load", "unload"):
         plan = fence.resolve(cfg, role="agent-gpu2", action=action, cards=["gpu2"], digest=None,
                              profile=profile if action == "load" else None)

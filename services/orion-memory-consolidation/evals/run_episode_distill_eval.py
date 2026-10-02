@@ -147,6 +147,9 @@ def score(result, turns, answer, parsed_count: int) -> dict[str, Any]:
         "about_juniper": len(aj),
         "about_juniper_with_novel_words": sum(1 for m in aj if m.novel_words),
         "high_stakes": sum(1 for m in kept if m.stakes == "high"),
+        # The renderer contract is first person; a statement naming Orion is written about Orion, not by it.
+        "statements_naming_orion": sum(1 for m in kept if "orion" in m.statement.lower().split()
+                                       or "orion's" in m.statement.lower()),
         "questions": len(result.questions),
         "voices": dict(Counter(m.voice for m in kept)),
         "purposes": dict(Counter(m.purpose for m in kept)),
@@ -178,7 +181,7 @@ async def main_async(args) -> dict[str, Any]:
     await bus.connect()
     summary: dict[str, Any] = {"generated_at": datetime.now(timezone.utc).isoformat(), "routes": {}, "episodes": []}
     try:
-        episodes = select_episodes()
+        episodes = [e for e in select_episodes() if not args.only or e["name"] in args.only]
         for ep in episodes:
             rows = load_rows(ep["turn_ids"])
             turns = turns_from_rows(rows)
@@ -226,6 +229,7 @@ def main() -> int:
     ap.add_argument("--bus-url", default=DEFAULT_BUS)
     ap.add_argument("--out", default="/tmp/memory-distill-eval")
     ap.add_argument("--summary-json", type=Path)
+    ap.add_argument("--only", nargs="*", help="episode names to run (default: all)")
     args = ap.parse_args()
     summary = asyncio.run(main_async(args))
     text = json.dumps(summary, indent=1, default=str)

@@ -8,8 +8,8 @@ Three Hub write paths are covered:
 - the unified lane (Juniper's live default): stamp from the situation build;
 - the legacy WS/HTTP turn publish (live today only for workflow commands):
   read-only stamp in ``publish_chat_turn``;
-- Orion's unprompted outreach: read-only stamp on ``client_meta`` (the
-  assistant-only message envelope has no spark_meta).
+- Orion's unprompted outreach is NOT stamped: its rows never reach consolidation (empty prompt),
+  so a stamp there had no reader (review 2026-10-02).
 """
 
 from __future__ import annotations
@@ -144,49 +144,23 @@ def _outreach():
     return EndogenousOutreach.__new__(EndogenousOutreach)
 
 
-def test_outreach_message_carries_the_wall_clock(monkeypatch):
+def test_outreach_writes_no_conversation_phase_nobody_reads(monkeypatch):
+    """Review 2026-10-02: outreach rows never reach consolidation (empty prompt), and consolidation
+    reads spark_meta, not client_meta, so a stamp here was a write with no reader. Removed."""
     captured: dict = {}
 
     async def fake_publish(bus, envelopes):
         captured["env"] = envelopes[0]
 
-    async def fake_read(sid):
-        return {"phase_change": "long_gap", "delta_user_seconds": 19380, "crossed_day": False, "source": "session_state_read"}
+    async def must_not_read(sid):
+        raise AssertionError("outreach must not read the conversation clock")
 
     fake = types.ModuleType("scripts.chat_history")
     fake.publish_chat_history = fake_publish
     fake.build_chat_history_envelope = lambda **kw: types.SimpleNamespace(payload=kw)
-    fake.read_conversation_phase_stamp_for_session = fake_read
+    fake.read_conversation_phase_stamp_for_session = must_not_read
     monkeypatch.setitem(sys.modules, "scripts.chat_history", fake)
     outreach = _outreach()
     outreach._bus = object()
-    asyncio.run(
-        outreach._publish_history(
-            text="How did the offsite go?", session_id="orion_journal", correlation_id="c", message_id="m"
-        )
-    )
-    meta = captured["env"].payload["client_meta"]
-    assert meta["unsolicited"] is True
-    assert meta["conversation_phase"]["phase_change"] == "long_gap"
-
-
-def test_outreach_stamp_failure_never_costs_the_message(monkeypatch):
-    captured: dict = {}
-
-    async def fake_publish(bus, envelopes):
-        captured["env"] = envelopes[0]
-
-    async def broken_read(sid):
-        raise RuntimeError("redis down")
-
-    fake = types.ModuleType("scripts.chat_history")
-    fake.publish_chat_history = fake_publish
-    fake.build_chat_history_envelope = lambda **kw: types.SimpleNamespace(payload=kw)
-    fake.read_conversation_phase_stamp_for_session = broken_read
-    monkeypatch.setitem(sys.modules, "scripts.chat_history", fake)
-    outreach = _outreach()
-    outreach._bus = object()
-    asyncio.run(
-        outreach._publish_history(text="hello", session_id="s", correlation_id="c", message_id="m")
-    )
+    asyncio.run(outreach._publish_history(text="hello", session_id="s", correlation_id="c", message_id="m"))
     assert "conversation_phase" not in captured["env"].payload["client_meta"]

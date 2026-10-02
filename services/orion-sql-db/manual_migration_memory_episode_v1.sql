@@ -12,9 +12,8 @@
 ALTER TABLE memory_consolidation_windows ADD COLUMN IF NOT EXISTS close_reason TEXT;
 ALTER TABLE memory_consolidation_windows ADD COLUMN IF NOT EXISTS boundary_score_at_close DOUBLE PRECISION;
 
--- Fix 2 dedup looks a turn up by correlation_id inside the turns array.
-CREATE INDEX IF NOT EXISTS idx_mcw_turns_gin
-    ON memory_consolidation_windows USING GIN (turn_correlation_ids jsonb_path_ops);
+-- The GIN index for Fix 2's dedup lookup is built CONCURRENTLY in its own file (it cannot run inside
+-- a transaction): manual_migration_memory_episode_v1_gin.sql. Rollback: *_rollback.sql.
 
 -- Shadow episodes under boundary Rule 3. Read by nothing live.
 CREATE TABLE IF NOT EXISTS memory_episode_shadow (

@@ -36,6 +36,14 @@ SELECT op, reason, count(*) AS n FROM episode_memory_event
 WHERE episode_id = $1 AND op IN ('rejected_invalid', 'downgraded_voice', 'stakes_raised', 'evidence_dropped')
 GROUP BY op, reason ORDER BY op, reason
 """
+# Closed (not skipped) episodes in the window whose distill run has not finished yet: while any
+# remain, the report is provisional and is rewritten on the next pass.
+UNDISTILLED_SQL = """
+SELECT count(*) AS n FROM memory_episode_shadow e
+WHERE e.status = 'closed' AND e.episode_status = 'closed' AND e.source_platform IS NULL
+  AND e.closed_at >= $1 AND e.closed_at < $2
+  AND NOT EXISTS (SELECT 1 FROM episode_distill_run d WHERE d.episode_id = e.episode_id)
+"""
 RUN_SQL = """
 SELECT run_id, model, prompt_tokens, completion_tokens, llm_latency_ms, hold_wait_ms, coverage
 FROM episode_distill_run WHERE episode_id = $1

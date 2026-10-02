@@ -103,6 +103,27 @@ async def test_report_puts_old_rows_next_to_new_memories(tmp_path):
         assert "rejected_invalid no_verified_quote x1" in text
         assert "900 tokens in, 120 out" in text
         assert (tmp_path / "latest.md").read_text() == text
-        assert await episode_report.write_due_report(pool, settings, now=now) is None   # once per day
+        assert await episode_report.write_due_report(pool, settings, now=now) is None   # final: written once
+    finally:
+        await _drop(name, pool)
+
+
+@pytest.mark.asyncio
+async def test_report_is_rewritten_until_every_episode_is_distilled(tmp_path):
+    name, pool = await _db()
+    try:
+        await _seed(pool)
+        await pool.execute("DELETE FROM episode_distill_run")             # ep-1 not distilled yet
+        settings = SimpleNamespace(MEMORY_EPISODE_REPORT_TZ="America/Denver", MEMORY_EPISODE_REPORT_DIR=str(tmp_path))
+        early = datetime(2026, 9, 29, 15, 0, tzinfo=timezone.utc)        # 09:00 MDT the next day
+        path = await episode_report.write_due_report(pool, settings, now=early)
+        assert "Provisional: 1 episode(s) not distilled yet" in path.read_text()
+        assert await episode_report.write_due_report(pool, settings, now=early) is not None   # rewritten
+        await pool.execute(
+            """INSERT INTO episode_distill_run (episode_id, run_id, memories_kept, memories_rejected,
+               questions_kept, downgrades) VALUES ('ep-1', 'memdistill-ep-1', 1, 0, 0, 0)""")
+        path = await episode_report.write_due_report(pool, settings, now=early)
+        assert "Provisional" not in path.read_text()
+        assert await episode_report.write_due_report(pool, settings, now=early) is None       # now final
     finally:
         await _drop(name, pool)

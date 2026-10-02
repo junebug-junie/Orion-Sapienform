@@ -189,6 +189,6 @@ Also: `docker logs orion-athena-harness-governor 2>&1 | grep fcc_context_compact
 
 ## PR link
 
-TBD
+https://github.com/junebug-junie/Orion-Sapienform/pull/2481
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -628,6 +628,7 @@ from orion.schemas.attention_frame import (
     AttentionBroadcastProjectionV1,
     AttentionFrameV1,
     AttentionSignalV1,
+    PredictionErrorMagnitudeV1,
     SalienceFeaturesV1,
     VoluntaryOverrideV1,
 )
@@ -994,6 +995,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "AttentionFrameV1": AttentionFrameV1,
     "AttentionSignalV1": AttentionSignalV1,
     "SalienceFeaturesV1": SalienceFeaturesV1,
+    "PredictionErrorMagnitudeV1": PredictionErrorMagnitudeV1,
     "AttentionBroadcastProjectionV1": AttentionBroadcastProjectionV1,
     "VoluntaryOverrideV1": VoluntaryOverrideV1,
     "AttentionSelfModelV1": AttentionSelfModelV1,

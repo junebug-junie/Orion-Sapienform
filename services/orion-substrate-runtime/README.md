@@ -290,6 +290,41 @@ behavior thresholds. See
 `docs/superpowers/specs/2026-09-23-system-one-substrate-appraisal-shadow-design.md` for the
 promotion gate and failure model.
 
+## Prediction-error magnitude history (2026-10-02, default off)
+
+Spec: `docs/superpowers/specs/2026-10-02-reverie-prediction-error-magnitude-proposal.md` (step 1).
+
+When `SUBSTRATE_PE_HISTORY_ENABLED=true`, every attention-broadcast tick:
+
+1. Reads `prediction_error` and `temporal.observed_at` from every `node:substrate.*`
+   node in the graph snapshot it already took.
+2. Writes a row to `substrate_node_prediction_error_history` only when that node's
+   `observed_at` moved since the last recorded sample. A stale node adds nothing.
+   The in-memory 7-day window is seeded once from Postgres at the first tick.
+3. Prunes rows older than `SUBSTRATE_PE_HISTORY_RETENTION_HOURS` (default 168), at most
+   once an hour.
+4. Computes `PredictionErrorMagnitudeV1` per node
+   (`orion/substrate/prediction_error_magnitude.py`): the current value and its age,
+   7-day and 24-hour p50/p90, `percentile_now` (the share of 7-day readings strictly
+   below now), `median_1h` vs `median_prior_24h`, `trend`, and `band`. With fewer than
+   200 readings, `band`/`trend` read `insufficient_history`.
+   `ORION_REVERIE_PE_TREND_MIN_DELTA` (default 0.01) sets the floor on the
+   rising/settling threshold.
+5. Attaches the result to each substrate broadcast loop as `OpenLoopV1.magnitude`.
+   This is descriptive only: it is never a ranking input. The broadcast log
+   (`substrate_attention_broadcast_log.projection_json`) is the trace.
+
+Fail-open throughout. A missing table or a write error logs
+`substrate_pe_history_tick_failed` / `substrate_pe_history_write_failed`, and the
+broadcast still runs with `magnitude=None`.
+
+**Rollout order.** `OpenLoopV1` is `extra="forbid"`:
+
+1. Apply `services/orion-sql-db/manual_migration_node_prediction_error_history_v1.sql`.
+2. Rebuild `orion-thought` and `orion-hub`, which validate the broadcast.
+3. Rebuild this service.
+4. Only then set the flag.
+
 ## AST/HOT self-model tick (rung 4)
 
 `orion/substrate/attention_self_model.py::reduce_attention_self_model()` unifies the field lane

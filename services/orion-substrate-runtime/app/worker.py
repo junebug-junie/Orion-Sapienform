@@ -2959,10 +2959,23 @@ class BiometricsSubstrateWorker:
             )
 
             state = store.snapshot()
+            tick_now = datetime.now(timezone.utc)
+            magnitudes = None
+            if s.pe_history_enabled:
+                try:
+                    magnitudes = self._prediction_error_magnitudes(
+                        nodes=list(state.nodes.values()), now=tick_now
+                    )
+                except Exception:
+                    # Fail-open: a history/magnitude fault must never cost the
+                    # broadcast itself -- loops just carry magnitude=None.
+                    logger.exception("substrate_pe_history_tick_failed")
+                    magnitudes = None
             frame = build_substrate_attention_frame(
                 nodes=list(state.nodes.values()),
                 min_salience=float(s.attention_broadcast_min_salience),
-                now=datetime.now(timezone.utc),
+                now=tick_now,
+                magnitude_by_node_id=magnitudes,
             )
             projection = broadcast_projection_from_frame(frame)
             self._store.save_attention_broadcast(projection)
@@ -2997,6 +3010,128 @@ class BiometricsSubstrateWorker:
                     logger.exception("substrate_system_one_appraisal_tick_failed")
         except Exception:
             logger.exception("substrate_attention_broadcast_failed")
+
+    # Prediction-error magnitude history (spec 2026-10-02, step 1). In-memory
+    # per-node window seeded once from Postgres, so the 7-day percentiles do
+    # not re-read ~200k rows every ~35 s tick. Instance attrs are read with
+    # getattr() because tests build the worker via __new__.
+    _PE_HISTORY_NODE_PREFIX = "node:substrate."
+    _PE_HISTORY_PRUNE_INTERVAL = timedelta(hours=1)
+
+    @staticmethod
+    def _node_prediction_error_reading(node: Any) -> tuple[float, datetime] | None:
+        """(prediction_error, observed_at) for a node, or None if unusable."""
+        metadata = getattr(node, "metadata", None) or {}
+        raw = metadata.get("prediction_error") if isinstance(metadata, dict) else None
+        if raw is None or isinstance(raw, bool):
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value):
+            return None
+        observed_at = getattr(getattr(node, "temporal", None), "observed_at", None)
+        if not isinstance(observed_at, datetime):
+            return None
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+        return value, observed_at
+
+    def _prediction_error_magnitudes(
+        self, *, nodes: list[Any], now: datetime
+    ) -> dict[str, Any] | None:
+        """Record new readings, prune, and compute each node's magnitude.
+
+        A node adds a history row only when its observed_at moved past the
+        last recorded sample -- a stale node (harness_closure sitting at 0.65
+        for hours) must not fill its own history with copies of itself, which
+        would drag its percentiles toward the stale value. Returns None (no
+        magnitudes attached this tick) when the seed read fails, e.g. the
+        migration has not been applied yet.
+        """
+        from orion.substrate.prediction_error_magnitude import (
+            WINDOW_7D,
+            compute_prediction_error_magnitude,
+        )
+
+        s = self._settings
+        cache: dict[str, deque] | None = getattr(self, "_pe_history_cache", None)
+        if cache is None:
+            rows = self._store.fetch_prediction_error_history(since=now - WINDOW_7D)
+            cache = {}
+            for node_id, observed_at, value in rows:
+                if observed_at.tzinfo is None:
+                    observed_at = observed_at.replace(tzinfo=timezone.utc)
+                cache.setdefault(node_id, deque()).append((observed_at, float(value)))
+            self._pe_history_cache = cache
+            # Kept apart from the 7-day window: trimming can empty a window
+            # whose node has not moved in a week, and that must still read as
+            # "already recorded", not trigger a rewrite every tick.
+            self._pe_history_last_observed = {
+                node_id: window[-1][0] for node_id, window in cache.items() if window
+            }
+        last_observed: dict[str, datetime] = self._pe_history_last_observed
+
+        current: dict[str, tuple[float, datetime]] = {}
+        new_samples: list[tuple[str, datetime, float]] = []
+        for node in nodes:
+            node_id = str(getattr(node, "node_id", "") or "")
+            if not node_id.startswith(self._PE_HISTORY_NODE_PREFIX):
+                continue
+            reading = self._node_prediction_error_reading(node)
+            if reading is None:
+                continue
+            value, observed_at = reading
+            current[node_id] = reading
+            previous = last_observed.get(node_id)
+            if previous is not None and previous >= observed_at:
+                continue  # observed_at has not moved: stale, no new sample
+            new_samples.append((node_id, observed_at, value))
+
+        if new_samples:
+            try:
+                self._store.save_prediction_error_history_samples(new_samples)
+            except Exception:
+                # Not added to the in-memory window either, so the next tick
+                # retries the same reading instead of silently diverging.
+                logger.exception("substrate_pe_history_write_failed")
+            else:
+                for node_id, observed_at, value in new_samples:
+                    cache.setdefault(node_id, deque()).append((observed_at, value))
+                    last_observed[node_id] = observed_at
+
+        horizon = now - WINDOW_7D
+        for window in cache.values():
+            while window and window[0][0] < horizon:
+                window.popleft()
+
+        last_prune = getattr(self, "_pe_history_last_prune_at", None)
+        if last_prune is None or now - last_prune >= self._PE_HISTORY_PRUNE_INTERVAL:
+            self._pe_history_last_prune_at = now
+            try:
+                pruned = self._store.prune_prediction_error_history(
+                    older_than=now - timedelta(hours=float(s.pe_history_retention_hours))
+                )
+                logger.info("substrate_pe_history_pruned rows=%d", pruned)
+            except Exception:
+                logger.exception("substrate_pe_history_prune_failed")
+
+        magnitudes: dict[str, Any] = {}
+        for node_id, (value, observed_at) in current.items():
+            magnitudes[node_id] = compute_prediction_error_magnitude(
+                value=value,
+                observed_at=observed_at,
+                history=list(cache.get(node_id) or ()),
+                now=now,
+                trend_min_delta=float(s.pe_trend_min_delta),
+            )
+        logger.info(
+            "substrate_pe_history_tick nodes=%d new_samples=%d",
+            len(current),
+            len(new_samples),
+        )
+        return magnitudes
 
     def _fetch_heartbeat_h1(self) -> dict | None:
         """One synchronous GET to orion-heartbeat's own `/h1` endpoint, same

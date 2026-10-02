@@ -244,6 +244,17 @@ def failed_turn_meta(state: dict[str, Any]) -> dict[str, Any]:
     return {"harness_turn_meta": {"turn_correlation_id": corr}} if corr else {}
 
 
+def attempt_timeout_sec(state: dict[str, Any], timeout_sec: float, now: datetime | None = None) -> float:
+    """The turn limit Hub is told: the brief's, clamped to the run's deadline -- the same clamp
+    `admission_runtime.execute` applies to the attempt timer, so Hub's finalize reserve and
+    reply deadline line up with when the hold is actually released."""
+    deadline = (state.get("admission") or {}).get("deadline_at")
+    if not deadline:
+        return float(timeout_sec)
+    left = (datetime.fromisoformat(deadline) - (now or datetime.now(timezone.utc))).total_seconds()
+    return max(1.0, min(float(timeout_sec), left))
+
+
 def make_nodes(deps: Deps) -> dict[str, Callable[[CuriosityRunState], Awaitable[dict[str, Any]]]]:
     async def harness_turn(state: CuriosityRunState) -> dict[str, Any]:
         brief = _brief(state)
@@ -253,7 +264,7 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[CuriosityRunState], Awaitable[
             correlation_id=turn_correlation_id(state),
             prompt=brief.prompt,
             fcc_model_label=brief.fcc_model_label,
-            timeout_sec=brief.timeout_sec,
+            timeout_sec=attempt_timeout_sec(state, brief.timeout_sec),
             source_tag=brief.source_tag,
             attempt=attempt,
             # The run's pool hold: Hub fences it with the pool and every LLM call of the turn
@@ -308,6 +319,10 @@ def make_nodes(deps: Deps) -> dict[str, Callable[[CuriosityRunState], Awaitable[
     async def journal(state: CuriosityRunState) -> dict[str, Any]:
         brief = _brief(state)
         debug = state.get("debug") or {}
+        if debug.get("draft_salvaged"):
+            # An unfinalized draft (never through response repair) is not journaled as a
+            # finished investigation; the urgent report carries it, marked UNFINISHED.
+            return {"journal_entry_id": None}
         hops = [(int(n), str(note)) for n, note in (state.get("hops") or [])]
         entry = build_investigation_journal_entry(
             material=MaterialCounts(
@@ -409,10 +424,16 @@ def _urgent_finish_detail(state: dict[str, Any]) -> dict[str, Any]:
     if urgent is None:
         return {}
     report = state.get("incident_report") or None
+    debug = state.get("debug") if isinstance(state.get("debug"), dict) else {}
     return {
         "urgent": urgent,
         "incident_report": report,
         "report_flag": None if report else (state.get("report_flag") or NO_STRUCTURED_VERDICT),
+        # Hub handed back Orion's unfinalized draft because the turn ran out of time or
+        # finalize failed (`curiosity_investigation.salvage_urgent_draft`): the report
+        # says so instead of presenting it as a finished answer.
+        **({"draft_salvaged": True, "salvaged_from_error": str(debug.get("salvaged_from_error") or "")[:300]}
+           if debug.get("draft_salvaged") else {}),
     }
 
 

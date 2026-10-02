@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import suppress
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -34,6 +35,44 @@ logger = logging.getLogger("orion-harness-governor.bus")
 
 class SubstrateAppraisalUnavailableError(Exception):
     """Substrate finalize-appraisal RPC timed out (infra outage, not a content failure)."""
+
+
+class FinalizeReplyDeadlineError(Exception):
+    """The caller's reply budget (``HarnessRunRequestV1.reply_budget_sec``) ran out before
+    finalize could finish. Caught by the generic ``except Exception`` path (not
+    HarnessFinalizeFailedError: the chain was cancelled, so its own failure artifacts and any
+    partial appraisal/reflection are not emitted -- the log line and ``grounding_status`` are
+    the trace), which replies with ``draft_text`` while the caller is still waiting -- and, for a held curiosity turn,
+    while the run still holds its GPU (run a153451fe423 finalized after the hold was gone)."""
+
+
+def finalize_seconds_left(request: HarnessRunRequestV1, received_monotonic: float) -> float | None:
+    """Seconds left of the caller's reply budget, or None when the request set none."""
+    budget = getattr(request, "reply_budget_sec", None)
+    if budget is None:
+        return None
+    return float(budget) - (time.monotonic() - received_monotonic)
+
+
+async def run_bounded_finalize(awaitable: Any, seconds_left: float | None) -> Any:
+    """Await the finalize chain within ``seconds_left``; FinalizeReplyDeadlineError past it.
+    Only the budget's own expiry is renamed: a TimeoutError raised inside the chain
+    (an RPC's own timeout) propagates unchanged."""
+    if seconds_left is None:
+        return await awaitable
+    if seconds_left <= 0:
+        if asyncio.iscoroutine(awaitable):
+            awaitable.close()
+        raise FinalizeReplyDeadlineError("finalize_reply_deadline: no time left after the motor")
+    try:
+        async with asyncio.timeout(seconds_left) as cm:
+            return await awaitable
+    except TimeoutError:
+        if cm.expired():
+            raise FinalizeReplyDeadlineError(
+                f"finalize_reply_deadline: finalize cut after {seconds_left:.0f}s"
+            ) from None
+        raise
 
 
 # User-facing text for a degraded turn -- deliberately generic. The real exception
@@ -299,6 +338,7 @@ async def handle_harness_run_request(
     plus lifecycle grammar events. Start here when Hub received nothing back,
     or an error frame whose failing phase is unclear.
     """
+    received_monotonic = time.monotonic()
     corr = correlation_id or request.correlation_id or str(uuid4())
     causality = list(causality_chain or [])
     recall_debug, memory_digest = _recall_fields_from_thought(request.thought_event)
@@ -382,7 +422,7 @@ async def handle_harness_run_request(
             raise SubstrateAppraisalUnavailableError(str(exc)) from exc
 
     try:
-        chain = await run_harness_finalize_chain(
+        chain = await run_bounded_finalize(run_harness_finalize_chain(
             correlation_id=corr,
             draft_text=motor.draft_text,
             draft_molecule=motor.draft_molecule,
@@ -407,7 +447,7 @@ async def handle_harness_run_request(
             grammar_channel=settings.channel_grammar_event,
             closure_channel=settings.channel_post_turn_closure,
             system_error_channel=settings.channel_system_error,
-        )
+        ), finalize_seconds_left(request, received_monotonic))
     except HarnessFinalizeFailedError as exc:
         logger.error("harness finalize chain error corr=%s err=%s", corr, exc)
         partial = exc.partial

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
@@ -401,13 +402,37 @@ def _with_overflow_hint(text: str | None) -> str | None:
     return apply_context_overflow_hint(text, n_ctx=max_context_tokens())
 
 
-def _partial_draft_from_run(run: HarnessRunV1) -> str | None:
+# Urgent curiosity turns hand the draft to the incident report as Orion's words
+# (durable-runs `FINDING_TEXT_CAP`), so their frames carry the same length.
+_URGENT_PARTIAL_DRAFT_MAX_LEN = 8000
+# Seconds kept between the harness's reply budget and the caller's own deadline:
+# bus transit of the reply plus durable-runs' timer starting a moment before Hub's.
+_REPLY_TRANSIT_SLACK_SEC = 10.0
+
+
+def _held_turn_budgets(payload: dict[str, Any]) -> tuple[float | None, float | None]:
+    """(inference_timeout_sec, reply_budget_sec) for the harness request.
+
+    The caller (curiosity's held turns) may stamp a monotonic deadline at which it
+    stops waiting. Measured here, after stance/recall, so the harness learns how long
+    it really has; the motor's budget is never allowed past it."""
+    inference = payload.get("inference_timeout_sec")
+    deadline = payload.get("harness_reply_deadline_monotonic")
+    if deadline is None:
+        return inference, None
+    reply_budget = max(1.0, float(deadline) - time.monotonic() - _REPLY_TRANSIT_SLACK_SEC)
+    if inference is not None:
+        inference = min(float(inference), reply_budget)
+    return inference, reply_budget
+
+
+def _partial_draft_from_run(run: HarnessRunV1, max_len: int = _PARTIAL_DRAFT_MAX_LEN) -> str | None:
     draft = run.draft_text
     if not draft:
         return None
-    if len(draft) <= _PARTIAL_DRAFT_MAX_LEN:
+    if len(draft) <= max_len:
         return draft
-    return draft[:_PARTIAL_DRAFT_MAX_LEN]
+    return draft[:max_len]
 
 
 def _finalize_phase_error(run: HarnessRunV1) -> bool:
@@ -421,7 +446,9 @@ def _finalize_phase_error(run: HarnessRunV1) -> bool:
     return "orion_response_repair" in status or "orion_voice_finalize" in status
 
 
-def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str, Any]:
+def _harness_error_frame(
+    run: HarnessRunV1, *, correlation_id: str, partial_max_len: int = _PARTIAL_DRAFT_MAX_LEN
+) -> dict[str, Any]:
     base: dict[str, Any] = {
         "type": "turn_error",
         "correlation_id": correlation_id,
@@ -437,7 +464,7 @@ def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str,
             "partial",
             "failed",
         } else "substrate_appraisal"
-        partial = _partial_draft_from_run(run)
+        partial = _partial_draft_from_run(run, partial_max_len)
         if partial:
             base["partial_draft"] = _with_overflow_hint(partial) or partial
         return base
@@ -445,7 +472,7 @@ def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str,
         run.substrate_appraisal is not None and (run.reflection is None or not run.final_text)
     ):
         base["phase"] = "finalize"
-        partial = _partial_draft_from_run(run)
+        partial = _partial_draft_from_run(run, partial_max_len)
         if partial:
             base["partial_draft"] = _with_overflow_hint(partial) or partial
         if run.grounding_status:
@@ -457,7 +484,7 @@ def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str,
     base["phase"] = "harness"
     if run.step_count:
         base["partial"] = run.step_count
-    partial = _partial_draft_from_run(run)
+    partial = _partial_draft_from_run(run, partial_max_len)
     if partial:
         base["partial_draft"] = _with_overflow_hint(partial) or partial
     if run.grounding_status:
@@ -1489,9 +1516,11 @@ async def execute_unified_turn(
         enabled=bool(getattr(cfg, "HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE", True)),
         progress_lines=progress_lines,
     )
+    inference_timeout_sec, reply_budget_sec = _held_turn_budgets(payload)
     harness_req = HarnessRunRequestV1(
         gpu_lease=payload.get("gpu_lease"),
-        inference_timeout_sec=payload.get("inference_timeout_sec"),
+        inference_timeout_sec=inference_timeout_sec,
+        reply_budget_sec=reply_budget_sec,
         reading_binding=reading_binding,
         reading_only=reading_only,
         correlation_id=correlation_id,
@@ -1683,7 +1712,10 @@ async def execute_unified_turn(
         ]
     if not run.finalize_ran or not run.final_text:
         await _finish_cockpit(run, success=False)
-        return [_harness_error_frame(run, correlation_id=correlation_id)]
+        return [_harness_error_frame(
+            run, correlation_id=correlation_id,
+            partial_max_len=_URGENT_PARTIAL_DRAFT_MAX_LEN if urgent else _PARTIAL_DRAFT_MAX_LEN,
+        )]
     await _publish_unified_turn_chat_history(
         bus=bus,
         correlation_id=correlation_id,

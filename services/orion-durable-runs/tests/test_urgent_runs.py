@@ -595,3 +595,100 @@ def test_ordinary_terminal_projection_call_unchanged():
     asyncio.run(_projection_runtime(seen)._terminal(RUN_ID, "completed", state))
     [(status, _detail, kwargs)] = seen
     assert status == "completed" and kwargs == {}
+
+
+# --- a doomed retry is not run (run a153451fe423) ------------------------------
+
+
+def _retry_with_deadline(seconds_left: float) -> tuple[RetryWorld, list[float], dict[str, Any]]:
+    world = RetryWorld()
+    deadline = (world.now + timedelta(seconds=seconds_left)).isoformat()
+
+    async def scenario():
+        graph = world.graph(InMemorySaver())
+        initial = {**_admitted_initial(urgent=True),
+                   "admission": {"resource": "llm.route.agent", "priority": "urgent", "deadline_at": deadline}}
+        await graph.ainvoke(initial, CFG)
+        delays: list[float] = []
+        for _ in range(10):
+            snap = await graph.aget_state(CFG)
+            if not snap.next:
+                return delays, dict(snap.values)
+            retry_at = datetime.fromisoformat(snap.values["retry_at"])
+            delays.append((retry_at - world.now).total_seconds())
+            world.now = retry_at
+            await graph.ainvoke(Command(resume=True), CFG)
+        raise AssertionError("graph never terminated")
+
+    delays, end = asyncio.run(scenario())
+    return world, delays, end
+
+
+def test_urgent_retry_skipped_when_less_than_one_attempt_is_left():
+    # The incident: attempt 1 used its 900 s turn, ~300 s of the 1200 s deadline remained, and
+    # attempt 2 restarted from zero only to be killed by workflow_deadline mid-motor.
+    world, delays, end = _retry_with_deadline(300.0)
+    assert delays == [] and world.turns == 1
+    assert end["status"] == "failed" and end["attempt"] == 1
+    assert end["last_error"].startswith("retry_skipped_insufficient_time: HarnessTurnFailed")
+
+
+def test_urgent_retry_still_runs_with_a_whole_attempt_left():
+    # 10 s backoff + one 900 s attempt fits.
+    world, delays, end = _retry_with_deadline(910.0)
+    assert delays == [10.0] and world.turns == 2
+
+
+def test_urgent_retry_skipped_when_the_backoff_eats_the_margin():
+    # 905 s left now, but the retry would start after the 10 s backoff with only 895 s.
+    world, delays, end = _retry_with_deadline(905.0)
+    assert delays == [] and world.turns == 1
+    assert end["last_error"].startswith("retry_skipped_insufficient_time")
+
+
+def test_ordinary_run_without_a_deadline_retries_as_before():
+    world = RetryWorld()
+    delays, end = _retry_delays(world, urgent=False)
+    assert delays == [30.0, 60.0] and world.turns == 3
+
+
+def test_finish_detail_marks_a_salvaged_urgent_draft():
+    state = {**_state(urgent=True), "text": "Orion's partial verdict", "incident_report": None,
+             "debug": {"draft_salvaged": True, "salvaged_from_error": "finalize_reply_deadline: cut"}}
+    detail = finish_detail(state)
+    assert detail["draft_salvaged"] is True
+    assert detail["salvaged_from_error"] == "finalize_reply_deadline: cut"
+    assert detail["finding_text"] == "Orion's partial verdict"
+    plain = finish_detail({**_state(urgent=True), "text": "done", "debug": {}})
+    assert "draft_salvaged" not in plain
+
+
+def test_turn_limit_sent_to_hub_is_clamped_to_the_run_deadline():
+    # durable-runs' attempt timer is min(brief.timeout_sec, deadline - now); Hub must be told the
+    # same, or its finalize reserve lines up with a release that already happened.
+    from app.graph import attempt_timeout_sec
+
+    state = {**_state(urgent=True), "admission": {"deadline_at": (NOW + timedelta(seconds=600)).isoformat()}}
+    assert attempt_timeout_sec(state, 900.0, now=NOW) == 600.0
+    assert attempt_timeout_sec({**state, "admission": {}}, 900.0, now=NOW) == 900.0
+    late = {**state, "admission": {"deadline_at": (NOW - timedelta(seconds=5)).isoformat()}}
+    assert attempt_timeout_sec(late, 900.0, now=NOW) == 1.0
+
+    sent: list[CuriosityTurnRequestV1] = []
+    near = {**state, "admission": {"deadline_at": (datetime.now(timezone.utc) + timedelta(seconds=300)).isoformat()}}
+    asyncio.run(make_nodes(_turn_deps(sent))["harness_turn"](near))
+    assert 290.0 <= sent[0].timeout_sec <= 300.0
+
+
+def test_salvaged_draft_is_not_journaled_as_a_finished_investigation():
+    journaled: list[Any] = []
+    deps = _turn_deps([])
+
+    async def journal(entry):
+        journaled.append(entry)
+        return entry.entry_id
+
+    deps.publish_journal = journal
+    state = {**_state(urgent=True), "text": "half a verdict", "debug": {"draft_salvaged": True}}
+    assert asyncio.run(make_nodes(deps)["journal"](state)) == {"journal_entry_id": None}
+    assert journaled == []

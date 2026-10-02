@@ -688,6 +688,7 @@ async def startup_event():
                 urgent_enabled=settings.HUB_CURIOSITY_URGENT_ENABLED,
                 urgent_turn_timeout_sec=settings.HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC,
                 urgent_timeout_sec=settings.HUB_CURIOSITY_URGENT_TIMEOUT_SEC,
+                held_turn_finalize_reserve_sec=settings.HUB_CURIOSITY_HELD_TURN_FINALIZE_RESERVE_SEC,
             )
             # Every urgent run ends in a critical Hub + email notice (final,
             # failed, INCOMPLETE, or not investigated) -- scripts/urgent_report.py.

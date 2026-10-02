@@ -37,7 +37,8 @@ def test_hold_ref_is_validated_with_the_pool_and_the_turn_runs_under_it(monkeypa
     args, kwargs = validate.await_args
     assert args[1] == ref() and kwargs["expected_holder"] == "durable-runs:run-one"
     gen = loop._generate.await_args.kwargs
-    assert gen["gpu_lease"] == ref() and gen["timeout_sec"] == 42
+    # The limit counts from receipt (durable-runs' timer is already running).
+    assert gen["gpu_lease"] == ref() and 41.0 < gen["timeout_sec"] <= 42
     # The role (agent-gpu2) is not a route: FCC names the hold's work-class route.
     assert gen["fcc_model_label"] == "llamacpp/agent"
     assert "resource_lease" not in gen

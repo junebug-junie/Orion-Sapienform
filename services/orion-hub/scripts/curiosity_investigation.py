@@ -570,6 +570,42 @@ def signal_block_reason(inp: SignalGateInputs) -> Optional[str]:
 
 
 
+# In-process only: `execute_unified_turn` turns it into the harness request's
+# `reply_budget_sec`. A monotonic stamp, so it never leaves this process.
+REPLY_DEADLINE_PAYLOAD_KEY = "harness_reply_deadline_monotonic"
+
+
+def held_turn_fcc_budget_sec(turn_timeout_sec: float, reserve_sec: float) -> float:
+    """The motor's budget for a held turn: the turn's limit minus the finalize reserve.
+
+    durable-runs stops the attempt and releases the run's GPU hold at the turn's limit
+    (`brief.timeout_sec`), and Hub stops waiting at the same limit. A motor given the
+    whole limit is still running when the hold goes, so finalize's LLM calls fail with
+    `hold_not_granted:released` and the draft is thrown away (run a153451fe423). A
+    reserve that would leave the motor nothing is ignored rather than starving it."""
+    turn = float(turn_timeout_sec)
+    budget = turn - max(0.0, float(reserve_sec))
+    if budget > 0:
+        return budget
+    if reserve_sec > 0:
+        logger.warning(
+            "curiosity_held_turn_reserve_exceeds_turn turn_sec=%.0f reserve_sec=%.0f -- motor gets the whole "
+            "turn; finalize will be cut at the reply deadline and the draft returned", turn, reserve_sec,
+        )
+    return turn
+
+
+def salvage_urgent_draft(frame: Any) -> str:
+    """Orion's unfinalized draft from a `turn_error` frame (`partial_draft`), or "".
+    A context-overflow frame's draft is not Orion's answer and is never salvaged."""
+    if not isinstance(frame, dict) or frame.get("context_overflow"):
+        return ""
+    draft = str(frame.get("partial_draft") or "").strip()
+    from orion.fcc.context_budget import is_context_overflow_text
+
+    return "" if is_context_overflow_text(draft) else draft
+
+
 def _turn_payload(source: str, fcc_model_label: Optional[str]) -> dict:
     """The unified-turn payload for one curiosity turn.
 
@@ -669,6 +705,7 @@ class CuriosityInvestigation:
         urgent_enabled: bool = False,
         urgent_turn_timeout_sec: float = 900.0,
         urgent_timeout_sec: float = 1200.0,
+        held_turn_finalize_reserve_sec: float = 0.0,
     ) -> None:
         # Durable runs: when on, `_investigate` builds the same prompt and
         # hands the run to cortex instead of running the turn here; the
@@ -865,6 +902,8 @@ class CuriosityInvestigation:
         self.urgent_enabled = bool(urgent_enabled)
         self.urgent_turn_timeout_sec = float(urgent_turn_timeout_sec)
         self.urgent_timeout_sec = float(urgent_timeout_sec)
+        # Held turns only: see held_turn_fcc_budget_sec.
+        self.held_turn_finalize_reserve_sec = max(0.0, float(held_turn_finalize_reserve_sec))
         self.urgent_reporter: Any = None
         self.urgent_listener_task: Optional[asyncio.Task] = None
         # Terminal-report deliveries retry for up to 30 min; held here so the
@@ -3315,7 +3354,13 @@ class CuriosityInvestigation:
         if gpu_lease is not None:
             # Stage 4: every LLM call of the turn attaches to the run's GPU pool hold.
             payload["gpu_lease"] = gpu_lease.model_dump(mode="json")
-            payload["inference_timeout_sec"] = turn_timeout
+            # The motor gets the turn's limit minus the finalize reserve, and the harness is
+            # told when Hub stops waiting: durable-runs releases the hold at this same limit,
+            # so finalize must run -- and the reply land -- before it (run a153451fe423).
+            payload["inference_timeout_sec"] = held_turn_fcc_budget_sec(
+                turn_timeout, self.held_turn_finalize_reserve_sec
+            )
+            payload[REPLY_DEADLINE_PAYLOAD_KEY] = started + turn_timeout
         appraisal = None
         if parent_run_id and source in (INVESTIGATION_TAG, SELF_INQUIRY_TAG):
             appraisal = self._mind_appraisal_by_run_id.get(parent_run_id)
@@ -3406,6 +3451,20 @@ class CuriosityInvestigation:
             error = "no_final_frame"
             if urgent and frame_type == "turn_error" and other.get("error"):
                 error = str(other["error"])
+            salvaged = salvage_urgent_draft(other) if urgent and frame_type == "turn_error" else ""
+            if salvaged and not looks_like_error_text(salvaged):
+                # An urgent run must end in Orion's own words, not a bare failure: the
+                # motor's draft, unfinalized, flagged so the report says what it is.
+                logger.warning(
+                    "curiosity_urgent_draft_salvaged corr=%s error=%s chars=%s",
+                    correlation_id, error, len(salvaged),
+                )
+                return salvaged, {
+                    "draft_salvaged": True,
+                    "salvaged_from_error": error[:300],
+                    "harness_step_count": other.get("partial"),
+                    "elapsed_sec": elapsed,
+                }
             return "", {
                 "error": error,
                 "frame_type": frame_type,
@@ -4010,6 +4069,9 @@ class CuriosityInvestigation:
         `False` from inside the tick, which already holds `_run_lock`
         (asyncio.Lock is not re-entrant)."""
         now = time.monotonic()
+        # durable-runs' attempt timer is already running: a held turn's limit counts from
+        # receipt, not from when `_generate` starts (hold fence, prompt read, lock wait).
+        received = now
         key = f"{request.run_id}:{request.correlation_id}"
         if request.gpu_lease is not None:
             # Stage 4: the pool is the fence. Refuse a hold that is gone, re-granted (stale
@@ -4052,7 +4114,7 @@ class CuriosityInvestigation:
                     # A hold's role (e.g. agent-gpu2) is not a route: FCC names the hold's
                     # work-class route and the gateway attaches every call to the hold.
                     **({"fcc_model_label": f"{FCC_LLAMACPP_MODEL_PREFIX}{GPU_LEASE_ROUTE}",
-                        "timeout_sec": request.timeout_sec}
+                        "timeout_sec": max(1.0, request.timeout_sec - (time.monotonic() - received))}
                        if request.gpu_lease is not None else {}),
                     **({"gpu_lease": request.gpu_lease} if request.gpu_lease is not None else {}),
                     **({"urgent": True} if request.urgent is not None else {}),

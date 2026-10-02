@@ -1884,6 +1884,21 @@ channels:
     stability: "experimental"
     since: "2026-06-16"
 
+  # Memory episode redesign Stage 1 (spec 2026-09-30-memory-episode-redesign-design.md).
+  # Shadow episodes closed under boundary Rule 3. Consumer: orion-durable-runs
+  # starts a memory.episode_distill run per closed episode. That subscriber
+  # ships in the stacked Stage 1 PR 2 (feat/memory-episode-distill-shadow);
+  # until it deploys, events go to no subscriber (pub/sub, harmless) and the
+  # memory_episode_shadow table is the durable record.
+  - name: "orion:memory:episode:closed"
+    kind: "event"
+    schema_id: "MemoryEpisodeClosedV1"
+    message_kind: "memory.episode.closed.v1"
+    producer_services: ["orion-memory-consolidation"]
+    consumer_services: ["orion-durable-runs"]
+    stability: "experimental"
+    since: "2026-10-02"
+
   - name: "orion:chat:history:spark_meta:patch"
     kind: "event"
     schema_id: "ChatHistorySparkMetaPatchV1"

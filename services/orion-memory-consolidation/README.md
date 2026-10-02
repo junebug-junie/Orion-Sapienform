@@ -169,6 +169,23 @@ once the grounding guardrail and prompt have been proven out on real data.
 | Out | `orion:chat:history:spark_meta:patch` |
 | Out (threshold) | `orion:signals:memory_consolidation` (`signal.memory_consolidation.turn_change`) |
 | Out (propose) | `orion:memory:crystallization:proposed` (`memory.crystallization.proposed.v1`) |
+| Out (shadow) | `orion:memory:episode:closed` (`memory.episode.closed.v1`) |
+
+## Episode boundary (Stage 1, shadow)
+
+Spec: `docs/superpowers/specs/2026-09-30-memory-episode-redesign-design.md`.
+
+- **One classification per turn (Fix 2).** sql-writer publishes each turn twice. A turn already in a window is not classified again (`WindowStore.find_windowed_turn`); the second pass used to compare the turn with itself and overwrite `chat_history_log`'s boundary score with a meaningless low value.
+- **Wall clock on the turn (Fix 1).** The Hub stamps `spark_meta.conversation_phase = {phase_change, delta_user_seconds, crossed_day, source}`. With `MEMORY_LEGACY_BOUNDARY_USE_PHASE=false` (default) the live window rule and the classify prompt do not see it, so live closing is unchanged.
+- **Rule 3 in shadow.** Each direct-conversation turn is also placed into `memory_episode_shadow`: long_gap / next_day / stale_thread split; resumed_thread splits only with a judge score >= `MEMORY_BOUNDARY_OVERRIDE_THRESHOLD`; same_breath / short_pause never split; no phase falls back to the `MEMORY_WINDOW_FALLBACK_GAP_SEC` gap. The boundary turn opens the next episode. Each turn records both the legacy and the Rule 3 decision. A closed episode publishes `memory.episode.closed.v1` with `close_lag_sec`; an episode of only workflow commands closes as `skipped/command_only`. AI Town is excluded.
+- **Close audit.** Each live window records `close_reason` (`legacy:...`) and `boundary_score_at_close`.
+- **Replay eval:** `python services/orion-memory-consolidation/evals/run_episode_boundary_replay_eval.py [--refresh]`.
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `MEMORY_EPISODE_SHADOW_ENABLED` | `true` | Kill switch for the Rule 3 shadow tracker and its close event |
+| `CHANNEL_MEMORY_EPISODE_CLOSED` | `orion:memory:episode:closed` | Close event channel |
+| `MEMORY_LEGACY_BOUNDARY_USE_PHASE` | `false` | Let the live window rule and classify prompt read the phase stamp (changes live windows) |
 
 ## Turn change appraisal
 
@@ -188,7 +205,7 @@ Each persisted turn (after the first in a window) gets a logprob-calibrated `tur
 docker compose --env-file ../../.env --env-file ../orion-bus/.env -f docker-compose.yml up -d --build
 ```
 
-Apply Postgres migration: `services/orion-sql-db/manual_migration_memory_consolidation_v1.sql`
+Apply Postgres migrations: `services/orion-sql-db/manual_migration_memory_consolidation_v1.sql`, then `services/orion-sql-db/manual_migration_memory_episode_v1.sql` (shadow episodes + close audit; the service is fail-open without it).
 
 ## Smoke
 

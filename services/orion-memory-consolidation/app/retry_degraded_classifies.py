@@ -9,6 +9,7 @@ import logging
 from orion.core.bus.async_service import OrionBusAsync
 from orion.schemas.memory_consolidation import MemoryTurnPersistedV1
 
+from app.boundary import legacy_view
 from app.classify import classify_turn
 from app.settings import settings
 from app.window_state import WindowStore
@@ -115,7 +116,7 @@ async def retry_degraded_classifies(
         )
         try:
             patch_fields = await classify_turn(
-                bus, turn=turn, prior_turns=prior_turns, settings=settings
+                bus, turn=legacy_view(turn, settings), prior_turns=prior_turns, settings=settings
             )
         except Exception:
             logger.exception("memory_classify_retry_failed corr=%s", corr)
@@ -123,6 +124,11 @@ async def retry_degraded_classifies(
             continue
         status = patch_fields.get("memory_classify_status")
         await publish_spark_meta_patch(bus, corr, patch_fields)
+        # Fix 2: the window must hold the same score chat_history_log now holds.
+        try:
+            await window_store.update_turn_scores(corr, scores=patch_fields)
+        except Exception:
+            logger.warning("memory_classify_retry_window_update_failed corr=%s", corr, exc_info=True)
         if status == "ok":
             _retry_counts.pop(corr, None)
             logger.info("memory_classify_retry_ok corr=%s", corr)

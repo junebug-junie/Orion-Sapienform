@@ -17,7 +17,7 @@ import orion.hub.turn_orchestrator as turn_orchestrator
 def _run(payload):
     captured = {}
 
-    async def _fake_build(ctx, runtime_ns):
+    async def _fake_build(ctx, runtime_ns, **_kwargs):
         captured["ctx"] = ctx
         return None, {"compact_text": "Situation: stub"}
 

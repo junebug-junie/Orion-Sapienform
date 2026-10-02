@@ -10,6 +10,20 @@ import asyncpg
 from orion.schemas.memory_consolidation import MemoryTurnPersistedV1
 
 
+def _apply_scores_to_entry(entry: dict[str, Any], scores: dict[str, Any]) -> None:
+    for key in ("memory_significance_score", "conversation_boundary_score", "memory_classify_ts"):
+        if key in scores:
+            entry[key] = scores.get(key)
+    appraisal = scores.get("turn_change_appraisal")
+    if isinstance(appraisal, dict):
+        meta = entry.get("spark_meta") if isinstance(entry.get("spark_meta"), dict) else {}
+        meta["turn_change_appraisal"] = appraisal
+        sig = scores.get("memory_significance_score")
+        if isinstance(sig, (int, float)):
+            meta["memory_significance_score"] = float(sig)
+        entry["spark_meta"] = meta
+
+
 class WindowStore:
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
@@ -38,6 +52,99 @@ class WindowStore:
             source_platform,
         )
 
+    async def find_windowed_turn(
+        self, correlation_id: str, *, lookback_hours: int = 72
+    ) -> dict[str, Any] | None:
+        """The window entry already holding this turn, if any (newest window first).
+
+        Boundary Fix 2. orion-sql-writer publishes orion:memory:turn:persisted
+        twice per turn (see append_turn's comment). The second copy used to be
+        classified again, and because the first copy had already been appended
+        (or carried into the next window as its seed), the second pass took the
+        turn itself as its "previous turn" baseline. That self-comparison is
+        why every turn's persisted conversation_boundary_score read low
+        (0.004-0.685 on 2026-09-28) while the score that actually closed the
+        window read 0.96-1.00: two different classifications, the later one
+        overwriting chat_history_log. A turn already in a window has been
+        classified; this is the check that keeps it to once.
+        """
+        row = await self._pool.fetchrow(
+            """
+            SELECT memory_window_id, turn_correlation_ids
+            FROM memory_consolidation_windows
+            WHERE turn_correlation_ids @> $1::jsonb
+              AND created_at > now() - make_interval(hours => $2)
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            json.dumps([{"correlation_id": correlation_id}]),
+            int(lookback_hours),
+        )
+        if row is None:
+            return None
+        turns = json.loads(row["turn_correlation_ids"]) if row["turn_correlation_ids"] else []
+        for entry in turns if isinstance(turns, list) else []:
+            if isinstance(entry, dict) and entry.get("correlation_id") == correlation_id:
+                return {"memory_window_id": row["memory_window_id"], **entry}
+        return None
+
+    async def update_turn_scores(self, correlation_id: str, *, scores: dict[str, Any]) -> int:
+        """Rewrite this turn's scores in every window that holds it. Returns rows updated.
+
+        Used by the degraded-classify retry so the window keeps the same score
+        the retry patches into chat_history_log (Fix 2: one score per turn).
+        """
+        rows = await self._pool.fetch(
+            """
+            SELECT memory_window_id, turn_correlation_ids
+            FROM memory_consolidation_windows
+            WHERE turn_correlation_ids @> $1::jsonb
+            """,
+            json.dumps([{"correlation_id": correlation_id}]),
+        )
+        updated = 0
+        for row in rows:
+            turns = json.loads(row["turn_correlation_ids"]) if row["turn_correlation_ids"] else []
+            if not isinstance(turns, list):
+                continue
+            changed = False
+            for entry in turns:
+                if isinstance(entry, dict) and entry.get("correlation_id") == correlation_id:
+                    _apply_scores_to_entry(entry, scores)
+                    changed = True
+            if changed:
+                await self._pool.execute(
+                    "UPDATE memory_consolidation_windows SET turn_correlation_ids = $2::jsonb WHERE memory_window_id = $1",
+                    row["memory_window_id"],
+                    json.dumps(turns),
+                )
+                updated += 1
+        return updated
+
+    async def record_close_audit(
+        self,
+        memory_window_id: str,
+        *,
+        close_reason: str | None,
+        boundary_score_at_close: float | None,
+    ) -> None:
+        """Name why the live (legacy) rule closed this window.
+
+        Separate statement from the close itself and best-effort in the caller:
+        the columns arrive with manual_migration_memory_episode_v1.sql, and a
+        service deployed before that migration must still close windows.
+        """
+        await self._pool.execute(
+            """
+            UPDATE memory_consolidation_windows
+            SET close_reason = $2, boundary_score_at_close = $3
+            WHERE memory_window_id = $1
+            """,
+            memory_window_id,
+            close_reason,
+            boundary_score_at_close,
+        )
+
     async def append_turn(self, turn: MemoryTurnPersistedV1, *, scores: dict[str, Any]) -> None:
         row = await self._get_open_window(turn.source_platform)
         phase_change = (turn.spark_meta.get("conversation_phase") or {}).get("phase_change")
@@ -55,6 +162,9 @@ class WindowStore:
             "memory_significance_score": scores.get("memory_significance_score"),
             "conversation_boundary_score": scores.get("conversation_boundary_score"),
             "phase_change": phase_change,
+            "conversation_phase": turn.spark_meta.get("conversation_phase")
+            if isinstance(turn.spark_meta.get("conversation_phase"), dict)
+            else None,
             "memory_classify_ts": scores.get("memory_classify_ts"),
             "spark_meta": spark_meta,
             # Still carried per-turn even though the cursor is now partitioned by

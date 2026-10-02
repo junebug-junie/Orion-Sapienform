@@ -116,4 +116,4 @@ Live acceptance after deploy: during one real Orion harness turn, `ssh circe@cir
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2476 (root cause and repro: #2471)

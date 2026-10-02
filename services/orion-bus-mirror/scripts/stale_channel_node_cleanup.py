@@ -84,6 +84,8 @@ def _fetch_channel_rows(client: RedisGraphQueryClient, *, page_size: int = 5000)
     # Paged, not one query: FalkorDB's RESULTSET_SIZE (default 10000) silently
     # truncates a larger result. Live 2026-10-02 the graph held 117k Channel
     # nodes (GPU-pool per-request reply channels) and one query saw 10,000.
+    # Offsets can shift if the live mirror adds nodes mid-fetch; a name missed
+    # here is caught on the next run and a duplicate delete is a no-op.
     out: list[dict] = []
     skip = 0
     while True:

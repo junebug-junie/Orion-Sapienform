@@ -32,6 +32,14 @@ def _serialize_envelope(decoded: DecodeResult) -> str:
 
 
 async def _ensure_schema(conn: aiosqlite.Connection) -> None:
+    # WAL: a reader (an operator's ad-hoc query, the causality audit script)
+    # no longer blocks the per-message commit -- live 2026-10-02 a long read
+    # crashed the mirror twice with "database is locked". synchronous=NORMAL
+    # drops the per-commit fsync (WAL stays consistent; a power cut can lose
+    # the last few rows of a 24h mirror log), which was most of the
+    # remaining per-message cost once the graph indexes landed.
+    await conn.execute("PRAGMA journal_mode=WAL")
+    await conn.execute("PRAGMA synchronous=NORMAL")
     await conn.execute(
         """
         CREATE TABLE IF NOT EXISTS bus_events (
@@ -71,21 +79,29 @@ async def _prune_old_bus_events(
     Deletes in ``batch_size`` chunks, committing and yielding between them:
     this shares ``conn`` with the message loop, and one multi-million-row
     DELETE would stall every insert behind it long enough for Redis to cut
-    the pub/sub connection (client-output-buffer-limit). Rows are inserted in
-    time order, so a rowid-ordered scan finds the old ones first.
+    the pub/sub connection (client-output-buffer-limit).
+
+    Rows are inserted in time order, so the oldest rowid is the oldest row:
+    each pass reads one row to decide whether to continue, instead of a
+    ``WHERE timestamp < ?`` scan that (with no timestamp index) would read
+    the whole remaining 24h of rows to prove nothing old is left.
     """
     cutoff = ((now or datetime.now(timezone.utc)) - timedelta(hours=retention_hours)).isoformat()
     total = 0
     while True:
+        cursor = await conn.execute("SELECT timestamp FROM bus_events ORDER BY rowid LIMIT 1")
+        oldest = await cursor.fetchone()
+        if oldest is None or oldest[0] >= cutoff:
+            return total
         cursor = await conn.execute(
             "DELETE FROM bus_events WHERE rowid IN "
-            "(SELECT rowid FROM bus_events WHERE timestamp < ? ORDER BY rowid LIMIT ?)",
-            (cutoff, batch_size),
+            "(SELECT rowid FROM bus_events ORDER BY rowid LIMIT ?) AND timestamp < ?",
+            (batch_size, cutoff),
         )
         await conn.commit()
-        total += cursor.rowcount
-        if cursor.rowcount < batch_size:
+        if cursor.rowcount == 0:
             return total
+        total += cursor.rowcount
         await asyncio.sleep(0)
 
 
@@ -121,7 +137,15 @@ def _build_graph_writer() -> Optional[BusSynapticGraphWriter]:
     if not settings.FALKORDB_URI:
         logger.error("MIRROR_GRAPH_ENABLED=true but FALKORDB_URI is empty -- graph writer disabled")
         return None
-    client = RedisGraphQueryClient(uri=settings.FALKORDB_URI, graph_name=settings.FALKORDB_BUS_GRAPH)
+    # Bounded: graph writes are fail-open, so a hung FalkorDB must cost one
+    # timed-out write, not freeze the message loop (or startup's
+    # ensure_indexes, which runs before the subscribe) indefinitely.
+    client = RedisGraphQueryClient(
+        uri=settings.FALKORDB_URI,
+        graph_name=settings.FALKORDB_BUS_GRAPH,
+        socket_timeout=10.0,
+        socket_connect_timeout=5.0,
+    )
     writer = BusSynapticGraphWriter(client, alpha=settings.MIRROR_GRAPH_EWMA_ALPHA)
     writer.ensure_indexes()
     return writer

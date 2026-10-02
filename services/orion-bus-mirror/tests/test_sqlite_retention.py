@@ -123,6 +123,31 @@ class TestRetentionLoop:
                 if (await cursor.fetchone())[0] == 0:
                     break
             task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
 
             cursor = await conn.execute("SELECT count(*) FROM bus_events")
             assert (await cursor.fetchone())[0] == 0
+
+
+class TestPruneStopsEarly:
+    @pytest.mark.asyncio
+    async def test_does_not_scan_recent_rows_once_old_ones_are_gone(self) -> None:
+        # The stop test must read only the oldest row, not walk the retained
+        # 24h of rows (no timestamp index) on the connection inserts share.
+        async with aiosqlite.connect(":memory:") as conn:
+            await _ensure_schema(conn)
+            now = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+            await _insert_row(conn, timestamp_iso=(now - timedelta(hours=30)).isoformat())
+            for minutes_ago in range(50):
+                await _insert_row(conn, timestamp_iso=(now - timedelta(minutes=minutes_ago + 1)).isoformat())
+
+            statements: list[str] = []
+            await conn.set_trace_callback(statements.append)
+            deleted = await _prune_old_bus_events(conn, retention_hours=24.0, now=now, batch_size=1)
+            await conn.set_trace_callback(None)
+
+            assert deleted == 1
+            assert not any("WHERE timestamp <" in s for s in statements)
+            cursor = await conn.execute("SELECT count(*) FROM bus_events")
+            assert (await cursor.fetchone())[0] == 50

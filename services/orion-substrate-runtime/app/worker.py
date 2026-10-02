@@ -3323,10 +3323,12 @@ class BiometricsSubstrateWorker:
     def _brain_frame_lane_health(self) -> dict:
         """Fetch reducer lane health for lane regions, remapped to friendly lane keys.
 
-        ``build_substrate_grammar_truth`` keys its lag/backlog/quarantine dicts by
-        cursor_name (e.g. ``execution_grammar_reducer``); the brain-frame producer
-        and UI expect the friendly reducer keys (e.g. ``execution_trajectory``).
-        Remap here so no phantom/mislabeled lanes reach the frame. Fail-open to {}.
+        ``build_substrate_grammar_truth`` keys its lag/backlog dicts by cursor_name
+        (e.g. ``execution_grammar_reducer``); the brain-frame producer and UI expect
+        the friendly reducer keys (e.g. ``execution_trajectory``). Quarantine entries
+        are already keyed by reducer_key ({"unacknowledged_count", "recent_examples"}
+        per lane); the remap is a no-op for them. Remap here so no phantom/mislabeled
+        lanes reach the frame. Fail-open to {}.
         """
         try:
             from app.grammar_truth import (

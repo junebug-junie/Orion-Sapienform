@@ -534,3 +534,31 @@ def test_lane_quarantine_reads_count_from_store_shaped_entry():
         for rid, r in lanes.items()
         if rid not in {"lane:storage_write", "lane:vision_organ"}
     )
+
+
+def test_lane_quarantine_only_lane_and_bare_number_fallback():
+    """A lane present only in the quarantine map still renders, and a bare
+    numeric entry (already-reduced caller) is read as the count."""
+    from app.brain_frame_producer import assemble_brain_frame
+
+    frame = assemble_brain_frame(
+        nodes=[_node("t1", "tension", activation=0.9, pressure=0.8)],
+        edges=[],
+        lane_health={
+            "cursor_lag_by_reducer": {},
+            "pending_backlog_by_reducer": {},
+            "quarantine_by_reducer": {
+                "quarantine_only_lane": {"unacknowledged_count": 2, "recent_examples": []},
+                "execution_trajectory": 4,
+            },
+        },
+        self_state=None,
+        attention=None,
+        attention_payload=None,
+        settings=_settings(),
+        now=datetime(2026, 10, 2, 8, 30, 0, tzinfo=timezone.utc),
+        tick_seq=1,
+    )
+    lanes = {r.region_id: r for r in frame.regions if r.dimension == "lane"}
+    assert lanes["lane:quarantine_only_lane"].detail["quarantine"] == 2.0
+    assert lanes["lane:execution_trajectory"].detail["quarantine"] == 4.0

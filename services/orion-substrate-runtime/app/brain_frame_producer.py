@@ -133,7 +133,7 @@ def _lane_regions(lane_health: Mapping[str, Any], now, firing, starving) -> list
     backlog = dict(lane_health.get("pending_backlog_by_reducer") or {})
     quarantine = dict(lane_health.get("quarantine_by_reducer") or {})
     regions: list[BrainRegionV1] = []
-    lane_keys = set(lag) | set(backlog) | set(_LANE_LABELS)
+    lane_keys = set(lag) | set(backlog) | set(quarantine) | set(_LANE_LABELS)
     for lane in sorted(lane_keys):
         lag_sec = float(lag.get(lane, 0.0) or 0.0)
         pending = float(backlog.get(lane, 0.0) or 0.0)

@@ -93,7 +93,11 @@ Later ones are deliberately not moved into `system`: that made the system block
 grow every step, which shifted the whole conversation, and these models then
 re-read the entire 13-30k-token prompt each step (~38 s) instead of only the
 new tokens (~1 s). Keeping them in place makes each step's prompt the previous
-prompt plus new text. Block content and `cache_control` are preserved. See
+prompt plus new text (figures from the design doc's replay). Blocks and
+`cache_control` are preserved; the wrapper text is added inside the first and
+last text block. A reminder that lands between an assistant `tool_use` and its
+`tool_result` is placed after the result, so tool pairing stays intact; empty
+reminders are dropped. See
 `docs/superpowers/specs/2026-10-02-fcc-prompt-prefix-cache-design.md`.
 Durable-lease validation and a GPU pool lease still apply to the request.
 

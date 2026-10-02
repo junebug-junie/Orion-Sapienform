@@ -473,7 +473,10 @@ profiles:
       # chars lost per step (inside the end checkpoint, cheap but not zero,
       # and the model loses its own prior reasoning); true -> 0 lost. See
       # docs/superpowers/specs/2026-10-02-fcc-prompt-prefix-cache-design.md
-      # (Fix B). Inert for histories that carry no reasoning_content.
+      # (Fix B). Server-wide for every :8011 client, not only FCC: any history
+      # carrying reasoning_content / thinking blocks now keeps that text in
+      # the prompt (costs those tokens) instead of having it stripped. Inert
+      # for histories that carry none (most Hub/cortex chat).
       chat_template_kwargs:
         preserve_thinking: true
 

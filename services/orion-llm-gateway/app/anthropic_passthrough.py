@@ -86,6 +86,16 @@ def _system_message_as_reminder(content: Any) -> Dict[str, Any]:
     return {"role": "user", "content": blocks}
 
 
+def _awaits_tool_result(message: Any) -> bool:
+    content = message.get("content") if isinstance(message, dict) else None
+    return (
+        isinstance(message, dict)
+        and message.get("role") == "assistant"
+        and isinstance(content, list)
+        and any(isinstance(block, dict) and block.get("type") == "tool_use" for block in content)
+    )
+
+
 def normalize_anthropic_system_messages(body: Dict[str, Any]) -> Dict[str, Any]:
     """Make Claude Code's role=system messages acceptable to llama.cpp, append-only.
 
@@ -111,7 +121,10 @@ def normalize_anthropic_system_messages(body: Dict[str, Any]) -> Dict[str, Any]:
         return dict(body)
 
     system = _content_blocks(body.get("system"))
-    conversation = []
+    conversation: list = []
+    # Reminders that arrive between an assistant tool_use and its tool_result
+    # wait until after that next message, so tool call/result pairing survives.
+    pending: list = []
     leading = True
     for message in messages:
         is_system = isinstance(message, dict) and message.get("role") == "system"
@@ -121,10 +134,21 @@ def normalize_anthropic_system_messages(body: Dict[str, Any]) -> Dict[str, Any]:
                 system.append({"type": "text", "text": "\n\n"})
             system.extend(additional)
         elif is_system:
-            conversation.append(_system_message_as_reminder(message.get("content")))
+            if not _content_blocks(message.get("content")):
+                continue  # an empty reminder carries nothing; same drop as the leading path
+            reminder = _system_message_as_reminder(message.get("content"))
+            if pending or _awaits_tool_result(conversation[-1] if conversation else None):
+                pending.append(reminder)
+            else:
+                conversation.append(reminder)
         else:
-            leading = False
+            if isinstance(message, dict) and message.get("role") in ("user", "assistant"):
+                leading = False
             conversation.append(message)
+            if pending and not _awaits_tool_result(message):
+                conversation.extend(pending)
+                pending = []
+    conversation.extend(pending)
     forwarded = {**body, "messages": conversation}
     if system or "system" in body:
         forwarded["system"] = system

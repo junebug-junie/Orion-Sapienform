@@ -117,6 +117,23 @@ def test_reminder_preserves_every_block_and_wraps_non_text_edges() -> None:
     ]
 
 
+def test_reminder_between_tool_use_and_tool_result_waits_for_the_result() -> None:
+    tool_use = {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}
+    tool_result = {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "x"}]}
+    body = {"messages": [{"role": "user", "content": "Go"}, tool_use, {"role": "system", "content": "hook"}, tool_result]}
+    messages = anthropic_passthrough.normalize_anthropic_system_messages(body)["messages"]
+    assert messages[:3] == [body["messages"][0], tool_use, tool_result]
+    assert _joined_text(messages[3]) == "<system-reminder>\nhook\n</system-reminder>"
+    # still forwarded if the request ends before the result arrives
+    trailing = anthropic_passthrough.normalize_anthropic_system_messages({"messages": body["messages"][:3]})["messages"]
+    assert [m["role"] for m in trailing] == ["user", "assistant", "user"]
+
+
+def test_empty_late_system_message_is_dropped() -> None:
+    body = {"messages": [{"role": "user", "content": "Hi"}, {"role": "system", "content": ""}, {"role": "system", "content": []}]}
+    assert anthropic_passthrough.normalize_anthropic_system_messages(body)["messages"] == [{"role": "user", "content": "Hi"}]
+
+
 @pytest.mark.parametrize("system", [None, "Original instructions", [
     {"type": "text", "text": "Original instructions", "cache_control": {"type": "ephemeral"}}
 ]])

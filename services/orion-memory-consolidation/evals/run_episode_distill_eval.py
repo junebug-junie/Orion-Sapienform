@@ -15,7 +15,7 @@
 
 Checks reported (label-free; nobody labels anything):
   grounding (juniper_said with a verified prompt quote), downgrades, rejections by reason,
-  novel-word rate for about_juniper, coverage of non-command turns, junk (<=5 words / duplicates /
+  coverage of non-command turns, junk (<=5 words / duplicates /
   command-only), referent-set Jaccard between repeated runs, tokens and latency per episode, and
   the Austin property checks (event referent with alias "austin"; juniper_said memory with a
   verified "introvert" quote; a follow_up due on/after 2026-09-30; no memory from command turns).
@@ -145,7 +145,6 @@ def score(result, turns, answer, parsed_count: int) -> dict[str, Any]:
         "juniper_said": len(js),
         "juniper_said_grounded": sum(1 for m in js if any(e.verified and e.source_kind == "chat_prompt" for e in m.evidence)),
         "about_juniper": len(aj),
-        "about_juniper_with_novel_words": sum(1 for m in aj if m.novel_words),
         "high_stakes": sum(1 for m in kept if m.stakes == "high"),
         # The renderer contract is first person; a statement naming Orion is written about Orion, not by it.
         "statements_naming_orion": sum(1 for m in kept if "orion" in m.statement.lower().split()
@@ -194,6 +193,8 @@ async def main_async(args) -> dict[str, Any]:
                     try:
                         answer = await call_gateway(bus, prompt, route=route, timeout=args.timeout,
                                                     max_tokens=args.max_tokens)
+                        # Save the raw answer first: a scoring bug must never cost a model call.
+                        (out / f"{ep['name']}.{route}.{i}.answer.txt").write_text(answer["text"])
                         parsed = parse_distillation(answer["text"])
                         result = validate_distillation(parsed, turns, episode_id=ep["name"])
                         s = score(result, turns, answer, len(parsed.memories))

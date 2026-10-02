@@ -101,6 +101,15 @@ from orion.substrate.llm_inference_loop.pipeline import (
     empty_llm_inference_projection,
     process_llm_inference_grammar_events,
 )
+from orion.substrate.storage_write_loop.constants import (
+    STORAGE_WRITE_GRAMMAR_CURSOR_NAME,
+    STORAGE_WRITE_PROJECTION_ID,
+    STORAGE_WRITE_SOURCE_SERVICE,
+)
+from orion.substrate.storage_write_loop.pipeline import (
+    empty_storage_write_projection,
+    process_storage_write_grammar_events,
+)
 
 from .health_monitor import HealthMonitor
 from .publish import publish_accepted_events
@@ -382,6 +391,13 @@ REDUCER_SPECS: tuple[ReducerSpec, ...] = (
         enabled=lambda s: s.enable_llm_inference_reducer,
         batch_limit=lambda s: s.llm_inference_grammar_batch_limit,
     ),
+    ReducerSpec(
+        reducer_key="storage_write",
+        cursor_name=STORAGE_WRITE_GRAMMAR_CURSOR_NAME,
+        source_service=STORAGE_WRITE_SOURCE_SERVICE,
+        enabled=lambda s: s.enable_storage_write_reducer,
+        batch_limit=lambda s: s.storage_write_grammar_batch_limit,
+    ),
 )
 
 
@@ -550,6 +566,9 @@ class BiometricsSubstrateWorker:
             asyncio.create_task(self._route_poll_loop(), name="route-substrate-poll"),
             asyncio.create_task(
                 self._llm_inference_poll_loop(), name="llm-inference-substrate-poll"
+            ),
+            asyncio.create_task(
+                self._storage_write_poll_loop(), name="storage-write-substrate-poll"
             ),
             asyncio.create_task(self._prune_loop(), name="substrate-receipt-pruner"),
             asyncio.create_task(self._health_loop(), name="substrate-health-monitor"),
@@ -793,6 +812,9 @@ class BiometricsSubstrateWorker:
     async def _llm_inference_poll_loop(self) -> None:
         await self._grammar_reducer_poll_loop(REDUCER_SPECS[5], self._llm_inference_tick)
 
+    async def _storage_write_poll_loop(self) -> None:
+        await self._grammar_reducer_poll_loop(REDUCER_SPECS[6], self._storage_write_tick)
+
     async def _grammar_reducer_poll_loop(
         self,
         spec: ReducerSpec,
@@ -822,6 +844,8 @@ class BiometricsSubstrateWorker:
                         advance_fn = self._store.advance_route_cursor
                     elif spec.cursor_name == LLM_INFERENCE_GRAMMAR_CURSOR_NAME:
                         advance_fn = self._store.advance_llm_inference_cursor
+                    elif spec.cursor_name == STORAGE_WRITE_GRAMMAR_CURSOR_NAME:
+                        advance_fn = self._store.advance_storage_write_cursor
                     else:
                         advance_fn = self._store.advance_transport_cursor
                     await asyncio.to_thread(
@@ -2959,10 +2983,23 @@ class BiometricsSubstrateWorker:
             )
 
             state = store.snapshot()
+            tick_now = datetime.now(timezone.utc)
+            magnitudes = None
+            if s.pe_history_enabled:
+                try:
+                    magnitudes = self._prediction_error_magnitudes(
+                        nodes=list(state.nodes.values()), now=tick_now
+                    )
+                except Exception:
+                    # Fail-open: a history/magnitude fault must never cost the
+                    # broadcast itself -- loops just carry magnitude=None.
+                    logger.exception("substrate_pe_history_tick_failed")
+                    magnitudes = None
             frame = build_substrate_attention_frame(
                 nodes=list(state.nodes.values()),
                 min_salience=float(s.attention_broadcast_min_salience),
-                now=datetime.now(timezone.utc),
+                now=tick_now,
+                magnitude_by_node_id=magnitudes,
             )
             projection = broadcast_projection_from_frame(frame)
             self._store.save_attention_broadcast(projection)
@@ -2997,6 +3034,154 @@ class BiometricsSubstrateWorker:
                     logger.exception("substrate_system_one_appraisal_tick_failed")
         except Exception:
             logger.exception("substrate_attention_broadcast_failed")
+
+    # Prediction-error magnitude history (spec 2026-10-02, step 1). In-memory
+    # per-node window seeded once from Postgres, so the 7-day percentiles do
+    # not re-read ~200k rows every ~35 s tick. Instance attrs are read with
+    # getattr() because tests build the worker via __new__.
+    _PE_HISTORY_NODE_PREFIX = "node:substrate."
+    _PE_HISTORY_PRUNE_INTERVAL = timedelta(hours=1)
+    _PE_HISTORY_SEED_RETRY = timedelta(minutes=5)
+    # A reading stamped further ahead than this is treated as producer clock
+    # skew and not recorded: it would otherwise pin last_observed in the
+    # future and silently drop every correct reading until the clock caught up.
+    _PE_HISTORY_MAX_FUTURE_SKEW = timedelta(minutes=5)
+
+    @staticmethod
+    def _node_prediction_error_reading(node: Any) -> tuple[float, datetime] | None:
+        """(prediction_error, observed_at) for a node, or None if unusable."""
+        metadata = getattr(node, "metadata", None) or {}
+        raw = metadata.get("prediction_error") if isinstance(metadata, dict) else None
+        if raw is None or isinstance(raw, bool):
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(value):
+            return None
+        observed_at = getattr(getattr(node, "temporal", None), "observed_at", None)
+        if not isinstance(observed_at, datetime):
+            return None
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+        return value, observed_at
+
+    def _prediction_error_magnitudes(
+        self, *, nodes: list[Any], now: datetime
+    ) -> dict[str, Any] | None:
+        """Record new readings, prune, and compute each node's magnitude.
+
+        A node adds a history row only when its observed_at moved past the
+        last recorded sample -- a stale node (harness_closure sitting at 0.65
+        for hours) must not fill its own history with copies of itself, which
+        would drag its percentiles toward the stale value. Returns None (no
+        magnitudes attached this tick) when the seed read fails, e.g. the
+        migration has not been applied yet.
+        """
+        from orion.substrate.prediction_error_magnitude import (
+            WINDOW_7D,
+            compute_prediction_error_magnitude,
+        )
+
+        s = self._settings
+        cache: dict[str, deque] | None = getattr(self, "_pe_history_cache", None)
+        if cache is None:
+            # Back off after a failed seed (e.g. flag on before the migration):
+            # do not re-run a 7-day read and log a traceback every ~35 s tick.
+            failed_at = getattr(self, "_pe_history_seed_failed_at", None)
+            if failed_at is not None and now - failed_at < self._PE_HISTORY_SEED_RETRY:
+                return None
+            try:
+                rows = self._store.fetch_prediction_error_history(since=now - WINDOW_7D)
+            except Exception as exc:
+                if failed_at is None:
+                    logger.exception("substrate_pe_history_seed_failed")
+                else:
+                    logger.warning("substrate_pe_history_seed_failed err=%s", exc)
+                self._pe_history_seed_failed_at = now
+                return None
+            self._pe_history_seed_failed_at = None
+            cache = {}
+            for node_id, observed_at, value in rows:
+                if observed_at.tzinfo is None:
+                    observed_at = observed_at.replace(tzinfo=timezone.utc)
+                cache.setdefault(node_id, deque()).append((observed_at, float(value)))
+            self._pe_history_cache = cache
+            # Kept apart from the 7-day window: trimming can empty a window
+            # whose node has not moved in a week, and that must still read as
+            # "already recorded", not trigger a rewrite every tick.
+            self._pe_history_last_observed = {
+                node_id: window[-1][0] for node_id, window in cache.items() if window
+            }
+        last_observed: dict[str, datetime] = self._pe_history_last_observed
+
+        current: dict[str, tuple[float, datetime]] = {}
+        new_samples: list[tuple[str, datetime, float]] = []
+        for node in nodes:
+            node_id = str(getattr(node, "node_id", "") or "")
+            if not node_id.startswith(self._PE_HISTORY_NODE_PREFIX):
+                continue
+            reading = self._node_prediction_error_reading(node)
+            if reading is None:
+                continue
+            value, observed_at = reading
+            if observed_at > now + self._PE_HISTORY_MAX_FUTURE_SKEW:
+                logger.warning(
+                    "substrate_pe_history_future_reading_skipped node_id=%s observed_at=%s",
+                    node_id,
+                    observed_at.isoformat(),
+                )
+                continue
+            current[node_id] = reading
+            previous = last_observed.get(node_id)
+            if previous is not None and previous >= observed_at:
+                continue  # observed_at has not moved: stale, no new sample
+            new_samples.append((node_id, observed_at, value))
+
+        if new_samples:
+            try:
+                self._store.save_prediction_error_history_samples(new_samples)
+            except Exception:
+                # Not added to the in-memory window either, so the next tick
+                # retries the same reading instead of silently diverging.
+                logger.exception("substrate_pe_history_write_failed")
+            else:
+                for node_id, observed_at, value in new_samples:
+                    cache.setdefault(node_id, deque()).append((observed_at, value))
+                    last_observed[node_id] = observed_at
+
+        horizon = now - WINDOW_7D
+        for window in cache.values():
+            while window and window[0][0] < horizon:
+                window.popleft()
+
+        last_prune = getattr(self, "_pe_history_last_prune_at", None)
+        if last_prune is None or now - last_prune >= self._PE_HISTORY_PRUNE_INTERVAL:
+            self._pe_history_last_prune_at = now
+            try:
+                pruned = self._store.prune_prediction_error_history(
+                    older_than=now - timedelta(hours=float(s.pe_history_retention_hours))
+                )
+                logger.info("substrate_pe_history_pruned rows=%d", pruned)
+            except Exception:
+                logger.exception("substrate_pe_history_prune_failed")
+
+        magnitudes: dict[str, Any] = {}
+        for node_id, (value, observed_at) in current.items():
+            magnitudes[node_id] = compute_prediction_error_magnitude(
+                value=value,
+                observed_at=observed_at,
+                history=list(cache.get(node_id) or ()),
+                now=now,
+                trend_min_delta=float(s.pe_trend_min_delta),
+            )
+        logger.info(
+            "substrate_pe_history_tick nodes=%d new_samples=%d",
+            len(current),
+            len(new_samples),
+        )
+        return magnitudes
 
     def _fetch_heartbeat_h1(self) -> dict | None:
         """One synchronous GET to orion-heartbeat's own `/h1` endpoint, same
@@ -4165,6 +4350,38 @@ class BiometricsSubstrateWorker:
                 events=batch,
                 load_projection=load_projection,
                 save_projection=self._store.save_llm_inference_projection,
+                save_receipt=self._store.save_receipt,
+                now=now,
+            )
+
+        return self._process_events_with_poison_isolation(
+            spec=spec,
+            events=events,
+            process_batch=process_batch,
+        )
+
+    def _storage_write_tick(self) -> str | None:
+        """orion-sql-writer's own per-window write outcomes -> one storage_write
+        delta on node:substrate.storage_write (orion/substrate/storage_write_loop/).
+        The field digester is the only consumer, gated separately by
+        ENABLE_STORAGE_WRITE_FIELD_DIGESTION."""
+        spec = REDUCER_SPECS[6]
+        events = self._store.fetch_storage_write_grammar_events(
+            limit=spec.batch_limit(self._settings),
+        )
+        if not events:
+            return None
+        now = datetime.now(timezone.utc)
+
+        def load_projection():
+            loaded = self._store.load_storage_write_projection(STORAGE_WRITE_PROJECTION_ID)
+            return loaded or empty_storage_write_projection(now=now)
+
+        def process_batch(batch: list[GrammarEventV1]) -> None:
+            process_storage_write_grammar_events(
+                events=batch,
+                load_projection=load_projection,
+                save_projection=self._store.save_storage_write_projection,
                 save_receipt=self._store.save_receipt,
                 now=now,
             )

@@ -37,6 +37,17 @@ orion:rpc_health:snapshot (every service's shared bus client, every 30 s)
   (SUBSTRATE_RPC_DELIVERY_BRIDGE_ENABLED, default off in code, on in .env_example.
   No migration: pub/sub listener + receipts only. Nothing is written when no bus
   RPC call happened in the window. Evidence: evals/run_rpc_delivery_eval.py.)
+
+grammar_events (orion-sql-writer, sql_writer.storage:*) → storage write projection
+  → storage_write_reducer: rolling 600 s (event time) of the writer's per-family
+    write outcomes, worst family's failed / max(attempted, 10), 2+ failures only
+  → StateDeltaV1(target_kind=storage_write) on node:substrate.storage_write, one per writer window
+  → substrate_reduction_receipts → orion-field-digester (when ENABLE_STORAGE_WRITE_FIELD_DIGESTION=true)
+  → capability:storage reliability_pressure
+  (SQL_WRITER_WRITE_HEALTH_ENABLED on the writer, ENABLE_STORAGE_WRITE_REDUCER here;
+  both off in code, on in .env_example. manual_migration_storage_write_substrate_loop.sql
+  must be applied first. No hint is written when nothing was attempted in the span.
+  Evidence: services/orion-sql-writer/evals/storage_write_replay.py.)
 ```
 
 ## Setup
@@ -289,6 +300,46 @@ The evaluator reports variance/saturation/confidence/level distributions only; i
 behavior thresholds. See
 `docs/superpowers/specs/2026-09-23-system-one-substrate-appraisal-shadow-design.md` for the
 promotion gate and failure model.
+
+## Prediction-error magnitude history (2026-10-02, default off)
+
+Spec: `docs/superpowers/specs/2026-10-02-reverie-prediction-error-magnitude-proposal.md` (step 1).
+
+When `SUBSTRATE_PE_HISTORY_ENABLED=true`, every attention-broadcast tick:
+
+1. Reads `prediction_error` and `temporal.observed_at` from every `node:substrate.*`
+   node in the graph snapshot it already took.
+2. Writes a row to `substrate_node_prediction_error_history` only when that node's
+   `observed_at` moved since the last recorded sample. A stale node adds nothing.
+   The in-memory 7-day window is seeded once from Postgres at the first tick.
+3. Prunes rows older than `SUBSTRATE_PE_HISTORY_RETENTION_HOURS` (default 168), at most
+   once an hour.
+4. Computes `PredictionErrorMagnitudeV1` per node
+   (`orion/substrate/prediction_error_magnitude.py`): the current value and its age,
+   7-day and 24-hour p50/p90, `percentile_now` (the share of 7-day readings strictly
+   below now), `median_1h` vs `median_prior_24h`, `trend`, and `band`. With fewer than
+   200 readings, `band`/`trend` read `insufficient_history`.
+   `ORION_REVERIE_PE_TREND_MIN_DELTA` (default 0.01) sets the floor on the
+   rising/settling threshold.
+5. Attaches the result to each substrate broadcast loop as `OpenLoopV1.magnitude`.
+   This is descriptive only: it is never a ranking input. The broadcast log
+   (`substrate_attention_broadcast_log.projection_json`) is the trace.
+
+Fail-open throughout. A missing table or a write error logs
+`substrate_pe_history_tick_failed` / `substrate_pe_history_write_failed`, and the
+broadcast still runs with `magnitude=None`.
+
+**Rollout order.** `OpenLoopV1` is `extra="forbid"`:
+
+1. Apply `services/orion-sql-db/manual_migration_node_prediction_error_history_v1.sql`.
+2. Rebuild `orion-thought` and `orion-hub`, which validate the broadcast
+   (`orion-thought/app/broadcast_reader.py`, `bus_listener.py` via
+   `StanceReactRequestV1`; `orion/hub/association.py`). The spec also names
+   orion-attention-runtime, which was checked on 2026-10-02. It reads the
+   projection with SQL jsonb paths and never validates it, and neither do
+   proposal-runtime or feedback-runtime, so none of them need a rebuild.
+3. Rebuild this service.
+4. Only then set the flag.
 
 ## AST/HOT self-model tick (rung 4)
 

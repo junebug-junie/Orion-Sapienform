@@ -79,9 +79,9 @@ def test_fetch_pages_past_the_falkordb_resultset_cap() -> None:
 
     class PagingClient:
         def graph_query(self, cypher: str, params: dict | None = None) -> list[dict]:
-            assert "SKIP $skip LIMIT $limit" in cypher
-            page = names[params["skip"] : params["skip"] + params["limit"]]
-            return [{"channel": n, "edge_count": 1} for n in page]
+            assert "id(ch) > $after" in cypher
+            page = [i for i in range(len(names)) if i > params["after"]][: params["limit"]]
+            return [{"nid": i, "channel": names[i], "edge_count": 1} for i in page]
 
     rows = _fetch_channel_rows(PagingClient(), page_size=5)
 

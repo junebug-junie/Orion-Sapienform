@@ -143,6 +143,22 @@ class LlamaCppConfig(BaseModel):
         "model's trained block size (e.g. 16 for a DFlash drafter with block_size=16).",
     )
 
+    # Which llama-server binary inside the image runs this profile. None/"stock" = the image's
+    # own /app/llama-server (upstream llama.cpp). "prism" = PrismML's fork at /app/prism/
+    # (Dockerfile.prism), required for Ternary-Bonsai PQ2_0 GGUFs: stock llama.cpp rejects or
+    # garbles them. Per profile, not per image, so the agent-gpu2 seat rolls back from Bonsai to
+    # the Q4 27B by reordering config/gpu_pool.yaml launch.profiles alone (GPU pool stage 7.2).
+    # Fails closed: a "prism" profile on an image without the fork refuses to boot.
+    server_build: Optional[Literal["stock", "prism"]] = None
+
+    # llama.cpp host-RAM prompt cache, the llama.cpp #27148 mitigation knobs (stage 7 spec D2).
+    # Unset = the binary's defaults (8192 MiB, idle slots saved). cache_ram_mib 0 -> --cache-ram 0
+    # disables the RAM cache; cache_idle_slots false -> --no-cache-idle-slots. Set only if the
+    # bleed canary reproduces (Juniper 2026-10-01: then on every multi-slot lane). Only false is the
+    # mitigation; true emits --cache-idle-slots, which some builds lack (then the boot refuses).
+    cache_ram_mib: Optional[int] = None
+    cache_idle_slots: Optional[bool] = None
+
     host: str = "0.0.0.0"
     port: int = 8080
     ctx_size: int = 8192

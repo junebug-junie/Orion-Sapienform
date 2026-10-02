@@ -985,11 +985,36 @@ async def lifespan(app: FastAPI):
     # the cycle budget below, is strictly more capable than the startup pass ever was. One
     # retention path, not two.
     task: asyncio.Task | None = None
+    write_health_task: asyncio.Task | None = None
     if settings.orion_bus_enabled:
         svc = build_hunter()
         logger.info("🚀 starting Hunter")
         logger.info("🧲 sql-writer subscribing to channels: %s", settings.effective_subscribe_channels)
         task = asyncio.create_task(svc.start())
+        # Storage-write organ: the writer's own per-window write outcomes on
+        # orion:grammar:event (app/write_health.py). Publishes through the
+        # Hunter's own bus connection; a window published before it connects is
+        # dropped with a warning, never queued.
+        if settings.sql_writer_write_health_enabled:
+            from app import write_health
+            from app.worker import grammar_queue_snapshot
+
+            write_health.set_enabled(True)
+            write_health_task = asyncio.create_task(
+                write_health.run_window_publisher(
+                    lambda: svc.bus,
+                    writer_node=settings.node_name,
+                    window_sec=settings.sql_writer_write_health_window_sec,
+                    queue_depth=lambda: int(grammar_queue_snapshot().get("total_depth") or 0),
+                )
+            )
+            logger.info(
+                "storage-write organ ON window_sec=%s writer=%s",
+                settings.sql_writer_write_health_window_sec,
+                settings.node_name,
+            )
+        else:
+            logger.info("storage-write organ OFF (SQL_WRITER_WRITE_HEALTH_ENABLED=false)")
     else:
         logger.warning("Bus disabled; writer will be idle.")
 
@@ -1080,7 +1105,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         pending = [
-            t for t in (task, watch_task, retention_task, drain_task, vision_permanence_task,
+            t for t in (task, write_health_task, watch_task, retention_task, drain_task, vision_permanence_task,
                         vision_individuals_task, vision_rhythm_task, vision_expect_task)
             if t is not None
         ]

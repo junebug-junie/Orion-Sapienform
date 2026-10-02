@@ -331,8 +331,19 @@ class TestTheLaneTableMatchesTheRealConsumers:
             {LLM_INFERENCE_SOURCE_SERVICE},
             LLM_INFERENCE_TRACE_PREFIX,
         )
+        from orion.substrate.storage_write_loop.constants import (
+            STORAGE_WRITE_GRAMMAR_CURSOR_NAME,
+            STORAGE_WRITE_SOURCE_SERVICE,
+            STORAGE_WRITE_TRACE_PREFIX,
+        )
+
+        assert lanes[STORAGE_WRITE_GRAMMAR_CURSOR_NAME] == (
+            {STORAGE_WRITE_SOURCE_SERVICE},
+            STORAGE_WRITE_TRACE_PREFIX,
+        )
         assert set(lanes) == {
             LLM_INFERENCE_GRAMMAR_CURSOR_NAME,
+            STORAGE_WRITE_GRAMMAR_CURSOR_NAME,
             CHAT_GRAMMAR_CURSOR_NAME,
             ROUTE_GRAMMAR_CURSOR_NAME,
             GRAMMAR_CURSOR_NAME,

@@ -191,6 +191,8 @@ SYNC_PREFIXES = (
     # rpc delivery field bridge (2026-09-25): substrate-runtime producer keys and
     # the field-digester gate. None matched an existing prefix.
     "SUBSTRATE_RPC_DELIVERY_",
+    # Reverie PE-magnitude history writer (spec 2026-10-02, step 1).
+    "SUBSTRATE_PE_HISTORY_",
     "SUBSTRATE_RPC_HEALTH_",
     "ENABLE_RPC_DELIVERY_",
     "ENABLE_PRE_TURN_",
@@ -203,6 +205,11 @@ SYNC_PREFIXES = (
     "TRANSPORT_SUBSTRATE_",
     # bus_fallback_log backlog watcher (orion-sql-writer)
     "SQL_WRITER_FALLBACK_WATCH_",
+    # storage-write organ (2026-10-02): sql-writer emitter, substrate reducer,
+    # field-digester gate. None matched an existing prefix.
+    "SQL_WRITER_WRITE_HEALTH_",
+    "ENABLE_STORAGE_WRITE_",
+    "STORAGE_WRITE_",
     "HUB_PROPOSAL_REVIEW_",
     # Runtime activity marquee (2026-09-09): its two keys matched no prefix and
     # were silently skipped on first sync; found by grepping the live .env after.

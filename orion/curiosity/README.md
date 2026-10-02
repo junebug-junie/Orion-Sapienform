@@ -332,7 +332,8 @@ and the CLI emits no stream-json line until a step completes — so one unbounde
 query dies with `fcc_stream_stalled` while the outer clock still reads generous.
 Showing only the outer number would actively encourage the step that trips the
 inner one. Two further walls are *not* stamped and remain undisclosed to the
-turn: the accumulated-context ceiling (`fcc_draft_length_ceiling_exceeded`) and
+turn: the live-context ceiling (`fcc_context_ceiling_exceeded`, formerly
+`fcc_draft_length_ceiling_exceeded`; rebased on every CLI compaction) and
 Hub's own outer `asyncio.wait_for`.
 
 **The `test -n` guard is load-bearing, not decoration.** Bash expands before it

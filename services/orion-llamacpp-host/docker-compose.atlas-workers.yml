@@ -177,12 +177,17 @@ services:
 
   atlas-agent-burst:
     profiles: ["agent-burst"]
+    # GPU pool stage 7.2: the stock image plus PrismML's llama.cpp fork at /app/prism, so this seat
+    # can serve Ternary-Bonsai-2-27B (llamacpp.server_build: prism) or the Q4 27B (stock binary),
+    # chosen by the profile the pool sends. Its own tag: chat/metacog/fast/agent stay on stock.
+    # The lane controller starts it with `up --no-build`: build it first with
+    # services/orion-llamacpp-host/scripts/build-prism-volta.sh (README, "agent-gpu2 on Bonsai").
     build:
       context: ../..
-      dockerfile: services/orion-llamacpp-host/Dockerfile
+      dockerfile: services/orion-llamacpp-host/Dockerfile.prism
       args:
         - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b8740}
-    image: orion-llamacpp-host:0.1.0
+    image: orion-llamacpp-host-prism:0.1.0
     container_name: ${PROJECT:-orion}-atlas-llamacpp-agent-burst
     restart: unless-stopped
     environment:

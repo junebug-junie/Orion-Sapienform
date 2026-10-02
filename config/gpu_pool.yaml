@@ -63,12 +63,17 @@ roles:
                         compose_profile: agent-burst,
                         # Compose interpolation variables the actuator sets: the card index, and the
                         # profile the pool sends. The pool sends the FIRST entry of `profiles` on every
-                        # load (choosing by vision/ctx/VRAM is not built). It is the profile this seat
-                        # has announced on every load (discovery_confirmed, 2026-09-29), so the cutover
-                        # does not change the model.
+                        # load (choosing by vision/ctx/VRAM is not built).
+                        # Stage 7.2 (docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrency.md):
+                        # Ternary-Bonsai-2-27B, 2 slots x 131072 (discovery reads slots/ctx from /props).
+                        # The second entry, the Q4 27B this seat served through stage 6, is the rollback:
+                        # swap the two entries. The atlas-agent-burst image carries both binaries
+                        # (Dockerfile.prism), so rollback needs no image change. Either edit changes this
+                        # role's launch digest: pool (athena) and controller checkout (circe) move together.
                         cuda_env: ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES,
                         profile_var: ATLAS_AGENT_BURST_PROFILE_NAME,
-                        profiles: [qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex],
+                        profiles: [ternary-bonsai2-27b-pq2-v100-32gb-circe-agent,
+                                   qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex],
                         ready: /health, timeout_sec: 900}}
   metacog:    {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8012}
   fast:       {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8013}

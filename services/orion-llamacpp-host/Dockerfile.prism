@@ -1,0 +1,89 @@
+# services/orion-llamacpp-host/Dockerfile.prism
+#
+# The stock orion-llamacpp-host image PLUS a Volta (sm_70) build of PrismML's llama.cpp fork at
+# /app/prism/ (GPU pool stage 7.2). Used by atlas-agent-burst (pool role agent-gpu2) only.
+#
+# Both binaries live in one image so the seat's model is chosen by profile, not by image:
+#   - llamacpp.server_build: prism  -> /app/prism/llama-server  (Ternary-Bonsai-2-27B PQ2_0)
+#   - unset / stock                 -> /app/llama-server        (Qwen3.8-27B Q4, the rollback)
+# Rolling agent-gpu2 back to the Q4 27B is a reorder of config/gpu_pool.yaml launch.profiles;
+# the image does not change.
+#
+# Fork: PrismML-Eng/llama.cpp `prism` @ 88c4bc6 (build 10750), CUDA 12.8 (Prism: 13.3 builds
+# segfault; circe's host nvcc 13.x dropped Volta). Same pin and checks as
+# services/orion-llamacpp-bonsai-host/Dockerfile (the manual bake-off image, retired in stage 7.6).
+#
+# Build on circe (from a worktree at the deployed commit):
+#   services/orion-llamacpp-host/scripts/build-prism-volta.sh
+# The lane controller starts this seat with `up --no-build`, so the image must exist first.
+
+ARG LLAMACPP_IMAGE_TAG=server-cuda-b8740
+ARG CUDA_DEVEL_IMAGE=nvidia/cuda:12.8.1-devel-ubuntu24.04
+
+FROM ${CUDA_DEVEL_IMAGE} AS prism-build
+
+ARG PRISM_REPO=https://github.com/PrismML-Eng/llama.cpp.git
+ARG PRISM_REF=88c4bc60b9c9578f134385be9535e853f2db9b9f
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        cmake build-essential git ca-certificates libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+# Blobless, NOT --depth 1: llama.cpp's build number is `git rev-list --count HEAD`.
+# A shallow clone reports build 1, and the wrapper then treats the binary as
+# pre-b5332 and silently drops --flash-attn and --reasoning.
+RUN git clone --filter=blob:none --branch prism "${PRISM_REPO}" . \
+    && git checkout "${PRISM_REF}"
+
+# Stubs are enough for the link when the daemon has no GPU in the build.
+ENV LIBRARY_PATH=/usr/local/cuda/lib64/stubs
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs
+# ggml-cuda links the driver; stubs ship only libcuda.so, the binary wants .so.1.
+RUN ln -sf libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1
+
+# FA_ALL_QUANTS: Prism KNOWN_ISSUES -- quantized KV types need it under flash attention.
+# The flag list below is every flag the agent-gpu2 Bonsai profile emits. The #27148 knobs
+# (--cache-ram / --no-cache-idle-slots) are unset today; app.main refuses to boot if a profile
+# sets one and the binary lacks it, so they are not a build gate.
+RUN cmake -B build \
+        -DGGML_CUDA=ON \
+        -DGGML_NATIVE=OFF \
+        -DGGML_CUDA_FA_ALL_QUANTS=ON \
+        -DCMAKE_CUDA_ARCHITECTURES=70 \
+        -DLLAMA_CURL=OFF \
+        -DLLAMA_BUILD_TESTS=OFF \
+        -DLLAMA_BUILD_EXAMPLES=ON \
+        -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build --config Release --target llama-server -j"$(nproc)" \
+    && grep -rlaiq "pq2_0" build/bin \
+    && ./build/bin/llama-server --version 2>&1 | tee /tmp/version \
+    && test "$(grep -oE '\(build [0-9]+' /tmp/version | grep -oE '[0-9]+')" -gt 5332 \
+    && ./build/bin/llama-server --help > /tmp/help \
+    && for f in --ctx-checkpoints --jinja --reasoning --reasoning-format --chat-template-kwargs \
+                --flash-attn --no-context-shift --parallel --n-predict; do \
+         grep -qE -- "(^|[ ,])$f([ ,=]|$)" /tmp/help || { echo "missing $f"; exit 1; }; \
+       done
+
+# --- final image: identical to services/orion-llamacpp-host/Dockerfile, plus /app/prism ---
+FROM ghcr.io/ggml-org/llama.cpp:${LLAMACPP_IMAGE_TAG}
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 python3-pip ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY services/orion-llamacpp-host/requirements.txt /app/requirements.txt
+RUN pip3 install --break-system-packages --no-cache-dir -r /app/requirements.txt
+
+COPY services/orion-llamacpp-host/app /app/app
+COPY config /app/config
+COPY orion /app/orion
+
+# The fork and its own libllama/libggml. Never copied over /app: the stock binary keeps its own
+# libraries, and app.main puts /app/prism first on LD_LIBRARY_PATH only for the fork.
+COPY --from=prism-build /src/build/bin/ /app/prism/
+
+ENTRYPOINT ["python3", "-m", "app.main"]

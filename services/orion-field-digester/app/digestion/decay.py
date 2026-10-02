@@ -93,8 +93,15 @@ CAPABILITY_DECAY_CHANNELS = {
 #
 # rpc_timeout_pressure: the bridge writes every 30 s whenever any bus RPC call
 # happened in the last 10 min; 120 s = four missed ticks.
+#
+# write_failure_pressure: the sql-writer publishes one window every 60 s (an
+# idle window still publishes, and a measured span always yields a reading), so
+# 180 s = three missed windows. A dead writer, a dead reducer, or a Postgres
+# outage long enough that the writer's own report cannot be stored all read as
+# "unmeasured", never as the last calm value.
 EXPIRING_NODE_CHANNELS: dict[str, float] = {
     "rpc_timeout_pressure": 120.0,
+    "write_failure_pressure": 180.0,
 }
 
 

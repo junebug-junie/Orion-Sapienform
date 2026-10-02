@@ -169,7 +169,7 @@ jobs:
           LLM_PROFILE_NAME: ci
         run: |
           python -m pip install -r services/orion-llamacpp-host/requirements.txt
-          cd services/orion-llamacpp-host && python -m pytest tests/test_worker_announce.py -q -p no:cacheprovider
+          cd services/orion-llamacpp-host && python -m pytest tests/test_worker_announce.py tests/test_prism_seat.py tests/test_probe_slot_bleed.py -q -p no:cacheprovider
       - name: Bonsai fork worker contract (runs the llamacpp-host wrapper)
         env:
           LLM_PROFILE_NAME: ci

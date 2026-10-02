@@ -145,6 +145,11 @@ from orion.schemas.reduction_receipt import ProjectionUpdateV1, ReductionReceipt
 from orion.schemas.state_delta import StateDeltaV1
 from orion.schemas.substrate_telemetry import SubstrateTierOutcomesPayloadV1
 from orion.schemas.transport_projection import TransportBusProjectionV1, TransportBusStateV1
+from orion.schemas.storage_write_projection import (
+    StorageWriteFamilyStateV1,
+    StorageWriteProjectionV1,
+    StorageWriteWindowCountV1,
+)
 from orion.schemas.llm_inference_projection import (
     LlmInferenceNodeStateV1,
     LlmInferenceProjectionV1,
@@ -629,6 +634,7 @@ from orion.schemas.attention_frame import (
     AttentionBroadcastProjectionV1,
     AttentionFrameV1,
     AttentionSignalV1,
+    PredictionErrorMagnitudeV1,
     SalienceFeaturesV1,
     VoluntaryOverrideV1,
 )
@@ -853,6 +859,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "TransportBusProjectionV1": TransportBusProjectionV1,
     "LlmInferenceNodeStateV1": LlmInferenceNodeStateV1,
     "LlmInferenceProjectionV1": LlmInferenceProjectionV1,
+    "StorageWriteFamilyStateV1": StorageWriteFamilyStateV1,
+    "StorageWriteWindowCountV1": StorageWriteWindowCountV1,
+    "StorageWriteProjectionV1": StorageWriteProjectionV1,
     "LlmInferenceRoleStateV1": LlmInferenceRoleStateV1,
     "LlmInferenceWindowCountV1": LlmInferenceWindowCountV1,
     "CodebaseDeltaV1": CodebaseDeltaV1,
@@ -995,6 +1004,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "AttentionFrameV1": AttentionFrameV1,
     "AttentionSignalV1": AttentionSignalV1,
     "SalienceFeaturesV1": SalienceFeaturesV1,
+    "PredictionErrorMagnitudeV1": PredictionErrorMagnitudeV1,
     "AttentionBroadcastProjectionV1": AttentionBroadcastProjectionV1,
     "VoluntaryOverrideV1": VoluntaryOverrideV1,
     "AttentionSelfModelV1": AttentionSelfModelV1,

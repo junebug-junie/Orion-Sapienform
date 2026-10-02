@@ -93,7 +93,7 @@ Pooled detect-artifact age across all cameras. 0 non-zero values in 124,612 fiel
 ## Tests run
 
 ```text
-frame-router:     PYTHONPATH=<wt>:. pytest services/orion-vision-frame-router/tests -q        79 passed
+frame-router:     PYTHONPATH=<wt>:. pytest services/orion-vision-frame-router/tests -q        81 passed
 field-digester:   PYTHONPATH=<wt>:. pytest tests -q --ignore=tests/test_heartbeat_chassis.py 264 passed, 6 skipped
                   (test_heartbeat_chassis needs repo-root cwd; 3 passed from root)
 substrate-runtime: pytest tests -q --ignore=tests/test_grammar_consumer_integration.py
@@ -101,8 +101,8 @@ substrate-runtime: pytest tests -q --ignore=tests/test_grammar_consumer_integrat
 sql-writer:       pytest tests/test_grammar_retention_periodic.py -q                         67 passed
 orion/substrate:  pytest orion/substrate/tests -q   3 failed (test_felt_state_self_definition_lane, same on main), 861 passed
 root tests/:      full run diffed against origin/main: 0 new failures after the metric re-lock
-new:              tests/test_vision_organ_substrate_reducer.py 14 passed;
-                  services/orion-substrate-runtime/tests/test_worker_vision_organ_tick.py 3 passed;
+new:              tests/test_vision_organ_substrate_reducer.py 15 passed;
+                  services/orion-substrate-runtime/tests/test_worker_vision_organ_tick.py 4 passed;
                   services/orion-field-digester/tests/test_field_vision_organ_perturbations.py 10 passed
 static gates:     producer catalog, topology edges, substrate requests, ladder liveness, sql migration drift,
                   metric lineage, definition drift (after --update), inner-state registry, env-template parity,
@@ -130,7 +130,27 @@ Not deployed (by instruction). No docker build run; runtime proof is the deploy-
 
 ## Review findings fixed
 
-(filled in after the review pass)
+Review: code-review subagent on `git diff origin/main...HEAD`. No blockers.
+
+- Finding: silence rewrite cadence was `VISION_ORGAN_SILENCE_SEC/3`, so a setting above 900 s let the digester's 300 s expiry flip "can't see" to "unmeasured" between writes; a router window above 300 s did the same to live readings.
+  - Fix: cadence capped at `min(silence/3, 60 s)`; `VISION_ORGAN_WINDOW_SEC` bounded 5..100 s in router settings.
+  - Evidence: `test_silence_writes_stay_under_the_digester_expiry_for_long_silence_settings`, `test_window_length_is_bounded_below_the_digester_expiry`.
+- Finding: the "never a reading over half a window's streams" claim relied on stream atoms arriving before the closing atom.
+  - Fix: the reducer now checks the closing atom's `streams=N` against the stream atoms it holds; on a mismatch it skips the reading and warns on the receipt.
+  - Evidence: `test_window_missing_a_stream_atom_gives_no_reading`.
+- Finding: `DRY_RUN` recorded dispatches that then all timed out, reading as a dead host.
+  - Fix: under `DRY_RUN` the organ counts frames only (no dispatches, no timeouts).
+  - Evidence: `test_dry_run_counts_frames_but_not_tasks`.
+- Finding: metric lock conflicted with main.
+  - Fix: merged main, took main's lock, re-ran `--update`.
+  - Evidence: definition drift gate PASS (690 definitions).
+- Finding: dead `window_sec` field on the stream state; `VisionOrganWindowCountV1` not registered; the replies-vs-dispatched denominator was undocumented; the single-router assumption was undocumented.
+  - Fix: field dropped, model registered, both documented in the schema.
+- Finding: stale comments about the retired tick.
+  - Fix: retirement notes in `prediction_error.py` (yield helpers kept, uncalled, for the future day-shape prior), `settings.py`, and the substrate README P2 section.
+- Finding: an idle poll re-read the projection every second.
+  - Fix: the silence check now runs every 10 s.
+- Documented, not fixed in code (below): expiry falls back to the digester's derived "perfect vision" vector; rollback order; FalkorDB residue; deploy order.
 
 ## Restart required
 
@@ -143,7 +163,17 @@ ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh orion-field-dig
 ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh orion-vision-frame-router up -d --build
 ```
 
-Order matters a little: substrate-runtime first (it starts its silence clock and the old tick dies), then the digester, then the router. Between the substrate-runtime and router restarts `capability:vision` may read 1.0 for up to a few minutes (no router windows yet) -- that is the silence path working.
+Use this order: migration first, then the field digester, then substrate-runtime, then the router.
+
+- **Field digester before substrate-runtime.** Otherwise an old digester drops `vision_organ` deltas, and the retired node's value decays toward a calm-looking 0.
+- **Expect a short 1.0 reading.** Between the substrate-runtime and router restarts, `capability:vision` may read 1.0 for a few minutes because no router windows exist yet. That is the silence path working.
+
+Optional cleanup, a production write, so it was not run here: the old FalkorDB concept node `node:substrate.vision` (graph `orion_substrate`) still holds `prediction_error=0` and is no longer written. Endogenous curiosity already ages it to zero. To delete it:
+`docker exec orion-athena-falkordb redis-cli GRAPH.QUERY orion_substrate "MATCH (n {node_id:'node:substrate.vision'}) DETACH DELETE n"`
+
+Rollback: turn the router flag (`VISION_ORGAN_GRAMMAR_ENABLED=false`) off first, then the reducer. If the reducer is off while the router keeps emitting, unconsumed `vision.organ:` rows pin sql-writer's grammar retention floor, and pruning of `grammar_events` stops.
+
+After deploy, delete `SUBSTRATE_VISION_CHANNEL_TICK_ENABLED` and `SUBSTRATE_VISION_CHANNEL_TICK_INTERVAL_SEC` from the primary `services/orion-substrate-runtime/.env`. They are inert at that point.
 
 Proof queries after deploy:
 
@@ -174,6 +204,7 @@ SELECT count(*) FILTER (WHERE (field_json->'node_vectors'->'node:substrate.visio
 
 - Severity: medium. Concern: `capability:vision` now takes the freshest stream, so carbon (or walkway) being dark does not raise capability pressure; it shows only on the projection and in each receipt. Mitigation: deliberate -- a laptop webcam is off whenever the laptop is, and there is no day-shape prior yet; a worst-stream reading would pin capability:vision at alarm every evening. Revisit when a per-stream expectation exists.
 - Severity: medium. Concern: `vision_processing_failure_pressure` has never been non-zero on live data (the host failed once in 141k tasks), so its alarm side is verified by tests only. Mitigation: it is an absent-not-zero reading with a floor; first live failure burst will be in receipts (`failure_window.scope`).
+- Severity: medium. Concern: once both organ channels expire (substrate-runtime or the lane dead for more than 300 s), the field digester's existing derived fallback gives `capability:vision` `pressure=0.0` and `confidence=1.0`. Only the empty `capability_provenance` shows it is unmeasured. This is existing digester behaviour, shared with `rpc_delivery`. Mitigation: the ladder rung `receipts:vision_organ_reducer` goes stale in that case. A digester-wide fix, treating an unmeasured edge source as non-calm, is a follow-up.
 - Severity: low. Concern: if sql-writer stops persisting grammar events, the silence path reports vision as dark (1.0) though the cameras may be fine -- "can't confirm" reads as alarm, not calm. Intended direction, but it can name the wrong organ.
 - Severity: low. Concern: walkway is enabled in `config/vision_frame_router.yaml` but its camera is not deployed (PR #2287), so it reports `never_seen` forever. Mitigation: true; disable it in the policy until the camera ships, or leave it as a visible reminder.
 - Severity: low. Concern: no CI workflow runs the frame-router / field-digester / reducer unit tests; only the static gates run in CI. Mitigation: tests listed above were run locally; same situation as the llm_inference lane.

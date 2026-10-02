@@ -218,9 +218,9 @@ tool outputs still cost their own size, which is correct.
 - **:8011 and `--reasoning-budget 0`:** Orion's 10-01 transcript still contains real
   `thinking` text from that run. Whether the budget is honored is UNVERIFIED and does not
   affect this fix.
-- **Prompt semantics:** reminders move from the system prompt into user turns. This is
-  where Claude Code puts them for real Anthropic models, so behavior should match
-  upstream more closely, not less. Watch the first live turns anyway.
+- **Prompt semantics:** reminders move from the system prompt into user turns, placed
+  right after the tool result they refer to, instead of piling up in the system prompt.
+  The effect on model behavior is UNVERIFIED. Watch the first live turns.
 
 ## Reproduction scripts (in `2026-10-02-fcc-prompt-prefix-cache/`)
 

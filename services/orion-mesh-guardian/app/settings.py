@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     equilibrium_grace_sec: int = Field(30, alias="MESH_GUARDIAN_EQUILIBRIUM_GRACE_SEC")
     channel_equilibrium_snapshot: str = Field("orion:equilibrium:snapshot", alias="CHANNEL_EQUILIBRIUM_SNAPSHOT")
     health_http_port: int = Field(7161, alias="PORT")
+    # Host-wide stability checks (app/stability.py): crash loops, Redis
+    # slow-consumer kills, stuck/failed snapshots, bus-synapse graph inflation.
+    stability_enabled: bool = Field(True, alias="MESH_GUARDIAN_STABILITY_ENABLED")
+    stability_interval_sec: int = Field(60, alias="MESH_GUARDIAN_STABILITY_INTERVAL_SEC")
+    falkordb_uri: str = Field("redis://orion-athena-falkordb:6379", alias="FALKORDB_URI")
+    falkordb_bus_graph: str = Field("orion_bus_synapse", alias="FALKORDB_BUS_GRAPH")
 
     class Config:
         env_file = ".env"

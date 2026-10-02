@@ -13,7 +13,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from .attention import AttentionPublisher
 from .equilibrium_watch import equilibrium_status_for_service, watch_equilibrium
 from .probe import run_probe
-from .remediator import execute_remediation
+from .remediator import docker_cli_selfcheck, execute_remediation
 from .roster import NEVER_REMEDIATE_IDS, RosterDocument, RosterEntry, load_roster, validate_roster
 from .settings import Settings
 from .stability import (
@@ -62,6 +62,12 @@ class MeshGuardianService:
         if roster_errors:
             raise ValueError("invalid mesh guardian roster: " + "; ".join(roster_errors))
         await self._connect_bus_with_retry()
+        if self.settings.auto_remediate:
+            problem = await docker_cli_selfcheck(repo_root=self.settings.orion_repo_root)
+            if problem:
+                logger.error("auto-remediation enabled but docker CLI cannot reach the daemon: %s", problem)
+            else:
+                logger.info("auto-remediation enabled; docker CLI reaches the daemon")
         if self.bus.redis is not None:
             self.states = await load_all(self.bus.redis)
         for entry in self.roster.services:
@@ -319,8 +325,8 @@ class MeshGuardianService:
                 "GRAPH.RO_QUERY", self.settings.falkordb_bus_graph, "MATCH (c:Channel) RETURN count(c)"
             )
             channel_nodes = int(result[1][0][0]) if result and len(result) > 1 and result[1] else 0
-            # The live repo checkout (mounted at /repo), not the copy baked into
-            # this image: a stale baked catalog is the exact failure this detects.
+            # The live repo checkout (mounted at its host path), not the copy baked
+            # into this image: a stale baked catalog is the exact failure this detects.
             repo_catalog = Path(self.settings.orion_repo_root) / "orion" / "bus" / "channels.yaml"
             catalog_size = len(
                 await asyncio.to_thread(load_channel_catalog_names, repo_catalog if repo_catalog.is_file() else None)

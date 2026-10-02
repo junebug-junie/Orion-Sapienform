@@ -66,9 +66,76 @@ async def _run_command(cmd: list[str], *, repo_root: str) -> tuple[int, str]:
     return proc.returncode or 0, tail
 
 
+async def docker_cli_selfcheck(*, repo_root: str) -> str | None:
+    """None if the docker CLI can reach the host daemon, else why not. The image
+    build only proves the CLI exists; a client/daemon API-version gap (daemon
+    upgrades raise the minimum client API) only shows when the daemon is asked."""
+    try:
+        code, tail = await _run_command(
+            ["docker", "version", "--format", "{{.Server.APIVersion}}"], repo_root=repo_root
+        )
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None if code == 0 else (tail.strip() or f"exit {code}")
+
+
+async def deployed_from_elsewhere(
+    entry: RosterEntry, *, repo_root: str, socket_path: str = "/var/run/docker.sock", transport=None
+) -> str | None:
+    """Returns the compose working_dir the running container was deployed
+    from when it is NOT this repo checkout, else None.
+
+    Remediation always runs against the shared checkout. A service deployed
+    from a worktree (scripts/safe_docker_build.sh) would be silently reverted
+    to main by a recreate/rebuild -- the exact incident that wrapper exists to
+    prevent -- so remediation must refuse instead. Fails closed: if the
+    deploy origin cannot be read, that is reported as the reason to refuse.
+    """
+    import json
+
+    import httpx
+
+    expected = str(Path(repo_root) / "services" / entry.compose_dir)
+    filters = json.dumps(
+        {
+            "label": [
+                f"com.docker.compose.project={Path(entry.compose_dir).name}",
+                f"com.docker.compose.service={entry.compose_service}",
+            ]
+        }
+    )
+    try:
+        transport = transport or httpx.AsyncHTTPTransport(uds=socket_path)
+        async with httpx.AsyncClient(transport=transport, base_url="http://docker", timeout=10.0) as client:
+            resp = await client.get("/containers/json", params={"all": "true", "filters": filters})
+            resp.raise_for_status()
+            containers = resp.json()
+    except Exception as exc:
+        return f"<unreadable: {type(exc).__name__}: {exc}>"
+    for container in containers:
+        working_dir = (container.get("Labels") or {}).get("com.docker.compose.project.working_dir")
+        if working_dir and working_dir.rstrip("/") != expected:
+            return working_dir
+    return None
+
+
 async def execute_remediation(entry: RosterEntry, *, repo_root: str, tier: int) -> RemediationResult:
     if entry.id in NEVER_REMEDIATE_IDS or not entry.auto_remediate:
         return RemediationResult(ok=False, tier=tier, command=[], exit_code=1, stderr_tail="remediation_blocked")
+
+    elsewhere = await deployed_from_elsewhere(entry, repo_root=repo_root)
+    if elsewhere is not None:
+        return RemediationResult(
+            ok=False,
+            tier=tier,
+            command=[],
+            exit_code=1,
+            stderr_tail=(
+                f"remediation_refused: {entry.compose_service} is deployed from {elsewhere}, not "
+                f"{repo_root}; recreating from the shared checkout would revert that deploy. "
+                f"Redeploy it from main (scripts/safe_docker_build.sh) or restart it by hand."
+            ),
+        )
 
     if tier == 1:
         cmd = build_compose_command(entry, repo_root=repo_root, tier=1)

@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -870,6 +871,52 @@ def _build_subprocess_env(
     return env
 
 
+def repeat_failure_threshold() -> int:
+    """HARNESS_FCC_REPEAT_FAILURE_THRESHOLD: identical failed calls before the
+    breaker blocks that call for the rest of the turn. 0 disables it."""
+    from orion.fcc.repeat_failure_breaker import DEFAULT_THRESHOLD
+
+    raw = os.environ.get("HARNESS_FCC_REPEAT_FAILURE_THRESHOLD", "").strip()
+    if not raw:
+        return DEFAULT_THRESHOLD
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning(
+            "invalid HARNESS_FCC_REPEAT_FAILURE_THRESHOLD=%r; using default %d", raw, DEFAULT_THRESHOLD
+        )
+        return DEFAULT_THRESHOLD
+
+
+def repeat_failure_breaker_argv(*, correlation_id: str) -> List[str]:
+    """``--settings`` installing the repeat-failing-call PreToolUse hook (all tools).
+
+    Passed as flag settings so it applies regardless of --setting-sources
+    (reading-only turns pass an empty source list). See
+    orion/fcc/repeat_failure_breaker.py for the rule and the incident.
+    """
+    from orion.fcc.repeat_failure_breaker import hook_settings_json
+
+    threshold = repeat_failure_threshold()
+    if threshold <= 0:
+        logger.info("fcc_repeat_failure_breaker_disabled corr=%s", correlation_id)
+        return []
+    return ["--settings", hook_settings_json(threshold=threshold, python_bin=sys.executable)]
+
+
+def _log_repeat_failure_blocks(parsed: Dict[str, Any], *, correlation_id: str) -> None:
+    """Trace: one log line per tool_result the breaker blocked."""
+    from orion.fcc.repeat_failure_breaker import BLOCK_MARKER
+
+    for err in _extract_tool_result_errors(parsed):
+        if BLOCK_MARKER in err:
+            logger.warning(
+                "fcc_repeat_failure_breaker_fired corr=%s detail=%s",
+                correlation_id,
+                " ".join(err.split())[:400],
+            )
+
+
 async def _arm_write_stamper(
     fcc_env: Dict[str, str], *, reading_only: bool, correlation_id: str
 ) -> Optional[WriteStamper]:
@@ -1013,6 +1060,7 @@ async def run_fcc_turn(
         argv.extend(["--tools", "WebFetch,WebSearch", "--strict-mcp-config", "--setting-sources", ""])
     else:
         argv.extend(setting_sources_argv("HARNESS_FCC_SETTING_SOURCES"))
+    argv.extend(repeat_failure_breaker_argv(correlation_id=correlation_id))
     if mcp_config_path is not None:
         extra_allowed_tools: Optional[List[str]] = None
         if not reading_only and _env_truthy("HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"):
@@ -1154,6 +1202,7 @@ async def run_fcc_turn(
                     pending_graph_writes -= finished
                     await _run_write_stamp(stamper, correlation_id=correlation_id, phase="tool_result")
 
+            _log_repeat_failure_blocks(parsed, correlation_id=correlation_id)
             step = build_step_frame(parsed)
             step = annotate_harness_step(step, accumulated_chars=budget_chars, max_chars=ceiling_chars)
             budget_chars += measure_step_payload_chars(step)

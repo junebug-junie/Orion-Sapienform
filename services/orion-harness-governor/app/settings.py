@@ -169,6 +169,14 @@ class HarnessGovernorSettings(BaseSettings):
     harness_fcc_setting_sources: str = Field(
         "user,local", alias="HARNESS_FCC_SETTING_SOURCES"
     )
+    # Repeat-failing-call breaker threshold, read directly from the environment
+    # by orion.harness.fcc_motor.repeat_failure_threshold; mirrored here so
+    # operators see the effective value. 0 disables.
+    # str, not int: an empty value means "default" to the motor and must not
+    # fail settings validation at boot.
+    harness_fcc_repeat_failure_threshold: str = Field(
+        "3", alias="HARNESS_FCC_REPEAT_FAILURE_THRESHOLD"
+    )
 
     # (D) embodiment: publish a deliberate approach intent on the turn correlation_id
     # after a finalized relational turn. Default-off, fail-open (never breaks a turn).

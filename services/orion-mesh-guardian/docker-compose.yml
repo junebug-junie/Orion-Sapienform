@@ -11,6 +11,11 @@ services:
       - "${PORT:-7161}:${PORT:-7161}"
     volumes:
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:/repo:ro
+      # Same repo again at its HOST path: remediation runs `docker compose` against
+      # the host daemon, which resolves build contexts / bind mounts / project
+      # working_dir as host paths. Run from /repo, a recreate would point them at
+      # /repo/... (absent on the host) and relabel the containers.
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:ro
       - ${DOCKER_SOCK_PATH:-/var/run/docker.sock}:/var/run/docker.sock
     environment:
       PROJECT: ${PROJECT}
@@ -18,7 +23,7 @@ services:
       SERVICE_NAME: ${SERVICE_NAME:-orion-mesh-guardian}
       SERVICE_VERSION: ${SERVICE_VERSION:-0.1.0}
       PORT: ${PORT:-7161}
-      ORION_REPO_ROOT: /repo
+      ORION_REPO_ROOT: ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}
       ORION_BUS_URL: ${ORION_BUS_URL}
       HEARTBEAT_INTERVAL_SEC: ${HEARTBEAT_INTERVAL_SEC:-10}
       NOTIFY_BASE_URL: ${NOTIFY_BASE_URL:-http://${PROJECT}-notify:7140}

@@ -36,6 +36,7 @@ node_channels:
   - catalog_drift_pressure
   - observer_failure_pressure
   - rpc_timeout_pressure
+  - write_failure_pressure
   - conversation_load
   - repair_pressure
 
@@ -218,6 +219,25 @@ edges:
     channel_map:
       disk_pressure: pressure
       memory_pressure: pressure
+
+  # 2026-10-02: storage write health. node:substrate.storage_write is written by
+  # orion-substrate-runtime's storage_write reducer (orion/substrate/
+  # storage_write_loop/) from orion-sql-writer's own per-window write outcomes:
+  # the worst table family's failed / max(attempted, 10) over 10 minutes, 0 until
+  # 2 failures. Before this, capability:storage had only athena's disk/memory
+  # biometrics, which read calm while 863 home-cooling rows in a row failed to
+  # serialize (2026-09-26) or Postgres refused connections (2026-09-21).
+  # What it claims: "rows Orion produced did not reach their table" -- schema
+  # rejects, constraint and serialization errors, DB unavailable/timeouts, and
+  # grammar-queue shedding. Not routing gaps (unrouted kinds; fallback_watch owns
+  # those). The receipt names the family. Expires (unmeasured) 180 s after the
+  # writer stops reporting.
+  - source_id: node:substrate.storage_write
+    target_id: capability:storage
+    edge_type: node_capability
+    weight: 0.85
+    channel_map:
+      write_failure_pressure: reliability_pressure
 
   - source_id: node:athena
     target_id: capability:graph

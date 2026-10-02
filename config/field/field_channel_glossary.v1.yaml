@@ -291,6 +291,11 @@ channels:
     category: task_execution
     meaning: "Share of the calls the LLM gateway sent to this node's model backends that came back without an answer (timeout, refused connection, HTTP error), over the node's last 10 minutes of gateway windows: failures / max(calls, 10), counted only once 2+ failures are in that span (the RPC delivery bridge's rule), and the worse of the whole node and its worst single worker lane (2026-09-29; before that it was one 60 s window with no floor, so one timeout on a quiet minute read 1.0). Reported by the gateway itself; absent when the node got no calls in the span."
 
+  - channel: write_failure_pressure
+    level: [node]
+    category: infra_transport
+    meaning: "Storage writes that did not land, on node:substrate.storage_write: orion-sql-writer's own count of incoming writes that did not reach their Postgres table (schema/validation reject, constraint violation, serialization error, database unavailable or timed out, grammar queue shed), as the worst table family's failed / max(attempted, 10) over the last 10 minutes of writer windows, counted only once a family has 2+ failures. Idempotent duplicates are not failures; unrouted kinds are not counted. 0.0 means every counted write in the span landed; dropped (unmeasured) when no writer window has been reduced for 180 s."
+
   - channel: rpc_timeout_pressure
     level: [node]
     category: infra_transport

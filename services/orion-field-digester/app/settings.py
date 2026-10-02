@@ -64,6 +64,13 @@ class Settings(BaseSettings):
         False,
         alias="ENABLE_RPC_DELIVERY_FIELD_DIGESTION",
     )
+    # storage_write deltas (orion-sql-writer's own write outcomes, via
+    # substrate-runtime's storage_write reducer) -> node:substrate.storage_write
+    # write_failure_pressure -> capability:storage reliability_pressure.
+    enable_storage_write_field_digestion: bool = Field(
+        False,
+        alias="ENABLE_STORAGE_WRITE_FIELD_DIGESTION",
+    )
     enable_idle_tick: bool = Field(True, alias="FIELD_DIGESTER_IDLE_TICK_ENABLED")
     field_state_retention_hours: float = Field(72.0, alias="FIELD_STATE_RETENTION_HOURS")
     field_state_prune_interval_sec: float = Field(3600.0, alias="FIELD_STATE_PRUNE_INTERVAL_SEC")

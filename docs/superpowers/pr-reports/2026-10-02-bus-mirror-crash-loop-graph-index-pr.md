@@ -92,3 +92,7 @@ scripts/safe_docker_build.sh orion-bus-mirror up -d --build
 - **Low:** 117,874 stale per-request Channel nodes are still in the graph. They are harmless now that lookups are indexed. Remove them with the cleanup script `--execute` after a fresh RDB exists. The guard blocked this too.
 - **Low:** the SQLite file stays about 30 GB on disk until a one-off `VACUUM`. Freed pages are reused, so it won't grow further.
 - **Low:** `synchronous=NORMAL` can lose the last few rows of the 24 h mirror log on power loss.
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/2468

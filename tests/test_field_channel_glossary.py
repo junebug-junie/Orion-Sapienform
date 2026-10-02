@@ -41,14 +41,17 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     not renamed here to keep this diff reviewable against its own history --
     the asserted numbers below are current, that's what matters.
     - stream_backlog_pressure/stream_backlog_health/delivery_confidence retired
-    2026-09-25 (fix/bus-observer-scope): 51 -> 48 entries, 50 -> 47 names."""
+    2026-09-25 (fix/bus-observer-scope): 51 -> 48 entries, 50 -> 47 names.
+    + vision_frame_staleness / vision_processing_failure_pressure added
+    2026-10-02 (the vision frame router reporting on the eye,
+    orion/substrate/vision_organ_loop/): 49 -> 51 entries, 48 -> 50 names."""
     glossary = load_glossary()
     entries = glossary["entries"]
-    assert len(entries) == 49
+    assert len(entries) == 51
     names = {e.channel for e in entries}
     for retired in ("stream_backlog_pressure", "stream_backlog_health", "delivery_confidence"):
         assert retired not in names
-    assert len(names) == 48, "a node-qualified entry must not introduce a new distinct channel name"
+    assert len(names) == 50, "a node-qualified entry must not introduce a new distinct channel name"
     assert "cpu_pressure" in names
     assert "reliability_pressure" in names
     assert "tension_deviation_pressure" in names
@@ -58,6 +61,8 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     assert "cabinet_ambient_audio_staleness" in names
     assert "stability" in names
     assert "inference_failure_pressure" in names
+    assert "vision_frame_staleness" in names
+    assert "vision_processing_failure_pressure" in names
     assert "rpc_timeout_pressure" in names
     # contract_pressure is the only node+capability overlap since
     # stream_backlog_pressure was retired (2026-09-25).

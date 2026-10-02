@@ -572,6 +572,27 @@ def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                 )
             )
 
+    if delta.target_kind == "vision_organ":
+        # orion-vision-frame-router's own report on the eye, folded by substrate-
+        # runtime's vision_organ reducer (orion/substrate/vision_organ_loop/). One
+        # fresh organ reading per router window (or per silence write), so
+        # mode="replace". A hint the reducer omits (no task dispatched in the
+        # failure span) writes nothing; both channels expire rather than decay
+        # (decay.py EXPIRING_NODE_CHANNELS), so a stopped lane reads unmeasured,
+        # never a fabricated calm 0.0.
+        hints = dict((delta.after or {}).get("pressure_hints") or {})
+        for channel in ("vision_frame_staleness", "vision_processing_failure_pressure"):
+            if channel in hints:
+                out.append(
+                    Perturbation(
+                        node_id=node_id,
+                        channel=channel,
+                        intensity=max(0.0, min(1.0, float(hints[channel]))),
+                        label=delta.delta_id,
+                        mode="replace",
+                    )
+                )
+
     if delta.target_kind == "rpc_delivery":
         # orion-substrate-runtime's RPC delivery bridge (orion/substrate/rpc_delivery.py):
         # the worst bus hop's share of rpc_request() calls that hit their deadline,

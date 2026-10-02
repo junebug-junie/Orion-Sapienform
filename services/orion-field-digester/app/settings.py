@@ -57,6 +57,14 @@ class Settings(BaseSettings):
         False,
         alias="ENABLE_LLM_INFERENCE_FIELD_DIGESTION",
     )
+    # vision_organ deltas (orion-vision-frame-router's own report on the eye, via
+    # substrate-runtime's vision_organ reducer) -> node:substrate.vision_organ
+    # vision_frame_staleness / vision_processing_failure_pressure ->
+    # capability:vision. Off in code; the operator template turns it on.
+    enable_vision_organ_field_digestion: bool = Field(
+        False,
+        alias="ENABLE_VISION_ORGAN_FIELD_DIGESTION",
+    )
     # rpc_delivery deltas (substrate-runtime's RPC delivery bridge: worst bus
     # hop's timeout ratio from every service's rpc-health snapshots) -> node
     # rpc_timeout_pressure -> capability:transport reliability_pressure.

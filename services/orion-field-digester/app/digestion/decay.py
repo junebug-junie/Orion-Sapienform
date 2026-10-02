@@ -93,8 +93,16 @@ CAPABILITY_DECAY_CHANNELS = {
 #
 # rpc_timeout_pressure: the bridge writes every 30 s whenever any bus RPC call
 # happened in the last 10 min; 120 s = four missed ticks.
+#
+# vision_frame_staleness / vision_processing_failure_pressure: the vision_organ
+# reducer writes once per 60 s router window, and its silence path writes
+# staleness 1.0 every <= 60 s while the router is quiet. 300 s = five missed
+# writes, i.e. substrate-runtime itself (or the lane) has stopped -- then the
+# field must read "unmeasured", not the last value.
 EXPIRING_NODE_CHANNELS: dict[str, float] = {
     "rpc_timeout_pressure": 120.0,
+    "vision_frame_staleness": 300.0,
+    "vision_processing_failure_pressure": 300.0,
 }
 
 

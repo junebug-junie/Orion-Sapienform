@@ -11,6 +11,7 @@ from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
 
+from . import grammar_emit
 from .dispatcher import FrameDispatcher
 from .expectation import ExpectationCache
 from .metrics import RouterMetrics, make_health_envelope
@@ -39,6 +40,7 @@ class FrameRouterService:
         self._timeout_task: Optional[asyncio.Task] = None
         self._health_task: Optional[asyncio.Task] = None
         self._expectation_task: Optional[asyncio.Task] = None
+        self._organ_task: Optional[asyncio.Task] = None
         self._expectation_redis: Any = None
         self.expectation: ExpectationCache | None = (
             ExpectationCache(refresh_sec=self.settings.ROUTER_EXPECTATION_REFRESH_SEC)
@@ -66,6 +68,20 @@ class FrameRouterService:
         self._reply_task = asyncio.create_task(self._reply_loop())
         self._timeout_task = asyncio.create_task(self._timeout_loop())
         self._health_task = asyncio.create_task(self._health_loop())
+        if self.settings.VISION_ORGAN_GRAMMAR_ENABLED:
+            # Expected streams = the policy file's `streams:` block. A listed stream
+            # that never sends a frame is reported as absent, not as calm.
+            grammar_emit.install_recorder(
+                sid for sid, cfg in self.policy.streams_cfg.items() if (cfg or {}).get("enabled", True)
+            )
+            self._organ_task = asyncio.create_task(
+                grammar_emit.run_window_publisher(
+                    self.bus,
+                    router=self.settings.SERVICE_NAME,
+                    window_sec=self.settings.VISION_ORGAN_WINDOW_SEC,
+                    stop=self._shutdown,
+                )
+            )
         if self.expectation is not None:
             # Own client on the bus Redis (where orion:vision:expect:<stream_id>
             # lives). Plain redis-py, not the bus codec: this is a key read, not
@@ -88,6 +104,7 @@ class FrameRouterService:
             self._timeout_task,
             self._health_task,
             self._expectation_task,
+            self._organ_task,
         ):
             if task:
                 task.cancel()
@@ -187,6 +204,7 @@ class FrameRouterService:
             "expectation_steering_enabled": self.expectation is not None,
             "expectation_open_streams": self.expectation.open_streams() if self.expectation else [],
             "expectation_refresh_failures": self.expectation.refresh_failures if self.expectation else 0,
+            "vision_organ_grammar_enabled": grammar_emit.get_recorder() is not None,
         }
 
 

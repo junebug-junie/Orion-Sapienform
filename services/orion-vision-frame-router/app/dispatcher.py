@@ -10,6 +10,9 @@ from loguru import logger
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.vision import VisionFramePointerPayload, VisionTaskResultPayload
 
+from orion.schemas.vision_organ_projection import FAILURE_HOST_ERROR, FAILURE_INVALID_REPLY, FAILURE_TIMEOUT
+
+from . import grammar_emit
 from .envelopes import make_host_task_envelope, make_secondary_task_envelope
 from .host_trigger import extract_host_trigger_labels, stream_id_from_host_result
 from .metrics import RouterMetrics
@@ -53,6 +56,10 @@ class FrameDispatcher:
 
         self.metrics.record_seen()
         camera_id = frame.camera_id or "unknown"
+        organ_stream = _organ_stream(frame.stream_id, camera_id)
+        organ = grammar_emit.get_recorder()
+        if organ is not None:
+            organ.record_frame(organ_stream)
         image_path = (frame.image_path or "").strip()
         image_path_exists: bool | None = None
         if image_path and self.policy.require_image_path_exists(camera_id):
@@ -67,6 +74,8 @@ class FrameDispatcher:
             )
             if not decision.should_dispatch:
                 self.metrics.record_skip(decision.reason)
+                if organ is not None:
+                    organ.record_skip(organ_stream, decision.reason)
                 return
 
             task = self.policy.build_task_request(frame, env, decision)
@@ -103,8 +112,11 @@ class FrameDispatcher:
                 now=time.time(),
                 frame_ts=frame.frame_ts,
                 stream_id=frame.stream_id,
+                want_caption=want_caption,
             )
             self.metrics.record_dispatch()
+            if organ is not None:
+                organ.record_dispatch(organ_stream)
 
             # Secondary, independent dispatch -- see policy.decide_identity's
             # docstring for why this is not folded into decision/task above.
@@ -149,6 +161,8 @@ class FrameDispatcher:
                 )
                 self.state.camera(camera_id).last_identity_dispatch_ts = now
                 self.metrics.record_identity_dispatch()
+                if organ is not None:
+                    organ.record_dispatch(organ_stream, identity=True)
                 logger.info(
                     "[ROUTER] identity_dispatch camera_id={} stream_id={} corr={}",
                     camera_id,
@@ -190,12 +204,15 @@ class FrameDispatcher:
             # sweep_timeouts when vision-host demonstrably did respond).
             self.metrics.last_error = f"invalid_reply_payload: {exc}"
             self.metrics.host_errors_total += 1
+            _organ_failure(cleared, FAILURE_INVALID_REPLY)
             return
 
         self.metrics.host_replies_total += 1
         if not result.ok:
             self.metrics.host_errors_total += 1
+            _organ_failure(cleared, result.error_code or FAILURE_HOST_ERROR)
             return
+        _organ_reply_ok(cleared, result)
 
         stream_id = stream_id_from_host_result(result, fallback_stream_id=cleared.stream_id)
         allowed = set(self.policy.trigger_labels_for(cleared.camera_id, stream_id))
@@ -213,7 +230,36 @@ class FrameDispatcher:
             )
             cleared = 0
             for cid in expired:
-                if self.state.clear_pending(cid, now=now):
+                task = self.state.clear_pending(cid, now=now)
+                if task:
                     self.metrics.host_timeouts_total += 1
+                    _organ_failure(task, FAILURE_TIMEOUT)
                     cleared += 1
             return cleared
+
+
+def _organ_stream(stream_id: str | None, camera_id: str | None) -> str:
+    return str(stream_id or camera_id or "unknown")
+
+
+def _organ_failure(task, failure_class: str) -> None:
+    organ = grammar_emit.get_recorder()
+    if organ is not None:
+        organ.record_failure(_organ_stream(task.stream_id, task.camera_id), failure_class)
+
+
+def _organ_reply_ok(task, result: VisionTaskResultPayload) -> None:
+    organ = grammar_emit.get_recorder()
+    if organ is None:
+        return
+    outputs = result.artifact.outputs if result.artifact is not None else None
+    objects = outputs.objects if outputs is not None else None
+    caption = outputs.caption if outputs is not None else None
+    organ.record_reply_ok(
+        _organ_stream(task.stream_id, task.camera_id),
+        primary=task.is_primary,
+        # None (no objects key) is an embed-only/identity reply, not an empty detection
+        objects=None if objects is None else len(objects),
+        caption_requested=task.want_caption,
+        caption_present=bool(caption is not None and str(caption.text or "").strip()),
+    )

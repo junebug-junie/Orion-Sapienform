@@ -2942,6 +2942,9 @@ channels:
       # LLM_GATEWAY_GRAMMAR_ENABLED -- services/orion-llm-gateway/app/grammar_emit.py
       - orion-llm-gateway
       - orion-substrate-runtime
+      # per-window vision organ traces (vision.organ:), gated by
+      # VISION_ORGAN_GRAMMAR_ENABLED -- services/orion-vision-frame-router/app/grammar_emit.py
+      - orion-vision-frame-router
     # orion-equilibrium-service added for the chat_turn metacog trigger's
     # correlator, which filters this stream to semantic_role=="exec_turn_timeout"
     # only (services/orion-hub/scripts/grammar_emit.py::build_turn_timeout_grammar_events,

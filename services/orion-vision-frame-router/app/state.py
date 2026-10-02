@@ -26,6 +26,10 @@ class PendingTask(BaseModel):
     task_type: str
     dispatched_at: float
     reply_to: str
+    # Read by the vision organ recorder (app/grammar_emit.py) when the reply lands:
+    # only a primary task's reply counts toward detection/caption yield.
+    is_primary: bool = True
+    want_caption: bool = False
 
 
 class StreamTriggerState(BaseModel):
@@ -63,6 +67,7 @@ class RouterState:
         frame_ts: float | None,
         stream_id: str | None = None,
         is_primary: bool = True,
+        want_caption: bool = False,
     ) -> None:
         """``is_primary=False`` for the identity_face secondary dispatch
         (dispatcher.py): review finding, 2026-08-26, independently
@@ -97,6 +102,8 @@ class RouterState:
             task_type=task_type,
             dispatched_at=now,
             reply_to=reply_to,
+            is_primary=is_primary,
+            want_caption=want_caption,
         )
 
     def clear_pending(self, correlation_id: str, *, now: float) -> PendingTask | None:

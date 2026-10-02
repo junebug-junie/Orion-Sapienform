@@ -50,3 +50,11 @@ class Settings(BaseSettings):
     # reads as "no expectation".
     ROUTER_EXPECTATION_STEERING_ENABLED: bool = True
     ROUTER_EXPECTATION_REFRESH_SEC: float = 5.0
+
+    # Vision organ self-report (app/grammar_emit.py): once per window, publish
+    # what the eye did per stream (frames, tasks, failures by class, yield) as
+    # one grammar trace (vision.organ:) on orion:grammar:event. Off in code; the
+    # operator template turns it on. Consumed by orion-substrate-runtime's
+    # vision_organ reducer (ENABLE_VISION_ORGAN_REDUCER).
+    VISION_ORGAN_GRAMMAR_ENABLED: bool = False
+    VISION_ORGAN_WINDOW_SEC: float = 60.0

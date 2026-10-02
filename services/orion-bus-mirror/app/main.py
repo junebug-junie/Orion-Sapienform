@@ -1,4 +1,5 @@
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -57,7 +58,8 @@ async def _prune_old_bus_events(
     *,
     retention_hours: float,
     now: Optional[datetime] = None,
-    batch_size: int = 20000,
+    batch_size: int = 5000,
+    yield_ratio: float = 3.0,
 ) -> int:
     """Deletes ``bus_events`` rows older than ``retention_hours``, returns the
     number of rows deleted. Separated from the sleep-loop wrapper below so
@@ -85,10 +87,16 @@ async def _prune_old_bus_events(
     each pass reads one row to decide whether to continue, instead of a
     ``WHERE timestamp < ?`` scan that (with no timestamp index) would read
     the whole remaining 24h of rows to prove nothing old is left.
+
+    After each batch it sleeps ``yield_ratio`` times as long as the batch
+    took, capping the prune at ~1/(1+yield_ratio) of the connection's time.
+    Live 2026-10-02 a back-to-back prune of an 8-day backlog cut message
+    throughput from ~77/s to 4.7/s and the bus lag climbed past a minute.
     """
     cutoff = ((now or datetime.now(timezone.utc)) - timedelta(hours=retention_hours)).isoformat()
     total = 0
     while True:
+        started = time.monotonic()
         cursor = await conn.execute("SELECT timestamp FROM bus_events ORDER BY rowid LIMIT 1")
         oldest = await cursor.fetchone()
         if oldest is None or oldest[0] >= cutoff:
@@ -102,7 +110,7 @@ async def _prune_old_bus_events(
         if cursor.rowcount == 0:
             return total
         total += cursor.rowcount
-        await asyncio.sleep(0)
+        await asyncio.sleep((time.monotonic() - started) * yield_ratio)
 
 
 async def _run_sqlite_retention_loop(conn: aiosqlite.Connection) -> None:

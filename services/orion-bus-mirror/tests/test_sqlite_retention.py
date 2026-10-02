@@ -151,3 +151,30 @@ class TestPruneStopsEarly:
             assert not any("WHERE timestamp <" in s for s in statements)
             cursor = await conn.execute("SELECT count(*) FROM bus_events")
             assert (await cursor.fetchone())[0] == 50
+
+
+class TestPruneYieldsToTheMessageLoop:
+    @pytest.mark.asyncio
+    async def test_sleeps_between_batches_in_proportion_to_batch_time(self, monkeypatch) -> None:
+        # A back-to-back prune starved inserts on the shared connection
+        # (live 2026-10-02: 77 msg/s -> 4.7 msg/s). Each batch must be
+        # followed by a real pause, not asyncio.sleep(0).
+        sleeps: list[float] = []
+        real_sleep = asyncio.sleep
+
+        async def recording_sleep(delay: float) -> None:
+            sleeps.append(delay)
+            await real_sleep(0)
+
+        monkeypatch.setattr(main_module.asyncio, "sleep", recording_sleep)
+        async with aiosqlite.connect(":memory:") as conn:
+            await _ensure_schema(conn)
+            now = datetime(2026, 7, 24, 12, 0, 0, tzinfo=timezone.utc)
+            for hours_ago in range(25, 31):
+                await _insert_row(conn, timestamp_iso=(now - timedelta(hours=hours_ago)).isoformat())
+
+            deleted = await _prune_old_bus_events(conn, retention_hours=24.0, now=now, batch_size=2, yield_ratio=3.0)
+
+        assert deleted == 6
+        assert len(sleeps) == 3
+        assert all(delay > 0 for delay in sleeps)

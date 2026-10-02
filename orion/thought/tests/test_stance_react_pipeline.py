@@ -260,3 +260,37 @@ def test_parse_stance_react_payload_drops_model_session_when_request_has_none() 
     raw["session_id"] = "sess-orion-main-001"
     parsed = parse_stance_react_payload(raw, correlation_id="c-real", session_id=None)
     assert parsed.session_id is None
+
+
+def test_apply_stance_react_pipeline_expands_bare_turn_token() -> None:
+    # The prompt asks for `hub:turn`; the model never copies the correlation id.
+    broadcast = _broadcast(attended=["node-a"])
+    req = _request(broadcast=broadcast)
+    thought = _thought(correlation_id="c-1", evidence_refs=["node-a", "hub:turn"], strain_refs=[])
+    result = apply_stance_react_pipeline(thought, req)
+    assert result.disposition == "proceed"
+    assert result.evidence_refs == ["node-a", "hub:turn:c-1"]
+
+
+def test_apply_stance_react_pipeline_garbled_anchor_in_strain_refs_cannot_launder_evidence() -> None:
+    # Live 2026-10-02: the model mis-transcribed the UUID. A garbled anchor in
+    # strain_refs used to widen the allowed set and pass the same garbled evidence.
+    req = _request(broadcast_stale=True)
+    thought = _thought(
+        correlation_id="c-1",
+        evidence_refs=["hub:turn:c-1-garbled"],
+        strain_refs=["hub:turn:c-1-garbled"],
+    )
+    result = apply_stance_react_pipeline(thought, req)
+    assert result.evidence_refs == ["hub:turn:c-1"]
+    assert result.strain_refs == ["hub:turn:c-1"]
+
+
+def test_stance_react_prompt_does_not_ask_model_to_copy_correlation_id() -> None:
+    from pathlib import Path
+
+    template = (
+        Path(__file__).resolve().parents[2] / "cognition" / "prompts" / "stance_react.j2"
+    ).read_text(encoding="utf-8")
+    assert "hub:turn:<correlation_id>" not in template
+    assert "literal `hub:turn`" in template

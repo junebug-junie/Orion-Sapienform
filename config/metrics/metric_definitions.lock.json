@@ -2,11 +2,10 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 688,
   "_last_change": {
-    "change_count": 2,
-    "high_severity_count": 1,
+    "change_count": 1,
+    "high_severity_count": 0,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026y', 'orion-substrate-run\u2026 -> \u2026y', 'orion-sql-writer', 'orion-substrate-run\u2026)",
-      "medium added metric://field_channel/orion-field-digester/write_failure_pressure"
+      "medium added metric://bus_channel/orion-memory-consolidation/orion:memory:episode:closed"
     ]
   },
   "definitions": {
@@ -526,7 +525,6 @@
         "orion-harness-governor",
         "orion-hub",
         "orion-llm-gateway",
-        "orion-sql-writer",
         "orion-substrate-runtime"
       ],
       "declared_consumers": [
@@ -2440,6 +2438,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-memory-consolidation/orion:memory:episode:closed": {
+      "schema_id": "MemoryEpisodeClosedV1",
+      "all_producers": [
+        "orion-memory-consolidation"
+      ],
+      "declared_consumers": [
+        "orion-durable-runs"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-memory-consolidation/orion:signals:memory_consolidation": {
       "schema_id": "OrionSignalV1",
       "all_producers": [
@@ -4229,11 +4238,6 @@
     "metric://field_channel/orion-field-digester/turn_incompletion": {
       "meaning": "Did Hub fail to get a usable result back from the harness-governor RPC for this turn at all -- the one unified-turn failure mode where no governor-side grammar event exists. A distinct, worse severity than compliance_deficit's worst rank.",
       "notes": "category=task_execution level=node",
-      "registry_source": "config/field/field_channel_glossary.v1.yaml"
-    },
-    "metric://field_channel/orion-field-digester/write_failure_pressure": {
-      "meaning": "Storage writes that did not land, on node:substrate.storage_write: orion-sql-writer's own count of incoming writes that did not reach their Postgres table (schema/validation reject, constraint violation, serialization error, database unavailable or timed out, grammar queue shed), as the worst table family's failed / max(attempted, 10) over the last 10 minutes of writer windows, counted only once a family has 2+ failures. Idempotent duplicates are not failures; unrouted kinds are not counted. 0.0 means every counted write in the span landed; dropped (unmeasured) when no writer window has been reduced for 180 s.",
-      "notes": "category=infra_transport level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://inner_state/orion-attention-runtime/field_attention_frame.v1": {

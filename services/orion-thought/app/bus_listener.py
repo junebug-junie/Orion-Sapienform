@@ -29,6 +29,7 @@ from orion.schemas.thought import (
     StanceReactRequestV1,
     ThoughtEventV1,
 )
+from orion.thought.coalition import prompt_turn_refs
 from orion.thought.stance_react import (
     apply_stance_react_pipeline,
     build_stance_react_failure_thought,
@@ -138,7 +139,9 @@ def _coalition_projection(request: StanceReactRequestV1) -> dict[str, Any] | Non
     if broadcast is None:
         return None
     return {
-        "attended_node_ids": list(broadcast.attended_node_ids),
+        "attended_node_ids": prompt_turn_refs(
+            list(broadcast.attended_node_ids), request.association.correlation_id
+        ),
         "open_loop_ids": [loop.id for loop in broadcast.frame.open_loops],
         "broadcast_stale": request.association.broadcast_stale,
     }

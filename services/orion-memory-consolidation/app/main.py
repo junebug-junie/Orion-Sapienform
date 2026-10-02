@@ -13,6 +13,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from app.retry_degraded_classifies import run_classify_retry_loop
 from app.retry_failed_windows import run_retry_loop
 from app.settings import settings
+from app.episode_shadow import EpisodeShadowStore
 from app.window_state import WindowStore
 from app.worker import ConsolidationSuggestRunner, handle_memory_turn_persisted
 
@@ -54,6 +55,7 @@ async def lifespan(app: FastAPI):
     await bus_client.connect()
 
     window_store = WindowStore(pg_pool) if pg_pool is not None else None
+    episode_store = EpisodeShadowStore(pg_pool, settings) if pg_pool is not None else None
     suggest_runner = (
         ConsolidationSuggestRunner(pg_pool, window_store, grammar_pool=grammar_pg_pool or pg_pool)
         if pg_pool and window_store
@@ -73,6 +75,7 @@ async def lifespan(app: FastAPI):
             bus=bus_client,
             window_store=window_store,
             suggest_runner=suggest_runner,
+            episode_store=episode_store,
         )
 
     if settings.ORION_BUS_ENABLED:
@@ -126,4 +129,5 @@ async def health() -> dict:
         "postgres": pg_pool is not None,
         "bus": bus_hunter is not None,
         "enabled": settings.MEMORY_CONSOLIDATION_ENABLED,
+        "episode_shadow_enabled": settings.MEMORY_EPISODE_SHADOW_ENABLED,
     }

@@ -23,13 +23,17 @@ from orion.fcc.context_budget import (
     build_context_pressure_step,
     context_fill_pct,
     context_pressure_threshold_chars,
+    is_compact_boundary_event,
     is_context_overflow_text,
     is_provider_error_envelope,
     max_context_chars,
     max_context_tokens,
     measure_step_payload_chars,
+    post_compaction_context_chars,
     summarize_context_risk_suffix,
 )
+
+from orion.harness.cut_short import FCC_CONTEXT_CEILING_ERROR_CODE
 
 logger = logging.getLogger("orion.harness.fcc_motor")
 
@@ -1088,7 +1092,14 @@ async def run_fcc_turn(
     claude_session_id: Optional[str] = None
     served_model: Optional[str] = None
     exit_code = 1
+    # Estimated chars currently in the model's context, NOT a lifetime total:
+    # rebased to the post-compaction size on every CLI `compact_boundary`.
     budget_chars = len(prompt)
+    compactions = 0
+    # The CLI's own "turn complete" event arrived. A timeout/stall AFTER it is the
+    # process hanging on exit (e.g. MCP teardown), not a turn cut short: the
+    # runner must keep `accumulated` as the finished answer.
+    saw_result = False
     ceiling_chars = max_context_chars(lane_n_ctx)
     pressure_chars = context_pressure_threshold_chars(lane_n_ctx)
 
@@ -1165,7 +1176,7 @@ async def run_fcc_turn(
                     # known (see the identical carry-forward on the ceiling-
                     # exceeded and line-limit error yields below, and the
                     # authoritative one on the "final"/fcc_nonzero_exit yields).
-                    "metadata": {"fcc_served_model": served_model},
+                    "metadata": {"fcc_served_model": served_model, "fcc_result_seen": saw_result},
                 }
                 return
             except asyncio.LimitOverrunError as exc:
@@ -1175,7 +1186,7 @@ async def run_fcc_turn(
                     "error": f"fcc stream line exceeded read limit: {exc}",
                     "error_code": "fcc_stream_line_limit",
                     "llm_response": accumulated or None,
-                    "metadata": {"fcc_served_model": served_model},
+                    "metadata": {"fcc_served_model": served_model, "fcc_result_seen": saw_result},
                 }
                 return
 
@@ -1204,6 +1215,18 @@ async def run_fcc_turn(
 
             _log_repeat_failure_blocks(parsed, correlation_id=correlation_id)
             step = build_step_frame(parsed)
+            if is_compact_boundary_event(parsed):
+                # The CLI just dropped the old transcript for a summary; what the
+                # turn saw before this point is no longer in context.
+                before = budget_chars
+                budget_chars = post_compaction_context_chars(parsed, prompt_chars=len(prompt))
+                compactions += 1
+                # Re-arm the pressure nudge: context can legitimately fill again.
+                context_nudge_sent = False
+                logger.info(
+                    "fcc_context_compacted corr=%s compactions=%s budget_chars=%s->%s ceiling=%s",
+                    correlation_id, compactions, before, budget_chars, ceiling_chars,
+                )
             step = annotate_harness_step(step, accumulated_chars=budget_chars, max_chars=ceiling_chars)
             budget_chars += measure_step_payload_chars(step)
             yield {"type": "step", "step": step}
@@ -1230,18 +1253,24 @@ async def run_fcc_turn(
             # it falls back to json.dumps(raw), re-measuring text already
             # counted via the preceding assistant deltas) and lose the
             # completed answer to a false-positive runaway-draft error.
+            #
+            # Reaching the ceiling now means the estimated LIVE context (rebased on
+            # every compaction above) passed the lane window -- the CLI's own
+            # autocompact (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, below 100%) did not
+            # fire in time. That is the runaway this guard exists for.
             if str(parsed.get("type") or "") != "result" and budget_chars >= ceiling_chars:
                 proc.kill()
                 yield {
                     "type": "error",
                     "error": (
-                        f"fcc draft exceeded context ceiling ({budget_chars} >= "
-                        f"{ceiling_chars} chars) without completing the turn"
+                        f"fcc estimated live context exceeded the lane ceiling ({budget_chars} >= "
+                        f"{ceiling_chars} chars, {compactions} CLI compaction(s) this turn) "
+                        "without completing the turn"
                     ),
-                    "error_code": "fcc_draft_length_ceiling_exceeded",
+                    "error_code": FCC_CONTEXT_CEILING_ERROR_CODE,
                     "steps_seen": steps_seen,
                     "llm_response": accumulated or None,
-                    "metadata": {"fcc_served_model": served_model},
+                    "metadata": {"fcc_served_model": served_model, "fcc_compactions": compactions},
                 }
                 return
 
@@ -1250,6 +1279,8 @@ async def run_fcc_turn(
                 accumulated = text
             if sid:
                 claude_session_id = sid
+            if str(parsed.get("type") or "") == "result":
+                saw_result = True
             if str(parsed.get("type") or "") == "assistant":
                 seen_model = _served_model_from_assistant(parsed)
                 if seen_model:
@@ -1304,6 +1335,8 @@ async def run_fcc_turn(
         "claude_session_id": claude_session_id,
         "duration_ms": duration_ms,
         "exit_code": exit_code,
+        # How many times the CLI compacted this turn's context (compact_boundary).
+        "fcc_compactions": compactions,
     }
 
     if exit_code != 0:

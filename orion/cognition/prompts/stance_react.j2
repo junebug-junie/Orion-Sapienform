@@ -110,7 +110,7 @@ REQUIRED JSON FIELDS
 - imperative: max 300 chars — how this turn should approach the task (felt layer, not speech)
 - tone: max 200 chars — strain, discomfort, relational frame in plain language
 - strain_refs: JSON array of coalition node_ids and/or open_loop ids driving the felt layer
-- evidence_refs: JSON array — each id MUST be a subset of attended coalition ids or strain_refs; min 1 when proceeding
+- evidence_refs: JSON array — each id MUST be a subset of attended coalition ids or strain_refs (`hub:turn` is this turn's anchor); min 1 when proceeding
 - stance_harness_slice:
   - task_mode: one of direct_response, triage, technical_collaboration, identity_dialogue, reflective_dialogue, playful_exchange, mixed
   - conversation_frame: one of technical, planning, reflective, playful_relational, identity_emergence, mixed
@@ -130,7 +130,7 @@ METADATA (include when available from request context)
 - profile: "stance_react"
 - llm_profile: "brain"
 - producer: "stance_react_v1"
-- Hub turns always include attended coalition anchor `hub:turn:<correlation_id>` — cite it in evidence_refs when no substrate nodes qualify.
+- Hub turns always include this turn's coalition anchor. Cite it as the literal `hub:turn` (no id) in evidence_refs when no substrate nodes qualify; the transport fills in the id. Never copy or re-check the correlation_id.
 
 FAIL-CLOSED REMINDER
 - Empty evidence_refs or ids outside coalition/strain_refs will defer downstream — cite only coalition-backed evidence.

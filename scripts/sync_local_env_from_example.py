@@ -191,6 +191,8 @@ SYNC_PREFIXES = (
     # rpc delivery field bridge (2026-09-25): substrate-runtime producer keys and
     # the field-digester gate. None matched an existing prefix.
     "SUBSTRATE_RPC_DELIVERY_",
+    # Reverie PE-magnitude history writer (spec 2026-10-02, step 1).
+    "SUBSTRATE_PE_HISTORY_",
     "SUBSTRATE_RPC_HEALTH_",
     "ENABLE_RPC_DELIVERY_",
     "ENABLE_PRE_TURN_",

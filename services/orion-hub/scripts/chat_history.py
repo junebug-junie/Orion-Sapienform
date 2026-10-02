@@ -387,6 +387,44 @@ def build_chat_turn_envelope(
     )
 
 
+async def read_conversation_phase_stamp_for_session(session_id: Optional[str]) -> Optional[dict]:
+    """Read-only conversation wall-clock stamp for a turn with no situation build.
+
+    Memory episode boundary Fix 1: every persisted chat turn should carry
+    ``conversation_phase``. The unified lane stamps it from its own situation
+    build; the legacy WS/HTTP lanes (live today only for workflow commands) and
+    Orion's unprompted outreach do not build one, so they read the clock here
+    without moving it. Fail-open: None on any error, never a guessed phase.
+    """
+    try:
+        from orion.situational.context import (
+            hub_settings_to_runtime_namespace,
+            read_conversation_phase_stamp,
+            settings_from_runtime,
+        )
+
+        tz_name = settings_from_runtime(hub_settings_to_runtime_namespace(settings)).timezone
+        return await read_conversation_phase_stamp(session_id, tz_name=tz_name)
+    except Exception:
+        logger.debug("conversation_phase_stamp_read_failed session=%s", session_id, exc_info=True)
+        return None
+
+
+async def _ensure_conversation_phase(turn_payload: Any) -> None:
+    spark_meta = getattr(turn_payload, "spark_meta", None)
+    if isinstance(spark_meta, dict) and isinstance(spark_meta.get("conversation_phase"), dict):
+        return
+    stamp = await read_conversation_phase_stamp_for_session(getattr(turn_payload, "session_id", None))
+    if not stamp:
+        return
+    merged = dict(spark_meta) if isinstance(spark_meta, dict) else {}
+    merged["conversation_phase"] = stamp
+    try:
+        turn_payload.spark_meta = merged
+    except Exception:
+        logger.debug("conversation_phase_stamp_attach_failed", exc_info=True)
+
+
 async def publish_chat_turn(bus, env: ChatHistoryTurnEnvelope) -> None:
     """Publish a turn-level chat history envelope to the configured turn channel."""
     if not bus or not getattr(bus, "enabled", False):
@@ -397,6 +435,7 @@ async def publish_chat_turn(bus, env: ChatHistoryTurnEnvelope) -> None:
     channel = settings.chat_history_turn_channel
     try:
         turn_payload = env.payload
+        await _ensure_conversation_phase(turn_payload)
         explicit_reasoning_trace = getattr(turn_payload, "reasoning_trace", None)
         spark_meta = getattr(turn_payload, "spark_meta", None)
         reasoning_content = getattr(turn_payload, "reasoning_content", None)

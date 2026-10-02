@@ -485,3 +485,52 @@ def test_field_anomaly_regions_omits_threshold_key_when_absent():
     now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
     regions = _field_anomaly_regions(_field_anomaly(0.01, threshold=None), now)
     assert "threshold" not in regions[0].detail
+
+
+def test_lane_quarantine_reads_count_from_store_shaped_entry():
+    """Regression (2026-10-02): the first-ever unacknowledged quarantine rows
+    made every brain-frame tick crash with ``float() ... not 'dict'`` because
+    ``quarantine_by_reducer`` entries are dicts from ``store.quarantine_summary``,
+    not bare counts. Every earlier test passed an empty quarantine map."""
+    from app.brain_frame_producer import assemble_brain_frame
+
+    now = datetime(2026, 10, 2, 8, 30, 0, tzinfo=timezone.utc)
+    lane_health = {
+        "cursor_lag_by_reducer": {"storage_write": 2.0, "vision_organ": 3.0},
+        "pending_backlog_by_reducer": {"storage_write": 1, "vision_organ": 0},
+        # Exact shape store.quarantine_summary() returns (live sample 2026-10-02).
+        "quarantine_by_reducer": {
+            "storage_write": {
+                "unacknowledged_count": 1,
+                "recent_examples": [
+                    {
+                        "event_id": "e1",
+                        "trace_id": "t1",
+                        "reason": "boom",
+                        "quarantined_at": "2026-10-02T08:26:13+00:00",
+                    }
+                ],
+            },
+            "vision_organ": {"unacknowledged_count": 3, "recent_examples": []},
+        },
+    }
+    frame = assemble_brain_frame(
+        nodes=[_node("t1", "tension", activation=0.9, pressure=0.8)],
+        edges=[],
+        lane_health=lane_health,
+        self_state=None,
+        attention=None,
+        attention_payload=None,
+        settings=_settings(),
+        now=now,
+        tick_seq=1,
+    )
+    lanes = {r.region_id: r for r in frame.regions if r.dimension == "lane"}
+    assert lanes["lane:storage_write"].detail["quarantine"] == 1.0
+    assert lanes["lane:vision_organ"].detail["quarantine"] == 3.0
+    # Lanes with no quarantine entry still read zero.
+    assert all(
+        r.detail["quarantine"] == 0.0
+        for rid, r in lanes.items()
+        if rid not in {"lane:storage_write", "lane:vision_organ"}
+    )

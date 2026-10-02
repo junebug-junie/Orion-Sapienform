@@ -115,6 +115,19 @@ def _node_kind_regions(nodes, now, firing, starving) -> list[BrainRegionV1]:
     return regions
 
 
+def _quarantine_count(entry: Any) -> float:
+    """Unacknowledged quarantine count for one lane.
+
+    ``store.quarantine_summary()`` shapes each ``quarantine_by_reducer`` entry as
+    ``{"unacknowledged_count": int, "recent_examples": [...]}`` (since 2026-06-16).
+    The lane region carries the count only; examples stay on the grammar-truth
+    surface. A bare number is accepted for callers that already reduced it.
+    """
+    if isinstance(entry, Mapping):
+        entry = entry.get("unacknowledged_count", 0)
+    return float(entry or 0)
+
+
 def _lane_regions(lane_health: Mapping[str, Any], now, firing, starving) -> list[BrainRegionV1]:
     lag = dict(lane_health.get("cursor_lag_by_reducer") or {})
     backlog = dict(lane_health.get("pending_backlog_by_reducer") or {})
@@ -140,7 +153,7 @@ def _lane_regions(lane_health: Mapping[str, Any], now, firing, starving) -> list
                 node_count=int(pending),
                 as_of=now,
                 stale=False,
-                detail={"lag_sec": lag_sec, "backlog": pending, "quarantine": float(quarantine.get(lane, 0) or 0)},
+                detail={"lag_sec": lag_sec, "backlog": pending, "quarantine": _quarantine_count(quarantine.get(lane))},
             )
         )
     return regions

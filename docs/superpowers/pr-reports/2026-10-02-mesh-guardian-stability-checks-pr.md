@@ -119,3 +119,7 @@ scripts/safe_docker_build.sh orion-mesh-guardian up -d --build
 - **Low: live delivery of a stability card is UNVERIFIED.** No condition has fired since deploy. Cards go through the same `publish_transition` and notify path that delivered guardian cards on 2026-09-29, and failures are now logged as `attention card NOT delivered`.
 - **Low: the 6 h re-send gate is in memory.** A guardian restart re-sends cards for conditions that are still present.
 - **Low: thresholds are fixed constants** chosen from one incident and one healthy baseline. A legitimately long FalkorDB save, over 15 min on a much larger graph, would raise a false critical.
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/2472

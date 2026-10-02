@@ -19,6 +19,7 @@ def test_image_installs_docker_cli_and_compose_plugin() -> None:
     dockerfile = (SERVICE_ROOT / "Dockerfile").read_text()
     assert "docker-cli" in dockerfile
     assert "docker-compose" in dockerfile
+    assert "docker-buildx" in dockerfile  # tier-2 `compose build`
     assert "docker compose version" in dockerfile  # build fails if the plugin is missing
 
 

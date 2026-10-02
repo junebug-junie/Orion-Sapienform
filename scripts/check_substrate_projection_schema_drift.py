@@ -189,6 +189,12 @@ PROJECTIONS: tuple[ProjectionSpec, ...] = (
         model_name="StorageWriteProjectionV1",
     ),
     ProjectionSpec(
+        table="substrate_vision_organ_projection",
+        projection_id="active_vision_organ_projection",
+        model_module="orion.schemas.vision_organ_projection",
+        model_name="VisionOrganProjectionV1",
+    ),
+    ProjectionSpec(
         table="substrate_attention_broadcast_projection",
         projection_id="substrate.attention.broadcast.v1",
         model_module="orion.schemas.attention_frame",

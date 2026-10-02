@@ -17,7 +17,7 @@ for p in (REPO_ROOT, SUBSTRATE_ROOT):
         sys.path.insert(0, str(p))
 
 from app.reducer_health import clear_health_for_tests
-from app.worker import BiometricsSubstrateWorker, REDUCER_SPECS
+from app.worker import REDUCER_SPEC_BY_KEY, BiometricsSubstrateWorker, REDUCER_SPECS
 from orion.schemas.grammar import GrammarAtomV1, GrammarEventV1, GrammarProvenanceV1
 from orion.schemas.storage_write_projection import ROLE_FAMILY_WINDOW, ROLE_WINDOW_COMPLETED
 from orion.substrate.storage_write_loop.constants import (
@@ -51,8 +51,7 @@ def _ev(idx: int, role: str, summary: str) -> GrammarEventV1:
 
 
 def test_spec_is_registered_last_and_default_off():
-    spec = REDUCER_SPECS[6]
-    assert spec is REDUCER_SPECS[-1]
+    spec = REDUCER_SPEC_BY_KEY["storage_write"]
     assert spec.reducer_key == "storage_write"
     assert spec.cursor_name == STORAGE_WRITE_GRAMMAR_CURSOR_NAME
     assert spec.source_service == STORAGE_WRITE_SOURCE_SERVICE

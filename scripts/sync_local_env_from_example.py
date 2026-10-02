@@ -187,6 +187,10 @@ SYNC_PREFIXES = (
     # field-digester gate. None matched an existing prefix.
     "LLM_GATEWAY_GRAMMAR_",
     "ENABLE_LLM_INFERENCE_",
+    # vision_organ lane (2026-10-02): router emitter, substrate reducer,
+    # field-digester gate.
+    "VISION_ORGAN_",
+    "ENABLE_VISION_ORGAN_",
     "LLM_INFERENCE_",
     # rpc delivery field bridge (2026-09-25): substrate-runtime producer keys and
     # the field-digester gate. None matched an existing prefix.

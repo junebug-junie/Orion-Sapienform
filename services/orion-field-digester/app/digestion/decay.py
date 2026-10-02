@@ -99,9 +99,16 @@ CAPABILITY_DECAY_CHANNELS = {
 # 180 s = three missed windows. A dead writer, a dead reducer, or a Postgres
 # outage long enough that the writer's own report cannot be stored all read as
 # "unmeasured", never as the last calm value.
+# vision_frame_staleness / vision_processing_failure_pressure: the vision_organ
+# reducer writes once per 60 s router window, and its silence path writes
+# staleness 1.0 every <= 60 s while the router is quiet. 300 s = five missed
+# writes, i.e. substrate-runtime itself (or the lane) has stopped -- then the
+# field must read "unmeasured", not the last value.
 EXPIRING_NODE_CHANNELS: dict[str, float] = {
     "rpc_timeout_pressure": 120.0,
     "write_failure_pressure": 180.0,
+    "vision_frame_staleness": 300.0,
+    "vision_processing_failure_pressure": 300.0,
 }
 
 

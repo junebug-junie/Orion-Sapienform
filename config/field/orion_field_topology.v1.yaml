@@ -115,58 +115,43 @@ edges:
     channel_map:
       rpc_timeout_pressure: reliability_pressure
 
-  # 2026-08-13: capability:vision had NO edge at all until this one. Its live
-  # vector was therefore fabricated by the no-inbound-edge path -- pressure=0.0,
-  # confidence=1.0, available_capacity=1.0, capability_provenance empty -- i.e.
-  # Orion's self-model asserted perfect vision, permanently, whether or not a
-  # camera was running. That is the "schema-valid payload with meaningless
-  # content" CLAUDE.md §0A bans, sitting in the self-model.
+  # capability:vision -- the eye reporting on itself (2026-10-02).
   #
-  # node:substrate.vision is not a physical host. Same shape as
-  # node:substrate.bus_synaptic above: an Active-Inference-style domain node
-  # written by services/orion-substrate-runtime/app/worker.py::
-  # _vision_channel_tick via a receipt, consumed through the same generic
-  # prediction_signal perturbation path. Unlike that node it reads nothing from
-  # the bus synaptic graph: it listens to the vision artifact channel and
-  # measures the eye's own output on a clock. A first revision did read that
-  # graph's gap_zscore, and was deleted rather than tuned -- it z-scored a
-  # fixed 5s scheduler, and froze rather than rose when the eye went silent.
+  # node:substrate.vision_organ is an off-lattice domain node (same shape as
+  # node:substrate.rpc_delivery), written only by orion-substrate-runtime's
+  # vision_organ reducer (orion/substrate/vision_organ_loop/) from the frame
+  # router's per-window report (services/orion-vision-frame-router/app/
+  # grammar_emit.py, trace prefix vision.organ:). The router is the one process
+  # that sees frames arrive per stream, the tasks it sends the vision host, and
+  # every reply or timeout.
   #
-  # confidence/available_capacity intentionally NOT mapped, exactly as for
-  # capability:transport above -- apply_diffusion()'s derived-fallback formula
-  # produces them from this real pressure rather than fabricating a second
-  # constant, which is the specific bug this edge exists to remove.
-  # `prediction_error` is the channel name, and it carries the AVAILABILITY
-  # reading (vision_channel_staleness_pressure) for this node.
+  #   vision_frame_staleness -> pressure: staleness of the freshest camera
+  #     stream (0.0 while any camera delivers; 1.0 when none does, when a
+  #     configured stream set has never delivered, or when the router stops
+  #     reporting -- written on a clock by the substrate, so silence rises).
+  #   vision_processing_failure_pressure -> reliability_pressure: rolling 600 s
+  #     share of dispatched frames with no usable answer (timeout, invalid reply,
+  #     host error), hop_pressure rule. Absent when nothing was dispatched.
   #
-  # Not a free choice: `prediction_error` is the only pressure-hint key the
-  # shared receipt path emits. _prediction_error_receipt() hardcodes
-  # `pressure_hints: {"prediction_error": ...}`, state_deltas.py turns exactly
-  # that into the node-vector perturbation, and reconcile.py prunes any
-  # node-vector key that field-digester's channels.py::NODE_CHANNELS does not
-  # declare. An earlier revision of this edge mapped `perception_staleness`
-  # here, which reads better and was **dead**: nothing writes that channel onto
-  # a field node vector, so diffusion.py's src.get() returned 0.0 forever and
-  # capability:vision kept the fabricated pressure=0.0/confidence=1.0 vector
-  # this edge exists to delete -- including during a total blackout. Caught by
-  # code review, confirmed live against substrate_field_state.
+  # Replaces the node:substrate.vision -> capability:vision edge (prediction_
+  # error: pressure) and the substrate artifact tick behind it, killed in the
+  # same patch: it pooled detect artifacts from every camera, so one live
+  # camera hid every dead one (0.0 on all 124,612 field ticks 2026-09-29..10-02
+  # while the carbon webcam sent nothing). node:substrate.vision is pruned from
+  # the field via channels.py RETIRED_PSEUDO_NODES.
   #
-  # perception_staleness/perception_yield remain on the FalkorDB node as
-  # inspectable detail (see falkor_codec's allowlist); they are not field
-  # channels. Promoting either to a real one means plumbing it through
-  # _prediction_error_receipt + state_deltas.py + NODE_CHANNELS, which is a
-  # contract change, not a config line.
-  #
-  # perception_yield is deliberately not mapped to pressure at all: a sustained
-  # zero is equally consistent with a blinded eye and an empty dark room at
-  # 3am, and separating those needs a per-stream day-shape prior that does not
-  # exist yet.
-  - source_id: node:substrate.vision
+  # confidence/available_capacity intentionally NOT mapped: apply_diffusion()'s
+  # derived-fallback formula produces them from the real pressure. Per-stream
+  # status (carbon dark while cam0 runs) stays on the projection, not here: a
+  # laptop webcam is off whenever the laptop is, and with no day-shape prior a
+  # worst-stream reading would pin capability:vision at alarm every evening.
+  - source_id: node:substrate.vision_organ
     target_id: capability:vision
     edge_type: node_capability
     weight: 0.85
     channel_map:
-      prediction_error: pressure
+      vision_frame_staleness: pressure
+      vision_processing_failure_pressure: reliability_pressure
 
   # 2026-08-19 (P2, docs/superpowers/specs/2026-08-12-perception-frontier-
   # design.md): node:substrate.perception exists as of this patch, written by
@@ -174,8 +159,9 @@ edges:
   # _perception_prediction_error_tick / _handle_perception_prediction_error_
   # message, through the same generic prediction_signal perturbation path as
   # every other node:substrate.* domain node in this file. It is a SEPARATE
-  # node from node:substrate.vision above -- that node's prediction_error
-  # channel is availability (arrival timing); this one's prediction_error is
+  # node from the retired node:substrate.vision (now node:substrate.vision_organ
+  # above) -- that node's prediction_error channel was availability (arrival
+  # timing); this one's prediction_error is
   # `1 - cos(frame_embedding, EWMA_embedding)`, a measure of the embedding
   # model's own content encoding, plus a distinct `embedding_staleness`
   # freshness channel. See orion/substrate/prediction_error.py's own P2

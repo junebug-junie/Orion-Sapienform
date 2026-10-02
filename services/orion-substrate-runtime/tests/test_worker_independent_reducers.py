@@ -91,6 +91,7 @@ def test_start_spawns_independent_reducer_poll_tasks() -> None:
         "route-substrate-poll",
         "llm-inference-substrate-poll",
         "storage-write-substrate-poll",
+        "vision-organ-substrate-poll",
     }
 
 

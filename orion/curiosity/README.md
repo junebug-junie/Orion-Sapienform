@@ -215,6 +215,13 @@ inside it — Hub uses `127.0.0.1:6380`. Orion's sandbox is on `app-net` and use
 (`host.docker.internal:8080`) because that value is only ever rendered *into the
 prompt*, never used by Hub.
 
+The urgent prompt (`urgent_prompt.py`) does not use it. The harness blocks
+curl/wget inside the sandbox, so urgent run `a153451fe423` (2026-10-01) burned
+five Hub/pool fetches and then an external scraper while the cause sat in
+Postgres. Its sources are `psql` only: biometrics, the cabinet AC plug, and
+`gpu_pool_events` joined to the `durable_run_workflow` view (grant:
+`scripts/sql/2026-10-02_grant_orion_readonly_gpu_pool.sql`).
+
 ### How the credentials reach Orion
 
 `orion/harness/fcc_motor.py`'s `_build_subprocess_env` is `os.environ.copy()` —

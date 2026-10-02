@@ -8,10 +8,13 @@ dreams, continuation, hops).
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
+from pathlib import Path
 
 from orion.curiosity import kickoff_prompt
 from orion.curiosity.urgent_prompt import (
+    _HARDWARE_TABLES,
     EVIDENCE_CHAR_CAP,
     TOOLS_HEADER,
     TRUNCATION_MARKER,
@@ -59,7 +62,24 @@ def test_psql_history_is_offered_only_when_postgres_is_available():
     assert "psql" not in without_pg
     assert "ORION_CURIOSITY_PG_DSN" not in without_pg
     assert "no Postgres history this run" in without_pg
-    assert "/api/cabinet/cooling/latest" in without_pg
+    # With no database the evidence bundle is the only source; say so, and
+    # offer nothing the sandbox cannot reach.
+    assert "evidence above is all you have" in without_pg
+    assert "http" not in without_pg.lower()
+
+
+def test_no_http_fetches_anywhere_in_the_prompt():
+    """The harness blocks curl/wget in the sandbox. Run a153451fe423
+    (2026-10-01) spent its budget on five blocked Hub/pool fetches and an
+    external scraper while the cause sat in gpu_pool_events."""
+    for pg_available in (True, False):
+        for graph_enabled in (True, False):
+            prompt = build_urgent_prompt(
+                _seed(), run_id=RUN_ID, pg_available=pg_available, graph_enabled=graph_enabled
+            )
+            lowered = prompt.lower()
+            for banned in ("curl", "wget", "http://", "https://", "/api/", "/v1/pool", "firecrawl"):
+                assert banned not in lowered, (pg_available, graph_enabled, banned)
 
 
 def test_manual_and_rule_headers_differ():
@@ -93,38 +113,76 @@ def _tool_section(prompt: str) -> str:
 
 
 def test_tool_section_names_hardware_sources():
-    prompt = build_urgent_prompt(
-        _seed(), run_id=RUN_ID, hub_url="http://hub.test:8080", pool_url="http://pool.test:9"
-    )
-    tools = _tool_section(prompt)
+    tools = _tool_section(build_urgent_prompt(_seed(), run_id=RUN_ID))
     assert 'psql "$ORION_CURIOSITY_PG_DSN"' in tools
-    assert "orion_biometrics_summary" in tools
-    assert "home_cooling_sample" in tools
+    for name, _ in _HARDWARE_TABLES:
+        assert name in tools, name
     assert "permission denied" in tools
-    for path in (
-        "/api/cabinet/cooling/latest",
-        "/api/cabinet/sensors/latest",
-        "/api/biometrics/preview/snapshot?node=athena",
-        "/api/biometrics/preview/gpu?node=athena",
-    ):
-        assert f"http://hub.test:8080{path}" in tools, path
-    assert "curl -s http://pool.test:9/v1/pool" in tools
-    assert "Look, do not touch" in prompt
-
-    default = build_urgent_prompt(_seed(), run_id=RUN_ID)
-    assert "http://orion-athena-gpu-pool:8127/v1/pool" in default
-    assert "http://127.0.0.1:8080/api/cabinet/cooling/latest" in default
+    assert "Look, do not touch" in build_urgent_prompt(_seed(), run_id=RUN_ID)
 
 
 def test_example_queries_use_real_columns():
     tools = _tool_section(build_urgent_prompt(_seed(), run_id=RUN_ID))
     # orion_biometrics_summary.timestamp is TEXT ("YYYY-MM-DD HH:MM:SS.ffffff+00");
     # the example compares it as text so the (node, timestamp) index is used.
-    assert "ORDER BY timestamp DESC" in tools
-    assert "measurements->>'temp_c_max'" in tools
-    assert "measurements->>'cabinet_temp_c'" in tools
+    assert "::timestamptz" not in tools
     assert "to_char(now() AT TIME ZONE 'UTC' - interval '60 minutes', 'YYYY-MM-DD HH24:MI:SS')" in tools
-    assert "cooling_watts" in tools and "stale" in tools and "ORDER BY ts DESC" in tools
+    # Measurement keys checked live 2026-10-02 on both nodes.
+    for key in (
+        "gpu0_temp_c", "gpu1_temp_c", "gpu2_temp_c", "gpu3_temp_c", "temp_c_max",
+        "gpu_watts_total", "cpu_watts_total", "load_1m", "fan_pct_max", "cabinet_temp_c",
+    ):
+        assert f"measurements->>'{key}'" in tools, key
+    assert "cooling_watts" in tools and "stale" in tools and "switch_on" in tools
+    # The GPU query pairs grants with their end and names durable-run jobs.
+    assert "g.event = 'granted'" in tools
+    assert "x.lease_id = g.lease_id" in tools
+    # Every event that ends a lease; leaving one out shows that lease as still held.
+    assert "'released', 'aborted', 'expired', 'cancelled'" in tools
+    assert "LEFT JOIN durable_run_workflow w ON g.holder = 'durable-runs:' || w.run_id" in tools
+    assert "ORDER BY held_min DESC" in tools
+
+
+_SQL_DIR = Path(__file__).resolve().parents[1] / "scripts" / "sql"
+
+
+def _sql_body(path: Path) -> str:
+    """The file with `--` comments removed (whole-line and trailing)."""
+    return "\n".join(line.split("--", 1)[0] for line in path.read_text().splitlines())
+
+
+def _granted_to_orion_readonly() -> set[str]:
+    """Tables/views a grant file opens to orion_readonly. Reads GRANTs only: a
+    later REVOKE file would not be noticed (none exists today)."""
+    granted: set[str] = set()
+    for path in _SQL_DIR.glob("*grant_orion_readonly*.sql"):
+        clauses = re.findall(r"GRANT\s+SELECT\s+ON\s+(.*?)\s+TO\s+orion_readonly\b", _sql_body(path), re.S | re.I)
+        for clause in clauses:
+            granted |= set(re.findall(r"public\.([a-z0-9_]+)", clause))
+    return granted
+
+
+def test_every_source_the_prompt_queries_is_granted_by_a_grant_file():
+    """A source named in the prompt with no grant file is a guaranteed
+    "permission denied" -- a dead end handed to Orion."""
+    granted = _granted_to_orion_readonly()
+    missing = [name for name, _ in _HARDWARE_TABLES if name not in granted]
+    assert not missing, missing
+
+
+def test_the_durable_run_view_exposes_no_brief():
+    """durable_admission_runs.request carries a free-text brief (whole prompts);
+    Orion's role gets only the view, never the base table."""
+    body = _sql_body(_SQL_DIR / "2026-10-02_grant_orion_readonly_gpu_pool.sql")
+    select_list = re.search(
+        r"VIEW public\.durable_run_workflow\b.*?\bAS\s+SELECT\s+(.*?)\s+FROM\s+public\.durable_admission_runs",
+        body, re.S | re.I,
+    ).group(1)
+    columns = [c.strip() for c in select_list.split(",")]
+    assert columns == ["run_id", "request->>'workflow' AS workflow", "created_at", "terminal"]
+    # Owner rights are what keep the base table closed; never invoker rights.
+    assert "security_invoker = false" in body
+    assert "durable_admission_runs" not in _granted_to_orion_readonly()
 
 
 def test_tool_section_does_not_steer_toward_self_material():

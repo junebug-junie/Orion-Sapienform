@@ -1,0 +1,56 @@
+name: curiosity urgent prompt tests
+
+# The urgent-run briefing tells Orion where to read the machines. It must name
+# only sources the sandbox can reach (no curl/wget -- the harness blocks them)
+# and only tables a scripts/sql grant file opens to orion_readonly.
+
+on:
+  pull_request:
+    paths:
+      - "orion/curiosity/urgent_prompt.py"
+      - "orion/curiosity/incident_report.py"
+      - "orion/curiosity/kickoff_prompt.py"
+      - "orion/schemas/curiosity_urgent.py"
+      - "scripts/sql/*grant_orion_readonly*.sql"
+      - "services/orion-hub/scripts/curiosity_investigation.py"
+      - "tests/test_curiosity_urgent_prompt.py"
+      - "tests/test_curiosity_incident_report.py"
+      - "services/orion-hub/tests/test_curiosity_urgent_start.py"
+      - ".github/workflows/curiosity-urgent-prompt-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/curiosity/urgent_prompt.py"
+      - "orion/curiosity/incident_report.py"
+      - "orion/curiosity/kickoff_prompt.py"
+      - "orion/schemas/curiosity_urgent.py"
+      - "scripts/sql/*grant_orion_readonly*.sql"
+      - "services/orion-hub/scripts/curiosity_investigation.py"
+      - "tests/test_curiosity_urgent_prompt.py"
+      - "tests/test_curiosity_incident_report.py"
+      - "services/orion-hub/tests/test_curiosity_urgent_start.py"
+      - ".github/workflows/curiosity-urgent-prompt-tests.yml"
+
+jobs:
+  urgent-prompt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python -m pip install -r services/orion-hub/tests/requirements-reading.txt \
+            "markdown-it-py>=3.0,<5" "Pillow>=10.4,<13" "httpx>=0.27,<1"
+      # Two invocations: collected together, the root and Hub test trees
+      # collide at collection (pre-existing, also on main).
+      - name: Prompt + grant files
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q -p no:cacheprovider tests/test_curiosity_urgent_prompt.py tests/test_curiosity_incident_report.py
+      - name: Hub urgent start
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q -p no:cacheprovider services/orion-hub/tests/test_curiosity_urgent_start.py

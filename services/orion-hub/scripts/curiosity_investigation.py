@@ -2069,8 +2069,8 @@ class CuriosityInvestigation:
         if redis is None:
             return await self._refuse_urgent(seed, "redis_unavailable")
 
-        # A missing role does not refuse an urgent run (the HTTP readings still
-        # work); it only drops the psql history from the prompt. Checked before the
+        # A missing role does not refuse an urgent run (the evidence bundle is
+        # still there); it only drops the psql sources from the prompt. Checked before the
         # open key is taken and bounded: a hung pool must not strand the incident.
         pg_available = True
         if self.pg_readonly_role:
@@ -2092,7 +2092,6 @@ class CuriosityInvestigation:
             seed,
             run_id=run_id,
             own_graph=self.graph_own,
-            hub_url=self.hub_url,
             graph_enabled=self._reader is not None,
             pg_available=pg_available,
         )

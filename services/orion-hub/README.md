@@ -3293,8 +3293,14 @@ logged as `urgent_request_invalid`; when it still names a usable incident id it 
   curiosity durable run with the seed on the brief, `timeout_sec =
   HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC`, and GPU admission `priority: urgent` with
   `deadline_at = now + HUB_CURIOSITY_URGENT_TIMEOUT_SEC` (durable-runs fails the run with
-  `workflow_deadline` there, queued or mid-turn). The prompt offers `psql` history only when
-  the `HUB_CURIOSITY_PG_READONLY_ROLE` role exists (or the check is off);
+  `workflow_deadline` there, queued or mid-turn). The prompt's only sources are `psql`
+  queries (biometrics per minute, the cabinet AC plug, and who held which GPU card from
+  `gpu_pool_events` joined to the `durable_run_workflow` view); it names no HTTP URLs,
+  because the harness blocks curl/wget in the sandbox. They are offered only when the
+  `HUB_CURIOSITY_PG_READONLY_ROLE` role exists (or the check is off); otherwise the
+  prompt says the evidence bundle is all the run has. The grants are
+  `scripts/sql/2026-09-28_grant_orion_readonly_hardware.sql` and
+  `scripts/sql/2026-10-02_grant_orion_readonly_gpu_pool.sql`;
 - skips the run lock, cooldown, daily cap and waking window, and spends none of them;
 - records the incident in the Redis hash `orion:curiosity:urgent:incidents` (newest 50 by
   `requested_at`; an incident whose open key is held is never evicted);

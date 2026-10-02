@@ -31,11 +31,15 @@ TRUNCATION_MARKER = "[EVIDENCE TRUNCATED"
 
 TOOLS_HEADER = "WHERE TO LOOK. Use these to check the readings yourself."
 
+# Every table or view the briefing queries, with what it holds. All are
+# readable by `orion_readonly` once the grant files under scripts/sql/ are
+# applied (tests/test_curiosity_urgent_prompt.py checks the prompt against them).
 _HARDWARE_TABLES = (
-    ("orion_biometrics_summary", "per-node measurements (jsonb): temp_c_max, fan_pct_max, cabinet_temp_c (athena only), ..."),
+    ("orion_biometrics_summary", "per-node readings every ~30 s (jsonb measurements): gpuN_temp_c, temp_c_max, gpu_watts_total, cpu_watts_total, load_1m, fan_pct_max, cabinet_temp_c (athena only)"),
     ("home_cooling_sample", "cabinet AC plug: cooling_watts, switch_on, stale, sample_age_sec"),
+    ("gpu_pool_events", "the GPU pool's ledger: who was granted which of circe's GPU cards, and when they let go"),
+    ("durable_run_workflow", "names the job behind a 'durable-runs:<run_id>' holder"),
 )
-
 
 def _assignment_section(seed: CuriosityUrgentSeedV1) -> list[str]:
     opener = (
@@ -106,58 +110,107 @@ def _checklist_section() -> list[str]:
 
 
 def _pg_history_lines() -> list[str]:
-    """Example queries checked live 2026-09-28. `orion_biometrics_summary.timestamp`
-    is TEXT shaped `YYYY-MM-DD HH:MM:SS.ffffff+00`, so the cutoff is a text
-    compare in the same shape (see `cabinet_ambient_routes.biometrics_summary_cutoff`);
-    that uses the (node, timestamp) index where a `::timestamptz` cast would scan.
+    """Queries checked live 2026-10-02 as postgres, and as `orion_readonly` where
+    the grant already exists.
+
+    `orion_biometrics_summary.timestamp` is TEXT shaped
+    `YYYY-MM-DD HH:MM:SS.ffffff+00`, so the cutoff is a text compare in the same
+    shape (see `cabinet_ambient_routes.biometrics_summary_cutoff`); that uses the
+    (node, timestamp) index where a `::timestamptz` cast would scan, and
+    `left(timestamp, 16)` is the minute.
+
+    The GPU query pairs each `granted` row with the next end row of the same
+    lease (index on `(lease_id, generated_at)`). Grants are looked back 6 hours:
+    the pool sometimes records no end for a lease (7 in the 3 days to
+    2026-10-02, e.g. a cortex-exec gpu0 grant at 2026-10-01 07:18), and a longer
+    lookback ranks those ghosts as day-long holds above the real cause.
     """
     return [
-        "  History in Postgres (read-only):",
+        "  All of it is in Postgres (read-only). These are the only sources your "
+        "sandbox can reach -- there are no HTTP readings to fetch:",
         *[f"      {name.ljust(26)} {what}" for name, what in _HARDWARE_TABLES],
         "",
-        '    psql "$ORION_CURIOSITY_PG_DSN" -c "SELECT timestamp, node,',
-        "      measurements->>'temp_c_max' AS temp_c_max,",
-        "      measurements->>'cabinet_temp_c' AS cabinet_temp_c",
-        "      FROM orion_biometrics_summary WHERE node = 'athena'",
+        "  Temperatures, power and load, per minute, last hour (node = 'circe' or 'athena';",
+        "  circe has gpu0-gpu3, athena has gpu0-gpu1 and the cabinet probe):",
+        "",
+        '    psql "$ORION_CURIOSITY_PG_DSN" -c "SELECT left(timestamp, 16) AS minute,',
+        "      round(max((measurements->>'gpu0_temp_c')::float)::numeric, 1) AS gpu0_c,",
+        "      round(max((measurements->>'gpu1_temp_c')::float)::numeric, 1) AS gpu1_c,",
+        "      round(max((measurements->>'gpu2_temp_c')::float)::numeric, 1) AS gpu2_c,",
+        "      round(max((measurements->>'gpu3_temp_c')::float)::numeric, 1) AS gpu3_c,",
+        "      round(max((measurements->>'temp_c_max')::float)::numeric, 1) AS temp_c_max,",
+        "      round(max((measurements->>'gpu_watts_total')::float)::numeric, 1) AS gpu_w,",
+        "      round(max((measurements->>'cpu_watts_total')::float)::numeric, 1) AS cpu_w,",
+        "      round(max((measurements->>'load_1m')::float)::numeric, 1) AS load_1m,",
+        "      round(max((measurements->>'fan_pct_max')::float)::numeric, 1) AS fan_pct,",
+        "      round(max((measurements->>'cabinet_temp_c')::float)::numeric, 1) AS cabinet_c",
+        "      FROM orion_biometrics_summary WHERE node = 'circe'",
         "      AND timestamp >= to_char(now() AT TIME ZONE 'UTC' - interval '60 minutes', "
         "'YYYY-MM-DD HH24:MI:SS')",
-        '      ORDER BY timestamp DESC LIMIT 20"',
+        '      GROUP BY 1 ORDER BY 1 DESC LIMIT 60"',
         "",
-        '    psql "$ORION_CURIOSITY_PG_DSN" -c "SELECT ts, cooling_watts, switch_on, stale, sample_age_sec',
-        '      FROM home_cooling_sample ORDER BY ts DESC LIMIT 20"',
+        "  For an earlier window, keep the text form: AND timestamp >= '2026-10-01 21:00:00' "
+        "AND timestamp < '2026-10-01 22:30:00'.",
         "",
-        "  \"permission denied\" on either table means Juniper has not applied the "
-        "read-only grant yet. Say so and work from the evidence above and the "
-        "HTTP readings.",
+        "  The cabinet AC plug, per minute, last hour:",
+        "",
+        """    psql "$ORION_CURIOSITY_PG_DSN" -c "SELECT date_trunc('minute', ts) AS minute,""",
+        "      round(min(cooling_watts)::numeric) AS min_w, round(max(cooling_watts)::numeric) AS max_w,",
+        "      bool_and(switch_on) AS on_whole_minute, bool_or(stale) AS any_stale",
+        "      FROM home_cooling_sample WHERE ts >= now() - interval '60 minutes'",
+        '      GROUP BY 1 ORDER BY 1 DESC LIMIT 60"',
+        "",
+        "  Who held which GPU card in the last 3 hours, longest first. A heat rise that",
+        "  starts when a long hold starts is your likely cause; workflow names the job",
+        "  when the holder is a durable run:",
+        "",
+        '    psql "$ORION_CURIOSITY_PG_DSN" -c "SELECT g.holder, w.workflow, g.cards::text AS cards,',
+        "      g.detail->'grant'->>'served_by' AS worker, g.priority,",
+        "      g.generated_at AS granted_at, e.generated_at AS ended_at, e.event AS ended_by,",
+        "      round((extract(epoch FROM coalesce(e.generated_at, now()) - g.generated_at) / 60)::numeric, 1) AS held_min",
+        "      FROM gpu_pool_events g",
+        "      LEFT JOIN LATERAL (SELECT x.generated_at, x.event FROM gpu_pool_events x",
+        "        WHERE x.lease_id = g.lease_id AND x.generated_at > g.generated_at",
+        "        AND x.event IN ('released', 'aborted', 'expired', 'cancelled')",
+        "        ORDER BY x.generated_at LIMIT 1) e ON true",
+        "      LEFT JOIN durable_run_workflow w ON g.holder = 'durable-runs:' || w.run_id",
+        "      WHERE g.event = 'granted' AND g.generated_at >= now() - interval '6 hours'",
+        "      AND coalesce(e.generated_at, now()) >= now() - interval '3 hours'",
+        '      ORDER BY held_min DESC LIMIT 15"',
+        "",
+        "  For an earlier window, write the time where the WHERE lines say now(), e.g.",
+        "  timestamptz '2026-10-01 22:00+00' - interval '3 hours'.",
+        "",
+        "  An empty ended_by means the pool recorded no end for that lease: it is either",
+        "  still held or the record was lost. Check it against the temperatures before",
+        "  you blame it.",
+        "",
+        "  \"permission denied\" on any of these means Juniper has not applied that "
+        "read-only grant yet. Say which one, and work from the evidence above and "
+        "the tables you can read.",
         "",
     ]
 
 
-def _tools_section(*, hub_url: str, pool_url: str, pg_available: bool = True) -> list[str]:
+def _tools_section(*, pg_available: bool = True) -> list[str]:
     """Where to read the machines. Hardware sources only -- no memory tables.
 
-    The Postgres history is listed only when `pg_available`: offering `psql`
-    against a role Hub knows is missing sends the turn after a dead end.
+    Postgres is the only source offered: the harness blocks curl/wget inside
+    the sandbox, so Hub/pool HTTP URLs sent run a153451fe423 (2026-10-01) into
+    five failed fetches and an external scraper while the cause sat in
+    `gpu_pool_events`. When `pg_available` is False (Hub knows the read-only
+    role is missing) nothing is offered and the evidence bundle is all there is.
     """
-    history = _pg_history_lines() if pg_available else [
-        "  There is no Postgres history this run. Work from the evidence above "
-        "and the HTTP readings.",
-        "",
-    ]
-    return [
-        TOOLS_HEADER,
-        "",
-        "  Hub's live readings (JSON):",
-        f"    curl -s {hub_url}/api/cabinet/cooling/latest",
-        f"    curl -s {hub_url}/api/cabinet/sensors/latest",
-        f"    curl -s '{hub_url}/api/biometrics/preview/snapshot?node=athena'    (or node=circe)",
-        f"    curl -s '{hub_url}/api/biometrics/preview/gpu?node=athena'         (or node=circe)",
-        "",
-        "  The GPU pool, who holds which GPU right now:",
-        f"    curl -s {pool_url}/v1/pool",
-        "",
-        *history,
-    ]
+    if not pg_available:
+        return [
+            TOOLS_HEADER,
+            "",
+            "  There is no Postgres history this run, and your sandbox has no other "
+            "way to read the machines. The evidence above is all you have: answer "
+            "from it, and say plainly which parts of the question it cannot settle.",
+            "",
+        ]
+    return [TOOLS_HEADER, "", *_pg_history_lines()]
 
 
 def _report_section(*, seed: CuriosityUrgentSeedV1, own_graph: str, run_id: str) -> list[str]:
@@ -218,28 +271,22 @@ def build_urgent_prompt(
     *,
     run_id: str,
     own_graph: str = "orion_worldview",
-    hub_url: str = "http://127.0.0.1:8080",
-    pool_url: str = "http://orion-athena-gpu-pool:8127",
     graph_enabled: bool = True,
     pg_available: bool = True,
 ) -> str:
     """Assemble the urgent investigation prompt.
 
-    `hub_url` must be reachable from the harness sandbox: Hub passes its
-    sandbox URL (`HUB_CURIOSITY_SANDBOX_HUB_URL`, live value
-    `http://host.docker.internal:8080`); the default is for local use only.
-    `pool_url` defaults to the pool's `app-net` name: verified 2026-09-28
-    reachable from the harness-governor sandbox, where `127.0.0.1:8127` is not.
     The report template is only offered when a graph is configured and the run
     id is one the reader will accept; otherwise the prose is the report.
     `pg_available` is Hub's view of whether the sandbox's read-only role
-    exists; when False the `psql` history is not offered.
+    exists; when False no source is offered and the evidence bundle is all
+    the run has.
     """
     writable = graph_enabled and bool(_RUN_ID_RE.match(run_id or ""))
     lines = _assignment_section(seed)
     lines += _evidence_section(seed)
     lines += _checklist_section()
-    lines += _tools_section(hub_url=hub_url, pool_url=pool_url, pg_available=pg_available)
+    lines += _tools_section(pg_available=pg_available)
     if writable:
         lines += _report_section(seed=seed, own_graph=own_graph, run_id=run_id)
     else:

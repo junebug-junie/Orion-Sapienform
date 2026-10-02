@@ -174,7 +174,7 @@ class Settings(BaseSettings):
     # broadcast loops. Default off: OpenLoopV1 is extra="forbid", so every
     # broadcast consumer must be rebuilt BEFORE this is turned on. Apply
     # manual_migration_node_prediction_error_history_v1.sql first.
-    pe_history_enabled: bool = Field(False, alias="SUBSTRATE_PE_HISTORY_ENABLED")
+    pe_history_enabled: bool = Field(True, alias="SUBSTRATE_PE_HISTORY_ENABLED")
     # Floor 25h: below that the prune would delete the readings the 24h and
     # prior-24h windows need (0 would delete every row just written). Below
     # 168 the 7-day fields silently cover less than 7 days after a restart.

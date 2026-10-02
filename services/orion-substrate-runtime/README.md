@@ -301,7 +301,7 @@ behavior thresholds. See
 `docs/superpowers/specs/2026-09-23-system-one-substrate-appraisal-shadow-design.md` for the
 promotion gate and failure model.
 
-## Prediction-error magnitude history (2026-10-02, default off)
+## Prediction-error magnitude history (2026-10-02, default on)
 
 Spec: `docs/superpowers/specs/2026-10-02-reverie-prediction-error-magnitude-proposal.md` (step 1).
 

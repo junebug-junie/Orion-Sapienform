@@ -222,3 +222,14 @@ def test_retention_below_25_hours_is_rejected(monkeypatch):
     with pytest.raises(ValidationError):
         settings_mod.get_settings()
     settings_mod._settings = None
+
+
+def test_pe_history_ships_enabled_by_default(monkeypatch):
+    # Juniper 2026-10-02: flags ship ON. The flag is the rollback lever, not a rollout gate.
+    import app.settings as settings_mod
+
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://u:p@unused/db")
+    monkeypatch.delenv("SUBSTRATE_PE_HISTORY_ENABLED", raising=False)
+    assert settings_mod.Settings().pe_history_enabled is True
+    example = (Path(__file__).resolve().parents[1] / ".env_example").read_text()
+    assert "\nSUBSTRATE_PE_HISTORY_ENABLED=true\n" in example

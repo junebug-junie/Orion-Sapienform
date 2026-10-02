@@ -80,15 +80,28 @@ def compute_stale_channel_candidates(
     return candidates
 
 
-def _fetch_channel_rows(client: RedisGraphQueryClient) -> list[dict]:
-    rows = client.graph_query(
-        """
-        MATCH (ch:Channel)
-        OPTIONAL MATCH ()-[e:PUBLISHES]->(ch)
-        RETURN ch.channel AS channel, count(e) AS edge_count
-        """
-    )
-    return [{"channel": r["channel"], "edge_count": int(r["edge_count"])} for r in rows]
+def _fetch_channel_rows(client: RedisGraphQueryClient, *, page_size: int = 5000) -> list[dict]:
+    # Paged, not one query: FalkorDB's RESULTSET_SIZE (default 10000) silently
+    # truncates a larger result. Live 2026-10-02 the graph held 117k Channel
+    # nodes (GPU-pool per-request reply channels) and one query saw 10,000.
+    # Offsets can shift if the live mirror adds nodes mid-fetch; a name missed
+    # here is caught on the next run and a duplicate delete is a no-op.
+    out: list[dict] = []
+    skip = 0
+    while True:
+        rows = client.graph_query(
+            """
+            MATCH (ch:Channel)
+            OPTIONAL MATCH ()-[e:PUBLISHES]->(ch)
+            WITH ch.channel AS channel, count(e) AS edge_count
+            RETURN channel, edge_count ORDER BY channel SKIP $skip LIMIT $limit
+            """,
+            {"skip": skip, "limit": page_size},
+        )
+        out.extend({"channel": r["channel"], "edge_count": int(r["edge_count"])} for r in rows)
+        if len(rows) < page_size:
+            return out
+        skip += page_size
 
 
 def _delete_channels(client: RedisGraphQueryClient, channel_names: list[str], *, batch_size: int) -> int:

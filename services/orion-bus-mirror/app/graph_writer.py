@@ -62,6 +62,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
+from loguru import logger
+
 from orion.bus.census import normalize_channel_name
 from orion.graph.falkor_client import FalkorGraphClient
 
@@ -431,9 +433,25 @@ class BusSynapticGraphWriter:
     docker-compose replica bump.
     """
 
+    # Every write MERGEs on these properties. Without an index each MERGE is a
+    # full label scan: live 2026-10-02, 118k Channel nodes made every message
+    # cost ~45ms, the mirror fell behind the bus, and Redis disconnected it
+    # (client-output-buffer-limit) ~every 20 min -- 581 restarts.
+    INDEXED_PROPERTIES = (("Channel", "channel"), ("Organ", "organ_id"), ("Verb", "verb_name"))
+
     def __init__(self, client: FalkorGraphClient, *, alpha: float) -> None:
         self._client = client
         self._alpha = alpha
+
+    def ensure_indexes(self) -> None:
+        """Idempotent: an existing index makes FalkorDB raise "already
+        indexed", which is the expected steady state, not a failure."""
+        for label, prop in self.INDEXED_PROPERTIES:
+            try:
+                self._client.graph_query(f"CREATE INDEX FOR (n:{label}) ON (n.{prop})")
+            except Exception as exc:
+                if "already indexed" not in str(exc):
+                    logger.warning("bus synaptic graph index create failed label={} prop={} err={}", label, prop, exc)
 
     def record_publish(self, fact: BusEventFact) -> None:
         prior_rows = self._client.graph_query(

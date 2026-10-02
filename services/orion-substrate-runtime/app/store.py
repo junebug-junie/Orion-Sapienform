@@ -726,6 +726,70 @@ class BiometricsSubstrateStore:
                 ),
             )
 
+    def save_prediction_error_history_samples(
+        self, samples: list[tuple[str, datetime, float]]
+    ) -> int:
+        """Append (node_id, observed_at, value) readings; idempotent on the PK.
+
+        `substrate_node_prediction_error_history` (manual_migration_node_
+        prediction_error_history_v1.sql) is keyed (node_id, observed_at), so
+        re-recording a node whose observed_at has not moved is a no-op even if
+        the in-process "moved since last sample" check is bypassed (restart,
+        failed write retried next tick).
+        """
+        if not samples:
+            return 0
+        params = [
+            {"node_id": node_id, "observed_at": observed_at, "value": float(value)}
+            for node_id, observed_at, value in samples
+        ]
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_node_prediction_error_history (
+                        node_id, observed_at, value
+                    ) VALUES (
+                        :node_id, :observed_at, :value
+                    )
+                    ON CONFLICT (node_id, observed_at) DO NOTHING
+                    """
+                ),
+                params,
+            )
+        return len(params)
+
+    def fetch_prediction_error_history(
+        self, *, since: datetime
+    ) -> list[tuple[str, datetime, float]]:
+        """All readings with observed_at >= since, oldest first."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT node_id, observed_at, value
+                    FROM substrate_node_prediction_error_history
+                    WHERE observed_at >= :since
+                    ORDER BY node_id, observed_at
+                    """
+                ),
+                {"since": since},
+            ).fetchall()
+        return [(str(r[0]), r[1], float(r[2])) for r in rows]
+
+    def prune_prediction_error_history(self, *, older_than: datetime) -> int:
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    DELETE FROM substrate_node_prediction_error_history
+                    WHERE observed_at < :older_than
+                    """
+                ),
+                {"older_than": older_than},
+            )
+            return int(result.rowcount or 0)
+
     def save_system_one_appraisal(
         self, frame: SystemOneAppraisalFrameV1, *, retention_hours: float
     ) -> None:

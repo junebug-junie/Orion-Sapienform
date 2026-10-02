@@ -165,6 +165,25 @@ class Settings(BaseSettings):
     attention_broadcast_log_retention_hours: float = Field(
         168.0, alias="ORION_ATTENTION_BROADCAST_LOG_RETENTION_HOURS"
     )
+    # Prediction-error magnitude history (docs/superpowers/specs/2026-10-02-
+    # reverie-prediction-error-magnitude-proposal.md, step 1). When on, the
+    # attention-broadcast tick records each node:substrate.* node's
+    # prediction_error into substrate_node_prediction_error_history (only
+    # when its observed_at moved) and attaches OpenLoopV1.magnitude to
+    # broadcast loops. Default off: OpenLoopV1 is extra="forbid", so every
+    # broadcast consumer must be rebuilt BEFORE this is turned on. Apply
+    # manual_migration_node_prediction_error_history_v1.sql first.
+    pe_history_enabled: bool = Field(False, alias="SUBSTRATE_PE_HISTORY_ENABLED")
+    # Floor 25h: below that the prune would delete the readings the 24h and
+    # prior-24h windows need (0 would delete every row just written). Below
+    # 168 the 7-day fields silently cover less than 7 days after a restart.
+    pe_history_retention_hours: float = Field(
+        168.0, ge=25.0, alias="SUBSTRATE_PE_HISTORY_RETENTION_HOURS"
+    )
+    # Minimum |median_1h - median_prior_24h| before trend reads rising/settling
+    # (the effective threshold is max(this, 0.5 * (p90_7d - p50_7d))). A knob,
+    # not a finding.
+    pe_trend_min_delta: float = Field(0.01, alias="ORION_REVERIE_PE_TREND_MIN_DELTA")
 
     # System One / Kev appraisal. Rides the attention-broadcast cadence,
     # persists a compiled frame, emits a grammar shadow, and publishes the

@@ -17,6 +17,7 @@ import httpx
 from jinja2 import Environment
 
 from orion.schemas.thought import ThoughtEventV1
+from orion.thought.coalition import canonicalize_turn_refs
 
 
 def assess_response(raw: dict, correlation: str) -> dict:
@@ -30,9 +31,12 @@ def assess_response(raw: dict, correlation: str) -> dict:
         'session_id': 'stance_boundary_eval', 'created_at': datetime.now(timezone.utc),
     })
     anchor = f'hub:turn:{correlation}'
+    # The prompt asks for the bare `hub:turn` token; the runtime expands it the same way.
+    evidence_refs = canonicalize_turn_refs(thought.evidence_refs, correlation)
+    strain_refs = canonicalize_turn_refs(thought.strain_refs, correlation)
     return {'unexpected_keys': unexpected, 'imperative': thought.imperative, 'valid_stance': (
-        not unexpected and thought.evidence_refs == [anchor]
-        and set(thought.strain_refs) <= {anchor}
+        not unexpected and evidence_refs == [anchor]
+        and set(strain_refs) <= {anchor}
         and bool(thought.imperative.strip()) and thought.disposition == 'proceed'
     )}
 

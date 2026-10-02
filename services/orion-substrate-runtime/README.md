@@ -1020,6 +1020,10 @@ Flags: `ENABLE_VISION_ORGAN_REDUCER` (here), `VISION_ORGAN_GRAMMAR_ENABLED` (rou
 
 ## Perceptual prediction error (P2)
 
+> 2026-10-02: `node:substrate.vision`, `_vision_channel_tick` and
+> `SUBSTRATE_VISION_CHANNEL_TICK_*` mentioned below are retired; see "Vision organ
+> lane" above. The comparisons are kept as history.
+
 `docs/superpowers/specs/2026-08-12-perception-frontier-design.md`'s P2: `surprise = 1 -
 cos(frame_embedding, EWMA_embedding)` per camera stream, feeding a new node,
 `node:substrate.perception` -- deliberately **separate** from `node:substrate.vision` (P3, the

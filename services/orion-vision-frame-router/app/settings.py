@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -57,4 +58,7 @@ class Settings(BaseSettings):
     # operator template turns it on. Consumed by orion-substrate-runtime's
     # vision_organ reducer (ENABLE_VISION_ORGAN_REDUCER).
     VISION_ORGAN_GRAMMAR_ENABLED: bool = False
-    VISION_ORGAN_WINDOW_SEC: float = 60.0
+    # Bounded: orion-field-digester expires the organ channels after 300 s
+    # without a write, so a window much longer than ~100 s would read as
+    # "unmeasured" between two healthy reports.
+    VISION_ORGAN_WINDOW_SEC: float = Field(60.0, ge=5.0, le=100.0)

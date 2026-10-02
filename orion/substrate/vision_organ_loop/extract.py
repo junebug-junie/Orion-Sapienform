@@ -101,6 +101,8 @@ class WindowParse:
     window_end: datetime
     stream_event_ids: list[str]
     closing_event_id: str | None
+    # streams=N from the closing atom: how many stream atoms the window carried
+    expected_streams: int | None = None
 
 
 def extract_vision_organ_window(events: list[GrammarEventV1], *, now: datetime) -> WindowParse:
@@ -116,6 +118,7 @@ def extract_vision_organ_window(events: list[GrammarEventV1], *, now: datetime) 
     counts: dict[str, VisionOrganWindowCountV1] = {}
     stream_ids: list[str] = []
     closing_id: str | None = None
+    expected: int | None = None
     window_end = now
     for event in events:
         if event.atom is None:
@@ -125,6 +128,8 @@ def extract_vision_organ_window(events: list[GrammarEventV1], *, now: datetime) 
         if role == ROLE_WINDOW_COMPLETED:
             closing_id = event.event_id
             window_end = observed
+            raw = _parse_kv(event.atom.summary).get("streams")
+            expected = int(raw) if raw is not None and raw.isdigit() else None
             continue
         if role != ROLE_STREAM_WINDOW:
             continue
@@ -175,4 +180,5 @@ def extract_vision_organ_window(events: list[GrammarEventV1], *, now: datetime) 
         window_end=window_end,
         stream_event_ids=stream_ids,
         closing_event_id=closing_id,
+        expected_streams=expected,
     )

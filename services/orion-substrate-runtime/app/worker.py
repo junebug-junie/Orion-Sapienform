@@ -4065,7 +4065,9 @@ class BiometricsSubstrateWorker:
         if age <= silence_sec:
             return
         last = self._vision_organ_last_silence_write
-        if last is not None and (now - last).total_seconds() < silence_sec / 3.0:
+        # Capped at 60 s so the digester's 300 s expiry (decay.py) can never fire
+        # between two silence writes, whatever VISION_ORGAN_SILENCE_SEC is.
+        if last is not None and (now - last).total_seconds() < min(silence_sec / 3.0, 60.0):
             return
         updated, receipt = vision_organ_silence_receipt(projection, now=now, silent_for_sec=age)
         self._store.save_receipt(receipt)

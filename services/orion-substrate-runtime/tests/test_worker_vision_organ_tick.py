@@ -130,3 +130,18 @@ def _patched_datetime(clock: _Clock):
             return clock.t
 
     return _DT
+
+
+def test_silence_writes_stay_under_the_digester_expiry_for_long_silence_settings(monkeypatch) -> None:
+    """VISION_ORGAN_SILENCE_SEC=1800 must still rewrite 1.0 at least every 60 s, or the
+    digester's 300 s expiry turns "can't see" into "unmeasured"."""
+    t0 = datetime(2026, 10, 2, 4, 0, tzinfo=timezone.utc)
+    store = _Store(None)
+    w = _worker(store, started=t0)
+    w._settings.vision_organ_silence_sec = 1800.0
+    clock = _Clock(t0 + timedelta(seconds=1801))
+    monkeypatch.setattr(worker_module, "datetime", _patched_datetime(clock))
+    w._vision_organ_tick()
+    clock.t += timedelta(seconds=61)
+    w._vision_organ_tick()
+    assert len(store.receipts) == 2

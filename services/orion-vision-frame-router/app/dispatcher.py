@@ -57,9 +57,12 @@ class FrameDispatcher:
         self.metrics.record_seen()
         camera_id = frame.camera_id or "unknown"
         organ_stream = _organ_stream(frame.stream_id, camera_id)
+        # DRY_RUN never sends tasks, so every dispatch would time out and read as
+        # a dead host: the organ counts frames only.
         organ = grammar_emit.get_recorder()
         if organ is not None:
             organ.record_frame(organ_stream)
+        organ_tasks = organ if not self.settings.DRY_RUN else None
         image_path = (frame.image_path or "").strip()
         image_path_exists: bool | None = None
         if image_path and self.policy.require_image_path_exists(camera_id):
@@ -115,8 +118,8 @@ class FrameDispatcher:
                 want_caption=want_caption,
             )
             self.metrics.record_dispatch()
-            if organ is not None:
-                organ.record_dispatch(organ_stream)
+            if organ_tasks is not None:
+                organ_tasks.record_dispatch(organ_stream)
 
             # Secondary, independent dispatch -- see policy.decide_identity's
             # docstring for why this is not folded into decision/task above.
@@ -161,8 +164,8 @@ class FrameDispatcher:
                 )
                 self.state.camera(camera_id).last_identity_dispatch_ts = now
                 self.metrics.record_identity_dispatch()
-                if organ is not None:
-                    organ.record_dispatch(organ_stream, identity=True)
+                if organ_tasks is not None:
+                    organ_tasks.record_dispatch(organ_stream, identity=True)
                 logger.info(
                     "[ROUTER] identity_dispatch camera_id={} stream_id={} corr={}",
                     camera_id,
@@ -233,7 +236,8 @@ class FrameDispatcher:
                 task = self.state.clear_pending(cid, now=now)
                 if task:
                     self.metrics.host_timeouts_total += 1
-                    _organ_failure(task, FAILURE_TIMEOUT)
+                    if not self.settings.DRY_RUN:
+                        _organ_failure(task, FAILURE_TIMEOUT)
                     cleared += 1
             return cleared
 

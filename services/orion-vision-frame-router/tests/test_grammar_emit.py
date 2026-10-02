@@ -254,3 +254,24 @@ async def test_flag_off_records_nothing(tmp_path: Path) -> None:
     await d.handle_frame_envelope(_frame(uuid4()))
     assert grammar_emit.get_recorder() is None
     assert d.metrics.frames_dispatched_total == 1
+
+
+def test_window_length_is_bounded_below_the_digester_expiry() -> None:
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        Settings(VISION_ORGAN_WINDOW_SEC=600.0)
+    assert Settings(VISION_ORGAN_WINDOW_SEC=60.0).VISION_ORGAN_WINDOW_SEC == 60.0
+
+
+@pytest.mark.asyncio
+async def test_dry_run_counts_frames_but_not_tasks(tmp_path: Path, organ) -> None:
+    d = _dispatcher(tmp_path)
+    d.settings.DRY_RUN = True
+    await d.handle_frame_envelope(_frame(uuid4()))
+    await d.sweep_timeouts(now=time.time() + 60.0)
+    kv = {e.atom.text_value: _summary_kv(e.atom.summary)
+          for e in grammar_emit.build_window_events(router="r", snapshot=organ.drain())[:-1]}["cam1"]
+    assert kv["frames"] == "1"
+    assert kv["dispatched"] == "0"
+    assert kv["failed"] == "0"

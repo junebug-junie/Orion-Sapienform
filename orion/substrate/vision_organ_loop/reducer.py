@@ -29,6 +29,7 @@ object count is equally consistent with a blinded lens and an empty dark room
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -239,6 +240,20 @@ def reduce_vision_organ_trace_events(
     accepted = list(window.stream_event_ids)
     deltas: list[StateDeltaV1] = []
     updates: list[ProjectionUpdateV1] = []
+    warnings: list[str] = []
+    if window.completed and window.expected_streams is not None:
+        have = sum(1 for s in updated.streams.values() if s.window_id == window.window_id)
+        if have != window.expected_streams:
+            # Some stream atoms of this window never reached us (dropped publish,
+            # out-of-order rows). A min over a partial set could read falsely
+            # stale or falsely calm; skip this window's reading -- the last one
+            # holds, and expires in the digester if this keeps happening.
+            warnings.append(
+                f"vision organ window {window.window_id}: {have} of {window.expected_streams} "
+                "stream atoms present; no reading"
+            )
+            accepted.append(window.closing_event_id or "")
+            window = replace(window, completed=False)
     if window.completed:
         accepted.append(window.closing_event_id or "")
         this_window = {sid: s for sid, s in updated.streams.items() if s.window_id == window.window_id}
@@ -274,6 +289,7 @@ def reduce_vision_organ_trace_events(
         accepted_event_ids=[a for a in accepted if a],
         state_deltas=deltas,
         projection_updates=updates,
+        warnings=warnings,
         created_at=clock,
     )
     return updated, receipt

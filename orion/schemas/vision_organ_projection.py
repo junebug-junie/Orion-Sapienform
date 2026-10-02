@@ -62,7 +62,6 @@ class VisionOrganStreamStateV1(BaseModel):
     stream_id: str
     window_id: str
     source_trace_id: str
-    window_sec: float = 0.0
     # listed under `streams:` in config/vision_frame_router.yaml (expected to deliver)
     configured: bool = False
 
@@ -72,8 +71,12 @@ class VisionOrganStreamStateV1(BaseModel):
     last_frame_age_sec: float | None = None
     router_uptime_sec: float = 0.0
 
+    # primary tasks / identity_face secondary tasks sent to the host this window
     dispatched: int = 0
     identity_dispatched: int = 0
+    # replies_ok / failed count BOTH primary and identity tasks (and a reply can
+    # land in a later window than its dispatch), so compare them with
+    # dispatched + identity_dispatched over several windows, not one.
     replies_ok: int = 0
     failed: int = 0
     # failure class -> count, e.g. {"timeout": 1}; host error_code values pass through
@@ -112,6 +115,8 @@ class VisionOrganProjectionV1(BaseModel):
     schema_version: Literal["vision_organ.projection.v1"] = "vision_organ.projection.v1"
     projection_id: str
     generated_at: datetime
+    # One frame router is assumed: a second router (or a worktree deploy with the
+    # same SERVICE_NAME) would replace this projection's stream set every window.
     router: str | None = None
     status: OrganStatus = ORGAN_REPORTING
     # stream_id -> latest window state for that stream

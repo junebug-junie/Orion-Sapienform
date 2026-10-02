@@ -461,7 +461,8 @@ class Settings(BaseSettings):
     # (the value this flag published for its first day live) was found
     # numerically incomparable to every other prediction_error domain's
     # min_error threshold and migrated to include stage 2. Own explicit
-    # flag, not piggybacked on SUBSTRATE_VISION_CHANNEL_TICK_ENABLED or
+    # flag, not piggybacked on SUBSTRATE_VISION_CHANNEL_TICK_ENABLED (retired
+    # 2026-10-02, see ENABLE_VISION_ORGAN_REDUCER) or
     # SUBSTRATE_WRITE_PREDICTION_ERROR_NODES -- same domain-independence
     # convention every tick in this file follows (bus_synaptic vs
     # vision_channel vs codebase all have their own flags despite

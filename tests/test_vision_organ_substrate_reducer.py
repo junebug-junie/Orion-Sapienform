@@ -266,3 +266,12 @@ def test_topology_feeds_capability_vision_from_the_organ_only() -> None:
         "vision_frame_staleness": "pressure",
         "vision_processing_failure_pressure": "reliability_pressure",
     }
+
+
+def test_window_missing_a_stream_atom_gives_no_reading() -> None:
+    """The closing atom says 2 streams; only carbon's arrived. A min over carbon
+    alone would read 1.0 although cam0 was live -- skip the reading instead."""
+    events = _window(T0, [_stream("cam0"), _stream("carbon", frames=0, age=None, dispatched=0, ok=0)])
+    _, receipt = reduce_vision_organ_trace_events(events=[events[1], events[2]], projection=_empty(), now=T0)
+    assert receipt.state_deltas == []
+    assert any("1 of 2" in w for w in receipt.warnings)

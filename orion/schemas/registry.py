@@ -153,6 +153,7 @@ from orion.schemas.llm_inference_projection import (
 from orion.schemas.vision_organ_projection import (
     VisionOrganProjectionV1,
     VisionOrganStreamStateV1,
+    VisionOrganWindowCountV1,
 )
 from orion.schemas.agents.bound_capability import (
     BoundCapabilityExecutionFailureV1,
@@ -858,6 +859,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "LlmInferenceProjectionV1": LlmInferenceProjectionV1,
     "VisionOrganProjectionV1": VisionOrganProjectionV1,
     "VisionOrganStreamStateV1": VisionOrganStreamStateV1,
+    "VisionOrganWindowCountV1": VisionOrganWindowCountV1,
     "LlmInferenceRoleStateV1": LlmInferenceRoleStateV1,
     "LlmInferenceWindowCountV1": LlmInferenceWindowCountV1,
     "CodebaseDeltaV1": CodebaseDeltaV1,

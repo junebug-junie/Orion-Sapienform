@@ -3103,9 +3103,13 @@ class BiometricsSubstrateWorker:
         )
         from orion.substrate.prediction_error_trend import compute_prediction_error_trend
 
-        pe_by_domain, pe_evidence_by_domain = (
-            self._brain_frame_prediction_error_and_evidence_by_domain(state.nodes.values())
+        pe_by_domain, pe_evidence_by_domain, pe_omitted = (
+            self._fresh_prediction_error_and_evidence_by_domain(
+                state.nodes.values(), now=datetime.now(timezone.utc)
+            )
         )
+        # Stale domains are already absent from pe_by_domain, so the trend
+        # buffer is not re-appended with a stale value every tick.
         if pe_by_domain:
             self._attention_self_model_trend_buffer.append(pe_by_domain)
         pe_trend_by_domain = compute_prediction_error_trend(
@@ -3132,6 +3136,7 @@ class BiometricsSubstrateWorker:
             prediction_error_by_domain=pe_by_domain or None,
             prediction_error_evidence_by_domain=pe_evidence_by_domain or None,
             prediction_error_trend_by_domain=pe_trend_by_domain or None,
+            prediction_error_omitted_by_domain=pe_omitted or None,
             heartbeat_h1=heartbeat_h1,
         )
         self._store.save_attention_self_model(
@@ -3465,6 +3470,54 @@ class BiometricsSubstrateWorker:
                 evidence_by_domain[domain] = [str(item) for item in evidence]
         return pe_by_domain, evidence_by_domain
 
+    def _fresh_prediction_error_and_evidence_by_domain(
+        self, nodes: Iterable[Any], *, now: datetime
+    ) -> tuple[dict, dict, dict]:
+        """Same read as `_brain_frame_prediction_error_and_evidence_by_domain()`,
+        minus domains whose node reading is older than the shared horizon.
+
+        Returns ``(pe_by_domain, evidence_by_domain, omitted)`` where
+        ``omitted`` is ``{domain: age_sec | None}`` (None = observed_at
+        missing/unparseable, omitted conservatively). Omit, not fade: a faded
+        value reads as calm. Setting off -> old behavior, omitted == {}.
+        Stored node values are never rewritten.
+        """
+        nodes = list(nodes)
+        pe_by_domain, evidence_by_domain = (
+            self._brain_frame_prediction_error_and_evidence_by_domain(nodes)
+        )
+        settings = getattr(self, "_settings", None)
+        if not bool(getattr(settings, "attention_self_model_omit_stale_pe", True)):
+            return pe_by_domain, evidence_by_domain, {}
+        from orion.substrate.prediction_error_freshness import (
+            STATUS_FRESH,
+            classify_reading,
+        )
+
+        omitted: dict[str, float | None] = {}
+        for node in nodes:
+            domain = _PREDICTION_ERROR_DOMAIN_NODE_IDS.get(
+                str(getattr(node, "node_id", "") or "")
+            )
+            if domain is None or domain not in pe_by_domain:
+                continue
+            status, age = classify_reading(node, now=now)
+            if status != STATUS_FRESH:
+                omitted[domain] = age
+        for domain in omitted:
+            pe_by_domain.pop(domain, None)
+            evidence_by_domain.pop(domain, None)
+        key = tuple(sorted(omitted))
+        if key != getattr(self, "_last_pe_omitted_key", None):
+            self._last_pe_omitted_key = key
+            logger.info(
+                "attention_self_model_pe_omitted domains=%s ages_sec=%s used=%d",
+                list(key),
+                {d: (None if a is None else int(a)) for d, a in omitted.items()},
+                len(pe_by_domain),
+            )
+        return pe_by_domain, evidence_by_domain, omitted
+
     def _brain_frame_tick(self):
         """Assemble + persist one brain frame. Returns the frame or None."""
         s = self._settings
@@ -3509,8 +3562,8 @@ class BiometricsSubstrateWorker:
                     reduce_attention_self_model,
                 )
 
-                pe_by_domain, pe_evidence_by_domain = (
-                    self._brain_frame_prediction_error_and_evidence_by_domain(nodes)
+                pe_by_domain, pe_evidence_by_domain, pe_omitted = (
+                    self._fresh_prediction_error_and_evidence_by_domain(nodes, now=now)
                 )
                 attention_self_model = reduce_attention_self_model(
                     broadcast=attention,
@@ -3518,6 +3571,7 @@ class BiometricsSubstrateWorker:
                     now=now,
                     prediction_error_by_domain=pe_by_domain or None,
                     prediction_error_evidence_by_domain=pe_evidence_by_domain or None,
+                    prediction_error_omitted_by_domain=pe_omitted or None,
                 )
             except Exception:
                 logger.exception("brain_frame_attention_self_model_failed")

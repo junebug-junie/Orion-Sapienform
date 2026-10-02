@@ -25,26 +25,121 @@ def test_normalize_anthropic_model_name() -> None:
     assert anthropic_passthrough.normalize_anthropic_model_name("llamacpp/harness") == "harness"
 
 
+_CC = {"type": "ephemeral"}
+_SYSTEM = [
+    {"type": "text", "text": "x-anthropic-billing-header: cc_version=test;"},
+    {"type": "text", "text": "You are a test agent.", "cache_control": _CC},
+]
+_REMINDERS = [
+    "SessionStart hook additional context: <context>fixture</context>",
+    "<total_tokens>14987040 tokens left</total_tokens>",
+    "PreToolUse:Read hook additional context: <tip>fixture</tip>",
+    "PreToolUse:Bash hook additional context: <tip>fixture</tip>",
+]
+
+
+def _claude_code_step(n: int) -> dict:
+    """Claude Code 2.1.287 request shape for step n (1-based), per the captured probe.
+
+    The reminder that is new on this step is a one-block list carrying
+    cache_control; Claude Code resends earlier reminders as plain strings.
+    """
+    messages: list = [
+        {"role": "user", "content": [{"type": "text", "text": "Inspect the evidence."}]},
+    ]
+
+    def reminder(i: int) -> dict:
+        if i == n - 1:
+            return {"role": "system", "content": [{"type": "text", "text": _REMINDERS[i], "cache_control": _CC}]}
+        return {"role": "system", "content": _REMINDERS[i]}
+
+    messages.append(reminder(0))
+    for step in range(1, n):
+        tool_id = f"toolu_{step}"
+        messages.append({"role": "assistant", "content": [
+            {"type": "thinking", "thinking": f"step {step} plan", "signature": ""},
+            {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": f"echo {step}"}},
+        ]})
+        messages.append({"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": f"out {step}"}]})
+        messages.append(reminder(step))
+    return {"model": "llamacpp/harness", "system": json.loads(json.dumps(_SYSTEM)), "messages": messages,
+            "tools": [{"name": "Bash", "description": "run", "input_schema": {"type": "object"}}]}
+
+
+def _rendered_view(value: Any) -> Any:
+    """What llama.cpp renders: cache_control is a caching hint, not prompt text."""
+    if isinstance(value, dict):
+        return {k: _rendered_view(v) for k, v in value.items() if k != "cache_control"}
+    if isinstance(value, list):
+        return [_rendered_view(v) for v in value]
+    return value
+
+
+def _joined_text(message: dict) -> str:
+    return "".join(block["text"] for block in message["content"] if block.get("type") == "text")
+
+
+def test_claude_code_steps_forward_append_only() -> None:
+    forwarded = [anthropic_passthrough.normalize_anthropic_system_messages(_claude_code_step(n)) for n in range(1, 5)]
+    for previous, current in zip(forwarded, forwarded[1:]):
+        # (a) the system block no longer grows step to step
+        assert current["system"] == previous["system"] == _SYSTEM
+        # (b) step N's conversation is a strict prefix of step N+1's
+        assert len(current["messages"]) > len(previous["messages"])
+        assert _rendered_view(current["messages"][: len(previous["messages"])]) == _rendered_view(previous["messages"])
+    for body in forwarded:
+        assert all(message["role"] != "system" for message in body["messages"])
+
+
+def test_mid_conversation_system_becomes_wrapped_user_turn_in_place() -> None:
+    body = _claude_code_step(2)
+    original = json.loads(json.dumps(body))
+    forwarded = anthropic_passthrough.normalize_anthropic_system_messages(body)
+    roles = [message["role"] for message in forwarded["messages"]]
+    assert roles == ["user", "user", "assistant", "user", "user"]
+    assert _joined_text(forwarded["messages"][1]) == f"<system-reminder>\n{_REMINDERS[0]}\n</system-reminder>"
+    newest = forwarded["messages"][-1]
+    assert newest["content"] == [{"type": "text", "text": f"<system-reminder>\n{_REMINDERS[1]}\n</system-reminder>", "cache_control": _CC}]
+    assert body == original
+
+
+def test_reminder_preserves_every_block_and_wraps_non_text_edges() -> None:
+    image = {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AA=="}}
+    body = {"messages": [
+        {"role": "user", "content": "Hi"},
+        {"role": "system", "content": [image, {"type": "text", "text": "a", "cache_control": _CC}, image]},
+    ]}
+    content = anthropic_passthrough.normalize_anthropic_system_messages(body)["messages"][1]["content"]
+    assert content == [
+        {"type": "text", "text": "<system-reminder>\n"}, image,
+        {"type": "text", "text": "a", "cache_control": _CC}, image,
+        {"type": "text", "text": "\n</system-reminder>"},
+    ]
+
+
 @pytest.mark.parametrize("system", [None, "Original instructions", [
     {"type": "text", "text": "Original instructions", "cache_control": {"type": "ephemeral"}}
 ]])
-def test_hook_system_context_preserves_blocks_and_tool_order(system: Any) -> None:
-    hook = {"type": "text", "text": "SessionStart hook additional context", "cache_control": {"type": "ephemeral"}}
-    conversation = [
-        {"role": "user", "content": "Inspect evidence"},
-        {"role": "assistant", "content": [{"type": "tool_use", "id": "tool_1", "name": "Read", "input": {}}]},
-        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tool_1", "content": "Evidence"}]},
-    ]
-    body = {"system": system, "messages": [conversation[0], {"role": "system", "content": [hook]}, *conversation[1:], {"role": "system", "content": "Later context"}]}
+def test_leading_system_messages_still_hoisted(system: Any) -> None:
+    hook = {"type": "text", "text": "Leading hook context", "cache_control": _CC}
+    conversation = [{"role": "user", "content": "Inspect evidence"}]
+    body = {"system": system, "messages": [{"role": "system", "content": [hook]}, {"role": "system", "content": "Second"}, *conversation]}
     original = json.loads(json.dumps(body))
     normalized = anthropic_passthrough.normalize_anthropic_system_messages(body)
     assert normalized["messages"] == conversation
-    assert normalized["system"][-3:] == [hook, {"type": "text", "text": "\n\n"}, {"type": "text", "text": "Later context"}]
+    assert normalized["system"][-3:] == [hook, {"type": "text", "text": "\n\n"}, {"type": "text", "text": "Second"}]
     if system:
         expected = [{"type": "text", "text": system}] if isinstance(system, str) else system
-        assert normalized["system"][:len(expected)] == expected
+        assert normalized["system"][: len(expected)] == expected
         assert normalized["system"][len(expected)] == {"type": "text", "text": "\n\n"}
     assert body == original
+
+
+def test_no_system_key_added_when_nothing_hoisted() -> None:
+    body = {"messages": [{"role": "user", "content": "Hi"}, {"role": "system", "content": "late"}]}
+    normalized = anthropic_passthrough.normalize_anthropic_system_messages(body)
+    assert "system" not in normalized
+    assert [m["role"] for m in normalized["messages"]] == ["user", "user"]
 
 
 def test_standard_anthropic_body_unchanged() -> None:
@@ -177,13 +272,17 @@ class TestAnthropicPassthroughHTTP:
         assert response.json()["content"][0]["text"] == "OK"
         call_kwargs = mock_client.post.await_args.kwargs
         assert call_kwargs["json"]["model"] == "agent"
-        assert call_kwargs["json"]["messages"] == [{"role": "user", "content": "Say OK."}]
+        assert call_kwargs["json"]["system"] == [{"type": "text", "text": "s" * 40}]
+        assert call_kwargs["json"]["messages"] == [
+            {"role": "user", "content": "Say OK."},
+            {"role": "user", "content": [{"type": "text", "text": "<system-reminder>\nSessionStart context\n</system-reminder>"}]},
+        ]
         assert mock_client.post.await_args.args[0] == "http://pool-agent:8015/v1/messages"
         pool = configured_routes
         assert len(pool.calls) == 1
         assert pool.calls[0]["work_class"] == "agent"
         assert pool.calls[0]["holder"] == "http:anthropic"
-        # system (40 + hoisted 20 + separator 2 chars) + message 7 chars, /4, + max_tokens
+        # system 40 chars + messages (7 + wrapped reminder), /4, + max_tokens
         assert pool.calls[0]["min_ctx_tokens"] > 64
         assert pool.releases == ["ok"]
 

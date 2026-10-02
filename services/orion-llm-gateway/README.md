@@ -79,11 +79,23 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 
 The gateway exposes an Anthropic Messages-compatible HTTP membrane for Claude Code and FCC. Traffic uses the same route names (`config/gpu_pool.yaml` `routes:` -- `agent`, `chat`, `harness`, `quick`, `metacog`, etc.) and takes a GPU pool lease like the bus path, but **does not** go through the bus-native `run_llm_chat()` path.
 
-Claude session hooks can append `role=system` context inside `messages` after a
-user turn. Gateway moves those blocks into Anthropic's top-level `system` field
-before forwarding to llama.cpp, whose model template requires system context
-first. Existing system blocks, cache metadata, and conversation/tool ordering
-are preserved. Durable-lease validation and a GPU pool lease still apply to the request.
+Claude Code puts `role=system` messages inside `messages`: SessionStart hook
+context, a `<total_tokens>` reminder every step, and PreToolUse hook context
+after tool calls. llama.cpp's Qwen templates reject (:8015) or drop (:8011) a
+system message that is not first, so the gateway reshapes them:
+
+- System messages **before** the first user/assistant turn are moved into the
+  top-level `system` field.
+- Every **later** system message stays where it is, as a `role=user` turn
+  wrapped in `<system-reminder>...</system-reminder>`.
+
+Later ones are deliberately not moved into `system`: that made the system block
+grow every step, which shifted the whole conversation, and these models then
+re-read the entire 13-30k-token prompt each step (~38 s) instead of only the
+new tokens (~1 s). Keeping them in place makes each step's prompt the previous
+prompt plus new text. Block content and `cache_control` are preserved. See
+`docs/superpowers/specs/2026-10-02-fcc-prompt-prefix-cache-design.md`.
+Durable-lease validation and a GPU pool lease still apply to the request.
 
 Topology:
 

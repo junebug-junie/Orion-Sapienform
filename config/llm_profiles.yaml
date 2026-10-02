@@ -462,8 +462,20 @@ profiles:
       reasoning: "off"
       reasoning_budget: 0
       #reasoning_format: "deepseek"
-      #chat_template_kwargs:
-      #  enable_thinking: true
+      # ADDED 2026-10-02: keep earlier assistant turns' reasoning in the
+      # rendered prompt, same as the :8015 agent lane already does. Unlike
+      # that lane, THIS model's template treats an unset preserve_thinking as
+      # false: every time a new user turn appears (the gateway now forwards
+      # Claude Code's per-step reminders as in-place <system-reminder> user
+      # turns), the template strips the previous step's <think> block, so the
+      # old prompt is no longer a pure prefix of the new one. Measured with
+      # this lane's own /apply-template on captured FCC steps: unset -> 6
+      # chars lost per step (inside the end checkpoint, cheap but not zero,
+      # and the model loses its own prior reasoning); true -> 0 lost. See
+      # docs/superpowers/specs/2026-10-02-fcc-prompt-prefix-cache-design.md
+      # (Fix B). Inert for histories that carry no reasoning_content.
+      chat_template_kwargs:
+        preserve_thinking: true
 
       no_context_shift: true
       # CHANGED 2026-09-21: single GPU now (num_gpus: 1 above), so split_mode/

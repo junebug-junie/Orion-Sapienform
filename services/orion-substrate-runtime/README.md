@@ -37,6 +37,17 @@ orion:rpc_health:snapshot (every service's shared bus client, every 30 s)
   (SUBSTRATE_RPC_DELIVERY_BRIDGE_ENABLED, default off in code, on in .env_example.
   No migration: pub/sub listener + receipts only. Nothing is written when no bus
   RPC call happened in the window. Evidence: evals/run_rpc_delivery_eval.py.)
+
+grammar_events (orion-sql-writer, sql_writer.storage:*) → storage write projection
+  → storage_write_reducer: rolling 600 s (event time) of the writer's per-family
+    write outcomes, worst family's failed / max(attempted, 10), 2+ failures only
+  → StateDeltaV1(target_kind=storage_write) on node:substrate.storage_write, one per writer window
+  → substrate_reduction_receipts → orion-field-digester (when ENABLE_STORAGE_WRITE_FIELD_DIGESTION=true)
+  → capability:storage reliability_pressure
+  (SQL_WRITER_WRITE_HEALTH_ENABLED on the writer, ENABLE_STORAGE_WRITE_REDUCER here;
+  both off in code, on in .env_example. manual_migration_storage_write_substrate_loop.sql
+  must be applied first. No hint is written when nothing was attempted in the span.
+  Evidence: services/orion-sql-writer/evals/storage_write_replay.py.)
 ```
 
 ## Setup

@@ -778,6 +778,23 @@ in code, on in `.env_example`). Not the same event as `inference_failure_pressur
 is the gateway's count of backend calls that came back with an error; this one is callers
 whose reply did not arrive before their own deadline, whatever the reason.
 
+## `write_failure_pressure` (2026-10-02)
+
+Storage writes that did not land, written only on `node:substrate.storage_write` by
+orion-substrate-runtime's storage_write reducer (`orion/substrate/storage_write_loop/`) from
+orion-sql-writer's own per-window write outcomes (`services/orion-sql-writer/app/write_health.py`).
+The reading is the worst table family's `failed / max(attempted, 10)` over the last 600 s of
+writer windows, 0.0 until a family has 2+ failures. Failures are writes that did not reach their
+table: validation/schema reject, constraint violation, serialization error, database
+unavailable, timeout, other DB error, grammar-queue shed. Idempotent duplicates are not failures
+and unrouted kinds are not counted (`fallback_watch` owns those). `mode="replace"`, NOT in
+`NODE_DECAY_CHANNELS`, in `EXPIRING_NODE_CHANNELS` at 180 s (three missed 60 s writer windows):
+a dead writer, a stopped reducer, or a Postgres outage long enough that the writer's own report
+cannot be stored all read as unmeasured, never as the last calm value. Single-observer: never
+seeded on any other node. The edge maps it to `capability:storage` `reliability_pressure`, which
+had no input before (athena's disk/memory biometrics only feed `pressure`). Gated by
+`ENABLE_STORAGE_WRITE_FIELD_DIGESTION` (default off in code, on in `.env_example`).
+
 ## Retired: `stream_backlog_pressure` / `stream_backlog_health` / `delivery_confidence` (2026-09-25)
 
 Removed from `NODE_CHANNELS` (and `stream_backlog_pressure` from `CAPABILITY_CHANNELS`), with no

@@ -110,7 +110,7 @@ REQUIRED JSON FIELDS
 - imperative: max 300 chars — how this turn should approach the task (felt layer, not speech)
 - tone: max 200 chars — strain, discomfort, relational frame in plain language
 - strain_refs: JSON array of coalition node_ids and/or open_loop ids driving the felt layer
-- evidence_refs: JSON array — each id MUST be a subset of attended coalition ids or strain_refs; min 1 when proceeding
+- evidence_refs: JSON array — each id MUST be a subset of attended coalition ids or strain_refs (`hub:turn` is this turn's anchor); min 1 when proceeding
 - stance_harness_slice:
   - task_mode: one of direct_response, triage, technical_collaboration, identity_dialogue, reflective_dialogue, playful_exchange, mixed
   - conversation_frame: one of technical, planning, reflective, playful_relational, identity_emergence, mixed

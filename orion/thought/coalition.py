@@ -43,6 +43,12 @@ def canonicalize_turn_refs(refs: list[str], correlation_id: str) -> list[str]:
     return out
 
 
+def prompt_turn_refs(ids: list[str], correlation_id: str) -> list[str]:
+    """Show this turn's anchor to the stance model as `hub:turn`, never the full id."""
+    anchor = hub_turn_coalition_id(correlation_id)
+    return [HUB_TURN_REF_TOKEN if i == anchor else i for i in ids]
+
+
 def align_evidence_refs_to_coalition(
     thought: ThoughtEventV1,
     coalition_ids: set[str],

@@ -731,6 +731,18 @@ async def _mock_fcc_runner_fetch_then_error_with_partial(**_: Any) -> AsyncItera
             },
         },
     }
+    # The real motor only ever carries text in `llm_response` that it already
+    # streamed as an assistant step (fcc_motor.run_fcc_turn's `accumulated`).
+    yield {
+        "type": "step",
+        "step": {
+            "type": "assistant",
+            "raw": {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "partial text salvaged before the timeout"}]},
+            },
+        },
+    }
     yield {
         "type": "error",
         "llm_response": "partial text salvaged before the timeout",

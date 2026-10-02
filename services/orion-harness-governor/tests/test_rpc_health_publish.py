@@ -274,7 +274,9 @@ def test_fcc_hop_timeout_before_first_assistant_event_keys_by_role() -> None:
     assert hops["fcc:agent"].timeout_count == 1
 
 
-@pytest.mark.parametrize("code", ["fcc_stream_line_limit", "fcc_draft_length_ceiling_exceeded"])
+@pytest.mark.parametrize(
+    "code", ["fcc_stream_line_limit", "fcc_context_ceiling_exceeded", "fcc_draft_length_ceiling_exceeded"]
+)
 def test_fcc_hop_skips_motor_output_limit_kills(code: str) -> None:
     from app.bus_listener import record_fcc_hop
 

@@ -11,6 +11,11 @@ from uuid import UUID, uuid4
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.harness.cortex_client import HarnessCortexClient
+from orion.harness.cut_short import (
+    FCC_CONTEXT_CEILING_ERROR_CODE,
+    LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE,
+    ensure_cut_short_marked,
+)
 from orion.harness.finalize import (
     DEFAULT_FINALIZE_INTERLOCUTOR,
     HarnessFinalizeFailedError,
@@ -89,7 +94,11 @@ _FCC_PRESPAWN_CODES = frozenset({"fcc_bad_model_label", "fcc_lane_context_too_sm
 # The motor's own output guards killing a still-working stream (orion/harness/fcc_motor.py):
 # the elapsed time is truncated by a content limit, neither a round trip nor a
 # deadline -- recording it either way would bias the baseline.
-_FCC_SELF_KILL_CODES = frozenset({"fcc_stream_line_limit", "fcc_draft_length_ceiling_exceeded"})
+# `fcc_draft_length_ceiling_exceeded` is the pre-2026-10-02 name of
+# `fcc_context_ceiling_exceeded`; kept so a mixed-version deploy stays excluded.
+_FCC_SELF_KILL_CODES = frozenset(
+    {"fcc_stream_line_limit", FCC_CONTEXT_CEILING_ERROR_CODE, LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE}
+)
 
 
 def fcc_hop_key(serving_role: str | None, fcc_route: str | None = None, fcc_backend: str | None = None) -> str:
@@ -432,6 +441,7 @@ async def handle_harness_run_request(
             preserve_structured_output=bool(request.reading_only),
             gpu_lease=request.gpu_lease,
             fcc_model_label=request.fcc_model_label,
+            cut_short=bool(getattr(motor, "cut_short_reason", None)),
             repair_overlay=repair_overlay,
             user_message=request.user_message,
             voice_contract=request.answer_contract,
@@ -565,9 +575,15 @@ async def handle_harness_run_request(
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
 
+    final_text = chain.final_text
+    if getattr(motor, "cut_short_reason", None):
+        # Backstop only: the chain already skips repair for cut-short drafts
+        # (run_harness_finalize_chain(cut_short=True)) and passes the marked
+        # findings through. This keeps the marker if that ever regresses.
+        final_text = ensure_cut_short_marked(final_text)
     run = HarnessRunV1(
         correlation_id=corr,
-        final_text=chain.final_text,
+        final_text=final_text,
         draft_text=motor.draft_text,
         substrate_appraisal=chain.substrate_appraisal,
         reflection=chain.reflection,

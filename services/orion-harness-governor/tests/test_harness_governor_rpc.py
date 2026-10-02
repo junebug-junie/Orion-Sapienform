@@ -935,3 +935,59 @@ async def test_harness_run_carries_source_fetches_from_the_motor() -> None:
         )
 
     assert run.source_fetches == motor.source_fetches
+
+
+@pytest.mark.asyncio
+async def test_cut_short_turn_keeps_its_marker_through_repair() -> None:
+    """A motor-cut-short draft (orion/harness/cut_short.py) is rewritten by response
+    repair into prose that reads finished. The governor must re-attach the marker so
+    the turn is never presented as a full answer (live 2026-10-01: "I cannot complete
+    this investigation... hit a context wall" shipped as Orion's answer)."""
+    from app import bus_listener
+    from orion.harness.cut_short import CUT_SHORT_MARKER
+
+    thought = make_thought()
+    req = HarnessRunRequestV1(
+        correlation_id="c-1",
+        thought_event=thought,
+        user_message="investigate",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    motor = _motor_result(thought)
+    motor.draft_text = f"{CUT_SHORT_MARKER}\n- Read returned: real evidence"
+    motor.compliance_verdict = "partial"
+    motor.grounding_status = "fcc_context_ceiling_exceeded"
+    motor.cut_short_reason = "fcc_context_ceiling_exceeded"
+    reflection = make_reflection()
+    appraisal = make_appraisal()
+
+    async def _fake_finalize_chain(**kwargs: object) -> HarnessFinalizeChainResult:
+        return HarnessFinalizeChainResult(
+            final_text="Here is the complete answer.",
+            substrate_appraisal=appraisal,
+            reflection=reflection,
+            verdict_molecule=None,
+            outcome_molecule=None,
+            finalize_changed=True,
+            quick_lane_skipped_5b=False,
+            verdict_molecule_id="verdict-1",
+        )
+
+    with patch.object(
+        bus_listener,
+        "HarnessRunner",
+        return_value=AsyncMock(run=AsyncMock(return_value=motor)),
+    ), patch.object(bus_listener, "run_harness_finalize_chain", _fake_finalize_chain), patch.object(
+        bus_listener,
+        "emit_post_turn_closure",
+        AsyncMock(return_value=AsyncMock()),
+    ):
+        run = await bus_listener.handle_harness_run_request(
+            AsyncMock(), req, reply_to="orion:harness:run:result:c-1"
+        )
+
+    assert run.final_text.startswith(CUT_SHORT_MARKER)
+    assert "Here is the complete answer." in run.final_text
+    assert run.compliance_verdict == "partial"
+    assert run.grounding_status == "fcc_context_ceiling_exceeded"

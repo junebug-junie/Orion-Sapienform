@@ -28,7 +28,8 @@ JunkReason = Literal["low_info_social", "hub_command"]
 # stopwords) carries nothing to remember.
 _FILLER = frozenset(
     {
-        "hi", "hey", "hello", "yo", "sup", "hiya", "howdy", "heya", "morning",
+        "hi", "hey", "hello", "yo", "sup", "hiya", "howdy", "heya", "heyo", "morning",
+        "wassup", "wasup", "whassup", "wazzup", "wazup", "whatsup",
         "evening", "afternoon", "night", "gm", "gn",
         "thanks", "thank", "thx", "ty", "tysm", "cheers",
         "ok", "okay", "kk", "yep", "yup", "yeah", "yes", "nope", "nah",
@@ -93,8 +94,15 @@ _WORD_RE = re.compile(r"[\w']+", re.UNICODE)
 _NON_ASCII_LETTER_RE = re.compile(r"[^\W\d_a-zA-Z]", re.UNICODE)
 
 
+# Three or more of the same character in a row only happens in stretched
+# spelling ("wasssuppppp", "heyyyy", "hmmm"), so it is collapsed to one.
+# Doubles are left alone: "good" must not become "god".
+_STRETCH_RE = re.compile(r"(.)\1{2,}")
+
+
 def _words(text: str) -> list[str]:
-    return [w.strip("'") for w in _WORD_RE.findall(str(text or "").lower()) if w.strip("'")]
+    words = [w.strip("'") for w in _WORD_RE.findall(str(text or "").lower()) if w.strip("'")]
+    return [_STRETCH_RE.sub(r"\1", w) for w in words]
 
 
 def _is_negation(word: str) -> bool:

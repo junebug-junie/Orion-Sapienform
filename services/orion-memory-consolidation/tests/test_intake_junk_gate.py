@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from orion.memory.consolidation_gate import consolidation_memory_gate
-from orion.memory.intake_junk import hub_command_workflow, prompt_junk_reason
+from orion.memory.intake_junk import hub_command_workflow, is_low_info_prompt, prompt_junk_reason
 
 # Real junk rows that were auto-saved as memories.
 GREETINGS = [
@@ -185,3 +185,18 @@ def test_command_with_only_politeness_is_still_a_command(prompt):
 def test_command_with_content_is_not_a_command():
     for prompt in COMMAND_PLUS_CONTENT:
         assert hub_command_workflow(prompt) is None, prompt
+
+
+def test_stretched_greetings_are_junk():
+    """Live miss, 2026-10-02: 'wasssuppppp' was saved and auto-approved as a
+    semantic memory. Runs of 3+ identical letters only occur in stretched
+    spelling, so they collapse before matching."""
+    for prompt in ["wasssuppppp", "wassup", "heyyyy", "hiiii", "yooo", "hmmm", "okkk", "sooo good", "wazzzup?"]:
+        assert is_low_info_prompt(prompt), prompt
+
+
+def test_stretch_collapse_keeps_real_words():
+    """Doubles are not collapsed: 'good' must not become 'god', and stretched
+    real content stays content."""
+    for prompt in ["Do you believe in god?", "noooo my flight got cancelled", "sooo tired of this surgery wait", "I feeeel awful"]:
+        assert not is_low_info_prompt(prompt), prompt

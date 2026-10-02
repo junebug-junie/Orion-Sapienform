@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from app.boundary import should_close_window
+from app.boundary import legacy_close_reason, should_close_window  # noqa: F401
 from app.settings import settings
 from orion.schemas.memory_consolidation import MemoryTurnPersistedV1
 
@@ -29,14 +29,27 @@ def turn_has_phase(turn: MemoryTurnPersistedV1) -> bool:
     return bool(phase)
 
 
+def legacy_close_decision(
+    turn: MemoryTurnPersistedV1,
+    scores: dict,
+    *,
+    window_turns: list[dict],
+) -> str | None:
+    """The live (legacy) window-close decision, as a named reason or None."""
+    reason = legacy_close_reason(turn, scores, settings)
+    if reason is not None:
+        return reason
+    if turn_has_phase(turn):
+        return None
+    if should_close_by_time_gap(window_turns, gap_sec=int(settings.MEMORY_WINDOW_FALLBACK_GAP_SEC)):
+        return "legacy:time_gap"
+    return None
+
+
 def should_close_turn(
     turn: MemoryTurnPersistedV1,
     scores: dict,
     *,
     window_turns: list[dict],
 ) -> bool:
-    if should_close_window(turn, scores, settings):
-        return True
-    if turn_has_phase(turn):
-        return False
-    return should_close_by_time_gap(window_turns, gap_sec=int(settings.MEMORY_WINDOW_FALLBACK_GAP_SEC))
+    return legacy_close_decision(turn, scores, window_turns=window_turns) is not None

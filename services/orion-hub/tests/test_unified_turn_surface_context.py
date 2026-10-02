@@ -33,7 +33,7 @@ def _run(payload):
     builder rather than on a reimplementation of it."""
     captured = {}
 
-    async def _fake_build(ctx, runtime_ns):
+    async def _fake_build(ctx, runtime_ns, **_kwargs):
         captured["ctx"] = ctx
         return None, {"compact_text": "Situation: stub"}
 

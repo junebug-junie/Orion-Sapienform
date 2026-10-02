@@ -668,7 +668,47 @@ def _records_user_turn(ctx: dict[str, Any]) -> bool:
     return ctx.get("record_user_turn", True) is not False
 
 
-async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+def _phase_stamp_from_cached_brief(brief: Any, ctx: dict[str, Any], now_utc: datetime) -> dict[str, Any]:
+    """Re-read the wall clock for a turn served from the situation cache.
+
+    A cache hit skips ``_build_conversation_phase``, so the cached brief's
+    phase is the phase of the turn that BUILT the entry, up to ``ttl_seconds``
+    (300 s live) ago. Stamping that onto this turn would be wrong in the way
+    that matters most for episode boundaries: the morning's first turn reads
+    ``next_day``, and Juniper's second message four minutes later would
+    inherit ``next_day`` and look like a new conversation.
+
+    The cache key splits user turns from Orion-authored turns, so the last
+    user turn is recoverable without another Redis read:
+    - a user-turn entry was built by a user turn that wrote
+      ``last_user_turn_at = generated_at``;
+    - a no-user-turn entry only read the clock, so its own
+      ``last_user_turn_at`` is still the last user turn.
+    """
+    phase = brief.conversation_phase
+    if _records_user_turn(ctx):
+        last_user = brief.generated_at
+    else:
+        last_user = phase.last_user_turn_at
+    return conversation_phase_stamp(
+        classify_conversation_phase(last_user, now_utc, brief.time.timezone),
+        source="situation_cache",
+    )
+
+
+async def build_situation_for_ctx(
+    ctx: dict[str, Any],
+    runtime_settings: Any,
+    *,
+    phase_stamp_out: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build (or serve from cache) the situation brief and its prompt fragment.
+
+    ``phase_stamp_out``: optional dict the caller owns. When given, it is filled
+    with this turn's conversation-phase stamp (see ``conversation_phase_stamp``),
+    correct on both a fresh build and a cache hit. The Hub persists it on the
+    chat turn as ``spark_meta.conversation_phase``.
+    """
     cfg = settings_from_runtime(runtime_settings)
     if not cfg.enabled:
         return {}, {}
@@ -676,6 +716,13 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
     with _LOCK:
         cached = _SITUATION_CACHE.get(cache_key)
         if cached and (datetime.now(timezone.utc) - cached[0]).total_seconds() < cfg.ttl_seconds:
+            if phase_stamp_out is not None:
+                try:
+                    phase_stamp_out.update(
+                        _phase_stamp_from_cached_brief(cached[1], ctx, datetime.now(timezone.utc))
+                    )
+                except Exception:
+                    phase_stamp_out.clear()
             return cached[1].model_dump(mode="json"), cached[2].model_dump(mode="json")
 
     now = datetime.now(timezone.utc)
@@ -683,6 +730,17 @@ async def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) ->
     presence = _presence_from_ctx(ctx, cfg, now)
     time_ctx = _build_time_context(cfg, diagnostics)
     phase_ctx = await _build_conversation_phase(ctx, time_ctx, now)
+    if phase_stamp_out is not None:
+        phase_stamp_out.update(
+            conversation_phase_stamp(
+                {
+                    "phase_change": phase_ctx.phase_change,
+                    "delta_user_seconds": phase_ctx.time_since_last_user_turn_seconds,
+                    "crossed_day": phase_ctx.crossed_day_boundary,
+                },
+                source="situation_build",
+            )
+        )
     place_ctx = _build_place_context(cfg)
     env_ctx = await _build_environment_context(cfg, diagnostics)
     agenda_ctx = AgendaContextV1(available=False, source="stub")
@@ -868,21 +926,28 @@ def _season_label(month: int) -> str:
     return "autumn"
 
 
-async def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1, now_utc: datetime) -> ConversationPhaseContextV1:
-    session_id = str(ctx.get("session_id") or "global")
-    state = await read_session_turn_state(session_id)
-    last_user = state.last_user_turn_at
-    last_orion = state.last_orion_turn_at
-    delta_user = int((now_utc - last_user).total_seconds()) if last_user else None
+def classify_conversation_phase(
+    last_user_turn_at: datetime | None,
+    now_utc: datetime,
+    tz_name: str,
+) -> dict[str, Any]:
+    """The conversation wall clock: bucket the time since Juniper's last turn.
+
+    Pure function, shared by the live situation build and by the
+    ``conversation_phase`` stamp persisted on each chat turn (memory episode
+    boundary Fix 1), so both read the same clock with the same buckets.
+    Returns phase_change, continuity_mode, topic_staleness_risk,
+    response_adjustments, crossed_day and delta_user_seconds.
+    """
+    delta_user = int((now_utc - last_user_turn_at).total_seconds()) if last_user_turn_at else None
     phase = "unknown"
     continuity = "continue_directly"
     risk = "none"
     adjustments: list[str] = []
     crossed_day = False
-    if last_user:
-        crossed_day = last_user.astimezone(ZoneInfo(time_ctx.timezone)).date() != datetime.now(
-            ZoneInfo(time_ctx.timezone)
-        ).date()
+    if last_user_turn_at:
+        tz = ZoneInfo(tz_name)
+        crossed_day = last_user_turn_at.astimezone(tz).date() != now_utc.astimezone(tz).date()
         if delta_user is not None and delta_user < 120:
             phase = "same_breath"
         elif delta_user < 20 * 60:
@@ -906,6 +971,71 @@ async def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1
             continuity = "reorient"
             risk = "medium"
             adjustments.append("Crossed day boundary; lightly re-anchor timeline.")
+    return {
+        "phase_change": phase,
+        "continuity_mode": continuity,
+        "topic_staleness_risk": risk,
+        "response_adjustments": adjustments,
+        "crossed_day": crossed_day,
+        "delta_user_seconds": delta_user,
+    }
+
+
+def conversation_phase_stamp(
+    phase: dict[str, Any], *, source: str
+) -> dict[str, Any]:
+    """The persisted per-turn form: ``{phase_change, delta_user_seconds, crossed_day, source}``.
+
+    ``source`` says how the stamp was obtained (``situation_build``,
+    ``situation_cache``, ``session_state_read``) so a reader can tell a fresh
+    clock read from a reconstructed one.
+    """
+    return {
+        "phase_change": str(phase.get("phase_change") or "unknown"),
+        "delta_user_seconds": phase.get("delta_user_seconds"),
+        "crossed_day": bool(phase.get("crossed_day")),
+        "source": source,
+    }
+
+
+async def read_conversation_phase_stamp(
+    session_id: str | None,
+    *,
+    tz_name: str,
+    now_utc: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Read-only wall-clock stamp for a turn that does not build a situation brief.
+
+    Used for turns Juniper did not author through the unified lane: Orion's
+    unprompted outreach and legacy-lane workflow commands. Never writes the
+    session clock (same rule as ``_records_user_turn``). Returns None when the
+    session state cannot be read, so a caller never persists a guessed phase.
+    """
+    try:
+        state = await read_session_turn_state(str(session_id or "global"))
+    except Exception:
+        return None
+    if not getattr(state, "ok", False):
+        return None
+    now = now_utc or datetime.now(timezone.utc)
+    return conversation_phase_stamp(
+        classify_conversation_phase(state.last_user_turn_at, now, tz_name),
+        source="session_state_read",
+    )
+
+
+async def _build_conversation_phase(ctx: dict[str, Any], time_ctx: TimeContextV1, now_utc: datetime) -> ConversationPhaseContextV1:
+    session_id = str(ctx.get("session_id") or "global")
+    state = await read_session_turn_state(session_id)
+    last_user = state.last_user_turn_at
+    last_orion = state.last_orion_turn_at
+    clock = classify_conversation_phase(last_user, now_utc, time_ctx.timezone)
+    delta_user = clock["delta_user_seconds"]
+    phase = clock["phase_change"]
+    continuity = clock["continuity_mode"]
+    risk = clock["topic_staleness_risk"]
+    adjustments = list(clock["response_adjustments"])
+    crossed_day = bool(clock["crossed_day"])
     out = ConversationPhaseContextV1(
         last_user_turn_at=last_user,
         last_orion_turn_at=last_orion,

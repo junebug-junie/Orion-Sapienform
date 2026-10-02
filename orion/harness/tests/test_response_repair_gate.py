@@ -140,3 +140,58 @@ async def test_misaligned_chain_invokes_repair() -> None:
     assert chain.response_repair_ran is True
     assert chain.response_repair_reason == "misaligned"
     assert chain.finalize_changed is True
+
+
+@pytest.mark.asyncio
+async def test_cut_short_chain_skips_repair_and_keeps_marked_findings() -> None:
+    """A misaligned verdict would normally trigger a prose rewrite. For a cut-short
+    findings draft that rewrite synthesizes evidence into a finished-sounding
+    answer, so it is skipped and the outcome molecule carries the marked text."""
+    from orion.harness.cut_short import CUT_SHORT_MARKER
+
+    thought = make_thought()
+    draft_text = f"{CUT_SHORT_MARKER}\nThis turn was stopped...\n- Read returned: real evidence"
+    molecule = build_draft_molecule(
+        correlation_id="c-cut",
+        thought=thought,
+        draft_text=draft_text,
+        grammar_receipts=[],
+        coalition_snapshot=build_coalition_snapshot(thought),
+        repair_overlay=make_repair_overlay(),
+    )
+    reflection = make_reflection(alignment_verdict="misaligned", strain_unresolved=False)
+
+    async def substrate_client(_mol: object):
+        return make_appraisal(surprise_level=0.5)
+
+    async def cortex_client(_req: object):
+        return {"final_text": reflection.model_dump(mode="json"), "trace_id": "t"}
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            "orion.harness.finalize.extract_finalize_reflection_payload",
+            lambda _result: reflection.model_dump(mode="json"),
+        )
+        mp.setattr(
+            "orion.harness.finalize.extract_response_repair_text",
+            lambda _result: "Here is the complete answer.",
+        )
+        chain = await run_harness_finalize_chain(
+            correlation_id="c-cut",
+            draft_text=draft_text,
+            draft_molecule=molecule,
+            thought=thought,
+            grammar_receipts=[],
+            repair_overlay=make_repair_overlay(),
+            user_message="investigate",
+            voice_contract=None,
+            cortex_client=cortex_client,
+            substrate_client=substrate_client,
+            cut_short=True,
+        )
+
+    assert chain.final_text == draft_text
+    assert chain.response_repair_ran is False
+    assert chain.finalize_changed is False
+    assert chain.outcome_molecule is not None
+    assert chain.outcome_molecule.final_text == draft_text

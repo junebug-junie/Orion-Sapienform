@@ -254,6 +254,13 @@ def post_compaction_context_chars(event: Any, *, prompt_chars: int) -> int:
     total started from, since the CLI's system prompt was never counted on
     either side. The summary itself, if the CLI streams it as a user message,
     is counted by `measure_step_payload_chars` as the next step.
+
+    Known asymmetry: `post_tokens` very likely includes the CLI's own system
+    prompt and tool schemas, which the pre-compaction baseline (`len(prompt)`)
+    never counted. So the post_tokens path is the PESSIMISTIC one (larger
+    estimate, earlier nudge/kill), never the lenient one. Whether live events
+    carry `post_tokens` is UNVERIFIED: the CLI schema marks it optional and the
+    captured live fixture is field-stripped (no `compact_metadata` at all).
     """
     raw = event.get("raw") if isinstance(event, dict) and isinstance(event.get("raw"), dict) else event
     meta = raw.get("compact_metadata") if isinstance(raw, dict) else None

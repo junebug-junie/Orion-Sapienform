@@ -21,6 +21,7 @@ from orion.cognition.cortex_payload_extract import (
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.llm_json import parse_json_object
 from orion.embodiment.intents import build_intent
+from orion.harness.cut_short import ensure_cut_short_marked
 from orion.harness.reading_receipts import enforce_reading_receipt_grounding
 from orion.schemas.embodiment import EmbodimentIntentV1
 from orion.schemas.cognition.answer_contract import AnswerContract
@@ -1334,8 +1335,16 @@ async def run_harness_finalize_chain(
     grammar_publish_fn: Any = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    cut_short: bool = False,
 ) -> HarnessFinalizeChainResult:
     """Orion capability: unified-turn reflection and conditional response repair.
+
+    ``cut_short``: the motor stopped this turn mid-work and the draft is the
+    turn's own recorded findings under a cut-short marker
+    (orion/harness/cut_short.py). Response repair is skipped -- a prose rewrite
+    would synthesize those findings into something that reads finished -- and
+    the draft passes through verbatim, so the outcome molecule, the run record
+    and the hash all carry the same marked text.
 
     Orchestrates finalize beats 5a → 5b → 5b-prime → 5c → 6b: substrate
     appraisal (5a), integrative reflection or its deterministic quick lane
@@ -1446,6 +1455,17 @@ async def run_harness_finalize_chain(
                 correlation_id,
                 len(final_text),
             )
+        elif cut_short:
+            logger.info(
+                "response_repair_skipped corr=%s reason=cut_short",
+                correlation_id,
+            )
+            final_text = ensure_cut_short_marked(draft_text) or draft_text
+            voice_meta = {
+                "finalize_changed": final_text != draft_text,
+                "response_repair_ran": False,
+                "response_repair_reason": None,
+            }
         elif needs_response_repair(reflection):
             reason = response_repair_reason_for(reflection)
             final_text, voice_meta = await run_orion_response_repair(

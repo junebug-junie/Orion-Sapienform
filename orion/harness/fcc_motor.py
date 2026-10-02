@@ -33,14 +33,7 @@ from orion.fcc.context_budget import (
     summarize_context_risk_suffix,
 )
 
-# The motor's own context guard. It used to be `fcc_draft_length_ceiling_exceeded`,
-# which was never about the draft (live 2026-10-01: drafts were 74-546 chars) --
-# it was a running total of everything the turn ever saw, never reset when the
-# claude CLI compacted. Now the total is rebased on every `compact_boundary`, so
-# this only fires when the ESTIMATED LIVE CONTEXT passes the lane window, i.e.
-# the CLI failed to compact in time. Old rows keep the old name.
-FCC_CONTEXT_CEILING_ERROR_CODE = "fcc_context_ceiling_exceeded"
-LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE = "fcc_draft_length_ceiling_exceeded"
+from orion.harness.cut_short import FCC_CONTEXT_CEILING_ERROR_CODE
 
 logger = logging.getLogger("orion.harness.fcc_motor")
 
@@ -1103,6 +1096,10 @@ async def run_fcc_turn(
     # rebased to the post-compaction size on every CLI `compact_boundary`.
     budget_chars = len(prompt)
     compactions = 0
+    # The CLI's own "turn complete" event arrived. A timeout/stall AFTER it is the
+    # process hanging on exit (e.g. MCP teardown), not a turn cut short: the
+    # runner must keep `accumulated` as the finished answer.
+    saw_result = False
     ceiling_chars = max_context_chars(lane_n_ctx)
     pressure_chars = context_pressure_threshold_chars(lane_n_ctx)
 
@@ -1179,7 +1176,7 @@ async def run_fcc_turn(
                     # known (see the identical carry-forward on the ceiling-
                     # exceeded and line-limit error yields below, and the
                     # authoritative one on the "final"/fcc_nonzero_exit yields).
-                    "metadata": {"fcc_served_model": served_model},
+                    "metadata": {"fcc_served_model": served_model, "fcc_result_seen": saw_result},
                 }
                 return
             except asyncio.LimitOverrunError as exc:
@@ -1189,7 +1186,7 @@ async def run_fcc_turn(
                     "error": f"fcc stream line exceeded read limit: {exc}",
                     "error_code": "fcc_stream_line_limit",
                     "llm_response": accumulated or None,
-                    "metadata": {"fcc_served_model": served_model},
+                    "metadata": {"fcc_served_model": served_model, "fcc_result_seen": saw_result},
                 }
                 return
 
@@ -1282,6 +1279,8 @@ async def run_fcc_turn(
                 accumulated = text
             if sid:
                 claude_session_id = sid
+            if str(parsed.get("type") or "") == "result":
+                saw_result = True
             if str(parsed.get("type") or "") == "assistant":
                 seen_model = _served_model_from_assistant(parsed)
                 if seen_model:

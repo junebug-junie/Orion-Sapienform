@@ -598,6 +598,17 @@ class HarnessRunner:
                 # signal, e.g. a Hub cancel's SIGKILL); keep it instead of None.
                 if isinstance(err_meta, dict) and isinstance(err_meta.get("exit_code"), int):
                     exit_code = err_meta["exit_code"]
+                # Not cut short when the CLI already reported the turn complete
+                # (the process only hung on exit -- `partial` IS the answer), nor
+                # on reading-only machine turns: their consumer needs JSON and
+                # retries on a clean `turn_error:<code>`, which a findings draft
+                # would turn into a finalize parse failure.
+                result_seen = isinstance(err_meta, dict) and bool(err_meta.get("fcc_result_seen"))
+                use_cut_short = (
+                    is_cut_short_code(error_code)
+                    and not result_seen
+                    and not getattr(request, "reading_only", False)
+                )
                 cut_short_draft = (
                     build_cut_short_draft(
                         error_code=error_code,
@@ -605,7 +616,7 @@ class HarnessRunner:
                         findings=turn_findings,
                         last_text=partial,
                     )
-                    if is_cut_short_code(error_code)
+                    if use_cut_short
                     else ""
                 )
                 if cut_short_draft:
@@ -617,7 +628,7 @@ class HarnessRunner:
                     compliance_verdict = "partial"
                     grounding_status = error_code
                     cut_short_reason = error_code
-                elif is_cut_short_code(error_code):
+                elif use_cut_short:
                     # Cut short with nothing recorded: no findings to stand behind
                     # a draft, so the motor failed -- never a lone lead-in line.
                     compliance_verdict = "failed"

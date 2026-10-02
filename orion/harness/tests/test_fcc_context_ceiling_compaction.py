@@ -243,3 +243,97 @@ def test_ensure_cut_short_marked_reattaches_marker_after_repair() -> None:
     already = f"{CUT_SHORT_MARKER}\nfindings"
     assert ensure_cut_short_marked(already) == already
     assert ensure_cut_short_marked(None) is None
+
+
+# ---- review follow-ups ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_motor_flags_a_hang_after_the_cli_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The CLI reported the turn complete, then the process hung (e.g. MCP teardown)."""
+    proc = _FakeProc([_text("The full answer."), json.dumps({"type": "result", "result": "The full answer."})],
+                     block_after_stdout=True)
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(motor, "_preflight_fcc_server", lambda *a, **k: None)
+    monkeypatch.setattr(motor, "load_fcc_env", _fake_fcc_env)
+    monkeypatch.setattr(motor, "_maybe_render_mcp_config", lambda **k: None)
+    events = [ev async for ev in motor.run_fcc_turn(
+        prompt="inspect", fcc_model_label="MODEL_HAIKU", correlation_id="corr-hang",
+        workspace="/tmp", fcc_server_url="http://127.0.0.1:8082", auth_token="tok",
+        claude_bin="claude", timeout_sec=0.3,
+    )]
+    assert events[-1]["type"] == "error"
+    assert events[-1]["error_code"] in ("fcc_timeout", "fcc_stream_stalled")
+    assert events[-1]["metadata"]["fcc_result_seen"] is True
+    assert events[-1]["llm_response"] == "The full answer."
+
+
+@pytest.mark.asyncio
+async def test_hang_after_result_keeps_the_answer_unmarked() -> None:
+    async def _runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        for line in _tool_round("t1", "evidence"):
+            yield _step(json.loads(line))
+        yield _step(json.loads(_text("The full answer.")))
+        yield {"type": "error", "error": "x", "error_code": "fcc_timeout",
+               "llm_response": "The full answer.", "metadata": {"fcc_result_seen": True}}
+
+    result = await HarnessRunner(AsyncMock(), fcc_runner=_runner).run(_request("c-hang"))
+    assert result.draft_text == "The full answer."
+    assert result.cut_short_reason is None
+
+
+@pytest.mark.asyncio
+async def test_reading_only_turn_keeps_the_clean_turn_error_path() -> None:
+    """World-pulse reading turns need JSON and retry on `turn_error:<code>`; a findings
+    draft would become a finalize JSON-parse failure that loses the real code."""
+    async def _runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        for line in _tool_round("t1", "fetched page"):
+            yield _step(json.loads(line))
+        yield {"type": "error", "error": "x", "error_code": "fcc_timeout"}
+
+    request = _request("c-reading")
+    request = request.model_copy(update={"reading_only": True})
+    result = await HarnessRunner(AsyncMock(), fcc_runner=_runner).run(request)
+    assert result.draft_text == ""
+    assert result.compliance_verdict == "failed"
+    assert result.grounding_status == "fcc_timeout"
+    assert result.cut_short_reason is None
+
+
+def test_tool_output_is_scrubbed_of_credentials() -> None:
+    findings = TurnFindings()
+    secret_dump = (
+        "POSTGRES_PASSWORD=hunter2hunter2\nAuthorization: Bearer abc.def.ghi\n"
+        "url=redis://user:s3cr3tpw@host:6379/0 key ghp_ABCDEFGHIJKLMNOP1234"
+    )
+    for line in _tool_round("t1", secret_dump):
+        findings.observe({"type": "x", "raw": json.loads(line)})
+    draft = build_cut_short_draft(error_code="fcc_timeout", step_count=2, findings=findings)
+    for secret in ("hunter2hunter2", "abc.def.ghi", "s3cr3tpw", "ABCDEFGHIJKLMNOP1234"):
+        assert secret not in draft
+    assert "[redacted]" in draft
+
+
+def test_long_last_text_is_kept_whole_once_with_its_paragraphs() -> None:
+    findings = TurnFindings()
+    long_text = "First paragraph of the write-up.\n\n" + ("evidence line. " * 80)
+    findings.observe({"type": "x", "raw": json.loads(_text(long_text))})
+    draft = build_cut_short_draft(error_code="fcc_timeout", step_count=1, findings=findings, last_text=long_text)
+    assert draft.count("First paragraph of the write-up.") == 1
+    assert "First paragraph of the write-up.\n\nevidence line." in draft
+
+
+def test_short_note_keeps_its_line_breaks() -> None:
+    findings = TurnFindings()
+    findings.observe({"type": "x", "raw": json.loads(_text("line one\nline two"))})
+    assert "line one\n  line two" in findings.entries[0]
+
+
+def test_marker_check_tolerates_re_rendering() -> None:
+    rerendered = "[Cut short — not a finished answer.]\nbody"
+    assert ensure_cut_short_marked(rerendered) == rerendered
+    assert ensure_cut_short_marked("[cut short] body") == "[cut short] body"

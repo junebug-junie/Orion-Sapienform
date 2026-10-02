@@ -18,17 +18,27 @@ invented here: every line is something the turn itself saw or wrote.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
+
+# The motor's context guard (orion/harness/fcc_motor.py). It used to be
+# `fcc_draft_length_ceiling_exceeded`, which was never about the draft (live
+# 2026-10-01: drafts were 74-546 chars) -- it was a running total of everything
+# the turn ever saw, never reset when the claude CLI compacted. The total is now
+# rebased on every `compact_boundary`, so this only fires when the ESTIMATED
+# LIVE CONTEXT passes the lane window. Old rows keep the old name.
+FCC_CONTEXT_CEILING_ERROR_CODE = "fcc_context_ceiling_exceeded"
+LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE = "fcc_draft_length_ceiling_exceeded"
 
 # Motor error codes that mean "the motor stopped a turn that was still working".
 # Pre-spawn refusals, MCP preflight failures, provider errors and non-zero exits
 # are not cut-short turns -- nothing (or nothing trustworthy) ran.
 CUT_SHORT_CODES = frozenset(
     {
-        "fcc_context_ceiling_exceeded",
+        FCC_CONTEXT_CEILING_ERROR_CODE,
         # Pre-rename spelling; kept so a mixed-version deploy still routes here.
-        "fcc_draft_length_ceiling_exceeded",
+        LEGACY_FCC_CONTEXT_CEILING_ERROR_CODE,
         "fcc_timeout",
         "fcc_stream_stalled",
         "fcc_stream_line_limit",
@@ -36,6 +46,34 @@ CUT_SHORT_CODES = frozenset(
 )
 
 CUT_SHORT_MARKER = "[Cut short - not a finished answer.]"
+# Tolerant match so a re-rendered marker (em dash, case) is not doubled.
+_MARKER_RE = re.compile(r"^\s*\[cut short\b", re.IGNORECASE)
+
+# PRIVACY BOUNDARY: tool output used to reach only the finalize LLM (via step
+# summaries). A cut-short draft puts excerpts of it in user-visible text, chat
+# history and curiosity journals, so every excerpt is capped short and scrubbed
+# of credential-shaped values first. This is a best-effort scrub, not a DLP.
+_SECRET_PATTERNS = (
+    # Before the key=value rule, which would otherwise eat only the word "Bearer".
+    re.compile(r"(?i)(bearer\s+)([A-Za-z0-9\-._~+/]+=*)"),
+    # KEY=value / "key": "value" where the key name looks like a credential.
+    re.compile(
+        r"(?i)([A-Za-z0-9_\-]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|AUTH)[A-Za-z0-9_\-]*"
+        r"[\"']?\s*[:=]\s*[\"']?)([^\s\"',;]+)"
+    ),
+    re.compile(r"(://[^/\s:@]+:)([^@\s/]+)(@)"),
+    re.compile(r"\b(sk-|ghp_|gho_|github_pat_|xox[abp]-|AKIA)([A-Za-z0-9_\-]{8,})"),
+)
+
+
+def scrub_secrets(text: str) -> str:
+    out = str(text or "")
+    for pattern in _SECRET_PATTERNS:
+        if pattern.groups == 3:
+            out = pattern.sub(lambda m: f"{m.group(1)}[redacted]{m.group(3)}", out)
+        else:
+            out = pattern.sub(lambda m: f"{m.group(1)}[redacted]", out)
+    return out
 
 _REASON_TEXT = {
     "fcc_context_ceiling_exceeded": "its context filled past the lane's window",
@@ -46,7 +84,7 @@ _REASON_TEXT = {
 }
 
 _TEXT_CAP = 600
-_TOOL_RESULT_CAP = 500
+_TOOL_RESULT_CAP = 300
 _TOOL_ARGS_CAP = 160
 _LAST_TEXT_CAP = 4000
 # Total budget for the findings section. Finalize/reflect/repair read this
@@ -69,6 +107,14 @@ def _one_line(text: str, cap: int) -> str:
     return flat if len(flat) <= cap else flat[: cap - 3] + "..."
 
 
+def _keep_lines(text: str, cap: int) -> str:
+    """Orion's own prose: keep its paragraphs, indent continuation lines."""
+    body = str(text).strip()
+    if len(body) > cap:
+        body = body[: cap - 3].rstrip() + "..."
+    return "\n  ".join(line.rstrip() for line in body.splitlines())
+
+
 def _result_text(body: Any) -> str:
     if isinstance(body, str):
         return body
@@ -88,6 +134,7 @@ class TurnFindings:
     entries: list[str] = field(default_factory=list)
     tool_calls: dict[str, str] = field(default_factory=dict)
     tool_result_count: int = 0
+    last_text_entry_index: int | None = None
 
     def observe(self, step: Any) -> None:
         if not isinstance(step, dict):
@@ -109,13 +156,16 @@ class TurnFindings:
             if btype == "text" and rtype == "assistant":
                 text = str(block.get("text") or "").strip()
                 if text:
-                    self.entries.append(f"- Orion noted: {_one_line(text, _TEXT_CAP)}")
+                    self.entries.append(f"- Orion noted: {_keep_lines(text, _TEXT_CAP)}")
+                    self.last_text_entry_index = len(self.entries) - 1
             elif btype == "tool_use":
                 name = str(block.get("name") or "tool")
                 args = block.get("input")
                 arg_str = ""
                 if isinstance(args, dict) and args:
-                    arg_str = _one_line(json.dumps(args, default=str, ensure_ascii=False), _TOOL_ARGS_CAP)
+                    arg_str = _one_line(
+                        scrub_secrets(json.dumps(args, default=str, ensure_ascii=False)), _TOOL_ARGS_CAP
+                    )
                 tool_id = str(block.get("id") or "")
                 if tool_id:
                     self.tool_calls[tool_id] = f"{name} {arg_str}".strip()
@@ -126,7 +176,9 @@ class TurnFindings:
                 if not body:
                     body = "(empty result)"
                 self.tool_result_count += 1
-                self.entries.append(f"- {call}{err} returned: {_one_line(body, _TOOL_RESULT_CAP)}")
+                self.entries.append(
+                    f"- {call}{err} returned: {_one_line(scrub_secrets(body), _TOOL_RESULT_CAP)}"
+                )
 
     def has_findings(self) -> bool:
         return bool(self.entries)
@@ -149,15 +201,26 @@ def build_cut_short_draft(
     if not findings.has_findings():
         return ""
     reason = _REASON_TEXT.get(str(error_code or "").strip(), "the motor stopped it")
+    last = str(last_text or "").strip()
+    append_last = len(last) > _TEXT_CAP
+    entries = list(findings.entries)
+    idx = findings.last_text_entry_index
+    if (
+        append_last
+        and idx is not None
+        and " ".join(entries[idx].split()).startswith("- Orion noted: " + " ".join(last[:80].split()))
+    ):
+        # The full text is appended below; drop its truncated copy from the list.
+        entries.pop(idx)
     kept: list[str] = []
     used = 0
-    for entry in reversed(findings.entries):
+    for entry in reversed(entries):
         if kept and used + len(entry) + 1 > char_budget:
             break
         kept.append(entry)
         used += len(entry) + 1
     kept.reverse()
-    omitted = len(findings.entries) - len(kept)
+    omitted = len(entries) - len(kept)
     lines = [
         CUT_SHORT_MARKER,
         (
@@ -171,16 +234,16 @@ def build_cut_short_draft(
     if omitted:
         lines.append(f"({omitted} earlier entries omitted for length.)")
     lines.extend(kept)
-    last = str(last_text or "").strip()
-    if len(last) > _TEXT_CAP:
+    if append_last:
         # The findings list caps each note; a long in-progress write-up is the
         # closest thing to a conclusion the turn has, so keep it whole (bounded).
-        lines += ["", "The last thing Orion was writing when it was stopped:", "", last[:_LAST_TEXT_CAP]]
+        tail = last if len(last) <= _LAST_TEXT_CAP else last[: _LAST_TEXT_CAP - 3].rstrip() + "..."
+        lines += ["", "The last thing Orion was writing when it was stopped:", "", tail]
     return "\n".join(lines)
 
 
 def ensure_cut_short_marked(final_text: str | None) -> str | None:
     """Re-attach the marker if finalize/repair rewrote it away."""
-    if not final_text or CUT_SHORT_MARKER in final_text:
+    if not final_text or _MARKER_RE.match(final_text):
         return final_text
     return f"{CUT_SHORT_MARKER}\n{final_text}"

@@ -87,7 +87,7 @@ def test_calm_window_reads_measured_zero_not_absent():
     assert proj.write_failure_pressure == 0.0
     assert receipt.state_deltas[0].target_id == STORAGE_WRITE_NODE_ID
     assert proj.families["gpu_pool_events"].duplicate == 3
-    assert proj.families["gpu_pool_events"].commit_p50_ms == 5
+    assert proj.families["gpu_pool_events"].write_p50_ms == 5
 
 
 def test_home_cooling_burst_reads_worst_family_not_pooled():

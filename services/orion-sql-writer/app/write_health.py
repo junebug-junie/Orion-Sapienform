@@ -38,6 +38,13 @@ with no traffic still publishes its closing atom (so "alive and idle" is
 distinguishable from "dead" in the ledger), but carries no family atoms, and
 the reducer reports "not measured" rather than 0.0 for it.
 
+Known bias: this report is itself a grammar event, so it travels the same
+queue and the same database it reports on. When the grammar path (or Postgres)
+is failing, the report about that failure is lost along with it, and the
+reading goes unmeasured instead of high. Safe (never calm), but grammar-family
+and full-outage failures are under-reported. A bus-direct path to the field
+would fix it; deliberately not built here.
+
 ## Classification
 
 From the exception object or the error text the writer already records on its
@@ -94,7 +101,7 @@ _MAX_LATENCY_SAMPLES = 2048
 # Order matters: the first match wins. Each entry: (class, lowercase needles).
 _CLASS_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     # pydantic's own message prefix ("1 validation error for CockpitHopV1").
-    ("validation", ("validation error for", "validationerror", "normalization failed")),
+    ("validation", ("validation error", "normalization failed")),
     ("backpressure", ("grammar queue full",)),
     ("unrouted", ("unknown kind",)),
     (
@@ -170,14 +177,25 @@ _CLASS_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 
 # Error text can carry the payload (SQLAlchemy appends "[SQL: ...] [parameters: ...]",
-# pydantic appends "input_value=..."). Only the head of the message is matched,
-# so a row whose content says "timeout" cannot pick its own class.
-_PAYLOAD_MARKERS = ("[sql:", "[parameters:", "input_value=", "[background on this error")
+# Postgres adds a DETAIL line with row data, pydantic appends "input_value=...").
+# Only the first line, cut before any of these markers, is matched, so a row
+# whose content says "timeout" cannot pick its own class.
+_PAYLOAD_MARKERS = (
+    "[sql:",
+    "[parameters:",
+    "input_value=",
+    "(background on this error",
+    # Postgres puts row data in a DETAIL line ("Failing row contains (...)",
+    # "Key (id)=(...)") BEFORE SQLAlchemy's [SQL: ...]; stored error text may
+    # have its newlines flattened, so the marker is matched on its own too.
+    "detail:",
+)
 _HEAD_CHARS = 400
 
 
 def _message_head(text: str) -> str:
-    lowered = text.lower()
+    # pydantic and Postgres both put the class-bearing summary on the first line.
+    lowered = text.lower().split("\n", 1)[0]
     cut = len(lowered)
     for marker in _PAYLOAD_MARKERS:
         idx = lowered.find(marker)
@@ -365,6 +383,23 @@ def record_grammar(
         get_recorder().record(GRAMMAR_FAMILY, outcome, count=n, latency_ms=latency_ms)
 
 
+def record_grammar_outcome(
+    trace_id: str | None,
+    counts: dict[str, int],
+    *,
+    latency_ms: float | None = None,
+) -> None:
+    """One grammar persist call (all events of one trace) with what the ledger
+    handler says actually happened to them: {"committed": n, "duplicate": m,
+    "timeout": k, ...}."""
+    if not _enabled or not counts_grammar_event(trace_id):
+        return
+    recorder = get_recorder()
+    for cls, n in counts.items():
+        if int(n) > 0:
+            recorder.record(GRAMMAR_FAMILY, cls, count=int(n), latency_ms=latency_ms)
+
+
 # ---------------------------------------------------------------------------
 # Per-envelope outcome (non-grammar path)
 # ---------------------------------------------------------------------------
@@ -375,29 +410,46 @@ class EnvelopeOutcome:
 
     Shared by reference through a contextvar: ``asyncio.to_thread`` copies the
     context, so the worker thread sees the same object and its marks land here.
-    Precedence: any failure > committed > duplicate > skipped. Marks after
+
+    The envelope's own table (``family``) decides. A write to another table
+    (evidence units, a side log) is secondary: it only counts when the primary
+    table was never written. Precedence:
+
+        primary committed > any failure > primary duplicate
+        > secondary committed > secondary duplicate > unrouted > skipped
+
+    so an exception raised after the row committed (a post-commit publish that
+    lands in the shared fallback handler) does not turn a landed row into a lost
+    one, and a reject a helper reports before returning False (cockpit hop,
+    harness trace) is not read as an idempotent duplicate. Marks after
     :meth:`close` are ignored (a background task spawned from the handler
     inherits the context and may finish later)."""
 
-    __slots__ = ("family", "failure", "committed", "duplicate", "unrouted", "closed", "_lock")
+    __slots__ = ("family", "failure", "primary", "secondary", "unrouted", "closed", "_lock")
 
     def __init__(self, family: str) -> None:
         self.family = family
         self.failure: str | None = None
-        self.committed = False
-        self.duplicate = False
+        self.primary: str | None = None  # committed | duplicate
+        self.secondary: str | None = None
         self.unrouted = False
         self.closed = False
         self._lock = threading.Lock()
 
-    def mark_written(self, ok: bool) -> None:
+    def mark_written(self, ok: bool, table: str | None = None) -> None:
+        result = OUTCOME_COMMITTED if ok else OUTCOME_DUPLICATE
         with self._lock:
             if self.closed:
                 return
-            if ok:
-                self.committed = True
-            else:
-                self.duplicate = True
+            # An unrouted kind can still be written somewhere (the evidence-unit
+            # adapter path): report it under the table it actually reached.
+            if table and self.family == OUTCOME_UNROUTED:
+                self.family = table
+            if table is None or table == self.family:
+                if self.primary != OUTCOME_COMMITTED:
+                    self.primary = result
+            elif self.secondary != OUTCOME_COMMITTED:
+                self.secondary = result
 
     def mark_failed(self, error: BaseException | str | None) -> None:
         cls = classify_write_error(error)
@@ -412,12 +464,14 @@ class EnvelopeOutcome:
     def close(self) -> str:
         with self._lock:
             self.closed = True
+            if self.primary == OUTCOME_COMMITTED:
+                return OUTCOME_COMMITTED
             if self.failure is not None:
                 return self.failure
-            if self.committed:
-                return OUTCOME_COMMITTED
-            if self.duplicate:
-                return OUTCOME_DUPLICATE
+            if self.primary is not None:
+                return self.primary
+            if self.secondary is not None:
+                return self.secondary
             if self.unrouted:
                 return OUTCOME_UNROUTED
             return OUTCOME_SKIPPED
@@ -458,10 +512,10 @@ def end_envelope(
                 _CURRENT.set(None)
 
 
-def mark_written(ok: bool) -> None:
+def mark_written(ok: bool, table: str | None = None) -> None:
     outcome = _CURRENT.get()
     if outcome is not None:
-        outcome.mark_written(ok)
+        outcome.mark_written(ok, table)
 
 
 def mark_failed(error: BaseException | str | None) -> None:
@@ -583,6 +637,30 @@ async def flush_window(bus: Any, *, writer_node: str, recorder: WriteHealthRecor
     return sent
 
 
+async def _wait_window(
+    stop: asyncio.Event,
+    interval: float,
+    recorder: WriteHealthRecorder,
+    queue_depth: Callable[[], int] | None,
+) -> None:
+    """Sleep one window, sampling the grammar queue depth once a second so the
+    window carries its high-water mark, not just its depth at flush time."""
+    deadline = time.monotonic() + interval
+    while not stop.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        if queue_depth is not None:
+            try:
+                recorder.note_grammar_queue_depth(int(queue_depth()))
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=min(1.0, remaining))
+        except asyncio.TimeoutError:
+            pass
+
+
 async def run_window_publisher(
     bus_getter: Callable[[], Any],
     *,
@@ -591,30 +669,20 @@ async def run_window_publisher(
     queue_depth: Callable[[], int] | None = None,
     stop: asyncio.Event | None = None,
 ) -> None:
-    """Flush one window every ``window_sec``.
-
-    ``queue_depth`` is sampled once a second so the window carries the grammar
-    queue's high-water mark, not just its depth at flush time."""
+    """Flush one window every ``window_sec`` until ``stop`` is set."""
     recorder = get_recorder()
     stop = stop or asyncio.Event()
     interval = max(5.0, float(window_sec))
     while not stop.is_set():
-        deadline = time.monotonic() + interval
-        while not stop.is_set():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            if queue_depth is not None:
-                try:
-                    recorder.note_grammar_queue_depth(int(queue_depth()))
-                except Exception:  # noqa: BLE001
-                    pass
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=min(1.0, remaining))
-            except asyncio.TimeoutError:
-                pass
+        await _wait_window(stop, interval, recorder, queue_depth)
         try:
-            bus = bus_getter()
+            try:
+                bus = bus_getter()
+            except Exception:  # noqa: BLE001
+                bus = None
+            await flush_window(bus, writer_node=writer_node, recorder=recorder)
         except Exception:  # noqa: BLE001
-            bus = None
-        await flush_window(bus, writer_node=writer_node, recorder=recorder)
+            # Never let one bad window (an event that fails its own schema, a
+            # drain bug) end the organ for the life of the process: downstream
+            # would read "unmeasured" forever with nothing in the logs but this.
+            logger.exception("storage_write_health_window_failed; continuing")

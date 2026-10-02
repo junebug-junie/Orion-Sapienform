@@ -84,10 +84,13 @@ class StorageWriteFamilyStateV1(BaseModel):
     skipped: int = 0
     unrouted: int = 0
     failure_classes: dict[str, int] = Field(default_factory=dict)
-    # Write wall time inside the writer (validation + insert + commit), committed
-    # and duplicate writes only. None when nothing committed this window.
-    commit_p50_ms: int | None = None
-    commit_p95_ms: int | None = None
+    # Writer wall time, committed and duplicate writes only; None when none this
+    # window. Envelope path: the whole handler (validation, insert, commit, and any
+    # post-commit publish). Grammar path: one ledger persist call (a whole trace
+    # batch counts as one sample). A "how long does a write take here" reading,
+    # not a pure database commit latency.
+    write_p50_ms: int | None = None
+    write_p95_ms: int | None = None
 
 
 class StorageWriteWindowCountV1(BaseModel):

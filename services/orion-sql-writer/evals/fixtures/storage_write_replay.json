@@ -1,219 +1,9 @@
 {
  "periods": [
   {
-   "end": "2026-10-02T04:46:00+00:00",
+   "end": "2026-10-02T05:04:00+00:00",
    "label": "calm_recent_3h",
    "minutes": {
-    "2026-10-02T01:51:00Z": {
-     "grammar_events": {
-      "committed": 222
-     },
-     "home_cooling_sample": {
-      "committed": 11
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T01:52:00Z": {
-     "gpu_pool_events": {
-      "committed": 3
-     },
-     "grammar_events": {
-      "committed": 278
-     },
-     "home_cooling_sample": {
-      "committed": 12
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T01:53:00Z": {
-     "grammar_events": {
-      "committed": 260
-     },
-     "home_cooling_sample": {
-      "committed": 12
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T01:54:00Z": {
-     "gpu_pool_events": {
-      "committed": 12
-     },
-     "grammar_events": {
-      "committed": 322
-     },
-     "home_cooling_sample": {
-      "committed": 12
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T01:55:00Z": {
-     "grammar_events": {
-      "committed": 199
-     },
-     "home_cooling_sample": {
-      "committed": 12
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T01:56:00Z": {
-     "grammar_events": {
-      "committed": 259
-     },
-     "home_cooling_sample": {
-      "committed": 12
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T01:57:00Z": {
-     "grammar_events": {
-      "committed": 246
-     },
-     "home_cooling_sample": {
-      "committed": 12
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T01:58:00Z": {
-     "gpu_pool_events": {
-      "committed": 3
-     },
-     "grammar_events": {
-      "committed": 259
-     },
-     "home_cooling_sample": {
-      "committed": 12
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T01:59:00Z": {
-     "grammar_events": {
-      "committed": 260
-     },
-     "home_cooling_sample": {
-      "committed": 12
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T02:00:00Z": {
-     "grammar_events": {
-      "committed": 250
-     },
-     "home_cooling_sample": {
-      "committed": 12
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T02:01:00Z": {
-     "grammar_events": {
-      "committed": 255
-     },
-     "home_cooling_sample": {
-      "committed": 11
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T02:02:00Z": {
-     "grammar_events": {
-      "committed": 259
-     },
-     "home_cooling_sample": {
-      "committed": 12
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T02:03:00Z": {
-     "grammar_events": {
-      "committed": 250
-     },
-     "home_cooling_sample": {
-      "committed": 12
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T02:04:00Z": {
-     "grammar_events": {
-      "committed": 222
-     },
-     "home_cooling_sample": {
-      "committed": 12
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T02:05:00Z": {
-     "grammar_events": {
-      "committed": 255
-     },
-     "home_cooling_sample": {
-      "committed": 12
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T02:06:00Z": {
-     "grammar_events": {
-      "committed": 259
-     },
-     "home_cooling_sample": {
-      "committed": 12
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T02:07:00Z": {
-     "grammar_events": {
-      "committed": 250
-     },
-     "home_cooling_sample": {
-      "committed": 12
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
-    "2026-10-02T02:08:00Z": {
-     "gpu_pool_events": {
-      "committed": 2
-     },
-     "grammar_events": {
-      "committed": 194
-     },
-     "home_cooling_sample": {
-      "committed": 12
-     },
-     "metacognition_ticks": {
-      "committed": 6
-     }
-    },
     "2026-10-02T02:09:00Z": {
      "gpu_pool_events": {
       "committed": 16
@@ -2189,9 +1979,228 @@
      "metacognition_ticks": {
       "committed": 6
      }
+    },
+    "2026-10-02T04:46:00Z": {
+     "grammar_events": {
+      "committed": 194
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:47:00Z": {
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:48:00Z": {
+     "grammar_events": {
+      "committed": 251
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:49:00Z": {
+     "gpu_pool_events": {
+      "committed": 12
+     },
+     "grammar_events": {
+      "committed": 330
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:50:00Z": {
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:51:00Z": {
+     "gpu_pool_events": {
+      "committed": 12
+     },
+     "grammar_events": {
+      "committed": 336
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:52:00Z": {
+     "gpu_pool_events": {
+      "committed": 8
+     },
+     "grammar_events": {
+      "committed": 283
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:53:00Z": {
+     "gpu_pool_events": {
+      "committed": 1
+     },
+     "grammar_events": {
+      "committed": 260
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:54:00Z": {
+     "grammar_events": {
+      "committed": 222
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:55:00Z": {
+     "gpu_pool_events": {
+      "committed": 14
+     },
+     "grammar_events": {
+      "committed": 334
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:56:00Z": {
+     "gpu_pool_events": {
+      "committed": 10
+     },
+     "grammar_events": {
+      "committed": 324
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:57:00Z": {
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:58:00Z": {
+     "grammar_events": {
+      "committed": 250
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T04:59:00Z": {
+     "grammar_events": {
+      "committed": 198
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T05:00:00Z": {
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T05:01:00Z": {
+     "grammar_events": {
+      "committed": 250
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T05:02:00Z": {
+     "grammar_events": {
+      "committed": 255
+     },
+     "home_cooling_sample": {
+      "committed": 11
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
+    },
+    "2026-10-02T05:03:00Z": {
+     "gpu_pool_events": {
+      "committed": 3
+     },
+     "grammar_events": {
+      "committed": 259
+     },
+     "home_cooling_sample": {
+      "committed": 12
+     },
+     "metacognition_ticks": {
+      "committed": 6
+     }
     }
    },
-   "start": "2026-10-02T01:51:00+00:00"
+   "start": "2026-10-02T02:09:00+00:00"
   },
   {
    "end": "2026-09-26 05:30:00+00",
@@ -3294,5 +3303,5 @@
    "start": "2026-09-07 07:30:00+00"
   }
  ],
- "pulled_at": "2026-10-02T04:51:00+00:00"
+ "pulled_at": "2026-10-02T05:09:00+00:00"
 }

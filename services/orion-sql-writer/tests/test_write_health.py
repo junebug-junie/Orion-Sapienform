@@ -98,13 +98,21 @@ def test_pydantic_validation_error_object():
 
 def test_outcome_precedence_and_late_marks_ignored():
     o = wh.EnvelopeOutcome("t")
-    o.mark_written(True)
     o.mark_failed("Unknown kind")
     o.mark_failed(HOME_COOLING_2026_09_26)
     o.mark_failed(COCKPIT_2026_09_07)
-    assert o.close() == "serialization"  # first real failure wins over commit
+    assert o.close() == "serialization"  # first real failure
     o.mark_failed(DB_RESTART_2026_09_21)
-    assert o.failure == "serialization"
+    o.mark_written(True)
+    assert o.failure == "serialization" and o.primary is None  # closed: late marks ignored
+    landed = wh.EnvelopeOutcome("t")
+    landed.mark_written(True)
+    landed.mark_failed(DB_RESTART_2026_09_21)  # e.g. a post-commit publish failing
+    assert landed.close() == "committed"  # the row landed
+    rejected = wh.EnvelopeOutcome("t")
+    rejected.mark_failed(COCKPIT_2026_09_07)
+    rejected.mark_written(False)  # helper reported the reject, then returned False
+    assert rejected.close() == "validation"
     assert wh.EnvelopeOutcome("t").close() == "skipped"
     dup = wh.EnvelopeOutcome("t")
     dup.mark_written(False)
@@ -238,6 +246,17 @@ async def test_unrouted_kind_is_counted_but_not_attempted(stub_db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unrouted_kind_written_as_evidence_units_reports_that_table(stub_db, monkeypatch):
+    unit = SimpleNamespace(model_dump=lambda mode=None: {"metadata": {}})
+    monkeypatch.setattr(worker, "build_evidence_units", lambda *a, **k: [unit])
+    monkeypatch.setattr(worker, "_write_row", lambda cls, data: True)
+    await worker.handle_envelope(_env("no.such.kind.v1"))
+    fams = _drain_families()
+    assert "unrouted" not in fams
+    assert fams["evidence_units"].classes == {"committed": 1}
+
+
+@pytest.mark.asyncio
 async def test_grammar_persist_success_and_failure_are_recorded(monkeypatch):
     calls = {"n": 0}
 
@@ -279,3 +298,169 @@ async def test_flush_window_publishes_and_survives_a_dead_bus():
     wh.record_grammar(["hub.chat:a"], "committed")
     assert await wh.flush_window(DeadBus(), writer_node="athena") == 0
     assert await wh.flush_window(None, writer_node="athena") == 0
+
+
+# ---- review findings (2026-10-02) ------------------------------------------
+
+
+class _Orig(Exception):
+    def __init__(self, msg, pgcode):
+        super().__init__(msg)
+        self.pgcode = pgcode
+
+
+class _GrammarSess:
+    def __init__(self):
+        self.committed = False
+
+    def connection(self):
+        return SimpleNamespace(connection=SimpleNamespace(close=lambda: None))
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+def _grammar_event(trace: str) -> GrammarEventV1:
+    return GrammarEventV1(event_id=f"e-{trace}-{uuid4()}", event_kind="trace_started", trace_id=trace,
+                          emitted_at=datetime.now(timezone.utc),
+                          provenance=GrammarProvenanceV1(source_service="test"))
+
+
+@pytest.mark.parametrize(
+    "apply_effect,expected",
+    [
+        ("dedupe", {"duplicate": 1}),
+        ("applied", {"committed": 1}),
+        ("cancel", {"timeout": 1}),
+        ("unique", {"duplicate": 1}),
+        ("notnull", {"constraint": 1}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_real_ledger_handler_reports_what_return_false_meant(monkeypatch, apply_effect, expected):
+    """persist_grammar_event returns False for a dedupe AND for a swallowed statement
+    cancel or integrity reject; the organ must not read the last two as committed."""
+    import app.grammar_ledger_handler as glh
+    from sqlalchemy.exc import IntegrityError, OperationalError
+
+    def _apply(sess, event):
+        if apply_effect == "dedupe":
+            return False
+        if apply_effect == "applied":
+            return True
+        if apply_effect == "cancel":
+            raise OperationalError("INSERT", {}, Exception("canceling statement due to statement timeout"))
+        code = "23505" if apply_effect == "unique" else "23502"
+        raise IntegrityError("INSERT", {}, _Orig("violates constraint", code))
+
+    monkeypatch.setattr(glh, "get_grammar_session", lambda: _GrammarSess())
+    monkeypatch.setattr(glh, "remove_grammar_session", lambda: None)
+    monkeypatch.setattr(glh, "apply_grammar_event", _apply)
+    monkeypatch.setattr(worker, "_write_fallback", lambda *a, **k: None)
+    await worker._persist_grammar_event_envelope(_env("grammar.event.v1"), event=_grammar_event("hub.chat:x"),
+                                                 payload={}, corr_id="c")
+    assert _drain_families()["grammar_events"].classes == expected
+
+
+@pytest.mark.asyncio
+async def test_real_ledger_batch_partial_dedupe_and_cancel(monkeypatch):
+    import app.grammar_ledger_handler as glh
+    from sqlalchemy.exc import OperationalError
+
+    effects = iter(["partial", "cancel"])
+
+    def _apply_batch(sess, events):
+        if next(effects) == "partial":
+            return 2
+        raise OperationalError("INSERT", {}, Exception("canceling statement due to statement timeout"))
+
+    monkeypatch.setattr(glh, "get_grammar_session", lambda: _GrammarSess())
+    monkeypatch.setattr(glh, "remove_grammar_session", lambda: None)
+    monkeypatch.setattr(glh, "apply_grammar_trace_batch", _apply_batch)
+    monkeypatch.setattr(worker, "_write_fallback", lambda *a, **k: None)
+    for _ in range(2):
+        items = [(_env("grammar.event.v1"), _grammar_event("hub.chat:t"), {}, "c") for _ in range(3)]
+        await worker._persist_grammar_trace_batch_envelope(items)
+    assert _drain_families()["grammar_events"].classes == {"committed": 2, "duplicate": 1, "timeout": 3}
+
+
+@pytest.mark.asyncio
+async def test_cockpit_reject_is_a_validation_failure_not_a_duplicate(stub_db, monkeypatch):
+    from app.cockpit_turn_sighting_persist import append_cockpit_hop
+
+    monkeypatch.setattr(worker, "_write_row", lambda cls, data: append_cockpit_hop(None, {"seq": 1}))
+    await worker.handle_envelope(_env("cockpit.hop.v1"))
+    fams = _drain_families()
+    (fam,) = fams.values()
+    assert fam.classes == {"validation": 1}
+
+
+@pytest.mark.asyncio
+async def test_exception_after_the_primary_commit_does_not_count_as_lost(stub_db, monkeypatch):
+    def _commit_then_postcommit_failure(cls, data):
+        wh.mark_written(True, cls.__tablename__)
+        raise RuntimeError("post-commit publish failed: connection refused")
+
+    monkeypatch.setattr(worker, "_write_row", _commit_then_postcommit_failure)
+    await worker.handle_envelope(_env("home.cooling.sample.v1"))
+    assert _drain_families()["home_cooling_sample"].classes == {"committed": 1}
+
+
+def test_secondary_commit_does_not_upgrade_a_primary_duplicate():
+    o = wh.EnvelopeOutcome("chat_history_log")
+    o.mark_written(True, "evidence_units")
+    o.mark_written(False, "chat_history_log")
+    assert o.close() == "duplicate"
+    only_secondary = wh.EnvelopeOutcome("chat_history_log")
+    only_secondary.mark_written(True, "evidence_units")
+    assert only_secondary.close() == "committed"
+    failed_primary = wh.EnvelopeOutcome("chat_history_log")
+    failed_primary.mark_written(True, "evidence_units")
+    failed_primary.mark_failed(HOME_COOLING_2026_09_26)
+    assert failed_primary.close() == "serialization"
+
+
+@pytest.mark.parametrize(
+    "error,expected",
+    [
+        ('(psycopg2.errors.NotNullViolation) null value in column "x" violates not-null constraint\n'
+         "DETAIL:  Failing row contains (connection refused, statement timeout).", "constraint"),
+        ('(psycopg2.errors.NotNullViolation) null value in column "x" violates not-null constraint '
+         "DETAIL:  Failing row contains (connection refused).", "constraint"),
+        ("(psycopg2.errors.UniqueViolation) duplicate key value violates unique constraint \"k\"\n"
+         "DETAIL:  Key (id)=(statement timeout) already exists.", "constraint"),
+        ('(psycopg2.errors.ForeignKeyViolation) insert violates foreign key constraint "fk"\n'
+         "DETAIL:  Key (x)=(1 validation error for Foo) is not present.", "constraint"),
+        ("2 validation errors for CockpitHopV1\nstage\n  Input should be ...", "validation"),
+    ],
+)
+def test_classifier_ignores_postgres_detail_and_reads_plural_validation(error, expected):
+    assert wh.classify_write_error(error) == expected
+
+
+@pytest.mark.asyncio
+async def test_publisher_survives_a_window_that_fails_to_build(monkeypatch):
+    calls = {"n": 0}
+
+    async def _flush(bus, *, writer_node, recorder=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ValueError("window failed its own schema")
+        stop.set()
+        return 0
+
+    async def _no_wait(*_a, **_k):
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(wh, "flush_window", _flush)
+    monkeypatch.setattr(wh, "_wait_window", _no_wait)
+    stop = asyncio.Event()
+    await asyncio.wait_for(wh.run_window_publisher(lambda: None, writer_node="athena", window_sec=5, stop=stop),
+                           timeout=5)
+    assert calls["n"] == 2

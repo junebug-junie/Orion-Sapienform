@@ -2160,8 +2160,20 @@ async def _write(
         logger.error(f"Failed to write to primary table: {e}")
         raise
     # _write_row returns False only for an idempotent duplicate skip.
-    write_health.mark_written(bool(written))
+    write_health.mark_written(bool(written), getattr(sql_model_cls, "__tablename__", None))
     return written
+
+
+def _grammar_persist_with_outcome(fn: Any, *args: Any) -> tuple[Any, dict[str, int] | None]:
+    """Run a grammar persist and read what it actually did, in the same executor
+    thread (the outcome is a thread-local; run_in_executor does not carry
+    contextvars). The persist functions return False/0 for a duplicate AND for a
+    swallowed statement cancel or integrity reject; only the outcome tells them apart."""
+    from app.grammar_ledger_handler import take_last_grammar_outcome
+
+    take_last_grammar_outcome()
+    result = fn(*args)
+    return result, take_last_grammar_outcome()
 
 
 async def _persist_grammar_trace_batch_envelope(
@@ -2179,13 +2191,18 @@ async def _persist_grammar_trace_batch_envelope(
     )
     loop = asyncio.get_running_loop()
     executor = _get_grammar_executors()[shard]
-    fut = loop.run_in_executor(executor, persist_grammar_trace_batch, events, shard)
+    fut = loop.run_in_executor(
+        executor, _grammar_persist_with_outcome, persist_grammar_trace_batch, events, shard
+    )
     trace_ids = [e.trace_id for e in events]
     started = time.perf_counter()
     try:
-        await asyncio.wait_for(fut, timeout=timeout_sec)
-        write_health.record_grammar(
-            trace_ids, "committed", latency_ms=(time.perf_counter() - started) * 1000.0
+        applied, outcome = await asyncio.wait_for(fut, timeout=timeout_sec)
+        if outcome is None:
+            n_applied = max(0, min(len(events), int(applied or 0)))
+            outcome = {"committed": n_applied, "duplicate": len(events) - n_applied}
+        write_health.record_grammar_outcome(
+            trace_id, outcome, latency_ms=(time.perf_counter() - started) * 1000.0
         )
     except asyncio.TimeoutError:
         write_health.record_grammar(trace_ids, "timeout")
@@ -2245,12 +2262,16 @@ async def _persist_grammar_event_envelope(
     timeout_sec = float(settings.sql_writer_grammar_persist_timeout_sec)
     loop = asyncio.get_running_loop()
     executor = _get_grammar_executors()[shard]
-    fut = loop.run_in_executor(executor, persist_grammar_event, event, shard)
+    fut = loop.run_in_executor(
+        executor, _grammar_persist_with_outcome, persist_grammar_event, event, shard
+    )
     started = time.perf_counter()
     try:
-        await asyncio.wait_for(fut, timeout=timeout_sec)
-        write_health.record_grammar(
-            [event.trace_id], "committed", latency_ms=(time.perf_counter() - started) * 1000.0
+        applied, outcome = await asyncio.wait_for(fut, timeout=timeout_sec)
+        if outcome is None:
+            outcome = {"committed" if applied else "duplicate": 1}
+        write_health.record_grammar_outcome(
+            event.trace_id, outcome, latency_ms=(time.perf_counter() - started) * 1000.0
         )
     except asyncio.TimeoutError:
         write_health.record_grammar([event.trace_id], "timeout")
@@ -2451,7 +2472,11 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
         return
 
     async with _get_write_semaphore():
-        outcome, token = write_health.begin_envelope(_write_family_for_kind(env.kind))
+        outcome, token = (
+            write_health.begin_envelope(_write_family_for_kind(env.kind))
+            if write_health.is_enabled()
+            else (None, None)
+        )
         started = time.perf_counter()
         error: BaseException | None = None
         try:
@@ -2495,7 +2520,8 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
 
         try:
             n = await asyncio.to_thread(persist_crop_observation, payload)
-            write_health.mark_written(True)
+            if n:
+                write_health.mark_written(True)
             logger.info("Written %s -> vision_crop_observation rows=%s", env.kind, n)
         except Exception as exc:
             logger.error(

@@ -141,8 +141,8 @@ def extract_storage_write_window(
                 skipped=_int(kv, "skipped"),
                 unrouted=_int(kv, "unrouted"),
                 failure_classes=classes,
-                commit_p50_ms=_opt_int(kv, "p50_ms"),
-                commit_p95_ms=_opt_int(kv, "p95_ms"),
+                write_p50_ms=_opt_int(kv, "p50_ms"),
+                write_p95_ms=_opt_int(kv, "p95_ms"),
             )
             window.window_end = window.window_end or emitted
             window.evidence_event_ids.append(event.event_id)

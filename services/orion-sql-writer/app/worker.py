@@ -2463,6 +2463,59 @@ async def _maybe_emit_memory_turn_from_row(
         logger.exception("Failed to emit memory turn persisted event corr=%s", corr_id)
 
 
+# One orion:memory:turn:persisted per turn (2026-10-02). A Hub turn reaches this writer as a
+# `chat.history` turn envelope AND an assistant `chat.history.message.v1`, in either order (both
+# orders seen live). Each used to publish, so memory-consolidation judged every turn twice. The
+# turn envelope carries the turn's spark_meta (conversation_phase), the row read-back does not, so
+# the envelope wins: it claims the correlation id and publishes at once; a message only schedules
+# a row-based publish after a short delay, dropped if the envelope claimed the id meanwhile.
+# Message-only flows (Collapse Mirror reply) still publish once, from the row.
+# In-process and best-effort: a restart inside the delay drops that one publish (the consumer's
+# degraded-classify retry still appraises the row); claims expire after an hour.
+_MEMORY_TURN_EMIT_CLAIMS: dict[str, float] = {}
+_MEMORY_TURN_CLAIM_TTL_SEC = 3600.0
+_MEMORY_TURN_CLAIM_MAX = 20000
+
+
+def _claim_memory_turn_emit(corr_id: str) -> bool:
+    """True if this caller may publish the turn for corr_id (first claim within the TTL)."""
+    now = time.monotonic()
+    if len(_MEMORY_TURN_EMIT_CLAIMS) > _MEMORY_TURN_CLAIM_MAX:
+        for key, at in list(_MEMORY_TURN_EMIT_CLAIMS.items()):
+            if now - at > _MEMORY_TURN_CLAIM_TTL_SEC:
+                _MEMORY_TURN_EMIT_CLAIMS.pop(key, None)
+    at = _MEMORY_TURN_EMIT_CLAIMS.get(corr_id)
+    if at is not None and now - at <= _MEMORY_TURN_CLAIM_TTL_SEC:
+        return False
+    _MEMORY_TURN_EMIT_CLAIMS[corr_id] = now
+    return True
+
+
+async def _emit_memory_turn_from_envelope_once(bus: Any, *, parent_env: BaseEnvelope, turn: dict) -> None:
+    corr = str(turn["correlation_id"])
+    if not _claim_memory_turn_emit(corr):
+        logger.info("memory_turn_persisted_duplicate_suppressed corr=%s source=turn_envelope", corr)
+        return
+    await _emit_memory_turn_persisted(bus, parent_env=parent_env, turn=turn)
+
+
+async def _emit_memory_turn_from_row_deferred(bus: Any, *, parent_env: BaseEnvelope, corr_id: str) -> None:
+    await asyncio.sleep(float(settings.sql_writer_memory_turn_row_emit_delay_sec))
+    if not _claim_memory_turn_emit(corr_id):
+        logger.info("memory_turn_persisted_duplicate_suppressed corr=%s source=message_row", corr_id)
+        return
+    await _maybe_emit_memory_turn_from_row(bus, parent_env=parent_env, corr_id=corr_id)
+
+
+def _schedule_memory_turn_from_row(bus: Any, *, parent_env: BaseEnvelope, corr_id: str) -> None:
+    task = asyncio.create_task(_emit_memory_turn_from_row_deferred(bus, parent_env=parent_env, corr_id=corr_id))
+    _PENDING_MEMORY_TURN_TASKS.add(task)
+    task.add_done_callback(_PENDING_MEMORY_TURN_TASKS.discard)
+
+
+_PENDING_MEMORY_TURN_TASKS: set = set()
+
+
 async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
     if env.kind == "grammar.event.v1":
         payload = env.payload if isinstance(env.payload, dict) else {}
@@ -3082,7 +3135,7 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                     prompt = str(data_to_process.get("prompt") or "").strip()
                     response = str(data_to_process.get("response") or "").strip()
                     if corr and prompt and response:
-                        await _emit_memory_turn_persisted(
+                        await _emit_memory_turn_from_envelope_once(
                             bus,
                             parent_env=env,
                             turn={
@@ -3103,7 +3156,7 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                                 "source_platform": _chat_source_platform(payload.get("client_meta")),
                             },
                         )
-                    elif corr:
+                    elif corr and _claim_memory_turn_emit(corr):
                         await _maybe_emit_memory_turn_from_row(bus, parent_env=env, corr_id=corr)
                 except Exception:
                     logger.exception(
@@ -3121,7 +3174,8 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 and (payload.get("role") or "").lower() == "assistant"
             ):
                 corr = str(env.correlation_id or payload.get("correlation_id") or "")
-                await _maybe_emit_memory_turn_from_row(bus, parent_env=env, corr_id=corr)
+                if corr and settings.sql_writer_emit_memory_turn_persisted:
+                    _schedule_memory_turn_from_row(bus, parent_env=env, corr_id=corr)
 
         except Exception as e:
             logger.exception(f"Error writing {env.kind} to {sql_model.__tablename__}, falling back.")

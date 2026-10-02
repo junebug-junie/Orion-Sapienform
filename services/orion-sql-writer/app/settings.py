@@ -264,6 +264,11 @@ class Settings(BaseSettings):
         alias="SQL_WRITER_SOCIAL_TURN_STORED_CHANNEL",
     )
     sql_writer_emit_memory_turn_persisted: bool = Field(True, alias="SQL_WRITER_EMIT_MEMORY_TURN_PERSISTED")
+    # Seconds an assistant chat.history.message.v1 waits before publishing the turn from the row,
+    # so the turn envelope (which carries spark_meta) can claim it first. One publish per turn.
+    sql_writer_memory_turn_row_emit_delay_sec: float = Field(
+        5.0, ge=0.0, le=60.0, alias="SQL_WRITER_MEMORY_TURN_ROW_EMIT_DELAY_SEC"
+    )
     channel_memory_turn_persisted: str = Field(
         "orion:memory:turn:persisted", alias="CHANNEL_MEMORY_TURN_PERSISTED"
     )

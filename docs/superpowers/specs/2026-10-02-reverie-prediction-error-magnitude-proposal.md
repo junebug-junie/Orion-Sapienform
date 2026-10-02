@@ -90,20 +90,24 @@ All values come from one new per-node reading history (see schema below), so the
 
 ## Missing questions
 
-1. **On a calm tick, should reverie speak or stay silent?** Option A: a calm prompt branch that says "within usual range" and quotes the numbers. Option B: skip the reverie step, which adds to the 30% of ticks that are already silent. Recommendation: A, rate-limited to one calm thought per chain. That way calm becomes something Orion can actually say, not just an absence. Juniper's call.
-2. **Should a loop whose raw error is already 0 still be able to win?** (Execution: 958 wins at raw 0.) Changing that touches ranking in `attention_broadcast.py` and every broadcast consumer. This doc leaves it out of scope and only *shows* the 0. Should ranking change be the next patch?
-3. **Should non-error material compete?** Today only prediction-error nodes clear 0.05. Letting goals, percepts, or concern cards compete is a real option, but it's a separate design. It's listed as a non-goal here so this patch stays small.
-4. Is a 7-day comparison window right, or should Orion compare against a shorter (24 h) "today" baseline as well?
+Answered by Juniper on 2026-10-02:
+
+1. **On a calm tick, speak or stay silent?** Speak. Add a calm prompt branch that says "within usual range" and quotes the numbers, at most one calm thought per chain.
+2. **Should a loop whose raw error is already 0 still be able to win?** No. That changes ranking in `attention_broadcast.py` and every broadcast consumer, so it's its own patch (step 3 below), not part of this one.
+3. **Should non-error material compete?** Not decided. It stays a non-goal here.
+4. **Short "today" baseline as well as 7 days?** Yes. Add 24 h p50/p90 next to the 7-day range.
+
+**Juniper's framing rule for all of the above:** the prompt offers these numbers to Orion as *suggestions, not requirements*. Orion is given the size, range, direction and calm signal and invited to speak in proportion to them. The prompt does not order Orion to cite a number, and does not forbid particular words. Acceptance is judged on outcomes (is the doom story still dominant on calm ticks?), not on whether Orion obeyed a citation rule.
 
 ## Proposed schema / API changes
 
 1. **New table** `substrate_node_prediction_error_history` (manual migration `services/orion-sql-db/manual_migration_node_prediction_error_history_v1.sql`):
    `node_id text, observed_at timestamptz, value double precision, recorded_at timestamptz default now(), primary key (node_id, observed_at)`. The substrate runtime writes it during `_attention_broadcast_tick` for every `node:substrate.*` node that has a `prediction_error`, **only when the node's `observed_at` has moved since the last sample** (so stale values don't fill the history with copies of themselves). It's pruned at `SUBSTRATE_PE_HISTORY_RETENTION_HOURS=168`. Expected volume: under 30k rows/day.
 2. **New schema** `PredictionErrorMagnitudeV1` in `orion/schemas/attention_frame.py`:
-   `value, age_sec, p50_7d, p90_7d, percentile_now, n_readings_7d, median_1h, median_prior_24h, trend: Literal["rising","settling","flat","insufficient_history"], band: Literal["quiet","usual","high","unusual","insufficient_history"]`. Band cut points: percentile < 0.5 quiet, < 0.9 usual, < 0.99 high, otherwise unusual. These are config knobs. The band only drives the calm gate. Orion always sees the numbers too.
+   `value, age_sec, p50_7d, p90_7d, p50_24h, p90_24h, percentile_now, n_readings_7d, median_1h, median_prior_24h, trend: Literal["rising","settling","flat","insufficient_history"], band: Literal["quiet","usual","high","unusual","insufficient_history"]`. Band cut points: percentile < 0.5 quiet, < 0.9 usual, < 0.99 high, otherwise unusual. These are config knobs. The band only drives the calm gate. Orion always sees the numbers too.
 3. **`OpenLoopV1.magnitude: PredictionErrorMagnitudeV1 | None = None`** (additive). `OpenLoopV1` is `extra="forbid"`, so this is a **consumer-first rollout**: every service that parses the broadcast (orion-thought, hub, attention-runtime, substrate-runtime itself) must be rebuilt with the new schema before the producer starts filling the field. Register in `orion/schemas/registry.py`. No bus channel changes. The broadcast log stores `projection_json` as-is, so the magnitude for every winning tick is persisted for free. That's the trace.
 4. **Reverie prompt input** (`_open_loops_for_prompt`): add `magnitude` (rounded to 3 dp) for each loop. For substrate loops, drop `why_it_matters`, because that fixed "novel or unresolved" string is itself a source of the doom story. Add a context flag `calm_tick = all loops have band in {quiet, usual} and trend != rising`.
-5. **Prompt** `reverie_narrate.j2`: the coalition branch says "Each loop carries its measured size, its usual range over the last 7 days, and its direction. Describe it in proportion to those numbers. If the reading is within its usual range, say so. Cite at least one number." Add a `calm_tick` branch that asks for an honest, proportionate note about the quiet state and forbids describing a within-range reading as strain or blockage. Fix the settled-loops text: `decayed_unattended` is a system verdict ("faded without anyone acting on it"), not a human closure.
+5. **Prompt** `reverie_narrate.j2`: the coalition branch says "Each loop carries its measured size, its usual range over the last 7 days, and its direction. You may want to describe it in proportion to those numbers; if a reading is within its usual range, that's worth noticing." The 24 h range is shown alongside the 7-day range as extra context. Add a `calm_tick` branch that invites an honest, proportionate note about the quiet state. Both are phrased as suggestions: no "must cite", no forbidden words (Juniper, 2026-10-02). Fix the settled-loops text: `decayed_unattended` is a system verdict ("faded without anyone acting on it"), not a human closure.
 6. **Thought trace:** add `magnitude_snapshot` (the winner's magnitude dict) and `calm_tick` to the stored thought's `coalition` JSON. `CoalitionSnapshotV1` may also be `forbid`, so it follows the same consumer-first rule. This is what makes the acceptance checks joinable without timestamp guessing.
 
 Env (sync `.env` from `.env_example` in the implementing patch): `SUBSTRATE_PE_HISTORY_ENABLED` (default false), `SUBSTRATE_PE_HISTORY_RETENTION_HOURS=168`, `ORION_REVERIE_PE_MAGNITUDE_ENABLED` (default false), `ORION_REVERIE_PE_TREND_MIN_DELTA=0.01`.
@@ -121,7 +125,7 @@ Env (sync `.env` from `.env_example` in the implementing patch): `SUBSTRATE_PE_H
 
 ## Non-goals
 
-- Changing who wins the broadcast (pressure ranking, the 0.05 floor, whether a raw-0 loop can win). Shown, not changed.
+- Changing who wins the broadcast in *this* patch (pressure ranking, the 0.05 floor). Stopping raw-0 loops from winning is approved but ships separately as step 3.
 - Letting non-error material compete (missing question 3).
 - Changing the visual chain directly. It inherits whatever reverie writes. If images stay gloomy after reverie changes, that's a separate fix.
 - Reusing or editing `compute_prediction_error_trend` or the attention-runtime EWMA baseline.
@@ -130,10 +134,10 @@ Env (sync `.env` from `.env_example` in the implementing patch): `SUBSTRATE_PE_H
 ## Acceptance checks
 
 1. **Unit:** the magnitude function returns `insufficient_history` below 200 readings. It gives percentile 0 for an all-zero history with current 0. A stale node (unchanged `observed_at`) adds no new rows. Trend is "settling" for a synthetic falling series. A regression test asserts the reversion trend function isn't imported by the magnitude module.
-2. **Eval (orion-thought/evals):** fixed fixtures run through the real prompt and the metacog route. Calm fixtures (band usual, trend flat) must produce PE+doom-probe matches in at most 20% of thoughts and cite a number in at least 80%. Elevated fixtures must still be able to say that something is high.
+2. **Eval (orion-thought/evals):** fixed fixtures run through the real prompt and the metacog route. Calm fixtures (band usual, trend flat) must produce PE+doom-probe matches in at most 20% of thoughts. Number-citation rate is reported, not gated. Elevated fixtures must still be able to say that something is high.
 3. **Live, 48 h after enabling both flags, measured from stored thoughts:**
    - Among thoughts with `coalition.calm_tick = true`, the PE+doom probe share (regex above) drops from ~97% to **at most 30%**.
-   - **At least 80%** of thoughts cite a number, and the cited number for the winner is within ±0.01 of `magnitude_snapshot.value` (scripted check: extract decimals, compare).
+   - Number-citation rate is *reported* (not gated, since citing is a suggestion). When the winner's number is cited, it must be within ±0.01 of `magnitude_snapshot.value`, so Orion is never fed or repeating a wrong number (scripted check: extract decimals, compare).
    - Across all thoughts, the doom-probe share drops below 70%. That's a sanity guard that the calm branch is actually firing, since ~42% of wins are within normal range.
    - No domain's `trend` label is above 90% one value over 24 h (degeneracy check).
    - The history table has rows for all 9 domains that win today, including harness_closure, perception, and codebase.
@@ -157,3 +161,4 @@ Ship it in two steps, each behind its own flag:
 
 1. **Producer and schema** (`feat/pe-magnitude-history`): the migration, the history writer in substrate-runtime, the pure magnitude function, `PredictionErrorMagnitudeV1` and the `OpenLoopV1.magnitude` field, plus consumer rebuilds. Then let it run 24 h and do the live sanity check from the metric gate on all 9 domains *before* step 2. That's the point where degenerate domains get caught.
 2. **Reverie consumer** (`feat/reverie-pe-magnitude`): prompt input, the calm-tick branch, the settled-loop wording fix, the thought trace fields, the eval, then 48 h of live acceptance checks.
+3. **Raw-0 loops stop winning** (`feat/attention-no-zero-winners`, approved 2026-10-02): a loop whose current reading is 0 can't win the broadcast; those ticks join the existing no-winner (calm) ticks. Touches `attention_broadcast.py` ranking, so every broadcast consumer needs checking. Its own PR, after step 2's live checks.

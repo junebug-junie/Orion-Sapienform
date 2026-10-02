@@ -96,7 +96,7 @@ python scripts/check_circe_worker_refs.py                  -> PASS
 git diff --check                                           -> clean
 pytest orion/gpu_pool/tests services/orion-gpu-lane-controller/tests -> 434 passed
 services/orion-gpu-pool: pytest tests                      -> 147 passed, 15 skipped (Postgres-only)
-services/orion-llamacpp-host: pytest tests                 -> 50 passed, 1 failed (pre-existing on
+services/orion-llamacpp-host: pytest tests                 -> 67 passed, 1 failed (pre-existing on
     origin/main: test_qwen3_8b_atlas_metacog_profile_q5km_single_lane_16k expects --parallel 1, the
     profile is 4; not in CI)
 services/orion-llamacpp-bonsai-host: pytest tests          -> 7 passed
@@ -291,7 +291,7 @@ Checked and not changed:
 
 - "diffusion's launch digest also moves": it does not (diffusion evicts nothing); now pinned in
   `test_profile_order_moves_the_launch_digest_so_pool_and_controller_deploy_together`.
-- Two-dot diff showing mesh-guardian deletions: a stale-base artifact; the branch is rebased onto current main.
+- Two-dot diff showing mesh-guardian deletions: a stale-base artifact; current main is merged into the branch (no force push).
 - The Dockerfile contract test is a string check by nature; the real proof is the build on circe (UNVERIFIED).
 
 ## Restart required
@@ -325,6 +325,6 @@ UNVERIFIED (each becomes true or false on first load):
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2477
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

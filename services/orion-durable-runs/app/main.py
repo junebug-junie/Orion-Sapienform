@@ -31,6 +31,7 @@ _sweep_task: asyncio.Task[None] | None = None
 _checkpointer_cm: Any = None
 admission: Any = None
 _admission_task: asyncio.Task | None = None
+_reconcile_task: asyncio.Task | None = None
 rpc_health_publisher: RpcHealthPublisher | None = None
 
 
@@ -167,7 +168,7 @@ async def _open_checkpointer():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task
+    global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task, _reconcile_task
     global rpc_health_publisher
     from app.runner import DurableRunner
 
@@ -203,6 +204,11 @@ async def lifespan(app: FastAPI):
         _sweep_task = asyncio.create_task(runner.sweep_forever(_stop))
         if admission is not None:
             _admission_task = asyncio.create_task(admission.run(_stop))
+            if _settings.memory_episode_writer_enabled:
+                from app.episode_distill_reconcile import run_reconcile_loop
+
+                _reconcile_task = asyncio.create_task(
+                    run_reconcile_loop(admission.pool, admission.submit, _settings, _stop))
         if _settings.orion_bus_enabled:
             patterns = [_settings.request_channel, RESOURCE_EVENT_CHANNEL]
             if admission is not None:
@@ -221,6 +227,8 @@ async def lifespan(app: FastAPI):
         _stop.set()
         if _sweep_task is not None:
             _sweep_task.cancel()
+        if _reconcile_task is not None:
+            _reconcile_task.cancel()
         if _admission_task is not None:
             _admission_task.cancel()
             await asyncio.gather(_admission_task, return_exceptions=True)

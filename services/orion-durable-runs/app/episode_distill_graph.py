@@ -207,7 +207,12 @@ def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: Pers
     return g.compile(checkpointer=checkpointer)
 
 
-def request_from_closed_event(event: dict[str, Any], *, settings: Any, now: datetime | None = None):
+def base_run_id(episode_id: str) -> str:
+    return f"memdistill-{episode_id}"
+
+
+def request_from_closed_event(event: dict[str, Any], *, settings: Any, now: datetime | None = None,
+                              run_id: str | None = None):
     """``memory.episode.closed.v1`` -> the DurableRunRequestV1 that distills it, or None to skip.
 
     run_id is deterministic per episode, so a re-delivered close event is a duplicate submit the
@@ -235,7 +240,7 @@ def request_from_closed_event(event: dict[str, Any], *, settings: Any, now: date
         max_tokens=int(settings.memory_episode_distill_max_tokens),
     )
     return DurableRunRequestV1(
-        run_id=f"memdistill-{closed.episode_id}",
+        run_id=run_id or base_run_id(closed.episode_id),
         workflow=MEMORY_EPISODE_DISTILL_WORKFLOW,
         correlation_id=closed.episode_id,
         brief=brief,

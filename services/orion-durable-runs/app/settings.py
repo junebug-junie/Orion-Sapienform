@@ -112,6 +112,10 @@ class Settings(BaseSettings):
     memory_episode_distill_deadline_hours: float = Field(20.0, gt=0.0, lt=24.0,
                                                          alias="MEMORY_EPISODE_DISTILL_DEADLINE_HOURS")
     llm_intake_channel: str = Field("orion:exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE")
+    # Reconciler: resubmits closed episodes with no distill run (lost close event or a failed run)
+    # as a NEW durable attempt, at most MEMORY_EPISODE_DISTILL_MAX_ATTEMPTS per episode.
+    memory_episode_reconcile_interval_sec: float = Field(900.0, gt=0.0, alias="MEMORY_EPISODE_RECONCILE_INTERVAL_SEC")
+    memory_episode_distill_max_attempts: int = Field(3, ge=1, le=10, alias="MEMORY_EPISODE_DISTILL_MAX_ATTEMPTS")
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL
 

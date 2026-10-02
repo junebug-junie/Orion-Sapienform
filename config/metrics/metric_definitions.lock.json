@@ -2,10 +2,11 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 688,
   "_last_change": {
-    "change_count": 1,
-    "high_severity_count": 0,
+    "change_count": 2,
+    "high_severity_count": 2,
     "changes": [
-      "medium added metric://bus_channel/orion-memory-consolidation/orion:memory:episode:closed"
+      "high   routing_changed metric://bus_channel/orion-agent-council/orion:exec:request:LLMGatewayService (all_producers: \u2026am', 'orion-hub', 'orion\u2026 -> \u2026am', 'orion-durable-runs', 'orion-hub', 'orion\u2026)",
+      "high   routing_changed metric://bus_channel/orion-llm-gateway/orion:exec:result:LLMGatewayService:* (declared_consumers: \u2026am', 'orion-hub', 'orion\u2026 -> \u2026am', 'orion-durable-runs', 'orion-hub', 'orion\u2026)"
     ]
   },
   "definitions": {
@@ -405,6 +406,7 @@
         "orion-agent-council",
         "orion-cortex-exec",
         "orion-dream",
+        "orion-durable-runs",
         "orion-hub",
         "orion-juniper-affective-state",
         "orion-memory-consolidation",
@@ -2387,6 +2389,7 @@
       "declared_consumers": [
         "orion-cortex-exec",
         "orion-dream",
+        "orion-durable-runs",
         "orion-hub",
         "orion-memory-consolidation"
       ],

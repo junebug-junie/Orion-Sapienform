@@ -25,6 +25,7 @@ grammar_pg_pool: Optional[asyncpg.Pool] = None
 bus_client: Optional[OrionBusAsync] = None
 _retry_task: Optional[asyncio.Task] = None
 _classify_retry_task: Optional[asyncio.Task] = None
+_report_task: Optional[asyncio.Task] = None
 
 
 def _cfg() -> ChassisConfig:
@@ -41,7 +42,7 @@ def _cfg() -> ChassisConfig:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global bus_hunter, pg_pool, grammar_pg_pool, bus_client, _retry_task, _classify_retry_task
+    global bus_hunter, pg_pool, grammar_pg_pool, bus_client, _retry_task, _classify_retry_task, _report_task
 
     dsn = (settings.POSTGRES_URI or "").strip()
     if dsn:
@@ -100,6 +101,11 @@ async def lifespan(app: FastAPI):
             )
         )
 
+    if pg_pool is not None and settings.MEMORY_EPISODE_REPORT_ENABLED:
+        from app.episode_report import run_report_loop
+
+        _report_task = asyncio.create_task(run_report_loop(pg_pool, settings))
+
     app.state.pg_pool = pg_pool
     app.state.bus_hunter = bus_hunter
     yield
@@ -108,6 +114,8 @@ async def lifespan(app: FastAPI):
         _retry_task.cancel()
     if _classify_retry_task is not None:
         _classify_retry_task.cancel()
+    if _report_task is not None:
+        _report_task.cancel()
     if bus_hunter is not None:
         await bus_hunter.stop()
     if bus_client is not None:

@@ -111,6 +111,9 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   # (agent -> gpu2 seat when loaded -> gpu0 when lent), so both are just agent work.
   agent-burst: {class: agent, priority: system}
   chat-burst: {class: agent, priority: system}
+  # Memory episode distiller (2026-10-02): durable-runs holds the 27B agent lane at system
+  # priority (ahead of curiosity's background holds) and calls the gateway on this route.
+  memory_distill: {class: agent, priority: system}
 
 hold_routes:   # durable-run holds on non-LLM roles; durable-runs reads these, the gateway never does
   # reverie.visual's generate step (docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.md).

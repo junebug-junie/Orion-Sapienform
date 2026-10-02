@@ -436,6 +436,63 @@ class DurableRunner:
         logger.info("journal_compose_drafted run=%s trigger_kind=%s", run_id, brief.trigger.trigger_kind)
         return draft
 
+    async def _call_memory_distill_llm(
+        self, prompt: str, *, brief: Any, run_id: str, correlation_id: str, gpu_lease: GpuLeaseRefV1,
+    ) -> dict[str, Any]:
+        """memory.episode_distill: ONE direct LLM gateway call under the run's GPU pool hold.
+
+        Direct, not through cortex-orch: orch would run recall and mix retrieved memories into
+        what the distiller treats as evidence (spec section A). ``options.gpu_lease`` attaches the
+        call to the hold; the route stays the brief's (``memory_distill``). JSON-object output,
+        thinking off (Qwen thinking spends max_tokens before the answer). Raises on transport,
+        a gateway error, or empty text -- each is one bounded attempt for the graph.
+        """
+        import time
+
+        from orion.core.bus.bus_schemas import ChatRequestPayload, LLMMessage
+
+        if self._bus is None:
+            raise RuntimeError("no_bus")
+        timeout = float(brief.timeout_sec)
+        payload = ChatRequestPayload(
+            messages=[LLMMessage(role="user", content=prompt)],
+            route=brief.llm_route,
+            options={
+                "llm_route": brief.llm_route,
+                "max_tokens": int(brief.max_tokens),
+                "temperature": 0.2,
+                "purpose": "memory_episode_distill",
+                "structured_output_method": "json_object_only",
+                "chat_template_kwargs": {"enable_thinking": False},
+                "skip_spark_candidate_publish": True,
+                "gateway_read_timeout_sec": timeout,
+                "gpu_lease": gpu_lease.model_dump(mode="json"),
+            },
+        )
+        rpc_correlation_id = uuid4()
+        reply_channel = f"orion:exec:result:LLMGatewayService:{rpc_correlation_id}"
+        envelope = BaseEnvelope(kind="llm.chat.request", source=self._source(), correlation_id=rpc_correlation_id,
+                                reply_to=reply_channel, payload=payload.model_dump(mode="json"))
+        started = time.monotonic()
+        msg = await self._bus.rpc_request(self._settings.llm_intake_channel, envelope,
+                                          reply_channel=reply_channel, timeout_sec=timeout + 30.0)
+        decoded = self._bus.codec.decode(msg.get("data"))
+        if not decoded.ok or decoded.envelope is None:
+            raise RuntimeError(f"gateway_decode_failed:{decoded.error}")
+        result = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
+        raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+        if raw.get("error"):
+            raise RuntimeError(f"gateway_error:{raw.get('error')}")
+        text = str(result.get("content") or result.get("text") or "")
+        if not text.strip():
+            raise RuntimeError("gateway_empty_text")
+        usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
+        logger.info("memory_episode_distilled run=%s episode=%s chars=%s usage=%s", run_id, brief.episode_id,
+                    len(text), usage)
+        return {"text": text, "usage": {k: usage.get(k) for k in ("prompt_tokens", "completion_tokens")},
+                "model": raw.get("model") or result.get("model"),
+                "latency_ms": int((time.monotonic() - started) * 1000)}
+
     async def _publish_journal_write(self, entry: JournalEntryWriteV1) -> bool:
         return await self._publish_journal(entry) is not None
 

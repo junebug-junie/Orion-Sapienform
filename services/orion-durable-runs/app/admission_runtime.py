@@ -37,6 +37,8 @@ from app.admitted_graph import (
 from app.admitted_reflect_graph import build_admitted_reflect_graph
 from app.compactor_digest_graph import build_compactor_digest_graph, finish_detail as compactor_digest_finish_detail
 from app.journal_compose_graph import build_journal_compose_graph, finish_detail as journal_compose_finish_detail
+from app.episode_distill_graph import build_episode_distill_graph, finish_detail as episode_distill_finish_detail
+from orion.schemas.memory_episode import MEMORY_EPISODE_DISTILL_WORKFLOW
 from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW
 from app.admitted_self_sense_graph import build_admitted_self_sense_graph
 from app.graph import failed_turn_meta, finish_detail, recorded_turn_correlation_id, turn_correlation_id, urgent_detail
@@ -104,8 +106,12 @@ HOLD_SEQ_SKIP_MAX = 20
 # for at most urgent_preempt_grace_sec + PREEMPT_REQUEUE_MARGIN_SEC from first sight (local clock).
 PREEMPT_POLL_SEC = 1.0
 PREEMPT_REQUEUE_MARGIN_SEC = 3.0
-# Background/system drivers at once. Urgent drivers are outside it, capped at urgent_max_concurrent.
+# Background drivers at once. Urgent drivers are outside it, capped at urgent_max_concurrent.
 MAX_CONCURRENT_DRIVERS = 4
+# "system" runs (memory.episode_distill, 2026-10-02) are also outside it, capped here: a system run
+# must not wait behind four background turns before it even asks the pool, where it then ranks
+# above background. One at a time: the distiller is the only system producer (~1-2 episodes/day).
+MAX_CONCURRENT_SYSTEM_DRIVERS = 1
 # Which pool refusals fail the run is decided in one place: ``pool_hold.refusal_is_terminal``.
 # Any other unavailable (dead-lettered after expiries during a durable-runs outage, an abort) is
 # the hold's own history, not the run's: end it and ask again under a new request id. A refusal
@@ -164,6 +170,11 @@ class AdmissionRuntime:
             JOURNAL_COMPOSE_WORKFLOW: build_journal_compose_graph(
                 lambda brief, **kw: runner._compose_journal(brief, **kw),
                 lambda write: runner._publish_journal_write(write), admission_deps, runner._checkpointer),
+            # Memory episode distiller (shadow, 2026-10-02). Late-bound like journal.compose.
+            MEMORY_EPISODE_DISTILL_WORKFLOW: build_episode_distill_graph(
+                lambda brief: self._load_episode(brief),
+                lambda prompt, **kw: runner._call_memory_distill_llm(prompt, **kw),
+                lambda **kw: self._persist_episode(**kw), admission_deps, runner._checkpointer),
             # Bound lazily (like reading's run_turn): resolved on the runner at call time.
             ORION_DAY_WORKFLOW: build_orion_day_graph(OrionDayDeps(
                 call_verb_text=lambda *args, **kwargs: runner._call_verb_text(*args, **kwargs),
@@ -176,6 +187,7 @@ class AdmissionRuntime:
         self.graph = self.graphs[DEFAULT_WORKFLOW]
         self.active: dict[str, asyncio.Task] = {}
         self._urgent_drivers: set[str] = set()   # the runs in ``active`` driven as urgent
+        self._system_drivers: set[str] = set()   # the runs in ``active`` driven as system priority
         self._wake = asyncio.Event()
         self._hints: set[str] = set()           # runs a pool event said something changed for
         self._checked: dict[str, float] = {}    # run -> monotonic time of its last waiting-hold read
@@ -213,7 +225,25 @@ class AdmissionRuntime:
             return journal_compose_finish_detail(state)
         if workflow == ORION_DAY_WORKFLOW:
             return orion_day_finish_detail(state)
+        if workflow == MEMORY_EPISODE_DISTILL_WORKFLOW:
+            return episode_distill_finish_detail(state)
         return finish_detail(state)
+
+    async def _load_episode(self, brief) -> dict:
+        """memory.episode_distill load_episode: the turns' FULL text from chat_history_log (never a
+        preview -- the validator checks quotes against exactly this), plus candidate referent keys."""
+        from orion.memory.episode.distill import LOAD_TURNS_SQL, turns_from_rows, turns_to_state
+        from orion.memory.episode.store import candidate_referent_keys
+
+        async with self.pool.connection() as conn:
+            rows = await (await conn.execute(LOAD_TURNS_SQL, (list(brief.turn_ids),))).fetchall()
+        turns = turns_from_rows([dict(r) for r in rows])
+        return {"turns": turns_to_state(turns), "candidate_referents": await candidate_referent_keys(self.pool)}
+
+    async def _persist_episode(self, **kwargs) -> dict:
+        from orion.memory.episode.store import persist_episode
+
+        return await persist_episode(self.pool, **kwargs)
 
     async def _orion_day_brief(self, state) -> OrionDayRunBriefV1:
         """The full orion_day.letter brief from the accepted request row (the checkpoint keeps
@@ -1171,10 +1201,12 @@ class AdmissionRuntime:
         urgent_cap = int(self.holds.cfg.defaults.urgent_max_concurrent) if urgent else 0
         if urgent_cap <= 0:
             urgent = set()   # rollback switch: the pool treats urgent as background, and so do we
-        # Urgent first (stable otherwise): an urgent run must not wait behind long background turns
-        # before it even asks the pool, so it is exempt from MAX_CONCURRENT_DRIVERS, capped instead
-        # at the pool's own urgent_max_concurrent.
-        for row in sorted(rows, key=lambda r: r["run_id"] not in urgent):
+        system = {row["run_id"] for row in rows if _priority(row) == "system"} - urgent
+        # Urgent first, then system (stable otherwise): an urgent run must not wait behind long
+        # background turns before it even asks the pool, so it is exempt from
+        # MAX_CONCURRENT_DRIVERS, capped instead at the pool's own urgent_max_concurrent. A system
+        # run is exempt the same way, capped at MAX_CONCURRENT_SYSTEM_DRIVERS.
+        for row in sorted(rows, key=lambda r: (r["run_id"] not in urgent, r["run_id"] not in system)):
             run_id = row["run_id"]
             if run_id in self.active:
                 if row.get("control"):
@@ -1187,15 +1219,21 @@ class AdmissionRuntime:
             if run_id in urgent:
                 if len(self._urgent_drivers & self.active.keys()) >= urgent_cap:
                     continue
-            elif len(self.active.keys() - self._urgent_drivers) >= MAX_CONCURRENT_DRIVERS:
+            elif run_id in system:
+                if len(self._system_drivers & self.active.keys()) >= MAX_CONCURRENT_SYSTEM_DRIVERS:
+                    continue
+            elif len(self.active.keys() - self._urgent_drivers - self._system_drivers) >= MAX_CONCURRENT_DRIVERS:
                 break
             task = asyncio.create_task(self._drive(row), name=f"admitted-{run_id}")
             self.active[run_id] = task
             if run_id in urgent:
                 self._urgent_drivers.add(run_id)
+            elif run_id in system:
+                self._system_drivers.add(run_id)
             def finished(t, key=run_id):
                 self.active.pop(key, None)
                 self._urgent_drivers.discard(key)
+                self._system_drivers.discard(key)
                 if not t.cancelled() and t.exception():
                     logger.error("durable_driver_failed run=%s error=%s", key, t.exception())
             task.add_done_callback(finished)

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -31,17 +30,14 @@ from orion.schemas.memory_episode import MemoryEpisodeClosedV1
 
 logger = logging.getLogger(__name__)
 
-# A workflow command turn is identified by the Hub workflow runtime's own reply
-# header ("Workflow: Journal Pass", "Workflow 'github_compactor_pass' ..."),
-# per the spec's skip rule. This is a structural marker the runtime writes,
-# not a judgment about what is worth remembering.
-_WORKFLOW_REPLY = re.compile(r"^\s*Workflow\b")
-
 SKIP_COMMAND_ONLY = "command_only"
 
 
 def is_workflow_command_turn(response: str | None) -> bool:
-    return bool(_WORKFLOW_REPLY.match(str(response or "")))
+    """One detector for the boundary tracker and the distiller (orion.memory.episode.distill)."""
+    from orion.memory.episode.distill import is_workflow_command_reply
+
+    return is_workflow_command_reply(response)
 
 
 def _as_utc(value: datetime) -> datetime:

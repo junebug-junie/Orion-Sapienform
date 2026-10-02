@@ -74,6 +74,14 @@ class Settings(BaseSettings):
     # (30-day replay: ~98 windows -> ~33-35) and the classify prompt's phase
     # line; see the Stage 1 PR report before flipping it.
     MEMORY_LEGACY_BOUNDARY_USE_PHASE: bool = Field(default=False, alias="MEMORY_LEGACY_BOUNDARY_USE_PHASE")
+    # Daily old-vs-new memory report (Stage 1 PR 2): yesterday's shadow episodes, legacy
+    # crystallization rows next to the shadow distiller's memories, as markdown on a named
+    # volume. Read-only; no notification. Quotes Juniper's conversation: never commit it.
+    MEMORY_EPISODE_REPORT_ENABLED: bool = Field(default=True, alias="MEMORY_EPISODE_REPORT_ENABLED")
+    MEMORY_EPISODE_REPORT_DIR: str = Field(
+        default="/data/memory-episode-reports", alias="MEMORY_EPISODE_REPORT_DIR"
+    )
+    MEMORY_EPISODE_REPORT_TZ: str = Field(default="America/Denver", alias="MEMORY_EPISODE_REPORT_TZ")
     CHANNEL_MEMORY_EPISODE_CLOSED: str = Field(
         default="orion:memory:episode:closed", alias="CHANNEL_MEMORY_EPISODE_CLOSED"
     )

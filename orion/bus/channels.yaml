@@ -2957,6 +2957,11 @@ channels:
       # LLM_GATEWAY_GRAMMAR_ENABLED -- services/orion-llm-gateway/app/grammar_emit.py
       - orion-llm-gateway
       - orion-substrate-runtime
+      # per-window storage-write outcome traces (sql_writer.storage:), gated by
+      # SQL_WRITER_WRITE_HEALTH_ENABLED -- services/orion-sql-writer/app/write_health.py.
+      # The writer is also this channel's persister; it never counts its own
+      # sql_writer.storage: events (write_health.counts_grammar_event).
+      - orion-sql-writer
     # orion-equilibrium-service added for the chat_turn metacog trigger's
     # correlator, which filters this stream to semantic_role=="exec_turn_timeout"
     # only (services/orion-hub/scripts/grammar_emit.py::build_turn_timeout_grammar_events,

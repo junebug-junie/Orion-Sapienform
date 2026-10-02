@@ -591,6 +591,25 @@ def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                 )
             )
 
+    if delta.target_kind == "storage_write":
+        # orion-sql-writer's own write outcomes (orion/substrate/storage_write_loop/):
+        # the worst table family's share of writes that did not reach their table,
+        # over a rolling 600 s of writer windows. A fresh full reading per writer
+        # window, so mode="replace". The reducer omits the hint when nothing was
+        # attempted; the channel is in EXPIRING_NODE_CHANNELS, so a silent writer
+        # reads as unmeasured, never as a held or decayed calm value.
+        hints = dict((delta.after or {}).get("pressure_hints") or {})
+        if "write_failure_pressure" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_id,
+                    channel="write_failure_pressure",
+                    intensity=max(0.0, min(1.0, float(hints["write_failure_pressure"]))),
+                    label=delta.delta_id,
+                    mode="replace",
+                )
+            )
+
     if delta.target_kind == "prediction_signal":
         hints = dict((delta.after or {}).get("pressure_hints") or {})
         node_key = _node_key(str((delta.after or {}).get("node_id") or delta.target_id))

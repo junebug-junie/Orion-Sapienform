@@ -101,6 +101,15 @@ from orion.substrate.llm_inference_loop.pipeline import (
     empty_llm_inference_projection,
     process_llm_inference_grammar_events,
 )
+from orion.substrate.storage_write_loop.constants import (
+    STORAGE_WRITE_GRAMMAR_CURSOR_NAME,
+    STORAGE_WRITE_PROJECTION_ID,
+    STORAGE_WRITE_SOURCE_SERVICE,
+)
+from orion.substrate.storage_write_loop.pipeline import (
+    empty_storage_write_projection,
+    process_storage_write_grammar_events,
+)
 
 from .health_monitor import HealthMonitor
 from .publish import publish_accepted_events
@@ -382,6 +391,13 @@ REDUCER_SPECS: tuple[ReducerSpec, ...] = (
         enabled=lambda s: s.enable_llm_inference_reducer,
         batch_limit=lambda s: s.llm_inference_grammar_batch_limit,
     ),
+    ReducerSpec(
+        reducer_key="storage_write",
+        cursor_name=STORAGE_WRITE_GRAMMAR_CURSOR_NAME,
+        source_service=STORAGE_WRITE_SOURCE_SERVICE,
+        enabled=lambda s: s.enable_storage_write_reducer,
+        batch_limit=lambda s: s.storage_write_grammar_batch_limit,
+    ),
 )
 
 
@@ -550,6 +566,9 @@ class BiometricsSubstrateWorker:
             asyncio.create_task(self._route_poll_loop(), name="route-substrate-poll"),
             asyncio.create_task(
                 self._llm_inference_poll_loop(), name="llm-inference-substrate-poll"
+            ),
+            asyncio.create_task(
+                self._storage_write_poll_loop(), name="storage-write-substrate-poll"
             ),
             asyncio.create_task(self._prune_loop(), name="substrate-receipt-pruner"),
             asyncio.create_task(self._health_loop(), name="substrate-health-monitor"),
@@ -793,6 +812,9 @@ class BiometricsSubstrateWorker:
     async def _llm_inference_poll_loop(self) -> None:
         await self._grammar_reducer_poll_loop(REDUCER_SPECS[5], self._llm_inference_tick)
 
+    async def _storage_write_poll_loop(self) -> None:
+        await self._grammar_reducer_poll_loop(REDUCER_SPECS[6], self._storage_write_tick)
+
     async def _grammar_reducer_poll_loop(
         self,
         spec: ReducerSpec,
@@ -822,6 +844,8 @@ class BiometricsSubstrateWorker:
                         advance_fn = self._store.advance_route_cursor
                     elif spec.cursor_name == LLM_INFERENCE_GRAMMAR_CURSOR_NAME:
                         advance_fn = self._store.advance_llm_inference_cursor
+                    elif spec.cursor_name == STORAGE_WRITE_GRAMMAR_CURSOR_NAME:
+                        advance_fn = self._store.advance_storage_write_cursor
                     else:
                         advance_fn = self._store.advance_transport_cursor
                     await asyncio.to_thread(
@@ -4326,6 +4350,38 @@ class BiometricsSubstrateWorker:
                 events=batch,
                 load_projection=load_projection,
                 save_projection=self._store.save_llm_inference_projection,
+                save_receipt=self._store.save_receipt,
+                now=now,
+            )
+
+        return self._process_events_with_poison_isolation(
+            spec=spec,
+            events=events,
+            process_batch=process_batch,
+        )
+
+    def _storage_write_tick(self) -> str | None:
+        """orion-sql-writer's own per-window write outcomes -> one storage_write
+        delta on node:substrate.storage_write (orion/substrate/storage_write_loop/).
+        The field digester is the only consumer, gated separately by
+        ENABLE_STORAGE_WRITE_FIELD_DIGESTION."""
+        spec = REDUCER_SPECS[6]
+        events = self._store.fetch_storage_write_grammar_events(
+            limit=spec.batch_limit(self._settings),
+        )
+        if not events:
+            return None
+        now = datetime.now(timezone.utc)
+
+        def load_projection():
+            loaded = self._store.load_storage_write_projection(STORAGE_WRITE_PROJECTION_ID)
+            return loaded or empty_storage_write_projection(now=now)
+
+        def process_batch(batch: list[GrammarEventV1]) -> None:
+            process_storage_write_grammar_events(
+                events=batch,
+                load_projection=load_projection,
+                save_projection=self._store.save_storage_write_projection,
                 save_receipt=self._store.save_receipt,
                 now=now,
             )

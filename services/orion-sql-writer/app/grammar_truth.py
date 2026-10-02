@@ -91,6 +91,7 @@ GRAMMAR_LANES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("chat_grammar_consumer", ("orion-hub",), "hub.chat:"),
     ("route_grammar_consumer", ("orion-cortex-orch",), "orch.route:"),
     ("llm_inference_grammar_reducer", ("orion-llm-gateway",), "llm_gateway.inference:"),
+    ("storage_write_grammar_reducer", ("orion-sql-writer",), "sql_writer.storage:"),
 )
 
 _LANE_UNCONSUMED_SQL = text(

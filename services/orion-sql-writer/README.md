@@ -428,6 +428,30 @@ Every knob (all `VISION_*`, `ORION_ASK_*` keys) is listed with a comment in
 
 Report: `python3 scripts/report_vision_individuals.py [--stream walkway] [--json]`.
 
+## Storage-write organ (2026-10-02)
+
+The writer reports on its own writes (`app/write_health.py`). Every incoming write ends in one
+outcome per envelope: `committed`, `duplicate` (idempotent skip), `skipped` (writer chose not to
+write), `unrouted` (no route; counted, never part of the reading), or a failure class --
+`validation`, `constraint`, `serialization`, `db_unavailable`, `timeout`, `db_error`,
+`backpressure` (grammar queue full), `other`. The class comes from the exception or from the
+error text already written to `bus_fallback_log` (only the head of the message is matched, so
+payload text in `[parameters: ...]` cannot pick a class). Grammar events are counted in the
+persist helpers, one count per event, and the organ never counts its own `sql_writer.storage:`
+events.
+
+Once per `SQL_WRITER_WRITE_HEALTH_WINDOW_SEC` (60) it publishes one trace on
+`orion:grammar:event`: one `storage_write_window_observed` atom per table family that saw traffic
+(at most 32, overflow folded into `_other`) with counts by class and write wall-time p50/p95, and
+one `storage_writer_window_completed` atom with totals and the grammar queue high-water mark.
+Counts only, never payloads or error messages. A publish failure drops that window with a warning
+and never touches the write path. substrate-runtime's storage_write reducer turns it into
+`write_failure_pressure` on `node:substrate.storage_write` -> `capability:storage`
+`reliability_pressure` (see the field-digester README).
+
+Flag: `SQL_WRITER_WRITE_HEALTH_ENABLED` (off in code, on in `.env_example`). Replay real history
+through the emitter and reducer: `python services/orion-sql-writer/evals/storage_write_replay.py --live`.
+
 ## Running & Testing
 
 ### Run via Docker

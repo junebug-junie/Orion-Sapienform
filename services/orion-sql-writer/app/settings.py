@@ -818,6 +818,17 @@ class Settings(BaseSettings):
         5, alias="SQL_WRITER_FALLBACK_WATCH_THRESHOLD_STEP"
     )
 
+    # Storage-write organ (app/write_health.py): the writer counts its own write
+    # outcomes per table family and publishes one grammar trace per window
+    # (sql_writer.storage:) for substrate-runtime's storage_write reducer.
+    # Off in code; on in .env_example.
+    sql_writer_write_health_enabled: bool = Field(
+        False, alias="SQL_WRITER_WRITE_HEALTH_ENABLED"
+    )
+    sql_writer_write_health_window_sec: float = Field(
+        60.0, alias="SQL_WRITER_WRITE_HEALTH_WINDOW_SEC"
+    )
+
     # Notify service, used only by the watcher above. This service already
     # PERSISTS notify records (models/notify_models.py) but had never SENT one,
     # so these keys are new here.

@@ -51,6 +51,12 @@ NODE_CHANNELS = [
     # (orion/substrate/rpc_delivery.py). Only written on node:substrate.rpc_delivery;
     # holds (not in NODE_DECAY_CHANNELS) when no bus RPC call happened in the window.
     "rpc_timeout_pressure",
+    # orion-sql-writer's own view of its writes: the worst table family's share of
+    # writes that did not reach their table over a rolling 600 s of writer windows,
+    # failed / max(attempted, 10), 0 until 2 failures (orion/substrate/storage_write_loop/).
+    # Only written on node:substrate.storage_write; expires (EXPIRING_NODE_CHANNELS)
+    # when the writer stops reporting.
+    "write_failure_pressure",
     "field_coherence_warning",
     "prediction_error",
 ]
@@ -135,6 +141,9 @@ SINGLE_OBSERVER_NODE_CHANNELS: dict[str, str] = {
     # node would otherwise be seeded with a never-written 0.0 by
     # DEFAULT_NODE_VECTOR, which reads as "measured, calm".
     "rpc_timeout_pressure": "node:substrate.rpc_delivery",
+    # Written only by substrate-runtime's storage_write reducer (sql-writer's
+    # own write outcomes). Same reason: never seed a calm 0.0 elsewhere.
+    "write_failure_pressure": "node:substrate.storage_write",
 }
 
 # Channel names that were RENAMED and no longer have a producer. reconcile

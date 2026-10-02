@@ -90,6 +90,7 @@ def test_start_spawns_independent_reducer_poll_tasks() -> None:
         "chat-substrate-poll",
         "route-substrate-poll",
         "llm-inference-substrate-poll",
+        "storage-write-substrate-poll",
     }
 
 

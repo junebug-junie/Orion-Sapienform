@@ -198,6 +198,6 @@ scripts/safe_docker_build.sh orion-memory-consolidation up -d --build
 
 ## PR link
 
-(filled after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2484
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -1,0 +1,81 @@
+# Workflow: memory episode redesign (Stage 1) -- boundary shadow, distiller validation, shadow store,
+# daily report, migrations and the distill reconciler. The Postgres-backed tests run against a real
+# Postgres service here and must NOT skip (review of #2484, 2026-10-02).
+
+name: orion-memory-episode-tests
+
+on:
+  pull_request:
+    paths:
+      - "orion/memory/**"
+      - "orion/schemas/memory_episode.py"
+      - "orion/schemas/memory_consolidation.py"
+      - "orion/cognition/prompts/memory_episode_distill.j2"
+      - "orion/situational/**"
+      - "services/orion-memory-consolidation/**"
+      - "services/orion-durable-runs/app/episode_distill_*.py"
+      - "services/orion-durable-runs/tests/test_episode_distill_*.py"
+      - "services/orion-sql-db/manual_migration_memory_*.sql"
+      - "services/orion-sql-db/manual_migration_episode_memory_*.sql"
+      - ".github/workflows/orion-memory-episode-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/memory/**"
+      - "orion/schemas/memory_episode.py"
+      - "services/orion-memory-consolidation/**"
+      - "services/orion-durable-runs/app/episode_distill_*.py"
+      - "services/orion-sql-db/manual_migration_memory_*.sql"
+      - "services/orion-sql-db/manual_migration_episode_memory_*.sql"
+      - ".github/workflows/orion-memory-episode-tests.yml"
+
+jobs:
+  memory-episode:
+    name: Memory episode -- unit + Postgres-backed
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Admin DSN of a throwaway server: each test creates and drops its own database.
+      ORION_MEMORY_EPISODE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      ORION_BUS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-durable-runs/requirements.txt
+          python -m pip install -r requirements-dev.txt
+          python -m pip install asyncpg==0.29.0 pytest-asyncio
+      - name: Run memory episode tests (Postgres-backed tests must not skip)
+        run: |
+          set -o pipefail
+          # Two processes: orion-memory-consolidation and orion-durable-runs both name their package `app`.
+          PYTHONPATH=. python -m pytest -q -rs -p no:cacheprovider \
+            orion/memory/episode/tests \
+            services/orion-memory-consolidation/tests \
+            services/orion-memory-consolidation/evals \
+            | tee pytest.out
+          PYTHONPATH=.:services/orion-durable-runs python -m pytest -q -rs -p no:cacheprovider \
+            services/orion-durable-runs/tests/test_episode_distill_reconcile.py \
+            services/orion-durable-runs/tests/test_episode_distill_graph.py \
+            | tee -a pytest.out
+          if grep -q "SKIPPED" pytest.out; then
+            echo "Postgres-backed memory episode tests skipped -- the service/env wiring is broken" >&2
+            exit 1
+          fi

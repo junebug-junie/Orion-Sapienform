@@ -10,14 +10,24 @@
 --
 -- durable_admission_runs is NOT granted: its `request` column carries a
 -- free-text `brief` (whole prompts). The view exposes only the run id, the
--- workflow name, when it was created and how it ended. A view runs with its
--- owner's privileges, so no grant on the base table is needed.
+-- workflow name, when it was created and how it ended. The view runs with its
+-- OWNER's rights (security_invoker = false, set explicitly), so no grant on the
+-- base table is needed and none must be added. Apply it as postgres, as below,
+-- so postgres owns it. Flipping it to invoker rights would require granting the
+-- base table, brief and all.
+--
+-- gpu_pool_events is granted whole, including `detail`: worker URLs (internal
+-- tailscale IP:port), model profile/file names, swap/recall state. Nothing
+-- secret and no prompt text (checked live 2026-10-02).
+--
+-- Re-running is safe while the column list is unchanged. CREATE OR REPLACE
+-- VIEW cannot drop or reorder columns: to narrow the view, DROP it first.
 --
 -- The urgent prompt's queries (orion/curiosity/urgent_prompt.py) read these
 -- unqualified; tests/test_curiosity_urgent_prompt.py checks every table the
 -- prompt names is granted by a file in scripts/sql/.
 --
--- SELECT only. Idempotent; safe to re-run.
+-- SELECT only.
 --
 -- Apply (from the host):
 --   docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
@@ -25,7 +35,8 @@
 
 BEGIN;
 
-CREATE OR REPLACE VIEW public.durable_run_workflow AS
+CREATE OR REPLACE VIEW public.durable_run_workflow
+  WITH (security_invoker = false) AS
   SELECT run_id,
          request->>'workflow' AS workflow,
          created_at,

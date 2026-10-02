@@ -121,7 +121,7 @@ def _pg_history_lines() -> list[str]:
 
     The GPU query pairs each `granted` row with the next end row of the same
     lease (index on `(lease_id, generated_at)`). Grants are looked back 6 hours:
-    the pool sometimes records no end for a lease (12 in the 3 days to
+    the pool sometimes records no end for a lease (7 in the 3 days to
     2026-10-02, e.g. a cortex-exec gpu0 grant at 2026-10-01 07:18), and a longer
     lookback ranks those ghosts as day-long holds above the real cause.
     """
@@ -171,7 +171,7 @@ def _pg_history_lines() -> list[str]:
         "      FROM gpu_pool_events g",
         "      LEFT JOIN LATERAL (SELECT x.generated_at, x.event FROM gpu_pool_events x",
         "        WHERE x.lease_id = g.lease_id AND x.generated_at > g.generated_at",
-        "        AND x.event IN ('released', 'aborted', 'expired')",
+        "        AND x.event IN ('released', 'aborted', 'expired', 'cancelled')",
         "        ORDER BY x.generated_at LIMIT 1) e ON true",
         "      LEFT JOIN durable_run_workflow w ON g.holder = 'durable-runs:' || w.run_id",
         "      WHERE g.event = 'granted' AND g.generated_at >= now() - interval '6 hours'",

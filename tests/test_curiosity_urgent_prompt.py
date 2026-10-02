@@ -137,7 +137,8 @@ def test_example_queries_use_real_columns():
     # The GPU query pairs grants with their end and names durable-run jobs.
     assert "g.event = 'granted'" in tools
     assert "x.lease_id = g.lease_id" in tools
-    assert "'released', 'aborted', 'expired'" in tools
+    # Every event that ends a lease; leaving one out shows that lease as still held.
+    assert "'released', 'aborted', 'expired', 'cancelled'" in tools
     assert "LEFT JOIN durable_run_workflow w ON g.holder = 'durable-runs:' || w.run_id" in tools
     assert "ORDER BY held_min DESC" in tools
 
@@ -145,12 +146,19 @@ def test_example_queries_use_real_columns():
 _SQL_DIR = Path(__file__).resolve().parents[1] / "scripts" / "sql"
 
 
+def _sql_body(path: Path) -> str:
+    """The file with `--` comments removed (whole-line and trailing)."""
+    return "\n".join(line.split("--", 1)[0] for line in path.read_text().splitlines())
+
+
 def _granted_to_orion_readonly() -> set[str]:
+    """Tables/views a grant file opens to orion_readonly. Reads GRANTs only: a
+    later REVOKE file would not be noticed (none exists today)."""
     granted: set[str] = set()
     for path in _SQL_DIR.glob("*grant_orion_readonly*.sql"):
-        body = "\n".join(line for line in path.read_text().splitlines() if not line.lstrip().startswith("--"))
-        for clause in re.findall(r"GRANT\s+SELECT\s+ON\s+(.*?)\s+TO\s+orion_readonly", body, re.S | re.I):
-            granted |= set(re.findall(r"public\.([a-z_]+)", clause))
+        clauses = re.findall(r"GRANT\s+SELECT\s+ON\s+(.*?)\s+TO\s+orion_readonly\b", _sql_body(path), re.S | re.I)
+        for clause in clauses:
+            granted |= set(re.findall(r"public\.([a-z0-9_]+)", clause))
     return granted
 
 
@@ -165,11 +173,15 @@ def test_every_source_the_prompt_queries_is_granted_by_a_grant_file():
 def test_the_durable_run_view_exposes_no_brief():
     """durable_admission_runs.request carries a free-text brief (whole prompts);
     Orion's role gets only the view, never the base table."""
-    sql = (_SQL_DIR / "2026-10-02_grant_orion_readonly_gpu_pool.sql").read_text()
-    body = "\n".join(line for line in sql.splitlines() if not line.lstrip().startswith("--"))
-    view = re.search(r"CREATE OR REPLACE VIEW public\.durable_run_workflow AS(.*?);", body, re.S).group(1)
-    assert "brief" not in view and "request->>'workflow'" in view
-    assert "request," not in view and "*" not in view
+    body = _sql_body(_SQL_DIR / "2026-10-02_grant_orion_readonly_gpu_pool.sql")
+    select_list = re.search(
+        r"VIEW public\.durable_run_workflow\b.*?\bAS\s+SELECT\s+(.*?)\s+FROM\s+public\.durable_admission_runs",
+        body, re.S | re.I,
+    ).group(1)
+    columns = [c.strip() for c in select_list.split(",")]
+    assert columns == ["run_id", "request->>'workflow' AS workflow", "created_at", "terminal"]
+    # Owner rights are what keep the base table closed; never invoker rights.
+    assert "security_invoker = false" in body
     assert "durable_admission_runs" not in _granted_to_orion_readonly()
 
 

@@ -21,8 +21,15 @@ on:
     branches: [main]
     paths:
       - "orion/curiosity/urgent_prompt.py"
+      - "orion/curiosity/incident_report.py"
+      - "orion/curiosity/kickoff_prompt.py"
+      - "orion/schemas/curiosity_urgent.py"
       - "scripts/sql/*grant_orion_readonly*.sql"
       - "services/orion-hub/scripts/curiosity_investigation.py"
+      - "tests/test_curiosity_urgent_prompt.py"
+      - "tests/test_curiosity_incident_report.py"
+      - "services/orion-hub/tests/test_curiosity_urgent_start.py"
+      - ".github/workflows/curiosity-urgent-prompt-tests.yml"
 
 jobs:
   urgent-prompt:

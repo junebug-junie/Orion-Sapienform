@@ -115,9 +115,14 @@ def test_thermostat_cycling_ac_resolves():
     assert v.open_reason is None and v.resolve
 
 
-def test_long_low_dip_does_not_count_as_working():
-    pts = series(0, 100, watts=850.0) + series(105, 900, watts=105.0)
-    assert not cooling_verdict(pts, at(900)).resolve
+def test_dip_past_low_sec_stops_counting_as_working():
+    """300 W is neither 'low' (<150) nor 'good' (>=500): it cannot open low_power, so cooling_ok_sec
+    alone shows whether the dip still counts. The 180 s cutoff after the last >=500 W reading."""
+    base = series(0, 100, watts=850.0)
+    inside = cooling_verdict(base + series(105, 100 + 175, watts=300.0), at(100 + 175))
+    outside = cooling_verdict(base + series(105, 100 + 190, watts=300.0), at(100 + 190))
+    assert inside.open_reason is None and inside.detail["cooling_ok_sec"] > 0
+    assert outside.open_reason is None and outside.detail["cooling_ok_sec"] == 0 and not outside.resolve
 
 
 def test_resolve_refused_while_newest_live_is_too_old():

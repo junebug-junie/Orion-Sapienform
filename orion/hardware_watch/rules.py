@@ -88,6 +88,21 @@ class CoolingRuleConfig:
     max_gap_sec: float = 120.0
 
 
+def _cooling_ok_sec(live: Sequence[CoolingPoint], now: datetime, cfg: CoolingRuleConfig) -> float:
+    """Seconds the AC has been "working" up to ``now`` (0 when the newest live reading is stale).
+
+    A reading works if it is >= ``resolve_watts``, or it is a dip lasting less than ``low_sec`` after
+    such a reading: the same dip length that cannot open ``low_power``. A thermostat-cycling AC
+    (compressor ~750 W, idle ~105 W) never holds 500 W for 10 minutes, but it is cooling."""
+    last_high: datetime | None = None
+    working: list[bool] = []
+    for p in live:
+        if p.watts >= cfg.resolve_watts:
+            last_high = p.ts
+        working.append(last_high is not None and _age(p.ts, last_high) <= cfg.low_sec)
+    return held_for(list(zip(live, working)), lambda x: x[1], now, ts=lambda x: x[0].ts, max_gap_sec=cfg.max_gap_sec)
+
+
 def cooling_verdict(points: Sequence[CoolingPoint], now: datetime,
                     cfg: CoolingRuleConfig = CoolingRuleConfig()) -> Verdict:
     """``points``: every home_cooling_sample row in the lookback (>= frozen_sec + margin), ascending.
@@ -97,7 +112,8 @@ def cooling_verdict(points: Sequence[CoolingPoint], now: datetime,
                                         (named from the newest row) | no_samples (no row at all)
       live cooling_watts < low_watts held low_sec      -> low_power
       identical live cooling_watts held frozen_sec      -> frozen
-    Resolve: live cooling_watts >= resolve_watts held resolve_sec AND no opening arm holds (a
+    Resolve: the AC 'working' (>= resolve_watts, or a dip shorter than low_sec after one -- a cycling
+    compressor) for resolve_sec AND no opening arm holds (a
     frozen 850 W would otherwise open and resolve on alternate ticks).
     """
     live = [p for p in points if p.live]
@@ -137,7 +153,7 @@ def cooling_verdict(points: Sequence[CoolingPoint], now: datetime,
     if open_reason is None and frozen >= cfg.frozen_sec:
         open_reason = "frozen"
 
-    good = held_for(live, lambda p: p.watts >= cfg.resolve_watts, now, ts=ts, max_gap_sec=cfg.max_gap_sec)
+    good = _cooling_ok_sec(live, now, cfg)
     detail["cooling_ok_sec"] = round(good, 1)
     return Verdict(open_reason, open_reason is None and good >= cfg.resolve_sec, detail)
 

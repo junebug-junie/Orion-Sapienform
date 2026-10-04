@@ -696,45 +696,63 @@ async def _announce_worker(bus, settings) -> None:
 
 
 # Heartbeat Coroutine
-async def heartbeat_loop(settings):
-    # Initialize a local bus just for this script
-    bus = OrionBusAsync(url=settings.orion_bus_url, enabled=True)
-    await bus.connect()
+HEARTBEAT_INTERVAL_SEC = 30.0
+HEARTBEAT_STEP_TIMEOUT_SEC = 15.0
 
+
+async def _beat(bus, settings) -> None:
+    """One heartbeat: connect if needed (idempotent), publish health, announce to the GPU pool."""
+    await bus.connect()
+    payload = SystemHealthV1(
+        service=settings.service_name,
+        version=settings.service_version,
+        boot_id=BOOT_ID,
+        last_seen_ts=datetime.now(timezone.utc),
+        node="llamacpp-node",
+        status="ok",
+        # heartbeat_interval_sec must match this loop's real period. Left at the
+        # schema default of 10.0, orion-equilibrium-service computes
+        # grace = interval * EQUILIBRIUM_GRACE_MULTIPLIER (3.0) = 30.0s and marks the
+        # service "down" once delta > grace (service.py's status check). Publishing
+        # every 30s leaves ZERO margin, so any event-loop delay or bus latency flips
+        # it to down, emits a spurious transition and pushes distress_score.
+        heartbeat_interval_sec=HEARTBEAT_INTERVAL_SEC,
+    ).model_dump(mode="json")
+    await bus.publish("orion:system:health", BaseEnvelope(
+        kind="system.health.v1",
+        source=ServiceRef(name=settings.service_name, version=settings.service_version),
+        payload=payload
+    ))
+    await _announce_worker(bus, settings)
+
+
+async def heartbeat_loop(settings):
+    """Heartbeat + pool announcement every 30s, self-healing. A bus that is down at boot, or a
+    connection that dies later, used to leave this loop dead or wedged on a hung socket with no
+    log line (circe, 2026-10-03: four lane hosts silent for 3h, hub chat down). Every step is
+    time-bounded, and any failure drops the connection so the next beat reconnects."""
+    bus = OrionBusAsync(url=settings.orion_bus_url, enabled=True)
     logger.info("Heartbeat loop started.")
     try:
         while True:
             try:
-                payload = SystemHealthV1(
-                    service=settings.service_name,
-                    version=settings.service_version,
-                    boot_id=BOOT_ID,
-                    last_seen_ts=datetime.now(timezone.utc),
-                    node="llamacpp-node",
-                    status="ok",
-                    # heartbeat_interval_sec must match this loop's real period. Left at the
-                    # schema default of 10.0, orion-equilibrium-service computes
-                    # grace = interval * EQUILIBRIUM_GRACE_MULTIPLIER (3.0) = 30.0s and marks the
-                    # service "down" once delta > grace (service.py's status check). Publishing
-                    # every 30s leaves ZERO margin, so any event-loop delay or bus latency flips
-                    # it to down, emits a spurious transition and pushes distress_score.
-                    heartbeat_interval_sec=30.0,
-                ).model_dump(mode="json")
-
-                await bus.publish("orion:system:health", BaseEnvelope(
-                    kind="system.health.v1",
-                    source=ServiceRef(name=settings.service_name, version=settings.service_version),
-                    payload=payload
-                ))
-            except Exception as e:
-                logger.warning(f"Heartbeat failed: {e}")
-
-            await _announce_worker(bus, settings)
-            await asyncio.sleep(30)
+                await asyncio.wait_for(_beat(bus, settings), timeout=HEARTBEAT_STEP_TIMEOUT_SEC)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 -- includes TimeoutError from a hung socket
+                logger.warning(f"Heartbeat failed ({type(e).__name__}: {e}); will reconnect")
+                try:
+                    await asyncio.wait_for(bus.close(), timeout=HEARTBEAT_STEP_TIMEOUT_SEC)
+                except Exception:  # noqa: BLE001
+                    pass
+            await asyncio.sleep(HEARTBEAT_INTERVAL_SEC)
     except asyncio.CancelledError:
         logger.info("Heartbeat loop stopping...")
     finally:
-        await bus.close()
+        try:
+            await bus.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 #  Main Entrypoint
 async def _main_async():

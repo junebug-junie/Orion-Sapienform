@@ -170,3 +170,21 @@ def test_garbage_outlets_inside_a_valid_map_are_dropped():
 def test_multiple_proxied_nodes_are_supported():
     assert parse_proxy_outlets('{"circe": [19,25], "ghost": [7]}') == {
         "circe": [19, 25], "ghost": [7]}
+
+
+def test_hecate_proxy_outlets_alongside_circe():
+    """hecate (outlets 19,25) is read through athena's proxy next to circe's relocated bank."""
+    assert parse_proxy_outlets('{"circe": [1,7,13], "hecate": [19,25]}') == {
+        "circe": [1, 7, 13],
+        "hecate": [19, 25],
+    }
+
+
+def test_hecate_is_in_the_node_catalog():
+    from pathlib import Path
+
+    from orion.biometrics.node_catalog import NodeCatalog
+
+    cat = NodeCatalog.load(Path(__file__).resolve().parents[1] / "config/biometrics/node_catalog.yaml")
+    assert cat.resolve("hecate.tail348bbe.ts.net").node_id == "hecate"
+    assert cat.resolve("hecate").expected_online is False

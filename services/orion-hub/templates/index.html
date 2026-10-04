@@ -3018,6 +3018,7 @@
           <div class="text-xs uppercase tracking-[0.24em] text-gray-300 mr-2">Biometrics</div>
           <button type="button" id="biometricsSubtabAthena" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-700 text-gray-100 border border-gray-700">Athena</button>
           <button type="button" id="biometricsSubtabCirce" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700">Circe</button>
+          <button type="button" id="biometricsSubtabHecate" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700">Hecate</button>
           <button type="button" id="biometricsSubtabGpu" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700">GPU</button>
           <button type="button" id="biometricsSubtabCabinet" class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-300 border border-gray-700 hover:bg-gray-700">Cabinet</button>
         </div>
@@ -3075,6 +3076,29 @@
             </p>
           </div>
           <div id="biometricsCirceInduction" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs"></div>
+        </div>
+        <div id="biometricsSubviewHecate" class="hidden flex-col gap-4">
+          <h3 class="text-base font-bold text-white">Hecate — current snapshot</h3>
+          <div class="flex flex-wrap items-center gap-3 text-[11px]">
+            <span class="inline-flex items-center gap-1 text-emerald-200 font-semibold">● good</span>
+            <span class="inline-flex items-center gap-1 text-amber-200 font-semibold">▲ warning</span>
+            <span class="inline-flex items-center gap-1 text-red-200 font-semibold">■ critical</span>
+            <span class="text-gray-400">sorted worst-first · ↑/↓ changing (EWMA trend) · → flat</span>
+          </div>
+          <div id="biometricsHecateSnapshot" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs"></div>
+          <h3 class="text-base font-bold text-white">Trended (24h)</h3>
+          <div id="biometricsHecateHistory" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
+          <div>
+            <h3 class="text-base font-bold text-white">Trend detail (EWMA)</h3>
+            <p class="text-[11px] text-gray-400 mt-0.5 max-w-2xl">
+              How fast and how erratically each channel is moving, from Orion's own EWMA trend
+              tracker — <span class="text-gray-300">level</span> is the smoothed current value,
+              <span class="text-gray-300">volatility</span> is how much it's bouncing around, and
+              <span class="text-gray-300">spikes</span> counts sudden jumps per tick. Same
+              good/warning/critical coloring as the snapshot above.
+            </p>
+          </div>
+          <div id="biometricsHecateInduction" class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs"></div>
         </div>
         <div id="biometricsSubviewGpu" class="hidden flex-col gap-4">
           <div class="flex items-center gap-2 text-xs">

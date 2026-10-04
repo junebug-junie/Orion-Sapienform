@@ -61,6 +61,14 @@ def test_circe_resolves_to_configured_base_url(monkeypatch):
     assert biometrics_node_client._base_url("circe") == "http://10.0.0.5:8100"
 
 
+def test_hecate_resolves_to_configured_base_url(monkeypatch):
+    monkeypatch.setattr(
+        biometrics_node_client.settings, "HECATE_BIOMETRICS_BASE_URL", "http://10.0.0.6:8100/"
+    )
+    assert biometrics_node_client._base_url("hecate") == "http://10.0.0.6:8100"
+    assert "hecate" in biometrics_node_client.LIVE_NODES
+
+
 @pytest.mark.asyncio
 async def test_fetch_snapshot_wraps_connection_failure(monkeypatch):
     import aiohttp

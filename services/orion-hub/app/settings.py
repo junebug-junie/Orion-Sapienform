@@ -512,6 +512,13 @@ class Settings(BaseSettings):
         default="http://100.112.254.99:8100",
         alias="CIRCE_BIOMETRICS_BASE_URL",
     )
+    # hecate (Inspur NF5288M5, added 2026-10-03), tailscale 100.87.202.68. Its
+    # orion-biometrics may not be deployed yet; until it is, the Hub shows hecate as
+    # unreachable and still shows its PDU-proxied wattage from athena's cluster read.
+    HECATE_BIOMETRICS_BASE_URL: str = Field(
+        default="http://100.87.202.68:8100",
+        alias="HECATE_BIOMETRICS_BASE_URL",
+    )
     BIOMETRICS_NODE_CLIENT_TIMEOUT_SEC: float = Field(
         default=5.0,
         alias="BIOMETRICS_NODE_CLIENT_TIMEOUT_SEC",

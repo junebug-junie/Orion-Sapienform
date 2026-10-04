@@ -2,11 +2,11 @@
  * Biometrics view -- drives two related surfaces from one module:
  *
  * 1. The Cognitive EKG card's toggle (landing "hub" tab): swaps between the
- *    /spark/ui Substrate Brain State iframe and a compact Athena+Circe
+ *    /spark/ui Substrate Brain State iframe and a compact Athena+Circe+Hecate
  *    biometrics preview, in the same card slot. Clicking the preview opens
  *    the full modal.
- * 2. The near-fullscreen Biometrics modal: 4 sub-tabs (Athena / Circe / GPU /
- *    Cabinet). Modal open/close/Escape/backdrop mechanics live in app.js
+ * 2. The near-fullscreen Biometrics modal: 5 sub-tabs (Athena / Circe / Hecate /
+ *    GPU / Cabinet). Modal open/close/Escape/backdrop mechanics live in app.js
  *    (openBiometricsModal/closeBiometricsModal, matching every other Hub
  *    modal); this module owns subview switching and data loading only, and
  *    is told about open/close via onModalOpen()/onModalClose().
@@ -42,10 +42,10 @@
 
   var cardView = "brain"; // "brain" | "biometrics"
   var modalOpen = false;
-  var modalSubview = "athena"; // "athena" | "circe" | "gpu" | "cabinet"
+  var modalSubview = "athena"; // "athena" | "circe" | "hecate" | "gpu" | "cabinet"
   var gpuNode = "athena"; // "athena" | "circe"
 
-  var loaded = { cardPreview: false, athena: false, circe: false, gpu: { athena: false, circe: false } };
+  var loaded = { cardPreview: false, athena: false, circe: false, hecate: false, gpu: { athena: false, circe: false } };
   var cardPollTimer = null;
   var gpuPollTimer = null;
 
@@ -290,7 +290,7 @@
     if (!grid) return;
     if (status) status.textContent = "Loading…";
     clear(grid);
-    var nodes = ["athena", "circe"];
+    var nodes = ["athena", "circe", "hecate"];
     var results = await Promise.all(
       nodes.map(function (n) {
         return Promise.all([
@@ -636,12 +636,14 @@
     var panels = {
       athena: el("biometricsSubviewAthena"),
       circe: el("biometricsSubviewCirce"),
+      hecate: el("biometricsSubviewHecate"),
       gpu: el("biometricsSubviewGpu"),
       cabinet: el("cabinet"),
     };
     var buttons = {
       athena: el("biometricsSubtabAthena"),
       circe: el("biometricsSubtabCirce"),
+      hecate: el("biometricsSubtabHecate"),
       gpu: el("biometricsSubtabGpu"),
       cabinet: el("biometricsSubtabCabinet"),
     };
@@ -673,6 +675,9 @@
     } else if (name === "circe" && !loaded.circe) {
       loaded.circe = true;
       loadNodeDetail("circe");
+    } else if (name === "hecate" && !loaded.hecate) {
+      loaded.hecate = true;
+      loadNodeDetail("hecate");
     } else if (name === "gpu") {
       if (!loaded.gpu[gpuNode]) loadGpu(gpuNode);
       gpuPollTimer = setInterval(function () {
@@ -734,6 +739,7 @@
     [
       ["biometricsSubtabAthena", "athena"],
       ["biometricsSubtabCirce", "circe"],
+      ["biometricsSubtabHecate", "hecate"],
       ["biometricsSubtabGpu", "gpu"],
       ["biometricsSubtabCabinet", "cabinet"],
     ].forEach(function (pair) {

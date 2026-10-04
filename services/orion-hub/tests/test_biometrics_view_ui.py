@@ -99,6 +99,7 @@ def test_template_declares_four_subtabs_and_subview_panels() -> None:
     for subtab_id in (
         "biometricsSubtabAthena",
         "biometricsSubtabCirce",
+        "biometricsSubtabHecate",
         "biometricsSubtabGpu",
         "biometricsSubtabCabinet",
     ):
@@ -137,10 +138,11 @@ def test_app_js_notifies_biometrics_view_of_open_and_close() -> None:
 
 def test_biometrics_view_js_declares_subview_switch_and_lazy_load_state() -> None:
     assert "function showModalSubview(" in BIOMETRICS_VIEW_JS
-    for name in ("athena", "circe", "gpu", "cabinet"):
+    for name in ("athena", "circe", "hecate", "gpu", "cabinet"):
         assert f'"{name}"' in BIOMETRICS_VIEW_JS
     assert "loaded.athena" in BIOMETRICS_VIEW_JS
     assert "loaded.circe" in BIOMETRICS_VIEW_JS
+    assert "loaded.hecate" in BIOMETRICS_VIEW_JS
     assert "loaded.gpu" in BIOMETRICS_VIEW_JS
 
 

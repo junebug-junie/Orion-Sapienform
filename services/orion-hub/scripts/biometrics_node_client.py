@@ -1,7 +1,9 @@
 """Hub client for per-node `orion-biometrics` HTTP APIs (snapshot / raw/recent).
 
-Only two nodes are live: athena (local to Hub's own host, `127.0.0.1:8100`) and
-circe (cross-host, `settings.CIRCE_BIOMETRICS_BASE_URL`). A third node, `atlas`,
+Live nodes: athena (local to Hub's own host, `127.0.0.1:8100`), circe (cross-host,
+`settings.CIRCE_BIOMETRICS_BASE_URL`) and hecate (cross-host,
+`settings.HECATE_BIOMETRICS_BASE_URL`; its orion-biometrics may not be deployed yet, in
+which case the node reads as unreachable -- never a guessed value). A third node, `atlas`,
 was decommissioned 2026-08-20 and is deliberately rejected here rather than
 silently resolved to nothing or forwarded as a doomed HTTP call — "absent is
 not zero" applies to node identity too, not just to a missing reading.
@@ -21,11 +23,11 @@ from scripts.settings import settings
 
 logger = logging.getLogger("orion-hub.biometrics-node-client")
 
-#: The only two nodes this client will ever address. `atlas` is intentionally
+#: The only nodes this client will ever address. `atlas` is intentionally
 #: absent — decommissioned 2026-08-20, per project_node_liveness memory and
 #: node_catalog.yaml. Adding a node here means it has a live, reachable
 #: orion-biometrics instance; do not add it speculatively.
-LIVE_NODES: tuple[str, ...] = ("athena", "circe")
+LIVE_NODES: tuple[str, ...] = ("athena", "circe", "hecate")
 
 ATHENA_BASE_URL = "http://127.0.0.1:8100"
 
@@ -39,6 +41,8 @@ def _base_url(node: str) -> str:
         return ATHENA_BASE_URL
     if node == "circe":
         return str(settings.CIRCE_BIOMETRICS_BASE_URL or "").strip().rstrip("/")
+    if node == "hecate":
+        return str(settings.HECATE_BIOMETRICS_BASE_URL or "").strip().rstrip("/")
     raise BiometricsNodeClientError(
         f"unknown or decommissioned node {node!r}; only {LIVE_NODES} are live"
     )

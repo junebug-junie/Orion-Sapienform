@@ -1,6 +1,6 @@
 """Hub read API backing the Cognitive EKG card's Biometrics toggle + deep-inspection modal.
 
-Athena and circe are the only two live host nodes; a third node (`atlas`) was
+Athena, circe and hecate are the live host nodes; a third node (`atlas`) was
 decommissioned 2026-08-20 and is rejected explicitly rather than silently
 dropped or forwarded as a doomed cross-host call (see `biometrics_node_client.py`).
 

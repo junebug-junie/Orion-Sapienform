@@ -49,12 +49,9 @@ main_module = _load("main")
 
 @pytest.fixture
 def client(monkeypatch):
-    # Heartbeat chassis talks to a real bus -- irrelevant to these HTTP
+    # The bus chassis talks to a real bus -- irrelevant to these HTTP
     # contract tests and not something to stand a real Redis up for.
     monkeypatch.setattr(main_module.settings, "ORION_BUS_ENABLED", False)
-    monkeypatch.setattr(
-        main_module, "build_heartbeat_chassis", lambda: (_ for _ in ()).throw(RuntimeError("no bus in tests"))
-    )
     with TestClient(main_module.app) as c:
         yield c
 

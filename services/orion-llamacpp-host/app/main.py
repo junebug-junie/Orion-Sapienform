@@ -741,8 +741,9 @@ async def heartbeat_loop(settings):
                 raise
             except Exception as e:  # noqa: BLE001 -- includes TimeoutError from a hung socket
                 logger.warning(f"Heartbeat failed ({type(e).__name__}: {e}); will reconnect")
-                try:
-                    await asyncio.wait_for(bus.close(), timeout=HEARTBEAT_STEP_TIMEOUT_SEC)
+                stale, bus = bus, OrionBusAsync(url=settings.orion_bus_url, enabled=True)
+                try:  # never reuse a suspect client, even if its close() hangs
+                    await asyncio.wait_for(stale.close(), timeout=HEARTBEAT_STEP_TIMEOUT_SEC)
                 except Exception:  # noqa: BLE001
                     pass
             await asyncio.sleep(HEARTBEAT_INTERVAL_SEC)

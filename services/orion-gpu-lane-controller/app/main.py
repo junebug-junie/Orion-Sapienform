@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from loguru import logger
@@ -56,6 +56,7 @@ async def _start_bus_with_retry() -> None:
             logger.info(f"[HOST] gpu_pool_actuator_started actuator={settings.GPU_POOL_ACTUATOR_NAME}")
             return
         except asyncio.CancelledError:
+            await chassis.stop()  # don't leak a half-opened bus client on shutdown
             raise
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[HOST] gpu_pool_actuator_start_failed error={exc!r} retry_in={BUS_RETRY_DELAY_SEC}s")
@@ -81,6 +82,8 @@ async def lifespan(app: FastAPI):
     yield
     if bus_task is not None:
         bus_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await bus_task
     if actuator_chassis is not None:
         try:
             await actuator_chassis.stop()

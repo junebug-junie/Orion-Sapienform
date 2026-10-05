@@ -78,9 +78,16 @@ def test_rendered_block_states_home_and_body_as_fixed() -> None:
     text = _fragment_text(_hub())
     assert f"home_location={HOME}" in text
     assert f"physical_location={BODY}" in text
-    assert "not where Orion's body" in text
+    assert "independent of where Juniper is" in text
+    assert len([l for l in text.split("\n") if l.startswith("Place:")][0]) < 260
 
 
 def test_rendered_block_is_silent_when_unconfigured() -> None:
     text = _fragment_text(SimpleNamespace())
     assert "home_location" not in text and "physical_location" not in text
+
+
+def test_blank_location_label_falls_back_to_unknown() -> None:
+    cfg = settings_from_runtime(hub_settings_to_runtime_namespace(_hub(ORION_SITUATION_LOCATION_LABEL="")))
+    assert cfg.location_label == "Unknown"
+    assert situation_mod._build_place_context(cfg).source == "unknown"

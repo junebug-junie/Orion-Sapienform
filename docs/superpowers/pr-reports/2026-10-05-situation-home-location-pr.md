@@ -56,7 +56,15 @@ Not run. UNVERIFIED live until Hub restarts and a turn's prompt is inspected.
 
 ## Review findings fixed
 
-(see PR thread)
+- Finding: Place line too long / could crowd cautions (reviewer assumed a 1200 cap; live cap is 7200 per `_DEFAULT_PROMPT_MAX_CHARS`).
+  - Fix: shortened to ~150 chars; test asserts it stays under 260.
+  - Evidence: `orion/situational/tests` 99 passed.
+- Finding: travel hint is emitted every turn, even when Juniper is home.
+  - Fix: facts only, "(fixed; independent of where Juniper is right now)".
+  - Evidence: `test_rendered_block_states_home_and_body_as_fixed`.
+- Finding: blank `ORION_SITUATION_LOCATION_LABEL` became `configured_home` with empty label.
+  - Fix: blank falls back to "Unknown".
+  - Evidence: `test_blank_location_label_falls_back_to_unknown`.
 
 ## Restart required
 
@@ -67,8 +75,7 @@ docker compose --env-file .env --env-file services/orion-hub/.env -f services/or
 
 ## Risks / concerns
 
-- Low: the `Place:` line adds ~300 chars to every turn; cap is 7200.
-- Low: when Juniper is home, the "may be traveling" sentence is mildly redundant.
+- Low: the `Place:` line adds ~150 chars to every turn; cap is 7200.
 
 ## PR link
 

@@ -247,7 +247,7 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
             getattr(settings, "orion_situation_prompt_max_chars", _DEFAULT_PROMPT_MAX_CHARS)
         ),
         timezone=str(getattr(settings, "orion_situation_timezone", "America/Denver")),
-        location_label=str(getattr(settings, "orion_situation_location_label", "Unknown")),
+        location_label=str(getattr(settings, "orion_situation_location_label", None) or "Unknown").strip() or "Unknown",
         locality=getattr(settings, "orion_situation_locality", None),
         region=getattr(settings, "orion_situation_region", None),
         country=getattr(settings, "orion_situation_country", None),
@@ -490,7 +490,7 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
             getattr(cfg, "ORION_SITUATION_PROMPT_MAX_CHARS", _DEFAULT_PROMPT_MAX_CHARS)
         ),
         orion_situation_timezone=str(getattr(cfg, "ORION_SITUATION_TIMEZONE", "America/Denver")),
-        orion_situation_location_label=str(getattr(cfg, "ORION_SITUATION_LOCATION_LABEL", "Unknown")),
+        orion_situation_location_label=str(getattr(cfg, "ORION_SITUATION_LOCATION_LABEL", None) or "Unknown"),
         orion_situation_locality=getattr(cfg, "ORION_SITUATION_LOCALITY", None),
         orion_situation_region=getattr(cfg, "ORION_SITUATION_REGION", None),
         orion_situation_country=getattr(cfg, "ORION_SITUATION_COUNTRY", None),
@@ -2141,12 +2141,11 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         if brief.place.home_location:
             place_parts.append(f"home_location={brief.place.home_location}")
         if brief.place.physical_location:
-            place_parts.append(f"Orion's physical_location={brief.place.physical_location}")
+            place_parts.append(f"Orion physical_location={brief.place.physical_location}")
         lines.insert(
             1,
             "Place: " + "; ".join(place_parts)
-            + ". These are fixed. Juniper may be traveling elsewhere; a city she mentions "
-            "is where SHE is, not where Orion's body, cameras or sensors are.",
+            + " (fixed; independent of where Juniper is right now).",
         )
     # Only rendered for a non-typed modality. SurfaceContextV1.input_modality
     # has existed since this brief was first built, but nothing ever put it

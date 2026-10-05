@@ -112,6 +112,11 @@ class PlaceContextV1(BaseModel):
     locality: Optional[str] = None
     region: Optional[str] = None
     country: Optional[str] = None
+    # Fixed facts about where Orion lives, independent of where Juniper is
+    # this week. Rendered in the Situation block so a mention of "outside" or
+    # "the camera" cannot be resolved against a travel city from recent chat.
+    home_location: Optional[str] = None
+    physical_location: Optional[str] = None
     timezone: str = "America/Denver"
     precision: Literal["none", "coarse", "city", "exact"] = "coarse"
     source: Literal["configured_home", "browser_metadata", "manual", "unknown"] = "unknown"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -438,6 +439,32 @@ async def list_crystallizations(
     async with pool.acquire() as conn:
         rows = await conn.fetch(sql, *args)
 
+    out: list[MemoryCrystallizationV1] = []
+    for row in rows:
+        claims, evidence, links = await _load_children(pool, str(row["crystallization_id"]))
+        out.append(_row_to_crystallization(row, claims=claims, evidence=evidence, links=links))
+    return out
+
+
+async def find_exact_duplicates(
+    pool: asyncpg.Pool, *, kind: str, subject: str, summary: str
+) -> list[MemoryCrystallizationV1]:
+    """Live rows with the same kind and the same case/whitespace-normalised subject and
+    summary. Unlike list_crystallizations(), not capped to the top-N by salience, so an
+    old low-salience copy is still found."""
+    sql = r"""
+        SELECT * FROM memory_crystallizations
+        WHERE kind = $1
+          AND status NOT IN ('rejected', 'archived', 'quarantined')
+          AND lower(regexp_replace(btrim(subject), '\s+', ' ', 'g')) = $2
+          AND lower(regexp_replace(btrim(summary), '\s+', ' ', 'g')) = $3
+        ORDER BY created_at
+    """
+    def norm(t: str) -> str:
+        return re.sub(r"\s+", " ", (t or "").strip()).lower()
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(sql, kind, norm(subject), norm(summary))
     out: list[MemoryCrystallizationV1] = []
     for row in rows:
         claims, evidence, links = await _load_children(pool, str(row["crystallization_id"]))

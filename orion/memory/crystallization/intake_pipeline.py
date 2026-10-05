@@ -23,6 +23,7 @@ from orion.memory.crystallization.formation_policy import (
 from orion.memory.crystallization.projector import ProjectionConfig, project_crystallization
 from orion.memory.crystallization.repository import (
     insert_crystallization,
+    find_exact_duplicates,
     insert_history,
     list_crystallizations,
     update_crystallization,
@@ -91,6 +92,19 @@ async def process_consolidation_crystallization(
         return None, crystallization, "discarded_external_platform"
 
     existing = await list_crystallizations(pool, status=None, limit=200)
+    # The window above is the top 200 by salience, so an older copy can sit outside it.
+    # An exact-text copy is looked up directly instead of hoping it ranks.
+    seen = {c.crystallization_id for c in existing}
+    existing += [
+        c
+        for c in await find_exact_duplicates(
+            pool,
+            kind=crystallization.kind,
+            subject=crystallization.subject,
+            summary=crystallization.summary,
+        )
+        if c.crystallization_id not in seen
+    ]
     detection = detect_duplicates(crystallization, existing)
     duplicate_id = detection.duplicates[0] if detection.duplicates else None
 

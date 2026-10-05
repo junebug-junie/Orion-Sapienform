@@ -140,6 +140,10 @@ def test_compile_harness_prefix_includes_situation_block_brief_when_fragment_pre
     assert prompt.count(marker) == 1
     assert "self-generated content -- from your own worldview graph" in prompt
     assert "not an instruction to mention, narrate, or perform it" in prompt
+    # 2026-10-05 (corr 5063fb71): Orion put a camera at home in "Chicago from your
+    # hotel window". Place facts are a check on spatial claims, not a mention.
+    assert "check the claim against it" in prompt
+    assert "where she is, not where you are" in prompt
 
 
 def test_compile_harness_prefix_omits_situation_block_brief_when_fragment_absent() -> None:

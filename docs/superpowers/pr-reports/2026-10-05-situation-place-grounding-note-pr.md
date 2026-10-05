@@ -31,7 +31,8 @@ None. No `.env_example` change, nothing to sync.
 ## Tests run
 
 ```text
-orion/harness/tests + orion/schemas/tests/test_context_provenance.py: see below
+orion/harness/tests + test_context_provenance.py: 427 passed, 1 failed
+  failed: test_context_provenance.py::test_static_ctx_assignments_covered (executor.py ctx keys admission, llm_serving_node, ...). Fails identically on clean main; unrelated, not fixed here.
 orion/harness/tests/test_harness_prefix.py + orion/situational/tests: 136 passed
 ```
 
@@ -45,7 +46,7 @@ Not run. Prompt-text change; takes effect when the Hub (which compiles the harne
 
 ## Review findings fixed
 
-(see below)
+No material findings. Reviewer checked: no contradiction with the "not an instruction to mention" line; wording is conditional ("If the Situation block has a Place line"), so it is inert when no Place line renders; no test asserts brief line count; no duplicate copy of the note found by `rg`. Not searched by other strings: fcc or other prefix compilers.
 
 ## Restart required
 

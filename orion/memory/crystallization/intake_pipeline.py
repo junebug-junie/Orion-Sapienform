@@ -93,20 +93,23 @@ async def process_consolidation_crystallization(
 
     existing = await list_crystallizations(pool, status=None, limit=200)
     # The window above is the top 200 by salience, so an older copy can sit outside it.
-    # An exact-text copy is looked up directly instead of hoping it ranks.
+    # An exact-text copy is looked up directly instead of hoping it ranks, and counts as
+    # a duplicate outright: the Jaccard score is 0 for text with no 3+ character tokens
+    # ("ok"), which would otherwise let identical short turns through.
+    exact = await find_exact_duplicates(
+        pool,
+        kind=crystallization.kind,
+        subject=crystallization.subject,
+        summary=crystallization.summary,
+    )
     seen = {c.crystallization_id for c in existing}
-    existing += [
-        c
-        for c in await find_exact_duplicates(
-            pool,
-            kind=crystallization.kind,
-            subject=crystallization.subject,
-            summary=crystallization.summary,
-        )
-        if c.crystallization_id not in seen
-    ]
+    existing += [c for c in exact if c.crystallization_id not in seen]
     detection = detect_duplicates(crystallization, existing)
-    duplicate_id = detection.duplicates[0] if detection.duplicates else None
+    duplicate_id = (
+        exact[0].crystallization_id
+        if exact
+        else (detection.duplicates[0] if detection.duplicates else None)
+    )
 
     # Mutually exclusive with the REINFORCE_EXISTING branch below by construction: this
     # only fires when no same-window duplicate was found, so the already-working

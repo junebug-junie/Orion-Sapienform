@@ -81,3 +81,48 @@ async def test_copy_outside_top_window_reinforces_not_inserts(monkeypatch):
     assert outcome == "reinforced" and cid == old.crystallization_id
     insert.assert_not_called()
     update.assert_awaited_once()
+
+
+async def _run(monkeypatch, old, new):
+    mod = "orion.memory.crystallization.intake_pipeline."
+    insert, update = AsyncMock(return_value="new-id"), AsyncMock()
+    monkeypatch.setattr(mod + "list_crystallizations", AsyncMock(return_value=[]))
+    monkeypatch.setattr(mod + "find_exact_duplicates", AsyncMock(return_value=[old]))
+    monkeypatch.setattr(mod + "insert_crystallization", insert)
+    monkeypatch.setattr(mod + "update_crystallization", update)
+    monkeypatch.setattr(mod + "emit_crystallization_lifecycle", AsyncMock(return_value=True))
+    _, _, outcome = await process_consolidation_crystallization(
+        MagicMock(), MagicMock(enabled=True), crystallization=new,
+        settings=_Settings(), project_config=ProjectionConfig(),
+    )
+    return outcome, insert, update
+
+
+@pytest.mark.asyncio
+async def test_intimate_window_never_reinforces_an_active_row(monkeypatch):
+    old = _row("w1")
+    old.status = "active"
+    new = _row("w2")
+    new.governance.sensitivity = "intimate"
+    outcome, _insert, update = await _run(monkeypatch, old, new)
+    assert outcome == "proposed"
+    update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_identity_scoped_window_never_reinforces_an_active_row(monkeypatch):
+    old = _row("w1")
+    old.status = "active"
+    new = _row("w2", scope=["identity:juniper", "memory_window:w2"])
+    outcome, _insert, update = await _run(monkeypatch, old, new)
+    assert outcome == "proposed"
+    update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_short_exact_copy_reinforces_despite_zero_token_overlap(monkeypatch):
+    old = _row("w1", "ok")
+    old.status = "active"
+    outcome, insert, _update = await _run(monkeypatch, old, _row("w2", "ok"))
+    assert outcome == "reinforced"
+    insert.assert_not_called()

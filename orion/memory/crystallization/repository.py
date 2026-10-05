@@ -456,9 +456,9 @@ async def find_exact_duplicates(
         SELECT * FROM memory_crystallizations
         WHERE kind = $1
           AND status NOT IN ('rejected', 'archived', 'quarantined')
-          AND lower(regexp_replace(btrim(subject), '\s+', ' ', 'g')) = $2
-          AND lower(regexp_replace(btrim(summary), '\s+', ' ', 'g')) = $3
-        ORDER BY created_at
+          AND lower(btrim(regexp_replace(subject, '\s+', ' ', 'g'))) = $2
+          AND lower(btrim(regexp_replace(summary, '\s+', ' ', 'g'))) = $3
+        ORDER BY (status = 'active') DESC, created_at
     """
     def norm(t: str) -> str:
         return re.sub(r"\s+", " ", (t or "").strip()).lower()

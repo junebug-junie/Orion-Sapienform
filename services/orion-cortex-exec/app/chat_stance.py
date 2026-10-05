@@ -2480,6 +2480,8 @@ def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
             "coarse_location": _compact(place.get("coarse_location"), limit=48),
             "locality": _compact(place.get("locality"), limit=32),
             "region": _compact(place.get("region"), limit=32),
+            "home_location": _compact(place.get("home_location"), limit=48),
+            "physical_location": _compact(place.get("physical_location"), limit=96),
         },
         "environment": environment_summary,
         "lab": {

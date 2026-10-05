@@ -1548,6 +1548,16 @@ class Settings(BaseSettings):
         default=7200, alias="ORION_SITUATION_PROMPT_MAX_CHARS"
     )
     ORION_SITUATION_TIMEZONE: str = Field(default="America/Denver", alias="ORION_SITUATION_TIMEZONE")
+    # Place fields for the unified-turn Situation block (same keys/values as
+    # services/orion-cortex-exec). Previously hardcoded "Unknown" in the hub
+    # adapter, so the turn had a timezone but no place.
+    ORION_SITUATION_LOCATION_LABEL: str = Field(default="Unknown", alias="ORION_SITUATION_LOCATION_LABEL")
+    ORION_SITUATION_LOCALITY: str | None = Field(default=None, alias="ORION_SITUATION_LOCALITY")
+    ORION_SITUATION_REGION: str | None = Field(default=None, alias="ORION_SITUATION_REGION")
+    ORION_SITUATION_COUNTRY: str | None = Field(default=None, alias="ORION_SITUATION_COUNTRY")
+    ORION_SITUATION_LOCATION_PRECISION: str = Field(default="city", alias="ORION_SITUATION_LOCATION_PRECISION")
+    ORION_SITUATION_HOME_LOCATION: str | None = Field(default=None, alias="ORION_SITUATION_HOME_LOCATION")
+    ORION_SITUATION_PHYSICAL_LOCATION: str | None = Field(default=None, alias="ORION_SITUATION_PHYSICAL_LOCATION")
     ORION_SITUATION_WEATHER_PROVIDER: str = Field(default="stub", alias="ORION_SITUATION_WEATHER_PROVIDER")
     # Added alongside ORION_SITUATION_WEATHER_PROVIDER above (that field
     # shipped in an earlier, never-finished wiring attempt -- see

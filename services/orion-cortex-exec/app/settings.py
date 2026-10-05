@@ -175,6 +175,8 @@ class Settings(BaseSettings):
     orion_situation_locality: str | None = Field(None, alias="ORION_SITUATION_LOCALITY")
     orion_situation_region: str | None = Field(None, alias="ORION_SITUATION_REGION")
     orion_situation_country: str | None = Field(None, alias="ORION_SITUATION_COUNTRY")
+    orion_situation_home_location: str | None = Field(None, alias="ORION_SITUATION_HOME_LOCATION")
+    orion_situation_physical_location: str | None = Field(None, alias="ORION_SITUATION_PHYSICAL_LOCATION")
     orion_situation_location_precision: str = Field("city", alias="ORION_SITUATION_LOCATION_PRECISION")
     orion_situation_weather_enabled: bool = Field(True, alias="ORION_SITUATION_WEATHER_ENABLED")
     orion_situation_weather_provider: str = Field("stub", alias="ORION_SITUATION_WEATHER_PROVIDER")

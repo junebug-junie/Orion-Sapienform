@@ -210,6 +210,13 @@ class SituationSettings:
     runtime_probe_timeout_sec: float
     default_requestor: str
     presence_persist_allowed: bool
+    home_location: str | None = None
+    physical_location: str | None = None
+
+
+def _clean_optional_str(raw: Any) -> str | None:
+    text = str(raw).strip() if raw is not None else ""
+    return text or None
 
 
 def _split_stream_ids(raw: Any) -> list[str]:
@@ -240,10 +247,12 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
             getattr(settings, "orion_situation_prompt_max_chars", _DEFAULT_PROMPT_MAX_CHARS)
         ),
         timezone=str(getattr(settings, "orion_situation_timezone", "America/Denver")),
-        location_label=str(getattr(settings, "orion_situation_location_label", "Unknown")),
+        location_label=str(getattr(settings, "orion_situation_location_label", None) or "Unknown").strip() or "Unknown",
         locality=getattr(settings, "orion_situation_locality", None),
         region=getattr(settings, "orion_situation_region", None),
         country=getattr(settings, "orion_situation_country", None),
+        home_location=_clean_optional_str(getattr(settings, "orion_situation_home_location", None)),
+        physical_location=_clean_optional_str(getattr(settings, "orion_situation_physical_location", None)),
         location_precision=str(getattr(settings, "orion_situation_location_precision", "city")),
         weather_enabled=bool(getattr(settings, "orion_situation_weather_enabled", True)),
         weather_provider=str(getattr(settings, "orion_situation_weather_provider", "stub")),
@@ -422,8 +431,13 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     with no visible error. This bridges the two conventions explicitly
     rather than making `settings_from_runtime` guess casings.
 
-    Fields orion-hub does not yet configure (location label/locality/
-    region/country, lab, perception) are turned off here on purpose, not
+    Place fields (location label/locality/region/country/home/physical) are
+    read from orion-hub's own ORION_SITUATION_* settings: before 2026-10-05
+    they were hardcoded "Unknown", so the unified turn carried a timezone
+    but no place and Orion resolved "the camera outside" against a travel
+    city in recent chat (correlation 5063fb71).
+
+    Fields orion-hub does not yet configure (lab, perception) are turned off here on purpose, not
     left to `settings_from_runtime`'s own defaults to silently decide: hub
     has no verified perception/lab runtime dependency yet (no DSN/HTTP
     egress vetted for its event loop), so wiring those is a follow-up, not
@@ -476,11 +490,13 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
             getattr(cfg, "ORION_SITUATION_PROMPT_MAX_CHARS", _DEFAULT_PROMPT_MAX_CHARS)
         ),
         orion_situation_timezone=str(getattr(cfg, "ORION_SITUATION_TIMEZONE", "America/Denver")),
-        orion_situation_location_label="Unknown",
-        orion_situation_locality=None,
-        orion_situation_region=None,
-        orion_situation_country=None,
-        orion_situation_location_precision="city",
+        orion_situation_location_label=str(getattr(cfg, "ORION_SITUATION_LOCATION_LABEL", None) or "Unknown"),
+        orion_situation_locality=getattr(cfg, "ORION_SITUATION_LOCALITY", None),
+        orion_situation_region=getattr(cfg, "ORION_SITUATION_REGION", None),
+        orion_situation_country=getattr(cfg, "ORION_SITUATION_COUNTRY", None),
+        orion_situation_home_location=getattr(cfg, "ORION_SITUATION_HOME_LOCATION", None),
+        orion_situation_physical_location=getattr(cfg, "ORION_SITUATION_PHYSICAL_LOCATION", None),
+        orion_situation_location_precision=str(getattr(cfg, "ORION_SITUATION_LOCATION_PRECISION", "city")),
         orion_situation_weather_enabled=bool(getattr(cfg, "ORION_SITUATION_WEATHER_ENABLED", True)),
         orion_situation_weather_provider=str(getattr(cfg, "ORION_SITUATION_WEATHER_PROVIDER", "stub")),
         orion_situation_weather_lat=getattr(cfg, "ORION_SITUATION_WEATHER_LAT", None),
@@ -1088,6 +1104,8 @@ def _build_place_context(cfg: SituationSettings) -> PlaceContextV1:
         locality=cfg.locality,
         region=cfg.region,
         country=cfg.country,
+        home_location=cfg.home_location,
+        physical_location=cfg.physical_location,
         timezone=cfg.timezone,
         precision=cfg.location_precision,  # type: ignore[arg-type]
         source="configured_home" if cfg.location_label != "Unknown" else "unknown",
@@ -2115,6 +2133,20 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         f"Conversation phase: {brief.conversation_phase.phase_change}; continuity={brief.conversation_phase.continuity_mode}.",
         f"Presence: requestor={brief.requestor.display_name}, audience_mode={brief.presence.audience_mode}.",
     ]
+    # Fixed home/body location, only when configured. Placed up front so the
+    # budget cap never trims it. Without it, a travel city mentioned in recent
+    # chat is the only place in context (see 2026-10-05, correlation 5063fb71).
+    if brief.place.home_location or brief.place.physical_location:
+        place_parts = []
+        if brief.place.home_location:
+            place_parts.append(f"home_location={brief.place.home_location}")
+        if brief.place.physical_location:
+            place_parts.append(f"Orion physical_location={brief.place.physical_location}")
+        lines.insert(
+            1,
+            "Place: " + "; ".join(place_parts)
+            + " (fixed; independent of where Juniper is right now).",
+        )
     # Only rendered for a non-typed modality. SurfaceContextV1.input_modality
     # has existed since this brief was first built, but nothing ever put it
     # in the prompt -- a schema field with no consumer. It earns a line here

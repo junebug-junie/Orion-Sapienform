@@ -32,6 +32,7 @@ from orion.substrate.appraisal.contract import REPAIR_PRESSURE_CONTRACT_METADATA
 from .settings import settings
 from .router import PlanRouter
 from .dream_publish import build_dream_publish_envelope
+from .exec_ctx import build_exec_ctx
 from .chat_stance import resolve_autonomy_graphdb_config
 from .core_event_cache import get_core_event_cache
 from .world_context_capsule_cache import get_world_context_capsule_cache
@@ -554,22 +555,13 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     payload_context = raw_payload.get("context") or req_env.payload.context or {}
 
     # 2. Merge Context
-    plan_metadata = req_env.payload.plan.metadata if isinstance(req_env.payload.plan.metadata, dict) else {}
-    ctx = {
-        **payload_context,
-        **(req_env.payload.args.extra or {}),
-        "user_id": req_env.payload.args.user_id,
-        "trigger_source": req_env.payload.args.trigger_source,
-        "trace_id": trace_id,
-        "parent_event_id": parent_event_id,
-        "correlation_id": corr_id,
-        "plan_metadata": plan_metadata,
-    }
-    if "personality_file" in plan_metadata:
-        # Preserve declaration state (including empty string) for precise identity fallback diagnostics.
-        ctx["personality_file"] = plan_metadata.get("personality_file")
-    ctx.setdefault("trigger_correlation_id", ctx.get("chat_correlation_id") or corr_id)
-    ctx.setdefault("trigger_trace_id", trace_id)
+    ctx = build_exec_ctx(
+        payload_context=payload_context,
+        req=req_env.payload,
+        trace_id=trace_id,
+        parent_event_id=parent_event_id,
+        corr_id=corr_id,
+    )
 
     logger.debug(f"Context loaded with {len(ctx.get('messages', []))} history messages.")
 
@@ -947,6 +939,24 @@ pre_turn_appraisal_svc = Rabbit(
     request_channel=settings.channel_pre_turn_appraisal_request,
     handler=handle_pre_turn_appraisal_request,
 )
+# Unified-turn latency L4: stance_context_prepare, one channel per exec lane so
+# orion-thought's prepare lands on the same container as its stance_react.
+from orion.schemas.stance_context_prepare import stance_context_prepare_channel
+from .stance_prepare import handle_stance_context_prepare
+
+STANCE_CONTEXT_PREPARE_CHANNEL = stance_context_prepare_channel(settings.channel_exec_request)
+stance_prepare_svc: Rabbit | None = (
+    Rabbit(
+        _cfg(),
+        request_channel=STANCE_CONTEXT_PREPARE_CHANNEL,
+        handler=handle_stance_context_prepare,
+        # A handler awaits a ~9 s build; serial handling would leave a second
+        # turn's prepare unregistered until the first finished.
+        concurrent_handlers=True,
+    )
+    if STANCE_CONTEXT_PREPARE_CHANNEL
+    else None
+)
 _rpc_bus = None
 _rpc_health_stop = asyncio.Event()
 _rpc_health_task: "asyncio.Task | None" = None
@@ -1146,6 +1156,13 @@ async def main() -> None:
         starters: list[Any] = [svc.start(), health_task]
         if settings.enable_pre_turn_appraisal_handler:
             starters.insert(1, pre_turn_appraisal_svc.start())
+        if stance_prepare_svc is not None:
+            starters.insert(1, stance_prepare_svc.start())
+        logger.info(
+            "stance_context_prepare_listener channel=%s lane=%s",
+            STANCE_CONTEXT_PREPARE_CHANNEL or "off",
+            settings.exec_lane,
+        )
         await asyncio.gather(*starters)
     finally:
         await _stop_rpc_health_publish()

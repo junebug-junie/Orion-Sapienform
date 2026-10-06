@@ -312,6 +312,8 @@ SYNC_PREFIXES = (
     "STANCE_REACT_",
     # Mind stance enrichment (unified turn; orion-thought → orion-mind, default-off)
     "ORION_THOUGHT_MIND_",
+    # Unified-turn latency L4: stance context built while orion-mind runs.
+    "ORION_THOUGHT_STANCE_PREPARE_",
     "ORION_MIND_",
     "HARNESS_FCC_",
     "ORION_FCC_",

@@ -1624,6 +1624,8 @@ class PlanRunner:
             metadata["grounding_capsule"] = ctx["grounding_capsule"]
         if isinstance(ctx.get("autonomy_slice"), dict):
             metadata["autonomy_slice"] = ctx["autonomy_slice"]
+        if isinstance(ctx.get("stance_prepare_overlap"), dict):
+            metadata["stance_prepare_overlap"] = ctx["stance_prepare_overlap"]
         # Real served model-card name (e.g. "qwen-36-instruct"), independent of
         # whether a reasoning trace was collected -- see _last_model_used's own
         # docstring. Hub already reads metadata["model"] off CortexClientResult

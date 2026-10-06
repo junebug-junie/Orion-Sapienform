@@ -33,6 +33,7 @@ from orion.cognition.recall_query import (
     retrieval_query_from_ctx,
 )
 
+from orion.schemas.stance_context_prepare import STANCE_PREPARE_REQUESTED_CTX_KEY
 from orion.schemas.agents.schemas import DeliberationRequest
 from orion.core.verbs import VerbResultV1
 from orion.schemas.collapse_mirror import (
@@ -4812,6 +4813,14 @@ async def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: boo
         return None
     if not force_refresh and isinstance(ctx.get("chat_stance_inputs"), dict):
         return ctx.get("chat_stance_inputs")
+    if not force_refresh and ctx.get(STANCE_PREPARE_REQUESTED_CTX_KEY):
+        # Unified-turn latency L4: orion-thought built this context while
+        # orion-mind ran (app/stance_prepare.py). Waits for an in-flight
+        # prepare instead of building a second time.
+        from .stance_prepare import take_prepared_stance_context
+
+        if await take_prepared_stance_context(ctx):
+            return ctx.get("chat_stance_inputs")
 
     _inject_identity_context(ctx)
     stance_inputs = await build_chat_stance_inputs(ctx)

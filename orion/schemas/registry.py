@@ -89,6 +89,12 @@ from orion.schemas.execution_projection import (
 )
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.system_one_appraisal import SystemOneAppraisalFrameV1
+from orion.schemas.stance_context_prepare import (
+    STANCE_CONTEXT_PREPARE_REQUEST_KIND,
+    STANCE_CONTEXT_PREPARE_RESULT_KIND,
+    StanceContextPrepareRequestV1,
+    StanceContextPrepareResultV1,
+)
 from orion.schemas.graph_write_intent import GraphWriteIntentV1
 from orion.schemas.memory_consolidation import (
     ChatHistorySparkMetaPatchV1,
@@ -858,6 +864,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SubstrateTierOutcomesPayloadV1": SubstrateTierOutcomesPayloadV1,
     "GrammarEventV1": GrammarEventV1,
     "SystemOneAppraisalFrameV1": SystemOneAppraisalFrameV1,
+    "StanceContextPrepareRequestV1": StanceContextPrepareRequestV1,
+    "StanceContextPrepareResultV1": StanceContextPrepareResultV1,
     "OrganEmissionV1": OrganEmissionV1,
     "ReductionReceiptV1": ReductionReceiptV1,
     "StateDeltaV1": StateDeltaV1,
@@ -1971,6 +1979,16 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "SystemOneAppraisalFrameV1": SchemaRegistration(
         model=SystemOneAppraisalFrameV1,
         kind="system_one.appraisal.frame.v1",
+    ),
+    # Unified-turn latency L4 (2026-10-06): stance context built while
+    # orion-mind runs. Also in `_REGISTRY`.
+    "StanceContextPrepareRequestV1": SchemaRegistration(
+        model=StanceContextPrepareRequestV1,
+        kind=STANCE_CONTEXT_PREPARE_REQUEST_KIND,
+    ),
+    "StanceContextPrepareResultV1": SchemaRegistration(
+        model=StanceContextPrepareResultV1,
+        kind=STANCE_CONTEXT_PREPARE_RESULT_KIND,
     ),
     # Memory episode redesign Stage 1 (2026-10-02). Also in `_REGISTRY`.
     "MemoryEpisodeClosedV1": SchemaRegistration(

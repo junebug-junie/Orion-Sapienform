@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from orion.gpu_pool.orion_shed import MemoryOrionShedLedger, OrionShedCaps, OrionShedController
 from orion.schemas.gpu_pool import GpuPoolShedReasonRequestV1
 
-from tests.test_runtime import acq, boot, make, run
+from tests.test_runtime import acq, acq_r, boot, make, run
 from tests.test_runtime_shed import incident
 
 
@@ -55,10 +55,12 @@ def test_set_blocks_new_background_only_running_work_finishes_and_ttl_expires():
         assert running.status == "granted"
         out = await rt.orion_shed_request(req(ttl=600))
         assert out.background_live_at_start == 1 and out.ttl_sec == 600
-        waiting = await rt.acquire(acq("metacog", priority="background"))
+        waiting = await rt.acquire(acq_r("metacog", priority="background"))   # retryable: waits (D3)
         sys_ = await rt.acquire(acq("metacog", priority="system"))
         chat = await rt.acquire(acq("chat", priority="interactive"))
         assert waiting.status == "queued" and chat.status == "granted"
+        one_shot = await rt.acquire(acq("fast", priority="background"))       # D3: refused at once
+        assert one_shot.status == "unavailable" and one_shot.reason == "shed:orion_self_shed"
         await rt.tick()
         assert (await rt.store.lease(running.lease_id))["status"] == "granted"   # nothing recalled
         assert not rt.bus.events("recalled")
@@ -149,7 +151,7 @@ def test_check9_kill_switch_drill_restart_with_flag_off_cancels_and_next_lease_g
         rt, clock = pool(ledger=ledger)
         await boot(rt)
         await rt.orion_shed_request(req())
-        assert (await rt.acquire(acq("metacog", priority="background"))).status == "queued"
+        assert (await rt.acquire(acq_r("metacog", priority="background"))).status == "queued"
         # the operator flips GPU_POOL_ORION_SHED_ENABLED=false and restarts the pool
         rt2, _ = pool(enabled=False, ledger=ledger, clock=clock)
         rt2.store = rt.store

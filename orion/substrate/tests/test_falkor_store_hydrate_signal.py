@@ -104,8 +104,15 @@ def test_env_builder_threads_timeouts_to_the_store_client(monkeypatch) -> None:
     monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "falkor")
     monkeypatch.setenv("FALKORDB_URI", "redis://h:6379")
 
+    # Each build makes the store's own client first, then a short-lived,
+    # always-bounded client for the node_id index bootstrap.
     build_substrate_store_from_env(falkor_socket_timeout_s=30.0, falkor_socket_connect_timeout_s=5.0)
-    assert seen[-1]["socket_timeout"] == 30.0 and seen[-1]["socket_connect_timeout"] == 5.0
+    store_client, index_client = seen[-2], seen[-1]
+    assert store_client["socket_timeout"] == 30.0 and store_client["socket_connect_timeout"] == 5.0
+    assert index_client["socket_timeout"] == falkor_store_mod.ENSURE_INDEX_SOCKET_TIMEOUT_S
 
+    seen.clear()
     build_substrate_store_from_env()
-    assert "socket_timeout" not in seen[-1] and "socket_connect_timeout" not in seen[-1]
+    store_client, index_client = seen
+    assert "socket_timeout" not in store_client and "socket_connect_timeout" not in store_client
+    assert index_client["socket_connect_timeout"] == falkor_store_mod.ENSURE_INDEX_CONNECT_TIMEOUT_S

@@ -104,8 +104,8 @@ def _common_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None)
 
 
 # `activation_decayed_at` (2026-10-06, L6): the moment a node's stored
-# activation is valid as of; written by SubstrateDynamicsEngine.tick() and the
-# Hub decay scheduler so decay covers only the time since the last decay
+# activation is valid as of; written by SubstrateDynamicsEngine.tick() (the
+# sole decay writer since 2026-10-06) so decay covers only the time since the last decay
 # (orion/substrate/activation.py::activation_decay_anchor). Stored on every
 # durable kind, since activation itself is a common property.
 #

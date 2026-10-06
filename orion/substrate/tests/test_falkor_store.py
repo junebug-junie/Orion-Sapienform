@@ -1159,7 +1159,7 @@ def test_falkor_hydrated_concepts_support_concept_region_query():
 # always return self._cache.snapshot() with no refresh at all, so (a) a node
 # deleted directly from Falkor (bypassing this process, e.g. an operator
 # running Cypher DELETE by hand) stayed resurrected in the cache forever, and
-# (b) the decay scheduler (services/orion-hub/scripts/api_routes.py::
+# (b) the then-Hub decay scheduler (since removed; services/orion-hub/scripts/api_routes.py::
 # decay_concept_activations) durably re-upserts every node in every snapshot()
 # it reads on every tick -- so a stale cache didn't just show old data, it
 # actively wrote deleted data back into Falkor on the next tick, undoing the

@@ -68,7 +68,10 @@ class Settings(BaseSettings):
         alias="NODE_CATALOG_PATH",
     )
     grammar_poll_interval_sec: float = Field(5.0, alias="GRAMMAR_POLL_INTERVAL_SEC")
-    enable_dynamics_tick: bool = Field(False, alias="SUBSTRATE_DYNAMICS_TICK_ENABLED")
+    # Default ON since 2026-10-06: this tick is the only writer of activation
+    # decay (the Hub's second decay scheduler was removed), so with it off
+    # nothing decays at all.
+    enable_dynamics_tick: bool = Field(True, alias="SUBSTRATE_DYNAMICS_TICK_ENABLED")
     dynamics_tick_interval_sec: float = Field(30.0, alias="SUBSTRATE_DYNAMICS_TICK_INTERVAL_SEC")
     # since_last: decay stored activation only by the time since its last decay
     # (metadata activation_decayed_at). legacy: pre-2026-10-06 compounding decay

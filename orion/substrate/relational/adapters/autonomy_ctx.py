@@ -29,6 +29,7 @@ from orion.core.schemas.cognitive_substrate import (
     SubstrateSignalBundleV1,
 )
 from orion.substrate.adapters._common import make_temporal
+from orion.substrate.relational.registry import ProducerUnavailableError
 
 logger = logging.getLogger("orion.substrate.relational.adapters.autonomy_ctx")
 
@@ -160,8 +161,10 @@ def map_autonomy_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV1
         # orion/autonomy/repository.py's comment for the full rationale.
         repository = build_autonomy_repository()
     except Exception as exc:
-        logger.debug("autonomy_ctx_adapter_init_failed error=%s", exc)
-        return None
+        # Raise, not None: the unification layer counts None as a fresh pull
+        # for 300 s; an exception marks autonomy degraded and retries next turn.
+        logger.warning("autonomy_ctx_adapter_init_failed error=%s", exc)
+        raise ProducerUnavailableError(f"autonomy repository init failed: {exc}") from exc
 
     correlation_id = str(ctx.get("correlation_id") or ctx.get("trace_id") or "")
     session_id = str(ctx.get("session_id") or "")
@@ -175,8 +178,8 @@ def map_autonomy_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV1
     try:
         lookups = repository.list_latest(subjects, observer=observer)
     except Exception as exc:
-        logger.debug("autonomy_ctx_adapter_fetch_failed error=%s", exc)
-        return None
+        logger.warning("autonomy_ctx_adapter_fetch_failed error=%s", exc)
+        raise ProducerUnavailableError(f"autonomy fetch failed: {exc}") from exc
 
     all_nodes: list[Any] = []
     for lookup in lookups:

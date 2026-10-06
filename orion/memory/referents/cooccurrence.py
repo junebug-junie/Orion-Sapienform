@@ -25,7 +25,7 @@ from orion.core.schemas.substrate_graph_journal import SubstrateGraphDecisionV1,
 from orion.substrate.assertion_projector import assertion_node_id
 
 from .aliases import alias_in_text, slug_text
-from .resolve import LIVE_STATES, REFERENT_NAMESPACE, REFERENT_PRODUCER, SELF_REFERENT_KEYS
+from .resolve import LIVE_STATES, REFERENT_NAMESPACE, REFERENT_PRODUCER
 
 POLICY = "source_cooccurrence_v1"
 MAX_ACCEPTED_PER_MEMORY = 6
@@ -58,8 +58,10 @@ def cooccurrence_claims(
     decided_targets: set[str],
     accept: bool,
     recorded_at: datetime,
+    exclude_node_ids: set[str] | frozenset[str] = frozenset(),
 ) -> list[CooccurrenceClaim]:
-    named: dict[str, EndpointV1] = {e.node_id: e for e in endpoints if e.key not in SELF_REFERENT_KEYS}
+    """``exclude_node_ids``: Juniper's and Orion's nodes, by node id (not key)."""
+    named: dict[str, EndpointV1] = {e.node_id: e for e in endpoints if e.node_id not in exclude_node_ids}
     pairs: set[tuple[str, str]] = set()
     for quote in prompt_quotes:
         present = sorted(nid for nid, e in named.items() if any(alias_in_text(n, quote) for n in e.names))

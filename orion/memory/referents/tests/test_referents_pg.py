@@ -4,8 +4,9 @@ ORION_MEMORY_EPISODE_TEST_DATABASE_URL: admin DSN of a THROWAWAY Postgres (each 
 and drops its own database). ORION_TEST_FALKOR_URI: a THROWAWAY FalkorDB (each test uses its
 own graph). CI: .github/workflows/orion-memory-episode-tests.yml, which fails on any skip.
 
-The fixture mirrors the live 2026-10-06 shapes: Hecate's grounded hardware names, "my boss",
-a topic-foundry entity already named "circe", people named together at an offsite.
+The fixture mirrors the shapes seen live on 2026-10-06: Hecate's grounded hardware names, "my boss",
+a topic-foundry entity already named "circe", people named together at a retreat. All people
+and places are synthetic (the repository is public).
 """
 
 from __future__ import annotations
@@ -31,33 +32,39 @@ pytestmark = pytest.mark.skipif(not (ADMIN_DSN and FALKOR_URI),
                                 reason="ORION_MEMORY_EPISODE_TEST_DATABASE_URL / ORION_TEST_FALKOR_URI not set")
 
 NOW = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
+P, D = "proper_name", "descriptor"
 HECATE_PROMPT = ("I got us an Inspur NF5288M5 AGX-2 GPU that holds 8x smx2 gpus. We'll call it Hecate "
                  "and it sits next to Circe")
-OFFSITE_PROMPT = "my boss Rachel and Vincent are both going to the offsite in Austin"
+RETREAT_PROMPT = "my boss Morgan and Quill are both going to the retreat in Springfield"
 TURNS = [
     EpisodeTurn(label="t1", correlation_id="c-hecate", prompt=HECATE_PROMPT, response="That is a big upgrade."),
-    EpisodeTurn(label="t2", correlation_id="c-offsite", prompt=OFFSITE_PROMPT, response="Have fun at the offsite."),
+    EpisodeTurn(label="t2", correlation_id="c-retreat", prompt=RETREAT_PROMPT, response="Have fun at the retreat."),
 ]
 DISTILLATION = {
     "memories": [
         {"purpose": "happened", "voice": "juniper_said", "channel": "chat",
          "statement": "Juniper got an Inspur NF5288M5 server for us and named it Hecate.",
          "stakes": "low", "stakes_reason": "none",
-         "referents": [{"key": "project:hecate", "role": "about",
-                        "aliases": ["Inspur NF5288M5", "AGX-2 GPU", "8x smx2 gpus", "the new server"]},
-                       {"key": "project:circe", "role": "about", "aliases": []}],
+         "referents": [{"key": "project:hecate", "role": "about", "alias_kind": P,
+                        "aliases": [{"text": "Inspur NF5288M5", "alias_kind": P},
+                                    {"text": "AGX-2 GPU", "alias_kind": P},
+                                    {"text": "8x smx2 gpus", "alias_kind": P},
+                                    {"text": "the new server", "alias_kind": D}]},
+                       {"key": "project:circe", "role": "about", "alias_kind": P, "aliases": []}],
          "evidence": [{"turn": "t1", "field": "prompt", "quote": "We'll call it Hecate and it sits next to Circe"},
                       {"turn": "t1", "field": "prompt",
                        "quote": "Inspur NF5288M5 AGX-2 GPU that holds 8x smx2 gpus"}]},
         {"purpose": "happened", "voice": "juniper_said", "channel": "chat",
-         "statement": "Juniper's boss Rachel and Vincent are going to the offsite in Austin.",
+         "statement": "Juniper's boss Morgan and Quill are going to the retreat in Springfield.",
          "stakes": "low", "stakes_reason": "none",
-         "referents": [{"key": "person:rachel", "role": "participant", "aliases": ["my boss"]},
-                       {"key": "person:vincent", "role": "participant", "aliases": []},
-                       {"key": "event:austin-offsite", "role": "event", "aliases": ["offsite"]},
-                       {"key": "person:juniper", "role": "subject", "aliases": []}],
+         "referents": [{"key": "person:morgan", "role": "participant", "alias_kind": P,
+                        "aliases": [{"text": "my boss", "alias_kind": D}]},
+                       {"key": "person:quill", "role": "participant", "alias_kind": P, "aliases": []},
+                       {"key": "event:spring-retreat", "role": "event", "alias_kind": D,
+                        "aliases": [{"text": "retreat", "alias_kind": D}]},
+                       {"key": "person:juniper", "role": "subject", "alias_kind": P, "aliases": []}],
          "evidence": [{"turn": "t2", "field": "prompt",
-                       "quote": "my boss Rachel and Vincent are both going to the offsite"}]},
+                       "quote": "my boss Morgan and Quill are both going to the retreat"}]},
     ],
     "questions": [],
 }
@@ -66,12 +73,6 @@ DISTILLATION = {
 def _statements(path: Path) -> list[str]:
     code = "\n".join(re.sub(r"--.*$", "", line) for line in path.read_text().splitlines())
     return [s for s in code.split(";") if s.strip()]
-
-
-CHAT_LOG = """
-CREATE TABLE chat_history_log (id TEXT PRIMARY KEY, correlation_id TEXT, source TEXT, prompt TEXT, response TEXT,
-                               created_at TIMESTAMPTZ DEFAULT now())
-"""
 
 
 async def _with_dbs(fn):
@@ -92,16 +93,7 @@ async def _with_dbs(fn):
         async with pg.connection() as conn:
             for f in ("manual_migration_episode_memory_v1.sql", "manual_migration_substrate_graph_journal_v1.sql",
                       "manual_migration_referent_alias_v1.sql"):
-                for stmt in _statements(SQL / f):
-                    await conn.execute(stmt)
-            await conn.execute(CHAT_LOG)
-            # Juniper's prompt corpus: "my"/"the" are common, the proper names are rare.
-            for i in range(300):
-                await conn.execute("INSERT INTO chat_history_log (id, prompt) VALUES (%s, %s)",
-                                   (f"filler-{i}", "my day was fine and the weather was nice"))
-            for turn in TURNS:
-                await conn.execute("INSERT INTO chat_history_log (id, correlation_id, prompt) VALUES (%s, %s, %s)",
-                                   (turn.correlation_id, turn.correlation_id, turn.prompt))
+                await conn.execute((SQL / f).read_text())
         await fn(pg, apg)
     finally:
         await apg.close()
@@ -135,7 +127,7 @@ async def _persist(pg, policy=ReferentPolicy()):
     result = validate_distillation(EpisodeDistillationV1.model_validate(DISTILLATION), TURNS, episode_id="ep-1")
     assert len(result.memories) == 2 and not result.rejections
     return await persist_episode(pg, episode_id="ep-1", run_id="memdistill-ep-1", result=result,
-                                 model_route="memory_distill", model="t", prompt_version="memory_episode_distill.v3",
+                                 model_route="memory_distill", model="t", prompt_version="memory_episode_distill.v4",
                                  usage={}, llm_latency_ms=1, hold_wait_ms=0, coverage=1.0, now=NOW,
                                  referent_policy=policy)
 
@@ -155,8 +147,8 @@ async def _table(pg, sql) -> list[dict]:
 
 
 HECATE, CIRCE = node_id_for_key("project:hecate"), node_id_for_key("project:circe")
-RACHEL, VINCENT = node_id_for_key("person:rachel"), node_id_for_key("person:vincent")
-OFFSITE = node_id_for_key("event:austin-offsite")
+MORGAN, QUILL = node_id_for_key("person:morgan"), node_id_for_key("person:quill")
+RETREAT = node_id_for_key("event:spring-retreat")
 
 
 def test_persist_resolves_every_referent_and_keeps_juniper_s_names():
@@ -164,10 +156,10 @@ def test_persist_resolves_every_referent_and_keeps_juniper_s_names():
         counts = await _persist(pg)
         assert counts["referents_resolved"] == 6
         aliases = await _aliases(pg)
-        for name in ("hecate", "inspur nf5288m5", "agx-2 gpu", "8x smx2 gpus"):
+        for name in ("hecate", "inspur nf5288m5", "agx 2 gpu", "8x smx2 gpus"):
             assert aliases[(HECATE, name)][:3] == ("name", "provisional", "alias_grounding_v1"), name
-        assert aliases[(HECATE, "the new server")][1:3] == ("proposed", "ungrounded")
-        boss = aliases[(RACHEL, "my boss")]
+        assert aliases[(HECATE, "the new server")][:3] == ("descriptor", "proposed", "ungrounded")
+        boss = aliases[(MORGAN, "my boss")]
         assert boss[:3] == ("descriptor", "provisional", "alias_grounding_v1")
         assert (boss[3] - NOW).days == 90
         unresolved = await _table(pg, "SELECT * FROM episode_memory_referent WHERE node_id IS NULL")
@@ -176,7 +168,7 @@ def test_persist_resolves_every_referent_and_keeps_juniper_s_names():
                                      "JOIN substrate_graph_journal d ON d.proposal_id = p.proposal_id "
                                      "AND d.event_kind = 'decision' WHERE p.event_kind = 'proposal'")
         keys = {d["k"] for d in decisions}
-        # Hecate-Circe (one quote), and the three offsite pairs; never with Juniper.
+        # Hecate-Circe (one quote), and the three retreat pairs; never with Juniper.
         assert len(keys) == 4 and not any(node_id_for_key("person:juniper") in k for k in keys)
         # Replaying the persist writes nothing new.
         before = (await _aliases(pg), await _table(pg, "SELECT event_id FROM substrate_graph_journal ORDER BY 1"))
@@ -248,18 +240,63 @@ def test_the_daily_report_shows_held_claims_names_by_rule_and_open_questions():
     from orion.memory.episode.report import render_referents
 
     variant = copy.deepcopy(DISTILLATION)
-    # Juniper says "my boss" about Rachel; the writer also files a second person under it.
-    variant["memories"][1]["referents"].append({"key": "person:dana", "role": "about", "aliases": ["my boss"]})
+    # Juniper says "my boss" about Morgan; the writer also files a second person under it.
+    variant["memories"][1]["referents"].append({"key": "person:taylor", "role": "about", "alias_kind": P,
+                                                "aliases": [{"text": "my boss", "alias_kind": D}]})
 
     async def body(pg, apg):
         result = validate_distillation(EpisodeDistillationV1.model_validate(variant), TURNS, episode_id="ep-1")
         await persist_episode(pg, episode_id="ep-1", run_id="r", result=result, model_route="m", model="t",
-                              prompt_version="memory_episode_distill.v3", usage={}, llm_latency_ms=1, hold_wait_ms=0,
+                              prompt_version="memory_episode_distill.v4", usage={}, llm_latency_ms=1, hold_wait_ms=0,
                               coverage=1.0, now=NOW,
                               referent_policy=ReferentPolicy(cooccurrence_auto_accept=False))
         lines = "\n".join(await render_referents(apg, start=NOW - timedelta(hours=1), end=NOW + timedelta(hours=1)))
         assert "provisional (alias_grounding_v1)" in lines
         assert "Co-occurrence claims held for review (not walkable): " in lines
         assert "held for review (not walkable): 0" not in lines  # the kill switch held them all
-        assert "[alias_collision, ask via conversation] Does 'my boss' mean 'rachel' or 'dana'?" in lines
+        assert "[alias_collision, ask via conversation] Does 'my boss' mean 'morgan' or 'taylor'?" in lines
+    asyncio.run(_with_dbs(body))
+
+
+def test_backfill_cli_dry_run_writes_nothing_logs_progress_and_survives_a_bad_episode(tmp_path):
+    """#2520 review 7 (AGENTS.md section 14): progress DURING the run, per-episode errors counted
+    and skipped, dry run computes what would change and rolls it back, report files written."""
+    import importlib.util
+    import json
+
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+    spec = importlib.util.spec_from_file_location(
+        "backfill_cli", Path(__file__).resolve().parents[4] / "scripts" / "backfill_referents_from_episodes.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+
+    async def body(pg, apg):
+        await _persist(pg, policy=None)
+        type_, blob = JsonPlusSerializer().dumps_typed(json.dumps(DISTILLATION))
+        async with pg.connection() as conn:
+            await conn.execute("CREATE TABLE checkpoint_writes (thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT,"
+                               " task_id TEXT, idx INT, channel TEXT, type TEXT, blob BYTEA, task_path TEXT)")
+            await conn.execute("INSERT INTO checkpoint_writes VALUES ('memdistill-ep-1', '', 'c1', 't', 0, "
+                               "'answer_text', %s, %s, '')", (type_, blob))
+            # a second episode whose saved answer is corrupt
+            await conn.execute("INSERT INTO episode_distill_run (episode_id, run_id, memories_kept, memories_rejected,"
+                               " questions_kept, downgrades) VALUES ('ep-bad', 'memdistill-ep-bad', 1, 0, 0, 0)")
+            await conn.execute("INSERT INTO checkpoint_writes VALUES ('memdistill-ep-bad', '', 'c1', 't', 0, "
+                               "'answer_text', 'msgpack', %s, '')", (b"\xc1\xc1not-msgpack",))
+            await conn.execute("INSERT INTO episode_memory (memory_id, episode_id, purpose, voice, channel, statement,"
+                               " stakes, confirmation_state, strength, last_reinforced_at) VALUES"
+                               " (gen_random_uuid(), 'ep-bad', 'happened', 'juniper_said', 'chat',"
+                               " 'Juniper said something about the garden today.', 'low', 'auto', 0.8, now())")
+        dsn = ADMIN_DSN.rsplit("/", 1)[0] + "/" + (await _table(pg, "SELECT current_database() AS d"))[0]["d"]
+        code = await cli.run(dsn, apply=False, out=tmp_path)
+        assert code == 1  # one episode failed
+        assert await _table(pg, "SELECT 1 FROM referent_alias") == []  # dry run: rolled back
+        lines = (tmp_path / "progress.log").read_text().splitlines()
+        assert lines[0].startswith("referent-backfill start mode=dry-run")
+        assert any("50% ETA" in line and "episodes 1/2" in line for line in lines), lines
+        assert any("100% ETA" in line and "episodes 2/2" in line and "errors 1" in line for line in lines)
+        report = (tmp_path / "report.md").read_text()
+        assert "1 of 2 episodes would apply; 1 errors" in report and "Nothing was written" in report
+        assert (tmp_path / "before_after.csv").read_text().count("dry-run") == 4
     asyncio.run(_with_dbs(body))

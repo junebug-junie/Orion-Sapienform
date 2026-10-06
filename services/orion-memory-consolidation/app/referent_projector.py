@@ -6,16 +6,21 @@ write goes through ``SubstrateGraphMaterializer.apply_record`` and is idempotent
 graph can be rebuilt by truncating ``referent_projection``.
 
 One tick:
+0. readiness: nothing is written until every substrate reader advertises the
+   assertion-core capability (orion/substrate/reader_capability.py). While waiting it logs
+   ``referent_projector_waiting reason=readers_not_ready missing=[...]`` and /health shows it;
 1. nodes: one Entity (or Concept, for ``concept:`` keys) per referent node; state = its
    key row's state; display aliases = its live names. On a node's FIRST projection, if
    another producer already has a same-named Concept/Entity (topic-foundry's "circe"),
-   the node is demoted to ``proposed`` and Orion gets an identity question. Never a merge;
+   Orion gets an identity question; the node stays walkable. Never a merge, never a demotion;
 2. memories: one Evidence node per memory (``episode_memory:<id>``; the text stays in
    Postgres) and an ``observed_in`` provenance edge from each of its referent nodes. A
    memory that stops being active closes its edges (``valid_to``) instead of deleting;
 3. assertions: ``AssertionProjector.run_once`` applies co-occurrence decisions.
 
-Kill switch: MEMORY_REFERENT_PROJECTOR_ENABLED=false.
+Kill switch: MEMORY_REFERENT_PROJECTOR_ENABLED=false. Rebuild the graph from Postgres:
+``ReferentProjector.rebuild()`` (CLI: scripts/rebuild_referent_graph.py), never by hand:
+truncating the ledger alone does not re-project accepted assertions.
 """
 
 from __future__ import annotations
@@ -48,9 +53,11 @@ from orion.memory.referents.resolve import (
     REFERENT_NAMESPACE,
     REFERENT_PRODUCER,
 )
+from orion.core.schemas.substrate_graph_journal import SubstrateGraphDecisionV1
 from orion.substrate.assertion_projector import AssertionProjector
 from orion.substrate.graph_journal import SubstrateGraphJournal
 from orion.substrate.materializer import SubstrateGraphMaterializer
+from orion.substrate.reader_capability import ReadinessCheck, ReadinessV1
 
 logger = logging.getLogger(__name__)
 
@@ -64,13 +71,18 @@ _SAVE_LEDGER = """
 INSERT INTO referent_projection (subject_id, subject_kind, fingerprint, projected_at) VALUES ($1, $2, $3, $4)
 ON CONFLICT (subject_id) DO UPDATE SET fingerprint = EXCLUDED.fingerprint, projected_at = EXCLUDED.projected_at
 """
-_DEMOTE = """
-UPDATE referent_alias SET promotion_state = 'proposed', admitted_by = 'label_collision', updated_at = $2
-WHERE node_id = $1 AND alias_class = 'key' AND promotion_state = 'provisional'
-"""
 _QUESTION = """
 INSERT INTO memory_tension_shadow (question_id, text, kind, scope, answer_via, source_refs, referent_keys, created_at)
 VALUES ($1::uuid, $2, 'question', $3, $4, $5::jsonb, $6, $7) ON CONFLICT (question_id) DO NOTHING
+"""
+# The decision behind each target's latest APPLIED revision (for rebuild()).
+_LATEST_APPLIED = """
+SELECT DISTINCT ON (d.target_id) d.payload
+FROM substrate_graph_journal d
+JOIN substrate_graph_journal m ON m.event_kind = 'materialization' AND m.outcome = 'applied'
+                              AND m.decision_id = d.decision_id
+WHERE d.event_kind = 'decision' AND d.actor = 'memory.referents'
+ORDER BY d.target_id, d.revision DESC
 """
 _MEMORIES = """
 SELECT m.memory_id::text AS memory_id, m.status, m.voice, m.created_at, m.updated_at,
@@ -91,8 +103,9 @@ def _edge_id(*parts: str) -> str:
 
 @dataclass
 class ProjectionTickV1:
+    blocked: ReadinessV1 | None = None    # readers not ready: nothing was written this tick
     nodes: int = 0
-    demoted: list[str] = field(default_factory=list)
+    label_questions: list[str] = field(default_factory=list)
     memories: int = 0
     waiting_memories: int = 0
     assertions_applied: int = 0
@@ -100,23 +113,32 @@ class ProjectionTickV1:
 
 
 class ReferentProjector:
-    def __init__(self, *, pool: Any, materializer: SubstrateGraphMaterializer) -> None:
+    def __init__(self, *, pool: Any, materializer: SubstrateGraphMaterializer, readiness: ReadinessCheck) -> None:
         self._pool = pool
         self._materializer = materializer
         self._store = materializer.store
-        self._assertions = AssertionProjector(journal=SubstrateGraphJournal(pool), materializer=materializer)
+        self._readiness = readiness
+        self.last_readiness: ReadinessV1 | None = None
+        self._assertions = AssertionProjector(journal=SubstrateGraphJournal(pool), materializer=materializer,
+                                              readiness=readiness)
 
     async def run_once(self, *, now: datetime | None = None) -> ProjectionTickV1:
         now = now or datetime.now(timezone.utc)
         tick = ProjectionTickV1()
+        ready = await asyncio.to_thread(self._readiness)
+        self.last_readiness = ready
+        if not ready.ready:
+            tick.blocked = ready
+            logger.info("referent_projector_waiting reason=%s missing=%s", ready.reason, list(ready.missing))
+            return tick
         projected = await self._project_nodes(now, tick)
         await self._project_memories(now, projected, tick)
         report = await self._assertions.run_once()
         tick.assertions_applied, tick.assertions_failed = len(report.applied), len(report.failed)
         logger.info(
-            "referent_projection_tick nodes=%d demoted=%d memories=%d waiting_memories=%d "
+            "referent_projection_tick nodes=%d label_questions=%d memories=%d waiting_memories=%d "
             "assertions_applied=%d assertions_failed=%d",
-            tick.nodes, len(tick.demoted), tick.memories, tick.waiting_memories,
+            tick.nodes, len(tick.label_questions), tick.memories, tick.waiting_memories,
             tick.assertions_applied, tick.assertions_failed,
         )
         return tick
@@ -140,10 +162,8 @@ class ReferentProjector:
             node_kind = "concept" if key["referent_kind"] == "concept" else "entity"
             if node_id in ledger:
                 projected[node_id] = node_kind
-            if node_id not in ledger and key["promotion_state"] == "provisional":
-                if await self._demote_on_label_collision(node_id, key, now):
-                    tick.demoted.append(node_id)
-                    key = {**key, "promotion_state": "proposed"}
+            if node_id not in ledger and await self._ask_on_label_collision(node_id, key, now):
+                tick.label_questions.append(node_id)
             names = sorted({r["alias_text"] for r in node_rows if r["alias_class"] != "key"
                             and r["promotion_state"] in LIVE_STATES
                             and (r["alias_class"] != "descriptor" or (r["valid_until"] and r["valid_until"] > now))})
@@ -176,26 +196,56 @@ class ReferentProjector:
             return ConceptNodeV1(**common)
         return EntityNodeV1(entity_type=spec["kind"], aliases=spec["aliases"], **common)
 
-    async def _demote_on_label_collision(self, node_id: str, key: dict, now: datetime) -> bool:
+    async def _ask_on_label_collision(self, node_id: str, key: dict, now: datetime) -> bool:
+        """Another producer has a same-named node: ask whether they are the same. Our node
+        keeps its state (it stays walkable); the rule that asked is recorded on the question.
+        Idempotent (deterministic question id), so a rebuild re-asks nothing new."""
         label = slug_text(key["alias_norm"])
         others = await asyncio.to_thread(self._store.find_semantic_node_ids_by_label, label,
                                          exclude_producers=(REFERENT_PRODUCER,))
         if not others:
             return False
-        kind = key["referent_kind"]
-        juniper = kind in JUNIPER_ANSWERS_KINDS
+        juniper = key["referent_kind"] in JUNIPER_ANSWERS_KINDS
         text = f"Is the '{label}' from our conversations the same as the '{label}' already in my graph?"
         question_id = str(uuid.uuid5(REFERENT_NAMESPACE, f"label_collision|{node_id}|{'|'.join(others)}"))
         async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(_DEMOTE, node_id, now)
-                await conn.execute(
-                    _QUESTION, question_id, text, "juniper" if juniper else "self",
-                    "conversation" if juniper else "investigation",
-                    json.dumps([{"reason": "label_collision", "node_ids": [node_id, *others]}]),
-                    [key["alias_norm"]], now)
-        logger.info("referent_label_collision node_id=%s label=%s others=%s", node_id, label, others)
+            await conn.execute(
+                _QUESTION, question_id, text, "juniper" if juniper else "self",
+                "conversation" if juniper else "investigation",
+                json.dumps([{"reason": "label_collision", "admitted_by": "label_collision",
+                             "node_ids": [node_id, *others]}]),
+                [key["alias_norm"]], now)
+        logger.info("referent_label_collision_question node_id=%s label=%s others=%s", node_id, label, others)
         return True
+
+    async def rebuild(self, *, now: datetime | None = None) -> ProjectionTickV1:
+        """Re-project everything from Postgres into the (possibly empty) graph.
+
+        Truncating ``referent_projection`` re-projects nodes and memory evidence, but NOT
+        assertions: the journal (append-only) already records them as applied, so the
+        assertion projector has nothing pending. Here each target's latest applied decision
+        is replayed through the same record builder, with no new journal rows.
+        """
+        now = now or datetime.now(timezone.utc)
+        async with self._pool.acquire() as conn:
+            await conn.execute("TRUNCATE referent_projection")
+        tick = await self.run_once(now=now)
+        if tick.blocked is not None:
+            return tick
+        journal = self._assertions._journal
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(_LATEST_APPLIED)
+        for row in rows:
+            decision = SubstrateGraphDecisionV1.model_validate(json.loads(row["payload"]) if isinstance(
+                row["payload"], str) else row["payload"])
+            proposal = await journal.proposal(decision.proposal_id)
+            if proposal is None:
+                continue
+            record, _n, _e = await asyncio.to_thread(self._assertions._record, proposal, decision)
+            await asyncio.to_thread(self._materializer.apply_record, record)
+            tick.assertions_applied += 1
+        logger.info("referent_projection_rebuilt assertions_replayed=%d", tick.assertions_applied)
+        return tick
 
     # ── memories ────────────────────────────────────────────────────────────
 
@@ -245,12 +295,14 @@ class ReferentProjector:
 
 
 def build_projector(pool: Any, settings: Any) -> ReferentProjector | None:
-    """The projector on its own Falkor store (no full hydration: it primes only its own nodes)."""
+    """The projector on its own Falkor store (no full hydration: it primes only its own nodes),
+    gated on every substrate reader advertising the assertion-core capability."""
     uri = str(getattr(settings, "FALKORDB_URI", "") or "").strip()
     if not uri:
         logger.warning("referent_projector_disabled reason=no_FALKORDB_URI")
         return None
     from orion.substrate.falkor_store import FalkorSubstrateStore, FalkorSubstrateStoreConfig
+    from orion.substrate.reader_capability import readiness, required_readers_from_env
 
     store = FalkorSubstrateStore(
         FalkorSubstrateStoreConfig(uri=uri, graph_name=settings.FALKORDB_SUBSTRATE_GRAPH,
@@ -260,7 +312,18 @@ def build_projector(pool: Any, settings: Any) -> ReferentProjector | None:
     nodes, edges = store.prime_cache_for_producers((REFERENT_PRODUCER,))
     logger.info("referent_projector_primed graph=%s nodes=%d edges=%d", settings.FALKORDB_SUBSTRATE_GRAPH,
                 nodes, edges)
-    return ReferentProjector(pool=pool, materializer=SubstrateGraphMaterializer(store=store))
+    required = required_readers_from_env()
+    return ReferentProjector(pool=pool, materializer=SubstrateGraphMaterializer(store=store),
+                             readiness=lambda: readiness(uri, required))
+
+
+# Read by app.main's /health: {"state": ..., "readiness": {...}} -- "waiting" names the readers.
+PROJECTOR_STATUS: dict[str, Any] = {"state": "not_started"}
+
+
+def record_status(tick: ProjectionTickV1, readiness: ReadinessV1 | None) -> None:
+    PROJECTOR_STATUS.update(state="waiting" if tick.blocked else "running",
+                            readiness=readiness.as_dict() if readiness else None)
 
 
 async def run_referent_projector_loop(pool: Any, settings: Any) -> None:
@@ -270,13 +333,17 @@ async def run_referent_projector_loop(pool: Any, settings: Any) -> None:
             projector = await asyncio.to_thread(build_projector, pool, settings)
         except Exception:  # noqa: BLE001 - Falkor down at boot: retry, never crash the service
             logger.exception("referent_projector_start_failed")
+            PROJECTOR_STATUS.update(state="start_failed")
         if projector is None:
             if not str(getattr(settings, "FALKORDB_URI", "") or "").strip():
+                PROJECTOR_STATUS.update(state="disabled_no_falkor_uri")
                 return
             await asyncio.sleep(float(settings.MEMORY_REFERENT_PROJECTOR_TICK_SEC))
     while True:
         try:
-            await projector.run_once()
+            tick = await projector.run_once()
+            record_status(tick, projector.last_readiness)
         except Exception:  # noqa: BLE001 - one bad tick must not stop projection
             logger.exception("referent_projection_tick_failed")
+            PROJECTOR_STATUS.update(state="tick_failed")
         await asyncio.sleep(float(settings.MEMORY_REFERENT_PROJECTOR_TICK_SEC))

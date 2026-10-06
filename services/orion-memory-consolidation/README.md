@@ -190,20 +190,21 @@ Spec: `docs/superpowers/specs/2026-09-30-memory-episode-redesign-design.md`.
 ## Referent projector (memory Stage 2, 2026-10-06)
 
 `app/referent_projector.py`, a 30 s loop (`MEMORY_REFERENT_PROJECTOR_ENABLED`,
-`MEMORY_REFERENT_PROJECTOR_TICK_SEC`, `FALKORDB_URI`, `FALKORDB_SUBSTRATE_GRAPH`). It copies what
-the referent step wrote into Postgres into Orion's one graph, as producer `memory.referents`.
-It never hydrates the whole graph: at start it loads only its own nodes. Truncating
-`referent_projection` forces a full, idempotent rebuild. Concepts it owns (the rest are in
-`orion/memory/referents/README.md` and `orion/substrate/README.md`):
+`MEMORY_REFERENT_PROJECTOR_TICK_SEC`, `FALKORDB_URI`, `FALKORDB_SUBSTRATE_GRAPH`,
+`SUBSTRATE_ASSERTION_REQUIRED_READERS`). It copies what the referent step wrote into Postgres
+into Orion's one graph, as producer `memory.referents`. It never hydrates the whole graph: at
+start it loads only its own nodes. Rebuild ONLY with `scripts/rebuild_referent_graph.py`
+(truncating `referent_projection` by hand re-projects nodes and evidence but not accepted
+assertions). Concepts it owns (the rest are in `orion/memory/referents/README.md` and
+`orion/substrate/README.md`):
 
 | Concept | What it means in plain English | Producer | Consumer | Test |
 |---|---|---|---|---|
-| Referent node in Falkor (Entity, or Concept for `concept:` keys; producer `memory.referents`) | The thing itself, with its usable names shown on it. Fenced: never merged by label or embedding. | this projector | neighborhood reads (walkable once provisional/canonical); `AssertionProjector` endpoint check | `tests/test_referent_projector_pg.py` |
-| Memory Evidence node (`episode_memory:<id>`) + `observed_in` provenance edge | "This thing is mentioned in that memory", with when Orion learned it (`valid_from`) and when the memory stopped being active (`valid_to`). The memory text stays in Postgres. | this projector | `AssertionProjector` (a claim's supporting evidence must exist); the neighborhood never walks it | projector test (6 edges, all `provenance`; superseding closes them) |
-| Label collision demotion | Our "circe" meets topic-foundry's "circe": ours becomes an open question, never a merge. | this projector (first projection only) | identity questions in the daily report | projector test |
-| `referent_projection` ledger | What the projector last wrote per node/memory, so it rewrites only what changed. | this projector | this projector | projector test (second tick writes nothing) |
-
-Deploy order: see `docs/superpowers/pr-reports/2026-10-06-memory-referents-pr.md`.
+| Readiness gate | Writes NOTHING until every substrate reader advertises it can read the new shapes; meanwhile logs `referent_projector_waiting reason=readers_not_ready missing=[...]` and `/health` shows `referent_projector.state=waiting` with the missing readers. | `orion/substrate/reader_capability.py` (readers advertise at boot) | `ReferentProjector.run_once`, `/health` | `tests/test_referent_projector_pg.py::test_projector_writes_nothing_until_every_reader_is_ready`, `test_health_reports_the_missing_readers` |
+| Referent node in Falkor (Entity, or Concept for `concept:` keys; producer `memory.referents`) | The thing itself, with its usable names shown on it. Fenced: never merged by label or embedding. | this projector | neighborhood reads; `AssertionProjector` endpoint check | `tests/test_referent_projector_pg.py` |
+| Memory Evidence node (`episode_memory:<id>`) + `observed_in` provenance edge | "This thing is mentioned in that memory", with when Orion learned it (`valid_from`) and when the memory stopped being active (`valid_to`). The text stays in Postgres. | this projector | `AssertionProjector` (a claim's evidence must exist); every walk/region read refuses it | projector test (6 edges, all `provenance`; superseding closes them) |
+| Label-collision question | Our "circe" meets topic-foundry's "circe": Orion asks whether they are the same; our node stays walkable; never a merge. | this projector (first projection only) | identity questions in the daily report | projector test |
+| `referent_projection` ledger | What the projector last wrote per node/memory, so it rewrites only what changed. | this projector | this projector; `rebuild()` | projector test (second tick writes nothing), discipline eval (rebuild into an empty graph = same ids, no new journal rows) |
 
 ## Turn change appraisal
 

@@ -138,6 +138,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Orion Memory Consolidation", lifespan=lifespan)
 
 
+def _referent_status() -> dict:
+    from app.referent_projector import PROJECTOR_STATUS
+
+    return dict(PROJECTOR_STATUS)
+
+
 @app.get("/health")
 async def health() -> dict:
     return {
@@ -148,4 +154,5 @@ async def health() -> dict:
         "enabled": settings.MEMORY_CONSOLIDATION_ENABLED,
         "episode_shadow_enabled": settings.MEMORY_EPISODE_SHADOW_ENABLED,
         "referent_projector_enabled": settings.MEMORY_REFERENT_PROJECTOR_ENABLED,
+        "referent_projector": _referent_status(),
     }

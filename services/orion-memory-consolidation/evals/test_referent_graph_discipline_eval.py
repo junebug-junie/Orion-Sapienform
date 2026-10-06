@@ -6,8 +6,8 @@ Label-free, deterministic, and it fails the build on any violation:
    returned by the neighborhood read;
 2. no silent merge: every memory.referents node id is one the referent step minted, and no
    other producer's node gained a memory.referents provenance or alias;
-3. rebuildable: dropping the projector's ledger and projecting again into an EMPTY graph
-   gives identical node and edge id sets.
+3. rebuildable: ReferentProjector.rebuild() into an EMPTY graph gives identical node and edge
+   id sets (assertions included) and writes nothing to the append-only journal.
 
 Runs with the memory-episode CI job (ORION_MEMORY_EPISODE_TEST_DATABASE_URL + ORION_TEST_FALKOR_URI).
 """
@@ -28,6 +28,7 @@ from orion.memory.referents.tests.test_referents_pg import (  # noqa: E402
     NOW, _falkor, _persist, _seed_topic_foundry_circe, _table, _with_dbs,
     pytestmark,  # noqa: F401  (same skip rule)
 )
+from orion.substrate.reader_capability import ALWAYS_READY  # noqa: E402
 
 spec = importlib.util.spec_from_file_location("mc_referent_projector_eval", SERVICE_ROOT / "app" / "referent_projector.py")
 referent_projector = importlib.util.module_from_spec(spec)
@@ -55,7 +56,7 @@ def test_graph_discipline_and_rebuild_from_postgres():
             _seed_topic_foundry_circe(store_a)
             await _persist(pg)
             await referent_projector.ReferentProjector(
-                pool=apg, materializer=SubstrateGraphMaterializer(store=store_a)).run_once(now=NOW)
+                pool=apg, materializer=SubstrateGraphMaterializer(store=store_a), readiness=ALWAYS_READY).run_once(now=NOW)
             state, nodes, edges = _ids(store_a)
 
             # 1. every projection is backed by an accepted assertion at its revision, or unwalkable
@@ -74,14 +75,18 @@ def test_graph_discipline_and_rebuild_from_postgres():
             assert state.nodes["tf-circe"].provenance.producer == "topic_foundry_adapter"
             assert not getattr(state.nodes["tf-circe"], "aliases", [])
 
-            # 3. rebuild: empty ledger, empty graph -> the same ids
+            # 3. rebuild into an EMPTY graph through the one supported path (ReferentProjector.rebuild):
+            #    same node and edge ids, accepted assertions included, no new journal rows.
             async with pg.connection() as conn:
-                await conn.execute("TRUNCATE referent_projection")
+                journal_before = (await (await conn.execute("SELECT count(*) AS n FROM substrate_graph_journal"))
+                                  .fetchone())["n"]
             _seed_topic_foundry_circe(store_b)
-            async with pg.connection() as conn:
-                await conn.execute("DELETE FROM substrate_graph_journal WHERE event_kind = 'materialization'")
             await referent_projector.ReferentProjector(
-                pool=apg, materializer=SubstrateGraphMaterializer(store=store_b)).run_once(now=NOW)
+                pool=apg, materializer=SubstrateGraphMaterializer(store=store_b), readiness=ALWAYS_READY).rebuild(now=NOW)
+            async with pg.connection() as conn:
+                journal_after = (await (await conn.execute("SELECT count(*) AS n FROM substrate_graph_journal"))
+                                 .fetchone())["n"]
+            assert journal_after == journal_before
             _, nodes_b, edges_b = _ids(store_b)
             assert (nodes_b, edges_b) == (nodes, edges)
         finally:

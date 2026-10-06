@@ -13,9 +13,9 @@ deployed before a producer adds a field (consumer-first).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Literal, Optional, get_args
+from typing import Any, List, Literal, Optional, get_args
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 MEMORY_EPISODE_CLOSED_KIND = "memory.episode.closed.v1"
 
@@ -53,7 +53,7 @@ class MemoryEpisodeClosedV1(BaseModel):
 # --- Stage 1 PR 2: the shadow distiller (memory.episode_distill) ---------------------------
 
 MEMORY_EPISODE_DISTILL_WORKFLOW = "memory.episode_distill"
-MEMORY_EPISODE_DISTILL_PROMPT_VERSION = "memory_episode_distill.v3"  # v3: stakes rubric (2026-10-06)
+MEMORY_EPISODE_DISTILL_PROMPT_VERSION = "memory_episode_distill.v4"  # v4: alias_kind on every name (2026-10-06)
 
 Purpose = Literal["happened", "about_juniper", "orion_view", "follow_up"]
 Voice = Literal["juniper_said", "worked_out_together", "orion_thought", "orion_read", "orion_self_knowledge"]
@@ -112,12 +112,44 @@ class DistillEvidenceV1(BaseModel):
     quote: str
 
 
+# The distiller's own judgment of what kind of name a name is (memory Stage 2, 2026-10-06).
+# proper_name: names exactly one specific thing ("Hecate", "Fairview"). descriptor: a role,
+# relation or description that can point at different things over time ("my boss", "the new
+# server"). Only a proper_name may decide identity; a name with no judgment is a descriptor.
+AliasKind = Literal["proper_name", "descriptor"]
+
+
+class DistillAliasV1(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    text: str
+    alias_kind: AliasKind = "descriptor"
+
+    @field_validator("alias_kind", mode="before")
+    @classmethod
+    def _unknown_is_descriptor(cls, value: Any) -> Any:
+        return value if value in ("proper_name", "descriptor") else "descriptor"
+
+
 class DistillReferentV1(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     key: str
     role: str = "about"
-    aliases: List[str] = Field(default_factory=list)
+    # What kind of name the key's own slug is (same rule as the aliases).
+    alias_kind: AliasKind = "descriptor"
+    aliases: List[DistillAliasV1] = Field(default_factory=list)
+
+    @field_validator("alias_kind", mode="before")
+    @classmethod
+    def _unknown_is_descriptor(cls, value: Any) -> Any:
+        return value if value in ("proper_name", "descriptor") else "descriptor"
+
+    @field_validator("aliases", mode="before")
+    @classmethod
+    def _plain_strings_are_unjudged(cls, value: Any) -> Any:
+        # Answers from prompts before v4 carry bare strings: no judgment, so never identity-deciding.
+        return [{"text": v} if isinstance(v, str) else v for v in (value or [])]
 
 
 class DistilledMemoryV1(BaseModel):

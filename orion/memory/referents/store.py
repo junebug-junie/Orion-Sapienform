@@ -17,13 +17,14 @@ from typing import Any
 
 from orion.substrate.graph_journal import journal_row
 
-from .aliases import TokenFrequency, first_token, normalize_alias, slug_text
 from .cooccurrence import EndpointV1, cooccurrence_claims
 from .resolve import (
+    SELF_REFERENT_KEYS,
     AliasIndex,
     AliasRow,
     ReferentPolicy,
     candidate_aliases,
+    node_id_for_key,
     resolve_referent,
 )
 
@@ -52,12 +53,6 @@ INSERT INTO memory_tension_shadow (question_id, text, kind, scope, answer_via, s
                                    referent_keys, created_at)
 VALUES (%s, %s, 'question', %s, %s, %s, %s, %s, %s) ON CONFLICT (question_id) DO NOTHING
 """
-# Juniper's own words: the corpus whose word frequencies decide name vs descriptor.
-_PROMPT_DF = """
-SELECT count(*) FILTER (WHERE to_tsvector('simple', coalesce(prompt, '')) @@ plainto_tsquery('simple', %s)) AS df,
-       count(*) AS n
-FROM chat_history_log
-"""
 _DECIDED = """
 SELECT DISTINCT target_id FROM substrate_graph_journal
 WHERE event_kind = 'decision' AND proposal_kind = 'relationship_assertion'
@@ -77,7 +72,10 @@ class MemoryReferents:
     episode_id: str
     created_at: datetime                 # when Juniper last used these names (descriptor expiry base)
     referents: list[tuple[str, str]]     # (key, role)
-    aliases_by_key: dict[str, list[str]] = field(default_factory=dict)
+    # key -> [(alias text, alias_kind)], alias_kind = the distiller's proper_name | descriptor
+    aliases_by_key: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+    # key -> the distiller's alias_kind for the key's own name (missing = descriptor)
+    name_kinds: dict[str, str] = field(default_factory=dict)
     # (source_id, quote) of the EPISODE's verified chat_prompt evidence: grounds aliases.
     prompt_quotes: list[tuple[str, str]] = field(default_factory=list)
     # This memory's own verified chat_prompt quotes: the only source of co-occurrence claims.
@@ -94,14 +92,6 @@ async def _fetchall(conn: Any, sql: str, params: tuple = ()) -> list[Any]:
     return await (await conn.execute(sql, params)).fetchall()
 
 
-async def _frequencies(conn: Any, tokens: set[str]) -> dict[str, TokenFrequency]:
-    out: dict[str, TokenFrequency] = {}
-    for token in sorted(tokens):
-        row = (await _fetchall(conn, _PROMPT_DF, (token,)))[0]
-        out[token] = TokenFrequency(documents=int(row["df"]), total=int(row["n"]))
-    return out
-
-
 async def persist_referents(
     conn: Any,
     memories: list[MemoryReferents],
@@ -115,16 +105,13 @@ async def persist_referents(
 
     await conn.execute(_LOCK)
     index = AliasIndex(_row(r) for r in await _fetchall(conn, _LOAD))
-    tokens = {first_token(normalize_alias(text)) for m in memories for key, _ in m.referents
-              for text in [slug_text(key), *m.aliases_by_key.get(key, [])]}
-    frequency = await _frequencies(conn, {t for t in tokens if t})
     decided = {r["target_id"] for r in await _fetchall(conn, _DECIDED)}
     counts = {"resolved": 0, "minted": 0, "aliases": 0, "questions": 0, "proposals": 0, "decisions": 0}
 
     for m in memories:
         endpoints: dict[str, EndpointV1] = {}
         for key, _role in m.referents:
-            cands = candidate_aliases(key, m.aliases_by_key.get(key, []), m.prompt_quotes, frequency)
+            cands = candidate_aliases(key, m.name_kinds.get(key), m.aliases_by_key.get(key, []), m.prompt_quotes)
             res = resolve_referent(key, cands, index, now=now, last_use=m.created_at, policy=policy,
                                    proposed_by=proposed_by)
             counts["resolved"] += 1
@@ -149,7 +136,11 @@ async def persist_referents(
             endpoints[res.node_id] = EndpointV1(
                 key=key, node_id=res.node_id, node_kind="concept" if kind == "concept" else "entity",
                 state=index.node_state(res.node_id) or "proposed", names=tuple(index.live_name_norms(res.node_id, now)))
+        # Juniper and Orion by NODE, not key: a refined or aliased key for either is still them.
+        self_ids = {node_id_for_key(k) for k in SELF_REFERENT_KEYS} | {
+            r.node_id for k in SELF_REFERENT_KEYS if (r := index.key_row(k)) is not None}
         claims = cooccurrence_claims(
+            exclude_node_ids=self_ids,
             memory_id=m.memory_id, endpoints=list(endpoints.values()),
             prompt_quotes=m.own_prompt_quotes, decided_targets=decided,
             accept=policy.cooccurrence_auto_accept, recorded_at=m.created_at)

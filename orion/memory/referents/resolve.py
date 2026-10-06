@@ -1,25 +1,29 @@
 """Which substrate node does a writer referent mean? (memory Stage 2 spec 1.2-1.3). Pure.
 
 Postgres ``referent_alias`` is the source of truth: a node exists because it has a
-``key`` alias row, and its promotion state is that row's state. Resolution, per
-referent ``{key, aliases}``:
+``key`` alias row, and its promotion state is that row's state.
 
-1. exact key: a key row for this key (any state but rejected) -> that node;
-2. kind refinement: same slug under an interchangeable kind (project/service) -> that
-   node, plus a key row for the new key. Not a merge: the same thing, filed again;
-3. name match: the key's own name or one of its grounded aliases equals a live proper
-   name (never a descriptor) of exactly one node of a compatible kind -> that node;
-4. ambiguous (two or more nodes, or a node of an incompatible kind) -> a NEW node in
-   state ``proposed`` plus an identity question. Nothing merges;
-5. otherwise a new ``provisional`` node.
+What kind of name each name is comes from the distiller (``alias_kind``: proper_name or
+descriptor, for the key's own name and every alias). A name with no judgment is a
+descriptor. Code never classifies names by their words.
+
+Identity rule: a referent resolves onto an EXISTING node only by
+1. its exact key (a key row for this key, any state but rejected); or
+2. a grounded proper name (the key's own name or an alias the distiller called a
+   proper_name, found in Juniper's verified words) that exactly equals a live proper name
+   of exactly one node of the SAME kind, with nothing contradicting it: if the key's own
+   name is itself a grounded proper name, it must belong to that same node.
+Anything else that lands on another node's proper name is ambiguous: a NEW node in state
+``proposed`` and an identity question. Descriptors ("my boss") never decide identity, in
+either direction: they attach as expiring names, and a collision on one is a question.
 
 Aliases on the resolved node:
-- ``alias_grounding_v1``: an alias found word-bounded in one of Juniper's verified
-  prompt quotes becomes ``provisional`` (kill switch: ``grounding_auto_accept``);
-  anything else stays ``proposed``, which never resolves and is never indexed;
-- a descriptor (aliases.alias_class) lives until ``last use + 90 days``;
-- collision: an alias already live on ANOTHER node is stored ``proposed`` on this
-  one and becomes a question. Never a silent merge.
+- ``alias_grounding_v1``: a name found word-bounded in Juniper's verified prompt quotes
+  becomes ``provisional`` (kill switch: ``grounding_auto_accept``); anything else stays
+  ``proposed``, which never resolves and is never displayed;
+- a descriptor lives until ``last use + 90 days``; reuse extends it;
+- an alias's class is frozen at insert; a frozen descriptor still never decides identity;
+- collision: an alias already live on ANOTHER node is stored ``proposed`` here and asked about.
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Iterable, Optional
 
-from .aliases import DESCRIPTOR_TTL_DAYS, alias_class, alias_in_text, normalize_alias, slug_text, TokenFrequency
+from .aliases import DESCRIPTOR_TTL_DAYS, alias_in_text, normalize_alias, slug_text
 
 REFERENT_PRODUCER = "memory.referents"
 REFERENT_NAMESPACE = uuid.UUID("2c0f3c55-8a1e-4f60-b0d2-7a5e1c9d4b13")
@@ -38,9 +42,6 @@ LIVE_STATES = frozenset({"provisional", "canonical"})
 # Kinds whose identity question goes to Juniper in conversation (people, places and events
 # are hers to name). Every other kind is something Orion can investigate itself.
 JUNIPER_ANSWERS_KINDS = frozenset({"person", "place", "event"})
-# The same slug under these kinds is one thing filed twice ("project:orion-hub" and
-# "service:orion-hub"), so resolution step 2 joins them.
-INTERCHANGEABLE_KINDS = frozenset({"project", "service"})
 # Juniper and Orion are in nearly every memory; a relationship "with Juniper" says nothing.
 SELF_REFERENT_KEYS = frozenset({"person:juniper", "person:orion"})
 
@@ -55,8 +56,9 @@ def kind_of(key: str) -> str:
     return str(key).partition(":")[0]
 
 
-def compatible(kind_a: str, kind_b: str) -> bool:
-    return kind_a == kind_b or (kind_a in INTERCHANGEABLE_KINDS and kind_b in INTERCHANGEABLE_KINDS)
+def alias_class_for(alias_kind: Optional[str]) -> str:
+    """The stored class: 'name' only for the distiller's proper_name; everything else descriptor."""
+    return "name" if alias_kind == "proper_name" else "descriptor"
 
 
 @dataclass(frozen=True)
@@ -94,7 +96,7 @@ class Resolution:
     key: str
     node_id: str
     minted: bool
-    via: str                  # exact_key | kind_refined | name_match | ambiguous | minted
+    via: str                  # exact_key | name_match | ambiguous | minted
     new_rows: list[AliasRow] = field(default_factory=list)
     refreshed: list[AliasRow] = field(default_factory=list)
     questions: list[Question] = field(default_factory=list)
@@ -136,7 +138,7 @@ class AliasIndex:
         row = self.node_key_row(node_id)
         return slug_text(row.alias_norm) if row else node_id
 
-    def live_names(self, alias_norm: str, now: datetime) -> list[AliasRow]:
+    def live_rows(self, alias_norm: str, now: datetime) -> list[AliasRow]:
         return [r for r in self.rows.values() if r.alias_norm == alias_norm and r.alias_class != "key"
                 and r.live(now)]
 
@@ -149,33 +151,25 @@ class AliasIndex:
 class CandidateAlias:
     text: str
     norm: str
-    cls: str
+    cls: str                  # name | descriptor (from the distiller's alias_kind)
     grounded_in: Optional[str]
+    is_key_name: bool = False
 
 
-def candidate_aliases(key: str, aliases: Iterable[str], prompt_quotes: list[tuple[str, str]],
-                      frequency: dict[str, TokenFrequency]) -> list[CandidateAlias]:
-    """The key's own name plus the writer's aliases, classified and checked for grounding.
-
-    ``prompt_quotes``: (source_id, quote) of verified chat_prompt evidence: Juniper's words.
-    ``frequency``: first-token document frequency in Juniper's prompts (aliases.alias_class).
-    """
-    from .aliases import first_token
-
+def candidate_aliases(key: str, key_alias_kind: Optional[str], aliases: Iterable[tuple[str, Optional[str]]],
+                      prompt_quotes: list[tuple[str, str]]) -> list[CandidateAlias]:
+    """The key's own name plus the writer's aliases, each with the distiller's class and a
+    grounding check against ``prompt_quotes`` ((source_id, quote) of Juniper's verified words)."""
     out: dict[str, CandidateAlias] = {}
-    for text in [slug_text(key), *aliases]:
+    for text, kind, is_key in [(key.partition(":")[2], key_alias_kind, True),
+                               *[(t, k, False) for t, k in aliases]]:
         norm = normalize_alias(text)
-        if not norm or norm in out or ":" in norm:
+        if not norm or norm in out:
             continue
         grounded = next((sid for sid, quote in prompt_quotes if alias_in_text(norm, quote)), None)
-        token = first_token(norm)
-        # The writer's own key name for the thing ("circe" for project:circe) is its proper
-        # name, however often Juniper says it. Live 2026-10-06: "circe", "chicago" and "space"
-        # are frequent in her prompts and were wrongly classed as relative descriptors.
-        is_key_name = norm == slug_text(key)
-        cls = "name" if is_key_name else alias_class(norm, frequency.get(token) if token else None)
-        out[norm] = CandidateAlias(text=str(text).strip() or norm, norm=norm, cls=cls,
-                                   grounded_in=f"chat_prompt:{grounded}" if grounded else None)
+        display = slug_text(key) if is_key else (str(text).strip() or norm)
+        out[norm] = CandidateAlias(text=display, norm=norm, cls=alias_class_for(kind),
+                                   grounded_in=f"chat_prompt:{grounded}" if grounded else None, is_key_name=is_key)
     return list(out.values())
 
 
@@ -200,7 +194,6 @@ def resolve_referent(
     proposed_by: str = "episode_writer",
 ) -> Resolution:
     kind = kind_of(key)
-    grounded = [c for c in candidates if c.grounded_in]
 
     def finish(res: Resolution) -> Resolution:
         _admit_aliases(res, kind, candidates, index, now=now, last_use=last_use, policy=policy,
@@ -211,37 +204,27 @@ def resolve_referent(
     if existing is not None:
         return finish(Resolution(key=key, node_id=existing.node_id, minted=False, via="exact_key"))
 
-    slug = key.partition(":")[2]
-    if kind in INTERCHANGEABLE_KINDS:
-        for other_kind in sorted(INTERCHANGEABLE_KINDS - {kind}):
-            other = index.key_row(f"{other_kind}:{slug}")
-            if other is not None and other.promotion_state in LIVE_STATES:
-                row = AliasRow(node_id=other.node_id, alias_norm=key, alias_text=key, alias_class="key",
-                               referent_kind=other.referent_kind, promotion_state=other.promotion_state,
-                               admitted_by="kind_refined", proposed_by=proposed_by)
-                index.add(row)
-                return finish(Resolution(key=key, node_id=other.node_id, minted=False, via="kind_refined",
-                                         new_rows=[row]))
-
-    names = {slug_text(key)} | {c.norm for c in grounded}
-    matched: dict[str, AliasRow] = {}
-    for norm in sorted(names):
-        for row in index.live_names(norm, now):
-            # A relative name ("my boss") never decides identity: who it points at changes.
-            # It can only collide with another node's name (-> a question), never resolve.
+    # Identity is decided by grounded proper names only, against other nodes' proper names.
+    proper = [c for c in candidates if c.cls == "name" and c.grounded_in]
+    hits: dict[str, set[str]] = {}
+    for cand in proper:
+        for row in index.live_rows(cand.norm, now):
             if row.alias_class == "name":
-                matched.setdefault(row.node_id, row)
-    same = [n for n in matched if compatible(kind, index.node_kind(n) or "")]
-    other = [n for n in matched if n not in same]
-    if len(same) == 1 and not other:
-        return finish(Resolution(key=key, node_id=same[0], minted=False, via="name_match"))
+                hits.setdefault(cand.norm, set()).add(row.node_id)
+    matched: set[str] = set().union(*hits.values()) if hits else set()
+    same_kind = {n for n in matched if index.node_kind(n) == kind}
+    key_name = next((c for c in proper if c.is_key_name), None)
+    # "person:taylor" + alias "Morgan" (on Morgan's node): the key's own proper name says a
+    # different thing than the alias does -- that is a question, not a merge.
+    contradicted = key_name is not None and hits.get(key_name.norm, set()) != same_kind
+    if len(same_kind) == 1 and matched == same_kind and not contradicted:
+        return finish(Resolution(key=key, node_id=next(iter(same_kind)), minted=False, via="name_match"))
 
     ambiguous = bool(matched)
     node_id = node_id_for_key(key) if not ambiguous else node_id_for_key(f"{key}|ambiguous")
-    state = "proposed" if ambiguous else "provisional"
     row = AliasRow(node_id=node_id, alias_norm=key, alias_text=key, alias_class="key", referent_kind=kind,
-                   promotion_state=state, admitted_by="ambiguous" if ambiguous else "minted",
-                   proposed_by=proposed_by)
+                   promotion_state="proposed" if ambiguous else "provisional",
+                   admitted_by="ambiguous" if ambiguous else "minted", proposed_by=proposed_by)
     index.add(row)
     res = Resolution(key=key, node_id=node_id, minted=True, via="ambiguous" if ambiguous else "minted",
                      new_rows=[row])
@@ -267,7 +250,7 @@ def _admit_aliases(res: Resolution, kind: str, candidates: list[CandidateAlias],
                 index.add(refreshed)
                 res.refreshed.append(refreshed)
             continue
-        elsewhere = [r for r in index.live_names(cand.norm, now) if r.node_id != res.node_id]
+        elsewhere = [r for r in index.live_rows(cand.norm, now) if r.node_id != res.node_id]
         if elsewhere:
             state, admitted = "proposed", "collision"
             # A node minted on the ambiguity path already asks "is X the same as Y".

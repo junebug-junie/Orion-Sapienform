@@ -149,7 +149,8 @@ async def _persist_referents(conn: Any, episode_id: str, result: ValidationResul
     inputs = [
         MemoryReferents(
             memory_id=m.memory_id, episode_id=episode_id, created_at=now, referents=list(m.referents),
-            aliases_by_key=dict(m.referent_aliases), prompt_quotes=episode_quotes,
+            aliases_by_key=dict(m.referent_aliases), name_kinds=dict(m.referent_name_kinds),
+            prompt_quotes=episode_quotes,
             own_prompt_quotes=[ev.quote for ev in m.evidence if ev.verified and ev.source_kind == "chat_prompt"],
         )
         for m in result.memories if m.referents

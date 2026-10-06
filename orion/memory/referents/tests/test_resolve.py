@@ -1,22 +1,16 @@
 """Referent resolution, alias admission and source_cooccurrence_v1. Pure, DB-free.
 
-Names and quotes are the live 2026-10-06 shapes (spec "Aliases the writer emitted"),
-reduced to what each rule needs.
+All people, places and phrases here are synthetic (the repository is public).
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from orion.memory.referents.aliases import (
-    TokenFrequency,
-    alias_class,
-    alias_in_text,
-    normalize_alias,
-    slug_text,
-)
+from orion.memory.referents.aliases import alias_in_text, normalize_alias, slug_text
 from orion.memory.referents.cooccurrence import (
     MAX_ACCEPTED_PER_MEMORY,
     POLICY,
@@ -30,151 +24,166 @@ from orion.memory.referents.resolve import (
     node_id_for_key,
     resolve_referent,
 )
+from orion.schemas.memory_episode import DistillReferentV1
 
 NOW = datetime(2026, 10, 6, 12, tzinfo=timezone.utc)
 ON = ReferentPolicy()
-# Live first-token frequencies in Juniper's 576 prompts (2026-10-06).
-FREQ = {t: TokenFrequency(n, 576) for t, n in {
-    "my": 46, "the": 155, "a": 133, "camera": 7, "inspur": 1, "agx-2": 1, "8x": 1, "hecate": 1,
-    "jackalope": 1, "joker": 2, "offsite": 2, "vincent": 1, "rachel": 1, "boss": 2, "circe": 1,
-}.items()}
+P, D = "proper_name", "descriptor"
 HECATE_QUOTE = ("p1", "I got us an Inspur NF5288M5 AGX-2 GPU that holds 8x smx2 gpus. We'll call it Hecate")
 
 
-def resolve(key, aliases, index, quotes=(HECATE_QUOTE,), policy=ON, last_use=NOW):
-    cands = candidate_aliases(key, aliases, list(quotes), FREQ)
-    return resolve_referent(key, cands, index, now=NOW, last_use=last_use, policy=policy)
+def resolve(key, aliases, index, quotes=(HECATE_QUOTE,), policy=ON, last_use=NOW, now=NOW, key_kind=P):
+    cands = candidate_aliases(key, key_kind, aliases, list(quotes))
+    return resolve_referent(key, cands, index, now=now, last_use=last_use, policy=policy)
 
 
 def states(res):
     return {r.alias_norm: (r.alias_class, r.promotion_state, r.admitted_by) for r in res.new_rows}
 
 
-# ── alias text rules ────────────────────────────────────────────────────────
+# ── text rules ──────────────────────────────────────────────────────────────
 
 
-def test_normalization_and_word_bounded_match():
-    assert normalize_alias("  “Jackalope  Bar”. ") == "jackalope  bar".replace("  ", " ")
-    assert slug_text("project:orion-camera") == "orion camera"
+def test_one_normalization_for_keys_and_aliases():
+    assert normalize_alias("  “Fairview,  Ohio”. ") == "fairview ohio"
+    assert slug_text("place:fairview-ohio") == "fairview ohio"
     assert alias_in_text("hecate", "We'll call it Hecate.")
-    assert not alias_in_text("hecate", "hecatessen")  # no substring identity
+    assert not alias_in_text("hecate", "hecatessen")  # word-bounded, no substring identity
 
 
-def test_a_thing_s_own_key_name_is_a_proper_name_however_often_juniper_says_it():
-    freq = {**FREQ, "circe": TokenFrequency(40, 576)}  # live: Juniper talks about Circe a lot
-    cands = {c.norm: c.cls for c in candidate_aliases("project:circe", ["circe box"], [], freq)}
-    assert cands == {"circe": "name", "circe box": "descriptor"}
-
-
-def test_descriptor_is_decided_by_frequency_in_juniper_s_prompts_not_a_word_list():
-    assert alias_class("my boss", FREQ["my"]) == "descriptor"
-    assert alias_class("camera", FREQ["camera"]) == "descriptor"
-    assert alias_class("inspur nf5288m5", FREQ["inspur"]) == "name"
-    assert alias_class("anything", None) == "name"  # no corpus evidence -> no expiry
+def test_unjudged_names_are_descriptors():
+    """Answers from before prompt v4 carry bare strings and no alias_kind."""
+    ref = DistillReferentV1.model_validate({"key": "person:morgan", "aliases": ["boss", {"text": "Morgan",
+                                                                                         "alias_kind": "proper_name"}]})
+    assert ref.alias_kind == D
+    assert [(a.text, a.alias_kind) for a in ref.aliases] == [("boss", D), ("Morgan", P)]
+    assert DistillReferentV1.model_validate({"key": "x:y", "alias_kind": "weird"}).alias_kind == D
 
 
 # ── alias_grounding_v1 ──────────────────────────────────────────────────────
 
 
 def test_grounded_names_are_usable_and_ungrounded_ones_are_not():
-    index = AliasIndex([])
-    res = resolve("project:hecate", ["Inspur NF5288M5", "AGX-2 GPU", "8x smx2 gpus", "the new server"], index)
+    res = resolve("project:hecate", [("Inspur NF5288M5", P), ("AGX-2 GPU", P), ("8x smx2 gpus", P),
+                                     ("the new server", D)], AliasIndex([]))
     got = states(res)
     assert res.via == "minted" and res.node_id == node_id_for_key("project:hecate")
     assert got["project:hecate"] == ("key", "provisional", "minted")
-    for name in ("hecate", "inspur nf5288m5", "agx-2 gpu", "8x smx2 gpus"):
+    for name in ("hecate", "inspur nf5288m5", "agx 2 gpu", "8x smx2 gpus"):
         assert got[name] == ("name", "provisional", "alias_grounding_v1"), name
-    # Orion's own phrase, never in Juniper's words: kept, but never resolves.
-    assert got["the new server"][1:] == ("proposed", "ungrounded")
+    assert got["the new server"] == ("descriptor", "proposed", "ungrounded")
 
 
 def test_the_grounding_kill_switch_flips_grounded_names_to_proposed():
-    res = resolve("project:hecate", ["Inspur NF5288M5"], AliasIndex([]),
+    res = resolve("project:hecate", [("Inspur NF5288M5", P)], AliasIndex([]),
                   policy=ReferentPolicy(grounding_auto_accept=False))
     assert states(res)["inspur nf5288m5"] == ("name", "proposed", "alias_grounding_v1_disabled")
 
 
-def test_a_grounded_name_resolves_a_later_key_to_the_same_node():
+def test_a_grounded_proper_name_resolves_a_later_key_to_the_same_node():
     index = AliasIndex([])
-    first = resolve("project:hecate", ["Inspur NF5288M5"], index)
+    first = resolve("project:hecate", [("Inspur NF5288M5", P)], index)
     later = resolve("project:inspur-nf5288m5", [], index)
     assert (later.via, later.node_id) == ("name_match", first.node_id)
 
 
 def test_an_ungrounded_name_never_resolves():
     index = AliasIndex([])
-    resolve("project:hecate", ["the new server"], index)
-    later = resolve("project:the-new-server", [], index, quotes=())
-    assert later.via == "minted" and later.node_id != node_id_for_key("project:hecate")
+    resolve("project:hecate", [("the new server", D)], index)
+    later = resolve("project:the-new-server", [], index, quotes=(("q", "the new server is loud"),))
+    assert later.node_id != node_id_for_key("project:hecate")
 
 
-# ── relative names: live as soon as said, 90-day expiry, refresh on reuse ──
+# ── review repro 1: a descriptor never decides identity ─────────────────────
 
 
-def test_a_relative_name_resolves_now_and_lapses_90_days_after_last_use():
+def test_the_same_descriptor_for_two_people_is_a_question_not_a_merge():
     index = AliasIndex([])
-    quote = ("p2", "my boss Rachel is coming to the offsite")
-    res = resolve("person:rachel", ["my boss"], index, quotes=[quote])
-    assert states(res)["my boss"][:2] == ("descriptor", "provisional")
-    row = index.rows[(res.node_id, "my boss")]
-    assert row.valid_until == NOW + timedelta(days=90)
-    assert index.live_names("my boss", NOW + timedelta(days=89))
-    assert not index.live_names("my boss", NOW + timedelta(days=91))
-    # Juniper says it again 60 days later: it lives 90 days past that use.
-    again = resolve("person:rachel", ["my boss"], index, quotes=[quote], last_use=NOW + timedelta(days=60))
-    assert again.refreshed and index.rows[(res.node_id, "my boss")].valid_until == NOW + timedelta(days=150)
-
-
-def test_a_collision_on_a_relative_name_becomes_a_question_never_a_merge():
-    index = AliasIndex([])
-    rachel = resolve("person:rachel", ["my boss"], index, quotes=[("p2", "my boss Rachel")])
-    dana = resolve("person:dana", ["my boss"], index, quotes=[("p3", "my boss Dana starts monday")])
-    # Dana's own key is unambiguous: she is a new, usable node. Only the relative name collides.
-    assert dana.via == "minted" and dana.node_id != rachel.node_id
-    assert states(dana)["my boss"][1:] == ("proposed", "collision")
-    (q,) = dana.questions
+    morgan = resolve("person:morgan", [("boss", D)], index, quotes=[("p1", "boss morgan wants the deck")])
+    taylor = resolve("person:taylor", [("boss", D)], index, quotes=[("p2", "boss taylor starts monday")])
+    assert taylor.via == "minted" and taylor.node_id != morgan.node_id
+    assert states(taylor)["boss"][1:] == ("proposed", "collision")
+    (q,) = taylor.questions
     assert (q.scope, q.answer_via, q.reason) == ("juniper", "conversation", "alias_collision")
-    assert set(q.node_ids) == {rachel.node_id, dana.node_id}
-    # Once Rachel's "my boss" has lapsed (90 days without use), it no longer collides.
-    later = AliasIndex(index.rows.values())
-    sam = resolve_referent("person:sam", candidate_aliases("person:sam", ["my boss"], [("p9", "my boss Sam")], FREQ),
-                           later, now=NOW + timedelta(days=91), last_use=NOW + timedelta(days=91), policy=ON)
-    assert states(sam)["my boss"][1:] == ("provisional", "alias_grounding_v1") and not sam.questions
 
 
-# ── identity: refinement, ambiguity ─────────────────────────────────────────
-
-
-def test_kind_refinement_files_the_same_thing_under_a_second_key():
+def test_a_misjudged_proper_name_still_cannot_override_the_key_s_own_name():
+    """Even if the distiller wrongly calls "boss" a proper name for both people, Taylor's own
+    grounded name says it is someone else: that is a question, never a merge."""
     index = AliasIndex([])
-    project = resolve("project:orion-hub", [], index, quotes=())
-    service = resolve("service:orion-hub", [], index, quotes=())
-    assert (service.via, service.node_id) == ("kind_refined", project.node_id)
-    assert index.key_row("service:orion-hub").node_id == project.node_id
+    morgan = resolve("person:morgan", [("boss", P)], index, quotes=[("p1", "boss morgan wants the deck")])
+    taylor = resolve("person:taylor", [("boss", P)], index, quotes=[("p2", "boss taylor starts monday")])
+    assert taylor.via == "ambiguous" and taylor.node_id != morgan.node_id
+    assert states(taylor)[f"person:taylor"][1] == "proposed"
+    assert taylor.questions[0].reason == "referent_identity"
 
 
-def test_a_name_on_two_nodes_mints_a_proposed_node_and_asks():
+# ── review repro 2: a descriptor-derived key never swallows a person ────────
+
+
+def test_a_descriptor_key_never_resolves_another_key():
     index = AliasIndex([])
-    a = resolve("person:sam-a", ["Sam"], index, quotes=[("p4", "Sam called")])
-    b_key = "person:sam-b"
-    # make "sam" live on a second node too (as Juniper confirming a second Sam would)
-    from dataclasses import replace
+    cousin = resolve("person:my-cousin", [], index, quotes=[("p", "my cousin called")], key_kind=D)
+    robin = resolve("person:robin", [("my cousin", D)], index, quotes=[("p", "my cousin robin called")])
+    assert robin.node_id != cousin.node_id and robin.via == "minted"
+    assert states(cousin)["my cousin"][0] == "descriptor"
+    assert states(robin)["my cousin"][1:] == ("proposed", "collision")
+    # and the other direction: a later descriptor-named key never lands on Robin
+    again = resolve("person:my-cousin-robin", [("Robin", D)], index, quotes=[("p", "my cousin robin")], key_kind=D)
+    assert again.node_id != robin.node_id
+
+
+# ── relative names: live at once, 90-day lapse, refresh, no silent second node ──
+
+
+def test_a_descriptor_lapses_90_days_after_last_use_and_is_refreshed_by_reuse():
+    index = AliasIndex([])
+    quote = ("p2", "my boss Morgan is coming to the retreat")
+    res = resolve("person:morgan", [("my boss", D)], index, quotes=[quote])
+    assert states(res)["my boss"][:2] == ("descriptor", "provisional")
+    assert index.rows[(res.node_id, "my boss")].valid_until == NOW + timedelta(days=90)
+    assert index.live_rows("my boss", NOW + timedelta(days=89))
+    assert not index.live_rows("my boss", NOW + timedelta(days=91))
+    again = resolve("person:morgan", [("my boss", D)], index, quotes=[quote], last_use=NOW + timedelta(days=60))
+    assert again.refreshed and index.rows[(res.node_id, "my boss")].valid_until == NOW + timedelta(days=150)
+    # After it lapses, a new boss gets the name without a question; Morgan keeps her node.
+    later = NOW + timedelta(days=200)
+    taylor = resolve("person:taylor", [("my boss", D)], index, quotes=[("p9", "my boss taylor")],
+                     now=later, last_use=later)
+    assert states(taylor)["my boss"][1:] == ("provisional", "alias_grounding_v1") and not taylor.questions
+    assert resolve("person:morgan", [], index, quotes=(), now=later).node_id == res.node_id
+
+
+def test_a_place_name_with_punctuation_never_splits_into_a_second_node():
+    index = AliasIndex([])
+    first = resolve("place:fairview", [("Fairview, Ohio", P)], index, quotes=[("p", "we drove to fairview, ohio")])
+    later = NOW + timedelta(days=100)  # proper names do not lapse
+    second = resolve("place:fairview-ohio", [("Fairview, Ohio", P)], index, quotes=[("q", "back in fairview, ohio")],
+                     now=later, last_use=later)
+    assert (second.via, second.node_id) == ("name_match", first.node_id)
+
+
+# ── ambiguity ───────────────────────────────────────────────────────────────
+
+
+def test_a_proper_name_on_two_nodes_mints_a_proposed_node_and_asks():
+    index = AliasIndex([])
+    a = resolve("person:sam-a", [("Sam", P)], index, quotes=[("p4", "Sam called")], key_kind=D)
     index.add(replace(index.rows[(a.node_id, "sam")], node_id="referent-other"))
     index.add(replace(index.node_key_row(a.node_id), node_id="referent-other", alias_norm="person:sam-c"))
-    res = resolve(b_key, ["Sam"], index, quotes=[("p5", "Sam is visiting")])
-    assert res.via == "ambiguous" and states(res)[b_key] == ("key", "proposed", "ambiguous")
+    res = resolve("person:sam-b", [("Sam", P)], index, quotes=[("p5", "Sam is visiting")], key_kind=D)
+    assert res.via == "ambiguous" and states(res)["person:sam-b"] == ("key", "proposed", "ambiguous")
     assert {tuple(sorted(q.node_ids)) for q in res.questions} == {
         tuple(sorted((res.node_id, a.node_id))), tuple(sorted((res.node_id, "referent-other")))}
-    # Grounded aliases of an unanswered node are not usable either.
     assert states(res)["sam"][1] == "proposed"
 
 
-def test_a_name_on_an_incompatible_kind_is_ambiguous():
+def test_the_same_proper_name_on_another_kind_is_ambiguous():
     index = AliasIndex([])
     resolve("place:circe", [], index, quotes=[("p6", "drive to circe")])
     res = resolve("project:circe", [], index, quotes=[("p7", "circe is rebooting")])
     assert res.via == "ambiguous"
-    assert res.questions[0].scope == "self"  # a project question Orion can investigate
+    assert res.questions[0].scope == "self"
 
 
 # ── source_cooccurrence_v1 ──────────────────────────────────────────────────
@@ -184,17 +193,18 @@ def ep(key, *names, state="provisional"):
     return EndpointV1(key=key, node_id=node_id_for_key(key), node_kind="entity", state=state, names=names)
 
 
-QUOTE = "Vincent and Rachel from the Austin offsite went to the Jackalope bar"
+QUOTE = "Quill and Morgan from the spring retreat went to the Lantern Pub"
+SELF = {node_id_for_key("person:juniper"), node_id_for_key("person:orion")}
 
 
-def claims(endpoints, *, accept=True, quotes=(QUOTE,), decided=None):
+def claims(endpoints, *, accept=True, quotes=(QUOTE,), decided=None, exclude=SELF):
     return cooccurrence_claims(memory_id="m1", endpoints=endpoints, prompt_quotes=list(quotes),
                                decided_targets=set() if decided is None else decided, accept=accept,
-                               recorded_at=NOW)
+                               recorded_at=NOW, exclude_node_ids=exclude)
 
 
 def test_things_named_in_one_quote_become_accepted_co_occurrences():
-    got = claims([ep("person:vincent", "vincent"), ep("event:austin-offsite", "offsite", "austin offsite"),
+    got = claims([ep("person:quill", "quill"), ep("event:spring-retreat", "retreat", "spring retreat"),
                   ep("person:juniper", "juniper")])
     assert len(got) == 1
     proposal, decision = got[0].proposal, got[0].decision
@@ -203,17 +213,17 @@ def test_things_named_in_one_quote_become_accepted_co_occurrences():
 
 
 def test_the_cooccurrence_kill_switch_leaves_proposals_only():
-    got = claims([ep("person:vincent", "vincent"), ep("place:jackalope-bar", "jackalope bar")], accept=False)
+    got = claims([ep("person:quill", "quill"), ep("place:lantern-pub", "lantern pub")], accept=False)
     assert len(got) == 1 and got[0].decision is None
 
 
 def test_an_unaccepted_endpoint_keeps_the_claim_proposed():
-    got = claims([ep("person:vincent", "vincent"), ep("place:jackalope-bar", "jackalope bar", state="proposed")])
+    got = claims([ep("person:quill", "quill"), ep("place:lantern-pub", "lantern pub", state="proposed")])
     assert got[0].decision is None
 
 
 def test_more_than_six_claims_from_one_memory_are_all_held_for_review():
-    names = ["vincent", "rachel", "austin", "offsite", "jackalope"]
+    names = ["quill", "morgan", "spring", "retreat", "lantern"]
     eps = [ep(f"person:p{i}", n) for i, n in enumerate(names)]  # 5 named -> 10 pairs
     got = claims(eps)
     assert len(got) == 10 > MAX_ACCEPTED_PER_MEMORY
@@ -224,7 +234,7 @@ def test_more_than_six_claims_from_one_memory_are_all_held_for_review():
 
 def test_a_second_memory_adds_a_proposal_not_a_second_decision():
     decided: set[str] = set()
-    eps = [ep("person:vincent", "vincent"), ep("place:jackalope-bar", "jackalope bar")]
+    eps = [ep("person:quill", "quill"), ep("place:lantern-pub", "lantern pub")]
     first = claims(eps, decided=decided)
     second = cooccurrence_claims(memory_id="m2", endpoints=eps, prompt_quotes=[QUOTE], decided_targets=decided,
                                  accept=True, recorded_at=NOW)
@@ -233,11 +243,15 @@ def test_a_second_memory_adds_a_proposal_not_a_second_decision():
 
 
 def test_names_in_different_quotes_do_not_co_occur():
-    got = claims([ep("person:vincent", "vincent"), ep("place:jackalope-bar", "jackalope bar")],
-                 quotes=("Vincent called", "we went to the Jackalope bar"))
+    got = claims([ep("person:quill", "quill"), ep("place:lantern-pub", "lantern pub")],
+                 quotes=("Quill called", "we went to the Lantern Pub"))
     assert got == []
 
 
-@pytest.mark.parametrize("excluded", ["person:juniper", "person:orion"])
-def test_juniper_and_orion_never_co_occur(excluded):
-    assert claims([ep(excluded, "vincent"), ep("person:vincent", "vincent")]) == []
+def test_juniper_and_orion_are_excluded_by_node_id_not_key():
+    """Review LOW 9: a second key resolved onto Juniper's node (e.g. by her proper name) is
+    still Juniper."""
+    juniper_node = node_id_for_key("person:juniper")
+    alias_of_juniper = EndpointV1(key="person:june", node_id=juniper_node, node_kind="entity",
+                                  state="provisional", names=("june",))
+    assert claims([alias_of_juniper, ep("person:quill", "quill")], quotes=("june and quill",)) == []

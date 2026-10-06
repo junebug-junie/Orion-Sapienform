@@ -77,80 +77,128 @@ There are three separate controllers (reflex shed, learned shed, swap guard). Th
 | C9 | The GPU/CPU heat rule fires on its own p95, so it is true about 5% of the time by construction. | `rules.py:203-224` | yes, 6 GPU + 4 CPU |
 | C10 | Three meanings of "no reading": `thermal_gate` allows, the swap guard blocks, hardware-watch sheds. One failed Postgres query counts as unreadable, and through the latch that lasts the whole incident. The pool and the watcher read the cabinet from different paths. | `thermal_gate.py:94-109`; `guards.py:47-48`; `watcher.py:285-287` | yes, 10-03 |
 | C11 | An operator resolve snoozes **every** open reason for the rule for 1 h, including `device_offline`. A real failure in that hour is silent. | `watcher.py:222-225,249-250`; `store.py:79-82` | no |
-| C12 | The pool's `_open_ac_incidents` never expires. A lost "resolved" event leaves the learned shed refused as `reflex_active` until the pool restarts. A heat incident whose sensor dies never resolves. | `runtime.py:660-678`; `watcher.py:99,259`; `rules.py:205,226` | no |
+| C12 | The pool's `_open_ac_incidents` (removed by D2) never expires. A lost "resolved" event leaves the learned shed refused as `reflex_active` until the pool restarts. A heat incident whose sensor dies never resolves. | `runtime.py:660-678`; `watcher.py:99,259`; `rules.py:205,226` | no |
 | C13 | The swap guard starts up in the "hot" state. | `guards.py:28` | no (cosmetic) |
 | C14 | **Nobody has measured whether shedding lowers cabinet temperature at all.** The whole mechanism is untested against its own goal. | none | n/a |
 
 ## Design
 
-### D1. One owner for "how hot is the cabinet": `cabinet_heat_state`
+### D1. One owner for "how hot is the cabinet": extend `orion/autonomy/cabinet_heat.py`
 
-A single pure function in `orion/hardware_watch/rules.py`, the existing shared home of `cabinet_rise_c`. Every consumer imports it: hardware-watch, Orion's learned shed, the pool swap guard and `thermal_gate`.
+The owner already exists:
+- `read_cabinet_heat()` / `CabinetHeatReading` in `orion/autonomy/cabinet_heat.py`;
+- built on `hysteretic_thermal_state()` and the `ThermalState` names `normal | elevated | hot | unknown` (`orion/autonomy/thermal_gate.py:41`);
+- plus the shared `cabinet_rise_c` (`orion/hardware_watch/rules.py`).
 
-```text
-cabinet_heat_state(readings, now, cfg) -> CabinetHeat{
-  state: "ok" | "warm" | "hot" | "unknown",
-  temp_c, rise_c_per_15m, minutes_to_hot (projection, None if not rising),
-  reading_age_sec
-}
-ok      temp < warm_c - hysteresis_c (on the way down) or < warm_c (on the way up)
-warm    temp ≥ warm_c, OR rising AND minutes_to_hot ≤ lookahead_min
-hot     temp ≥ hot_c
-unknown no reading younger than grace_sec (default 300 s; one failed query does NOT make it unknown)
-```
+Do not add a parallel function. Extend `CabinetHeatReading` with:
+- `minutes_to_hot`: linear projection from the 15-min rise; None if not rising;
+- `reading_age_sec`.
 
-- `warm_c = 29.5` (today's `DEFAULT_ELEVATED_C`).
-- `hot_c = 32.0` (today's swap-guard line).
-- `hysteresis_c = 1.0`.
+Make every consumer read it:
+- hardware-watch (it replaces `shed_verdict`);
+- the pool swap guard (`services/orion-gpu-pool/app/guards.py`, today a private copy at 32/30.5°C);
+- Orion's learned shed (already does).
+
+The state names stay as they are, so these existing consumers keep working unchanged:
+- `orion-thought` `visual_chain.py` / `visual_steps.py`;
+- `orion/feedback/world_settlement.py`;
+- `orion/schemas/reverie_visual.py`.
+
+Thresholds stay where they live today:
+- `elevated` at 29.5°C, from `DEFAULT_ELEVATED_C`;
+- `hot` at 32°C, from `thermal_gate`'s hot line, which the swap guard then reads instead of its own copy;
+- `hysteresis_c = 1.0`;
 - `lookahead_min = 20`.
 
-All four are Juniper's call (Q1). They are named and stored in one place instead of three.
+What "unknown" means is decided **once**, here:
+- Hold the last known state for `grace_sec` (default 300 s). One failed query does **not** make it unknown.
+- After grace, unknown counts as `elevated`. It becomes `hot` only if the AC also reads low (D5): "the sensor is dead and the AC looks dead" is the one case where we assume the worst.
+- If *every* reading is gone (AC plug and cabinet both silent, as on 10-03, when Z-Wave or sql-writer is down), it is a monitoring outage. The response is an alert plus the `elevated` tier, not `hot`.
 
-What "unknown" means is decided **once**, here: hold the last known state for `grace_sec`, then treat it as `warm`, never as `hot`. A dead sensor in a cool room limits the damage to one shed tier. It does not cause a full shed.
+**Live calibration fact (7 days to 10-06, 19,197 readings):** the cabinet was at or above 29.5°C for **34%** of readings and at or above 32°C for **3%**. The module's own 09-29 docstring said about 65%; that figure is now stale. "Elevated" is a common daily state, not an emergency. That drives D2.
 
-### D2. Shed on cabinet heat, with tiers, re-evaluated every tick, no latch
+### D2. Two layers on the existing shed board: the reflex owns `hot`, Orion owns `elevated`
 
-| Cabinet state | Pool behavior |
-|---|---|
-| ok | nothing held back |
-| warm | hold back `background` work; block gpu2 swap loads |
-| hot | also hold back `system`; still never `interactive`/`urgent`/human-turn |
-| unknown (past grace) | same as warm |
+The pool already has a fail-open shed signal board (`orion/gpu_pool/shed.py`):
+- signals are `(reason, source_id, detail, valid_until)`;
+- a signal past `valid_until` counts as absent;
+- blocks are the union of active reasons;
+- `interactive`/`urgent` are never shed.
 
-- The shed is a **level**, recomputed every watcher tick from `cabinet_heat_state`.
-- Release uses the hysteresis in D1. It is not tied to any incident's lifecycle. This removes C2 and C3.
-- The shed no longer requires an open cooling incident. Heat alone sheds (fixes C1, the hot-day direction).
+Reuse it. No new transport.
 
-### D3. Held-back requests are refused at once, not queued to their deadline
+| Cabinet state | Reflex (hardware-watch) | Orion's learned shed (D8) |
+|---|---|---|
+| normal | no signal | not eligible |
+| elevated | no shed; blocks gpu2 swap loads (guard) | **eligible**: Orion decides whether to hold back `background` |
+| hot | signal `cabinet_hot` → blocks `background` + `system` | not needed (reflex covers it) |
+| unknown, past grace | signal `cabinet_unknown` → blocks `background` (→ `cabinet_hot` if AC also low) | eligible |
 
-- When a request's priority is shed, the pool returns `Unavailable("shed:<state>")` right away.
-- The caller's existing fallback path runs immediately:
-  - orion-mind fails open with no mind coloring;
-  - memory annotation falls back to regex;
-  - background turns re-queue through durable runs per `feedback_retries_go_on_durable_runs`.
-- This replaces the "keep place in line + keep deadline" behavior (C5).
-- A durable-run hold already granted is not killed; it simply gets no new work placed on it.
+- **Why split it this way.** "Elevated" holds 34% of the time. A reflex that sheds background a third of the week would starve Orion's background cognition, and it would make Orion's learned action a permanent no-op: a lower-precedence reason can only add blocks (`shed.py:14-16`), so it would never get the chance to act.
+- **Division of labor:**
+  - the reflex handles real danger (`hot`, sensor loss) and needs no judgment;
+  - the elevated band, where shedding is a trade-off, belongs to Orion's learned action;
+  - D11 measures whether shedding actually cools anything.
+
+  This keeps the agency the attend-to-act design intended (`docs/superpowers/specs/2026-09-29-attend-to-act-loop-design.md`, A1) and removes the redundancy.
+- **Re-sent every tick, no latch.** hardware-watch re-sends its signal every tick with `valid_until = now + 3 × tick`. When the state drops (with hysteresis), it stops sending and the signal expires. This replaces the incident-scoped latch (C2, C3).
+  - If the watcher dies, the shed lapses within about 90 s (fail-open), matching the board's own design.
+- **New reasons** in `shed.py`:
+  - `cabinet_hot` (precedence 0, blocks background + system);
+  - `cabinet_unknown` (precedence 0, blocks background).
+- **Retire `cooling_incident` as a shed reason completely**, not as a partial exclusion (CLAUDE.md "retire the old one completely"). Re-key the logic that reads it from "AC incident open" to "reflex signal active":
+  - `services/orion-gpu-pool/app/runtime.py:637-650` signal handling;
+  - `runtime.py:660-678` `_open_ac_incidents` / `reflex_active`;
+  - `preempt_by_reflex`.
+
+  The `_open_ac_incidents` set and its no-expiry bug (C12) go away with it.
+- Heat alone sheds; no open incident is needed. This fixes C1 in the hot-day direction.
+
+### D3. One-shot requests are refused at once; durable work keeps waiting
+
+Refusing everything at once would break durable runs:
+- `shed:*` is not in `RUN_TERMINAL_PREFIXES` (`services/orion-durable-runs/app/pool_hold.py:65`), so a refused hold is re-requested immediately (`admission_runtime.py:428-446`). That is a tight loop that leaves a lease row per attempt.
+- `on_unavailable: backlog` classes are *meant* to wait.
+
+So the change is scoped:
+- **One-shot requests** (`kind == "request"`, no `hold_lease_id`, and a class whose `on_unavailable` is not `backlog`) get `Unavailable("shed:<reason>")` as soon as they would be shed. Their caller's fallback runs at once:
+  - orion-mind fails open;
+  - memory annotation uses its regex fallback;
+  - cortex-exec background metacog turns end and are re-driven by their own schedulers.
+
+  This removes tonight's 45–700 s waits (C5).
+- **Durable-run holds** and **backlog-class leases** keep today's queued-under-shed behavior. Children of an already granted hold keep being granted (`orion/gpu_pool/scheduler.py:392-394`, the `hold_lease_id is None` filter), so a run in progress is never cut off mid-run.
+- A test covers each class: a one-shot request refused at once; a durable hold stays queued; a backlog lease stays backlogged; a granted hold's child is still granted under shed.
 
 ### D4. Human-turn work never sheds
 
-- Add explicit routes for human-critical-path calls, rather than overloading `system`.
-- The route table is already the contract between caller and pool, and the gateway refuses unknown routes:
+- Add explicit routes for calls on a human's critical path, rather than overloading `system`:
   - `metacog_turn: {class: metacog, priority: interactive}`, used by orion-mind when its request carries a Hub turn;
-  - `quick_turn: {class: fast, priority: interactive}`, used by cortex-orch memory annotation on a live turn.
-- Give `agent` and `quick` explicit priorities. They need a decision, not the `system` default (Q4).
-- Change the `RouteSpec.priority` default from `system` to **required**, so every route states its priority (C6).
+  - `quick_turn: {class: fast, priority: interactive}`, used by cortex-orch memory annotation on a live turn;
+  - `agent_turn` per Q4.
+- **There are two route registries, and both must change together:**
+  - `config/gpu_pool.yaml` routes (the pool);
+  - `orion/llm/routes.py` `ACCEPTED_LLM_ROUTES` plus `LLM_ROUTE_DISPLAY_ORDER`. The import-time assert at `:138` requires every accepted route to be listed. This registry is used by the Hub client (`llm_gateway_client.py:35`), orion-actions, cortex-exec route override (`executor.py:2059,4296`) and `route_view`.
+
+  Also update the golden fixture `orion/gpu_pool/tests/fixtures_routes_compat_golden.json` and `test_route_view.py`.
+- Give `agent` and `quick` explicit priorities in the YAML (C6).
+- **Do not** make `RouteSpec.priority` a required model field. The shorthand validator (`orion/gpu_pool/config.py:214-219`, `agent: agent` → `{"class": "agent"}`) and tests that build `RouteSpec` without a priority (`services/orion-llm-gateway/tests/test_lane_senders.py:18-20`) would break.
+  - Instead, add a config-load **test** that every route in `config/gpu_pool.yaml` is written in long form with an explicit priority. The gate lives in CI, and the model stays compatible.
 
 ### D5. AC power becomes a diagnosis, not a trigger
 
-- The cooling rule opens an incident only when **AC looks low AND the cabinet is warming** (`cabinet_heat_state` in warm/hot, or rising).
-- "AC looks low" means mean watts over a **15-minute** window below a duty-cycle floor, rather than 180 s under 150 W. On 10-06 the healthy AC averaged 187–375 W per 10 minutes with the compressor cycling. A dead AC is about 100 W flat.
+- **When an incident opens.** The cooling rule opens an incident only when **the AC looks low AND the cabinet is `elevated` or `hot`, or projected to reach `hot` within the lookahead**. There is no bare "rising" arm, so the C2 problem does not come back on the alert path.
+- **What "AC looks low" means.** Mean watts over a **15-minute** window below a duty-cycle floor, rather than 180 s under 150 W.
+  - On 10-06 the healthy AC averaged 187–375 W per 10 minutes while the compressor cycled.
+  - A dead AC is about 100 W flat.
   - Floor proposal: mean < 140 W over 15 min. Replay will validate it (Q2).
-- `device_offline` / `no_samples` still open an incident (a dead plug is real), but they **alert only**. Shedding comes solely from D2.
-- Open and resolve get separate thresholds (hysteresis), which ends the flapping (C4).
+- **How "unknown" counts here.** An `unknown` cabinet counts as elevated for this test, so "AC low + sensor dead" still opens an incident and escalates the reflex to `cabinet_hot` (D1).
+- **Dead plug.** `device_offline` / `no_samples` still open an incident (a dead plug is real), but they **alert only**. Shedding comes from D2's cabinet state alone.
+- **No flapping.** Open and resolve get separate thresholds: open below the floor for 15 min; resolve at or above 1.5× the floor for 15 min. This ends the flapping (C4).
 
 ### D6. Alerts and investigations deduplicate per rule and subject across a window
 
-- The email dedupe key becomes `cooling:<subject>:<window-bucket>` (default 6 h), not per incident ID.
+- The email dedupe becomes a **sliding** window per `rule+subject` (default 6 h): no alert if one was sent for the same rule and subject in the last 6 h. It is no longer keyed per incident ID.
 - The urgent investigation is requested at most once per rule and subject per window. It is **not** requested for `gpu_heat`/`cpu_heat` p95 outliers (C8, C9).
 - Urgent work requested by a cooling incident cannot trigger a gpu2 swap load while the cabinet is warm or hot (C8).
 
@@ -161,15 +209,19 @@ What "unknown" means is decided **once**, here: hold the last known state for `g
 - The trailing p95 is kept as an *annotation* on the incident ("this card is 22°C above its usual"), not as a trigger (C9).
 - A heat incident whose sensor has gone silent for more than 15 min resolves as `sensor_lost`, so it cannot block anything indefinitely (C12).
 
-### D8. Orion's learned shed: fix the eligibility inversions
+### D8. PROPOSAL (autonomy change): Orion's learned shed owns the elevated band
 
-In `self_shed.py`:
-- eligible when `cabinet_heat_state` is warm **or hot** (removes the `!= "elevated"` refusal);
-- blocked only by an open **cooling** incident (the reflex owns the AC-failure case), as its own docstring already says (C7).
+In `orion/autonomy/self_shed.py`:
+- Eligible when the cabinet is `elevated` or `unknown`, and not otherwise. At `hot` the reflex already blocks background, so Orion's signal would add nothing.
+- Drop the `cabinet_not_rising` requirement. In the elevated band, the decision belongs to Orion's attend-to-act loop, not a fixed rise threshold.
+- Blocked only while the reflex's own signal is active (`cabinet_hot`/`cabinet_unknown`), not by *any* incident (`self_shed.py:130`, C7). Junk heat incidents can no longer disable it.
 
-Its 0.5°C rise threshold becomes the D1 projection. It shares one definition with the reflex, per the existing intent in `cabinet_rise_c`'s docstring.
-
-The pool's `_open_ac_incidents` gets a TTL refreshed by the watcher's existing per-tick publish of open incidents. A missed "resolved" event then self-heals within one refresh period (C12).
+Proposal-mode block (CLAUDE.md §0A):
+- **Capability:** Orion gains a real, frequently reachable action: holding back its own background GPU work when the cabinet is elevated (34% of the week). Today that action is unreachable (0 rows ever).
+- **Data touched:** `gpu_pool_orion_shed`, `substrate_world_action_episodes`. No private content.
+- **Proof it works:** rows appear in both tables on elevated days, and the D11 report shows cabinet ΔT per Orion-initiated shed.
+- **Dangerous failure:** Orion holds background work back for long stretches, starving reverie, journal and curiosity on warm days. Mitigation: the board's `valid_until` caps every signal, and the pool reports how long background work was blocked per day.
+- **Rollback:** `GPU_POOL_ORION_SHED_ENABLED` (existing RPC gate) or a revert of the eligibility change.
 
 ### D9. Operator resolve snoozes only the reason that was resolved
 
@@ -178,7 +230,9 @@ The pool's `_open_ac_incidents` gets a TTL refreshed by the watcher's existing p
 
 ### D10. Swap guard starts "unknown", not "hot"
 
-It uses `cabinet_heat_state` like everyone else (C13).
+It reads `CabinetHeatReading` like everyone else, and starts as `unknown` with the D1 grace rule (C13).
+
+Today the "unknown = hot" behavior comes from two things together: the start-up value `hot` (`guards.py:28`), and the state not updating while a reading is degraded (`guards.py:47-48` returns `degraded:`).
 
 ### D11. Measure whether shedding works (C14)
 
@@ -194,42 +248,60 @@ If shedding background work never measurably lowers cabinet temperature, the she
 
 ## Missing questions (for Juniper)
 
-1. **Thresholds.**
-   - Is 29.5°C the right "start holding back background work" line, and 32°C the "also hold back system work" line? On 10-04/05 a 29.5°C warm line could have held back background GPU work for up to ~19 h each day (hourly max; time actually above the line is UNVERIFIED until replay). Is that the behavior you want, or is the real danger line higher (V100 intake is rated to about 35°C)? I recommend keeping 29.5/32 and letting D11 tell us within a week whether shedding even moves the needle.
+1. **Thresholds and who acts where.**
+   - The cabinet is at or above 29.5°C for **34%** of the week, and at or above 32°C for **3%**.
+   - Proposed:
+     - the reflex sheds only at `hot` (≥ 32°C) or on sensor loss;
+     - the elevated band (29.5–32°C) is Orion's to act in (D2/D8).
+   - Alternative: the reflex also sheds background at elevated. That holds background back about a third of the week, and Orion's learned action becomes dead code that should be retired.
+   - Is 32°C the real "must act" line? V100 intake is rated to about 35°C. I recommend 32°C, and letting D11 show within a week whether shedding moves the temperature at all.
    - Lookahead 20 min, hysteresis 1°C: confirm, or let replay pick.
 2. **AC-low floor.** Mean < 140 W over 15 min, validated by replay. OK to let replay set the exact number?
 3. **CPU ceiling.** What fixed CPU temperature (`temp_c_max`) should alert? circe ran 41–62°C during its incidents. I propose 90°C, typical Xeon throttle territory, pending the actual CPU model on each host.
 4. **`agent` and `quick` priority.** Hub Agent mode and the Hub default `quick` route both carry human turns, but also background callers. Split them like D4 (`agent_turn`), or make both `interactive`? I recommend splitting. It keeps background agent work sheddable.
-5. **Urgent investigations on cooling.** Keep at most one per 6 h window (D6), or drop them entirely and rely on the alert? The 10-06 one timed out without a conclusion. I recommend keeping one per window, because a real AC failure warrants a look.
+5. **Approve D8** (proposal mode: Orion's learned shed becomes reachable in the elevated band)?
+6. **Urgent investigations on cooling.** Keep at most one per 6 h window (D6), or drop them entirely and rely on the alert? The 10-06 one timed out without a conclusion. I recommend keeping one per window, because a real AC failure warrants a look.
 
 ## Proposed schema / API changes
 
-- `orion/hardware_watch/rules.py`: new `CabinetHeat`, `cabinet_heat_state()`, `CabinetHeatConfig`.
-  - Remove the incident-scoped `shed_verdict`.
-  - `cabinet_rise_c` stays as the internal helper.
-- `orion/gpu_pool/config.py`: `RouteSpec.priority` becomes required. No default.
-- `config/gpu_pool.yaml`: new routes `metacog_turn`, `quick_turn` (+ `agent_turn` per Q4); explicit priorities on every route.
-- Pool shed result: `Unavailable("shed:warm" | "shed:hot")` replaces the queued `Shed` decision. Check `orion/schemas/` for any `gpu_pool` event schema carrying shed reasons; additive reason values only.
-- `hardware_watch_incident`: add `alert_dedupe_bucket` (text) and `snooze_reason` (text). Additive migration; no backfill needed.
-- Bus: the existing `orion:hardware_watch:*` incident events gain `heat_state` in the payload. Additive.
-  - Consumers are on `extra="ignore"` or `forbid`? Check per `feedback_additive_schema_fields_are_a_consumer_first_migration_on_forbid_models` before shipping.
+- `orion/autonomy/cabinet_heat.py`:
+  - `CabinetHeatReading` gains `minutes_to_hot` and `reading_age_sec`;
+  - `read_cabinet_heat` gains the grace and "unknown + AC low → hot" rules;
+  - `ThermalState` names are unchanged.
+- `orion/hardware_watch/rules.py`:
+  - remove the incident-scoped `shed_verdict`;
+  - the cooling open/resolve rules per D5;
+  - `cabinet_rise_c` stays.
+- `orion/gpu_pool/shed.py`:
+  - new reasons `cabinet_hot` and `cabinet_unknown`, both precedence 0;
+  - retire `cooling_incident`.
+
+  Check whether the shed-signal RPC/bus payload validates reason names against a schema in `orion/schemas/`. If so, update the schema and registry (CLAUDE.md §6). Also check consumers of shed events for `extra="forbid"` (`feedback_additive_schema_fields_are_a_consumer_first_migration_on_forbid_models`).
+- `orion/gpu_pool/scheduler.py`: a one-shot shed request yields `Unavailable("shed:<reason>")`. Durable holds and backlog classes are unchanged (D3).
+- Routes (D4):
+  - `config/gpu_pool.yaml` gets `metacog_turn`, `quick_turn` (+ `agent_turn` per Q4) and long-form explicit priorities for every route;
+  - `orion/llm/routes.py` `ACCEPTED_LLM_ROUTES` + `LLM_ROUTE_DISPLAY_ORDER`;
+  - the golden fixture `orion/gpu_pool/tests/fixtures_routes_compat_golden.json`;
+  - `RouteSpec` model unchanged.
+- `hardware_watch_incident`: add `snooze_reason` (text). Additive migration. The alert dedupe is a query over `alert_sent_at` by rule+subject, so it needs no new column.
 - Env:
-  - new `HARDWARE_WATCH_WARM_C`, `HARDWARE_WATCH_HOT_C`, `HARDWARE_WATCH_HEAT_HYSTERESIS_C`, `HARDWARE_WATCH_HEAT_LOOKAHEAD_MIN`, `HARDWARE_WATCH_READING_GRACE_SEC`, `HARDWARE_WATCH_AC_LOW_MEAN_W`, `HARDWARE_WATCH_AC_LOW_WINDOW_SEC`, `HARDWARE_WATCH_ALERT_DEDUPE_WINDOW_SEC`;
+  - new `HARDWARE_WATCH_READING_GRACE_SEC`, `HARDWARE_WATCH_HEAT_LOOKAHEAD_MIN`, `HARDWARE_WATCH_AC_LOW_MEAN_W`, `HARDWARE_WATCH_AC_LOW_WINDOW_SEC`, `HARDWARE_WATCH_ALERT_DEDUPE_WINDOW_SEC`, `HARDWARE_WATCH_HEAT_CONTROLLER`;
   - retire `HARDWARE_WATCH_SHED_RISE_C`;
-  - `.env_example` and local `.env` synced in the same PR (CLAUDE.md §7);
-  - the pool and `thermal_gate` read the same keys, or receive the state over the bus. Pick one at implementation and document it. No second copy of the thresholds.
+  - temperature lines stay in `thermal_gate` (one copy), and the swap guard's private 32/30.5 constants are removed;
+  - `.env_example` and local `.env` synced in the same PR (CLAUDE.md §7).
 
 ## Files likely to touch
 
+- `orion/autonomy/{cabinet_heat.py,thermal_gate.py,self_shed.py}`
 - `orion/hardware_watch/rules.py`, `services/orion-hardware-watch/app/{watcher.py,store.py,settings.py}`, `.env_example`, `README.md`, `evals/run_rules_replay_eval.py`
-- `orion/gpu_pool/{scheduler.py,config.py}`, `config/gpu_pool.yaml`, `services/orion-gpu-pool/app/{guards.py,runtime.py}`
-- `orion/autonomy/{self_shed.py,thermal_gate.py}`
-- `services/orion-mind/app/llm_client.py` (+ settings: turn route); `services/orion-cortex-orch/.../memory_extractor.py` (turn route)
+- `orion/gpu_pool/{shed.py,scheduler.py}`, `config/gpu_pool.yaml`, `services/orion-gpu-pool/app/{guards.py,runtime.py}`
+- `orion/llm/routes.py`, `orion/gpu_pool/tests/fixtures_routes_compat_golden.json`, `test_route_view.py`
+- `services/orion-mind/app/llm_client.py` (+ settings: turn route); cortex-orch `memory_extractor.py` (turn route)
 - tests under each service; `services/orion-hardware-watch/evals/`
 
 ## Non-goals
 
-- No change to the alert transport (in-app + email), the urgent-curiosity runner, or durable runs.
+- No change to the alert transport (in-app + email), the urgent-curiosity runner, or durable runs' refusal handling (D3 is scoped to avoid it).
 - No AC or Z-Wave control (Orion does not switch the AC).
 - No new service. The controller stays inside hardware-watch, and the pool remains the only thing that grants GPUs.
 - No change to GPU-pool scheduling beyond the shed path and the route priorities.
@@ -238,25 +310,27 @@ If shedding background work never measurably lowers cabinet temperature, the she
 
 1. **7-day replay gate (the deciding test).** Feed the real `home_cooling_sample` and `orion_biometrics_summary` rows from 2026-09-29 → 2026-10-06 through the new rules. Assert, hour by hour:
    - **10-06 00:00–04:00:** no shed, no cooling incident, no email.
-   - **10-04 14:00–17:00 and 10-05 14:00–19:00:** background shed active (cabinet ≥ 29.5°C).
-   - **10-03 21:14 `no_samples`:** an alert fires, and the shed is at most the warm tier, released as soon as readings resume.
+   - **Hours with cabinet ≥ 32°C on 10-04/10-05:** reflex `cabinet_hot` active. **Hours at 29.5–32°C:** no reflex shed, and Orion's learned shed reports *eligible* (whether it acts is its own decision).
+   - **10-03 21:14 `no_samples`:** an alert fires, the shed is at most `cabinet_unknown` (background only), and it lapses within 3 ticks of readings resuming.
    - **gpu_heat:** zero incidents for 73–80°C readings.
    - **emails:** at most one per rule+subject per 6 h.
 
    The replay eval (`run_rules_replay_eval.py`) is extended rather than rewritten. Fixture rows are exported to the test dir by a script, so the run is deterministic.
 2. **Unit:**
-   - `cabinet_heat_state` boundaries, hysteresis and grace;
-   - D3 immediate `Unavailable`;
+   - `read_cabinet_heat` boundaries, hysteresis, grace, and unknown + AC-low → hot;
+   - D3: a one-shot request refused at once; a durable hold stays queued; a backlog lease stays backlogged; a granted hold's child is still granted;
+   - D2: a signal lapses after `valid_until` when the watcher stops sending;
    - D4 every route has an explicit priority (a config-load test fails on a missing one);
-   - D8 learned-shed eligibility on hot and on a non-cooling incident.
+   - D8: learned shed eligible at elevated/unknown, not at normal/hot, and not blocked by a gpu_heat incident.
 3. **Live after deploy:**
    - next cool night: `hardware_watch_incident` has no `low_power` row and metacog grants never drop to 0;
-   - next warm afternoon: a `shed:warm` decision appears, and orion-mind on Hub turns is still granted (`gpu_pool_leases` holder `orion-mind`, `granted_at` not null).
+   - next afternoon above 32°C: a `cabinet_hot` signal appears, and orion-mind on Hub turns is still granted (`gpu_pool_leases` holder `orion-mind`, `granted_at` not null);
+   - first elevated afternoon: `gpu_pool_orion_shed` gets its first row, or the eligibility snapshot shows why not.
 4. **D11 report** shows cabinet ΔT after shed for at least 3 shed episodes. If ΔT ≈ 0, the follow-up is to drop the shed tier, not to tune it.
 
 ## Rollback
 
-- D2/D5 go behind `HARDWARE_WATCH_HEAT_CONTROLLER=v2`. Setting `v1` restores today's rules. The flag ships **on** (`feedback_always_ship_with_flags_on`).
+- D2/D5 go behind `HARDWARE_WATCH_HEAT_CONTROLLER=v2`. Setting `v1` restores today's rules, including the `cooling_incident` reason, which stays in code until v2 has run clean for a week. Then delete it. The flag ships **on** (`feedback_always_ship_with_flags_on`).
 - D3 and D4 are independent pool/config changes, each a plain revert.
 - The schema additions are additive columns; leave them in place on rollback.
 
@@ -264,9 +338,10 @@ If shedding background work never measurably lowers cabinet temperature, the she
 
 Ship in one PR, in this order inside it:
 1. Export the replay fixtures and write the failing 7-day replay assertions. They must fail on today's code for the cool-night and hot-day reasons above.
-2. `cabinet_heat_state` (D1) + level shed (D2) + AC-as-diagnosis (D5) → the replay passes.
-3. Immediate refusal (D3), turn routes (D4).
-4. Dedupe (D6), heat ceilings (D7), learned-shed eligibility (D8), snooze (D9), guard init (D10).
-5. D11 reducer + report.
+2. Extend `read_cabinet_heat` (D1) + per-tick shed signals (D2) + AC-as-diagnosis (D5) → the replay passes.
+3. Scoped immediate refusal (D3), turn routes in both registries (D4).
+4. Dedupe (D6), heat ceilings (D7), snooze (D9), guard init (D10).
+5. D8 only after Juniper approves it (proposal mode).
+6. D11 reducer + report.
 
 Deploy hardware-watch, gpu-pool, llm-gateway (routes), orion-mind and cortex-orch together; the route names must exist before callers use them. Deploy from the primary checkout on main after merge (`feedback_worktree_deploys_can_pin_a_worktree_as_production`).

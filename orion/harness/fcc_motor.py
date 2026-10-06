@@ -1119,10 +1119,16 @@ async def run_fcc_turn(
         )
         if warm_turn is not None:
             outcome: Dict[str, Any] = {"retry_spawn": False}
-            async for frame in _drive_fcc_turn(
-                io=_WarmTurnIO(warm_turn, prompt), outcome=outcome, mcp_config_path=None, **drive_kwargs
-            ):
-                yield frame
+            try:
+                async for frame in _drive_fcc_turn(
+                    io=_WarmTurnIO(warm_turn, prompt), outcome=outcome, mcp_config_path=None, **drive_kwargs
+                ):
+                    yield frame
+            finally:
+                # Idempotent. Covers a failure/cancel before _drive_fcc_turn's own
+                # try (stamper baseline, turn lock): without it the slot stays busy
+                # forever with the turn's lease still bound on the relay.
+                await warm_turn.release()
             if not outcome["retry_spawn"]:
                 return
             fallback_reason = "warm_process_died_before_first_event"

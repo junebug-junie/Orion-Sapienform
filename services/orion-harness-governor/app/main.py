@@ -189,7 +189,13 @@ def _lane_alive(task: "asyncio.Task | None") -> bool | None:
 
 def _warm_pool_status() -> dict | None:
     pool = get_warm_pool()
-    return pool.status() if pool is not None else None
+    if pool is not None:
+        return pool.status()
+    from orion.harness import fcc_warm_pool
+
+    if fcc_warm_pool.LAST_START_ERROR:
+        return {"running": False, "start_error": fcc_warm_pool.LAST_START_ERROR}
+    return None
 
 
 @app.get("/health")

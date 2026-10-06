@@ -14,7 +14,7 @@ turn currently owns that slot and, per request:
 - adds the CURRENT turn's ``X-Orion-Gpu-Lease`` (stripping any copy the client
   sent) and ``X-Orion-Correlation-Id``.
 
-A ``POST /v1/messages`` with no turn bound is refused with 503, so a warm
+A ``POST /v1/messages`` with no turn bound is refused with 409, so a warm
 process can never spend a model call (or a lease) outside a turn -- including
 a late request from a turn that was killed for overrunning its deadline. Other
 idle requests (the CLI's start-up ``/v1/models`` discovery, ``count_tokens``)
@@ -145,7 +145,6 @@ def build_relay_app(registry: RelayRegistry, default_upstream: RelayUpstream, *,
     """ASGI app. Built lazily so importing this module does not require starlette/httpx."""
     import httpx
     from starlette.applications import Starlette
-    from starlette.background import BackgroundTask
     from starlette.requests import Request
     from starlette.responses import StreamingResponse
     from starlette.routing import Route
@@ -179,7 +178,9 @@ def build_relay_app(registry: RelayRegistry, default_upstream: RelayUpstream, *,
         is_messages = request.method == "POST" and rest.rstrip("/") == "v1/messages"
         if binding is None and is_messages:
             logger.warning("fcc_warm_relay_refused_unbound slot=%s path=/%s", slot_id, rest)
-            return _json_error(503, "warm relay: no chat turn is bound to this slot", error_type="overloaded_error")
+            # 409 invalid_request_error, not 503/overloaded: the CLI must not retry
+            # its way into a later turn's binding.
+            return _json_error(409, "warm relay: no chat turn is bound to this slot", error_type="invalid_request_error")
         upstream = binding.upstream if binding is not None else default_upstream
         url = upstream.base_url.rstrip("/") + "/" + rest
         if request.url.query:
@@ -217,12 +218,16 @@ def build_relay_app(registry: RelayRegistry, default_upstream: RelayUpstream, *,
             int((time.monotonic() - started) * 1000),
         )
         out_headers = {k: v for k, v in resp.headers.items() if k.lower() not in _DROP_RESPONSE_HEADERS}
-        return StreamingResponse(
-            resp.aiter_raw(),
-            status_code=resp.status_code,
-            headers=out_headers,
-            background=BackgroundTask(resp.aclose),
-        )
+        async def body():
+            # Close upstream on every exit, including the client (a killed warm
+            # process) disconnecting, so a GPU generation never outlives its turn.
+            try:
+                async for chunk in resp.aiter_raw():
+                    yield chunk
+            finally:
+                await resp.aclose()
+
+        return StreamingResponse(body(), status_code=resp.status_code, headers=out_headers)
 
     methods = ["GET", "POST", "HEAD", "PUT", "DELETE", "PATCH", "OPTIONS"]
     return Starlette(

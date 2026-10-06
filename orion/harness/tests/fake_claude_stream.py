@@ -90,7 +90,12 @@ def run_turn(text: str) -> bool:
         sys.exit(3)
     if text.startswith("HANG"):
         time.sleep(3600)
-    if text.startswith("ENVFILE"):
+    if text.startswith("BGSHELL"):
+        emit({"type": "assistant", "session_id": SESSION[0], "message": {"model": "stub-model", "content": [
+            {"type": "tool_use", "id": "toolu_bg", "name": "Bash",
+             "input": {"command": "sleep 60", "run_in_background": True}}]}})
+        reply = "started"
+    elif text.startswith("ENVFILE"):
         reply = "CLOCK " + json.dumps(bash_view_of_turn_clock(), sort_keys=True)
     else:
         HISTORY.append({"role": "user", "content": text})

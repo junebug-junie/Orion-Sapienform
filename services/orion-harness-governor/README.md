@@ -200,7 +200,7 @@ A spawned `claude -p` spends about 3.4 s starting its MCP servers before it can 
 
 Nothing per-turn lives in the warm process's environment:
 
-- **Model upstream, credential, GPU lease header, correlation id.** The process's `ANTHROPIC_BASE_URL` points at a relay inside the container (`127.0.0.1:${HARNESS_FCC_CHAT_WARM_POOL_RELAY_PORT}`, one URL per slot, guarded by a per-process secret). The relay applies the current turn's values to every request. A model call with no turn bound gets 503, so a killed or overrun turn cannot keep spending its lease.
+- **Model upstream, credential, GPU lease header, correlation id.** The process's `ANTHROPIC_BASE_URL` points at a relay inside the container (`127.0.0.1:${HARNESS_FCC_CHAT_WARM_POOL_RELAY_PORT}`, one URL per slot, guarded by a per-process secret). The relay applies the current turn's values to every request. A model call with no turn bound gets 409 (not retryable), so a killed or overrun turn cannot keep spending its lease.
 - **Turn clock** (`ORION_TURN_BUDGET_SEC` / `_DEADLINE_EPOCH` / `_STEP_STALL_SEC`). Rewritten per turn into the slot's `CLAUDE_ENV_FILE`, which the CLI re-reads on every Bash call.
 - **Model and context window.** Part of the slot's signature. A turn that needs a different one spawns as before, and the idle slot is respawned for it.
 

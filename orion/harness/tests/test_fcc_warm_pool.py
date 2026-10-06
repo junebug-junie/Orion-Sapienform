@@ -449,7 +449,7 @@ async def test_relay_refuses_bad_secret_and_unbound_model_calls(env_setup, stub,
         r = await client.post(url + "/v1/messages", json={"messages": []}, headers={"authorization": "Bearer nope"})
         assert r.status_code == 401
         r = await client.post(url + "/v1/messages", json={"messages": []}, headers={"authorization": f"Bearer {secret}"})
-        assert r.status_code == 503
+        assert r.status_code == 409
         before = len(stub.requests)
         r = await client.get(url + "/v1/models", headers={"authorization": f"Bearer {secret}"})
         assert r.status_code == 200
@@ -486,3 +486,69 @@ async def test_relay_streams_sse_and_strips_client_lease(env_setup, stub, pool_c
     assert GPU_LEASE_HEADER.lower() not in sent
     assert sent["authorization"] == "Bearer gw-token"
     pool.registry.unbind(slot_id)
+
+
+# ---------------------------------------------------------------- review regressions
+
+
+@pytest.mark.asyncio
+async def test_failure_before_drive_try_still_releases_the_slot(env_setup, stub, pool_cleanup, monkeypatch):
+    """Review #1: a raise between acquire and the drive loop (stamper baseline)
+    must not leave the slot busy with the turn's lease bound."""
+    pool = await _start_pool(env_setup, stub)
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("baseline failed")
+
+    monkeypatch.setattr(motor, "_arm_write_stamper", boom)
+    with pytest.raises(RuntimeError):
+        await _turn(env_setup, stub, "x", "corr-boom", gpu_lease=_lease("lease-boom"))
+    assert pool.registry.binding(pool._slots[0].slot_id) is None
+    assert pool._slots[0].state != "busy"
+    monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+async def test_death_between_clear_and_prompt_falls_back(env_setup, stub, pool_cleanup, monkeypatch, caplog):
+    """Review #2: the process dying after /clear but before the prompt is written
+    retries as a spawn instead of failing the chat turn."""
+    caplog.set_level(logging.INFO)
+    pool = await _start_pool(env_setup, stub)
+    real_arm = motor._arm_write_stamper
+    fired = []
+
+    async def kill_then_arm(*a, **k):
+        if not fired:  # only the warm attempt; the fallback spawn arms normally
+            fired.append(True)
+            proc = pool._slots[0].proc
+            os.kill(proc.pid, signal.SIGKILL)
+            await proc.wait()
+        return await real_arm(*a, **k)
+
+    monkeypatch.setattr(motor, "_arm_write_stamper", kill_then_arm)
+    frame = _terminal(await _turn(env_setup, stub, "after a race", "corr-race"))
+    assert frame["type"] == "final" and frame["metadata"]["fcc_spawn_mode"] == "spawn"
+    assert any("reason=warm_process_died_before_first_event" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_background_shell_turn_recycles_the_process(env_setup, stub, pool_cleanup):
+    """Review #5: a turn that started a background shell never hands its process on."""
+    pool = await _start_pool(env_setup, stub)
+    old = _pid(pool)
+    frame = _terminal(await _turn(env_setup, stub, "BGSHELL", "corr-bg"))
+    assert frame["type"] == "final"
+    await _wait_idle(pool, 1)
+    assert _pid(pool) != old
+    assert pool.counters["respawn:recycle_background_shell"] == 1
+
+
+@pytest.mark.asyncio
+async def test_relay_closes_upstream_when_client_disconnects():
+    """Review #4: the upstream stream is closed by the body generator itself."""
+    import inspect
+
+    from orion.harness import fcc_warm_relay
+
+    src = inspect.getsource(fcc_warm_relay.build_relay_app)
+    assert "BackgroundTask" not in src and "await resp.aclose()" in src

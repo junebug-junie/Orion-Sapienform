@@ -76,6 +76,8 @@ class WarmPoolConfig:
     stream_read_limit: int = 8 * 1024 * 1024
     graceful_stop_sec: float = 5.0
     respawn_backoff_sec: float = 5.0
+    # Longer than any turn can legally run (HARNESS_FCC_TIMEOUT_SEC default 7200).
+    busy_reclaim_sec: float = 3 * 3600.0
 
     @classmethod
     def from_runtime_env(cls, **overrides: Any) -> "WarmPoolConfig":
@@ -169,6 +171,8 @@ class _Slot:
         self.stderr_task: Optional[asyncio.Task] = None
         self.next_retry = 0.0
         self.last_error: Optional[str] = None
+        self.busy_since = 0.0
+        self.pgid: Optional[int] = None
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.returncode is None
@@ -198,6 +202,8 @@ class WarmTurn:
         self.eof = False
         self.killed = False
         self.released = False
+        self.recycle_after = False
+        self.started_at = time.monotonic()
         self.killable = _Killable(self)
 
     @property
@@ -205,9 +211,14 @@ class WarmTurn:
         return self.eof and not self.killed and not self.result_seen
 
     async def send_prompt(self, prompt: str) -> None:
-        stdin = self._proc.stdin
-        stdin.write(_user_line(prompt))
-        await stdin.drain()
+        try:
+            stdin = self._proc.stdin
+            stdin.write(_user_line(prompt))
+            await stdin.drain()
+        except (BrokenPipeError, ConnectionResetError, RuntimeError, AttributeError):
+            # Died between /clear and the prompt: read as EOF with nothing said,
+            # so the motor retries the turn as a spawn instead of failing it.
+            self.eof = True
 
     async def readline(self) -> bytes:
         if self.result_seen or self.eof:
@@ -216,6 +227,10 @@ class WarmTurn:
         if not line:
             self.eof = True
             return b""
+        if b'"tool_use"' in line and b"run_in_background" in line:
+            # A background shell can outlive the turn inside a warm process (it
+            # holds the slot secret); never hand this process to another turn.
+            self.recycle_after = True
         if b'"result"' in line:
             ev = _parse(line)
             if ev.get("type") == "result":
@@ -281,7 +296,13 @@ class WarmPool:
             host=cfg.relay_host,
             port=cfg.relay_port,
         )
-        await asyncio.to_thread(self.relay.start)
+        try:
+            await asyncio.to_thread(self.relay.start)
+        except BaseException:
+            await asyncio.to_thread(self.relay.stop)
+            if self._owns_state_dir:
+                shutil.rmtree(self._state_dir, ignore_errors=True)
+            raise
         self._slots = [_Slot(i, self._state_dir) for i in range(max(1, int(cfg.size)))]
         self._wanted = self._initial_wanted()
         self.running = True
@@ -391,6 +412,7 @@ class WarmPool:
             return self._miss(correlation_id, f"clear_failed:{type(exc).__name__}")
         slot.turns += 1
         slot.last_used = time.monotonic()
+        slot.busy_since = slot.last_used
         self.counters["hit"] += 1
         logger.info(
             "fcc_warm_pool_acquired corr=%s slot=%s gen=%s pid=%s turn=%s acquire_ms=%d",
@@ -416,6 +438,9 @@ class WarmPool:
                 turn.correlation_id, slot.slot_id, turn.pid, reason,
             )
             self._schedule_respawn(slot, reason=reason)
+            return
+        if turn.recycle_after:
+            self._schedule_respawn(slot, reason="recycle_background_shell")
             return
         if slot.turns >= self.config.max_turns:
             self._schedule_respawn(slot, reason="recycle_max_turns", graceful=True)
@@ -535,6 +560,7 @@ class WarmPool:
                 cleanup_mcp_config(mcp_config_path)
             raise
         slot.proc = proc
+        slot.pgid = proc.pid  # start_new_session: the leader's pid is the group id
         slot.mcp_config_path = mcp_config_path
         slot.stderr_tail.clear()
         slot.stderr_task = asyncio.create_task(self._drain_stderr(slot, proc))
@@ -573,6 +599,14 @@ class WarmPool:
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
             except asyncio.TimeoutError:
                 logger.warning("fcc_warm_pool_reap_timeout slot=%s pid=%s", slot.slot_id, proc.pid)
+        if slot.pgid is not None:
+            # Leader is reaped; sweep any MCP children left in its group. Done
+            # immediately after reaping, so the group id cannot have been reused.
+            try:
+                os.killpg(slot.pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+            slot.pgid = None
         if slot.stderr_task is not None:
             slot.stderr_task.cancel()
             slot.stderr_task = None
@@ -613,6 +647,16 @@ class WarmPool:
                 self._schedule_respawn(slot, reason="recycle_max_age", graceful=True)
             elif slot.state in ("empty", "dead") and self._wanted is not None and now >= slot.next_retry:
                 self._schedule_respawn(slot, reason="health")
+            elif (
+                slot.state == "busy"
+                and slot.busy_since
+                and now - slot.busy_since >= self.config.busy_reclaim_sec
+            ):
+                # A turn that never released (should not happen; release is in a
+                # finally). Reclaim rather than leave the pool permanently busy.
+                logger.warning("fcc_warm_pool_busy_reclaimed slot=%s busy_sec=%.0f", slot.slot_id, now - slot.busy_since)
+                self.registry.unbind(slot.slot_id)
+                self._schedule_respawn(slot, reason="busy_reclaimed")
             elif slot.state == "idle" and now - slot.last_used >= IDLE_PROBE_AFTER_SEC:
                 slot.state = "busy"
                 try:
@@ -653,6 +697,8 @@ class WarmPool:
 
 
 _POOL: Optional[WarmPool] = None
+# Why the last start failed, for /health (None = never failed or since recovered).
+LAST_START_ERROR: Optional[str] = None
 
 
 def get_warm_pool() -> Optional[WarmPool]:
@@ -661,11 +707,16 @@ def get_warm_pool() -> Optional[WarmPool]:
 
 
 async def start_warm_pool(config: WarmPoolConfig) -> WarmPool:
-    global _POOL
+    global _POOL, LAST_START_ERROR
     if _POOL is not None:
         await stop_warm_pool()
     pool = WarmPool(config)
-    await pool.start()
+    try:
+        await pool.start()
+    except BaseException as exc:
+        LAST_START_ERROR = f"{type(exc).__name__}: {exc}"
+        raise
+    LAST_START_ERROR = None
     _POOL = pool
     return pool
 

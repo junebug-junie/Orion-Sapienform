@@ -15,6 +15,7 @@ from .activation import (
     normalize_decay_mode,
     seed_activation,
 )
+from .eligibility import cognitive_view
 from .falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
 from .pressure import (
     PressureConfig,
@@ -86,16 +87,20 @@ class SubstrateDynamicsEngine:
         if tick_at.tzinfo is None:
             tick_at = tick_at.replace(tzinfo=timezone.utc)
         state = self._store.snapshot()
-        if not state.nodes:
+        # Cognitive subgraph only (orion/substrate/eligibility.py, #2497 rule 8):
+        # assertions, fenced memory referents/evidence and role-bearing edges are
+        # neither decayed, pressured, propagated through, nor re-persisted here.
+        state_nodes, state_edges = cognitive_view(state.nodes, state.edges)
+        if not state_nodes:
             return SubstrateDynamicsResultV1(tick_at=tick_at, activation_updates=[], pressure_updates=[], dormancy_transitions=[])
         identity_by_node_id = {node_id: identity for identity, node_id in state.node_identity_index.items()}
 
-        outgoing, incoming = self._adjacency(state.edges)
-        pressures, pressure_reasons = self._compute_pressures(state.nodes, outgoing, tick_at)
+        outgoing, incoming = self._adjacency(state_edges)
+        pressures, pressure_reasons = self._compute_pressures(state_nodes, outgoing, tick_at)
         pressure_updates: list[PressureUpdateV1] = []
         updated_nodes: dict[str, BaseSubstrateNodeV1] = {}
 
-        for node_id, node in state.nodes.items():
+        for node_id, node in state_nodes.items():
             prev_pressure = float(node.metadata.get("dynamic_pressure") or 0.0)
             new_pressure = pressures.get(node_id, 0.0)
             if abs(new_pressure - prev_pressure) < 1e-6:

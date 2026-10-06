@@ -1223,7 +1223,8 @@ def _display_labels(nodes: list[Any], edges: list[Any]) -> dict[str, str]:
     """
     labels: dict[str, str] = {}
     for node in nodes:
-        raw = getattr(node, "label", None)
+        # An Assertion has no label; its statement_text is the readable claim.
+        raw = getattr(node, "label", None) or getattr(node, "statement_text", None)
         labels[node.node_id] = str(raw) if raw else str(node.node_id)
 
     # `supports` runs evidence -> concept (see the topic_foundry adapter), so

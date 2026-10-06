@@ -141,6 +141,12 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     # decode_entity_node falls back to "unknown"/[] for real stored values.
     "entity_type",
     "aliases_json",
+    # assertion nodes (falkor_codec.encode_node_properties' assertion branch)
+    "assertion_predicate",
+    "statement_key",
+    "statement_text",
+    "assertion_revision",
+    "decision_ref",
     # topic_id has had a complete encode/decode pair since the topic-foundry
     # work (_topic_foundry_properties_from_metadata /
     # _topic_foundry_metadata_from_row) and was simply never listed here, so
@@ -213,6 +219,9 @@ NATIVE_EDGE_RETURN_FIELDS: tuple[str, ...] = (
     "provenance_trace_id",
     "provenance_tier_rank",
     "evidence_refs_json",
+    "edge_role",
+    "assertion_id",
+    "assertion_revision",
 )
 
 

@@ -241,7 +241,7 @@ def test_falkor_rejects_non_concept_durable_write():
         ),
     )
 
-    with pytest.raises(ValueError, match="concept, evidence, entity nodes only"):
+    with pytest.raises(ValueError, match="concept, evidence, entity, assertion nodes only"):
         store.upsert_node(identity_key="drive:curiosity", node=drive)
 
     assert client.calls == []
@@ -1582,7 +1582,7 @@ def test_falkor_still_rejects_a_kind_nothing_writes():
             authority="local_inferred", source_kind="test", source_channel="test", producer="t"
         ),
     )
-    with pytest.raises(ValueError, match="concept, evidence, entity nodes only"):
+    with pytest.raises(ValueError, match="concept, evidence, entity, assertion nodes only"):
         store.upsert_node(identity_key="drive:curiosity", node=drive)
     assert client.calls == []
 

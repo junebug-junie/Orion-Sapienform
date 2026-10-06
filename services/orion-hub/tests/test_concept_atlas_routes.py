@@ -1132,8 +1132,18 @@ def test_every_payload_field_is_readable_for_every_durable_node_kind(
             signals=sig,
         ),
     )
+    from orion.core.schemas.cognitive_substrate import AssertionNodeV1
+
+    store.upsert_node(
+        identity_key="a:x",
+        node=AssertionNodeV1(
+            node_id="a-x", anchor_scope="world", temporal=_temporal(), provenance=prov, signals=sig,
+            predicate="co_occurs_with", statement_key="n-x|co_occurs_with|c-x|",
+            statement_text="athena and Alpha were named together", revision=1, promotion_state="provisional",
+        ),
+    )
     # every kind the store can persist must be represented above
-    assert set(DURABLE_NODE_KINDS) == {"concept", "evidence", "entity"}
+    assert set(DURABLE_NODE_KINDS) == {"concept", "evidence", "entity", "assertion"}
     store.upsert_edge(
         identity_key="edge:ex-cx", edge=_edge("edge-ex-cx", "e-x", "c-x", predicate="supports")
     )
@@ -1141,12 +1151,24 @@ def test_every_payload_field_is_readable_for_every_durable_node_kind(
         identity_key="edge:cx-nx",
         edge=_edge("edge-cx-nx", "c-x", "n-x", predicate="associated_with"),
     )
+    from orion.core.schemas.cognitive_substrate import NodeRefV1, SubstrateEdgeV1
+
+    store.upsert_edge(
+        identity_key="edge:ax-cx",
+        edge=SubstrateEdgeV1(
+            edge_id="edge-ax-cx", source=NodeRefV1(node_id="a-x", node_kind="assertion"),
+            target=NodeRefV1(node_id="c-x", node_kind="concept"), predicate="assertion_object",
+            edge_role="assertion_structure", temporal=_temporal(), provenance=prov,
+        ),
+    )
     monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: store)
 
     r = client.get("/api/substrate/concepts/network")
     assert r.status_code == 200, r.text
     nodes = r.json()["nodes"]
-    assert {n["node_kind"] for n in nodes} == {"concept", "evidence", "entity"}
+    assert {n["node_kind"] for n in nodes} == {"concept", "evidence", "entity", "assertion"}
+    assertion_row = next(n for n in nodes if n["node_kind"] == "assertion")
+    assert assertion_row["label"] == "athena and Alpha were named together"
     for node in nodes:
         assert node["label"], f"every node needs a readable label: {node}"
         assert node["origin"] in ("topic_foundry", "concept")

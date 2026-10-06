@@ -14,6 +14,29 @@ from orion.core.schemas.cognitive_substrate import (
 )
 
 
+# An Assertion in one of these states is "accepted" (#2497: provisional = accepted
+# as tentative, canonical = explicitly reviewed). Only then is its projection walked.
+ACCEPTED_ASSERTION_STATES: tuple[str, ...] = ("provisional", "canonical")
+
+
+def walkable_edge(edge: SubstrateEdgeV1, assertion: BaseSubstrateNodeV1 | None) -> bool:
+    """Edge-role gate shared by every backend (Falkor encodes it in Cypher).
+
+    legacy_unreviewed walks exactly as before roles existed. A semantic_projection
+    walks only while its Assertion exists, is accepted, and is at the revision the
+    edge was projected from; a stale projection left behind by a failed projector
+    run therefore never reads as an accepted relationship. provenance and
+    assertion_structure edges never walk.
+    """
+    if edge.edge_role == "legacy_unreviewed":
+        return True
+    if edge.edge_role != "semantic_projection" or assertion is None:
+        return False
+    return (assertion.node_kind == "assertion"
+            and assertion.promotion_state in ACCEPTED_ASSERTION_STATES
+            and getattr(assertion, "revision", None) == edge.assertion_revision)
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -203,7 +226,9 @@ def read_memory_neighborhood(store, request: NeighborhoodRequestV1) -> Neighborh
     def eligible_edges(ids):
         for edge in store._edges.values():
             src, dst = store._nodes.get(edge.source.node_id), store._nodes.get(edge.target.node_id)
-            if src and dst and request.eligible(src) and request.eligible(dst):
+            assertion = store._nodes.get(edge.assertion_id) if edge.assertion_id else None
+            if (src and dst and request.eligible(src) and request.eligible(dst)
+                    and walkable_edge(edge, assertion)):
                 if src.node_id in ids or dst.node_id in ids:
                     yield edge
 

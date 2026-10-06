@@ -1,7 +1,20 @@
 """Durable neighborhood adapters. All queries are reads and bypass store caches."""
 from __future__ import annotations
 
-from .neighborhood import NeighborhoodRequestV1, read_neighborhood
+from .neighborhood import ACCEPTED_ASSERTION_STATES, NeighborhoodRequestV1, read_neighborhood
+
+# Cypher form of neighborhood.walkable_edge(): legacy edges walk as before; a
+# semantic projection walks only while its Assertion is accepted at the edge's
+# revision. Provenance and assertion-structure edges never walk. Appended AFTER
+# the focal/endpoint filter so the OPTIONAL MATCH runs only for candidate edges.
+_WALKABLE_EDGE_TAIL = (
+    "OPTIONAL MATCH (assertion:SubstrateNode) WHERE assertion.node_id = e.assertion_id "
+    "WITH source, e, target, assertion WHERE "
+    "(coalesce(e.edge_role, 'legacy_unreviewed') = 'legacy_unreviewed' "
+    "OR (e.edge_role = 'semantic_projection' AND assertion.node_kind = 'assertion' "
+    "AND assertion.promotion_state IN $accepted_assertion_states "
+    "AND assertion.assertion_revision = e.assertion_revision)) "
+)
 
 
 def _groups(ids, request, predicates):
@@ -50,7 +63,8 @@ def read_falkor_neighborhood(store, request: NeighborhoodRequestV1):
 
     def where(ids, group=None):
         params = {"ids": ids, "states": list(request.semantic_states),
-                  "scopes": list(request.anchor_scopes)}
+                  "scopes": list(request.anchor_scopes),
+                  "accepted_assertion_states": list(ACCEPTED_ASSERTION_STATES)}
         condition = ("e.substrate_edge = true "
             "AND source.node_kind IN ['concept', 'entity'] "
             "AND target.node_kind IN ['concept', 'entity'] "
@@ -73,8 +87,8 @@ def read_falkor_neighborhood(store, request: NeighborhoodRequestV1):
     def predicates(ids, focal, direction, after):
         condition, params = where(ids, (focal, direction, None))
         params["after"] = after
-        rows = query(match + condition + "AND e.predicate > $after "
-            "RETURN DISTINCT e.predicate AS predicate ORDER BY predicate LIMIT 16",
+        rows = query(match + condition + "AND e.predicate > $after " + _WALKABLE_EDGE_TAIL
+            + "RETURN DISTINCT e.predicate AS predicate ORDER BY predicate LIMIT 16",
             params, ("predicate",))
         return [row["predicate"] for row in rows]
 
@@ -82,7 +96,7 @@ def read_falkor_neighborhood(store, request: NeighborhoodRequestV1):
         condition, params = where(ids, group)
         params.update(after=after)
         fields = NATIVE_EDGE_RETURN_FIELDS
-        rows = query(match + condition + "AND e.edge_id > $after RETURN "
+        rows = query(match + condition + "AND e.edge_id > $after " + _WALKABLE_EDGE_TAIL + "RETURN "
             + _edge_hydrate_return_clause(fields) + f" ORDER BY e.edge_id LIMIT {limit}", params, fields)
         result = []
         for row in rows:
@@ -127,6 +141,10 @@ def read_sparql_neighborhood(store, request: NeighborhoodRequestV1):
             "?target orion:nodeId ?target_id ; orion:nodeKind ?target_kind ; "
             "orion:promotionState ?target_state ; orion:anchorScope ?target_scope . "
             'FILTER(?source_kind IN ("concept", "entity") && ?target_kind IN ("concept", "entity")) '
+            # This backend stores no Assertion nodes, so it cannot verify a
+            # semantic projection: it walks legacy edges only (fail closed).
+            "OPTIONAL { ?edge orion:edgeRole ?edge_role . } "
+            'FILTER(!BOUND(?edge_role) || ?edge_role = "legacy_unreviewed") '
             f"FILTER(?source_state IN ({values(request.semantic_states)}) && "
             f"?target_state IN ({values(request.semantic_states)})) "
             f"FILTER(?source_scope IN ({values(request.anchor_scopes)}) && "

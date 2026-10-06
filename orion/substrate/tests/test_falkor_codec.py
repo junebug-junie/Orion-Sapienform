@@ -161,7 +161,7 @@ def test_encode_node_properties_rejects_non_concept():
         temporal=_temporal(),
         provenance=_provenance(),
     )
-    with pytest.raises(ValueError, match="concept, evidence, entity nodes only"):
+    with pytest.raises(ValueError, match="concept, evidence, entity, assertion nodes only"):
         encode_node_properties(drive, identity_key="drive:curiosity")
 
 
@@ -532,7 +532,7 @@ def test_entity_is_a_durable_node_kind():
     from orion.substrate.falkor_codec import DURABLE_NODE_KINDS
 
     assert "entity" in DURABLE_NODE_KINDS
-    assert set(DURABLE_NODE_KINDS) == {"concept", "evidence", "entity"}
+    assert set(DURABLE_NODE_KINDS) == {"concept", "evidence", "entity", "assertion"}
 
 
 def test_encode_entity_writes_its_own_columns():

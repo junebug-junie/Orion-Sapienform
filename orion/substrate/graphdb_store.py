@@ -285,6 +285,7 @@ INSERT {{
       orion:sourceNodeId {self._lit(edge.source.node_id)} ;
       orion:targetNodeId {self._lit(edge.target.node_id)} ;
       orion:predicate {self._lit(edge.predicate)} ;
+      orion:edgeRole {self._lit(edge.edge_role)} ;
       orion:confidence {self._typed_float(edge.confidence)} ;
       orion:salience {self._typed_float(edge.salience)} ;
       orion:observedAt {self._typed_datetime(edge.temporal.observed_at.isoformat())} ;

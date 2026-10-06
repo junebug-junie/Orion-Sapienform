@@ -243,7 +243,18 @@ class AdmissionRuntime:
     async def _persist_episode(self, **kwargs) -> dict:
         from orion.memory.episode.store import persist_episode
 
-        return await persist_episode(self.pool, **kwargs)
+        return await persist_episode(self.pool, **kwargs, referent_policy=self._referent_policy())
+
+    def _referent_policy(self):
+        """None when MEMORY_REFERENTS_ENABLED=false (the referent step is skipped)."""
+        if not getattr(self.settings, "memory_referents_enabled", False):
+            return None
+        from orion.memory.referents.resolve import ReferentPolicy
+
+        return ReferentPolicy(
+            grounding_auto_accept=bool(self.settings.memory_alias_grounding_auto_accept),
+            cooccurrence_auto_accept=bool(self.settings.memory_cooccurrence_auto_accept),
+        )
 
     async def _orion_day_brief(self, state) -> OrionDayRunBriefV1:
         """The full orion_day.letter brief from the accepted request row (the checkpoint keeps

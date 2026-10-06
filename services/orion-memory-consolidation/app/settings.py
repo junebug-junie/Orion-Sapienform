@@ -82,6 +82,13 @@ class Settings(BaseSettings):
         default="/data/memory-episode-reports", alias="MEMORY_EPISODE_REPORT_DIR"
     )
     MEMORY_EPISODE_REPORT_TZ: str = Field(default="America/Denver", alias="MEMORY_EPISODE_REPORT_TZ")
+
+    # Memory Stage 2 (2026-10-06): project referent nodes, memory evidence and accepted
+    # co-occurrences from Postgres into the substrate graph (app/referent_projector.py).
+    MEMORY_REFERENT_PROJECTOR_ENABLED: bool = Field(default=True, alias="MEMORY_REFERENT_PROJECTOR_ENABLED")
+    MEMORY_REFERENT_PROJECTOR_TICK_SEC: float = Field(default=30.0, gt=0.0, alias="MEMORY_REFERENT_PROJECTOR_TICK_SEC")
+    FALKORDB_URI: str = Field(default="", alias="FALKORDB_URI")
+    FALKORDB_SUBSTRATE_GRAPH: str = Field(default="orion_substrate", alias="FALKORDB_SUBSTRATE_GRAPH")
     CHANNEL_MEMORY_EPISODE_CLOSED: str = Field(
         default="orion:memory:episode:closed", alias="CHANNEL_MEMORY_EPISODE_CLOSED"
     )

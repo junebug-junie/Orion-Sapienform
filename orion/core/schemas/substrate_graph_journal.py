@@ -36,7 +36,8 @@ from orion.core.schemas.cognitive_substrate import (
 )
 
 # One value per kind something consumes. relationship_assertion: AssertionProjector.
-# (memory Stage 2 PR B adds referent_identity together with its consumer.)
+# Identity questions ("is X the same as Y?") are not journalled yet: they live in
+# memory_tension_shadow until a decision applier exists (Stage 3) to consume them here.
 SubstrateGraphProposalKindV1 = Literal["relationship_assertion"]
 SemanticEndpointKindV1 = Literal["concept", "entity"]
 

@@ -85,6 +85,18 @@ contracts `orion/schemas/memory_episode.py`, spec `docs/superpowers/specs/2026-0
   `memory_distill` route from `config/gpu_pool.yaml`), then this service. orion-memory-consolidation (the
   producer of the close event) can go any time after.
 
+#### Referents after each distill (memory Stage 2, 2026-10-06)
+
+After the memories are written, the same transaction (in a savepoint, so a fault never loses
+them) resolves each memory's referent keys to graph nodes and keeps Juniper's own names for them
+(`orion/memory/referents`). Kill switches, all shipped on:
+
+| Concept | What it means in plain English | Producer | Consumer | Test |
+|---|---|---|---|---|
+| `MEMORY_REFERENTS_ENABLED` | Run the referent step at all. | settings | `AdmissionRuntime._referent_policy` | `tests/test_episode_distill_referent_policy.py` |
+| `MEMORY_ALIAS_GROUNDING_AUTO_ACCEPT` (`alias_grounding_v1`) | A name Juniper actually said is usable at once. Off: every name waits for review. | settings | `orion/memory/referents/resolve.py` | same + `orion/memory/referents/tests` |
+| `MEMORY_COOCCURRENCE_AUTO_ACCEPT` (`source_cooccurrence_v1`) | Things named together in one of Juniper's sentences are linked at once. Off: the links are only proposed. | settings | `orion/memory/referents/cooccurrence.py` | same |
+
 ### Admitted journal compose (`journal.compose`, 2026-09-30)
 
 One journal entry, composed under a GPU pool hold (`app/journal_compose_graph.py`, contract

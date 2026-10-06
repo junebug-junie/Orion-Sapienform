@@ -109,6 +109,9 @@ class ValidatedMemory:
     referents: list[tuple[str, str]]
     evidence: list[VerifiedEvidence]
     events: list[MemoryEvent]
+    # The writer's own names for each referent key, kept verbatim (memory Stage 2): the
+    # referent store decides which are Juniper's words (alias_grounding_v1).
+    referent_aliases: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -373,6 +376,7 @@ def validate_distillation(
             )
 
         referents: list[tuple[str, str]] = []
+        referent_aliases: dict[str, list[str]] = {}
         for r in cand.referents:
             key = normalize_referent_key(r.key)
             if key is None:
@@ -380,6 +384,11 @@ def validate_distillation(
                 continue
             if (key, r.role) not in referents:
                 referents.append((key, str(r.role or "about")))
+            kept = referent_aliases.setdefault(key, [])
+            for alias in r.aliases or []:
+                text = normalize_ws(alias)
+                if text and text not in kept:
+                    kept.append(text)
 
         stakes, stakes_reason, stakes_event = resolve_stakes(
             cand.stakes, cand.stakes_reason, cand.asks_direction, category_required=category_required
@@ -411,6 +420,7 @@ def validate_distillation(
                 referents=referents,
                 evidence=[ev for ev, _, _ in checked],
                 events=events,
+                referent_aliases={k: v for k, v in referent_aliases.items() if v},
             )
         )
 

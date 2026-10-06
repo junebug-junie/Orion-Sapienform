@@ -9,6 +9,7 @@ nothing twice. Invalid candidates land only in episode_memory_event as ``rejecte
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -16,6 +17,7 @@ from typing import Any, Optional
 from orion.memory.episode.validate import MEMORY_ID_NAMESPACE, ValidationResult
 
 ACTOR = "memory.episode_distill"
+logger = logging.getLogger(__name__)
 
 _INSERT_MEMORY = """
 INSERT INTO episode_memory (
@@ -68,7 +70,10 @@ async def persist_episode(
     hold_wait_ms: Optional[int],
     coverage: Optional[float],
     now: Optional[datetime] = None,
+    referent_policy: Any = None,
 ) -> dict[str, int]:
+    """``referent_policy`` (orion.memory.referents.resolve.ReferentPolicy) turns on the Stage 2
+    referent step; None skips it (MEMORY_REFERENTS_ENABLED=false)."""
     from psycopg.types.json import Jsonb
 
     now = now or datetime.now(timezone.utc)
@@ -114,6 +119,7 @@ async def persist_episode(
                              "verified": e.verified} for e in q.evidence]),
                      q.referents, now),
                 )
+            referents = await _persist_referents(conn, episode_id, result, now, referent_policy)
             await conn.execute(
                 _INSERT_RUN,
                 (episode_id, run_id, model_route, model, prompt_version, usage.get("prompt_tokens"),
@@ -125,7 +131,35 @@ async def persist_episode(
         "rejections": len(result.rejections),
         "questions": len(result.questions),
         "downgrades": result.downgrades,
+        **({"referents_resolved": referents["resolved"]} if referents else {}),
     }
+
+
+async def _persist_referents(conn: Any, episode_id: str, result: ValidationResult, now: datetime,
+                             policy: Any) -> Optional[dict[str, int]]:
+    """Stage 2 referent step, in a SAVEPOINT: a fault here (e.g. its migration not applied yet)
+    is logged and rolled back alone, and the memories above still commit. The checkpoint backfill
+    (scripts/backfill_referents_from_episodes.py) can redo it later; every write is idempotent."""
+    if policy is None or not result.memories:
+        return None
+    from orion.memory.referents.store import MemoryReferents, persist_referents
+
+    episode_quotes = [(ev.source_id, ev.quote) for m in result.memories for ev in m.evidence
+                      if ev.verified and ev.source_kind == "chat_prompt"]
+    inputs = [
+        MemoryReferents(
+            memory_id=m.memory_id, episode_id=episode_id, created_at=now, referents=list(m.referents),
+            aliases_by_key=dict(m.referent_aliases), prompt_quotes=episode_quotes,
+            own_prompt_quotes=[ev.quote for ev in m.evidence if ev.verified and ev.source_kind == "chat_prompt"],
+        )
+        for m in result.memories if m.referents
+    ]
+    try:
+        async with conn.transaction():
+            return await persist_referents(conn, inputs, now=now, policy=policy)
+    except Exception:  # noqa: BLE001 - logged loudly; memories must not be lost to a referent fault
+        logger.exception("referents_persist_failed episode_id=%s", episode_id)
+        return None
 
 
 async def candidate_referent_keys(pool: Any, *, days: int = 30, limit: int = 60) -> list[str]:

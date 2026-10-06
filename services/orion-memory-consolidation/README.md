@@ -187,6 +187,24 @@ Spec: `docs/superpowers/specs/2026-09-30-memory-episode-redesign-design.md`.
 | `CHANNEL_MEMORY_EPISODE_CLOSED` | `orion:memory:episode:closed` | Close event channel |
 | `MEMORY_LEGACY_BOUNDARY_USE_PHASE` | `false` | Let the live window rule and classify prompt read the phase stamp (changes live windows) |
 
+## Referent projector (memory Stage 2, 2026-10-06)
+
+`app/referent_projector.py`, a 30 s loop (`MEMORY_REFERENT_PROJECTOR_ENABLED`,
+`MEMORY_REFERENT_PROJECTOR_TICK_SEC`, `FALKORDB_URI`, `FALKORDB_SUBSTRATE_GRAPH`). It copies what
+the referent step wrote into Postgres into Orion's one graph, as producer `memory.referents`.
+It never hydrates the whole graph: at start it loads only its own nodes. Truncating
+`referent_projection` forces a full, idempotent rebuild. Concepts it owns (the rest are in
+`orion/memory/referents/README.md` and `orion/substrate/README.md`):
+
+| Concept | What it means in plain English | Producer | Consumer | Test |
+|---|---|---|---|---|
+| Referent node in Falkor (Entity, or Concept for `concept:` keys; producer `memory.referents`) | The thing itself, with its usable names shown on it. Fenced: never merged by label or embedding. | this projector | neighborhood reads (walkable once provisional/canonical); `AssertionProjector` endpoint check | `tests/test_referent_projector_pg.py` |
+| Memory Evidence node (`episode_memory:<id>`) + `observed_in` provenance edge | "This thing is mentioned in that memory", with when Orion learned it (`valid_from`) and when the memory stopped being active (`valid_to`). The memory text stays in Postgres. | this projector | `AssertionProjector` (a claim's supporting evidence must exist); the neighborhood never walks it | projector test (6 edges, all `provenance`; superseding closes them) |
+| Label collision demotion | Our "circe" meets topic-foundry's "circe": ours becomes an open question, never a merge. | this projector (first projection only) | identity questions in the daily report | projector test |
+| `referent_projection` ledger | What the projector last wrote per node/memory, so it rewrites only what changed. | this projector | this projector | projector test (second tick writes nothing) |
+
+Deploy order: see `docs/superpowers/pr-reports/2026-10-06-memory-referents-pr.md`.
+
 ## Turn change appraisal
 
 Each persisted turn (after the first in a window) gets a logprob-calibrated `turn_change_appraisal` patch on `spark_meta`: novelty score, shift kind, confidence, and baseline mode (`prior_turn` or `session_window` fallback). The first turn in a window uses `turn_change_status=skipped` (no baseline, no LLM call). High-confidence novel turns also emit `OrionSignalV1` on `orion:signals:memory_consolidation`.

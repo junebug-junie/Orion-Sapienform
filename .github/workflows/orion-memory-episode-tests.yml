@@ -17,6 +17,11 @@ on:
       - "services/orion-durable-runs/tests/test_episode_distill_*.py"
       - "services/orion-sql-db/manual_migration_memory_*.sql"
       - "services/orion-sql-db/manual_migration_episode_memory_*.sql"
+      - "services/orion-sql-db/manual_migration_referent_alias_*.sql"
+      - "services/orion-sql-db/manual_migration_substrate_graph_journal_*.sql"
+      - "services/orion-durable-runs/app/admission_runtime.py"
+      - "orion/substrate/**"
+      - "scripts/backfill_referents_from_episodes.py"
       - ".github/workflows/orion-memory-episode-tests.yml"
   push:
     branches: [main]
@@ -27,6 +32,8 @@ on:
       - "services/orion-durable-runs/app/episode_distill_*.py"
       - "services/orion-sql-db/manual_migration_memory_*.sql"
       - "services/orion-sql-db/manual_migration_episode_memory_*.sql"
+      - "services/orion-sql-db/manual_migration_referent_alias_*.sql"
+      - "orion/substrate/**"
       - ".github/workflows/orion-memory-episode-tests.yml"
 
 jobs:
@@ -47,10 +54,16 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # Throwaway FalkorDB for the referent projector lane (memory Stage 2).
+      falkordb:
+        image: falkordb/falkordb:latest
+        ports:
+          - 6380:6379
     env:
       # Admin DSN of a throwaway server: each test creates and drops its own database.
       ORION_MEMORY_EPISODE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
       ORION_BUS_URL: redis://127.0.0.1:6379/0
+      ORION_TEST_FALKOR_URI: redis://localhost:6380
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -68,12 +81,14 @@ jobs:
           # Two processes: orion-memory-consolidation and orion-durable-runs both name their package `app`.
           PYTHONPATH=. python -m pytest -q -rs -p no:cacheprovider \
             orion/memory/episode/tests \
+            orion/memory/referents/tests \
             services/orion-memory-consolidation/tests \
             services/orion-memory-consolidation/evals \
             | tee pytest.out
           PYTHONPATH=.:services/orion-durable-runs python -m pytest -q -rs -p no:cacheprovider \
             services/orion-durable-runs/tests/test_episode_distill_reconcile.py \
             services/orion-durable-runs/tests/test_episode_distill_graph.py \
+            services/orion-durable-runs/tests/test_episode_distill_referent_policy.py \
             | tee -a pytest.out
           if grep -q "SKIPPED" pytest.out; then
             echo "Postgres-backed memory episode tests skipped -- the service/env wiring is broken" >&2

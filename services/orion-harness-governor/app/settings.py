@@ -190,6 +190,37 @@ class HarnessGovernorSettings(BaseSettings):
         "3", alias="HARNESS_FCC_REPEAT_FAILURE_THRESHOLD"
     )
 
+    # Warm Claude Code pool for Hub chat replies (spec L5; orion/harness/fcc_warm_pool.py).
+    # Chat-reply turns borrow a long-lived claude process instead of spawning one,
+    # skipping ~3.4 s of MCP server start-up. Any pool failure falls back to the
+    # per-turn spawn. false = every turn spawns, as before.
+    harness_fcc_chat_warm_pool_enabled: bool = Field(True, alias="HARNESS_FCC_CHAT_WARM_POOL_ENABLED")
+    # Processes kept warm. 1 = observed chat concurrency (220 chat turns over 30
+    # days, never two at once). Each one keeps its own MCP servers running.
+    harness_fcc_chat_warm_pool_size: int = Field(1, ge=1, le=8, alias="HARNESS_FCC_CHAT_WARM_POOL_SIZE")
+    # Recycle a process after this many turns or this many seconds (bounds memory growth).
+    harness_fcc_chat_warm_pool_max_turns: int = Field(50, ge=1, alias="HARNESS_FCC_CHAT_WARM_POOL_MAX_TURNS")
+    harness_fcc_chat_warm_pool_max_age_sec: float = Field(
+        3600.0, gt=0.0, alias="HARNESS_FCC_CHAT_WARM_POOL_MAX_AGE_SEC"
+    )
+    # Model label warmed at governor start (a ~/.fcc/.env key or "<backend>/<route>").
+    # The first chat turn asking for another model/window retargets the slot.
+    harness_fcc_chat_warm_pool_model_label: str = Field(
+        "MODEL_SONNET", alias="HARNESS_FCC_CHAT_WARM_POOL_MODEL_LABEL"
+    )
+    # Container-local relay port (bound to 127.0.0.1, never published).
+    harness_fcc_chat_warm_pool_relay_port: int = Field(
+        7157, ge=1, le=65535, alias="HARNESS_FCC_CHAT_WARM_POOL_RELAY_PORT"
+    )
+    # How long a fresh process may take to start its MCP servers.
+    harness_fcc_chat_warm_pool_spawn_timeout_sec: float = Field(
+        90.0, gt=0.0, alias="HARNESS_FCC_CHAT_WARM_POOL_SPAWN_TIMEOUT_SEC"
+    )
+    # Per-turn /clear handshake budget; on overrun the turn spawns instead.
+    harness_fcc_chat_warm_pool_clear_timeout_sec: float = Field(
+        5.0, gt=0.0, alias="HARNESS_FCC_CHAT_WARM_POOL_CLEAR_TIMEOUT_SEC"
+    )
+
     # (D) embodiment: publish a deliberate approach intent on the turn correlation_id
     # after a finalized relational turn. Default-off, fail-open (never breaks a turn).
     embodiment_d_finalize_enabled: bool = Field(False, alias="EMBODIMENT_D_FINALIZE_ENABLED")

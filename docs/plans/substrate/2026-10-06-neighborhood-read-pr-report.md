@@ -20,6 +20,7 @@ Shared substrate store protocol, in-memory/Falkor/SPARQL/routed implementations,
 
 ## Files changed
 
+- `orion/schema_skew_discovery.py`: declare the local request model has no cross-service writer.
 - `orion/substrate/neighborhood.py`: bounded request/result and shared allocation/integrity algorithm.
 - `orion/substrate/neighborhood_backends.py`: native Cypher and SPARQL adapters.
 - `orion/substrate/{store,falkor_store,graphdb_store,routed_store,query_planning}.py`: public API and planner integration.
@@ -49,6 +50,8 @@ Shared substrate store protocol, in-memory/Falkor/SPARQL/routed implementations,
 Clean Python 3.12 venv with the exact CI dependency list:
 python -m pytest -q orion/substrate/tests/test_neighborhood.py orion/substrate/tests/test_neighborhood_backends.py orion/substrate/tests/test_falkor_store.py orion/substrate/tests/test_graphdb_store.py orion/substrate/tests/test_routed_store.py orion/substrate/tests/test_phase16_query_planning.py
 114 passed (4.48s). RDFLib emits deprecation warnings.
+python -m pytest tests/scripts/test_substrate_ladder_liveness.py tests/scripts/test_schema_skew_discovery.py tests/test_sql_migration_drift_gate.py -q
+143 passed (16.88s), including the CI-discovered declaration gate.
 git diff --check: passed.
 ```
 
@@ -78,6 +81,9 @@ Evidence: /tmp/reading-neighborhood/{candidate,request,live-census,live-replay-f
 - Finding: a focal with both directions could receive two turns before another focal received one.
   - Fix: focal-first allocation, then rotation through that focal's directions and predicates.
   - Evidence: `test_focal_fairness_precedes_direction_and_predicate_diversity`; independent re-review confirmed resolution and no remaining material findings. Updated the tight-budget eval expectation to require both focal nodes before both directions of one focal.
+- CI finding: schema discovery required an explicit writer declaration for the new forbid model.
+  - Fix: declare the in-process query/diagnostic request has no cross-service writer.
+  - Evidence: schema-skew discovery regression gate.
 - Review skill: `/home/athena/.claude/plugins/cache/claude-plugins-official/superpowers/6.4.1/skills/requesting-code-review/SKILL.md`, run in an independent read-only subagent.
 
 ## Restart required

@@ -87,6 +87,11 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
         "hub reads it back via orion.orion_day.store.fetch_letter",
     ),
     # No cross-service writer.
+    "orion.substrate.neighborhood:NeighborhoodRequestV1": (
+        None,
+        "in-process query-plan arguments / explicit diagnostic request JSON; "
+        "no bus payload or cross-service writer",
+    ),
     "orion/attention/field_attention/policy.py": (None, "policy YAML the reader loads itself"),
     "orion.autonomy.models:CapabilityPolicyV1": (None, "capability policy YAML the reader loads itself"),
     "orion.autonomy.models:CapabilityPolicyRuleV1": (None, "capability policy YAML the reader loads itself"),

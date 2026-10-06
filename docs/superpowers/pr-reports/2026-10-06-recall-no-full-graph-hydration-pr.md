@@ -11,10 +11,10 @@
 - **Boot / cold start:** no 17-25 s load any more, and no near-30 s timeout after which concept_region silently returned nothing.
 - **Freshness:** the old copy was built once and never refreshed on the recall path, so concept_region read a graph frozen at boot. Now it reads the live graph on every turn.
 - **Per-turn cost, measured live (read-only, host to `orion-athena-falkordb`, 152 real queries):**
-  - Turns where nothing matches (about two thirds): **11.8 ms median**. This is one light query that returns only labels.
-  - Turns where a concept matches: **151 ms median, 199 ms p90, 631 ms max**.
+  - Turns where nothing matches (about two thirds): **10.6 ms median** (p90 16 ms). This is one light query that returns only labels.
+  - Turns where a concept matches: **142 ms median, 217 ms p90, 297 ms max**.
   - For comparison, the old cached path (`pcr_concept_region` in telemetry, last 7 days): 37 ms p50, 69 ms p90, 439 ms max. That excludes the 17-25 s first-load cost, which landed on boot or on the first turn.
-- **The 100 ms target is NOT met on turns that match.** See Risks: the cost comes from keeping the old edge-selection rule exactly as it was.
+- **The 100 ms target is NOT met on turns that match.** See Risks below: the cost comes from keeping the old edge-selection rule exactly as it was.
 
 ## Current architecture
 
@@ -27,7 +27,7 @@
 - New shared module `orion/substrate/falkor_direct.py` with `FalkorDirectConceptStore`. It has no `snapshot()` and no cache. A turn runs at most three bounded `GRAPH.RO_QUERY` reads:
   1. Rank the top N concepts in Cypher and return only their object ids and labels. The labels are matched in Python, with the same `_label_matches` as before.
   2. Only on a match: fetch the full rows for the matched concepts by object id.
-  3. Only on a match: compute the edge cut in Cypher (the top M edges by salience and confidence among all edges touching the N ranked concepts) and return full rows only for the cut edges that touch a matched concept.
+  3. Only on a match: compute the edge cut in Cypher (the top M edges by salience and confidence among all edges touching the N ranked concepts) and return full rows only for the cut edges that touch a matched concept. This query recomputes the concept ranking itself instead of taking object ids as a parameter, because FalkorDB 6.0 has a planner bug with the id-parameter form (see Review findings fixed).
 - The ranking keys copy the codec's decode defaults: a NULL salience counts as 0.0, and a NULL or 0 confidence counts as 0.5. Ties break in hydration order (ascending Falkor object id). So the order is identical to `InMemorySubstrateGraphStore._read_by_node_predicate`.
 - Reinforcement reads look up one node by `node_id`. The write still goes through `FalkorSubstrateStore(hydrate=False).upsert_node` (one `MERGE ... SET`, with the reducer-owned metadata keys skipped) on a separate client that is allowed to write.
 - `fetch_concept_region_fragment` calls `read_concept_region_matching(keep_label=...)` when the store has it. The full-slice path stays for the in-memory store. Applying the collector's own filter afterwards changes nothing, because the slice is already filtered.
@@ -82,9 +82,10 @@ pytest tests/test_recall_no_full_graph_hydration.py  -> 5 failed, 3 passed (rest
 # substrate CI lane (substrate-neighborhood.yml list + new file, no FalkorDB)
 188 passed, 12 skipped (the 12 real-FalkorDB tests)
 
-# real throwaway FalkorDB (docker falkordb/falkordb on 127.0.0.1:16399)
-ORION_TEST_FALKOR_URI=redis://127.0.0.1:16399 pytest orion/substrate/tests/test_falkor_direct.py
-  18 passed: full slice == hydrated cache for (500,500),(32,64),(40,200),(1,1),(120,1500);
+# real throwaway FalkorDB, both graph-module versions
+ORION_TEST_FALKOR_URI=redis://127.0.0.1:16399 (4.18.11, prod) pytest orion/substrate/tests/test_falkor_direct.py
+ORION_TEST_FALKOR_URI=redis://127.0.0.1:16400 (6.0.1, CI)     pytest orion/substrate/tests/test_falkor_direct.py
+  18 passed on each: full slice == hydrated cache for (500,500),(32,64),(40,200),(1,1),(120,1500);
   matching slice == collector filter over cache for 5 needles; single-node reads == cache.
   Fixture includes repeated salience values (ties), stored 0 and NULL confidence, a NULL
   salience, self-loops, evidence/entity endpoints.
@@ -101,12 +102,16 @@ pyflakes on all new/changed Python -> clean
 # Live, read-only equivalence + latency (orion_substrate: 5,004 nodes, 37,921 edges)
 python services/orion-recall/scripts/compare_concept_region_direct_vs_cache.py \
   --uri redis://127.0.0.1:6380 --queries-file <152 distinct recall_telemetry queries>
-  hydrate (old path) 12.8-18.5 s, complete=True
+  final query shape, graph at 5,041 nodes / 38,206 edges:
+  hydrate (old path) 13.1 s, complete=True
   152/152 identical (ordered), mean Jaccard 1.0; 52 matched turns, 3,506/3,506 fragments
-  direct latency: unmatched median 11.8 ms; matched median 151 ms, p90 199 ms, max 631 ms
+  direct latency (median of 3 per query): unmatched median 10.6 ms, p90 16 ms;
+  matched median 142 ms, p90 217 ms, max 297 ms
+  (first shape, same day: also 152/152 identical; unmatched 11.8 ms, matched 151 ms median)
 
 # Realistic fixture in the throwaway FalkorDB (870 concepts, 37k edges)
-  median no-match 9.9-12.9 ms, match 130-201 ms
+  FalkorDB 4.18 (prod version): median no-match 8.3 ms, match 123 ms
+  FalkorDB 6.0  (CI image):      median no-match 7.1 ms, match 62 ms
 
 python services/orion-recall/evals/run_recall_bounded_retrieval_eval.py -> runs clean (unaffected)
 ```
@@ -120,7 +125,10 @@ redis-py and the codec are already in the recall image.
 
 ## Review findings fixed
 
-- Not run in this branch. The orchestrator runs the review.
+- Finding (from CI, before review): the equivalence lane failed 8 of 18 on GitHub, which pulls FalkorDB 6.0.1. Locally (4.18.11, the production version) all 18 passed. Reproduced on 6.0.1: for `MATCH (n) WHERE id(n) = $x MATCH (n)-[e]-()`, the 6.0 planner drops the id filter and walks every edge in the graph (2,973 rows instead of 11 for one node), so the edge cut came out wrong.
+  - Fix: the edge-cut query recomputes the concept ranking and passes `n` through `WITH ... LIMIT`, so it never seeks by an id parameter. That plan is correct and bounded on both versions.
+  - Evidence: 18/18 on 4.18.11 and 18/18 on 6.0.1. Live comparison re-run with the final query: 152/152 identical.
+- Code review: not run in this branch. The orchestrator runs it.
 
 ## Restart required
 
@@ -141,6 +149,9 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && ORION_ALLOW_SHARED_CHE
 - Severity: low (observation, existing behavior kept as-is)
   - Concern: a broad match such as the seed concept "Orion" brings back about 341 edge fragments in one turn ("Hi Orion..." returns 342 fragments). The equivalence requirement preserved this.
   - Mitigation: none in this PR.
+- Severity: low
+  - Concern: production FalkorDB is configured with `TIMEOUT 1000` (ms), so a read slower than 1 s is killed. The slowest live read measured was 297 ms.
+  - Mitigation: a killed read raises, the collector catches it and returns nothing for that turn, and nothing falls back to hydration.
 - UNVERIFIED: the change has not run inside the deployed recall container. The latencies above were measured from the host to the published Falkor port, not over the container bridge network.
 
 ## PR link

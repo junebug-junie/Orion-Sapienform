@@ -874,9 +874,9 @@ With `SUBSTRATE_STORE_BACKEND=falkor`, `app/substrate_store.py` hands the collec
 `FalkorDirectConceptStore` (`orion/substrate/falkor_direct.py`), not a `FalkorSubstrateStore`.
 Each turn runs one light `GRAPH.RO_QUERY` that ranks the top 500 concepts by salience and
 confidence and returns only their labels; the labels are matched in Python. No match = done
-(~12ms live). On a match, two more bounded reads fetch the matched concepts' full rows and
+(~11ms median live). On a match, two more bounded reads fetch the matched concepts' full rows and
 the edges among the top 500 most salient edges touching the top 500 concepts that touch a
-matched concept (~150ms median live, most of it FalkorDB walking ~32k edges to rank them).
+matched concept (~140ms median live, most of it FalkorDB walking ~32k edges to rank them).
 The reinforcement reads are single-node lookups and the write is one `MERGE ... SET`.
 The selection is identical to the old cache read: 152/152 real recall queries produced the
 same fragments in the same order (`scripts/compare_concept_region_direct_vs_cache.py`).

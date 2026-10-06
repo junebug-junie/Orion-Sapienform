@@ -82,34 +82,46 @@ def _confidence(alias: str) -> str:
     return f"CASE WHEN coalesce({alias}.confidence, 0.0) = 0.0 THEN 0.5 ELSE {alias}.confidence END"
 
 
-# Light ranking pass: object id + label + rank keys only, never the full row.
-CONCEPT_RANK_CYPHER = (
-    "MATCH (n:SubstrateNode) WHERE n.node_kind = 'concept' AND n.payload_json IS NULL "
-    f"WITH n, {_salience('n')} AS rank_salience, {_confidence('n')} AS rank_confidence "
-    "RETURN id(n) AS object_id, n.label AS label "
-    "ORDER BY rank_salience DESC, rank_confidence DESC, object_id ASC LIMIT $limit_nodes"
+_CONCEPT_MATCH = "MATCH (n:SubstrateNode) WHERE n.node_kind = 'concept' AND n.payload_json IS NULL "
+_CONCEPT_RANKED = (
+    f"WITH n, {_salience('n')} AS rank_salience, {_confidence('n')} AS rank_confidence, id(n) AS object_id "
+    "ORDER BY rank_salience DESC, rank_confidence DESC, object_id ASC LIMIT $limit_nodes "
 )
 
-# Full rows for a handful of already-ranked nodes, by object id (id seek, no scan).
+# Light ranking pass: object id + label + rank keys only, never the full row.
+CONCEPT_RANK_CYPHER = (
+    _CONCEPT_MATCH + _CONCEPT_RANKED + "RETURN object_id, n.label AS label"
+)
+
+# Full rows for a handful of already-ranked nodes, by object id.
 CONCEPT_ROWS_CYPHER = (
     "UNWIND $object_ids AS object_id "
     "MATCH (n:SubstrateNode) WHERE id(n) = object_id "
     f"RETURN {_return_clause('n', NATIVE_NODE_RETURN_FIELDS)}, id(n) AS object_id"
 )
 
-# The edge cut is computed over every edge touching the ranked nodes (that is
-# the cache's semantics); only the survivors touching $selected are returned
-# with full rows. $selected_all=true returns the whole cut.
+# The edge cut is computed over every edge touching the ranked concepts (the
+# cache's semantics); only survivors touching $selected_ids come back, with
+# full rows. $selected_all=true returns the whole cut.
+#
+# The ranking is recomputed here rather than passed in as object ids on
+# purpose. FalkorDB 6.0 (graph module 60001, falkordb/falkordb:latest as of
+# 2026-10-06) drops the id filter in
+# "MATCH (n) WHERE id(n) = $x MATCH (n)-[e]-()" and walks every edge in the
+# graph; the single-clause form keeps the filter but traverses from every node
+# before applying it. Projecting n through WITH ... LIMIT gives the correct,
+# bounded plan on both 4.x (production) and 6.0. Caught by the CI equivalence
+# lane, which pulls the newer image.
 CONCEPT_EDGE_CUT_CYPHER = (
-    "UNWIND $ranked_ids AS ranked_id "
-    "MATCH (n:SubstrateNode) WHERE id(n) = ranked_id "
-    "MATCH (n)-[e]-(:SubstrateNode) WHERE e.substrate_edge = true AND e.payload_json IS NULL "
-    "WITH DISTINCT e "
-    f"WITH e, {_salience('e')} AS rank_salience, {_confidence('e')} AS rank_confidence "
-    "ORDER BY rank_salience DESC, rank_confidence DESC, id(e) ASC LIMIT $limit_edges "
-    "WITH e, startNode(e) AS source, endNode(e) AS target "
-    "WHERE $selected_all OR id(source) IN $selected_ids OR id(target) IN $selected_ids "
-    f"RETURN {_edge_hydrate_return_clause(NATIVE_EDGE_RETURN_FIELDS)}, id(e) AS object_id"
+    _CONCEPT_MATCH
+    + _CONCEPT_RANKED
+    + "MATCH (n)-[e]-(:SubstrateNode) WHERE e.substrate_edge = true AND e.payload_json IS NULL "
+    + "WITH DISTINCT e "
+    + f"WITH e, {_salience('e')} AS rank_salience, {_confidence('e')} AS rank_confidence "
+    + "ORDER BY rank_salience DESC, rank_confidence DESC, id(e) ASC LIMIT $limit_edges "
+    + "WITH e, startNode(e) AS source, endNode(e) AS target "
+    + "WHERE $selected_all OR id(source) IN $selected_ids OR id(target) IN $selected_ids "
+    + f"RETURN {_edge_hydrate_return_clause(NATIVE_EDGE_RETURN_FIELDS)}, id(e) AS object_id"
 )
 
 NODE_BY_ID_CYPHER = (
@@ -186,7 +198,7 @@ class FalkorDirectConceptStore:
         edge_rows = self._query(
             CONCEPT_EDGE_CUT_CYPHER,
             {
-                "ranked_ids": ranked_ids,
+                "limit_nodes": bounded_nodes,
                 "selected_ids": selected_ids,
                 "selected_all": keep_label is None,
                 "limit_edges": bounded_edges,

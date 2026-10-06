@@ -36,8 +36,8 @@ logger = logging.getLogger(__name__)
 
 # Redis socket timeouts for this service's Falkor clients. Live 2026-10-06
 # from the host against orion_substrate (868 concepts, 37,772 edges): the
-# ranking read takes ~15ms, the edge-cut read ~100-130ms. 5s is ~40x the
-# slowest; a hung FalkorDB cannot pin a recall worker thread past it.
+# ranking read takes ~10ms, a whole matched turn ~140ms median, ~300ms max.
+# 5s is >15x the slowest; a hung FalkorDB cannot pin a recall worker thread past it.
 FALKOR_SOCKET_TIMEOUT_S = 5.0
 FALKOR_SOCKET_CONNECT_TIMEOUT_S = 2.0
 

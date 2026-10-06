@@ -1,67 +1,114 @@
-# Memory Stage 2: one list of the things Orion knows about, and recall that starts from them
+# Memory Stage 2: the things Orion knows about, as one graph, and recall that starts from them
 
-Status: **PROPOSAL** (design mode + proposal mode). Nothing here is implemented.
+Status: **PROPOSAL, revision 2** (design mode + proposal mode). Nothing here is implemented.
 Date: 2026-10-06
-Parent: `2026-09-30-memory-episode-redesign-design.md` (rev 3, APPROVED 2026-10-01), the "Stage 2" rows of its plan.
-Builds on: `2026-09-29-recall-semantic-retrieval-pipeline-design.md` (#2413, "recall by referent, not resemblance"). No vectors, no similarity, anywhere in this design.
-Evidence base: read-only queries on the `conjourney` Postgres, FalkorDB `GRAPH.RO_QUERY`, the published graphify bundle, LangGraph checkpoints of the three live distill runs, and the code on main @ f0fc91dc1. All taken 2026-10-06. Anything not checked live is marked **UNVERIFIED**.
+Parent: `2026-09-30-memory-episode-redesign-design.md` (rev 3, APPROVED 2026-10-01), its "Stage 2" rows.
+Builds on:
+- `2026-09-29-recall-semantic-retrieval-pipeline-design.md` (#2413, "recall by referent, not resemblance"). No vectors and no similarity anywhere in this design.
+- `docs/plans/substrate/2026-10-06-reading-property-graph-design.md` and `…/2026-10-06-neighborhood-read-contract.md` (**#2497, merged**). This design follows their doctrine:
+  - Postgres holds text, evidence and the append-only audit trail.
+  - Falkor (the substrate graph) holds what can be walked.
+  - A relationship becomes walkable only once its assertion is accepted.
 
-The repo is public. Memories about Juniper's family, body or whereabouts are counted here, never quoted.
+Evidence base:
+- read-only queries on the `conjourney` Postgres and FalkorDB `GRAPH.RO_QUERY`;
+- read-only neighborhood replays (`scripts/replay_substrate_neighborhood.py`);
+- the published graphify bundle;
+- LangGraph checkpoints of the three live distill runs;
+- code on main @ 4d03ae877.
+
+All of it was taken on 2026-10-06. Anything not checked live is marked **UNVERIFIED**.
+
+The repo is public. Memories about Juniper's family, body, feelings or whereabouts are counted here, never quoted.
+
+## What changed in revision 2
+
+Revision 1 built a second graph of the same things #2497 governs. It used Postgres tables `referent` and `referent_mention`, walked them in Postgres, and added a Graphiti mirror. It also planned a second replacement for `concept_region`. Revision 2 removes that duplication:
+
+1. **Referents are substrate nodes.**
+   - People, places, machines, projects, services and events become `EntityNodeV1`. They use `entity_type`, a free-text field the codec already persists, so `machine` needs no schema change.
+   - Concepts become `ConceptNodeV1`.
+   - The Postgres `referent` table is gone.
+2. **Links are graph edges with voice, channel, producer and reason.**
+   - A memory, reverie, reading, curiosity note, journal or dream is an `EvidenceNodeV1`. Its text stays in Postgres.
+   - The link from a referent to that evidence is a provenance edge (`observed_in`, `edge_role=provenance`).
+   - Every claim-bearing step goes through #2497's assertion lifecycle: proposed, then provisional/canonical, or rejected/deprecated. The claim-bearing steps are alias→referent resolution, merges, and referent↔referent relationships.
+   - `referent_mention` is gone.
+3. **Postgres keeps four things:** the alias lifecycle, the evidence text and quotes, the episode_memory rows, and one shared append-only journal. Section 1.3 justifies keeping aliases there.
+4. **Recall by referent walks through #2497's bounded neighborhood API**, plus one bounded evidence-handle read. It is the single replacement for both `concept_region` and the active packet. The latency budget is measured against real neighborhood replays, and those are slow today (section 4.3).
+5. **The Graphiti mirror is dropped from Stage 2.** Substrate edges already store `valid_from`/`valid_to` natively, and the Postgres journal holds every state change. Together they answer "what did I know about X last week" (section 3). We do not keep two time-aware stores.
+6. **Stakes is decided, not open.** Juniper's policy: health, family/relationships, feelings and identity conclusions get confirmed in conversation. A fix PR is in flight. The reverie seed is now gated on that policy (section 5).
+7. **The PR sequence is now A–H.** PR A is the shared substrate contract patch that both this design and #2497's reading work need.
 
 ---
 
 ## Arsonist summary
 
-Stage 1 works: since 10-02, after each conversation, Orion writes down what is worth keeping, in its own words. Each memory names the specific things it is about (`project:hecate`, `person:vincent`, `place:chicago`). Today nothing uses those names. Recall still serves the same top 100 old rows by salience, whatever Juniper says.
+Stage 1 works. Since 10-02, after each conversation, Orion writes down what is worth keeping, in its own words. Each memory names the things it is about: `project:hecate`, `person:vincent`, `place:chicago`. Nothing uses those names yet. Recall still serves the same top 100 old rows by salience, whatever Juniper says.
 
-Stage 2 makes those names the backbone of memory:
+Stage 2 makes those names part of Orion's one graph:
 
-1. **One list of things.** A Postgres table holds every person, place, machine, project, service, concept and event Orion knows about. Each has its other names: "Hecate", "the Inspur" and "Inspur NF5288M5" all point at one machine. The memory writer proposes the names. Code accepts a name only if Juniper actually said it. When a name could mean two things, Orion asks; it never merges silently.
-2. **Links from everything to those things.** Memories, episodes, Orion's reveries, readings, curiosity notes and topic-model concepts are each linked to the things they mention, and each link records whose words it is.
-3. **Recall starts from the things a message names.** "How's Hecate doing?" finds Hecate, walks one step to the Hecate memories and their quotes, and returns them with the reason ("you said Hecate") and the voice ("Juniper told me…"). Orion's 180 reveries about Hecate come back labelled as Orion's own thoughts, never as something Juniper said.
-4. **Graphiti mirrors the timeline**, so Orion can answer "what did I know about X last week". It runs with no LLM, and Orion sets the validity dates.
-5. **The reverie image seed** switches from old crystallizations to validated new memories.
+1. **Each thing becomes a node in the substrate graph.**
+   - "Hecate", "the Inspur" and "Inspur NF5288M5" are names for one machine node.
+   - A name only counts if Juniper actually said it.
+   - When a name could mean two things, it becomes a *proposal* that Orion asks about. Nothing merges, or becomes walkable, until it is accepted.
+2. **Everything Orion has about a thing hangs off its node as evidence:** memories, reveries, readings, curiosity notes. Each link says whose words they are.
+3. **Recall starts from the things a message names.**
+   - "How's Hecate doing?" goes from the Hecate node to its evidence, and through #2497's bounded neighborhood to related things.
+   - Each item comes back with why it was recalled and whose words it is.
+   - Orion's 180 reveries about Hecate come back labelled as its own thoughts, never as something Juniper said.
+4. **"What did I know about Hecate last week?" is one graph query.** It reads edge validity dates plus the journal. No second time store.
+5. **The reverie image seed uses validated new memories.** High-stakes ones are used only after Juniper confirms them.
 
-It runs in shadow next to today's recall, with a side-by-side report. It replaces the old recall only when measured gates pass.
+It runs in shadow next to today's recall. It replaces the old recall only when measured gates pass.
 
-**Three live findings shape the design:**
-- **The writer already proposes aliases, and Stage 1 throws them away.** The raw 27B output for the Hecate episode carries `aliases: ["Inspur NF5288M5", "AGX-2 GPU", "8x smx2 gpus"]`. But `validate.py:308-315` keeps only `(key, role)`, and `episode_memory_referent` has no alias column. Six referents across the three runs had aliases. All were lost.
-- **Some proposed aliases are wrong as identities.** "my boss" for Rachel only means something relative to Juniper. "a Marriott" names a class of hotel, not the hotel. "autonomous robot" for the camera project names a different future thing. So aliases need a grounding rule and a collision path. A plain "accept what the LLM said" rule would not do.
-- **The writer files machines as projects** (`project:hecate`, `project:circe`). Its kind list has no `machine` (`validate.py:44`).
+**Live findings that shape it:**
+- **The writer already proposes aliases, and Stage 1 throws them away.** In the raw 27B output for the Hecate episode, `aliases` = "Inspur NF5288M5", "AGX-2 GPU", "8x smx2 gpus". `validate.py:308-315` keeps only `(key, role)`.
+- **Some proposed aliases are wrong as identities.** "my boss" only means something relative to Juniper. "a Marriott" names a class of hotel. "autonomous robot" for the camera project names a different future thing. So aliases need grounding and a collision path.
+- **The substrate graph has almost nothing walkable by default.** All 1,610 Entity nodes and 851 of 855 Concept nodes are `proposed`, but #2497's neighborhood defaults to `provisional`/`canonical`. A default read focused on topic-foundry's "circe" entity returns `focal_unavailable_or_filtered`.
+- **Neighborhood reads are slow on the chat path today:** 352–674 ms for one focal node from the host. The cost is round trips, not query time. A single bounded Cypher query runs in 2–4 ms inside Falkor.
 
 ---
 
 ## Current architecture
 
-### What Stage 1 actually writes (live, 2026-10-06)
+### What Stage 1 writes (live, 2026-10-06)
 
 | Table | Rows | Notes |
 |---|---|---|
 | `episode_distill_run` | 3 (10-04 01:26, 10-05 02:56, 10-05 03:53) | 27B Q4 on route `memory_distill`; LLM 35 s / 78 s / 118 s; hold wait 0.5–1.5 s |
-| `episode_memory` | 25 | 15 `happened`/`juniper_said`, 7 `about_juniper`/`juniper_said`, 2 `happened`/`orion_thought`, 1 `follow_up`. All `stakes=low`, `auto`, `active` |
+| `episode_memory` | 25 | 15 `happened`/`juniper_said`, 7 `about_juniper`/`juniper_said`, 2 `happened`/`orion_thought`, 1 `follow_up`. All `stakes=low`, `auto`, `active`, because they were written before Juniper's stakes policy was implemented |
 | `episode_memory_referent` | 32 rows, 14 distinct keys | No alias column. Indexed on `referent_key` |
 | `episode_memory_evidence` | 26 quotes, all `verified=t` | 22 from prompts, 4 from responses. `source_id` = `chat_history_log.id` |
 | `episode_memory_event` | 25, all `created` | No supersede, fade or confirm events yet |
-| `memory_tension_shadow` | 2 open questions | Both `scope=juniper`, `answer_via=conversation`, with `referent_keys` |
-| `episode_memory_link` (rev 3 §2) | **not created** | Stage 2 |
+| `memory_tension_shadow` | 2 open questions | `scope=juniper`, `answer_via=conversation`, with `referent_keys` |
 
-**Referent keys the writer emitted**, with key/role/count:
-- `person:juniper` (subject 5, about 3), `project:hecate` (about 5), `person:juniper-sister` (about 3, a family member)
-- `event:austin-offsite` (event 2), `event:joker-2-viewing` (event 2), `person:vincent` (participant 2), `place:the-wade` (location 2), `project:circe` (about 2)
-- 1 each: `concept:space` (topic), `person:orion` (about), `person:rachel` (participant), `place:chicago` (location), `place:jackalope-bar` (location), `project:orion-camera` (project)
+**Keys emitted** (key: role count):
 
-What this tells us:
-- **Roles are free text.** Seven distinct values appear: subject, about, participant, location, event, topic, project.
-- **Event keys are not dated.** The prompt asks for `event:<slug>-<yyyy>-<mm>`; the writer emitted `event:austin-offsite`.
-- **Some named people became no referent.** In "Jay, Jay, Armando, and Vincent", only Vincent got a key.
+| Key | Role(s) |
+|---|---|
+| `person:juniper` | subject 5, about 3 |
+| `project:hecate` | about 5 |
+| `person:juniper-sister` | about 3 |
+| `event:austin-offsite` | event 2 |
+| `event:joker-2-viewing` | event 2 |
+| `person:vincent` | participant 2 |
+| `place:the-wade` | location 2 |
+| `project:circe` | about 2 |
+| `concept:space`, `person:orion`, `person:rachel`, `place:chicago`, `place:jackalope-bar`, `project:orion-camera` | 1 each |
 
-**Aliases the writer emitted**, recovered from the `answer_text` channel of `checkpoint_writes` for the three `memdistill-*` threads:
+What this shows:
+- Roles are free text (7 values).
+- Event keys are not dated, even though the prompt asks for a `-yyyy-mm` suffix.
+- Machines are filed as `project`. The kind list in `validate.py:44` has no `machine`.
 
-| Key | Aliases emitted | Grounded in Juniper's words? |
+**Aliases the writer emitted**, recovered from `checkpoint_writes.answer_text` for the `memdistill-*` threads:
+
+| Key | Aliases | Grounded in Juniper's words? |
 |---|---|---|
 | `project:hecate` | "Inspur NF5288M5", "AGX-2 GPU", "8x smx2 gpus" | Yes. Prompt `ddc979a1…`: "I got us an Inspur NF5288M5 AGX-2 GPU that holds 8x smx2 gpus. We'll call it Hecate" |
 | `person:juniper-sister` | "my sister" | Yes, but relative to the speaker |
-| `place:the-wade` | "the Wade", "a Marriott" | "the Wade" yes; "a Marriott" is a class (**UNVERIFIED** whether it is in a quote) |
+| `place:the-wade` | "the Wade", "a Marriott" | "the Wade" yes. "a Marriott" is a class (**UNVERIFIED** whether it is quoted) |
 | `event:joker-2-viewing` | "Joker 2" | Yes |
 | `event:austin-offsite` | "Austin team", "offsite" | "offsite" yes |
 | `person:rachel` | "my boss" | Yes, but relative to the speaker |
@@ -69,617 +116,722 @@ What this tells us:
 | `project:orion-camera` | "camera", "autonomous robot" | Yes, but "autonomous robot" is a different future thing |
 | `event:chicago-simulation` (question only) | "simulation", "client use case" | Generic words |
 
-`validate.py` drops every one of these. The persisted `referents` field is `list[tuple[str, str]]` (`validate.py:103, 308-315`), and `store.py` inserts only `(memory_id, key, role)`.
+"The new server": Juniper never wrote it. Zero prompts match `new server|the inspur`. The phrase appears only in Orion's own memory statement `63d7e72b`.
 
-**The "new server" case.** Juniper never wrote "the new server". Zero chat prompts match `new server|the inspur`. The phrase appears only in Orion's own memory statement ("onboarding processes for the new server", memory `63d7e72b`). So today "the new server" can only resolve through Orion's own words. The design handles that case explicitly (section 1.4).
+### The substrate graph today (Falkor `orion_substrate`, live)
 
-### Where referents already appear in other stores (live counts)
+- **Nodes:**
+  - 2,494 Evidence (2,508 are `topic_foundry_run_topic`, all `proposed`; the two counts were taken a few minutes apart);
+  - 1,610 Entity: all `entity_type=unknown`, `proposed`, `anchor_scope=world`, from `topic_foundry_adapter`, unique by lowercased label;
+  - 855 Concept: 851 `proposed`, 4 `canonical`.
+- **Edges (37,630):**
+
+  | From → to | Predicate | Count |
+  |---|---|---|
+  | Concept → Entity | `associated_with` | 17,481 |
+  | Concept → Concept | `co_occurs_with` | 13,459 |
+  | Concept → Concept | `associated_with` | 3,379 |
+  | Evidence → Concept | `supports` | 3,310 |
+
+- **0 edges have `valid_from` set.** The codec persists it natively (`falkor_codec.py:90-91`, and for edges at `:354-355`); nothing writes it.
+- **Entity identity today is the label.**
+  - `reconcile.py:143-156` keys an entity as `entity|{scope}|{subject}|label:{label}`.
+  - Concepts can also merge by embedding cosine (`_concept_embedding_match_key`).
+  - Both conflict with "no silent merge, no vector identity". That is true for our nodes, and #2497 notes it in general.
+  - Topic-foundry already has Entity nodes labelled "juniper", "circe" and "orion".
+- **Codec:**
+  - It durably supports only `concept`, `entity` and `evidence` (`DURABLE_NODE_KINDS`, `falkor_codec.py:120`).
+  - For entities it stores `entity_type` and `aliases_json`. The latter is a JSON string, not indexable.
+  - For evidence it stores `evidence_type` and `content_ref`.
+  - `metadata` is not persisted generically.
+  - `SubstrateEdgeV1` has no acceptance state and no `edge_role` (#2497 §"Existing contracts").
+- **Writers** go through `SubstrateGraphMaterializer.apply_record` (`orion/substrate/materializer.py:41`).
+
+### #2497 (merged): what it gives and what it leaves for later
+
+**What it gives:** `read_neighborhood(NeighborhoodRequestV1)`:
+- internal and boundary edges with separate budgets, round-robin over focal node, direction and predicate;
+- only Concept/Entity endpoints in the requested promotion states;
+- receipts: `complete_for_request`, `truncated`, `degraded`, `reason`;
+- no hydration and no cache;
+- caps of 16 focal nodes and 256 edges/neighbors.
+
+Evidence and other non-semantic endpoints never compete for budgets (`neighborhood_backends.py`, the `source.node_kind IN ['concept','entity']` filter).
+
+**What it leaves for later patches:**
+- the assertion pipeline: `Assertion` node kind, `assertion_subject`/`assertion_object` edges, and proposal/decision/materialization events with a journal;
+- native `edge_role`;
+- `visibility_scope`;
+- the provenance resolver (`EvidenceLineageV1`);
+- moving existing callers, including `concept_region`, onto the new read.
+
+**Its own replay:** 8 hub-heavy focal nodes, budgets 12/16/16, 1,186.61 ms, truncated, not degraded.
+
+**Neighborhood replays I ran** (read-only, host Python against `redis://localhost:6380`, `proposed` opted in, 3 runs each):
+
+| Focal node | Budgets | Elapsed ms | Boundary edges | Truncated |
+|---|---|---|---|---|
+| Concept "GPU performance and work" | 12/16/16 | 621, 526, 674 | 15 | no |
+| Entity "circe" (topic-foundry) | 12/16/16 | 410, 388, 396 | 16 | yes |
+| Entity "circe" | 4/8/8 | 351, 406, 359 | 8 | yes |
+| Entity "circe", default states | 4/8/8 | 6 | 0 | `focal_unavailable_or_filtered` |
+
+For comparison, one bounded Cypher query (focal → latest 6 evidence nodes) runs in 2.6–4.1 ms inside Falkor, and about 100 ms through `docker exec`. The neighborhood cost is the number of round trips. It makes one query per focal node, per predicate group, per edge page, and **per neighbor node** (`neighborhood.py:166-170` fetches each outside endpoint separately).
+
+### Other stores that mention referents (live counts)
 
 | Source | Hecate | Inspur | Vincent | Jackalope | Wade |
 |---|---|---|---|---|---|
-| `substrate_reverie_thought` (Orion's reveries) | **180** (first 10-04 02:10, 41 min after Juniper's message; newest 10-06 02:05) | 1 | 0 | 0 | 0 |
-| `journal_entries`, non-metacog | 6 (manual 2, orion_day 2, scheduler 2) | 3 | 2 | 2 | 2 |
-| `chat_history_log` | 9 (1 prompt; 8 are Orion's unprompted outreach, with empty prompt) | 1 | 1 | 1 | 3 |
+| `substrate_reverie_thought` | **180** (first 10-04 02:10, 41 min after Juniper's message) | 1 | 0 | 0 | 0 |
+| `journal_entries`, non-metacog | 6 | 3 | 2 | 2 | 2 |
+| `chat_history_log` | 9 (1 prompt; 8 are Orion's unprompted outreach) | 1 | 1 | 1 | 3 |
 
-The reveries are Orion turning Hecate over on its own: "the unresolved tension between substrate structure and Hecate signals". They are exactly what must never come back as "Juniper said".
+**How rare names are in Orion's own corpus.** The corpus is 574 non-AI-Town chat turns, 2,748 non-metacog journals and 1,029 claims: 4,351 documents. Document frequency over chat and journals:
 
-**Topic-model concepts** (Falkor `orion_substrate`, `:Concept`):
-- 636 from `topic_foundry_adapter` (newest 10-05 04:10), 201 from `world_pulse_read_pipeline`, 11 from `substrate_runtime_worker`, 4 from `seed_concepts_loader`.
-- The labels are topic phrases: "Home server setup", "GPU performance and work", "Disk damage from AC failure".
-- Each concept's `evidence_refs_json` holds `<run_id>:topic:<n>`. That joins to `topic_foundry_segments(run_id, topic_id)`, whose `provenance.row_ids` are `chat_history_log` ids.
-- Live check: the Hecate turn `ddc979a1…` sits in 4 segments, which map to the concept **"GPU performance and work"** (`sub-concept-topicfoundry-7ed137b5…-6`). This is a real, typed link from a concept to a memory through a shared source turn, with no similarity involved.
+| Term | Documents |
+|---|---|
+| hecate | 15 |
+| inspur | 4 |
+| chicago | 13 |
+| offsite | 14 |
+| server | 27 |
+| camera | 38 |
 
-**graphify** (published bundle `/mnt/storage-warm/orion-graphify/published/graphify-out/graph.json`):
-- Built at `aff23fac0`, file dated 2026-09-11 (25 days stale). 77,966 nodes and 169,111 links.
-- It covers 95 `orion-*` service directories, 6,107 source files and 530 PR-report files. 4,828 of the files have a basename that is unique in the bundle; `__init__.py` (236), `README.md` (106), `settings.py` (83) and `main.py` (81) are not unique.
-- Its 1,174 `concept` nodes are mostly schema field names ("name", "category", "priority"). They are not referents.
-- `main` has 2,377 "Merge pull request #N" commits.
+At #2413's cut (df ≤ 0.5%, so ≤ 21 docs), "hecate" and "inspur" are rare and "server" is not.
 
-**Rarity of names in Orion's own words.** The corpus is 574 non-AI-Town chat turns + 2,748 non-metacog journals + 1,029 world-pulse claims = 4,351 documents. Document frequency over chat and journals: hecate 15, inspur 4, chicago 13, offsite 14, server 27, camera 38. At #2413's df ≤ 0.5% cut (≤ 21 docs), "hecate" and "inspur" count as rare and "server" and "camera" do not. That is why "the new server" needs an alias or a phrase rule. A rare-term rule alone will not catch it.
+**graphify:** the published bundle was built at `aff23fac0` (file dated 2026-09-11, 25 days stale). It has 95 `orion-*` services and 6,107 source files, of which 4,828 have a unique basename. Its `concept` file-type nodes are schema field names, not referents. `main` has 2,377 "Merge pull request #N" commits.
 
 ### Recall today (live, 7 days)
 
-- **The active packet is still query-blind.** `memory_crystallization_retrieval_events`: 569 retrievals, every one exactly 100 ids, only 103 distinct ids across them.
-- **The intent is still always `open_loop`.** `recall_telemetry` for `stance_react`: 636 `chat.continuity.v1` (Phase 1) and 608 `chat.belief.open_loop.v1` (Phase 3). Zero relational, semantic, procedural or contradiction profiles. The cause is the one rev 3 named: `retrieval_intent.py:128` checks `open_loops` first.
+- **The active packet ignores the query.** All 569 retrievals return exactly 100 ids, and only 103 distinct ids appear across them.
+- **Phase 3 always runs as `open_loop`.** 608 of 608 recalls used `chat.belief.open_loop.v1`, because `retrieval_intent.py:128` checks open loops first.
 - **Latency:**
 
   | Phase | p50 | p95 |
   |---|---|---|
-  | Phase 1 (continuity) | 532 ms | 1,084 ms |
-  | Phase 3 (purposeful) | 1,199 ms | 2,150 ms |
+  | Phase 1 | 532 ms | 1,084 ms |
+  | Phase 3 | 1,199 ms | 2,150 ms |
 
-- **#2413 is not built.** The tables `recall_referent`, `recall_referent_posting` and `recall_term_stats` do not exist, and there is no `services/orion-recall/app/referents/`. `MemoryItemV1` has no voice or reason field, and `orion/memory/voice_render.py` does not exist.
+- **Not built:** #2413's tables, `MemoryItemV1` voice/reason fields, `orion/memory/voice_render.py`.
 
 ### Graphiti today
 
-- The Hub URL fix shipped in **#2457** (commit `ffcf99e88`, "Graphiti URL reachable from host network; surface sync failures"). Hub `.env_example:911` is `GRAPHITI_ADAPTER_URL=http://127.0.0.1:8640`.
-- **Live proof it works:** Juniper approved crystallization `ae612548…` at 2026-10-05 04:31:10.63. A `graphiti_temporal` Entity node appeared at 04:31:10.98. The graph went from 25 to 28 nodes / 28 `RELATES_TO` edges.
-- **The temporal fields are still unused:** 0 edges have `valid_at`/`invalid_at`.
-- The adapter (app-net, `/health` OK) exposes `/v1/episodes`, `/v1/rebuild`, `/v1/neighborhood/{crystallization_id}` and `/v1/search`. orion-durable-runs is also on app-net.
+- **The Hub URL fix shipped in #2457** (`ffcf99e88`). Live proof: Juniper's approval of crystallization `ae612548…` at 2026-10-05 04:31:10.63 produced a `graphiti_temporal` node at 04:31:10.98. The graph now has 28 nodes and 28 edges.
+- **Its time fields are unused:** 0 edges have `valid_at`/`invalid_at`.
+- **Its only writer** is the legacy crystallization-approval sync.
 
-### Reverie visual seed today: alive again, but repetitive
+### Reverie visual seed today
 
-Rev 3 said this seed was dead since about 09-24. **That is no longer true:**
-- `reverie_visual_chain` has memory-seeded chains every day since 09-30 (4, 7, 8, 7, 10, 9, 1 per day).
-- The reader (`services/orion-thought/app/store.py:917-1018`) takes the newest *approved* crystallization. Juniper's 10-05 approval revived it.
-- But in the last 7 days only **2 distinct** memories seeded all of those chains, the latest one roughly 20 times.
-
-### Current gap, in one line
-
-The new memories know what they are about, but nothing turns that into a shared list of things, links other sources to those things, or lets recall use them.
+- **It is alive again since 09-30**, contrary to rev 3. It produced 4–10 memory-seeded chains a day.
+- It reads the newest *approved* crystallization (`services/orion-thought/app/store.py:917-1018`).
+- **But only 2 distinct memories seeded it in 7 days.**
 
 ---
 
-## Missing questions (answered here from evidence; open ones at the end)
+## Missing questions (answered here from evidence)
 
 | Question | Decision | Why |
 |---|---|---|
-| Wait for #2413's index? | **No.** This spec builds the referent store. #2413 Phases 2-3 are amended to read and write the same tables | Juniper's approved idea; #2413 is unbuilt (checked) |
-| Where does the referent store live? | Postgres, as a shared library `orion/memory/referents/`. Three writers: the distill persist node (durable-runs), the mention indexer (memory-consolidation) and the offline seeders (scripts). Recall only reads | The writer already runs in durable-runs' persist node (`episode_distill_graph.py:170-178`), in one transaction |
-| Who may add aliases? | The writer proposes. An alias becomes **active** only if it appears verbatim in a verified quote of **Juniper's** prompt. Orion-only aliases stay `proposed` | This narrows #2413's "aliases are not self-authored": the alias is Juniper's own word, and Orion only noticed it |
-| Kind for machines | Add `machine`. `project` and `machine` with the same slug are one thing (kind refinement, not a merge) | The writer filed Hecate and Circe as projects |
-| Store aliases from the 3 existing runs? | **Yes.** The backfill re-parses `answer_text` from the LangGraph checkpoints through the fixed validator | The raw outputs are still there (checked) |
-| Is `episode_memory_link` (rev 3 §2) needed? | **No stored table.** Links are a join, memory → referent → mention, exposed as a view | One fact per row; nothing to keep in sync |
-| Graphiti in the chat request path? | Only for the contradiction intent's "as of" view, with a 200 ms timeout. 1-hop and 2-hop walks read Postgres | At this scale Postgres answers both in milliseconds. Graphiti earns its place on the as-of view or goes back to optional (rev 3's honest risk) |
-| Old crystallizations at cutover? | Matched by the same referent/phrase rules against their `summary`, labelled `legacy_crystallization`. **The top-100-by-salience path is deleted**, not kept as a fallback | Kill means kill. Stage 4 still retires the rows |
+| One graph or two? | **One.** Referents are substrate Entity/Concept nodes; memories and other sources are Evidence nodes | #2497's doctrine. It also avoids two plans for one recall seam |
+| Who builds the assertion core? | **PR A, a shared substrate contract patch** used by both this design and #2497's reading pipeline | Memory needs it first, and #2497 left it unbuilt. Building it twice would recreate the conflict |
+| Aliases: node property or Postgres? | **Postgres is the source of truth for the lifecycle and the lookup.** Active aliases are copied onto `EntityNodeV1.aliases` for display | See 1.3. Each alias's state, grounding and validity are audit data. `aliases_json` is a non-indexable JSON string. `ConceptNodeV1` has no `aliases` field |
+| Does a mention (memory→referent link) need acceptance? | **Acceptance is enforced upstream, on the alias and the node.** A mention is a provenance receipt (where a name appears), not a claim. It is created only through an accepted alias pointing at a provisional/canonical node | One proposal per name, not 20k proposals for reveries. The claim-bearing step is "this name means this thing" |
+| Referent↔referent relationships? | **`co_occurs_with` assertions only**, from a verified Juniper quote naming both. Accepted under a named, tested policy (2.2). Never `causes`, `part_of`, and so on | #2497: `co_occurs_with` "only records source co-occurrence". It asks for any auto-accept policy to be named and tested, not quietly enabled |
+| Should new referent nodes enter dynamics/attention? | **Not in Stage 2.** They are excluded from the dynamics/attention eligibility predicate by provenance source kind, with a before/after test | #2497 rule 8: keep cognitive eligibility unchanged in the first migration |
+| Is Graphiti needed for the as-of view? | **No** (section 3) | Native edge validity plus the journal answer it in one query |
+| Old crystallizations at cutover? | A Postgres full-text lane over `memory_crystallizations.summary` until Stage 4. **The top-100-by-salience path is deleted** | Kill means kill |
 
 ---
 
 ## Design
 
-### 1. The canonical referent store (Postgres is the truth)
+### 1. Referents as substrate nodes
 
-#### 1.1 Tables
+#### 1.1 Node mapping (existing models and codec)
+
+| Writer kind | Model | `entity_type` | `anchor_scope` |
+|---|---|---|---|
+| person (not Juniper or Orion) | `EntityNodeV1` | `person` | `juniper` |
+| place | `EntityNodeV1` | `place` | `juniper` |
+| event | `EntityNodeV1` | `event` | `juniper` |
+| machine (new value; also `project:` slugs refined to it) | `EntityNodeV1` | `machine` | `orion` |
+| project | `EntityNodeV1` | `project` | `juniper` or `orion`, by first evidence |
+| service / file / pr | `EntityNodeV1` | `service` / `file` / `pr` | `orion` |
+| concept | `ConceptNodeV1` | — | `juniper` |
+| `person:juniper`, `person:orion` | `EntityNodeV1` | `person` | `juniper` / `orion`, seeded once |
+
+- **`EventNodeV1` is not used.** The codec cannot persist it, and #2497's neighborhood only walks Concept/Entity. An event is an Entity with `entity_type=event`.
+- **`entity_type` values come from a closed set** in `orion/memory/referents/kinds.py`. The writer validates them and the schema docs list them. The Pydantic field stays a free string, so the schema does not change.
+- **Node id:** `referent-<uuid5(ns, canonical key at mint)>`. It is never recomputed from a later label. Two things with the same name get different keys only through the ambiguity path (1.2), which #2497 requires ("IDs are not hashes of labels").
+- **Identity key (reconcile).** A new branch in `reconcile.py` gives nodes whose `provenance.producer == "memory.referents"` the key `referent|<node_id>`. That fences them off from:
+  - the label-identity merge (`reconcile.py:143-156`);
+  - the embedding-cosine concept merge. Our concepts carry no embedding, and a test asserts `_concept_embedding_match_key` returns `None` for them.
+- **Promotion state** follows #2497's single lifecycle:
+
+  | State | When | Walkable? |
+  |---|---|---|
+  | `provisional` | Minted from a grounded writer key or alias | Yes |
+  | `proposed` | Minted on the ambiguity path | No, until decided |
+  | `canonical` | Confirmed by Juniper | Yes |
+  | `deprecated` | Merged away (a redirect alias points to the survivor) | No |
+  | `rejected` | Juniper said it is not a thing | No |
+
+- **Provenance:** `producer="memory.referents"` and `source_kind="episode_memory_referent"`. `authority="user_asserted"` when grounded in a Juniper prompt, else `local_inferred`. `evidence_refs` = the memory ids.
+- **Roles** are normalized at validate time to `subject | about | participant | location`. They are kept on the provenance edge, not used for ranking.
+
+#### 1.2 Resolution in the writer's persist node (deterministic)
+
+The persist node in orion-durable-runs writes Postgres only, in one transaction:
+- the memory rows (as today);
+- `episode_memory_referent.node_id`;
+- alias rows;
+- journal events (1.4).
+
+A projector then materializes the graph (2.3). This is the transactional-outbox shape #2497 requires.
+
+For each referent `{key, role, aliases}`:
+1. **Exact key, or a redirect.** The key exists as an alias row of class `key` in state provisional/canonical → that node.
+2. **Kind refinement.** Same slug, and both kinds are in {project, machine, service} → that node. Write `kind_refined` and add the old key as a `key` alias. This is how `project:hecate` becomes `machine:hecate`. It is not a merge.
+3. **Grounded name alias.** The key's slug, or one of its grounded aliases (1.3), exactly equals a provisional/canonical name alias of exactly one node of a compatible kind → that node.
+4. **Ambiguous** → mint a new node as `proposed`, attach the memory to it, and write an **identity proposal**. A referent is ambiguous if any of these hold:
+   - it matches two or more nodes;
+   - it matches a node of an incompatible kind;
+   - it is a descriptor that matches two or more live nodes;
+   - its slug equals the label of an existing *non-memory* node, such as topic-foundry's "circe".
+
+   The proposal is a `SubstrateGraphProposalV1` with `proposal_kind=referent_identity` (1.4). It carries both node ids, the quotes, and the question "Is 'X' the same as 'Y'?".
+
+   It is mirrored to `memory_tension_shadow`:
+   - person, place, event: `scope=juniper`, `answer_via=conversation`. At Stage 3 this becomes an "Orion is asking" card.
+   - machine, service, file, pr, concept: `scope=self`, `answer_via=investigation`. At Stage 3 this becomes a curiosity self-question.
+5. **Otherwise** mint a `provisional` node.
+
+**Nothing merges without a decision.**
+- A merge is a `SubstrateGraphDecisionV1` with `resolution=merge`. It comes from Juniper's `AttentionLoopOutcomeV1` (Stage 3), or, for self-scope kinds, from Orion's investigation answer with its evidence.
+- The projector then:
+  - moves the evidence edges to the survivor;
+  - sets the loser to `deprecated` and writes a redirect alias;
+  - emits `SubstrateGraphMaterializationV1` with the real ids.
+- Until then the proposed node is invisible to the neighborhood, because of the default states. Recall shows it only when a query names it directly, as "possibly the same as X (unconfirmed)".
+
+#### 1.3 Aliases: Postgres holds the lifecycle; the node holds a display copy
 
 ```sql
-CREATE TABLE referent (
-  referent_id   uuid PRIMARY KEY,            -- uuid5(ns, first canonical key); never changes
-  canonical_key text NOT NULL UNIQUE,        -- kind:slug, e.g. machine:hecate
-  kind          text NOT NULL,               -- person | place | machine | project | service | concept | event | file | pr
-  display_name  text NOT NULL,               -- "Hecate"
-  status        text NOT NULL DEFAULT 'active', -- active | provisional | retired
-  source        text NOT NULL,               -- episode_writer | graphify | topic_foundry | git_log | seed
-  source_build  text NULL,                   -- e.g. 'graphify aff23fac0 2026-09-11'; 'topic_foundry run <id>'
-  external_ref  text NULL,                   -- graphify node id / Falkor node_id / PR number
-  first_seen_at timestamptz NOT NULL,        -- earliest evidence (memory occurred_at, mention ts, build date)
-  last_seen_at  timestamptz NOT NULL,
-  memory_count  int NOT NULL DEFAULT 0,      -- maintained by persist; feeds idf
-  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());
-
 CREATE TABLE referent_alias (
-  referent_id  uuid NOT NULL REFERENCES referent,
+  node_id      text NOT NULL,                -- substrate node id
   alias_norm   text NOT NULL,                -- lowercased, whitespace-collapsed, punctuation-trimmed
-  alias_text   text NOT NULL,                -- as first seen
-  alias_class  text NOT NULL,                -- name | descriptor | key   (deterministic, 1.3)
-  state        text NOT NULL,                -- active | proposed | ambiguous | rejected
-  grounded_in  text NULL,                    -- 'chat_prompt:<chat_history_log.id>' when active by grounding
-  proposed_by  text NOT NULL,                -- episode_writer | graphify | topic_foundry | juniper | seed
-  valid_until  timestamptz NULL,             -- descriptors only (1.3)
-  created_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (referent_id, alias_norm));
-CREATE INDEX ON referent_alias (alias_norm) WHERE state = 'active';
-
-CREATE TABLE referent_key_redirect (          -- old key -> referent (kind refinements, Juniper-confirmed merges)
-  old_key text PRIMARY KEY, referent_id uuid NOT NULL REFERENCES referent, reason text NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now());
-
-CREATE TABLE referent_event (                  -- every identity decision, for audit and rollback
-  event_id uuid PRIMARY KEY, referent_id uuid NULL, op text NOT NULL,
-  -- op: created | alias_added | alias_activated | alias_ambiguous | kind_refined | merge_proposed
-  --     | merge_confirmed | merge_rejected | retired
-  actor text NOT NULL, detail jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now());
-
-ALTER TABLE episode_memory_referent ADD COLUMN referent_id uuid NULL REFERENCES referent;  -- filled by persist + backfill
-CREATE INDEX ON episode_memory_referent (referent_id);
+  alias_text   text NOT NULL,
+  alias_class  text NOT NULL,                -- key | name | descriptor
+  promotion_state text NOT NULL,             -- proposed | provisional | canonical | rejected | deprecated (#2497 vocabulary)
+  grounded_in  text NULL,                    -- 'chat_prompt:<chat_history_log.id>'
+  proposed_by  text NOT NULL,                -- episode_writer | graphify | git_log | juniper | seed
+  valid_until  timestamptz NULL,             -- descriptors only
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (node_id, alias_norm));
+CREATE INDEX ON referent_alias (alias_norm) WHERE promotion_state IN ('provisional','canonical');
+ALTER TABLE episode_memory_referent ADD COLUMN node_id text NULL;
+CREATE INDEX ON episode_memory_referent (node_id);
 ```
 
-- **Kinds** are the brief's seven plus `file` and `pr`, which graphify needs. Each kind has a consumer: the ranking weight (1.5), the mention rules (2.3), and the voice renderer.
-- **Roles are normalized at validate time** to `subject | about | participant | location`. The writer's `event`, `topic` and `project` roles map to `about`. Roles are kept for Graphiti edge direction (section 3). Ranking ignores them.
-- **Self referents are seeded and fixed**: `person:juniper` and `person:orion`. They are on nearly every memory, so their ranking weight is ~0 (1.5). They can still filter.
+**Why aliases live in Postgres, not as node properties:**
+1. The per-turn extractor needs an exact-string index across all names. `aliases_json` is a JSON string property and cannot be indexed.
+2. Each alias has its own lifecycle: state, grounding quote, validity window, who proposed it. #2497 puts lifecycle and audit in Postgres.
+3. `ConceptNodeV1` has no `aliases` field at all.
 
-#### 1.2 Resolution in the writer's persist node (deterministic, same transaction)
+The projector writes the provisional/canonical names onto `EntityNodeV1.aliases`, so the Atlas and the graph workbench show them. That copy is for display only and is rebuilt from the table.
 
-For each referent `{key, role, aliases}` the validator keeps:
-
-1. **Exact key.** The normalized key equals a `referent.canonical_key` → that referent.
-2. **Redirect.** The key is in `referent_key_redirect` → that referent.
-3. **Kind refinement.** Same slug, and both kinds are in the artifact family {project, machine, service} → the same referent.
-   - Kind moves to the more specific one (machine or service over project). Write `kind_refined`, and add the old key as a redirect.
-   - This is how `project:hecate` becomes `machine:hecate` without a merge decision.
-   - Same slug across *different* families (`person:austin` vs `place:austin`) gives separate referents. They are not ambiguous; they are different things.
-4. **Name-alias match.** The key's slug, or one of its **grounded** aliases (1.3), exactly equals an `active` name alias of exactly one existing referent of a compatible kind → that referent.
-   - Write `alias_added` for any new aliases.
-   - This is still deterministic exact matching, which the approved idea allows.
-5. **Ambiguous** (any of the following) → create the new referent as `status='provisional'`, attach the memory to it, and open a tension:
-   - the match finds two or more referents;
-   - the match finds a referent of an incompatible kind;
-   - a descriptor matches two or more live referents.
-
-   The tension goes to `memory_tension_shadow` (`kind='tension'`, `text` = "Is 'X' the same as 'Y'?", `referent_keys` = both, `source_refs` = the quotes). Its scope:
-   - `scope=juniper`, `answer_via=conversation` for person/place/event. At Stage 3 it becomes an "Orion is asking" card.
-   - `scope=self`, `answer_via=investigation` for machine/service/file/pr/concept. At Stage 3 it becomes a curiosity self-question.
-6. **Otherwise mint** a new referent with `display_name` from the first grounded name alias, or else the slug title-cased.
-
-**Never silent merging.** A merge happens only through the outcome consumer at Stage 3: Juniper's `AttentionLoopOutcomeV1` on the tension's loop, or Orion's investigation answer with its evidence. It writes `merge_confirmed` and a redirect. Until then, recall treats a provisional referent and its candidate twin as two things. When a query names either one, `why` shows "possibly the same as X (unconfirmed)".
-
-#### 1.3 Which proposed aliases count (alias admission, deterministic)
+**Admission rules** (deterministic). The alias state is the acceptance gate for every mention.
 
 | Rule | Effect | Live example |
 |---|---|---|
-| **Grounding.** The alias text occurs (case-insensitive, word-bounded) in a verified evidence quote whose `source_kind='chat_prompt'` | `state='active'`, `grounded_in` set | "Inspur NF5288M5", "8x smx2 gpus", "AGX-2 GPU" → active on Hecate |
-| Not grounded in a prompt (only in a response, the statement, or nowhere) | `state='proposed'`. Visible in telemetry and the report; **never used to resolve** | "a Marriott" if absent from the quote; "the new server" from Orion's statement |
-| **Descriptor class.** The alias starts with a determiner or possessive (the, a, an, my, our, her, his, their, this, that), or every token in it is common (df > 0.5% in `recall_term_stats`) | `alias_class='descriptor'`, `valid_until = last use + 90 d` | "my boss", "my sister", "the new server", "camera" |
-| **Descriptor resolution.** A descriptor resolves only while valid **and** only when it is active on exactly one referent | Otherwise `alias_ambiguous` → tension | If Juniper later calls a second machine "the new server", Orion asks which |
-| **Collision.** An active alias proposed for referent B already exists, active, on referent A | `state='ambiguous'` on B → tension (1.2 step 5) | When `machine:robot` someday gets the alias "autonomous robot", it collides with the camera project and Orion asks |
-| **Rare-token index.** For a name alias, each token with df ≤ 0.5% that appears in the aliases of exactly one referent is also matched on its own | Query "the Inspur" → "inspur" → Hecate | "inspur" df 4; "nf5288m5" df ≤ 1 |
+| **Grounding:** the alias occurs (word-bounded, case-insensitive) in a verified evidence quote with `source_kind='chat_prompt'` | `provisional`. This is an auto-accept policy, `alias_grounding_v1` ("it is Juniper's own word"), with tests | "Inspur NF5288M5", "8x smx2 gpus", "AGX-2 GPU" on Hecate |
+| Not grounded in a prompt | `proposed`. Never used to resolve or to index | "a Marriott" if unquoted; "the new server" from Orion's statement |
+| **Descriptor:** starts with a determiner or possessive (the, a, an, my, our, her, his, their, this, that), or every token is common (df > 0.5%) | `alias_class='descriptor'`, `valid_until = last use + 90 d`. Resolves only while valid and unique | "my boss", "my sister", "camera" |
+| **Collision:** an alias proposed for node B is already provisional/canonical on node A | The alias on B is `proposed` → identity proposal (1.2 step 4) | If a robot node someday gets "autonomous robot", Orion asks |
+| **Rare tokens:** a token of a name alias with df ≤ 0.5% that belongs to exactly one node's aliases | The extractor matches it on its own | "the Inspur" → "inspur" (df 4) → Hecate |
+| Juniper confirms or corrects (Stage 3) | `canonical` / `rejected` | — |
 
-Known limit, stated plainly: grounding cannot tell "AGX-2 GPU" (a part of Hecate) from a name for Hecate. The cost is small. A query naming the GPU board finds the Hecate memories, and `why` says which alias matched. The collision rule is what catches a part-of alias once that part gets its own referent.
+Known limit: grounding cannot tell that "AGX-2 GPU" is part of Hecate rather than its name. The cost is small. A query naming the board finds the Hecate memories, and `why` names the alias. The collision rule catches it once the board gets its own node.
 
-`alias_class` is not a free label. The recall extractor (1.5) reads it to decide whether a match needs the uniqueness and validity checks.
+#### 1.4 One shared journal (Postgres, append-only)
 
-#### 1.4 The "new server" path, end to end
+#2497 proposed reading-specific `ReadingGraphProposalV1/DecisionV1/MaterializationV1`. This design generalizes them:
+- **Schemas:** `SubstrateGraphProposalV1`, `SubstrateGraphDecisionV1` and `SubstrateGraphMaterializationV1`, with a field `proposal_kind ∈ {relationship_assertion, referent_identity}`.
+- **Table:** one table, `substrate_graph_journal`. Columns: event_id PK, kind, proposal_id, assertion/node ids, expected revision, actor/authority, `visibility_scope`, evidence refs, payload jsonb, recorded_at.
+- **Channels:** as in #2497, renamed to `orion:substrate:graph:{proposal,decision,materialized}`.
 
-There are two honest routes, and both are deterministic:
-- **Today:** the **phrase lane** (1.5 c). The bigram "new server" is rare in Orion's corpus. It occurs in memory `63d7e72b`'s statement, which is linked to Hecate. So a query containing "the new server" finds that memory, and through its referent the other Hecate memories. `why` reads: "phrase 'new server' in my memory of 10-04 → Hecate".
-- **After Juniper says it:** the next distill proposes "the new server" as a descriptor alias grounded in her prompt. It becomes active for 90 days, while it stays unique among machines.
+Reading uses `relationship_assertion`. Memory uses both kinds. Alias transitions (`alias_added`, `alias_state_changed`, `kind_refined`) are journal rows too. That gives one audit trail, not `referent_event` plus a separate reading journal.
 
-#### 1.5 How referents are seeded
+### 2. Edges
 
-| Seed | Producer | When | What | Label |
-|---|---|---|---|---|
-| Writer backfill | `scripts/backfill_referents_from_episodes.py` (one-off, idempotent) | PR A deploy | The 14 keys in `episode_memory_referent`, plus aliases re-parsed from `checkpoint_writes.answer_text` for `memdistill-*` threads through the fixed validator. Fills `episode_memory_referent.referent_id` | `source=episode_writer` |
-| Writer, live | durable-runs persist node (1.2) | Every distill | Referents + aliases + resolution events | `source=episode_writer` |
-| graphify services | `scripts/build_referents_from_graphify.py` | On graphify publish (hooked into the publish script) and nightly if the bundle's `built_at_commit` changed | 95 `service:orion-*`. Name alias = the directory name, plus the name with "orion-" stripped, but only if no other referent claims it | `source=graphify`, `source_build='graphify <commit> <date>'` |
-| graphify files | same | same | `file:<full path>`. Basename alias only when unique in the bundle (4,828 of 6,107) | same |
-| PRs | same script, `git log --merges origin/main` | same | `pr:<n>` with alias "#n" / "pr n", `external_ref` = merge sha. The PR-report path is a mention target (2.2) | `source=git_log` |
-| Topic concepts | `scripts/build_referents_from_topic_foundry.py`, then the indexer's cursor (2.3) | After each completed `topic_foundry_runs` row | 636 `:Concept` nodes from `topic_foundry_adapter`. `concept:<slug(label)>`; the label is the only alias (class name, active by fiat as Orion's own vocabulary) | `source=topic_foundry`, `external_ref=node_id` |
-| Rarity table | `scripts/build_recall_term_stats.py` (#2413's `recall_term_stats`) | Nightly | df per term and bigram over the 4,351-doc corpus; AI Town and metacog excluded | — |
+#### 2.1 Provenance edges: referent → evidence, with voice on every link
 
-Not seeded: graphify's `concept` file-type nodes (they are schema field names, checked) and `rationale` nodes (LLM-derived). World-pulse concepts are left out until a reading-side consumer needs them.
+**Evidence nodes.** Every source item that names a referent becomes one `EvidenceNodeV1`:
+- `evidence_type` ∈ {`episode_memory`, `chat_turn`, `reverie`, `journal`, `reading_claim`, `reading_snapshot`, `curiosity_finding`, `curiosity_question`, `dream_hypothesis`};
+- `content_ref` = `<table>:<id>`, e.g. `episode_memory:01c4d9ef…` or `reverie:<thought_id>`. The text stays in Postgres;
+- PR A adds `voice` and `channel` to the codec's evidence encoding as native properties. They go on a closed allowlist; this is never a metadata dump.
 
-**No vector similarity for identity, anywhere.** Every resolution step above is string equality after normalization.
+**Provenance edges.** There is one edge per (referent, evidence) pair: `Entity|Concept --observed_in--> Evidence`, using the existing predicate. Each edge carries:
+- native `edge_role=provenance` (PR A adds `edge_role` to edges, as #2497 requires);
+- `temporal.valid_from` = the source time, and `valid_to` when the evidence is superseded or retracted;
+- the provenance `producer`;
+- `via` ∈ {`writer`, `alias_exact`, `rare_token`} and `matched_text`, as native properties.
 
-### 2. Edges: what links to what, who writes each link, and when
+These edges have an Evidence endpoint, so `read_neighborhood` never walks them and they never compete for semantic budgets (the endpoint-kind filter in `neighborhood_backends.py`). PR A also excludes them from dynamics and pressure (#2497 rule 8).
 
-#### 2.1 One mention table
+| Edge | Producer (service, when) |
+|---|---|
+| referent → `episode_memory` evidence | Projector in orion-memory-consolidation, from the journal, seconds after each distill persist |
+| referent → `chat_turn` (prompt side `juniper_said`; response side `orion_thought`/chat) | Mention indexer in orion-memory-consolidation, 60 s cursor |
+| referent → `reverie` (`orion_thought`/reverie) | Mention indexer over `substrate_reverie_thought.interpretation` |
+| referent → `journal` (non-metacog; `orion_thought`/journal) | Mention indexer |
+| referent → `reading_claim` / `reading_snapshot` (`orion_read`/reading) | Mention indexer. When #2497's reading pipeline lands, its `SourceDocument`/excerpt Evidence nodes are reused instead of minting a second node for the same source |
+| referent → `curiosity_finding` / `curiosity_question` (`orion_thought`/curiosity) | Mention indexer, a 10-minute read-only pass over Falkor `orion_worldview` and `curiosity_self_questions`. Never from refuted priors |
+| referent → `dream_hypothesis` (`orion_thought`/dream) | Mention indexer |
+| episode → referent | Not stored. `episode_memory.episode_id` groups the memory evidence nodes |
+| graphify service / file / pr | **Lazy** (2.4) |
 
-```sql
-CREATE TABLE referent_mention (
-  referent_id  uuid NOT NULL REFERENCES referent,
-  target_kind  text NOT NULL,   -- chat_turn | reverie | journal | reading_claim | reading_snapshot | curiosity_finding
-                                -- | curiosity_prior | curiosity_question | dream_hypothesis | topic_segment | pr_report | spec
-  target_id    text NOT NULL,
-  target_ts    timestamptz NOT NULL,
-  voice        text NOT NULL,   -- juniper_said | orion_thought | orion_read | orion_self_knowledge
-  channel      text NOT NULL,   -- chat | reverie | journal | reading | curiosity | dream | topic_model | graphify
-  via          text NOT NULL,   -- alias_exact | rare_token | co_evidence | graphify_source_file | git_merge
-  matched_text text NULL,       -- the alias or token that matched
-  producer     text NOT NULL,   -- referent_mention_indexer | build_referents_from_graphify | ...
-  created_at   timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (referent_id, target_kind, target_id, via));
-CREATE INDEX ON referent_mention (target_kind, target_id);
-CREATE INDEX ON referent_mention (referent_id, target_ts DESC);
+**Mention rules:**
+- Only provisional/canonical aliases of class `key` or `name` are matched, plus rare tokens. Descriptors are never matched.
+- `person` referents are never linked from `orion_read`.
+- Nothing is indexed from AI Town, metacog or refuted priors.
 
-CREATE TABLE referent_indexer_cursor (source text PRIMARY KEY, last_ts timestamptz, last_id text, updated_at timestamptz);
+**On-write crosswalk.**
+- When an alias becomes provisional, the indexer backfills that alias over each source's last 90 days, capped at 2,000 rows per source per tick.
+- It keeps a cursor per source (`referent_indexer_cursor`, Postgres).
+- It is idempotent because ids are deterministic: `ev-<uuid5(content_ref)>` and `edge-<uuid5(node_id|content_ref|observed_in)>`.
+
+The memory's own `episode_memory_referent` row and the Falkor edge record the same fact. The row is the writer's record; the edge is its projection. The reconciler (2.3) repairs the edge from the row, never the other way round.
+
+#### 2.2 Semantic edges: referent ↔ referent, only through assertions
+
+**What Stage 2 creates.** Exactly one kind of semantic relationship: **`co_occurs_with` between two referents, other than Juniper and Orion, named in the same verified Juniper prompt quote**. Each is:
+- an Assertion node (PR A: durable `assertion` kind, with `assertion_subject`/`assertion_object` edges);
+- with `predicate=co_occurs_with`;
+- supported by the memory's Evidence node (`supports`).
+
+**Acceptance policy `source_cooccurrence_v1`.** It is named, tested, limited, and switchable on its own via `MEMORY_COOCCURRENCE_AUTO_ACCEPT`.
+- An assertion is accepted as `provisional` only when all of these hold:
+  - both endpoints are provisional/canonical;
+  - the source is a verified prompt quote;
+  - the predicate is `co_occurs_with`;
+  - the memory has no more than 6 such assertions.
+- Anything else stays `proposed`.
+
+**Projection.** An accepted assertion is projected as a semantic edge with `edge_role=semantic_projection`, `assertion_id` and `assertion_revision`, which is #2497's rule. This gives the neighborhood something real to walk:
+- Vincent ↔ Austin offsite ↔ Rachel;
+- Vincent ↔ Jackalope bar;
+- Hecate ↔ Circe.
+
+Other predicates (`part_of`, `causes`, `subtype_of`) are out of scope. They stay with #2497's reviewed reading pipeline.
+
+#### 2.3 The projector (Postgres journal → Falkor)
+
+The projector is a cursor loop in orion-memory-consolidation over `substrate_graph_journal` and `episode_memory_event`. It:
+- writes nodes, evidence and edges through `SubstrateGraphMaterializer.apply_record`;
+- records a `SubstrateGraphMaterializationV1` with the canonical ids the materializer actually returned. If those differ from the deterministic ids, it fails closed and logs;
+- sets `valid_to` on evidence edges when a memory is superseded, corrected, rejected or retired;
+- updates node `aliases` and `promotion_state`.
+
+It is idempotent and can be rebuilt from Postgres. It replaces revision 1's Graphiti projector.
+
+#### 2.4 Lazy seeds, not bulk seeds
+
+Revision 1 seeded 95 services, about 2,377 PRs and 6,107 files as rows. As substrate nodes, that would add about 8.5k nodes that no memory names to the cognitive graph. Instead:
+
+- **graphify and git-log names start dormant.** `scripts/build_referent_candidates.py` writes alias rows with `node_id` NULL, `proposed_by=graphify|git_log`, and `source_build='graphify aff23fac0 2026-09-11'`. It covers services, PRs, and files (basenames only when unique).
+- **A node is minted on first use.** The first time a memory or a Juniper prompt names a dormant name, a graphify node is minted as `provisional`, with the build label. It gets `observed_in` edges to the spec or PR report as `orion_self_knowledge`/graphify evidence.
+- **Topic-foundry concepts are already substrate nodes, so we do not copy them.** When a writer `concept:` key matches a topic concept's label, that is an identity proposal (1.2 step 4), never a silent merge.
+
+#### 2.5 What is gone from revision 1
+
+- the `referent`, `referent_mention`, `referent_key_redirect` and `referent_event` tables;
+- the `memory_crosswalk_v` view;
+- the topic-segment co-evidence link, which returns only when topic concepts have a promotion path (a #2497 follow-up);
+- the Graphiti projector and `as_of` endpoint.
+
+### 3. "What did I know about X last week?" without Graphiti
+
+Edges natively carry `valid_from`/`valid_to` (codec `:354-355`), and the journal records every state change with its time. The projector sets both (2.3), so the as-of view is one query:
+
+```cypher
+MATCH (r:SubstrateNode {node_id: $node_id})-[e:observed_in]->(ev:Evidence)
+WHERE ev.evidence_type = 'episode_memory'
+  AND e.valid_from <= $at AND (e.valid_to IS NULL OR e.valid_to > $at)
+RETURN ev.content_ref, e.valid_from ORDER BY e.valid_from DESC LIMIT 20
 ```
 
-`voice` and `channel` reuse rev 3's vocabulary and the renderer keys on them (section 7 of rev 3). Every value has a producer (this table's writers) and a consumer (the renderer and recall).
+A Postgres hydration of those memory ids follows. Each memory's confirmation state at `$at` comes from `episode_memory_event`.
 
-#### 2.2 Edge types and their producers
+Example: "What did I know about Hecate on 09-29?" returns nothing, plus "first heard of it 10-04" (the minimum `valid_from`). On 10-06 it returns the 5 Hecate memories.
 
-| Edge | Stored as | Producer (service, when) |
-|---|---|---|
-| memory → referent | `episode_memory_referent` (+ `referent_id`) | Distill persist node, orion-durable-runs, same transaction as the memory |
-| episode → referent | **view** `episode_referent_v` (union of its memories' referents) | Derived, nothing to write |
-| question → referent | `memory_tension_shadow.referent_keys` (exists) | Distill persist node |
-| chat turn → referent | `referent_mention` (`chat_turn`, voice `juniper_said` for prompt matches, `orion_thought`/chat for response matches; one row per side, `target_id` = `<id>:prompt` or `<id>:response`) | Mention indexer, orion-memory-consolidation, 60 s cursor |
-| reverie → referent | `referent_mention` (`reverie`, `orion_thought`/reverie) | Mention indexer, 60 s cursor over `substrate_reverie_thought.interpretation` |
-| journal → referent | `referent_mention` (`journal`, `orion_thought`/journal; non-metacog only) | Mention indexer |
-| reading claim / snapshot → referent | `referent_mention` (`orion_read`/reading) | Mention indexer over `world_pulse_claim.payload_json` and `reading_document_snapshot` titles |
-| curiosity finding / prior / question → referent | `referent_mention` (`orion_thought`/curiosity) | Mention indexer, 10-min read-only pass over Falkor `orion_worldview` and `curiosity_self_questions`. Refuted priors never |
-| dream hypothesis → referent | `referent_mention` (`orion_thought`/dream) | Mention indexer |
-| concept → chat turn → memory | `referent_mention` (`topic_segment`, `via=co_evidence`; `target_id` = the chat_history_log id from segment provenance) | Mention indexer, after each completed topic-foundry run. The memory join is `episode_memory_evidence.source_id = target_id` |
-| PR / file / service → spec or PR report | `referent_mention` (`pr_report`/`spec`, `orion_self_knowledge`/graphify) | `build_referents_from_graphify.py` on publish |
+**Recommendation: retire the Graphiti mirror's role in Stage 2.**
+- Graphiti's claimed advantages were validity on edges and multi-hop walks. The substrate now has both: native validity and #2497's bounded neighborhood.
+- Graphiti's live time fields are unused (0 of 28 edges).
+- Keeping it would mean a second time-aware copy of the same facts.
 
-**The crosswalk is now a view, not a stored link table:**
+The legacy approval sync runs untouched until Stage 4 retires the crystallization approval UI. Retiring the adapter itself is a Stage 4 decision, outside this spec.
 
-```sql
-CREATE VIEW memory_crosswalk_v AS
-SELECT r.memory_id, mn.target_kind, mn.target_id, mn.voice, mn.channel, mn.via, ref.canonical_key AS via_referent, mn.target_ts
-FROM episode_memory_referent r
-JOIN referent ref ON ref.referent_id = r.referent_id
-JOIN referent_mention mn ON mn.referent_id = r.referent_id
-JOIN episode_memory m ON m.memory_id = r.memory_id
-WHERE ref.canonical_key NOT IN ('person:juniper','person:orion')
-  AND (ref.kind NOT IN ('person','event','place')
-       OR mn.target_ts BETWEEN coalesce(m.occurred_at, m.created_at) - interval '14 days'
-                           AND coalesce(m.occurred_at, m.created_at) + interval '14 days');
-```
+### 4. Recall by referent: one seam replacing `concept_region` and the active packet
 
-This keeps rev 3 §6's rule (±14 d for people, events and places) as SQL instead of a second table. Rev 3's "10 newest" for artifact referents is applied at read time (1.5).
-
-#### 2.3 Mention rules (what the indexer may link)
-
-- **Names only.** Only `active` aliases of class `name` (plus rare tokens) are matched, word-bounded and case-insensitive. Descriptors are never matched in other sources. A reverie that says "the new server" is not a mention of Hecate.
-- **People only in Orion's own world.** `person:` referents are not matched in `orion_read` (external articles). A news story about another Vincent is not Juniper's colleague.
-- **Exclusions at index time:** AI Town (source contains "town"), metacog journals, refuted priors. Same as #2413 and rev 3.
-- **Caps:** none at write time, since the table is cheap. Read-time caps are in 4.3.
-
-#### 2.4 On-write crosswalk and backfill
-
-- **On write.** When persist writes `alias_added`/`alias_activated` or `created`, the indexer handles the event next tick. It runs a **bounded alias backfill**: the new alias, over each source's last 90 days, at most 2,000 rows scanned per source per tick.
-  - Example: Hecate's referent is created on 10-05 at backfill. The indexer then finds the 180 reveries since 10-04 02:10 that mention it.
-- **Initial backfill** follows CLAUDE.md §14, with progress in `/tmp/referent-mention-backfill/progress.log`.
-  - No pre-snapshot is needed: it only INSERTs into new tables. The count of target rows is recorded up front.
-  - Source sizes: about 20k reveries, 574 chat turns, 2,748 journals, 1,029 claims, 636 concepts.
-  - The posting count is **UNVERIFIED**. Estimate: tens of thousands. The report records the real number.
-- **Order:** referents are seeded first (PR A/B). The indexer then runs a full pass from cursor zero.
-
-### 3. Graphiti as the temporal mirror (LLM-free)
-
-**What is mirrored** (group id `episode_memory`, separate from the 28 legacy crystallization nodes):
-- **One `EpisodicNode` per episode** with memories: uuid = uuid5(episode_id), `valid_at` = episode start.
-- **One `EntityNode` per referent** that has at least one mirrored memory: uuid = `referent_id`, name = `display_name`, labels = `[kind]`.
-- **One `EntityEdge` per memory:** uuid = `memory_id`, `fact` = statement, `episodes=[episode uuid]`, attributes `{voice, purpose, channel, confirmation_state}`.
-  - The source is the referent with role `subject`, else `person:juniper` for `juniper_said`/`worked_out_together`, else `person:orion`.
-  - The target is each remaining referent. A memory with no other referent gets an edge to its first `about` referent.
-  - Multi-referent memories become several edges sharing `memory_id` in attributes.
-- **Only** `auto`/`confirmed` memories with status `active`/`faded` are mirrored. `pending_confirmation` and `rejected` are never mirrored.
-
-**Validity, set by Orion, never by Graphiti's LLM:**
-- `valid_at` = `occurred_at`, else `created_at`.
-- On `superseded`, `corrected`, `rejected` or `retired`: `invalid_at` = the event time.
-- On `faded`: `expired_at` = the event time; the edge stays and is still queryable.
-
-**When:** the **projector**, a cursor loop in orion-memory-consolidation over `episode_memory_event` (cursor table `memory_projection_cursor`). It is idempotent because the uuids are deterministic. A lost tick is caught up later. `POST /v1/rebuild?group=episode_memory` replays from the tables.
-- This replaces rev 3's "project node inside the distill graph". A cursor loop survives the adapter being down, and validity changes come from the lifecycle job too, not only from the distiller.
-
-**Write path:** a new adapter endpoint, `POST /v1/memory_projection`, takes explicit nodes and edges. It saves them with graphiti-core's node/edge `save` calls and makes no `add_episode` or `add_triplet` call (those invoke the LLM, rev 3 §D). Whether graphiti-core 0.19's `EntityEdge.save` needs an embedding for `fact` is **UNVERIFIED**. If it does, the adapter's existing CPU embedder (bge on vector-host) fills it. That embedding is stored for Graphiti's internals only and is **never read for recall or identity**.
-
-**The "what did I know about X last week" query:**
-- `GET /v1/as_of?referent=<canonical_key>&at=<ts>` returns edges with `valid_at ≤ at` and (`invalid_at` null or > at), and `expired_at` shown as "faded".
-- The Postgres twin, which is canonical and used by the eval:
-
-```sql
-SELECT m.* FROM episode_memory m JOIN episode_memory_referent r USING (memory_id)
-WHERE r.referent_id = $1 AND coalesce(m.occurred_at, m.created_at) <= $2
-  AND m.confirmation_state IN ('auto','confirmed')
-  AND NOT EXISTS (SELECT 1 FROM episode_memory_event e WHERE e.memory_id = m.memory_id
-                  AND e.op IN ('superseded','corrected','rejected','retired') AND e.created_at <= $2);
-```
-
-- Example: "what did I know about Hecate on 09-29?" returns nothing, plus "first heard of it 10-04" (`referent.first_seen_at`). That is the honest answer, and both stores must agree on it.
-
-**Consumers:**
-- PCR contradiction intent (4.2), with a 200 ms timeout. On timeout, the contradiction lane renders its Postgres items only and logs `graphiti_timeout`.
-- The Hub memory report's as-of view.
-
-**Honest risk, carried forward from rev 3:** if 30 days of the equivalence eval (6.5) show Graphiti and Postgres always agree, the request path drops Graphiti and it stays a debug mirror.
-
-### 4. Recall by referent
-
-#### 4.1 The collector: `episode_referent`, in orion-recall
+#### 4.1 The collector (`referent_region`, in orion-recall)
 
 ```
-query text (retrieval_query from the companion spec)
- 1. extract (in-process, ≤ 5 ms)
-    a. alias n-grams: 1–5 token windows, longest match first, against an in-memory map
-       alias_norm → [(referent_id, class)], built from referent_alias WHERE state='active',
-       refreshed every 60 s (a few thousand rows)
-       - descriptor hits must be valid and unique (1.3), else marked ambiguous
-    b. explicit ids (#2413 regex): "#2287", "PR 2287", orion-* services, file paths
-    c. rare tokens (df ≤ 0.5%) not covered by (a), and rare bigrams (the phrase lane)
-    → if nothing: ABSTAIN (continuity still runs; no filler)
- 2. walk 1 hop (one Postgres round trip)
-    referent → episode_memory_referent → episode_memory (status active|faded, not rejected)
-             → episode_memory_evidence (quotes)
-    rare tokens / phrases → episode_memory.statement and evidence.quote via a 'simple'-config
-             tsvector GIN index (exact lexemes, no stemming) → that memory, and through its
-             referents, their memories (marked hop=2, "via phrase")
-    referent → memory_crosswalk_v / referent_mention, for the channels the intent allows (4.2)
-    legacy lane (until Stage 4): the same aliases/tokens → memory_crystallizations.summary (FTS),
-             channel legacy_crystallization
- 3. rank (lexicographic, deterministic)
-    (a) number of distinct query referents matched, weighted:
-        Σ idf(referent), idf = ln(N_memories / (1 + memory_count)); self referents → 0
-    (b) purpose fits the intent (4.2)
-    (c) effective strength = strength × 0.5^(days since last_reinforced_at / half_life)
-    (d) recency (occurred_at, else created_at)
- 4. caps: ≤ 6 memories; ≤ 2 per referent only when the query names 2+ referents (diversity);
-    ≤ 3 crosswalk items; ≤ 1 legacy item per referent
- 5. emit MemoryItemV1 with recall_reason {referents:[canonical_key], matched:[text], via:alias|token|phrase|id,
-    hop:1|2, ambiguous:bool} plus voice, channel, confirmation_state, faded
+query text (retrieval_query, companion spec)
+ 1. extract focal referents (in-process, ≤ 5 ms)
+    a. alias n-grams (1–5 tokens, longest first) against an in-memory map built every 60 s from
+       referent_alias WHERE promotion_state IN ('provisional','canonical');
+       descriptors only if valid and unique; proposed nodes only when named directly,
+       flagged "unconfirmed identity"
+    b. explicit ids (#2413 regex): "#2287", orion-* services, file paths -> dormant candidates resolve too
+    c. rare tokens / rare bigrams (df ≤ 0.5%) not covered by (a): Postgres 'simple' FTS over
+       episode_memory.statement + episode_memory_evidence.quote -> those memories' node_ids
+       ("the new server" -> memory 63d7e72b -> Hecate)
+    -> focal set (≤ 16, ranked by idf); none -> ABSTAIN
+ 2. evidence handles (ONE Cypher read, new bounded store method read_evidence_handles):
+    focal (+ selected neighbors) -observed_in-> Evidence, filtered by evidence_type/voice/channel
+    for the intent (4.2), valid now, newest first, ≤ 6 per referent
+ 3. neighborhood (Phase 3 only): read_neighborhood(focal, states=(provisional, canonical),
+    budgets 4/8/8, direction=both) -> related referents via accepted assertions; receipt kept.
+    Neighbors feed step 2 at hop 2 (≤ 2 per neighbor)
+ 4. hydrate (Postgres, by content_ref; the one provenance resolver from #2497 §5):
+    memory rows + verified quotes; reverie/journal/claim text, truncated
+ 5. legacy lane until Stage 4: same aliases/tokens -> memory_crystallizations.summary (FTS)
+ 6. rank (lexicographic): Σ idf of matched focal referents (self referents -> 0);
+    hop (focal 1.0, neighbor 0.5); purpose fits intent; effective strength; recency
+ 7. caps: ≤ 6 memories; ≤ 2 per referent only when 2+ referents are named; ≤ 3 other-voice
+    evidence items; ≤ 1 legacy item per referent
+ 8. emit MemoryItemV1 + recall_reason {referents, matched, via, hop, assertion_state of the edge
+    used, neighborhood receipt flags} + voice, channel, confirmation_state
 ```
 
-- **Every result carries why and whose words.** The voice renderer (`orion/memory/voice_render.py`, rev 3 §7) turns that into, for example: "Juniper told me (10-04): she got an Inspur NF5288M5 and named it Hecate. [recalled: you said 'Hecate']".
-- **Rendering never reinforces.** The collector writes `recalled` events in a batch, after the reply, and never touches `strength`.
+This is #2497's "relevance-scoped neighborhood" for `concept_region`, made concrete:
+- focal nodes are picked by exact alias/label match (no substring, no embedding);
+- expansion is `read_neighborhood`;
+- relation fragments carry assertion state and evidence handles;
+- truncated and degraded receipts are passed through. A degraded read renders "related things unavailable", never an empty "nothing related".
 
-#### 4.2 PCR phases and the new intent → memory mapping
+Rendering never reinforces a memory. `recalled` events are batch-written after the reply. Every line goes through `orion/memory/voice_render.py` (rev 3 §7).
 
-**Phase 1 (continuity, before stance)** replaces today's 1,200-token continuity block and the active packet's top 100:
-- the current turn's referent hits (4.1), at most 3, because referent lookup needs no stance;
-- the last closed episode's memories for this session/platform, at most 3, `happened` first;
-- due follow-ups (`due_after ≤ now`, active), at most 2;
-- recent sql_chat as today.
+#### 4.2 PCR phases and the intent → memory mapping
 
-Budget: 300 tokens.
+**Phase 1 (continuity, before stance)** runs steps 1, 2 and 4 only, with no neighborhood. Contents, within 300 tokens:
+- up to 3 referent hits;
+- the last closed episode's memories (up to 3);
+- due follow-ups (up to 2);
+- recent sql_chat.
 
-**Phase 3 (purposeful, after stance)** replaces `active_packet` and `concept_region`:
+**Phase 3 (purposeful):**
 
-| Intent | Memory purposes read | Voices / channels allowed | Crosswalk channels | Extra |
-|---|---|---|---|---|
-| continuity | `happened` (last episode), due `follow_up` | all chat | none | — |
-| relational | `about_juniper`, `orion_view`, `happened` with a `person:` referent other than self | `juniper_said`, `worked_out_together`, `orion_thought`/chat | journal (Orion's retelling) | — |
-| semantic | `happened`, `about_juniper` | all | reading, curiosity, topic_model, reverie, graphify | 2-hop via a shared referent (Postgres) |
-| procedural | `follow_up`, `happened` with service/file/pr/machine referents | all | graphify (PR reports, specs) | pageindex section lookup once that track lands |
-| open_loop | open `follow_up`, `memory_tension_shadow` questions whose `referent_keys` intersect the query | all | curiosity questions | — |
-| contradiction | memories sharing a referent that are `pending_confirmation`, `corrected` or superseded | all | none | Graphiti `as_of` for the top referent (200 ms) |
+| Intent | Memory purposes | Evidence types / voices allowed | Neighborhood |
+|---|---|---|---|
+| continuity | `happened` (last episode), due `follow_up` | `episode_memory`, chat | no |
+| relational | `about_juniper`, `orion_view`, `happened` with a person other than Juniper or Orion | `episode_memory`, `chat_turn`, `journal` | yes (people and events) |
+| semantic | `happened`, `about_juniper` | all, including `reverie`, `reading_*`, `curiosity_*`, graphify | yes |
+| procedural | `follow_up`, `happened` with machine/service/file/pr | `episode_memory`, graphify evidence | yes |
+| open_loop | open `follow_up`, `memory_tension_shadow` questions whose referents overlap the query | `episode_memory`, `curiosity_question` | no |
+| contradiction | memories sharing a referent that are pending, corrected or superseded | `episode_memory` + the as-of query (section 3) | no |
 
-**Intent derivation fix** (rev 3 §B, now concrete):
-- `open_loop` fires only for persistent loops (not `current_turn_v1`, not `already_known`) or an open `follow_up` whose referents appear in the turn.
-- Relational and topic rules are evaluated before it.
-- **New rule:** if 4.1 extracted a referent of kind person (non-self) → `relational`; of kind machine/service/file/pr → `procedural`; of any other kind → `semantic`. This puts the referent signal directly into the intent choice.
-- `rule_id` is logged per call.
+**Intent fix:**
+- `open_loop` fires only for persistent loops, or for an open `follow_up` whose referents appear in the turn.
+- Relational and topic rules are evaluated first.
+- **Referent rule:**
+  - a person other than Juniper or Orion → `relational`;
+  - a machine, service, file or pr → `procedural`;
+  - any other kind → `semantic`.
+- `rule_id` is logged on every call.
 
-**The concept_region collector is deleted at cutover.** The concepts it matched by substring are now referents with exact aliases and co-evidence links.
-
-#### 4.3 Latency budget
+#### 4.3 Latency budget, measured against neighborhood reads
 
 | Step | Budget (p95) | Basis |
 |---|---|---|
-| Extraction (in-memory) | 5 ms | Dictionary lookups over ≤ 5-grams of a ≤ 500-char query |
-| 1-hop memory + evidence + phrase lane | 30 ms | One SQL statement over indexed tables. At ~1–2 episodes a day × ~8 memories, the store is ~5k memories a year (**UNVERIFIED** growth) |
-| Crosswalk read | 30 ms | Indexed by `referent_id`, `target_ts DESC`, with a LIMIT |
+| Extract | 5 ms | In-memory dictionary over ≤ 5-grams |
+| Evidence handles (1 Cypher query) | 30 ms | A comparable bounded query takes 2.6–4.1 ms inside Falkor |
+| Rare-token FTS + Postgres hydration | 30 ms | Indexed; about 5k memories a year (**UNVERIFIED** growth) |
 | Legacy lane | 40 ms | FTS over about 1.4k crystallizations |
-| Graphiti as-of (contradiction only) | 200 ms hard timeout | Not measured. **UNVERIFIED** |
-| **Collector total, without Graphiti** | **≤ 100 ms** | #2413's referent-stage budget |
-| Phase 1 total | p50 < 250 ms | Today 532 ms |
-| Phase 3 total | p50 < 400 ms, p95 < 800 ms | Today 1,199 / 2,150 ms. Removing the 100-row boost writes and the embed call is most of the win |
+| **Neighborhood** (Phase 3) | **150 ms, hard timeout** | See below |
+| Phase 1 total | p50 < 250 ms | Today 532 ms. No neighborhood |
+| Phase 3 total | p50 < 400 ms, p95 < 800 ms | Today 1,199 / 2,150 ms |
 
-### 5. Reverie visual seed from validated shadow memories
+**Why the neighborhood needs work first.** Today it takes 351–674 ms for one focal node (my replays) and 1,187 ms for #2497's 8-node hub set. The cost is round trips: one query per neighbor (`neighborhood.py:166-170`), per predicate group and per edge page.
 
-Juniper approved this at Stage 2 in rev 3. A new reader, `load_episode_memory_seed()`, is added in `services/orion-thought/app/store.py` beside the old one:
-- **Eligible:**
-  - `purpose IN ('happened','about_juniper')`;
-  - `confirmation_state IN ('auto','confirmed')`, `status='active'`, `stakes='low'`;
-  - `created_at > now() - 7 d`;
-  - no `downgraded_voice` or `rejected_invalid` event;
-  - every evidence quote `verified`.
-- **Privacy rule until Juniper's stakes policy lands:** exclude memories with any `person:` referent other than `person:juniper`/`person:orion`.
-  - Why: Stage 1's validator leaves stakes to the distiller (`validate.py:19-20, 317-322`), and all 3 family memories are stored `low`/`auto`.
-  - This is a structural rule on referent kind, not a word list, and it is removed once the stakes floor exists.
-- **Rotation:** pick the eligible memory seeded least recently (ties: newest). This fixes "2 distinct seeds in 7 days".
-- **Trace:** `VisualSourceV1(source_kind='episode_memory', source_id=memory_id)` in `chain_json`. The existing "Orion remembers: " prefix and 180-char CLIP cap are kept, and the text goes through the voice renderer's short form.
-- **Switch:** `REVERIE_VISUAL_MEMORY_SEED_SOURCE=episode_memory` (ships ON). After 7 days of at least 1 episode-memory seed a day, the crystallization reader is deleted (kill means kill).
+**PR E** batches the neighbor and focal-node fetches into one `IN $ids` query per round (`nodes([...])`). That stays inside #2497's contract, and its receipts do not change.
+
+If PR E cannot bring a 4/8/8 single-focal read under 150 ms p95 on replay, the neighborhood step stays **shadow-only** and the cutover goes ahead without it. Neighbors are an extra hop; recall of the named things themselves does not depend on them.
+
+### 5. Reverie visual seed from validated memories
+
+A new reader, `load_episode_memory_seed()`, goes in `services/orion-thought/app/store.py`.
+
+**Eligible memories:**
+- `purpose IN ('happened','about_juniper')`, `status='active'`, created in the last 7 days;
+- no `downgraded_voice` or `rejected_invalid` event, and every quote verified;
+- **gated on Juniper's stakes policy:** either `stakes='low' AND confirmation_state='auto'`, or any stakes with `confirmation_state='confirmed'`.
+
+Under that policy, memories about health, family or relationships, feelings, and identity conclusions are `high` and `pending_confirmation`. They seed an image only after Juniper confirms them in conversation.
+
+**Dependency:** the stakes-fix PR (in flight) must re-stake the 25 existing rows. They were all written `low`/`auto` before the policy existed, including 3 family memories and 1 about feelings. PR G does not merge before that re-stake is live.
+
+**Behaviour:**
+- **Rotation:** pick the eligible memory seeded least recently. This fixes "2 distinct seeds in 7 days".
+- **Trace:** `VisualSourceV1(source_kind='episode_memory', source_id=memory_id)`.
+- **Switch:** `REVERIE_VISUAL_MEMORY_SEED_SOURCE=episode_memory`, shipped ON. The crystallization reader is deleted at cutover (PR H).
 
 ### 6. Evals (label-free, `services/orion-recall/evals/referent/`)
 
-1. **Known item, from the writer's own referents.**
-   - For every referent with ≥ 1 memory, and every active name alias, the query is "what do you remember about {alias}". The gold set is the memories linked to that referent.
-   - Metrics: hit@8 and recall@8. Gate: hit@8 ≥ 0.9.
-   - Named cases: "Hecate", "the Inspur" and "Inspur NF5288M5" each return all 5 Hecate memories. "Jackalope" returns the karaoke memory.
-   - A phrase case: "the new server" returns `63d7e72b`, then the other Hecate memories at hop 2.
-   - Honest caveat: this tests the lookup, not whether the writer chose the right referents. A known-item test built from the writer's referents cannot catch a writer that tags the wrong thing. The next eval partly covers that.
-2. **Quote-held-out known item.** The query uses a rare term from a memory's Juniper quote that is in neither its statement nor its aliases. This is reported, not gated. It measures the alias/paraphrase gap #2413's vector verdict watches.
+1. **Known-item test from the writer's referents.**
+   - For each provisional/canonical node with ≥ 1 memory, and each of its active name aliases, the query is "what do you remember about {alias}" and the gold set is the node's memories.
+   - Gate: hit@8 ≥ 0.9.
+   - "Hecate", "the Inspur" and "Inspur NF5288M5" each return all 5 Hecate memories; "the new server" returns `63d7e72b`.
+   - Caveat: this tests the lookup, not whether the writer tagged the right things.
+2. **Quote-held-out known item.** The query uses a rare term from a memory's Juniper quote that is in neither its statement nor its aliases. It measures the alias gap. Reported, not gated.
 3. **Cousin rate against today.**
-   - Replay the last 7 days of `stance_react` Phase 3 queries (`recall_telemetry.query`) through both today's active packet and the shadow collector.
-   - Cousin = a rendered, non-feed item that shares no referent (alias, id or rare token) with the query.
-   - Today's figure is measured in PR D's baseline (#2413 measured 98.4% across verbs).
-   - Gate: shadow ≤ 20%. Distinctness ≥ 10× today's 103/569-retrievals.
-4. **Source monitoring** (unit + replay):
-   - a reverie mention (e.g. any of the 180 Hecate reveries) never renders with "Juniper told me", "we" or "I told Juniper";
-   - `juniper_said` never renders without a verified prompt quote;
-   - a `pending_confirmation` item always carries "Unconfirmed";
-   - an `orion_read` item always carries its title and claim status;
-   - a person mention is never indexed from `orion_read`.
+   - Replay 7 days of `stance_react` Phase 3 queries through both paths. A cousin is a rendered, non-feed item that shares no referent with the query.
+   - Gates: shadow ≤ 20%, and distinctness ≥ 10× today's (103 distinct ids over 569 retrievals).
+4. **Source monitoring.** Gate: 0 violations over 7 days.
+   - None of the 180 Hecate reveries ever renders as "Juniper told me", "we" or "I told Juniper".
+   - `juniper_said` never renders without a verified prompt quote.
+   - Pending items carry "Unconfirmed".
+   - `orion_read` items carry their title and claim status.
+   - No person mention is indexed from `orion_read`.
+5. **Graph discipline:**
+   - 0 merges without a decision.
+   - 0 walkable semantic edges without an accepted assertion: every `edge_role=semantic_projection` edge has an assertion in provisional/canonical at the same revision.
+   - Reconcile never merges a `memory.referents` node by label or embedding. Fixture: the writer's `machine:circe` next to topic-foundry's "circe" opens an identity proposal.
+   - A projector rebuild from Postgres gives identical node and edge id sets.
+6. **Cognitive isolation.** On a fixed fixture, dynamics and attention outputs are identical before and after projecting the referent, evidence and assertion nodes and the provenance edges (#2497 acceptance 8).
+7. **As-of consistency.** For each memory node and each of the last 30 days, the as-of result equals the Postgres replay of `episode_memory_event`. Fixtures cover a supersede, a rejection, and a date before the first evidence (Hecate on 09-29 is empty).
+8. **Neighborhood receipts and latency.**
+   - Replay the shadow focal sets through `read_neighborhood` and report p50/p95, the truncated rate and the degraded rate.
+   - A degraded read never renders as "nothing related".
+   - Collector p95 ≤ 100 ms without the neighborhood; the neighborhood ≤ 150 ms after PR E.
+9. **Abstention honesty.** Report how often a query with no referent abstains, and how often a Juniper prompt has a rare token but no match.
 
-   Replay gate: 0 violations over 7 days of shadow output.
-5. **Graphiti equivalence.** For each referent and each day of the last 30, `as_of` against the Postgres twin gives identical memory-id sets. Fixture cases: a supersede, a fade, a rejection, and "before first_seen" (Hecate on 09-29 is empty in both). Gate: 100% equal, and 0 LLM calls (counted at the gateway, route tag).
-6. **Identity safety.**
-   - 0 merges without a `merge_confirmed` event;
-   - every `ambiguous` alias has an open tension row;
-   - re-running the backfill twice gives byte-identical `referent`/`referent_alias` tables.
-7. **Latency.** Per-step timings in `recall_telemetry.timings_ms` (`referent_extract`, `referent_lookup`, `referent_crosswalk`, `referent_legacy`, `graphiti_as_of`), checked against 4.3.
-8. **Abstention honesty.** The share of queries with no referent that abstain is reported. So is the share with a referent the index does not know: a Juniper prompt that contains a rare token but gets no match. That is the "aliases cannot keep up" signal.
-
-**Metric gate for the ranking signal** (matched-referent count weighted by referent idf; CLAUDE.md):
-1. **Provenance:** `referent.memory_count`, maintained by the persist node.
-2. **Independence:** it replaces salience/activation ranking for these items; it does not sit beside it.
+**Metric gate for the ranking signal** (Σ idf of matched referents):
+1. **Provenance:** `memory_count` per node, computed from `episode_memory_referent.node_id` and cached with the alias map.
+2. **Independence:** it replaces salience ranking for these items.
 3. **Theory:** inverse document frequency (Spärck Jones 1972), over Orion's own memories.
 4. **Live data:**
-   - With 25 memories, `person:juniper` (8 referent rows) gets idf ≈ 1.0. It is forced to 0 as a self referent.
-   - `project:hecate` (5 of 25): ≈ 1.4. `place:jackalope-bar` (1 of 25): ≈ 2.5.
-   - So the signal is not flat. With no referent the sum is 0 and recall abstains: a real rest state.
-5. **Existing mechanism:** #2413's df table, reused.
-6. **Reversibility:** a computed column and a ranking function. `RECALL_PCR_MEMORY_MODE=legacy` restores today.
+   - Juniper has 8 referent rows across the 25 memories, so idf ≈ 1.0, but it is forced to 0 as a self referent.
+   - Hecate (5 of 25) ≈ 1.4; Jackalope (1 of 25) ≈ 2.5.
+   - With no referent the sum is 0 and recall abstains, a real rest state.
+5. **Existing mechanism:** #2413's df table.
+6. **Reversibility:** `RECALL_PCR_MEMORY_MODE=legacy`.
 
 ### 7. Rollout
 
-#### 7.1 Shadow, side by side
+#### 7.1 Shadow
 
-- `RECALL_PCR_MEMORY_MODE=shadow` (ships ON). After each PCR recall returns, a background task runs the `episode_referent` collector on the same query and intent. It never runs before the reply, and is bounded by a semaphore of 2.
-- It writes one row to `recall_referent_shadow`:
+`RECALL_PCR_MEMORY_MODE=shadow` ships ON. After each PCR recall returns, a background task (semaphore 2) runs `referent_region` and writes one row:
 
-  ```sql
-  recall_referent_shadow(corr_id text PK, created_at timestamptz, verb text, phase text, intent text, rule_id text,
-    query text, query_referents jsonb, abstained bool, live_ids text[], shadow_items jsonb,  -- id, why, voice, channel, hop
-    cousin_live int, cousin_shadow int, timings_ms jsonb)
-  ```
+```sql
+recall_referent_shadow(corr_id text PK, created_at timestamptz, verb text, phase text, intent text, rule_id text,
+  query text, focal jsonb, abstained bool, live_ids text[], shadow_items jsonb,     -- id, why, voice, channel, hop
+  neighborhood_receipt jsonb, cousin_live int, cousin_shadow int, timings_ms jsonb)
+```
 
-- **The side-by-side report** extends Stage 1's report (`orion/memory/episode/report.py`, Hub `/memory/episodes/report`, plus the daily markdown artifact). It gets a "recall" section. For each day it shows:
-  - the 10 most recent chat recalls with live vs shadow items;
-  - the cousin rate, distinctness, abstain rates and latency;
-  - every identity tension opened.
+The Stage 1 report (`/memory/episodes/report` plus the daily markdown) gains a "recall" section showing, per day:
+- live vs shadow for the last 10 chat recalls;
+- cousin rate, distinctness, abstention and latency;
+- neighborhood receipts;
+- open identity proposals.
 
-  It is a report only; no notification is sent.
+It is a report only; no notification is sent.
 
-#### 7.2 Cutover criteria (all must hold over 7 consecutive days of shadow)
+#### 7.2 Cutover criteria (all must hold for 7 consecutive days)
 
-1. Known-item hit@8 ≥ 0.9 (eval 1).
-2. Shadow cousin rate ≤ 20%, and below live by at least 50 points (eval 3).
-3. 0 source-monitoring violations (eval 4).
-4. Collector p95 ≤ 100 ms without Graphiti; Phase 3 p50 projected < 400 ms.
-5. **No loss:** every live item that *did* share a referent with its query also appears in the shadow set, or is explained in the report (e.g. capped).
-6. 0 unconfirmed merges (eval 6).
+1. Known-item hit@8 ≥ 0.9.
+2. Shadow cousin rate ≤ 20%, and at least 50 points below live.
+3. 0 source-monitoring violations.
+4. Collector p95 ≤ 100 ms without the neighborhood. The neighborhood counts only if it holds ≤ 150 ms p95; otherwise it stays shadow-only.
+5. **No loss:** every live item that shared a referent with its query is in the shadow set, or the report explains why.
+6. Evals 5 and 6 are clean.
 
 #### 7.3 Cutover
 
-- Flip `RECALL_PCR_MEMORY_MODE=referent`.
-- In the **same PR**:
-  - delete `active_packet`'s salience query and boost-on-read;
-  - delete the `concept_region` collector;
-  - delete the crystallization retriever's Chroma/Graphiti rails.
+Flip `RECALL_PCR_MEMORY_MODE=referent`. In the same PR, delete:
+- the active packet's salience query and boost-on-read;
+- the `concept_region` collector;
+- the retriever's Chroma/Graphiti rails;
+- the old reverie reader.
 
-  Nothing is left as a fallback.
+Nothing is kept as a fallback.
 
 #### 7.4 Rollback
 
-- Before cutover: set `RECALL_PCR_MEMORY_MODE=legacy` to stop shadow work. All new tables are additive and derived. The referent tables can be rebuilt from `episode_memory_referent`, the checkpoints, graphify and topic-foundry by re-running the seed scripts.
-- After cutover: rollback means reverting the cutover PR and redeploying orion-recall (one commit), since the old path is deleted, not dormant.
-- The Graphiti group `episode_memory` can be dropped and rebuilt.
+- **Before cutover:** set `RECALL_PCR_MEMORY_MODE=legacy`. Also set `MEMORY_REFERENT_PROJECTOR_ENABLED=false`, `MEMORY_REFERENT_INDEXER_ENABLED=false` or `MEMORY_COOCCURRENCE_AUTO_ACCEPT=false` as needed.
+- **Graph:** projected nodes and edges are identified by `producer` and journal receipts. Deprecating them (#2497's retraction) removes their projections and keeps the history.
+- **After cutover:** revert PR H and redeploy orion-recall.
 
 #### 7.5 PRs, in order
 
 | # | PR | Contents | Acceptance |
 |---|---|---|---|
-| A | `feat(memory): canonical referent store + alias persistence` | Migration (1.1). `orion/memory/referents/{normalize,resolve,store}.py`. The validator keeps aliases, adds `machine`, normalizes roles. Persist resolves (1.2) and opens tensions. Prompt v3 adds `machine` and descriptor guidance. `scripts/backfill_referents_from_episodes.py`. Schema registry/docs | 14 keys → referents; `project:hecate`/`project:circe` become `machine:` via `kind_refined` + redirects. Hecate has 3 active grounded aliases. "my boss" is an active descriptor with `valid_until`. A forced collision fixture opens a tension and merges nothing. The backfill is idempotent (run twice, same rows). The Stage 1 distill tests still pass |
-| B | `feat(memory): seed referents from graphify, git log, topic-foundry; term stats` | 3 seed scripts, the `recall_term_stats` builder, the graphify publish hook | 95 services, about 2,377 PRs, 6,107 files (4,828 basename aliases), 636 concepts, each labelled with its build. Re-run is a no-op. No graphify `concept`/`rationale` nodes |
-| C | `feat(memory): referent mention indexer (crosswalk)` | Indexer loop in orion-memory-consolidation (+ read-only `FALKORDB_URI`, `.env_example`, env sync), `referent_mention`, the views, the alias-backfill trigger, the initial backfill under §14 | `machine:hecate` reverie mentions ≈ the live ILIKE count (180 ± matches excluded by word boundary). The Hecate memory joins the concept "GPU performance and work" through `co_evidence`. 0 AI Town/metacog/refuted rows. 0 person mentions from `orion_read`. Indexer lag p95 < 120 s |
-| D | `feat(recall): recall by referent in shadow + voice renderer + intent fix` | `orion/memory/voice_render.py`; `services/orion-recall/app/referents/`; `MemoryItemV1` gains `recall_reason`/voice fields (consumer-first, registry); the `retrieval_intent.py` fix + referent rule; `recall_referent_shadow`; the evals (6.1–6.4, 6.7, 6.8) with a baseline report; the report section | Evals 1, 3, 4 run and report. `rule_id` histogram ≥ 3 intents in 7 days. Shadow rows exist for ≥ 95% of stance_react recalls. Live recall latency unchanged (shadow runs after the reply) |
-| E | `feat(graphiti): episode-memory temporal mirror + as_of` | Adapter `POST /v1/memory_projection`, `GET /v1/as_of`, group-scoped rebuild; the projector loop in orion-memory-consolidation | Mirrored edge count = `auto`+`confirmed` active/faded memory edges (±0 after rebuild). Eval 5 passes on fixtures. 0 LLM calls |
-| F | `feat(thought): reverie visual seed from episode memories` | The 5 reader, flag, trace | ≥ 1 seed a day with `source_kind=episode_memory`. 0 seeds from memories with a non-self person referent. ≥ 5 distinct memory ids over 7 days (if ≥ 5 are eligible) |
-| G | `feat(recall): cut PCR over to recall by referent` | Flip the mode; delete active_packet salience + boost, concept_region, retriever rails; delete the old reverie reader | 7.2 met before merge. After 24 h live: 0 retrieval events with 100 ids, 0 boost writes, Phase 3 p50 < 400 ms |
+| **A** | `feat(substrate): shared assertion core` (contract patch, co-owned with #2497) | Durable `assertion` node kind (codec encode/decode); `assertion_subject`/`assertion_object` edges; native `edge_role` on edges; evidence `voice`/`channel` native properties; `substrate_graph_journal` + `SubstrateGraph{Proposal,Decision,Materialization}V1` (registry, channels, fixtures); `reconcile.py` identity branch for `memory.referents` nodes; the dynamics/attention eligibility predicate excludes assertions, provenance edges, evidence and `memory.referents` nodes | Codec round-trips every new field. Old edges decode as `edge_role=legacy_unreviewed`. Dynamics before/after fixture is identical. Reconcile fixture shows no label or embedding merge for fenced nodes. Reading can use the same contracts unchanged |
+| **B** | `feat(memory): referents as substrate nodes + alias lifecycle` | `referent_alias` and `episode_memory_referent.node_id`; validator keeps aliases, adds `machine`, normalizes roles; persist writes aliases and journal (1.2); projector loop in orion-memory-consolidation (2.3) with memory evidence nodes and `observed_in` edges; `co_occurs_with` assertions under `source_cooccurrence_v1`; checkpoint alias-recovery backfill | 14 keys → nodes (Hecate and Circe are `entity_type=machine` via `kind_refined`). Hecate has 3 provisional grounded aliases. The writer's `machine:circe` vs topic-foundry "circe" opens an identity proposal and merges nothing. 25 memory evidence nodes have a valid `valid_from`. Accepted assertions include Vincent–austin-offsite and Hecate–Circe. Running the backfill twice gives an identical journal and graph |
+| **C** | `feat(memory): referent mention indexer` | Indexer loop (+ read-only `FALKORDB_URI` for `orion_worldview`, `.env_example`, env sync); dormant graphify/git-log candidates (2.4); 90-day alias backfill under CLAUDE.md §14 | `machine:hecate` reverie evidence ≈ the live ILIKE count of 180, minus word-boundary misses. 0 from AI Town, metacog or refuted priors. 0 person edges from `orion_read`. Indexer lag p95 < 120 s. A graphify PR node is minted only on first mention |
+| **D** | `feat(memory): voice renderer + intent fix` | `orion/memory/voice_render.py`; the `retrieval_intent.py` fix and referent rule; `MemoryItemV1` gains `recall_reason`/voice fields (consumer-first, registry) | `rule_id` histogram shows ≥ 3 intents over 7 days. Source-monitoring unit tests pass |
+| **E** | `perf(substrate): batch neighborhood node fetches + read_evidence_handles` (in #2497's code) | One `IN $ids` node query per round in `neighborhood.py`; bounded `read_evidence_handles(node_ids, evidence_types, voices, per_node_limit)` in the Falkor, SPARQL and memory backends; hydration through the provenance resolver | Replay: 4/8/8 single-focal ≤ 150 ms p95. Receipts identical to before on fixtures. Evidence-handle read ≤ 30 ms p95 |
+| **F** | `feat(recall): referent_region in shadow` | `services/orion-recall/app/referents/`; `recall_referent_shadow`; evals 1–9; report section | Shadow rows for ≥ 95% of stance_react recalls. Live latency unchanged. The evals report |
+| **G** | `feat(thought): reverie seed from episode memories` | The section 5 reader, gated on the stakes-fix re-stake | ≥ 1 seed a day with `source_kind=episode_memory`. 0 seeds from `pending_confirmation` memories. ≥ 5 distinct ids over 7 days (when ≥ 5 are eligible) |
+| **H** | `feat(recall): cut PCR over to recall by referent` | Flip the mode; delete the old paths (7.3) | 7.2 met. Over 24 h live: 0 retrieval events with 100 ids, 0 boost writes, Phase 3 p50 < 400 ms |
 
-A → B → C are sequential, since each needs the previous one's referents. D can start after A, and its crosswalk read lights up after C. E and F only need A. G waits on the shadow week.
+**Order:**
+- A comes first. It blocks B, and #2497's reading pipeline too.
+- B, then C.
+- D runs in parallel with B.
+- E runs in parallel with B and C.
+- F needs B, D and E.
+- G needs B and the stakes fix.
+- H comes after the shadow week.
+
+---
+
+## Reconciliation with #2497: what is settled and what is still a real conflict
+
+**Settled by this revision:**
+- one graph, with referents as Entity/Concept nodes;
+- evidence text in Postgres, reached through Evidence handles;
+- only accepted assertions produce walkable semantic edges;
+- one recall seam, through `read_neighborhood`;
+- one journal;
+- no Graphiti for time.
+
+**Still genuinely in tension. These need the #2497 owner, Juniper, or both:**
+1. **Who builds the assertion core, and in what order.** #2497 left it for a later reading patch, but memory needs it first. This spec proposes PR A as the shared contract. It also renames #2497's `ReadingGraph*V1` events to `SubstrateGraph*V1` with a `proposal_kind`, which changes #2497's proposed contract.
+2. **Auto-acceptance.** #2497 recommends operator review as the initial gate, and asks that any self-accept policy be named and tested. This spec defines two named policies, each with tests and a kill switch:
+   - `alias_grounding_v1`: an alias is provisional when it appears in Juniper's verified quote;
+   - `source_cooccurrence_v1`: `co_occurs_with` only, from one verified prompt quote, at most 6 per memory.
+
+   Without them, nothing memory-derived would ever be walkable, because no review surface exists for these yet.
+3. **Default eligibility hides all existing topic structure.** 851 of 855 concepts and 1,610 of 1,610 entities are `proposed`. After cutover, chat loses the topic concepts `concept_region` surfaces today, until #2497's promotion path exists. This spec does **not** opt recall into `proposed`; #2497 calls that a diagnostic opt-in. This is a known behaviour loss.
+4. **Neighborhood latency.** Measured at 351–674 ms (one focal node) and 1,187 ms (8 focal nodes), against a 150 ms chat budget. PR E's batching changes #2497's code. If it falls short, the neighborhood stays shadow-only in recall.
+5. **Label and embedding identity merges** in `reconcile.py` contradict both specs' "no automatic identity by label or embedding". This spec fences off only its own nodes. Fixing topic-foundry's paths is #2497/substrate debt.
+6. **`visibility_scope`** is proposed in #2497 but not in the schema. Until it lands, memory evidence nodes about Juniper rely on the internal API boundary; anchor scope is not an access control.
 
 ---
 
 ## Proposed schema / API changes
 
-- **New tables:** `referent`, `referent_alias`, `referent_key_redirect`, `referent_event`, `referent_mention`, `referent_indexer_cursor`, `memory_projection_cursor`, `recall_referent_shadow`, `recall_term_stats` (from #2413).
-- **New views:** `episode_referent_v`, `memory_crosswalk_v`.
-- **Altered tables:**
-  - `episode_memory_referent` + `referent_id`;
-  - a 'simple'-config tsvector GIN index on `episode_memory.statement` and `episode_memory_evidence.quote`;
-  - `recall_telemetry` + `query_referents jsonb`, `abstained bool`, `selected_reasons jsonb`, `ranking_mode text` (#2413).
-- **Dropped from rev 3:** the `episode_memory_link` table (replaced by the view).
+- **Substrate (PR A):**
+  - durable `assertion` node kind, with `assertion_subject`/`assertion_object` edges;
+  - native `edge_role` (`semantic_projection | provenance | ontology_membership | legacy_unreviewed`);
+  - native `voice`/`channel` on evidence;
+  - `SubstrateGraph{Proposal,Decision,Materialization}V1`, `substrate_graph_journal`, and channels `orion:substrate:graph:{proposal,decision,materialized}`;
+  - a reconcile identity branch;
+  - an exclusion in the eligibility predicate.
+- **Store API:**
+  - new `read_evidence_handles(...)` (PR E);
+  - batched node fetch inside `read_neighborhood`, with no contract change.
+- **Postgres:**
+  - new tables: `referent_alias`, `referent_indexer_cursor`, `recall_referent_shadow`, `recall_term_stats` (#2413);
+  - `episode_memory_referent.node_id`;
+  - a 'simple' tsvector GIN index on statement and quote;
+  - `recall_telemetry` gains `query_referents`, `abstained`, `selected_reasons`, `ranking_mode`.
 - **Schemas:**
-  - `DistillReferentV1` keeps `aliases`, and `ValidatedMemory.referents` becomes `list[ValidatedReferent{key, role, aliases, grounded_aliases}]`;
-  - `MemoryItemV1` + optional `recall_reason`, `voice`, `channel`, `confirmation_state`, consumer-first;
-  - registry docs updated.
-- **#2413 amended:** its `recall_referent`/`recall_referent_posting` are this spec's `referent`/`referent_alias`/`referent_mention`. Its `recall_term_stats` and Phase 0 harness are reused.
-- **Graphiti adapter:** `POST /v1/memory_projection`, `GET /v1/as_of`, `POST /v1/rebuild?group=`.
-- **Bus:** no new channels. The indexer and projector are table-cursor loops, so they survive lost messages.
-- **Env** (each `.env_example`, then `python scripts/sync_local_env_from_example.py`; report keys skipped by `SYNC_PREFIXES`):
-  - orion-recall: `RECALL_PCR_MEMORY_MODE=shadow` (legacy|shadow|referent), `RECALL_REFERENT_ALIAS_REFRESH_SEC=60`, `RECALL_RARE_TERM_MAX_DF_FRAC=0.005`, `RECALL_GRAPHITI_AS_OF_TIMEOUT_MS=200`.
-  - orion-memory-consolidation: `MEMORY_REFERENT_INDEXER_ENABLED=true`, `MEMORY_REFERENT_INDEXER_TICK_SEC=60`, `MEMORY_GRAPHITI_PROJECTOR_ENABLED=true`, `FALKORDB_URI` (read-only use), `GRAPHITI_ADAPTER_URL=http://orion-athena-graphiti-adapter:8000` (app-net).
+  - the validated referent keeps `aliases`;
+  - `MemoryItemV1` gains `recall_reason`, `voice`, `channel`, `confirmation_state` (consumer-first);
+  - the closed set of `entity_type` values is documented.
+- **Dropped from revision 1 and rev 3:** `referent`, `referent_mention`, `referent_key_redirect`, `referent_event`, `episode_memory_link`, the Graphiti `memory_projection`/`as_of` endpoints, `memory_projection_cursor`.
+- **Env.** Update each `.env_example`, then run `python scripts/sync_local_env_from_example.py` and report any keys skipped by `SYNC_PREFIXES`. All flags ship ON.
+  - orion-recall: `RECALL_PCR_MEMORY_MODE=shadow`, `RECALL_REFERENT_ALIAS_REFRESH_SEC=60`, `RECALL_RARE_TERM_MAX_DF_FRAC=0.005`, `RECALL_NEIGHBORHOOD_TIMEOUT_MS=150`.
+  - orion-memory-consolidation: `MEMORY_REFERENT_PROJECTOR_ENABLED=true`, `MEMORY_REFERENT_INDEXER_ENABLED=true`, `MEMORY_REFERENT_INDEXER_TICK_SEC=60`, `MEMORY_COOCCURRENCE_AUTO_ACCEPT=true`, `FALKORDB_URI`, `FALKORDB_SUBSTRATE_GRAPH=orion_substrate`.
   - orion-thought: `REVERIE_VISUAL_MEMORY_SEED_SOURCE=episode_memory`.
-  - All flags ship ON.
 
 ## Files likely to touch
 
 - **A:**
-  - `services/orion-sql-db/manual_migration_referent_v1.sql` (+ rollback)
-  - `orion/memory/referents/` (new), `orion/memory/episode/validate.py`, `orion/memory/episode/store.py`
-  - `orion/schemas/memory_episode.py`, `orion/cognition/prompts/memory_episode_distill.j2`
-  - `scripts/backfill_referents_from_episodes.py`
-  - tests in `orion/memory/episode/tests/`, `orion/memory/referents/tests/`
-- **B:** `scripts/build_referents_from_graphify.py`, `scripts/build_referents_from_topic_foundry.py`, `scripts/build_recall_term_stats.py`, the graphify publish script hook
-- **C:** `services/orion-memory-consolidation/app/referent_indexer.py` (new), `settings.py`, `.env_example`, `docker-compose.yml`, `README.md`, tests
-- **D:**
-  - `orion/memory/voice_render.py`, `services/orion-recall/app/referents/{extract,lookup,rank}.py`
-  - `services/orion-recall/app/worker.py`, `pcr_collectors.py`, `orion/memory/retrieval_intent.py`, `orion/core/contracts/recall.py`, `orion/schemas/registry.py`
-  - `services/orion-recall/evals/referent/`, `orion/memory/episode/report.py`
-- **E:** `services/orion-graphiti-adapter/app/{main.py,backends/graphiti_core.py}`, `services/orion-memory-consolidation/app/graphiti_projector.py`
-- **F:** `services/orion-thought/app/store.py`, `visual_chain.py`, `.env_example`
-- **G:** `services/orion-recall/app/collectors/active_packet.py`, `collectors/concept_region.py`, `orion/memory/crystallization/retriever.py`, `services/orion-thought/app/store.py`
+  - `orion/core/schemas/cognitive_substrate.py`;
+  - `orion/substrate/falkor_codec.py`, `falkor_store.py`, `graphdb_store.py`, `materializer.py`, `reconcile.py`;
+  - eligibility in `dynamics.py` and in attention;
+  - `orion/schemas/registry.py`, `orion/bus/channels.yaml`;
+  - `services/orion-sql-db/manual_migration_substrate_graph_journal_v1.sql`;
+  - tests and fixtures.
+- **B:**
+  - `orion/memory/referents/` (new), `orion/memory/episode/{validate,store}.py`, `orion/schemas/memory_episode.py`;
+  - `orion/cognition/prompts/memory_episode_distill.j2`;
+  - `services/orion-memory-consolidation/app/referent_projector.py`;
+  - `scripts/backfill_referents_from_episodes.py`;
+  - a migration.
+- **C:** `services/orion-memory-consolidation/app/referent_indexer.py`, `settings.py`, `.env_example`, `docker-compose.yml`, `README.md`, `scripts/build_referent_candidates.py`.
+- **D:** `orion/memory/voice_render.py`, `orion/memory/retrieval_intent.py`, `orion/core/contracts/recall.py`.
+- **E:** `orion/substrate/neighborhood.py`, `neighborhood_backends.py`, `store.py`, the provenance resolver.
+- **F:** `services/orion-recall/app/referents/`, `worker.py`, `pcr_collectors.py`, `evals/referent/`, `orion/memory/episode/report.py`.
+- **G:** `services/orion-thought/app/store.py`, `.env_example`.
+- **H:** `services/orion-recall/app/collectors/{active_packet,concept_region}.py`, `orion/memory/crystallization/retriever.py`, `services/orion-thought/app/store.py`.
 
 ## Non-goals
 
-- Vectors or embeddings for identity, linking or ranking. The Graphiti-internal `fact` embedding, if graphiti-core requires it, is never read by recall.
-- LLM entity resolution, LLM dedupe or `add_episode`/`add_triplet` in Graphiti.
-- Silent merges. Merges happen only on a confirmed outcome.
-- The "Orion is asking" producer and the outcome consumer (Stage 3). Stage 2 only writes the tensions to `memory_tension_shadow`.
-- The pageindex fixes from rev 3 §C. That is a separate pageindex-owned track. The procedural intent calls it once it lands.
-- Distilling non-chat sources into memories. They stay linked sources with their own voices.
-- Retiring legacy crystallizations (Stage 4). Stage 2 only stops serving them by salience.
-- The stakes policy (Juniper's open decision from Stage 1 review). This spec's only stopgap is the reverie-seed person rule.
-- Killing `recall_v2`'s inline shadow diagnostic (separate ticket).
+- Vectors or embeddings for identity, linking or ranking.
+- A second graph store, or any Graphiti role in Stage 2.
+- Silent merges.
+- Opting recall into `proposed` nodes.
+- Predicates other than `co_occurs_with` from memory.
+- Bulk-seeding graphify artifacts into the cognitive graph.
+- The Stage 3 "Orion is asking" producer and outcome consumer. Stage 2 writes only proposals and `memory_tension_shadow` rows.
+- The pageindex fixes (a separate track).
+- Fixing topic-foundry's label and embedding merges.
+- Retiring the Graphiti adapter (a Stage 4 decision).
+- Distilling non-chat sources into memories.
 
 ## Acceptance checks (Stage 2 as a whole)
 
-1. **A-G each meet their row in 7.5.**
-2. **Hecate end to end** (live, after D):
-   - a chat turn "is Hecate flashed yet?" gives a shadow row with `query_referents=[machine:hecate]` and all 5 Hecate memories (3 rendered "Juniper told me (10-04)…", 2 rendered "I told Juniper…" or as Orion's own follow-up), plus at most 3 reverie items rendered "Something I was turning over on my own (reverie, …)";
-   - the reason names the alias "hecate";
-   - the intent is `procedural` by the referent rule, unless an earlier rule fires (`rule_id` logged either way).
-3. **Same for "the Inspur"** (via the rare token) **and "the new server"** (via the phrase lane, hop 2).
-4. **No referent:** "how are you feeling tonight" → `abstained=true` and no memory filler.
-5. **Graphiti:** `as_of(machine:hecate, 2026-09-29)` is empty in both stores, and `as_of(machine:hecate, 2026-10-06)` returns 5 edges.
-6. **Reverie:** a `reverie_visual_chain` row carries `source_kind=episode_memory` and a `memory_id` that resolves in `episode_memory`.
-7. **The whole stage made 0 LLM calls** outside the existing distiller.
+1. Each PR A–H meets its row in 7.5.
+2. **Hecate end to end (live shadow).** The query "is Hecate flashed yet?" gives:
+   - `focal=[referent-…hecate]`;
+   - all 5 Hecate memories: 3 rendered "Juniper told me (10-04)…", 2 as Orion's own words;
+   - at most 3 reveries, rendered "Something I was turning over on my own (reverie, …)";
+   - Circe as a hop-2 neighbor through an accepted `co_occurs_with` assertion, with the assertion id in `why`;
+   - the neighborhood receipt attached;
+   - intent `procedural`, unless an earlier rule fires.
+3. "the Inspur" (rare token) and "the new server" (phrase lane) reach the same memories.
+4. A query with no referent ("how are you feeling tonight") gives `abstained=true` and no filler memories.
+5. **As-of:** Hecate on 09-29 is empty; on 10-06 it returns 5 memories.
+6. **Reverie:** a `reverie_visual_chain` row carries `source_kind=episode_memory` and an eligible memory id. 0 rows come from pending memories.
+7. No LLM calls outside the existing distiller. 0 Graphiti writes from memory code.
 
 ## Proposal-mode disclosure
 
-- **Capability change:** Orion gets a durable list of the people, places, machines, projects and ideas in its life, with the names Juniper uses for them. Recall starts from the things a message names, and every recalled line says why it came back and whose words it is. Orion can answer "what did I know about X then". Reverie images come from real recent memories.
+- **Capability change:**
+  - The people, places, machines, projects and ideas in Orion's life become nodes in its one graph, with Juniper's names for them.
+  - Everything Orion has about each thing hangs off it, labelled with whose voice it is.
+  - Recall starts from the things a message names, and says why each item came back and whose words it is.
+  - Orion can say what it knew about something at a past time.
+  - Reverie images come from real recent memories.
 - **Data touched:**
-  - **Reads:** `episode_memory*`, LangGraph checkpoints of distill runs (once, for alias recovery), non-AI-Town chat, non-metacog journals, reveries, dreams, world-pulse claims, reading snapshots, Falkor `orion_worldview` and `orion_substrate` (read-only), topic-foundry segments, the published graphify bundle, `git log`.
-  - **Writes:** the new referent tables, `episode_memory_referent.referent_id`, `recall_referent_shadow`, `recall_telemetry` columns, `memory_tension_shadow` (identity tensions), the Graphiti `episode_memory` group, `recalled` events.
+  - **Reads:** `episode_memory*`, the distill checkpoints (once), non-AI-Town chat, non-metacog journals, reveries, dreams, claims, snapshots, Falkor `orion_worldview`, the graphify bundle, `git log`.
+  - **Writes:** `referent_alias`, `substrate_graph_journal`, the indexer cursors, the shadow table and telemetry columns, `memory_tension_shadow`, and Falkor `orion_substrate`. The Falkor writes are new Entity/Concept/Evidence/Assertion nodes and provenance, assertion and semantic-projection edges, all with `producer=memory.referents`.
 - **Privacy boundary:**
-  - everything stays on the host;
-  - AI Town and metacog never enter mentions;
-  - people are never linked from external reading;
-  - pending and rejected memories are never mirrored;
-  - the reverie seed excludes memories about people other than Juniper and Orion until a stakes policy exists;
-  - this public spec names referent keys only and quotes no family, health or location content.
-- **Trace that proves it works:**
-  - `referent_event` rows for every identity decision;
-  - `referent_mention.producer`/`via` on every link;
+  - Everything stays on the host.
+  - Evidence text never enters the graph; only `content_ref` does.
+  - AI Town and metacog are never indexed.
+  - People are never linked from external reading.
+  - High-stakes memories (under Juniper's policy) render "Unconfirmed" and never seed images until confirmed.
+  - `visibility_scope` is still pending (#2497), so access relies on the internal API boundary.
+  - This public spec names keys only.
+- **Trace:**
+  - journal rows for proposal → decision → materialization, with the real ids;
+  - `edge_role` and assertion ids on edges;
   - `recall_referent_shadow.shadow_items[].why`;
-  - `recall_telemetry.selected_reasons`;
-  - `VisualSourceV1.source_id=memory_id`;
-  - Graphiti edge uuid = `memory_id`.
+  - neighborhood receipts;
+  - `VisualSourceV1.source_id`.
 - **Dangerous failure modes:**
-  - (a) **A wrong merge** puts two people's memories under one name. Mitigated: no merge without a confirmed outcome; collisions open tensions.
-  - (b) **Source blending:** a reverie is recalled as Juniper's words. Mitigated by voice on every mention, the renderer contract, and eval 4 as a cutover gate.
-  - (c) **A bad alias drags in wrong memories**, e.g. "autonomous robot". Mitigated by grounding, the `why` shown on every item, collision tensions and the descriptor expiry.
-  - (d) **Silent narrowing:** a turn that talks around a thing without naming it gets nothing. Mitigated by the visible abstention, the abstain-with-rare-token rate, and the phrase lane.
-  - (e) **Stale graphify** (25 days today) cites changed code. Mitigated by the build label on every graphify referent and mention.
-- **Rollback:**
-  - `RECALL_PCR_MEMORY_MODE=legacy` before cutover; revert PR G after it;
-  - `MEMORY_REFERENT_INDEXER_ENABLED=false` / `MEMORY_GRAPHITI_PROJECTOR_ENABLED=false`;
-  - `REVERIE_VISUAL_MEMORY_SEED_SOURCE=crystallization` until PR G deletes it;
-  - every new table is derived and can be dropped and rebuilt by the seed scripts.
+  - (a) **A wrong merge.** Mitigated by merging only on decisions, plus reconcile fencing.
+  - (b) **Source blending.** Mitigated by voice on every evidence node, the renderer contract, and eval 4 as a cutover gate.
+  - (c) **A bad alias.** Mitigated by grounding, `why` on every item, collision proposals and descriptor expiry.
+  - (d) **New nodes silently changing attention or dynamics.** Mitigated by the eligibility exclusion and eval 6.
+  - (e) **A partial neighborhood shown as "nothing related".** Mitigated by rendering receipts; degraded is never shown as empty.
+  - (f) **Stale graphify.** Mitigated by the build label.
+  - (g) **Auto-accept policies letting junk structure in.** Mitigated by two narrow named policies with kill switches, covering only `co_occurs_with` relationships.
+- **Rollback:** see 7.4. Each subsystem has its own flag. Graph projections are retracted by producer and receipt, never by deleting the graph.
 
 ## Open product questions (for Juniper)
 
-1. **When should recall by referent become primary: at Stage 2 when the gates in 7.2 pass, or at Stage 4 as rev 3 planned?**
-   - Recommendation: Stage 2, when the gates pass.
-   - Why: today's path is query-blind (569 of 569 retrievals return the same-shaped 100 rows) and reinforces junk on every read.
-   - The legacy lane keeps old crystallizations reachable by referent until Stage 4 retires them.
-2. **Descriptor names like "my boss" or "my sister": may Orion keep them as live names (90-day expiry, grounded in your words), or should descriptors always be confirmed by you before they resolve?**
-   - Recommendation: keep them live with expiry. They are your own words, and a collision always becomes a question.
+1. **When should recall by referent become primary: at Stage 2, once the 7.2 gates pass, or at Stage 4 as rev 3 planned?** Recommendation: Stage 2. Today's path ignores the query (569 of 569 retrievals return the same-shaped 100 rows) and reinforces junk on every read.
+2. **Should descriptor names like "my boss" or "my sister" resolve while live (90-day expiry, grounded in your words, collisions become questions), or only after you confirm them?** Recommendation: resolve while live.
 
 ## Recommended next patch
 
-**PR A, the canonical referent store with alias persistence.** It is small, it unblocks everything else, and it stops losing data today: every distill run currently throws away the aliases the writer produced. Acceptance is the PR A row in 7.5, centred on Hecate. Its three aliases come back from the checkpoints, `project:hecate` refines to `machine:hecate`, and a forced name collision opens a tension instead of merging.
+**PR A: the shared substrate assertion core, agreed with #2497's owner first.** It unblocks both the memory referents and the reading pipeline, and it is where the one-graph decision actually becomes code.
+
+**In parallel, PR D:** the voice renderer and the intent fix. It does not depend on PR A and is useful immediately.

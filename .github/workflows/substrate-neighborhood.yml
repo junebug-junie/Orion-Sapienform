@@ -28,11 +28,17 @@ on:
 jobs:
   neighborhood:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # v4.18.11 is production's engine; 6.0.1 is the next major. Both plan
+        # the neighborhood reads differently enough to need a run.
+        falkordb: ['falkordb/falkordb:v4.18.11', 'falkordb/falkordb:6.0.1']
     services:
       # Throwaway FalkorDB for the direct-read equivalence lane: the concept
       # ranking and edge cut run in Cypher, so a fake client cannot prove them.
       falkordb:
-        image: falkordb/falkordb:latest
+        image: ${{ matrix.falkordb }}
         ports:
           - 6379:6379
       # Throwaway Postgres for the substrate graph journal + assertion projector lane.
@@ -60,6 +66,7 @@ jobs:
           python -m pytest -q
           orion/substrate/tests/test_neighborhood.py
           orion/substrate/tests/test_neighborhood_backends.py
+          orion/substrate/tests/test_neighborhood_batching_oracle.py
           orion/graph/tests/test_falkor_client.py
           orion/substrate/tests/test_falkor_store.py
           orion/substrate/tests/test_complete_hydration.py
@@ -78,6 +85,10 @@ jobs:
         env:
           ORION_TEST_FALKOR_URI: redis://localhost:6379
         run: python -m pytest -q -rs orion/substrate/tests/test_falkor_direct.py orion/substrate/tests/test_falkor_anchor_store.py
+      - name: Neighborhood reads equal the reference, with index seeks (real FalkorDB)
+        env:
+          ORION_TEST_FALKOR_URI: redis://localhost:6379
+        run: python -m pytest -q -rs orion/substrate/tests/test_neighborhood_falkor_live.py
       - name: Shared assertion core -- real FalkorDB + Postgres journal (must not skip)
         env:
           ORION_TEST_FALKOR_URI: redis://localhost:6379

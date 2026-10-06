@@ -594,3 +594,7 @@ plain text and stay out of the structured-output verb list.
 | :--- | :--- | :--- |
 | `LLM_ORION_DAY_NOTE_MAX_TOKENS` | `12000` | Completion budget for the long reflective note (reasoning tokens count against it on the agent-lane model). |
 | `LLM_ORION_DAY_CARRY_FORWARD_MAX_TOKENS` | `4000` | Completion budget for the carry-forward thread list. |
+
+### Stance build: no full-graph hydrate (2026-10-06)
+
+The unification layer behind every chat stance build reads Falkor through `FalkorAnchorStanceStore` (`orion/substrate/falkor_anchor_store.py`, chosen by `build_unification_store_from_env()` when `SUBSTRATE_STORE_BACKEND=falkor`). It fetches only the non-`world` anchor nodes (216 of 5,051 live) and the concept region, in about 80 ms each. Before this, each Hub turn's build re-hydrated the whole graph (38k edges, ~14 s, 17-28 s live) because the store's 30 s refresh ceiling had always lapsed by the next human turn. Each build logs `stance_build_phase_timing corr=... queue_wait_ms=... felt_state_ms=... beliefs_ms=... snapshot_calls=... snapshot_ms=...`.

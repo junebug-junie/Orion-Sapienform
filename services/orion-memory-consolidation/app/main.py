@@ -13,6 +13,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from app.retry_degraded_classifies import run_classify_retry_loop
 from app.retry_failed_windows import run_retry_loop
 from app.settings import settings
+from app.confirmation_loop import LOOP_OUTCOME_KIND, handle_loop_outcome, run_confirmation_loop
 from app.episode_shadow import EpisodeShadowStore
 from app.window_state import WindowStore
 from app.worker import ConsolidationSuggestRunner, handle_memory_turn_persisted
@@ -27,6 +28,7 @@ _retry_task: Optional[asyncio.Task] = None
 _classify_retry_task: Optional[asyncio.Task] = None
 _report_task: Optional[asyncio.Task] = None
 _referent_task: Optional[asyncio.Task] = None
+_confirmation_task: Optional[asyncio.Task] = None
 
 
 def _cfg() -> ChassisConfig:
@@ -45,6 +47,7 @@ def _cfg() -> ChassisConfig:
 async def lifespan(app: FastAPI):
     global bus_hunter, pg_pool, grammar_pg_pool, bus_client, _retry_task, _classify_retry_task, _report_task
     global _referent_task
+    global _confirmation_task
 
     dsn = (settings.POSTGRES_URI or "").strip()
     if dsn:
@@ -66,6 +69,13 @@ async def lifespan(app: FastAPI):
     )
 
     async def _handler(env: BaseEnvelope) -> None:
+        if env.kind == LOOP_OUTCOME_KIND:
+            # The memory confirmation loop's consumer; independent of the consolidation switch.
+            try:
+                await handle_loop_outcome(env, pool=pg_pool, settings=settings)
+            except Exception:  # noqa: BLE001 -- the ticker's table catch-up retries it
+                logger.exception("memory_confirmation_bus_apply_failed")
+            return
         if not settings.MEMORY_CONSOLIDATION_ENABLED:
             return
         if env.kind != "memory.turn.persisted.v1":
@@ -84,7 +94,8 @@ async def lifespan(app: FastAPI):
     if settings.ORION_BUS_ENABLED:
         bus_hunter = Hunter(
             _cfg(),
-            patterns=[settings.CHANNEL_MEMORY_TURN_PERSISTED],
+            patterns=[settings.CHANNEL_MEMORY_TURN_PERSISTED]
+            + ([settings.CHANNEL_ATTENTION_LOOP_OUTCOME] if settings.MEMORY_CONFIRMATION_LOOP_ENABLED else []),
             handler=_handler,
         )
         await bus_hunter.start_background()
@@ -112,6 +123,8 @@ async def lifespan(app: FastAPI):
         from app.referent_projector import run_referent_projector_loop
 
         _referent_task = asyncio.create_task(run_referent_projector_loop(pg_pool, settings))
+    if pg_pool is not None and settings.MEMORY_CONFIRMATION_LOOP_ENABLED:
+        _confirmation_task = asyncio.create_task(run_confirmation_loop(pg_pool, settings))
 
     app.state.pg_pool = pg_pool
     app.state.bus_hunter = bus_hunter
@@ -125,6 +138,8 @@ async def lifespan(app: FastAPI):
         _report_task.cancel()
     if _referent_task is not None:
         _referent_task.cancel()
+    if _confirmation_task is not None:
+        _confirmation_task.cancel()
     if bus_hunter is not None:
         await bus_hunter.stop()
     if bus_client is not None:
@@ -155,4 +170,5 @@ async def health() -> dict:
         "episode_shadow_enabled": settings.MEMORY_EPISODE_SHADOW_ENABLED,
         "referent_projector_enabled": settings.MEMORY_REFERENT_PROJECTOR_ENABLED,
         "referent_projector": _referent_status(),
+        "confirmation_loop_enabled": settings.MEMORY_CONFIRMATION_LOOP_ENABLED,
     }

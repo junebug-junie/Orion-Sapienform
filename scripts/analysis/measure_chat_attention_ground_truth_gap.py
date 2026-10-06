@@ -373,7 +373,10 @@ def fetch_loop_outcome_count(conn, since: datetime) -> Optional[int]:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT count(*) FROM attention_loop_outcome WHERE created_at >= %s",
+                # Memory confirmation answers (2026-10-06) share this table but are not attention
+                # loops; counting them would inflate the attention ground-truth number.
+                "SELECT count(*) FROM attention_loop_outcome WHERE created_at >= %s "
+                "AND loop_id NOT LIKE 'memory-confirm-%%'",
                 (since,),
             )
             row = cur.fetchone()

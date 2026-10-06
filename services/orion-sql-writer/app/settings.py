@@ -541,7 +541,8 @@ class Settings(BaseSettings):
     vision_crop_thumb_retention_days: float = Field(10.0, alias="VISION_CROP_THUMB_RETENTION_DAYS")
     # An ask that expired unanswered is not repeated for this long.
     vision_ask_cooldown_days: float = Field(30.0, alias="VISION_ASK_COOLDOWN_DAYS")
-    # Orion's whole daily ask budget (every source_kind), counted from
+    # The walkway camera's daily ask budget: vision_individual asks only (since 2026-10-06; memory
+    # confirmation cards have their own caps in orion-memory-consolidation), counted from
     # orion_ask.created_at since local midnight, so a restart cannot reset it.
     orion_ask_daily_cap: int = Field(2, alias="ORION_ASK_DAILY_CAP")
     # Local clock for "07:40", distinct days, weekday/weekend, and the ask cap day.

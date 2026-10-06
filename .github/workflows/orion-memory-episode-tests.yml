@@ -22,6 +22,10 @@ on:
       - "services/orion-durable-runs/app/admission_runtime.py"
       - "orion/substrate/**"
       - "scripts/backfill_referents_from_episodes.py"
+      - "services/orion-sql-db/manual_migration_walkway_camera_v1.sql"
+      - "services/orion-sql-db/manual_migration_attention_loop_outcome.sql"
+      - "services/orion-hub/scripts/ask_routes.py"
+      - "services/orion-hub/tests/test_ask_resolve_pg.py"
       - ".github/workflows/orion-memory-episode-tests.yml"
   push:
     branches: [main]
@@ -34,6 +38,7 @@ on:
       - "services/orion-sql-db/manual_migration_episode_memory_*.sql"
       - "services/orion-sql-db/manual_migration_referent_alias_*.sql"
       - "orion/substrate/**"
+      - "services/orion-hub/scripts/ask_routes.py"
       - ".github/workflows/orion-memory-episode-tests.yml"
 
 jobs:
@@ -92,6 +97,10 @@ jobs:
             services/orion-durable-runs/tests/test_episode_distill_reconcile.py \
             services/orion-durable-runs/tests/test_episode_distill_graph.py \
             services/orion-durable-runs/tests/test_episode_distill_referent_policy.py \
+            | tee -a pytest.out
+          # Third process: the Hub's resolve bridge end to end (its `scripts` package shadows the repo's).
+          PYTHONPATH=. python -m pytest -q -rs -p no:cacheprovider \
+            services/orion-hub/tests/test_ask_resolve_pg.py \
             | tee -a pytest.out
           if grep -q "SKIPPED" pytest.out; then
             echo "Postgres-backed memory episode tests skipped -- the service/env wiring is broken" >&2

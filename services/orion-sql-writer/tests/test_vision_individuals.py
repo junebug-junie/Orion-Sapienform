@@ -232,6 +232,15 @@ def test_ask_budget_comes_from_the_db_count() -> None:
     assert remaining_ask_budget(daily_cap=2, asked_today=5) == 0
 
 
+def test_ask_budget_counts_only_vision_asks() -> None:
+    """Memory confirmation cards share orion_ask but have their own cap; they must not use up the
+    walkway camera's daily budget."""
+    from app.vision_individuals import ASKED_TODAY_SQL
+
+    norm = " ".join(ASKED_TODAY_SQL.split())
+    assert "FROM orion_ask WHERE source_kind = 'vision_individual' AND created_at >= :d" in norm
+
+
 def test_ask_day_starts_at_local_midnight() -> None:
     # 03:00 UTC 9/25 = 21:00 Denver 9/24 -> the day began 06:00 UTC 9/24.
     start = local_day_start(datetime(2026, 9, 25, 3, 0, tzinfo=timezone.utc), TZ)

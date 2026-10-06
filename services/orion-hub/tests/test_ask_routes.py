@@ -36,27 +36,66 @@ class _FakeConn:
     def __init__(self, rows: dict[str, dict[str, Any]]) -> None:
         self.rows = rows
         self.sql: list[str] = []
+        self.statements: dict[str, str] = {}
+        self.outcomes: list[tuple] = []
+        self.tx_depth = 0
 
     def _answerable(self, r: dict[str, Any]) -> bool:
         return r["status"] == "open" and (r["expires_at"] is None or r["expires_at"] > _now())
 
-    async def fetch(self, sql: str, status: str, limit: int):
+    async def fetch(self, sql: str, *args):
         self.sql.append(sql)
+        if "FROM episode_memory" in sql:
+            (ids,) = args
+            return [{"memory_id": m, "statement": self.statements[m]} for m in ids if m in self.statements]
+        status, limit = args
         out = [r for r in self.rows.values() if r["status"] == status and (status != "open" or self._answerable(r))]
         return sorted(out, key=lambda r: r["created_at"], reverse=True)[:limit]
+
+    def transaction(self):
+        conn = self
+
+        class _Tx:
+            async def __aenter__(self_inner):
+                conn.tx_depth = conn.tx_depth + 1
+                return conn
+
+            async def __aexit__(self_inner, *exc):
+                conn.tx_depth -= 1
+                return False
+
+        return _Tx()
+
+    async def fetchval(self, sql: str, *args):
+        self.sql.append(sql)
+        assert "FROM episode_memory" in sql
+        return self.statements.get(args[0])
+
+    async def execute(self, sql: str, *args):
+        self.sql.append(sql)
+        if "INSERT INTO attention_loop_outcome" in sql:
+            assert self.tx_depth == 1, "outcome insert must share the card update's transaction"
+            self.outcomes.append(args)
+        return "INSERT 0 1"
 
     async def fetchrow(self, sql: str, *args):
         self.sql.append(sql)
         if sql.lstrip().startswith("UPDATE"):
-            ask_id, new_status, answer = args
+            ask_id, new_status, answer, kinds = args
             r = self.rows.get(ask_id)
             if r is None or not self._answerable(r):
                 return None
+            # The real SQL: /answer|/dismiss exclude RESOLVABLE_KINDS, /resolve requires them.
+            wants_resolvable = "= ANY($4" in sql
+            if (r["source_kind"] in kinds) != wants_resolvable:
+                return None
+            if wants_resolvable:
+                assert self.tx_depth == 1, "card update must run inside the transaction"
             r.update(status=new_status, answer=answer, answered_at=_now())
             return {k: r[k] for k in ("ask_id", "status", "answer", "answered_at", "source_kind", "source_ref")}
         (ask_id,) = args
         r = self.rows.get(ask_id)
-        return None if r is None else {"status": r["status"], "expires_at": r["expires_at"]}
+        return None if r is None else {"status": r["status"], "expires_at": r["expires_at"], "source_kind": r["source_kind"]}
 
 
 class _FakePool:
@@ -222,8 +261,13 @@ def test_template_declares_card_and_script_tag():
     assert 'id="visionAsksStatus"' in INDEX_HTML
     assert '/static/js/vision-asks.js?v={{HUB_UI_ASSET_VERSION}}' in INDEX_HTML
     assert (HUB_ROOT / "static" / "js" / "vision-asks.js").is_file()
-    # Card lives inside the Vision panel, after its last control.
-    assert INDEX_HTML.index('id="affectCaptureResult"') < INDEX_HTML.index('id="visionAsksCard"') < INDEX_HTML.index('id="visionFloatingContainer"')
+    # 2026-10-06: the card is the first thing on the Hub home, above the EKG (memory-episode spec
+    # section 5), no longer inside the Vision panel.
+    hub_panel = INDEX_HTML.index('id="hubTabPanel"')
+    card = INDEX_HTML.index('id="visionAsksCard"')
+    assert hub_panel < card < INDEX_HTML.index('id="ekgCardTitle"')
+    assert card < INDEX_HTML.index('id="affectCaptureResult"')
+    assert "Things Orion saw and wants your help naming" not in INDEX_HTML
 
 
 def test_rendered_index_includes_card_and_script():
@@ -353,3 +397,138 @@ def test_thumb_route_refuses_symlinks_fifos_dirs_and_oversize(tmp_path, monkeypa
 def test_thumb_route_permission_error_is_404(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(ask_routes.os, "open", lambda *a, **k: (_ for _ in ()).throw(PermissionError("no")))
     assert _thumb_client(tmp_path, monkeypatch).get(f"/api/vision/crop-thumbs/{'f' * 64}").status_code == 404
+
+
+# --- memory confirmation cards: Confirm / Revise / Reject (2026-10-06) -------------------------
+
+import json  # noqa: E402
+import uuid  # noqa: E402
+
+from orion.memory.episode.confirmation import ask_id_for, loop_id_for, outcome_id_for  # noqa: E402
+from orion.schemas.attention_salience import AttentionLoopOutcomeV1  # noqa: E402
+
+MEM_ID = str(uuid.UUID(int=7))
+
+
+def _memory_row(memory_id: str = MEM_ID, **kw) -> dict[str, Any]:
+    loop = loop_id_for(memory_id)
+    row = _row(ask_id_for(loop), **kw)
+    row.update(source_kind="memory_confirmation", source_ref=loop, image_ref=None, evidence_refs="[]",
+               question="You told me something on Oct 3, and I wrote it down like this: “X.” Want me to remember that?")
+    return row
+
+
+@pytest.fixture()
+def menv(monkeypatch, env):
+    client, rows, published = env
+    mem = _memory_row()
+    rows[mem["ask_id"]] = mem
+    pool = client.app.state.memory_pg_pool
+    pool.conn.statements[MEM_ID] = "Juniper told me that X happened today."
+    outcomes: list[AttentionLoopOutcomeV1] = []
+
+    async def _pub_outcome(o):
+        outcomes.append(o)
+        return True
+
+    monkeypatch.setattr(ask_routes, "_publish_loop_outcome", _pub_outcome)
+    monkeypatch.setattr(ask_routes, "_confirmation_loop_enabled", lambda: True)
+    return client, rows, published, outcomes, mem["ask_id"], pool.conn
+
+
+@pytest.mark.parametrize("resolution,note,ask_status,verdict", [
+    ("confirmed", "", "answered", "resolved"),
+    ("revised", "  Juniper told me Y,  not X. ", "answered", "resolved"),
+    ("rejected", "", "dismissed", "dismissed"),
+])
+def test_resolve_closes_card_writes_outcome_in_one_tx_and_publishes(menv, resolution, note, ask_status, verdict):
+    client, rows, published, outcomes, ask_id, conn = menv
+    r = client.post(f"/api/asks/{ask_id}/resolve", json={"resolution": resolution, "note": note})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["outcome_id"] == outcome_id_for(ask_id)
+    assert rows[ask_id]["status"] == ask_status
+    # The outcome row (asserted inside the fake to share the card update's transaction).
+    assert len(conn.outcomes) == 1
+    oid, loop_id, theme, v, actor, saved_note, _sal, _wv, feats, _at = conn.outcomes[0]
+    feats = json.loads(feats)
+    assert (oid, loop_id, theme, v, actor) == (outcome_id_for(ask_id), loop_id_for(MEM_ID), loop_id_for(MEM_ID), verdict, "juniper")
+    assert feats["resolution"] == resolution and feats["ask_id"] == ask_id and feats["memory_id"] == MEM_ID
+    assert feats["via"] == "orion_is_asking"
+    assert saved_note == " ".join(note.split())
+    # Published after commit: the single resolution record, plus the usual card event.
+    assert [o.outcome_id for o in outcomes] == [oid]
+    assert outcomes[0].verdict == verdict
+    assert published[0].ask_id == ask_id and published[0].status == ask_status
+
+
+@pytest.mark.parametrize("note,detail", [
+    ("   ", "revised_needs_note"),
+    ("no that's wrong", "revised_too_short"),          # a meta-note, not wording: Reject is the button
+    (" juniper TOLD me that X  happened today. ", "revised_unchanged"),  # the prefilled text sent back as-is
+])
+def test_revise_refuses_a_note_that_is_not_new_wording_and_touches_nothing(menv, note, detail):
+    client, rows, published, outcomes, ask_id, conn = menv
+    conn.statements[MEM_ID] = "Juniper told me that X happened today."
+    r = client.post(f"/api/asks/{ask_id}/resolve", json={"resolution": "revised", "note": note})
+    assert r.status_code == 422 and r.json()["detail"] == detail
+    assert conn.outcomes == [] and outcomes == [] and published == []
+    # The real route raises inside the transaction, so the card update rolls back. The fake has no
+    # rollback; the Postgres test (test_ask_resolve_pg.py) pins that the card stays open.
+
+
+def test_second_resolve_is_409_without_a_second_outcome(menv):
+    client, rows, _pub, outcomes, ask_id, conn = menv
+    assert client.post(f"/api/asks/{ask_id}/resolve", json={"resolution": "confirmed"}).status_code == 200
+    r = client.post(f"/api/asks/{ask_id}/resolve", json={"resolution": "rejected"})
+    assert r.status_code == 409 and r.json()["detail"] == "ask_not_open:answered"
+    assert len(conn.outcomes) == 1 and len(outcomes) == 1
+
+
+def test_memory_card_cannot_be_answered_or_dismissed_without_an_outcome(menv):
+    client, rows, published, _o, ask_id, conn = menv
+    for path, payload in (("answer", {"answer": "yes"}), ("dismiss", None)):
+        r = client.post(f"/api/asks/{ask_id}/{path}", json=payload) if payload else client.post(f"/api/asks/{ask_id}/{path}")
+        assert r.status_code == 409 and r.json()["detail"] == "ask_needs_resolution"
+    assert rows[ask_id]["status"] == "open" and published == [] and conn.outcomes == []
+
+
+def test_vision_card_cannot_be_resolved(menv):
+    client, rows, _p, _o, _ask, conn = menv
+    r = client.post("/api/asks/a1/resolve", json={"resolution": "confirmed"})
+    assert r.status_code == 409 and r.json()["detail"] == "ask_not_resolvable"
+    assert rows["a1"]["status"] == "open" and conn.outcomes == []
+
+
+def test_resolve_disabled_is_404(menv, monkeypatch):
+    client, rows, _p, _o, ask_id, _c = menv
+    monkeypatch.setattr(ask_routes, "_confirmation_loop_enabled", lambda: False)
+    assert client.post(f"/api/asks/{ask_id}/resolve", json={"resolution": "confirmed"}).status_code == 404
+    assert rows[ask_id]["status"] == "open"
+
+
+def test_outcome_publish_failure_still_commits(menv, monkeypatch):
+    client, rows, _p, _o, ask_id, conn = menv
+
+    async def _fail(_o):
+        return False
+
+    monkeypatch.setattr(ask_routes, "_publish_loop_outcome", _fail)
+    r = client.post(f"/api/asks/{ask_id}/resolve", json={"resolution": "confirmed"})
+    assert r.status_code == 200 and r.json()["published_outcome"] is False
+    assert rows[ask_id]["status"] == "answered" and len(conn.outcomes) == 1
+
+
+def test_list_adds_the_memory_statement_for_revise(menv):
+    client, _rows, _p, _o, ask_id, _c = menv
+    asks = {a["ask_id"]: a for a in client.get("/api/asks?status=open").json()["asks"]}
+    assert asks[ask_id]["memory_statement"] == "Juniper told me that X happened today."
+    assert "memory_statement" not in asks["a1"]
+
+
+def test_outcome_envelope_is_the_catalog_kind():
+    from scripts.bus_publish import build_loop_outcome_envelope
+
+    o = AttentionLoopOutcomeV1(outcome_id="o", loop_id=loop_id_for(MEM_ID), theme_key="t", verdict="resolved")
+    assert build_loop_outcome_envelope(o).kind == "attention.loop.outcome.v1"
+    assert ask_routes.CHANNEL_LOOP_OUTCOME == "orion:attention:loop_outcome"

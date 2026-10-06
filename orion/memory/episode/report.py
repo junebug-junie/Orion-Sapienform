@@ -27,6 +27,14 @@ FROM memory_crystallization_sources s JOIN memory_crystallizations c USING (crys
 WHERE s.source_kind = 'chat_turn' AND s.source_id = ANY($1::text[])
 ORDER BY c.kind, c.summary
 """
+# What the confirmation loop (orion.memory.episode.confirmation) has done with each memory, in words.
+CONFIRMATION_FLAG = {
+    "pending_confirmation": " (waiting to ask Juniper)",
+    "unconfirmed": " (asked, no answer in 7 days: unconfirmed)",
+    "confirmed": " (confirmed by Juniper)",
+    "corrected": " (Juniper revised this; superseded)",
+    "rejected": " (rejected by Juniper; never recalled)",
+}
 NEW_ROWS_SQL = """
 SELECT memory_id::text AS id, purpose, voice, channel, statement, stakes, stakes_reason, confirmation_state
 FROM episode_memory WHERE episode_id = $1 ORDER BY purpose, statement
@@ -117,7 +125,7 @@ def render_episode(ep: dict[str, Any], old: Iterable[dict], new: Iterable[dict],
     else:
         lines.append(f"**New writer ({len(new)} memories):**")
         for m in new:
-            flag = " (unconfirmed)" if m["confirmation_state"] == "pending_confirmation" else ""
+            flag = CONFIRMATION_FLAG.get(m["confirmation_state"], "")
             stakes = f", high: {m['stakes_reason'] or 'no category'}" if m["stakes"] == "high" else ""
             lines.append(f"- [{m['purpose']}, {_VOICE_LABEL.get(m['voice'], m['voice'])}/{m['channel']}{stakes}]"
                          f"{flag} {m['statement']}")

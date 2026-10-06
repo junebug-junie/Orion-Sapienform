@@ -77,15 +77,23 @@ _NON_TRANSFERABLE_KEYS = frozenset(
 @dataclass
 class StanceCtxDelta:
     changed: Dict[str, Any]
-    merged_keys: frozenset
     removed: List[str]
 
 
 def _snapshot(ctx: Dict[str, Any]) -> Dict[str, Any]:
-    # Shallow copies of containers so in-place mutation by the build is visible.
-    return {
-        k: (copy.copy(v) if isinstance(v, (dict, list, set)) else v) for k, v in ctx.items()
-    }
+    # Deep copies of containers so in-place mutation by the build -- nested
+    # too -- is visible. A value that cannot be deep-copied falls back to a
+    # shallow copy (top-level mutation still visible).
+    out: Dict[str, Any] = {}
+    for k, v in ctx.items():
+        if isinstance(v, (dict, list, set)):
+            try:
+                out[k] = copy.deepcopy(v)
+            except Exception:  # noqa: BLE001
+                out[k] = copy.copy(v)
+        else:
+            out[k] = v
+    return out
 
 
 def _same(a: Any, b: Any) -> bool:
@@ -99,7 +107,6 @@ def _same(a: Any, b: Any) -> bool:
 
 def compute_ctx_delta(before: Dict[str, Any], after: Dict[str, Any]) -> StanceCtxDelta:
     changed: Dict[str, Any] = {}
-    merged: set[str] = set()
     for key, value in after.items():
         if key in _NON_TRANSFERABLE_KEYS:
             continue
@@ -107,19 +114,19 @@ def compute_ctx_delta(before: Dict[str, Any], after: Dict[str, Any]) -> StanceCt
             changed[key] = value
         elif not _same(value, before[key]):
             changed[key] = value
-            if isinstance(value, dict) and isinstance(before[key], dict):
-                merged.add(key)
     removed = [k for k in before if k not in after and k not in _NON_TRANSFERABLE_KEYS]
-    return StanceCtxDelta(changed=changed, merged_keys=frozenset(merged), removed=removed)
+    return StanceCtxDelta(changed=changed, removed=removed)
 
 
 def apply_ctx_delta(ctx: Dict[str, Any], delta: StanceCtxDelta) -> None:
     for key in delta.removed:
         ctx.pop(key, None)
     for key, value in delta.changed.items():
-        # A dict the build mutated in place (e.g. ctx["debug"]) is merged, so
-        # keys the stance request set on its own copy survive.
-        if key in delta.merged_keys and isinstance(ctx.get(key), dict):
+        # A dict on both sides is merged, build's keys winning, so keys the
+        # stance request's own router set before its hook (e.g. ctx["debug"]
+        # recall_* entries) survive -- whether or not the prepare ctx had the
+        # dict before the build.
+        if isinstance(value, dict) and isinstance(ctx.get(key), dict):
             ctx[key] = {**ctx[key], **value}
         else:
             ctx[key] = value
@@ -306,14 +313,14 @@ def build_prepare_ctx(env: BaseEnvelope, request: StanceContextPrepareRequestV1)
     raw_plan_request = raw.get("plan_request") if isinstance(raw.get("plan_request"), dict) else {}
     req = request.plan_request
     payload_context = raw_plan_request.get("context") or req.context or {}
-    trace_id = (env.trace or {}).get("trace_id") or request.correlation_id
+    trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
     parent_event_id = (env.trace or {}).get("event_id") or (env.trace or {}).get("parent_event_id")
     ctx = build_exec_ctx(
         payload_context=dict(payload_context),
         req=req,
         trace_id=trace_id,
         parent_event_id=parent_event_id,
-        corr_id=request.correlation_id,
+        corr_id=str(env.correlation_id),
     )
     ctx.pop(STANCE_PREPARE_REQUESTED_CTX_KEY, None)
     # Same as PlanRunner.run_plan before its brain hook.
@@ -335,7 +342,10 @@ async def run_stance_context_prepare(
 ) -> StanceContextPrepareResultV1:
     from .executor import brain_reply_context_skipped, prepare_brain_reply_context
 
-    corr = request.correlation_id
+    # Keyed by the envelope's normalized correlation id: stance_react looks up
+    # ctx["correlation_id"] = str(env.correlation_id) (main.handle), so a
+    # non-canonical spelling in the payload must not miss.
+    corr = str(env.correlation_id)
     lane = settings.exec_lane
     cache = get_cache()
     entry, reason = cache.begin(corr)

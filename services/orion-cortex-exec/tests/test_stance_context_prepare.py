@@ -319,3 +319,99 @@ def test_prepare_ctx_matches_the_exec_ctx_and_sets_the_verb() -> None:
     assert ctx["user_message"] == "where is our work heading?"
     assert ctx["plan_metadata"] == (req.plan_request.plan.metadata or {})
     assert STANCE_PREPARE_REQUESTED_CTX_KEY not in ctx
+
+
+# --- review follow-ups -------------------------------------------------------
+
+
+def _bare_plan_request() -> PlanExecutionRequest:
+    """orion-thought's real shape: no ``debug`` in the request context."""
+    return PlanExecutionRequest(
+        plan=build_plan_for_verb("stance_react", mode="brain"),
+        args=PlanExecutionArgs(request_id=CORR, trigger_source="orion-thought", extra={"mode": "brain"}),
+        context={"session_id": "sess-1", "user_message": "where is our work heading?", "mode": "brain"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_router_path_keeps_its_own_debug_keys_and_builds_once(fake_build, monkeypatch) -> None:
+    """Drives the real main-ctx builder + PlanRunner.run_plan brain hook; only the
+    build and the LLM step are faked. The build adds a brand-new ``debug`` dict in
+    the prepare ctx; the router's own debug.recall_* entries must survive."""
+    from unittest.mock import AsyncMock
+
+    from orion.schemas.cortex.schemas import StepExecutionResult
+
+    router = importlib.import_module("app.router")
+    exec_ctx = importlib.import_module("app.exec_ctx")
+    plan_request = _bare_plan_request()
+
+    env = BaseEnvelope(
+        kind=STANCE_CONTEXT_PREPARE_REQUEST_KIND,
+        source=SOURCE,
+        correlation_id=CORR,
+        reply_to="orion:cortex:exec:stance_prepare_result:abc",
+        payload=StanceContextPrepareRequestV1(correlation_id=CORR, plan_request=plan_request).model_dump(mode="json"),
+    )
+    assert (await sp.handle_stance_context_prepare(env)) is not None
+
+    stance_context = dict(plan_request.context)
+    stance_context[STANCE_PREPARE_REQUESTED_CTX_KEY] = True
+    stance_req = plan_request.model_copy(update={"context": stance_context})
+    ctx = exec_ctx.build_exec_ctx(
+        payload_context=stance_context, req=stance_req, trace_id=CORR, parent_event_id=None, corr_id=CORR
+    )
+    monkeypatch.setattr(
+        router,
+        "call_step_services",
+        AsyncMock(
+            return_value=StepExecutionResult(
+                status="success",
+                verb_name="stance_react",
+                step_name="llm_stance_react",
+                order=0,
+                result={"LLMGatewayService": {"content": "{}"}},
+                latency_ms=1,
+                node="n",
+                logs=[],
+                error=None,
+            )
+        ),
+    )
+    monkeypatch.setattr(router, "assemble_stance_grounding", AsyncMock(return_value=None))
+    res = await router.PlanRunner().run_plan(
+        bus=object(), source=SOURCE, req=stance_req, correlation_id=CORR, ctx=ctx
+    )
+
+    assert fake_build.calls == 1
+    assert ctx["debug"]["stance_build"] == "done"
+    assert "recall_gating_reason" in ctx["debug"] and "recall_profile_source" in ctx["debug"]
+    assert ctx["stance_prepare_overlap"]["outcome"] == "used"
+    assert (res.metadata or {}).get("stance_prepare_overlap", {}).get("outcome") == "used"
+
+
+@pytest.mark.asyncio
+async def test_non_canonical_payload_correlation_id_still_hits(fake_build) -> None:
+    req = StanceContextPrepareRequestV1(correlation_id=CORR.upper(), plan_request=_plan_request())
+    env = BaseEnvelope(
+        kind=STANCE_CONTEXT_PREPARE_REQUEST_KIND,
+        source=SOURCE,
+        correlation_id=CORR.upper(),
+        payload=req.model_dump(mode="json"),
+    )
+    assert (await sp.run_stance_context_prepare(env, req)).status == "ready"
+    ctx = _stance_ctx()  # correlation_id is the normalized lowercase form
+    await prepare_brain_reply_context(ctx)
+    assert fake_build.calls == 1
+    assert ctx["stance_prepare_overlap"]["outcome"] == "used"
+
+
+def test_nested_in_place_mutation_is_transferred() -> None:
+    before_ctx = {"options": {"a": {"b": 1}}, "keep": 1}
+    before = sp._snapshot(before_ctx)
+    before_ctx["options"]["a"]["b"] = 2
+    delta = sp.compute_ctx_delta(before, before_ctx)
+    target = {"options": {"a": {"b": 1}, "own": True}, "keep": 1}
+    sp.apply_ctx_delta(target, delta)
+    assert target["options"]["a"]["b"] == 2
+    assert target["options"]["own"] is True

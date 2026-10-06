@@ -547,10 +547,11 @@ async def run_stance_react(
     # prepare channel of client.request_channel, the stance RPC to that channel.
     prepare_task = _start_stance_prepare(request, client)
     mind_started = time.perf_counter()
-    mind_coloring = await _maybe_build_mind_coloring(request, bus=bus)
-    mind_ms = round((time.perf_counter() - mind_started) * 1000.0, 1)
+    mind_ms: float | None = None
     exec_result: dict[str, Any] | None = None
     try:
+        mind_coloring = await _maybe_build_mind_coloring(request, bus=bus)
+        mind_ms = round((time.perf_counter() - mind_started) * 1000.0, 1)
         exec_result, raw_payload = await execute_stance_react(
             request,
             client=client,
@@ -559,6 +560,8 @@ async def run_stance_react(
         )
     finally:
         if prepare_task is not None:
+            # Also on a mind/stance failure or cancellation: never leave the
+            # prepare RPC task (and its bus connection) orphaned.
             _log_stance_prepare_overlap(
                 request, prepare_task, mind_ms=mind_ms, exec_result=exec_result
             )
@@ -584,7 +587,7 @@ def _log_stance_prepare_overlap(
     request: StanceReactRequestV1,
     prepare_task: asyncio.Task[StanceContextPrepareResultV1 | None],
     *,
-    mind_ms: float,
+    mind_ms: float | None,
     exec_result: dict[str, Any] | None = None,
 ) -> None:
     """One line per prepared turn: mind time vs build time, and how long

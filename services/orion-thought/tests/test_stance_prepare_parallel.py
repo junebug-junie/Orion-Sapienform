@@ -196,3 +196,29 @@ async def test_send_failure_is_fail_open(monkeypatch) -> None:
         _request(), request_channel="orion:cortex:exec:request", bus=_FakeBus(fail=True)
     )
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_prepare_task_is_cancelled_when_the_turn_fails_before_stance(monkeypatch) -> None:
+    bl = _reload(monkeypatch, flag="true")
+    events: list[str] = []
+    started = asyncio.Event()
+    holder: dict[str, asyncio.Task] = {}
+
+    async def _slow_send(request, *, request_channel, bus=None):
+        holder["task"] = asyncio.current_task()
+        started.set()
+        await asyncio.sleep(30)
+
+    async def _mind_boom(*_a, **_k):
+        await started.wait()
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(bl, "send_stance_context_prepare", _slow_send)
+    monkeypatch.setattr(bl, "_maybe_build_mind_coloring", _mind_boom)
+    client = _Client("orion:cortex:exec:request", events)
+    with pytest.raises(asyncio.CancelledError):
+        await bl.run_stance_react(_request(), bus=None, cortex_client=client)
+    await asyncio.sleep(0)
+    assert holder["task"].cancelled() or holder["task"].cancelling()
+    assert "stance_sent" not in events

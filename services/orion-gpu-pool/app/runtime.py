@@ -41,8 +41,8 @@ from orion.gpu_pool.orion_shed import (
     SHED_DECISION_REASON as ORION_SHED_DECISION_REASON, MemoryOrionShedLedger, OrionShedCaps,
     OrionShedController, OrionShedLedger,
 )
-from orion.gpu_pool.shed import ShedBoard, ShedSignal
-from orion.schemas.hardware_watch import HardwareWatchIncidentV1
+from orion.gpu_pool.shed import REFLEX_REASONS, ShedBoard, ShedSignal
+from orion.schemas.hardware_watch import HardwareWatchIncidentV1, HardwareWatchReflexShedV1
 from orion.gpu_pool.config import SWAP_GUARDS
 from orion.schemas.gpu_pool import (
     GPU_ACTUATE_KIND, GPU_POOL_ACTUATE_REQUEST_CHANNEL, GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND,
@@ -65,9 +65,11 @@ _PUBLIC = {"granted": "granted", "recalling": "recalled", "backlogged": "backlog
            "retry_wait": "retried", "queued": "queued"}
 
 
-# A cooling_incident signal lasts until the producer's valid_until (default 300 s, the watcher
-# refreshes every 60 s), never longer than SHED_MAX_VALID_SEC from when the pool received it.
+# A reflex signal (v2 cabinet_hot/cabinet_unknown, v1 cooling_incident) lasts until the producer's
+# valid_until (v2: 3 watcher ticks; v1 default 300 s), never longer than SHED_MAX_VALID_SEC from when
+# the pool received it.
 SHED_DEFAULT_VALID_SEC = 300.0
+V2_REFLEX_REASONS = ("cabinet_hot", "cabinet_unknown")
 SHED_MAX_VALID_SEC = 900.0
 
 
@@ -197,9 +199,8 @@ class PoolRuntime:
         self._shed_active: str | None = None      # last logged active reason (edge-triggered log)
         # Orion's learned shed (attend-to-act A1): the lower-precedence ``orion_self_shed`` reason, its
         # caps, ledger and manipulation check. GPU_POOL_ORION_SHED_ENABLED=false refuses every set.
-        # Open cabinet-AC (rule=cooling) incidents, whether or not they currently request a shed: the
-        # learned action's premise is "AC healthy", so an open one refuses orion_self_shed outright.
-        self._open_ac_incidents: set[str] = set()
+        # (thermal controller v2, D2: the old _open_ac_incidents set is gone with its no-expiry bug, C12.
+        # The learned action is refused while a REFLEX reason is active on the board, which expires.)
         self.orion_shed = OrionShedController(
             board=self.shed_board, ledger=orion_shed_ledger or MemoryOrionShedLedger(),
             caps=orion_shed_caps or OrionShedCaps(), enabled=orion_shed_enabled,
@@ -635,10 +636,11 @@ class PoolRuntime:
 
     # --- U4 shed ------------------------------------------------------------------------
     def on_incident(self, ev: HardwareWatchIncidentV1) -> str:
-        """orion-hardware-watch incident -> the ``cooling_incident`` shed signal for that incident.
-        Open + shed.requested sets (or refreshes) it; anything else clears it. The signal lapses at
-        the event's ``shed.valid_until``, capped at SHED_MAX_VALID_SEC from now so a bad clock can
-        never latch shedding. Returns what it did, for the log."""
+        """v1 rollback path (HARDWARE_WATCH_HEAT_CONTROLLER=v1): a cooling incident -> the
+        ``cooling_incident`` shed signal for that incident. Open + shed.requested sets (or refreshes)
+        it; anything else clears it. A v2 watcher's cooling incidents carry ``shed=None`` and only
+        clear. The signal lapses at ``shed.valid_until``, capped at SHED_MAX_VALID_SEC from now so a
+        bad clock can never latch shedding. Returns what it did, for the log."""
         if ev.rule != "cooling":
             return "ignored"
         if ev.status != "open" or ev.shed is None or not ev.shed.requested:
@@ -653,30 +655,55 @@ class PoolRuntime:
         return "set"
 
     async def handle_incident(self, ev: HardwareWatchIncidentV1) -> str:
-        """on_incident + the learned action's rule: an OPEN cabinet AC (``cooling``) incident drops any
-        active ``orion_self_shed`` at once (settles ``preempted_by_reflex``), whether or not the reflex
-        asserts ``cooling_incident`` this tick -- the action's premise (AC healthy) is gone."""
+        """on_incident + the learned action's rule: when the reflex starts shedding (v1: a cooling
+        incident sets ``cooling_incident``), any active ``orion_self_shed`` ends at once (settles
+        ``preempted_by_reflex``). An incident that does not shed (any v2 incident, a heat incident)
+        no longer touches the learned action (C7)."""
         async with self._locked("incident"):
             did = self.on_incident(ev)
-            if ev.rule == "cooling":
-                if ev.status == "open":
-                    self._open_ac_incidents.add(ev.incident_id)
-                else:
-                    self._open_ac_incidents.discard(ev.incident_id)
-            if ev.rule == "cooling" and ev.status == "open":
-                if await self.orion_shed.preempt_by_reflex(ev.incident_id):
-                    did = f"{did}+orion_shed_preempted"
+            if did == "set" and await self.orion_shed.preempt_by_reflex(f"cooling_incident:{ev.incident_id}"):
+                did = f"{did}+orion_shed_preempted"
             return did
+
+    def on_reflex_shed(self, sig: HardwareWatchReflexShedV1) -> str:
+        """v2 reflex (D2): one tick of hardware-watch's ``cabinet_hot``/``cabinet_unknown`` claim.
+        Active sets (or refreshes) that reason for ``source_id`` and clears the other reflex reason
+        from the same source; inactive clears both. Capped at SHED_MAX_VALID_SEC from now."""
+        cleared = False
+        for reason in V2_REFLEX_REASONS:
+            if not sig.active or reason != sig.reason:
+                cleared = self.shed_board.clear(reason, sig.source_id) or cleared
+        if not sig.active:
+            return "cleared" if cleared else "noop"
+        now = self.now()
+        valid_until = min(sig.valid_until, now + timedelta(seconds=SHED_MAX_VALID_SEC))
+        if valid_until <= now:
+            return "expired_on_arrival"
+        fresh = not any(r["name"] == sig.reason and r["active"] for r in self.shed_board.view(now, True).reasons)
+        self.shed_board.set(ShedSignal(sig.reason, sig.source_id, now, valid_until, {
+            k: sig.cabinet.get(k) for k in ("temp_c", "thermal_state", "age_sec", "critical", "ac_low")}))
+        return "set" if fresh else "refreshed"
+
+    async def handle_reflex_shed(self, sig: HardwareWatchReflexShedV1) -> str:
+        """on_reflex_shed + the learned action's rule: a reflex reason starting preempts it."""
+        async with self._locked("reflex_shed"):
+            did = self.on_reflex_shed(sig)
+            if did == "set" and await self.orion_shed.preempt_by_reflex(f"{sig.reason}:{sig.source_id}"):
+                did = f"{did}+orion_shed_preempted"
+            return did
+
+    def reflex_active(self) -> str | None:
+        """The active reflex reason on the board (any precedence-0 hardware-watch reason), or None."""
+        view = self.shed_board.view(self.now(), True)
+        return next((r["name"] for r in view.reasons if r["name"] in REFLEX_REASONS and r["active"]), None)
 
     async def orion_shed_request(self, req: GpuPoolShedReasonRequestV1) -> GpuPoolShedResultV1:
         """The shed RPC. Under the runtime lock: it reads live leases and changes the board."""
         async with self._locked("orion_shed"):
             live = await self.store.live_leases()
             background_live = sum(1 for r in live if r.get("priority") == "background")
-            view = self.shed_board.view(self.now(), True)
-            reflex_active = bool(self._open_ac_incidents) or any(
-                r["name"] == "cooling_incident" and r["active"] for r in view.reasons)
-            return await self.orion_shed.handle(req, background_live=background_live, reflex_active=reflex_active)
+            return await self.orion_shed.handle(req, background_live=background_live,
+                                                reflex_active=self.reflex_active() is not None)
 
     def shed_view(self):
         """The board as the scheduler will use it now; logs when the active reason changes."""

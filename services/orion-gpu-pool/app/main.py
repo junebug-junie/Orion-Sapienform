@@ -32,7 +32,10 @@ from orion.schemas.gpu_pool import (
 )
 from orion.gpu_pool.orion_shed import OrionShedCaps
 
-from orion.schemas.hardware_watch import HARDWARE_WATCH_INCIDENT_CHANNEL, HardwareWatchIncidentV1
+from orion.schemas.hardware_watch import (
+    HARDWARE_WATCH_INCIDENT_CHANNEL, HARDWARE_WATCH_REFLEX_SHED_CHANNEL, HardwareWatchIncidentV1,
+    HardwareWatchReflexShedV1,
+)
 
 from app.guards import GuardReader
 from app.orion_shed_store import PostgresOrionShedLedger
@@ -179,6 +182,19 @@ async def _on_incident(env: BaseEnvelope) -> None:
                     ev.rule, ev.transition, ev.shed.reason if ev.shed else None)
 
 
+async def _on_reflex_shed(env: BaseEnvelope) -> None:
+    """orion-hardware-watch v2 reflex -> cabinet_hot / cabinet_unknown on the shed board (D2)."""
+    try:
+        sig = HardwareWatchReflexShedV1.model_validate(env.payload or {})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("gpu_pool_reflex_shed_invalid err=%s", str(exc)[:300])
+        return
+    did = await runtime.handle_reflex_shed(sig)
+    if did not in ("refreshed", "noop"):
+        logger.warning("gpu_pool_reflex_shed %s source=%s reason=%s active=%s temp_c=%s", did, sig.source_id,
+                       sig.reason, sig.active, sig.cabinet.get("temp_c"))
+
+
 async def _on_announce(env: BaseEnvelope) -> None:
     try:
         await runtime.on_announce(LlmWorkerAnnounceV1.model_validate(env.payload or {}))
@@ -311,8 +327,11 @@ async def lifespan(app: FastAPI):
     incidents = Hunter(_cfg(), handler=_on_incident, patterns=[HARDWARE_WATCH_INCIDENT_CHANNEL])
     await incidents.start_background()
     _chassis.append(incidents)
-    logger.info("gpu_pool_shed enabled=%s orion_shed_enabled=%s channel=%s", _settings.shed_enabled,
-                _settings.orion_shed_enabled, HARDWARE_WATCH_INCIDENT_CHANNEL)
+    reflex = Hunter(_cfg(), handler=_on_reflex_shed, patterns=[HARDWARE_WATCH_REFLEX_SHED_CHANNEL])
+    await reflex.start_background()
+    _chassis.append(reflex)
+    logger.info("gpu_pool_shed enabled=%s orion_shed_enabled=%s channels=%s", _settings.shed_enabled,
+                _settings.orion_shed_enabled, [HARDWARE_WATCH_INCIDENT_CHANNEL, HARDWARE_WATCH_REFLEX_SHED_CHANNEL])
     _stop.clear()
     if any(spec.swap and spec.swap.guards for spec in cfg.roles.values()):
         _tasks.append(asyncio.create_task(_guards_forever(GuardReader(cabinet_url=_settings.cabinet_url))))
@@ -325,7 +344,7 @@ async def lifespan(app: FastAPI):
     logger.info("gpu_pool_ready channels=%s", [GPU_POOL_LEASE_REQUEST_CHANNEL, GPU_POOL_STATE_REQUEST_CHANNEL,
                                               GPU_POOL_CONTROL_REQUEST_CHANNEL, LLM_WORKER_ANNOUNCE_CHANNEL,
                                               GPU_POOL_ACTUATE_RESULT_CHANNEL, HARDWARE_WATCH_INCIDENT_CHANNEL,
-                                              GPU_POOL_SHED_REQUEST_CHANNEL])
+                                              HARDWARE_WATCH_REFLEX_SHED_CHANNEL, GPU_POOL_SHED_REQUEST_CHANNEL])
     try:
         yield
     finally:

@@ -9,12 +9,15 @@ Two questions, answered separately so the frame can say which one failed:
 1. ``bind_workspace_winner`` -- is the workspace broadcast winner bindable for this template?
    An action was selected (not ``none``), the projection is <= 90 s old (three broadcast ticks),
    the coalition held >= 2 ticks, and an attended node is in the template's ``binds_to_nodes``.
-2. ``evaluate_shed_eligibility`` -- is the world in the state the action is for? The thermal gate's
-   verdict on a FRESH reading is ``elevated`` (not hot, not unknown/stale), the cabinet rose >=
-   ``rise_threshold_c`` within 15 min (the reflex's own rise function), hardware-watch is healthy
-   with ZERO open incidents (unknown health = not idle = ineligible; "AC healthy" means no open
-   cooling incident, per the one rule that owns that judgement), at least one background lease is
-   granted or queued, and no earlier episode of this action is still in flight.
+2. ``evaluate_shed_eligibility`` -- is the world in the state the action is for? Thermal controller
+   v2, D8 (APPROVED 2026-10-06, docs/superpowers/specs/2026-10-06-thermal-controller-redesign-design.md):
+   Orion's learned shed owns the 29.5-34 C band. The cabinet is ``elevated``, ``hot`` below the
+   reflex's 34 C critical line, or ``unknown``; no rise is required (in the band the decision is the
+   attend-to-act loop's, not a fixed rise threshold); hardware-watch is reachable and ticking, and
+   the reflex's OWN shed signal (``cabinet_hot``/``cabinet_unknown``, or a v1 cooling incident that
+   requests shedding) is not active -- any other open incident (a gpu_heat outlier) no longer
+   disables it; at least one background lease is granted or queued; and no earlier episode of this
+   action is still in flight.
 
 The returned snapshot is persisted on the proposal, the dispatch candidate and the episode row, so
 treated and control rows can be shown to come from the same population.
@@ -35,6 +38,8 @@ WINNER_MIN_DWELL_TICKS = 2
 HARDWARE_WATCH_MAX_TICK_AGE_SEC = 180.0
 # The one action this module rules on.
 SHED_TEMPLATE = "shed_background_gpu"
+# D8: the band Orion's learned shed owns (below the reflex's critical line).
+SHED_ELIGIBLE_STATES = frozenset({"elevated", "hot", "unknown"})
 
 
 def _parse_ts(value: Any) -> datetime | None:
@@ -103,18 +108,28 @@ class HardwareWatchView:
     last_tick_age_sec: float | None = None
     open_incidents: tuple[dict[str, Any], ...] = ()
     error: str | None = None
+    # The reflex shed reason hardware-watch is asserting right now (v2 /health ``reflex_shed``), or a
+    # v1 cooling incident's shed reason while it requests shedding. None = the reflex is not shedding.
+    reflex_reason: str | None = None
 
     @classmethod
     def from_health(cls, health: Mapping[str, Any] | None, *, now: datetime, error: str | None = None) -> "HardwareWatchView":
         if not health:
             return cls(reachable=False, error=error or "unreachable")
         tick = _parse_ts(health.get("last_tick_at"))
+        incidents = tuple(dict(i) for i in health.get("open_incidents") or [])
+        reflex = health.get("reflex_shed") or {}
+        reason = reflex.get("reason") if reflex.get("active") else None
+        if reason is None:   # a v1 watcher: the reflex is a cooling incident that requests shedding
+            reason = next((f"cooling_incident:{i.get('shed_reason')}" for i in incidents
+                           if i.get("rule") == "cooling" and i.get("shed_requested")), None)
         return cls(
             reachable=True,
             enabled=bool(health.get("enabled")),
             last_tick_ok=bool(health.get("last_tick_ok")),
             last_tick_age_sec=None if tick is None else (now - tick).total_seconds(),
-            open_incidents=tuple(dict(i) for i in health.get("open_incidents") or []),
+            open_incidents=incidents,
+            reflex_reason=None if reason is None else str(reason)[:64],
         )
 
     def idle_refusal(self) -> str | None:
@@ -127,8 +142,8 @@ class HardwareWatchView:
             return "hardware_watch_unknown:last_tick_failed"
         if self.last_tick_age_sec is None or self.last_tick_age_sec > HARDWARE_WATCH_MAX_TICK_AGE_SEC:
             return "hardware_watch_unknown:stale"
-        if self.open_incidents:
-            return "hardware_watch_incident_open"
+        if self.reflex_reason:
+            return f"reflex_active:{self.reflex_reason}"
         return None
 
     def as_dict(self) -> dict[str, Any]:
@@ -137,6 +152,7 @@ class HardwareWatchView:
             "last_tick_age_sec": None if self.last_tick_age_sec is None else round(self.last_tick_age_sec, 1),
             "open_incident_ids": sorted(str(i.get("incident_id")) for i in self.open_incidents),
             "open_incident_rules": sorted({str(i.get("rule")) for i in self.open_incidents}),
+            "reflex_reason": self.reflex_reason,
             "error": self.error,
         }
 
@@ -153,10 +169,11 @@ def evaluate_shed_eligibility(
 ) -> dict[str, Any]:
     """The eligibility snapshot. ``eligible`` is True only when ``refusals`` is empty."""
     refusals: list[str] = []
-    if cabinet.thermal_state != "elevated":
+    if cabinet.thermal_state not in SHED_ELIGIBLE_STATES:
         refusals.append(f"thermal_not_elevated:{cabinet.thermal_state}")
-    if cabinet.rise_c is None or cabinet.rise_c < cabinet.rise_threshold_c:
-        refusals.append("cabinet_not_rising")
+    elif cabinet.critical:
+        # >= 34 C: the reflex already blocks background (and system); Orion's signal adds nothing.
+        refusals.append("thermal_critical:reflex_covers")
     idle = hardware_watch.idle_refusal()
     if idle:
         refusals.append(idle)
@@ -182,6 +199,7 @@ def evaluate_shed_eligibility(
 __all__ = [
     "HARDWARE_WATCH_MAX_TICK_AGE_SEC",
     "HardwareWatchView",
+    "SHED_ELIGIBLE_STATES",
     "SHED_TEMPLATE",
     "WINNER_MAX_AGE_SEC",
     "WINNER_MIN_DWELL_TICKS",

@@ -10,7 +10,7 @@ from pydantic import ValidationError
 from orion.gpu_pool.orion_shed import MemoryOrionShedLedger, OrionShedCaps, OrionShedController
 from orion.schemas.gpu_pool import GpuPoolShedReasonRequestV1
 
-from tests.test_runtime import acq, boot, make, run
+from tests.test_runtime import acq, acq_r, boot, make, run
 from tests.test_runtime_shed import incident
 
 
@@ -43,7 +43,8 @@ def test_check0_reflex_reason_wins_and_orion_reason_is_background_only():
         rt.on_incident(incident(rt))
         view = rt.shed_view()
         assert view.blocked == {"background": "cooling_incident", "system": "cooling_incident"}
-        assert [r["name"] for r in view.reasons][:2] == ["cooling_incident", "orion_self_shed"]
+        names = [r["name"] for r in view.reasons]          # precedence order: every reflex before Orion's
+        assert names[-1] == "orion_self_shed" and names.index("cooling_incident") < names.index("orion_self_shed")
     run(go())
 
 
@@ -55,10 +56,12 @@ def test_set_blocks_new_background_only_running_work_finishes_and_ttl_expires():
         assert running.status == "granted"
         out = await rt.orion_shed_request(req(ttl=600))
         assert out.background_live_at_start == 1 and out.ttl_sec == 600
-        waiting = await rt.acquire(acq("metacog", priority="background"))
+        waiting = await rt.acquire(acq_r("metacog", priority="background"))   # retryable: waits (D3)
         sys_ = await rt.acquire(acq("metacog", priority="system"))
         chat = await rt.acquire(acq("chat", priority="interactive"))
         assert waiting.status == "queued" and chat.status == "granted"
+        one_shot = await rt.acquire(acq("fast", priority="background"))       # D3: refused at once
+        assert one_shot.status == "unavailable" and one_shot.reason == "shed:orion_self_shed"
         await rt.tick()
         assert (await rt.store.lease(running.lease_id))["status"] == "granted"   # nothing recalled
         assert not rt.bus.events("recalled")
@@ -149,7 +152,7 @@ def test_check9_kill_switch_drill_restart_with_flag_off_cancels_and_next_lease_g
         rt, clock = pool(ledger=ledger)
         await boot(rt)
         await rt.orion_shed_request(req())
-        assert (await rt.acquire(acq("metacog", priority="background"))).status == "queued"
+        assert (await rt.acquire(acq_r("metacog", priority="background"))).status == "queued"
         # the operator flips GPU_POOL_ORION_SHED_ENABLED=false and restarts the pool
         rt2, _ = pool(enabled=False, ledger=ledger, clock=clock)
         rt2.store = rt.store
@@ -203,17 +206,18 @@ def test_check10_reflex_takes_over_mid_shed():
         assert view.blocked == {"background": "cooling_incident", "system": "cooling_incident"}
         status = await rt.orion_shed_request(req(action="status"))
         assert status.state == "preempted_by_reflex"
-        assert status.detail["preempted_by_incident"] == incident(rt).incident_id
+        assert status.detail["preempted_by_reflex"] == f"cooling_incident:{incident(rt).incident_id}"
     run(go())
 
 
-def test_ac_incident_open_without_shed_request_still_preempts():
+def test_ac_incident_without_a_shed_no_longer_preempts():
+    """Thermal v2 (C7): only the reflex's own shed ends the learned action, not any open incident."""
     async def go():
         rt, _ = pool()
         await boot(rt)
         await rt.orion_shed_request(req())
         await rt.handle_incident(incident(rt, requested=False))
-        assert (await rt.orion_shed_request(req(action="status"))).state == "preempted_by_reflex"
+        assert rt.orion_shed.active is not None
     run(go())
 
 
@@ -249,12 +253,75 @@ def test_ledger_down_at_boot_recovers_on_the_next_set():
     run(go())
 
 
-def test_open_ac_incident_refuses_even_without_a_shed_request():
+def test_open_ac_incident_without_a_shed_does_not_refuse():
+    """Thermal v2 (C7/C12): the old open-incident set is gone; an alert-only incident refuses nothing."""
     async def go():
         rt, _ = pool()
         await boot(rt)
         await rt.handle_incident(incident(rt, requested=False))
-        assert (await rt.orion_shed_request(req())).refusal == "reflex_active"
-        await rt.handle_incident(incident(rt, status="resolved", requested=False))
-        assert (await rt.orion_shed_request(req(dispatch_id="d2"))).state == "active"
+        assert (await rt.orion_shed_request(req())).state == "active"
+    run(go())
+
+
+# --- thermal controller v2 (D2): the per-tick reflex signal ----------------------------------
+
+def reflex(rt, reason="cabinet_hot", active=True, valid=90, source="orion-hardware-watch:athena:cabinet"):
+    from datetime import timedelta
+
+    from orion.schemas.hardware_watch import HardwareWatchReflexShedV1
+    now = rt.now()
+    return HardwareWatchReflexShedV1(source_id=source, active=active, reason=reason if active else None,
+                                     valid_until=now + timedelta(seconds=valid) if active else None,
+                                     cabinet={"temp_c": 34.4, "thermal_state": "hot"}, emitted_at=now)
+
+
+def test_v2_reflex_preempts_the_learned_shed_and_refuses_it_while_active():
+    async def go():
+        rt, clock = pool()
+        await boot(rt)
+        await rt.orion_shed_request(req())
+        assert await rt.handle_reflex_shed(reflex(rt)) == "set+orion_shed_preempted"
+        assert rt.shed_view().blocked == {"background": "cabinet_hot", "system": "cabinet_hot"}
+        assert await rt.handle_reflex_shed(reflex(rt)) == "refreshed"          # per-tick re-send
+        assert (await rt.orion_shed_request(req(dispatch_id="d2"))).refusal == "reflex_active"
+        assert await rt.handle_reflex_shed(reflex(rt, active=False)) == "cleared"
+        assert rt.shed_view().blocked == {}
+        clock.advance(901)                                  # past the learned action's own min_gap
+        assert (await rt.orion_shed_request(req(dispatch_id="d3"))).state == "active"
+    run(go())
+
+
+def test_v2_reflex_lapses_when_the_watcher_stops_sending():
+    async def go():
+        rt, clock = pool()
+        await boot(rt)
+        await rt.handle_reflex_shed(reflex(rt, reason="cabinet_unknown", valid=90))
+        assert rt.shed_view().blocked == {"background": "cabinet_unknown"}
+        clock.advance(91)
+        assert rt.shed_view().blocked == {}
+        assert rt.reflex_active() is None
+    run(go())
+
+
+def test_v2_unknown_escalating_to_hot_replaces_it_for_the_same_source():
+    async def go():
+        rt, _ = pool()
+        await boot(rt)
+        await rt.handle_reflex_shed(reflex(rt, reason="cabinet_unknown"))
+        await rt.handle_reflex_shed(reflex(rt, reason="cabinet_hot"))
+        active = [r["name"] for r in rt.shed_view().reasons if r["active"]]
+        assert active == ["cabinet_hot"]
+    run(go())
+
+
+def test_v2_one_shot_interactive_is_never_shed_under_cabinet_hot():
+    async def go():
+        rt, _ = pool()
+        rt.shed_enabled = True
+        await boot(rt)
+        await rt.handle_reflex_shed(reflex(rt))
+        turn = await rt.acquire(acq("metacog", priority="interactive"))
+        bg = await rt.acquire(acq("metacog", priority="system"))
+        assert turn.status == "granted"
+        assert bg.status == "unavailable" and bg.reason == "shed:cabinet_hot"     # D3: refused at once
     run(go())

@@ -53,7 +53,15 @@ Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-de
      anywhere (no owner-waiting recall, no swap load, no seat drain, no wait/backlog/fail verdict)
      and keeps its place in line and its deadline. Running work is untouched: nothing is recalled,
      and a granted hold's own calls (children) are still granted. Decided on the lease's ORIGINAL
-     priority, so the urgent rollback never makes urgent work sheddable
+     priority, so the urgent rollback never makes urgent work sheddable.
+     One-shot refusal (D3, docs/superpowers/specs/2026-10-06-thermal-controller-redesign-design.md):
+     a ONE-SHOT request -- kind "request", no hold_lease_id, status "queued" at the start of the
+     tick, and not a lease someone comes back for (its class is not on_unavailable "backlog" with
+     retryable set; a non-retryable backlog lease already behaves like "wait", rule 10) -- is
+     refused at once with Unavailable(reason="shed:<name>") instead of waiting out its deadline,
+     so the caller's fallback runs now. Durable-run holds, backlog leases and retry_wait leases
+     keep the Shed (wait) behavior above; a retry_wait lease is Requeue'd this tick and is not
+     also refused, so one lease never gets two transitions in one tick
 
 Stage 5 (docs/superpowers/specs/2026-09-29-gpu-pool-stage5-world-diffusion-generic-actuation.md):
   Z1 serialize_with: nothing is placed on a role while a lease (request, hold or child) is active on
@@ -217,6 +225,17 @@ class Shed:
 
 Decision = Union[Grant, Recall, Abort, Expire, Unavailable, Backlog, Requeue, DeadLetter, SwapLoad, SwapUnload,
                  SwapBlocked, Serialized, Shed]
+
+
+def _one_shot(cfg: PoolConfig, lease: LeaseView) -> bool:
+    """D3: a lease nobody comes back for -- refused at once when shed instead of waiting.
+
+    Status "queued" only: a retry_wait lease got Requeue this tick (and is retryable by definition),
+    a backlogged one is a backlog lease. "backlog" counts only with ``retryable``: without it rule 10
+    already treats the class as "wait" (the gateway's metacog/agent calls are this case)."""
+    if lease.kind != "request" or lease.hold_lease_id is not None or lease.status != "queued":
+        return False
+    return not (cfg.classes[lease.work_class].on_unavailable == "backlog" and lease.retryable)
 
 
 @dataclass
@@ -496,8 +515,12 @@ def schedule(
     backlogged = still_backlogged
 
     # U4: shed leases leave the placement pass entirely -- reported, never granted, never demand.
+    # D3: a one-shot request is refused now (its caller falls back at once); the rest wait.
     for lease in _order(cfg, [l for l in queued if l.lease_id in shed_of]):
-        out.append(Shed(lease.lease_id, f"shed:{shed_of[lease.lease_id]}"))
+        if _one_shot(cfg, lease):
+            out.append(Unavailable(lease.lease_id, f"shed:{shed_of[lease.lease_id]}"))
+        else:
+            out.append(Shed(lease.lease_id, f"shed:{shed_of[lease.lease_id]}"))
     queued = [l for l in queued if l.lease_id not in shed_of]
     backlogged = [l for l in backlogged if l.lease_id not in shed_of]
 

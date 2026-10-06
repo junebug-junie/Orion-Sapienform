@@ -130,17 +130,10 @@ nodes, 38,393 edges, `node_id` index present), 20 runs each:
 Equivalence: 305 requests (5 named + 300 random focal sets, budgets, states,
 directions) gave byte-identical receipts before and after on both engines.
 
-## Evidence handles
+## Evidence handles: not in this patch
 
-`store.read_evidence_handles(EvidenceHandleRequestV1(node_ids=…,
-evidence_types=…, per_node_limit=6, at=…))` returns, for each Concept/Entity,
-the Evidence nodes linked by `node -observed_in-> evidence` or
-`evidence -supports-> node`, valid at `at` (start = `valid_from`, else
-`observed_at`; end = `valid_to`), newest first, ties by edge id, at most
-`per_node_limit` each. A handle is ids plus `content_ref`; no text is read.
-Receipts: `truncated_node_ids` (more existed), `missing_node_ids` (absent or
-not semantic, which also sets `degraded`), and a typed `unavailable:` reason on
-any backend error, with no cache fallback. Falkor answers in one Cypher query;
-SPARQL in one query per node with a 4,096-candidate cap that fails closed;
-the in-memory store is the reference rule all three are tested against.
-Concept table: `orion/substrate/README.md`.
+A bounded `read_evidence_handles` read (which source items back a node, as of
+a time) was built and measured for this patch, then cut under the rule that no
+concept lands without a runtime consumer. It lands in memory Stage 2 PR F
+together with recall-by-referent, its first consumer. Concept table:
+`orion/substrate/README.md`.

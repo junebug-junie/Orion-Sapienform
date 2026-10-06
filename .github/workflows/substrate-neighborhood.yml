@@ -26,7 +26,7 @@ jobs:
       fail-fast: false
       matrix:
         # v4.18.11 is production's engine; 6.0.1 is the next major. Both plan
-        # the neighborhood/evidence reads differently enough to need a run.
+        # the neighborhood reads differently enough to need a run.
         falkordb: ['falkordb/falkordb:v4.18.11', 'falkordb/falkordb:6.0.1']
     services:
       # Throwaway FalkorDB for the direct-read equivalence lane: the concept
@@ -46,7 +46,7 @@ jobs:
           python -m pytest -q
           orion/substrate/tests/test_neighborhood.py
           orion/substrate/tests/test_neighborhood_backends.py
-          orion/substrate/tests/test_evidence_handles.py
+          orion/substrate/tests/test_neighborhood_batching_oracle.py
           orion/graph/tests/test_falkor_client.py
           orion/substrate/tests/test_falkor_store.py
           orion/substrate/tests/test_complete_hydration.py
@@ -61,7 +61,7 @@ jobs:
         env:
           ORION_TEST_FALKOR_URI: redis://localhost:6379
         run: python -m pytest -q -rs orion/substrate/tests/test_falkor_direct.py
-      - name: Neighborhood and evidence-handle reads equal the reference, with index seeks (real FalkorDB)
+      - name: Neighborhood reads equal the reference, with index seeks (real FalkorDB)
         env:
           ORION_TEST_FALKOR_URI: redis://localhost:6379
         run: python -m pytest -q -rs orion/substrate/tests/test_neighborhood_falkor_live.py

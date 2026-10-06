@@ -1,12 +1,12 @@
-"""Real-FalkorDB parity for read_neighborhood and read_evidence_handles (PR E).
+"""Real-FalkorDB parity for read_neighborhood (memory Stage 2 PR E).
 
 Runs only when ``ORION_TEST_FALKOR_URI`` points at a THROWAWAY FalkorDB
 (CI runs it against 4.18.11, production's version, and 6.0.1). Each module
 writes a seeded graph under a unique name and deletes it afterwards. Never
 point this at production.
 
-The fixture graph mixes states, scopes, kinds, predicates, both provenance
-shapes and edge validity windows. Every Falkor read must equal the in-memory
+The fixture graph mixes states, scopes, kinds, predicates, evidence
+endpoints (which must never enter neighborhood budgets). Every Falkor read must equal the in-memory
 reference read over the same graph: same nodes, same edges in the same order,
 same receipts. The plan test pins the index seek that the batching patch
 depends on for its latency.
@@ -24,7 +24,6 @@ from orion.core.schemas.cognitive_substrate import (
     ConceptNodeV1, EntityNodeV1, EvidenceNodeV1, NodeRefV1, SubstrateEdgeV1,
     SubstrateProvenanceV1, SubstrateTemporalWindowV1,
 )
-from orion.substrate.evidence_handles import EvidenceHandleRequestV1
 from orion.substrate.falkor_store import FalkorSubstrateStore, FalkorSubstrateStoreConfig
 from orion.substrate.neighborhood import NeighborhoodRequestV1
 from orion.substrate.store import InMemorySubstrateGraphStore
@@ -148,30 +147,6 @@ def test_neighborhood_parity_over_random_requests(stores):
     assert checked == 80 and nonempty >= 20  # not a vacuous all-empty comparison
 
 
-def test_evidence_handle_parity_over_random_requests(stores):
-    memory, reader, _, nodes = stores
-    semantic = [n.node_id for n in nodes if n.node_kind != "evidence"]
-    rng = random.Random(7)
-    nonempty = truncated = 0
-    for _ in range(80):
-        ids = rng.sample(semantic[:12], rng.choice([1, 2, 5])) + rng.sample(semantic, 1)
-        if rng.random() < 0.15:
-            ids.append("evi-000")  # an evidence node is not a semantic node
-        request = EvidenceHandleRequestV1(
-            node_ids=tuple(ids), per_node_limit=rng.choice([1, 3, 6, 16]),
-            evidence_types=rng.choice([None, ("episode_memory",), ("reverie", "chat_turn")]),
-            at=NOW - timedelta(days=rng.choice([0, 0, 2, 8, 30])))
-        expected = memory.read_evidence_handles(request)
-        actual = reader.read_evidence_handles(request)
-        assert actual.source_kind == "falkor"
-        assert actual.handles == expected.handles, request
-        assert (actual.missing_node_ids, actual.truncated_node_ids, actual.degraded, actual.reason) == (
-            expected.missing_node_ids, expected.truncated_node_ids, expected.degraded, expected.reason)
-        nonempty += bool(actual.handles)
-        truncated += actual.truncated
-    assert nonempty >= 40 and truncated >= 5
-
-
 def _cypher_params(params):
     def lit(value):
         if isinstance(value, (list, tuple)):
@@ -182,11 +157,25 @@ def _cypher_params(params):
     return "CYPHER " + " ".join(f"{key}={lit(value)}" for key, value in params.items()) + " "
 
 
+def _query_kind(query: str) -> str:
+    """Classify by the query's leading clause only, so later clauses (e.g. a
+    walkability tail adding its own WITH) cannot change the classification."""
+    if query.startswith("MATCH (target:SubstrateNode) WHERE target.node_id = $focal WITH target "):
+        return "incoming"
+    if query.startswith("MATCH (source:SubstrateNode) WHERE source.node_id = $focal WITH source "):
+        return "outgoing"
+    if query.startswith("MATCH (n:SubstrateNode) WHERE n.node_id IN $node_ids "):
+        return "nodes"
+    if query.startswith("MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode) WHERE "):
+        return "internal"
+    return "unknown"
+
+
 def test_every_issued_read_seeks_the_node_id_index(stores):
     """The latency win depends on these plans: no read may label-scan.
 
-    Records the exact queries the reader issues (hub focal, both directions,
-    plus an evidence-handle read) and EXPLAINs each with its parameters.
+    Records the exact queries the reader issues (hub focal, both directions)
+    and EXPLAINs each with its parameters.
     """
     _, reader, client, nodes = stores
     issued = []
@@ -203,7 +192,6 @@ def test_every_issued_read_seeks_the_node_id_index(stores):
         result = reader.read_neighborhood(NeighborhoodRequestV1(
             focal_node_ids=(hub,), semantic_states=tuple(STATES), anchor_scopes=tuple(SCOPES)))
         assert result.boundary_edges and not result.degraded
-        assert reader.read_evidence_handles(EvidenceHandleRequestV1(node_ids=(hub,), at=NOW)).source_kind == "falkor"
     finally:
         reader._client = inner
     kinds = set()
@@ -211,7 +199,5 @@ def test_every_issued_read_seeks_the_node_id_index(stores):
         plan = client._r.execute_command("GRAPH.EXPLAIN", client._graph_name, _cypher_params(params) + query)
         text = "\n".join(p.decode() if isinstance(p, bytes) else str(p) for p in plan)
         assert "Label Scan" not in text and "All Node Scan" not in text, (query, text)
-        kinds.add("incoming" if "WITH target" in query else "outgoing" if "WITH source" in query else
-                  "nodes" if "MATCH (n:SubstrateNode)" in query and "OPTIONAL" not in query else
-                  "evidence" if "OPTIONAL" in query else "internal")
-    assert {"incoming", "outgoing", "nodes", "evidence", "internal"} <= kinds, kinds
+        kinds.add(_query_kind(query))
+    assert kinds == {"incoming", "outgoing", "nodes", "internal"}, kinds

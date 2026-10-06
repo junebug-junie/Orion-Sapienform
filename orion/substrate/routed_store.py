@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from .neighborhood import NeighborhoodRequestV1, NeighborhoodResultV1
-from .evidence_handles import EvidenceHandleRequestV1, EvidenceHandleResultV1
 
 import logging
 import os
@@ -84,9 +83,6 @@ class RoutedSubstrateGraphStore:
 
     def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1:
         return self._primary.read_neighborhood(request)
-
-    def read_evidence_handles(self, request: EvidenceHandleRequestV1) -> EvidenceHandleResultV1:
-        return self._primary.read_evidence_handles(request)
 
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1:
         return self._primary.query_focal_slice(node_ids=node_ids, max_edges=max_edges)

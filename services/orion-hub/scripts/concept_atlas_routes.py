@@ -993,9 +993,15 @@ def _typed_relation_classification_candidates(store: Any) -> tuple[dict[str, Any
         for e in snapshot.edges.values()
         if isinstance(e.metadata, dict) and e.metadata.get("source_edge_id")
     }
+    # Cognitive view only (orion/substrate/eligibility.py): never classify a projection,
+    # a structure or provenance edge, or anything touching an assertion or a memory referent,
+    # into a new legacy typed edge.
+    from orion.substrate.eligibility import cognitive_view
+
+    _nodes, cognitive_edges = cognitive_view(snapshot.nodes, snapshot.edges)
     co_occurs_edges = [
         e
-        for e in snapshot.edges.values()
+        for e in cognitive_edges.values()
         if e.predicate == "co_occurs_with"
         and e.source.node_id in concept_nodes
         and e.target.node_id in concept_nodes

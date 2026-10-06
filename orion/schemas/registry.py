@@ -373,6 +373,7 @@ from orion.core.schemas.cognitive_substrate import (
     StateSnapshotNodeV1,
     HypothesisNodeV1,
     OntologyBranchNodeV1,
+    AssertionNodeV1,
     SubstrateEdgeV1,
     SubstrateGraphRecordV1,
 )
@@ -1264,6 +1265,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "StateSnapshotNodeV1": StateSnapshotNodeV1,
     "HypothesisNodeV1": HypothesisNodeV1,
     "OntologyBranchNodeV1": OntologyBranchNodeV1,
+    "AssertionNodeV1": AssertionNodeV1,
     "SubstrateEdgeV1": SubstrateEdgeV1,
     "SubstrateGraphRecordV1": SubstrateGraphRecordV1,
     "FrontierContextRefsV1": FrontierContextRefsV1,

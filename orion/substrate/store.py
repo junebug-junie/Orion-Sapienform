@@ -228,10 +228,17 @@ class InMemorySubstrateGraphStore:
         edge_candidates = [
             edge
             for edge in self._edges.values()
-            if edge.source.node_id in node_set or edge.target.node_id in node_set
+            if (edge.source.node_id in node_set or edge.target.node_id in node_set) and self._walkable(edge)
         ]
         edge_candidates.sort(key=lambda edge: (edge.salience, edge.confidence), reverse=True)
         return SubstrateNeighborhoodSliceV1(nodes=nodes, edges=edge_candidates[: max(1, int(max_edges))])
+
+    def _walkable(self, edge: SubstrateEdgeV1) -> bool:
+        """The neighborhood's edge-role gate, for every region read (recall's concept region
+        included): no structure/provenance edges, no unaccepted projections."""
+        from .neighborhood import walkable_edge
+
+        return walkable_edge(edge, self._nodes.get(edge.assertion_id) if edge.assertion_id else None)
 
     def _read_by_node_predicate(self, *, node_predicate, limit_nodes: int, limit_edges: int) -> SubstrateNeighborhoodSliceV1:
         bounded_nodes = max(1, int(limit_nodes))
@@ -243,10 +250,14 @@ class InMemorySubstrateGraphStore:
         edges = [
             edge
             for edge in self._edges.values()
-            if edge.source.node_id in node_ids or edge.target.node_id in node_ids
+            if (edge.source.node_id in node_ids or edge.target.node_id in node_ids)
+            and edge.edge_role in ("legacy_unreviewed", "semantic_projection")
         ]
         edges.sort(key=lambda edge: (edge.salience, edge.confidence), reverse=True)
-        return SubstrateNeighborhoodSliceV1(nodes=selected_nodes, edges=edges[:bounded_edges])
+        # Same order as falkor_direct's concept region: role filter before the cut, the
+        # assertion check on what survives it (the two must stay equivalent).
+        return SubstrateNeighborhoodSliceV1(nodes=selected_nodes,
+                                            edges=[e for e in edges[:bounded_edges] if self._walkable(e)])
 
     def read_hotspot_region(self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateNeighborhoodSliceV1:
         threshold = max(0.0, min(1.0, float(min_salience)))

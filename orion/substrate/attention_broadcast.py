@@ -21,6 +21,7 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
+from orion.substrate.eligibility import is_cognitive_node
 from orion.schemas.attention_frame import (
     VOLUNTARY_OVERRIDE_ABSENT_REASON_KEY,
     AttentionBroadcastProjectionV1,
@@ -127,6 +128,10 @@ def substrate_pressure_signals(
     signals: list[AttentionSignalV1] = []
     for node in nodes:
         try:
+            if not is_cognitive_node(node):
+                # Assertions and memory referents/evidence never compete for the
+                # workspace (orion/substrate/eligibility.py, #2497 rule 8).
+                continue
             metadata = dict(getattr(node, "metadata", None) or {})
             salience, kind = _node_salience(metadata)
             if salience < min_salience:

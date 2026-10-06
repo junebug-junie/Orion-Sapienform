@@ -1,7 +1,17 @@
 """Durable neighborhood adapters. All queries are reads and bypass store caches."""
 from __future__ import annotations
 
-from .neighborhood import NeighborhoodRequestV1, read_neighborhood
+from .neighborhood import (
+    NeighborhoodRequestV1, read_neighborhood, walkable_condition, walkable_optional_match,
+)
+
+# Cypher form of neighborhood.walkable_edge(), appended AFTER the WHERE that follows #2519's
+# `WITH {inside}` index-seek barrier, so the OPTIONAL MATCH runs only for candidate edges and the
+# focal seek is unchanged.
+_WALKABLE_EDGE_TAIL = (
+    walkable_optional_match("e", "assertion") + "WITH source, e, target, assertion WHERE "
+    + walkable_condition("e", "assertion") + " "
+)
 
 
 def _groups(ids, request, predicates):
@@ -88,7 +98,7 @@ def read_falkor_neighborhood(store, request: NeighborhoodRequestV1):
         condition, params = where(ids, (focal, direction, None))
         params["after"] = after
         rows = query(match((focal, direction, None)) + condition + "AND e.predicate > $after "
-            "RETURN DISTINCT e.predicate AS predicate ORDER BY predicate LIMIT 16",
+            + _WALKABLE_EDGE_TAIL + "RETURN DISTINCT e.predicate AS predicate ORDER BY predicate LIMIT 16",
             params, ("predicate",))
         return [row["predicate"] for row in rows]
 
@@ -96,7 +106,7 @@ def read_falkor_neighborhood(store, request: NeighborhoodRequestV1):
         condition, params = where(ids, group)
         params.update(after=after)
         fields = NATIVE_EDGE_RETURN_FIELDS
-        rows = query(match(group) + condition + "AND e.edge_id > $after RETURN "
+        rows = query(match(group) + condition + "AND e.edge_id > $after " + _WALKABLE_EDGE_TAIL + "RETURN "
             + _edge_hydrate_return_clause(fields) + f" ORDER BY e.edge_id LIMIT {limit}", params, fields)
         result = []
         for row in rows:
@@ -151,6 +161,10 @@ def read_sparql_neighborhood(store, request: NeighborhoodRequestV1):
             "?target orion:nodeId ?target_id ; orion:nodeKind ?target_kind ; "
             "orion:promotionState ?target_state ; orion:anchorScope ?target_scope . "
             'FILTER(?source_kind IN ("concept", "entity") && ?target_kind IN ("concept", "entity")) '
+            # This backend stores no Assertion nodes, so it cannot verify a
+            # semantic projection: it walks legacy edges only (fail closed).
+            "OPTIONAL { ?edge orion:edgeRole ?edge_role . } "
+            'FILTER(!BOUND(?edge_role) || ?edge_role = "legacy_unreviewed") '
             f"FILTER(?source_state IN ({values(request.semantic_states)}) && "
             f"?target_state IN ({values(request.semantic_states)})) "
             f"FILTER(?source_scope IN ({values(request.anchor_scopes)}) && "

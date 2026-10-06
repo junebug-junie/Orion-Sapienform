@@ -6,7 +6,9 @@ writes a seeded graph under a unique name and deletes it afterwards. Never
 point this at production.
 
 The fixture graph mixes states, scopes, kinds, predicates, evidence
-endpoints (which must never enter neighborhood budgets). Every Falkor read must equal the in-memory
+endpoints (which must never enter neighborhood budgets), and claims (#2515): Assertion nodes in
+every state with semantic_projection edges at matching and stale revisions plus
+assertion_structure edges, so walkability is checked on real FalkorDB too. Every Falkor read must equal the in-memory
 reference read over the same graph: same nodes, same edges in the same order,
 same receipts. The plan test pins the index seek that the batching patch
 depends on for its latency.
@@ -21,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from orion.core.schemas.cognitive_substrate import (
-    ConceptNodeV1, EntityNodeV1, EvidenceNodeV1, NodeRefV1, SubstrateEdgeV1,
+    AssertionNodeV1, ConceptNodeV1, EntityNodeV1, EvidenceNodeV1, NodeRefV1, SubstrateEdgeV1,
     SubstrateProvenanceV1, SubstrateTemporalWindowV1,
 )
 from orion.substrate.falkor_store import FalkorSubstrateStore, FalkorSubstrateStoreConfig
@@ -88,6 +90,28 @@ def _build(rng):
             add(node, ev, "observed_in", **window)
         else:
             add(ev, node, rng.choice(["supports", "observed_in"]), **window)
+    # #2515 walkability: generated AFTER the legacy graph, so the graph above is unchanged.
+    # Each claim's projection is walkable only if the claim is provisional/canonical at the
+    # projection's revision; structure edges never walk.
+    for i in range(40):
+        state = rng.choice(["proposed", "provisional", "canonical", "rejected", "deprecated"])
+        revision = rng.randint(1, 3)
+        claim = AssertionNodeV1(node_id=f"asr-{i:03d}", anchor_scope=rng.choice(SCOPES), promotion_state=state,
+                                temporal=SubstrateTemporalWindowV1(observed_at=_when(rng)), provenance=PROV,
+                                predicate="co_occurs_with", statement_key=f"k|{i}", statement_text=f"claim {i}",
+                                revision=revision)
+        nodes.append(claim)
+        source, target = rng.sample(semantic, 2)
+        if rng.random() < 0.4 and source is not hub:
+            target = hub
+        edge_revision = revision if rng.random() < 0.75 else revision + 1  # some stale projections
+        edges.append(SubstrateEdgeV1(edge_id=f"edge-{len(edges):05d}", source=ref(source), target=ref(target),
+            predicate=rng.choice(["co_occurs_with", "associated_with"]), edge_role="semantic_projection",
+            assertion_id=claim.node_id, assertion_revision=edge_revision,
+            temporal=SubstrateTemporalWindowV1(observed_at=_when(rng)), provenance=PROV))
+        edges.append(SubstrateEdgeV1(edge_id=f"edge-{len(edges):05d}", source=ref(claim), target=ref(source),
+            predicate="assertion_subject", edge_role="assertion_structure",
+            temporal=SubstrateTemporalWindowV1(observed_at=_when(rng)), provenance=PROV))
     return nodes, edges
 
 
@@ -127,7 +151,7 @@ def _neighborhood_receipt(result):
 
 def test_neighborhood_parity_over_random_requests(stores):
     memory, reader, _, nodes = stores
-    semantic = [n.node_id for n in nodes if n.node_kind != "evidence"]
+    semantic = [n.node_id for n in nodes if n.node_kind in ("concept", "entity")]
     rng = random.Random(6)
     checked = nonempty = 0
     for _ in range(80):
@@ -201,3 +225,26 @@ def test_every_issued_read_seeks_the_node_id_index(stores):
         assert "Label Scan" not in text and "All Node Scan" not in text, (query, text)
         kinds.add(_query_kind(query))
     assert kinds == {"incoming", "outgoing", "nodes", "internal"}, kinds
+
+
+
+def test_projections_walk_only_while_their_claim_is_accepted_on_real_falkor(stores):
+    """#2515 x #2519: the walkability tail spliced after the index-seek barrier. Every
+    projection touching the hub is checked against its claim, and both outcomes occur."""
+    from orion.substrate.neighborhood import walkable_edge
+
+    memory, reader, _, nodes = stores
+    hub = nodes[1].node_id
+    request = NeighborhoodRequestV1(focal_node_ids=(hub,), semantic_states=tuple(STATES),
+                                    anchor_scopes=tuple(SCOPES), boundary_edge_limit=256, neighbor_node_limit=256)
+    actual = reader.read_neighborhood(request)
+    assert not actual.degraded, actual.reason
+    walked = {e.edge_id for e in actual.boundary_edges}
+    projections = [e for e in memory._edges.values() if e.edge_role == "semantic_projection"
+                   and hub in (e.source.node_id, e.target.node_id)]
+    accepted = {e.edge_id for e in projections if walkable_edge(e, memory._nodes[e.assertion_id])}
+    refused = {e.edge_id for e in projections} - accepted
+    assert accepted and refused  # the fixture exercises both outcomes
+    assert accepted <= walked or actual.truncated
+    assert not (refused & walked)
+    assert not any(e.edge_role == "assertion_structure" for e in actual.boundary_edges)

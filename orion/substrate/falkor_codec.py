@@ -3,7 +3,8 @@
 This module is intentionally pure: no Redis client, no store cache, no graph
 queries. It owns the durable property allowlist used by FalkorSubstrateStore.
 
-Durable Falkor support is intentionally Concept + Evidence + SubstrateEdge.
+Durable Falkor support is intentionally Concept + Entity + Evidence + Assertion +
+SubstrateEdge.
 Other node kinds must not be silently persisted as incomplete native rows.
 """
 
@@ -12,16 +13,20 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
+from typing import Any, get_args
 
 from orion.core.schemas.cognitive_substrate import (
+    AssertionNodeV1,
     BaseSubstrateNodeV1,
     ConceptNodeV1,
     EntityNodeV1,
     EvidenceNodeV1,
     NodeRefV1,
     SubstrateActivationV1,
+    SubstrateEdgePredicateV1,
+    SubstrateEdgeRoleV1,
     SubstrateEdgeV1,
+    SubstrateNodeKindV1,
     SubstrateProvenanceV1,
     SubstrateSignalBundleV1,
     SubstrateTemporalWindowV1,
@@ -40,6 +45,7 @@ _LABEL_BY_KIND: dict[str, str] = {
     "state_snapshot": "StateSnapshot",
     "hypothesis": "Hypothesis",
     "ontology_branch": "OntologyBranch",
+    "assertion": "Assertion",
 }
 
 
@@ -144,7 +150,11 @@ def _decay_stamp_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
 # _LABEL_BY_KIND have no producer writing them to this store, and adding
 # encode/decode for a kind nothing emits would be a keyword cathedral. Add a
 # kind here when something real writes it, with a decoder in the same patch.
-DURABLE_NODE_KINDS: tuple[str, ...] = ("concept", "evidence", "entity")
+#
+# `assertion` joined 2026-10-06 (memory Stage 2 PR A, the shared assertion core):
+# producer orion/substrate/assertion_projector.py, consumers the neighborhood
+# read's walkable_edge() check and orion/substrate/eligibility.py.
+DURABLE_NODE_KINDS: tuple[str, ...] = ("concept", "evidence", "entity", "assertion")
 
 
 def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) -> dict[str, Any]:
@@ -164,6 +174,15 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
         props["label"] = getattr(node, "label")
         props["entity_type"] = getattr(node, "entity_type", "unknown")
         props["aliases_json"] = _json_list(getattr(node, "aliases", None))
+    elif node.node_kind == "assertion":
+        # `assertion_predicate`/`assertion_revision`, not `predicate`/`revision`:
+        # the neighborhood join reads a.assertion_revision next to
+        # e.assertion_revision, and a bare `predicate` would read like an edge field.
+        props["assertion_predicate"] = getattr(node, "predicate")
+        props["statement_key"] = getattr(node, "statement_key")
+        props["statement_text"] = getattr(node, "statement_text")
+        props["assertion_revision"] = int(getattr(node, "revision"))
+        props["decision_ref"] = getattr(node, "decision_ref", None)
     else:
         props["evidence_type"] = getattr(node, "evidence_type")
         props["content_ref"] = getattr(node, "content_ref")
@@ -389,6 +408,9 @@ def encode_edge_properties(edge: SubstrateEdgeV1, identity_key: str) -> dict[str
         "provenance_trace_id": provenance.trace_id,
         "provenance_tier_rank": provenance.tier_rank,
         "evidence_refs_json": _json_list(provenance.evidence_refs),
+        "edge_role": edge.edge_role,
+        "assertion_id": edge.assertion_id,
+        "assertion_revision": edge.assertion_revision,
     }
 
 
@@ -562,11 +584,59 @@ def decode_entity_node(row: Mapping[str, Any]) -> EntityNodeV1 | None:
     )
 
 
+def decode_assertion_node(row: Mapping[str, Any]) -> AssertionNodeV1 | None:
+    if row.get("node_kind") != "assertion":
+        return None
+    return AssertionNodeV1(
+        node_id=str(row["node_id"]),
+        predicate=row["assertion_predicate"],
+        statement_key=str(row["statement_key"]),
+        statement_text=str(row["statement_text"]),
+        revision=int(row.get("assertion_revision") or 0),
+        decision_ref=row.get("decision_ref"),
+        anchor_scope=row["anchor_scope"],
+        subject_ref=row.get("subject_ref"),
+        promotion_state=row.get("promotion_state") or "proposed",
+        risk_tier=row.get("risk_tier") or "low",
+        temporal=_temporal_from_row(row),
+        signals=_signals_from_row(row),
+        provenance=_provenance_from_row(row),
+        metadata=_decay_stamp_metadata_from_row(row),
+    )
+
+
+# Forward tolerance (#2515 review, 2026-10-06): a row of a shape newer than this code
+# (a node kind, predicate, endpoint kind or edge role it does not know) is SKIPPED and
+# counted by the caller, never fatal. A future shape then cannot take a reader down; the
+# reader_capability gate covers code that predates this check.
+_KNOWN_NODE_KINDS = frozenset(get_args(SubstrateNodeKindV1))
+_KNOWN_PREDICATES = frozenset(get_args(SubstrateEdgePredicateV1))
+_KNOWN_EDGE_ROLES = frozenset(get_args(SubstrateEdgeRoleV1))
+
+
+def node_row_is_known(row: Mapping[str, Any]) -> bool:
+    """A node row this code can decode durably (its kind is one of DURABLE_NODE_KINDS)."""
+    return row.get("node_kind") in DURABLE_NODE_KINDS
+
+
+def edge_row_is_known(row: Mapping[str, Any]) -> bool:
+    role = row.get("edge_role")
+    return (
+        row.get("predicate") in _KNOWN_PREDICATES
+        and (row.get("source_kind") or "concept") in _KNOWN_NODE_KINDS
+        and (row.get("target_kind") or "concept") in _KNOWN_NODE_KINDS
+        and (role is None or role in _KNOWN_EDGE_ROLES)
+    )
+
+
 def decode_node(row: Mapping[str, Any]) -> BaseSubstrateNodeV1 | None:
     node = decode_concept_node(row)
     if node is not None:
         return node
     node = decode_evidence_node(row)
+    if node is not None:
+        return node
+    node = decode_assertion_node(row)
     if node is not None:
         return node
     return decode_entity_node(row)
@@ -591,4 +661,9 @@ def decode_edge(row: Mapping[str, Any]) -> SubstrateEdgeV1 | None:
         salience=float(row.get("salience") or 0.0),
         provenance=_provenance_from_row(row),
         metadata={},
+        # Rows written before roles existed have no edge_role column: they are
+        # legacy_unreviewed by definition (#2497 "Persistence and ownership").
+        edge_role=row.get("edge_role") or "legacy_unreviewed",
+        assertion_id=row.get("assertion_id"),
+        assertion_revision=row.get("assertion_revision"),
     )

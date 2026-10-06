@@ -59,7 +59,6 @@ def test_failed_boot_does_not_mark_empty_cache_fresh():
     (lambda c: c._hydrate_node_rows[1].update(identity_key="node:0"), "duplicate node identity"),
     (lambda c: c._hydrate_edge_rows[0].update(source_id="missing"), "endpoint"),
     (lambda c: c._hydrate_edge_rows[0].update(source_kind="entity"), "endpoint"),
-    (lambda c: c._hydrate_node_rows[0].update(node_kind="unknown"), "unsupported"),
     (lambda c: c._hydrate_node_rows[0].update(node_id=None), "invalid"),
     (lambda c: c._hydrate_node_rows[0].update(anchor_scope="invalid"), "validation"),
     (lambda c: c._hydrate_edge_rows[0].update(edge_id=None), "invalid"),
@@ -74,6 +73,24 @@ def test_bad_rows_never_replace_good_cache(mutation, reason):
     assert store._cache is cache
     assert not store.last_scan_receipt.complete
     assert reason in store.last_scan_receipt.reason
+
+
+def test_a_shape_newer_than_this_reader_is_skipped_and_counted_not_fatal():
+    """#2515 review: forward tolerance. An unknown node kind is skipped with every edge
+    touching it; an unknown predicate or edge role is skipped; the rest hydrates."""
+    client = CappedClient()
+    gone = client._hydrate_node_rows[0]["node_id"]
+    client._hydrate_node_rows[0].update(node_kind="future_kind")
+    client._hydrate_edge_rows[-1].update(predicate="future_predicate")
+    expected = sum(1 for r in client._hydrate_edge_rows
+                   if gone in (r.get("source_id"), r.get("target_id")) or r["predicate"] == "future_predicate")
+    store = build(client)
+    state = store.snapshot()
+    assert state.scan_receipt.complete
+    assert store.hydrate_skipped_unknown_nodes == 1
+    assert store.hydrate_skipped_unknown_edges == expected >= 1
+    assert gone not in state.nodes
+    assert len(state.nodes) == 6
 
 
 def test_parallel_edges_with_compatible_lookup_alias_are_all_preserved():

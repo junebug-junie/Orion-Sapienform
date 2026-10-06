@@ -3538,8 +3538,16 @@ class BiometricsSubstrateWorker:
             if store is not None:
                 try:
                     state = store.snapshot()
-                    nodes = list(state.nodes.values())
-                    edges = list(getattr(state, "edges", []) or [])
+                    # Cognitive subgraph only: assertions, memory referents and
+                    # their provenance edges are not brain regions (eligibility.py).
+                    from orion.substrate.eligibility import cognitive_view
+
+                    raw_edges = getattr(state, "edges", None) or {}
+                    if not isinstance(raw_edges, dict):
+                        raw_edges = {e.edge_id: e for e in raw_edges}
+                    kept_nodes, kept_edges = cognitive_view(state.nodes, raw_edges)
+                    nodes = list(kept_nodes.values())
+                    edges = list(kept_edges.values())
                 except Exception:
                     logger.exception("brain_frame_snapshot_failed")
 

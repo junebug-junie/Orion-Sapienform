@@ -20,6 +20,7 @@ SubstrateNodeKindV1 = Literal[
     "state_snapshot",
     "hypothesis",
     "ontology_branch",
+    "assertion",
 ]
 SubstrateEdgePredicateV1 = Literal[
     "supports",
@@ -37,7 +38,22 @@ SubstrateEdgePredicateV1 = Literal[
     "subtype_of",
     "instance_of",
     "co_occurs_with",
+    # Assertion -> Concept/Entity: which things a claim is about. Never walked as
+    # a relationship; see SubstrateEdgeRoleV1 "assertion_structure".
+    "assertion_subject",
+    "assertion_object",
 ]
+# What an edge is FOR, so readers stop guessing from the predicate
+# (docs/plans/substrate/2026-10-06-reading-property-graph-design.md, "Relationships").
+# - legacy_unreviewed: every edge written before roles existed (and the decode default
+#   for those rows). Walked and propagated exactly as before.
+# - semantic_projection: a Concept/Entity relationship projected from an accepted
+#   Assertion; carries assertion_id + assertion_revision. Walkable only while that
+#   assertion is provisional/canonical at the same revision (neighborhood.walkable_edge).
+# - provenance: a thing -> the evidence it was observed in. Never walked or propagated.
+# - assertion_structure: Assertion -> its subject/object, and Evidence -> Assertion
+#   support. Never walked or propagated.
+SubstrateEdgeRoleV1 = Literal["legacy_unreviewed", "semantic_projection", "provenance", "assertion_structure"]
 SubstratePromotionStateV1 = Literal["proposed", "provisional", "canonical", "deprecated", "rejected"]
 SubstrateAnchorScopeV1 = Literal["orion", "juniper", "claude", "relationship", "world", "session"]
 SubstrateRiskTierV1 = Literal["low", "medium", "high"]
@@ -251,6 +267,24 @@ class OntologyBranchNodeV1(BaseSubstrateNodeV1):
     branch_label: str = Field(min_length=1)
 
 
+class AssertionNodeV1(BaseSubstrateNodeV1):
+    """A source-backed claim that two things are related (#2497 "Assertion").
+
+    ``promotion_state`` is the one lifecycle: proposed (unaccepted), provisional
+    (accepted, tentative), canonical (reviewed), rejected, deprecated. ``revision``
+    counts applied decisions; a semantic_projection edge is walkable only while it
+    names this same revision. Subject/object are ``assertion_subject``/
+    ``assertion_object`` edges, not fields here.
+    """
+
+    node_kind: Literal["assertion"] = "assertion"
+    predicate: SubstrateEdgePredicateV1
+    statement_key: str = Field(min_length=3)
+    statement_text: str = Field(min_length=1)
+    revision: int = Field(default=0, ge=0)
+    decision_ref: Optional[str] = None
+
+
 SubstrateNodeV1 = Annotated[
     Union[
         EntityNodeV1,
@@ -264,6 +298,7 @@ SubstrateNodeV1 = Annotated[
         StateSnapshotNodeV1,
         HypothesisNodeV1,
         OntologyBranchNodeV1,
+        AssertionNodeV1,
     ],
     Field(discriminator="node_kind"),
 ]
@@ -281,6 +316,23 @@ class SubstrateEdgeV1(BaseModel):
     salience: float = Field(default=0.0, ge=0.0, le=1.0)
     provenance: SubstrateProvenanceV1
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    edge_role: SubstrateEdgeRoleV1 = "legacy_unreviewed"
+    assertion_id: Optional[str] = None
+    assertion_revision: Optional[int] = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def _validate_role(self) -> "SubstrateEdgeV1":
+        if self.edge_role == "semantic_projection":
+            if not self.assertion_id or self.assertion_revision is None:
+                raise ValueError("semantic_projection edges need assertion_id and assertion_revision")
+            if self.source.node_kind not in {"concept", "entity"} or self.target.node_kind not in {"concept", "entity"}:
+                raise ValueError("semantic_projection edges join Concept/Entity endpoints only")
+        elif self.assertion_id is not None or self.assertion_revision is not None:
+            raise ValueError("only semantic_projection edges carry assertion_id/assertion_revision")
+        if self.predicate in {"assertion_subject", "assertion_object"}:
+            if self.source.node_kind != "assertion" or self.edge_role != "assertion_structure":
+                raise ValueError(f"{self.predicate} edges run from an Assertion with edge_role=assertion_structure")
+        return self
 
 
 class SubstrateGraphRecordV1(BaseModel):
@@ -307,4 +359,5 @@ GoalNodeV1.model_rebuild()
 StateSnapshotNodeV1.model_rebuild()
 HypothesisNodeV1.model_rebuild()
 OntologyBranchNodeV1.model_rebuild()
+AssertionNodeV1.model_rebuild()
 SubstrateGraphRecordV1.model_rebuild()

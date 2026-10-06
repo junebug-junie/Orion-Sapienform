@@ -239,23 +239,57 @@ def _open_and_close(w, store, clock, start, warm=True):
     go(w.tick())
 
 
-def test_second_incident_within_six_hours_sends_no_email_and_no_investigation():
+def test_second_incident_within_six_hours_sends_no_email_and_no_investigation_but_is_announced():
     w, store, rec, clock = make()
     _open_and_close(w, store, clock, 0)
     _open_and_close(w, store, clock, 4 * 3600)
     incs = store.list_incidents()
     assert len(incs) == 2
-    assert len([n for n in rec.on("notify") if n.severity == "critical"]) == 1
-    assert len(rec.on(URGENT_REQUEST_CHANNEL)) == 1
+    assert len([n for n in rec.on("notify") if n.severity == "critical"]) == 1      # one email
+    assert len(rec.on(URGENT_REQUEST_CHANNEL)) == 1                                 # one investigation
     second = max(incs, key=lambda r: r["opened_at"])
     assert second["alert_error"].startswith("deduped:") and second["urgent_error"].startswith("deduped:")
-    # no "closed" notice for the deduped incident either
-    assert len([n for n in rec.on("notify") if n.severity == "info"]) == 1
-    _open_and_close(w, store, clock, 7 * 3600)          # 7 h after the first alert: a new one
+    # never silent: the re-open is announced in the app, and so is its close
+    [reopened] = [n for n in rec.on("notify") if n.severity == "warning"]
+    assert reopened.channels_requested == ["in_app"] and "email held back" in reopened.title
+    assert len([n for n in rec.on("notify") if n.severity == "info"]) == 2
+    _open_and_close(w, store, clock, 7 * 3600)          # 7 h after the first email: a new email
+    assert len([n for n in rec.on("notify") if n.severity == "critical"]) == 2
+
+
+def test_a_deduped_incident_still_open_when_the_window_ends_gets_its_email_and_investigation():
+    w, store, rec, clock = make()
+    _open_and_close(w, store, clock, 0)                  # email + investigation at t=1200
+    start = 3600
+    feed_cooling(store, start - 4000, start + 6 * 3600, dead_ac)
+    cab(store, start - 4000, start + 6 * 3600, 30.2)
+    at(clock, start + 1200)
+    go(w.tick())
+    [row] = store.open_incidents()
+    assert row["alert_error"].startswith("deduped:")
+    at(clock, 1200 + 6 * 3600 + 30)                       # first email's window has ended, still open
+    go(w.tick())
+    row = store.get_incident(row["incident_id"])
+    assert row["alert_sent_at"] is not None and row["urgent_requested_at"] is not None
     assert len([n for n in rec.on("notify") if n.severity == "critical"]) == 2
 
 
 # --- D9: snooze only the reason resolved ----------------------------------------------------
+
+def test_resolving_device_offline_also_snoozes_the_other_plug_silence_reasons():
+    """One dead plug flips between device_offline / no_samples / no_fresh_sample: one family."""
+    w, store, rec, clock = make()
+    feed_cooling(store, -4000, 0, varying)
+    cab(store, -4000, 6000, 26.0)
+    feed_cooling(store, 5, 400, dead_ac, online=False)
+    at(clock, 400)
+    go(w.tick())
+    [row] = store.open_incidents()
+    assert row["open_reason"] == "device_offline"
+    go(w.resolve_by_operator(row["incident_id"]))
+    at(clock, 1200)                                       # rows stop entirely: no_samples
+    go(w.tick())
+    assert store.open_incidents() == []
 
 def test_operator_resolving_low_power_does_not_silence_device_offline():
     w, store, rec, clock = make()
@@ -302,3 +336,36 @@ def test_heat_incident_with_a_silent_sensor_resolves_sensor_lost():
     go(w.tick())
     assert store.open_incidents() == []
     assert store.get_incident(row["incident_id"])["resolve_reason"] == "sensor_lost"
+
+
+def test_a_reading_that_cannot_be_judged_is_unknown_now_not_last_ticks_state(monkeypatch):
+    import app.watcher as wm
+    w, store, rec, clock = make()
+    feed_cooling(store, -4000, 0, varying)
+    cab(store, -1800, 0, 26.0)
+    at(clock, 0)
+    go(w.tick())
+    real = wm.read_cabinet_heat
+
+    def boom(points, now, **kw):
+        if points:
+            raise ValueError("naive timestamp")
+        return real(points, now, **kw)
+
+    monkeypatch.setattr(wm, "read_cabinet_heat", boom)
+    at(clock, 30)
+    go(w.tick())
+    assert "cabinet_judge" in w.last.errors
+    [sig] = reflex(rec)
+    assert sig.reason == "cabinet_unknown"
+
+
+def test_health_does_not_claim_a_shed_the_bus_never_carried():
+    rec = Recorder(publish_fails=True)
+    w, store, _, clock = make(rec=rec)
+    feed_cooling(store, -4000, 0, varying)
+    cab(store, -1800, 0, 34.5)
+    at(clock, 0)
+    go(w.tick())
+    snap = w.reflex_snapshot()
+    assert snap["active"] is False and snap["would_shed"] == "cabinet_hot" and "publish_error" in snap

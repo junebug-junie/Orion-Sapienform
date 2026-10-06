@@ -76,16 +76,16 @@ class PostgresStore:
         return self._all(f"SELECT {', '.join(INCIDENT_COLUMNS)} FROM hardware_watch_incident "
                          "WHERE status = 'open' ORDER BY opened_at")
 
-    def snoozed_until(self, rule: str, subject: str, open_reason: str | None = None) -> datetime | None:
-        """D9: an operator resolve snoozes only the reason it resolved (the resolved row's own
+    def snoozed_until(self, rule: str, subject: str, open_reasons: tuple[str, ...] | None = None) -> datetime | None:
+        """D9: an operator resolve snoozes only the reason(s) it resolved (the resolved row's own
         open_reason), so resolving low_power never silences device_offline (C11). No new column."""
-        if open_reason is None:
+        if open_reasons is None:
             rows = self._all("SELECT max(snooze_until) AS s FROM hardware_watch_incident "
                              "WHERE rule = %s AND subject = %s AND status = 'resolved'", (rule, subject))
         else:
             rows = self._all("SELECT max(snooze_until) AS s FROM hardware_watch_incident WHERE rule = %s "
-                             "AND subject = %s AND open_reason = %s AND status = 'resolved'",
-                             (rule, subject, open_reason))
+                             "AND subject = %s AND open_reason = ANY(%s) AND status = 'resolved'",
+                             (rule, subject, list(open_reasons)))
         return rows[0]["s"] if rows else None
 
     def last_side_effect_at(self, column: str, rule: str, subject: str) -> datetime | None:
@@ -160,10 +160,10 @@ class MemoryStore:
         return sorted((dict(r) for r in self.incidents.values() if r["status"] == "open"),
                       key=lambda r: r["opened_at"])
 
-    def snoozed_until(self, rule: str, subject: str, open_reason: str | None = None) -> datetime | None:
+    def snoozed_until(self, rule: str, subject: str, open_reasons: tuple[str, ...] | None = None) -> datetime | None:
         vals = [r.get("snooze_until") for r in self.incidents.values()
                 if r["rule"] == rule and r["subject"] == subject and r["status"] == "resolved" and r.get("snooze_until")
-                and (open_reason is None or r["open_reason"] == open_reason)]
+                and (open_reasons is None or r["open_reason"] in open_reasons)]
         return max(vals) if vals else None
 
     def last_side_effect_at(self, column: str, rule: str, subject: str) -> datetime | None:

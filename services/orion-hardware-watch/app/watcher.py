@@ -33,7 +33,7 @@ from typing import Any, Awaitable, Callable
 from orion.autonomy.cabinet_heat import CabinetHeatReading, read_cabinet_heat
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.hardware_watch.rules import (
-    AcLowConfig, Baseline, CoolingRuleConfig, HeatRuleConfig, ShedRuleConfig, ShedVerdict, cooling_verdict,
+    FRESHNESS_REASONS, AcLowConfig, Baseline, CoolingRuleConfig, HeatRuleConfig, ShedRuleConfig, ShedVerdict, cooling_verdict,
     cooling_verdict_v2, heat_verdict, shed_verdict,
 )
 from orion.schemas.curiosity_urgent import URGENT_REQUEST_CHANNEL, URGENT_REQUEST_KIND, CuriosityUrgentRequestV1
@@ -56,6 +56,7 @@ REFLEX_VALID_TICKS = 3
 # How much cabinet history one read covers (the 15-min rise window plus margin; hysteresis is seeded
 # from the previous reading, so the window does not need to reach back to the trip).
 CABINET_WINDOW_SEC = 1800
+CABINET_FIRST_WINDOW_SEC = 7200
 HEAT_RULES = ("cpu_heat", "gpu_heat")
 
 Publish = Callable[[str, BaseEnvelope], Awaitable[None]]
@@ -190,15 +191,24 @@ class Watcher:
     async def _cabinet(self, now: datetime, open_rows: dict, report: TickReport) -> None:
         """D1: one cabinet read per tick. A failed query re-uses the last good readings, re-judged at
         ``now`` -- within grace that is the last state; past grace it is unknown (C10)."""
+        # The first read after a start reaches further back, so a 34 C trip from before a restart still
+        # holds until its 33 C re-arm (hysteresis memory); later reads are seeded by the last reading.
+        window = CABINET_WINDOW_SEC if self._cab is not None else CABINET_FIRST_WINDOW_SEC
         try:
             pts = await self._sync(self.store.temp_points, self.s.cabinet_node, CABINET_KEY,
-                                   now - timedelta(seconds=CABINET_WINDOW_SEC))
+                                   now - timedelta(seconds=window))
             self._cab_points, self._cab_points_at = list(pts), now
         except Exception as exc:  # noqa: BLE001 -- recorded; the reading below decides what it means
             report.errors["cabinet_read"] = f"{type(exc).__name__}: {exc}"[:300]
             logger.warning("hardware_watch_cabinet_read_failed err=%s (re-using readings from %s)", str(exc)[:200],
                            self._cab_points_at.isoformat() if self._cab_points_at else None)
-        self._cab = read_cabinet_heat(self._cab_points, now, grace_sec=self.s.reading_grace_sec, previous=self._cab)
+        try:
+            self._cab = read_cabinet_heat(self._cab_points, now, grace_sec=self.s.reading_grace_sec,
+                                          previous=self._cab)
+        except Exception as exc:  # noqa: BLE001 -- never act on last tick's reading: judge "no reading" now
+            report.errors["cabinet_judge"] = f"{type(exc).__name__}: {exc}"[:300]
+            logger.exception("hardware_watch_cabinet_judge_failed")
+            self._cab = read_cabinet_heat([], now, grace_sec=self.s.reading_grace_sec)
         report.verdicts["cabinet"] = self._cab.as_dict()
 
     def _cabinet_now(self, now: datetime) -> CabinetHeatReading:
@@ -209,7 +219,7 @@ class Watcher:
         reading = dataclasses.replace(self._cabinet_now(now), ac_low=self._ac_low)
         reason = reading.reflex
         valid_until = now + timedelta(seconds=REFLEX_VALID_TICKS * self.s.tick_sec)
-        self._reflex = {"controller": "v2", "active": bool(reason) and self.s.shed_enabled,
+        self._reflex = {"controller": "v2", "active": False,
                         "reason": reason if self.s.shed_enabled else None, "would_shed": reason,
                         "shed_enabled": self.s.shed_enabled, "evaluated_at": now.isoformat(),
                         "valid_until": valid_until.isoformat() if reason and self.s.shed_enabled else None,
@@ -228,8 +238,10 @@ class Watcher:
                 kind=HARDWARE_WATCH_REFLEX_SHED_KIND, source=self.source, payload=sig.model_dump(mode="json")))
         except Exception as exc:  # noqa: BLE001 -- re-sent next tick; a lost one lapses at valid_until
             report.errors["reflex_publish"] = f"{type(exc).__name__}: {exc}"[:300]
+            self._reflex["publish_error"] = report.errors["reflex_publish"]
             logger.error("hardware_watch_reflex_publish_failed reason=%s err=%s", reason, exc)
             return
+        self._reflex["active"] = sig.active
         if (reason if sig.active else None) != self._reflex_sent:
             logger.warning("hardware_watch_reflex_%s reason=%s temp_c=%s state=%s age_sec=%s ac_low=%s",
                            "on" if sig.active else "off", reason or self._reflex_sent, reading.temp_c,
@@ -273,11 +285,8 @@ class Watcher:
         """D5: AC power is a diagnosis. Alert-only incidents; the shed is the reflex's (D2)."""
         lookback = max(self.cooling_cfg.frozen_sec, self.ac_cfg.window_sec) + 300
         row = open_rows.get(("cooling", COOLING_SUBJECT))
-        try:
-            points = await self._sync(self.store.cooling_points, now - timedelta(seconds=lookback))
-        except Exception:
-            self._ac_low = None     # an unreadable AC is not "AC low" (D1: the outage case is elevated)
-            raise
+        self._ac_low = None     # set only by a verdict computed THIS tick; an unreadable AC is not "AC low"
+        points = await self._sync(self.store.cooling_points, now - timedelta(seconds=lookback))
         cabinet = self._cabinet_now(now)
         v = cooling_verdict_v2(points, now, cabinet, cfg=self.cooling_cfg, ac=self.ac_cfg,
                                open_reason=row["open_reason"] if row else None)
@@ -320,7 +329,7 @@ class Watcher:
     async def _heat(self, rule: str, subject: str, node: str, key: str, cfg: HeatRuleConfig, now: datetime,
                     open_rows: dict, report: TickReport) -> None:
         base = await self._baseline(node, key, now)
-        window = max(cfg.sustain_sec, cfg.ceiling_sustain_sec) + 300
+        window = max(cfg.sustain_sec, cfg.ceiling_sustain_sec, cfg.lost_sec or 0.0) + 300
         points = await self._sync(self.store.temp_points, node, key, now - timedelta(seconds=window))
         v = heat_verdict(points, now, base, cfg)
         report.verdicts[f"{rule}:{subject}"] = {"open_reason": v.open_reason, "resolve": v.resolve, **v.detail}
@@ -347,7 +356,10 @@ class Watcher:
     # --- transitions --------------------------------------------------------------------------
     async def _open(self, rule: str, subject: str, reason: str, now: datetime, evidence: dict,
                     *, by: str = "rule") -> dict | None:
-        snooze = await self._sync(self.store.snoozed_until, rule, subject, reason)   # D9: this reason only
+        # D9: only the reason resolved is snoozed -- except the four "plug is silent" reasons, which one
+        # dead plug flips between, so they snooze as one family (low_power never silences them, C11).
+        family = tuple(sorted(FRESHNESS_REASONS)) if reason in FRESHNESS_REASONS else (reason,)
+        snooze = await self._sync(self.store.snoozed_until, rule, subject, family)
         if by == "rule" and snooze is not None and snooze > now:
             logger.info("hardware_watch_open_snoozed rule=%s subject=%s reason=%s until=%s", rule, subject, reason,
                         snooze.isoformat())
@@ -387,8 +399,8 @@ class Watcher:
         if not await self._emit(row, "resolved", now):
             self._pending_resolved[row["incident_id"]] = row   # retried next tick
         self._last_refresh.pop(row["incident_id"], None)
-        if row["rule"] == "cooling" and row.get("alert_sent_at"):
-            await self._send_recovered(row, now)    # no "closed" notice for an incident whose alert was deduped
+        if row["rule"] == "cooling" and (row.get("alert_sent_at") or str(row.get("alert_error") or "").startswith("deduped:")):
+            await self._send_recovered(row, now)    # announced (email or in-app re-open) -> announce the close
         return row
 
     async def resolve_by_operator(self, incident_id: str, by: str = "juniper") -> dict | None:
@@ -451,15 +463,18 @@ class Watcher:
     async def _send_alert(self, row: dict, now: datetime) -> None:
         if row.get("alert_sent_at") or (row.get("alert_attempts") or 0) >= self.s.alert_max_attempts:
             return
-        if str(row.get("alert_error") or "").startswith("deduped:"):
-            return
         prior = await self._deduped("alert_sent_at", row, now)
         if prior is not None:
-            fields = {"alert_error": f"deduped:alert_sent_at={prior.isoformat()}"[:300]}
-            await self._sync(self.store.update_incident, row["incident_id"], **fields)
-            row.update(fields)
-            logger.warning("hardware_watch_alert_deduped id=%s rule=%s subject=%s prior=%s", row["incident_id"],
-                           row["rule"], row["subject"], prior.isoformat())
+            # D6: no second EMAIL inside the window -- but never silence: the incident is announced in
+            # the app once (Juniper's last word may have been a "closed" notice), and the dedupe is
+            # re-checked every tick, so an incident still open when the window ends gets its email.
+            if not str(row.get("alert_error") or "").startswith("deduped:"):
+                await self._send_reopened(row, prior)
+                fields = {"alert_error": f"deduped:alert_sent_at={prior.isoformat()}"[:300]}
+                await self._sync(self.store.update_incident, row["incident_id"], **fields)
+                row.update(fields)
+                logger.warning("hardware_watch_alert_deduped id=%s rule=%s subject=%s prior=%s", row["incident_id"],
+                               row["rule"], row["subject"], prior.isoformat())
             return
         attempts = (row.get("alert_attempts") or 0) + 1
         req = NotificationRequest(
@@ -484,6 +499,24 @@ class Watcher:
         await self._sync(self.store.update_incident, row["incident_id"], **fields)
         row.update(fields)
 
+    async def _send_reopened(self, row: dict, prior: datetime) -> None:
+        """In-app only: a cooling incident opened inside the email dedupe window (D6)."""
+        req = NotificationRequest(
+            source_service=self.s.service_name, event_kind="hardware.watch.cooling.reopened", severity="warning",
+            title=f"AC incident re-opened ({row['open_reason']}) - email held back",
+            body_text=(f"Cooling incident {row['incident_id']} opened at {row['opened_at'].isoformat()}: "
+                       f"{_reason_text(row, self.cooling_cfg, self.ac_cfg if self.v2 else None)}. An AC email "
+                       f"already went out at {prior.isoformat()}; another is sent if this is still open "
+                       f"{self.s.alert_dedupe_window_sec / 3600:.0f} h after that."),
+            context={"incident_id": row["incident_id"], "rule": row["rule"], "subject": row["subject"],
+                     "open_reason": row["open_reason"], "prior_alert_sent_at": prior.isoformat()},
+            tags=["hardware-watch", "cooling"], channels_requested=["in_app"],
+            dedupe_key=f"cooling:{row['incident_id']}:reopened", correlation_id=row["incident_id"])
+        try:
+            await self._sync(self.notify, req)
+        except Exception as exc:  # noqa: BLE001 -- best-effort; the email path is re-checked every tick
+            logger.warning("hardware_watch_reopened_notice_failed id=%s err=%s", row["incident_id"], exc)
+
     async def _send_recovered(self, row: dict, now: datetime) -> None:
         req = NotificationRequest(
             source_service=self.s.service_name, event_kind="hardware.watch.cooling.resolved", severity="info",
@@ -502,7 +535,7 @@ class Watcher:
     async def _request_urgent(self, row: dict, now: datetime) -> None:
         if row.get("urgent_requested_at") or not self.s.urgent_enabled:
             return
-        if str(row.get("urgent_error") or "").startswith(("deduped:", "skipped:")):
+        if str(row.get("urgent_error") or "").startswith("skipped:"):
             return
         if row["rule"] in HEAT_RULES and row["open_reason"] == "above_p95":
             # D6/C9: a p95 outlier is true ~5 % of the time by construction; it is not worth an agent run.
@@ -511,6 +544,9 @@ class Watcher:
             return
         prior = await self._deduped("urgent_requested_at", row, now)
         if prior is not None:
+            # Re-checked every tick: still open when the window ends -> the investigation is requested.
+            if str(row.get("urgent_error") or "").startswith("deduped:"):
+                return
             err = f"deduped:urgent_requested_at={prior.isoformat()}"[:300]
             await self._sync(self.store.update_incident, row["incident_id"], urgent_error=err)
             row["urgent_error"] = err

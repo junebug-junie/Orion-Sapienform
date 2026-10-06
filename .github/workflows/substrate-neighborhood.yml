@@ -3,15 +3,19 @@ on:
   pull_request:
     paths:
       - 'orion/substrate/**'
+      - 'orion/graph/falkor_client.py'
       - 'orion/core/schemas/cognitive_substrate.py'
       - 'scripts/replay_substrate_neighborhood.py'
+      - 'scripts/replay_substrate_complete_scan.py'
       - '.github/workflows/substrate-neighborhood.yml'
   push:
     branches: [main]
     paths:
       - 'orion/substrate/**'
+      - 'orion/graph/falkor_client.py'
       - 'orion/core/schemas/cognitive_substrate.py'
       - 'scripts/replay_substrate_neighborhood.py'
+      - 'scripts/replay_substrate_complete_scan.py'
       - '.github/workflows/substrate-neighborhood.yml'
 jobs:
   neighborhood:
@@ -28,8 +32,14 @@ jobs:
           orion/substrate/tests/test_neighborhood.py
           orion/substrate/tests/test_neighborhood_backends.py
           orion/substrate/tests/test_falkor_store.py
+          orion/substrate/tests/test_complete_hydration.py
+          orion/substrate/tests/test_falkor_store_hydrate_signal.py
+          orion/substrate/tests/test_dynamics.py
+          orion/substrate/tests/test_dynamics_falkor_routed.py
           orion/substrate/tests/test_graphdb_store.py
           orion/substrate/tests/test_routed_store.py
           orion/substrate/tests/test_phase16_query_planning.py
       - name: Hub-heavy budget and coverage eval
         run: python -m orion.substrate.evals.run_neighborhood_eval
+      - name: Complete scan and dynamics equivalence eval
+        run: python -m orion.substrate.evals.run_complete_hydration_eval

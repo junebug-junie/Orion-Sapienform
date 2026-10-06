@@ -43,14 +43,20 @@ class RecordingFalkorClient:
     def graph_query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
         self.calls.append((cypher, params))
         if "WHERE n.payload_json IS NOT NULL" in cypher:
-            return self._hydrate_legacy_node_rows
-        if "WHERE e.payload_json IS NOT NULL" in cypher:
-            return self._hydrate_legacy_edge_rows
-        if "RETURN n.node_id AS node_id" in cypher:
-            return self._hydrate_node_rows
-        if "RETURN e.edge_id AS edge_id" in cypher:
-            return self._hydrate_edge_rows
-        return []
+            rows = self._hydrate_legacy_node_rows
+        elif "WHERE e.payload_json IS NOT NULL" in cypher:
+            rows = self._hydrate_legacy_edge_rows
+        elif "RETURN n.node_id AS node_id" in cypher:
+            rows = self._hydrate_node_rows
+        elif "RETURN e.edge_id AS edge_id" in cypher:
+            rows = self._hydrate_edge_rows
+        else:
+            return []
+        if params is not None and "after_id" in params:
+            numbered = [dict(row, object_id=row.get("object_id", i)) for i, row in enumerate(rows)]
+            return [row for row in numbered if row["object_id"] > params["after_id"]][:params["page_size"]]
+        return rows
+
 
 
 class RedisGraphQueryClient:

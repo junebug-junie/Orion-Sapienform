@@ -20,6 +20,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -49,6 +50,7 @@ from orion.substrate.falkor_codec import (
     node_label_for_kind,
 )
 from orion.substrate.store import (
+    CompleteScanReceipt,
     InMemorySubstrateGraphStore,
     MaterializedSubstrateGraphState,
     SubstrateNeighborhoodSliceV1,
@@ -103,25 +105,9 @@ class FalkorSubstrateStoreConfig:
     #     The fresh-cache-swap idea (see _hydrate_from_durable) is what
     #     actually fixes deletion-visibility and is new to this store, not
     #     ported from GraphDB.
-    # (2) This store's hydrate queries have no LIMIT (GraphDB's are capped
-    #     at 500 nodes / 1000 edges), and same_generation is invalidated by
-    #     ANY write anywhere -- so a caller that both reads and writes every
-    #     tick (the decay scheduler above is exactly this shape: one
-    #     snapshot() read, then N upsert_node() writes) will see a
-    #     generation mismatch on its OWN next tick's read, forcing a full
-    #     unbounded re-hydration on very close to every tick regardless of
-    #     this ceiling. This is an accepted, understood tradeoff at current
-    #     graph sizes (tens of nodes) -- correctness over cache efficiency
-    #     for this caller shape -- not a bug, but worth revisiting (a LIMIT,
-    #     or excluding a caller's own immediately-prior writes from
-    #     generation invalidation) if it ever shows up as real cost.
-    #
-    # See also FALKOR_SNAPSHOT_FORCE_REFRESH_CEILING_SEC (falls back to this
-    # shared SUBSTRATE_SNAPSHOT_FORCE_REFRESH_CEILING_SEC when unset) for an
-    # independent override -- RoutedSubstrateGraphStore can run both a
-    # GraphDB-backed and a Falkor-backed store concurrently in one process
-    # (primary + shadow), and given point (2) above, the two backends' real
-    # refresh costs are not symmetric.
+    # (2) Falkor hydrates all supported durable nodes/edges with bounded
+    # keyset pages. A write/read loop still requests a complete refresh on
+    # every generation change; local exploration should use read_neighborhood.
     snapshot_force_refresh_ceiling_sec: float = 30.0
     # Optional redis socket timeouts (seconds) for the default
     # RedisGraphQueryClient. None = redis-py default (no timeout), which is
@@ -129,6 +115,11 @@ class FalkorSubstrateStoreConfig:
     # hung FalkorDB cannot pin a request thread (or the boot warmup) forever.
     client_socket_timeout_s: float | None = None
     client_socket_connect_timeout_s: float | None = None
+    hydration_page_size: int = 1000
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.hydration_page_size <= 10000:
+            raise ValueError("hydration_page_size must be between 1 and 10000")
 
 
 NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
@@ -313,120 +304,147 @@ class FalkorSubstrateStore:
         # "first call" branch is needed in snapshot() itself.
         self._last_snapshot_generation = -1
         self._snapshot_lock = threading.Lock()
+        self.last_scan_receipt: CompleteScanReceipt | None = None
+        self._last_successful_refresh_at: str | None = None
         if hydrate:
             self._hydrate_from_durable()
-            # Record that construction already did a full hydration, so the
-            # first real snapshot() call doesn't immediately redo it. Without
-            # this, the -1 sentinel above would force a second, wasted
-            # refresh on literally the next call (GraphDBSubstrateStore
-            # doesn't have this wrinkle because it never hydrates eagerly at
-            # construction -- its first snapshot() call is genuinely the
-            # first fetch, not a redundant second one).
-            self._last_snapshot_at = time.monotonic()
-            self._last_snapshot_generation = self._write_generation
 
-    # Outcome of the most recent _hydrate_from_durable() call. None = never
-    # hydrated (hydrate=False, or an instance built with __new__). False =
-    # the durable queries raised and the cache was left untouched (empty on
-    # a first hydrate). Read by callers that cache a store handle for the
-    # process lifetime (orion-recall's substrate_store.py) so a boot-time
-    # hydrate against an unreachable FalkorDB is not mistaken for a ready
-    # store. Class-level defaults so __new__-built instances have them.
     last_hydrate_ok: bool | None = None
     last_hydrate_node_count: int = 0
 
+    def _scan_pages(self, *, match: str, where: str, alias: str,
+                    returns: str, fields: tuple[str, ...], progress: dict[str, int]):
+        """A short page may be the server cap. Only an empty page ends a scan."""
+        cursor = -1
+        while True:
+            raw = self._client.graph_query(
+                f"{match} WHERE {where} AND id({alias}) > $after_id "
+                f"RETURN {returns}, id({alias}) AS object_id "
+                "ORDER BY object_id LIMIT $page_size",
+                {"after_id": cursor, "page_size": self._cfg.hydration_page_size},
+            )
+            rows = _normalize_rows(raw, fields=(*fields, "object_id"), strict=True)
+            progress["pages"] += 1
+            if not rows:
+                return
+            for row in rows:
+                object_id = row.get("object_id")
+                if type(object_id) is not int or object_id <= cursor:
+                    raise ValueError("nonadvancing or invalid object cursor")
+                cursor = object_id
+                yield row
+
     def _hydrate_from_durable(self) -> None:
-        """(Re)populate the in-process cache from durable Falkor state.
+        """Stage and validate all pages before replacing the last good cache.
 
-        Called once at construction, and again periodically by snapshot()'s
-        refresh path (see FalkorSubstrateStoreConfig.snapshot_force_refresh_ceiling_sec).
-        Builds a FRESH InMemorySubstrateGraphStore and swaps it in wholesale
-        rather than upserting into the existing self._cache in place -- this
-        is the actual fix for the resurrection bug: an in-place upsert can
-        only ever add/update nodes that still exist durably, it can never
-        remove a node that was deleted directly in Falkor (bypassing this
-        process). A fresh cache, containing only what's durably present
-        right now, correctly reflects deletions on every refresh.
-
-        On query failure, returns without touching self._cache at all --
-        the stale-but-still-valid existing cache is a strictly better
-        fallback than an empty one.
+        Object IDs are scan cursors, never business identities. Concurrent
+        external mutation can produce a mixed-time view; detected missing
+        endpoints or local writes reject the scan. Legacy rewrite remains a
+        best-effort compatibility step after validation, never in read-only mode.
         """
+        started = datetime.now(timezone.utc).isoformat()
+        generation = self._write_generation
+        progress = {"pages": 0, "edge_identity_aliases": 0}
+        fresh = InMemorySubstrateGraphStore()
+        legacy_nodes, legacy_edges = [], []
+        node_ids, edge_ids = set(), set()
+
+        def add_node(row, node):
+            if node is None or not node.node_id or node.node_id == "None":
+                raise ValueError("invalid or unsupported durable node")
+            if node.node_id in node_ids:
+                raise ValueError(f"duplicate node_id: {node.node_id}")
+            identity = row.get("identity_key") or None
+            if identity and fresh.get_node_id_by_identity(str(identity)) is not None:
+                raise ValueError(f"duplicate node identity: {identity}")
+            node_ids.add(node.node_id)
+            fresh.upsert_node(identity_key=str(identity) if identity else None, node=node)
+
+        def add_edge(row, edge):
+            if edge is None:
+                raise ValueError("invalid durable edge")
+            if edge.edge_id in edge_ids:
+                raise ValueError(f"duplicate edge_id: {edge.edge_id}")
+            for endpoint in (edge.source, edge.target):
+                node = fresh.get_node_by_id(endpoint.node_id)
+                if node is None or node.node_kind != endpoint.node_kind:
+                    raise ValueError(f"missing or mismatched endpoint: {endpoint.node_id}")
+            identity = str(row.get("identity_key") or self._edge_identity(edge))
+            previous_id = fresh.get_edge_id_by_identity(identity)
+            if previous_id is not None:
+                previous = fresh.get_edge_by_id(previous_id)
+                if (previous.source != edge.source or previous.target != edge.target
+                        or previous.predicate != edge.predicate):
+                    raise ValueError(f"incompatible edge identity: {identity}")
+                progress["edge_identity_aliases"] += 1
+            edge_ids.add(edge.edge_id)
+            fresh.upsert_edge(identity_key=identity, edge=edge)
+            if previous_id is not None and previous_id < edge.edge_id:
+                # Preserve all parallel edges, with a stable representative for
+                # the historical one-ID lookup API (not a uniqueness claim).
+                fresh.upsert_edge(identity_key=identity, edge=previous)
+
         try:
-            node_rows = self._client.graph_query(
-                "MATCH (n:SubstrateNode) RETURN " + _return_clause("n", NATIVE_NODE_RETURN_FIELDS)
-            )
-            edge_rows = self._client.graph_query(
-                "MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode) "
-                "WHERE e.substrate_edge = true "
-                "RETURN " + _edge_hydrate_return_clause(NATIVE_EDGE_RETURN_FIELDS)
-            )
-            legacy_node_rows = self._client.graph_query(
-                "MATCH (n:SubstrateNode) WHERE n.payload_json IS NOT NULL "
-                "RETURN n.payload_json AS payload_json, n.identity_key AS identity_key"
-            )
-            legacy_edge_rows = self._client.graph_query(
-                "MATCH ()-[e]->() WHERE e.payload_json IS NOT NULL "
-                "RETURN e.payload_json AS payload_json, e.identity_key AS identity_key"
-            )
+            for row in self._scan_pages(
+                match="MATCH (n:SubstrateNode)", where="n.payload_json IS NULL",
+                alias="n", returns=_return_clause("n", NATIVE_NODE_RETURN_FIELDS),
+                fields=NATIVE_NODE_RETURN_FIELDS, progress=progress,
+            ):
+                add_node(row, decode_node(row))
+            for row in self._scan_pages(
+                match="MATCH (n:SubstrateNode)", where="n.payload_json IS NOT NULL",
+                alias="n", returns="n.payload_json AS payload_json, n.identity_key AS identity_key",
+                fields=("payload_json", "identity_key"), progress=progress,
+            ):
+                node = NODE_ADAPTER.validate_json(row["payload_json"])
+                if node.node_kind not in DURABLE_NODE_KINDS:
+                    raise ValueError("unsupported legacy node kind")
+                add_node(row, node)
+                legacy_nodes.append(row)
+            for row in self._scan_pages(
+                match="MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode)",
+                where="e.substrate_edge = true AND e.payload_json IS NULL", alias="e",
+                returns=_edge_hydrate_return_clause(NATIVE_EDGE_RETURN_FIELDS),
+                fields=NATIVE_EDGE_RETURN_FIELDS, progress=progress,
+            ):
+                add_edge(row, decode_edge(row))
+            for row in self._scan_pages(
+                match="MATCH ()-[e]->()", where="e.payload_json IS NOT NULL", alias="e",
+                returns="e.payload_json AS payload_json, e.identity_key AS identity_key",
+                fields=("payload_json", "identity_key"), progress=progress,
+            ):
+                add_edge(row, SubstrateEdgeV1.model_validate_json(row["payload_json"]))
+                legacy_edges.append(row)
+            if self._write_generation != generation:
+                raise ValueError("local mutation during scan; retry required")
         except Exception as exc:
             logger.warning("falkor_substrate_hydrate_failed error=%s", exc)
             self.last_hydrate_ok = False
+            self.last_scan_receipt = CompleteScanReceipt(
+                started_at=started, finished_at=datetime.now(timezone.utc).isoformat(),
+                complete=False, stale=True, node_count=len(node_ids), edge_count=len(edge_ids),
+                pages_read=progress["pages"],
+                last_successful_refresh_at=self._last_successful_refresh_at,
+                reason=str(exc), edge_identity_aliases=progress["edge_identity_aliases"],
+            )
             return
 
-        fresh_cache = InMemorySubstrateGraphStore()
-        hydrated_nodes = 0
-        for row in _normalize_rows(node_rows, fields=NATIVE_NODE_RETURN_FIELDS):
-            try:
-                node = decode_node(row)
-            except Exception:
-                logger.warning("falkor_substrate_hydrate_node_invalid")
-                continue
-            if node is None:
-                continue
-            identity = row.get("identity_key")
-            fresh_cache.upsert_node(identity_key=str(identity) if identity else None, node=node)
-            hydrated_nodes += 1
-
-        for row in _normalize_rows(edge_rows, fields=NATIVE_EDGE_RETURN_FIELDS):
-            try:
-                edge = decode_edge(row)
-            except Exception:
-                logger.warning("falkor_substrate_hydrate_edge_invalid")
-                continue
-            if edge is None:
-                continue
-            identity = row.get("identity_key") or self._edge_identity(edge)
-            fresh_cache.upsert_edge(identity_key=str(identity), edge=edge)
-
-        # Swap now, before legacy migration -- _migrate_legacy_payload_*
-        # below call self.upsert_node()/self.upsert_edge() (the full public
-        # write path, which also bumps self._write_generation), and must
-        # operate against the current cache, not a soon-to-be-discarded one.
-        #
-        # Known, bounded race: upsert_node()/upsert_edge() are deliberately
-        # not protected by _snapshot_lock (matching GraphDBSubstrateStore's
-        # own precedent), so a concurrent upsert_node() call whose
-        # `self._cache.upsert_node(...)` step interleaves with this swap
-        # could land its write on the old (about to be discarded) cache
-        # object instead of `fresh_cache` -- that write would be briefly
-        # invisible to snapshot(). It self-heals: the write still bumped
-        # self._write_generation, so the very next snapshot() call detects
-        # the mismatch and re-fetches, which then sees the write durably
-        # reflected in Falkor. Not permanent loss, just a narrow visibility
-        # delay -- and this window scales with fresh_cache's build time,
-        # which is currently unbounded (see the LIMIT tradeoff noted on
-        # FalkorSubstrateStoreConfig.snapshot_force_refresh_ceiling_sec).
-        self._cache = fresh_cache
+        self._cache = fresh
         self.last_hydrate_ok = True
-        self.last_hydrate_node_count = hydrated_nodes
-
-        self._migrate_legacy_payload_nodes(
-            _normalize_rows(legacy_node_rows, fields=("payload_json", "identity_key"))
+        self.last_hydrate_node_count = len(node_ids)
+        finished = datetime.now(timezone.utc).isoformat()
+        self._last_snapshot_at = time.monotonic()
+        self._last_snapshot_generation = generation
+        self._last_successful_refresh_at = finished
+        self.last_scan_receipt = CompleteScanReceipt(
+            started_at=started, finished_at=finished, complete=True, stale=False,
+            node_count=len(node_ids), edge_count=len(edge_ids), pages_read=progress["pages"],
+            last_successful_refresh_at=finished,
+            edge_identity_aliases=progress["edge_identity_aliases"],
         )
-        self._migrate_legacy_payload_edges(
-            _normalize_rows(legacy_edge_rows, fields=("payload_json", "identity_key"))
-        )
+        if not getattr(self._client, "read_only", False):
+            self._migrate_legacy_payload_nodes(legacy_nodes)
+            self._migrate_legacy_payload_edges(legacy_edges)
 
     def _migrate_legacy_payload_nodes(self, rows: list[dict[str, Any]]) -> None:
         for row in rows:
@@ -702,24 +720,12 @@ class FalkorSubstrateStore:
             # operator running Cypher DELETE by hand against Falkor directly).
             within_ceiling = ceiling <= 0.0 or elapsed is None or elapsed < ceiling
 
-            if same_generation and within_ceiling:
-                return self._cache.snapshot()
-
-            # Capture the generation BEFORE refreshing (which does network
-            # I/O), not after -- if a write races in while the refresh is in
-            # flight, capturing after would credit that write to data fetched
-            # before it happened, silently masking it until the next
-            # unrelated write or the ceiling fires again. Capturing before
-            # means such a race just costs one possibly-redundant extra
-            # refresh on the next call, never a falsely-trusted stale cache.
-            # Same reasoning as GraphDBSubstrateStore.snapshot() (already
-            # proven in production for the SPARQL backend); this mirrors it
-            # for Falkor to fix the equivalent gap here.
-            generation_at_fetch_start = self._write_generation
-            self._hydrate_from_durable()
-            self._last_snapshot_at = now_mono
-            self._last_snapshot_generation = generation_at_fetch_start
-            return self._cache.snapshot()
+            if not (same_generation and within_ceiling and self.last_hydrate_ok):
+                self._hydrate_from_durable()
+            receipt = self.last_scan_receipt
+            if receipt and self._last_snapshot_generation != self._write_generation:
+                receipt = replace(receipt, stale=True)
+            return replace(self._cache.snapshot(), scan_receipt=receipt)
 
     def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1:
         from .neighborhood_backends import read_falkor_neighborhood
@@ -798,9 +804,11 @@ def _retag_source(result: SubstrateQueryResultV1, source_kind: str) -> Substrate
 
 
 def _normalize_rows(
-    raw: Any, *, fields: tuple[str, ...] | list[str] | None = None
+    raw: Any, *, fields: tuple[str, ...] | list[str] | None = None, strict: bool = False
 ) -> list[dict[str, Any]]:
     if raw is None:
+        if strict:
+            raise ValueError("missing query result")
         return []
     if isinstance(raw, list):
         # Raw GRAPH.QUERY response: [header, records, statistics]. redis-py's
@@ -814,6 +822,8 @@ def _normalize_rows(
             and all(isinstance(column, (list, tuple)) for column in raw[0])
         ):
             names = _header_field_names(raw[0])
+            if strict and any(not isinstance(r, (list, tuple)) or len(r) != len(names) for r in raw[1]):
+                raise ValueError("malformed wire query row")
             return [
                 dict(zip(names, record))
                 for record in raw[1]
@@ -828,11 +838,15 @@ def _normalize_rows(
                     if isinstance(values, list) and len(values) == len(field_names):
                         out.append(dict(zip(field_names, values)))
                         continue
+                if strict and "_positional" in item:
+                    raise ValueError("malformed positional query row")
                 out.append(item)
             elif isinstance(item, (list, tuple)):
                 if field_names and len(item) == len(field_names):
                     out.append(dict(zip(field_names, item)))
                 elif field_names:
+                    if strict:
+                        raise ValueError("query row width mismatch")
                     logger.warning(
                         "falkor_substrate_normalize_row_width_mismatch expected=%s got=%s",
                         len(field_names),
@@ -843,7 +857,11 @@ def _normalize_rows(
                     out.append({"node_id": item[0], "identity_key": item[1]})
                 elif item:
                     out.append({"node_id": item[0], "identity_key": ""})
+            elif strict:
+                raise ValueError("malformed query row")
         return out
+    if strict:
+        raise ValueError("malformed query result")
     return []
 
 
@@ -854,7 +872,7 @@ def _resolve_falkor_snapshot_force_refresh_ceiling_sec() -> float:
     RoutedSubstrateGraphStore can run a GraphDB-backed store and a
     Falkor-backed store concurrently in the same process (primary + shadow),
     and the two backends' refresh costs are not symmetric -- Falkor's own
-    hydrate queries are currently unbounded (no LIMIT, unlike GraphDB's
+    hydrate traverses all pages (unlike GraphDB's
     capped _query_nodes/_query_edges_for_node_ids), so an operator running
     both may want a longer Falkor ceiling without also having to change
     GraphDB's. Without this override, both backends would be forced to share

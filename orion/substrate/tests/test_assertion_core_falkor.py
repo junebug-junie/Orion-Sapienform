@@ -36,17 +36,17 @@ def graph():
 def _write(client, *, state: str, revision: int, edge_revision: int) -> FalkorSubstrateStore:
     store = FalkorSubstrateStore(FalkorSubstrateStoreConfig(uri=_FALKOR_URI, graph_name="unused"),
                                  client=client, hydrate=False)
-    for node in (entity("vincent", "vincent", producer=FENCED, scope="juniper"),
-                 entity("offsite", "austin offsite", producer=FENCED, scope="juniper"),
+    for node in (entity("quill", "quill", producer=FENCED, scope="juniper"),
+                 entity("retreat", "spring retreat", producer=FENCED, scope="juniper"),
                  entity("legacy-n", "legacy", scope="juniper"),
                  assertion("as1", state=state, revision=revision)):
         store.upsert_node(identity_key=f"k|{node.node_id}", node=node)
     store.upsert_edge(identity_key="projection|as1", edge=edge(
-        "proj", ("vincent", "entity"), ("offsite", "entity"), edge_role="semantic_projection",
+        "proj", ("quill", "entity"), ("retreat", "entity"), edge_role="semantic_projection",
         assertion_id="as1", assertion_revision=edge_revision))
-    store.upsert_edge(identity_key="leg", edge=edge("leg", ("vincent", "entity"), ("legacy-n", "entity"),
+    store.upsert_edge(identity_key="leg", edge=edge("leg", ("quill", "entity"), ("legacy-n", "entity"),
                                                     predicate="associated_with"))
-    store.upsert_edge(identity_key="struct", edge=edge("struct", ("as1", "assertion"), ("vincent", "entity"),
+    store.upsert_edge(identity_key="struct", edge=edge("struct", ("as1", "assertion"), ("quill", "entity"),
                                                        predicate="assertion_subject",
                                                        edge_role="assertion_structure"))
     return store
@@ -61,7 +61,7 @@ def _write(client, *, state: str, revision: int, edge_revision: int) -> FalkorSu
 def test_falkor_walks_a_projection_only_while_its_assertion_is_accepted(graph, state, revision, edge_revision, walks):
     _, client = graph
     store = _write(client, state=state, revision=revision, edge_revision=edge_revision)
-    result = store.read_neighborhood(NeighborhoodRequestV1(focal_node_ids=("vincent",)))
+    result = store.read_neighborhood(NeighborhoodRequestV1(focal_node_ids=("quill",)))
     assert not result.degraded, result.reason
     edges = {e.edge_id for e in result.boundary_edges}
     assert ("proj" in edges) is walks

@@ -3,8 +3,8 @@
 -- Spec: docs/superpowers/specs/2026-10-06-memory-stage2-referent-graph-design.md section 1.4;
 -- contract: orion/core/schemas/substrate_graph_journal.py.
 --
--- Append-only: rows are inserted, never updated or deleted (SubstrateGraphJournal has no
--- update/delete path). `payload` holds the full validated event; the columns beside it are the
+-- Append-only, enforced: a trigger rejects every UPDATE and DELETE (SubstrateGraphJournal has
+-- no such path either). Rollback drops the table, which the trigger does not block. `payload` holds the full validated event; the columns beside it are the
 -- ones queries filter or enforce uniqueness on.
 -- Writers: AssertionProjector (materializations) and claim producers (proposals, decisions;
 -- memory referents in PR B). Reader: AssertionProjector via SubstrateGraphJournal.
@@ -39,3 +39,12 @@ CREATE INDEX IF NOT EXISTS idx_substrate_graph_journal_target ON substrate_graph
 CREATE INDEX IF NOT EXISTS idx_substrate_graph_journal_proposal ON substrate_graph_journal (proposal_id);
 CREATE INDEX IF NOT EXISTS idx_substrate_graph_journal_decision ON substrate_graph_journal (decision_id)
     WHERE decision_id IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION substrate_graph_journal_append_only() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'substrate_graph_journal is append-only (% refused)', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS substrate_graph_journal_append_only ON substrate_graph_journal;
+CREATE TRIGGER substrate_graph_journal_append_only BEFORE UPDATE OR DELETE ON substrate_graph_journal
+    FOR EACH ROW EXECUTE FUNCTION substrate_graph_journal_append_only();

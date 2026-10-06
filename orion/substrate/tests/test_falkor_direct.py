@@ -510,10 +510,44 @@ def test_builder_can_skip_the_index_bootstrap(monkeypatch) -> None:
     import orion.substrate.falkor_direct as mod
 
     calls: list = []
-    monkeypatch.setattr(mod, "ensure_substrate_indexes", lambda *a, **k: calls.append(1))
+    monkeypatch.setattr(mod, "bootstrap_substrate_reader", lambda *a, **k: calls.append(1))
     monkeypatch.setattr(mod, "RedisGraphQueryClient", lambda **kw: _ScriptedClient())
     monkeypatch.setenv("FALKORDB_URI", "redis://falkor.test:6379")
     assert mod.build_falkor_direct_concept_store_from_env(ensure_indexes=False) is not None
     assert calls == []
     assert mod.build_falkor_direct_concept_store_from_env() is not None
     assert calls == [1]
+
+
+# ── #2515 review: the edge-role gate on recall's concept region ─────────────
+
+
+@live
+def test_concept_region_drops_structure_and_unaccepted_projections_and_equals_cache() -> None:
+    from orion.graph.falkor_client import RedisGraphQueryClient
+    from orion.substrate.tests.test_assertion_core import assertion, concept, edge
+
+    graph_name = f"test_falkor_direct_roles_{uuid.uuid4().hex[:10]}"
+    client = RedisGraphQueryClient(uri=_FALKOR_URI, graph_name=graph_name)
+    writer = FalkorSubstrateStore(FalkorSubstrateStoreConfig(uri=_FALKOR_URI, graph_name=graph_name),
+                                  client=client, hydrate=False)
+    try:
+        for node in (concept("c-a", "alpha"), concept("c-b", "beta"), concept("c-c", "gamma"),
+                     assertion("as-ok", state="provisional", revision=1),
+                     assertion("as-no", state="rejected", revision=2)):
+            writer.upsert_node(identity_key=f"k|{node.node_id}", node=node)
+        for e in (edge("legacy", ("c-a", "concept"), ("c-b", "concept"), predicate="associated_with"),
+                  edge("proj-ok", ("c-a", "concept"), ("c-c", "concept"), edge_role="semantic_projection",
+                       assertion_id="as-ok", assertion_revision=1),
+                  edge("proj-no", ("c-b", "concept"), ("c-c", "concept"), edge_role="semantic_projection",
+                       assertion_id="as-no", assertion_revision=2),
+                  edge("struct", ("as-ok", "assertion"), ("c-a", "concept"), predicate="assertion_subject",
+                       edge_role="assertion_structure")):
+            writer.upsert_edge(identity_key=f"e|{e.edge_id}", edge=e)
+        cache_store, direct = _pair(graph_name)
+        expected = cache_store.read_concept_region(limit_nodes=10, limit_edges=10)
+        actual = direct.read_concept_region(limit_nodes=10, limit_edges=10)
+        assert {e.edge_id for e in actual.edges} == {"legacy", "proj-ok"}
+        assert [e.edge_id for e in actual.edges] == [e.edge_id for e in expected.edges]
+    finally:
+        client._r.execute_command("GRAPH.DELETE", graph_name)

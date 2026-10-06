@@ -46,6 +46,8 @@ from orion.substrate.falkor_codec import (
     JSON_SUFFIXED_EXTERNALLY_OWNED_METADATA_KEYS,
     decode_edge,
     decode_node,
+    edge_row_is_known,
+    node_row_is_known,
     encode_edge_properties,
     encode_node_properties,
     node_label_for_kind,
@@ -303,6 +305,17 @@ def substrate_index_cypher(label: str, prop: str) -> str:
     return f"CREATE INDEX FOR (n:{label}) ON (n.{prop})"
 
 
+def bootstrap_substrate_reader(uri: str, graph_name: str, *, client: FalkorGraphClient | None = None) -> bool:
+    """The one-time, off-the-request-path bootstrap every reader runs: the node_id index,
+    then the reader-capability advertisement (orion/substrate/reader_capability.py) saying this
+    process reads the assertion-core shapes and skips unknown ones. Never raises."""
+    from orion.substrate.reader_capability import advertise
+
+    ok = ensure_substrate_indexes(uri, graph_name, client=client)
+    advertise(uri)
+    return ok
+
+
 def ensure_substrate_indexes(uri: str, graph_name: str, *, client: FalkorGraphClient | None = None) -> bool:
     """Idempotent, never raises. Returns True when every index exists afterwards.
 
@@ -420,7 +433,9 @@ class FalkorSubstrateStore:
         self.last_scan_receipt: CompleteScanReceipt | None = None
         self._last_successful_refresh_at: str | None = None
         if client_was_default and cfg.ensure_indexes:
-            ensure_substrate_indexes(cfg.uri, cfg.graph_name)
+            bootstrap_substrate_reader(cfg.uri, cfg.graph_name)
+        self.hydrate_skipped_unknown_nodes = 0
+        self.hydrate_skipped_unknown_edges = 0
         if hydrate:
             self._hydrate_from_durable()
 
@@ -502,12 +517,19 @@ class FalkorSubstrateStore:
                 # the historical one-ID lookup API (not a uniqueness claim).
                 fresh.upsert_edge(identity_key=identity, edge=previous)
 
+        skipped_nodes: set[str] = set()
+        skipped = {"nodes": 0, "edges": 0}
         try:
             for row in self._scan_pages(
                 match="MATCH (n:SubstrateNode)", where="n.payload_json IS NULL",
                 alias="n", returns=_return_clause("n", NATIVE_NODE_RETURN_FIELDS),
                 fields=NATIVE_NODE_RETURN_FIELDS, progress=progress,
             ):
+                if not node_row_is_known(row):
+                    # A kind newer than this code: skip it (and, below, its edges).
+                    skipped_nodes.add(str(row.get("node_id")))
+                    skipped["nodes"] += 1
+                    continue
                 add_node(row, decode_node(row))
             for row in self._scan_pages(
                 match="MATCH (n:SubstrateNode)", where="n.payload_json IS NOT NULL",
@@ -525,6 +547,10 @@ class FalkorSubstrateStore:
                 returns=_edge_hydrate_return_clause(NATIVE_EDGE_RETURN_FIELDS),
                 fields=NATIVE_EDGE_RETURN_FIELDS, progress=progress,
             ):
+                if (not edge_row_is_known(row) or str(row.get("source_id")) in skipped_nodes
+                        or str(row.get("target_id")) in skipped_nodes):
+                    skipped["edges"] += 1
+                    continue
                 add_edge(row, decode_edge(row))
             for row in self._scan_pages(
                 match="MATCH ()-[e]->()", where="e.payload_json IS NOT NULL", alias="e",
@@ -570,6 +596,11 @@ class FalkorSubstrateStore:
 
         self.last_hydrate_ok = True
         self.hydrate_ok_total += 1
+        self.hydrate_skipped_unknown_nodes = skipped["nodes"]
+        self.hydrate_skipped_unknown_edges = skipped["edges"]
+        if skipped["nodes"] or skipped["edges"]:
+            logger.warning("falkor_substrate_hydrate_skipped_unknown_shapes nodes=%d edges=%d",
+                           skipped["nodes"], skipped["edges"])
         self._maybe_log_hydrate_stats()
         self.last_hydrate_node_count = len(node_ids)
         finished = datetime.now(timezone.utc).isoformat()

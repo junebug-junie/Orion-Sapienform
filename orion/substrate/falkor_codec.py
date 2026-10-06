@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
+from typing import Any, get_args
 
 from orion.core.schemas.cognitive_substrate import (
     AssertionNodeV1,
@@ -23,7 +23,10 @@ from orion.core.schemas.cognitive_substrate import (
     EvidenceNodeV1,
     NodeRefV1,
     SubstrateActivationV1,
+    SubstrateEdgePredicateV1,
+    SubstrateEdgeRoleV1,
     SubstrateEdgeV1,
+    SubstrateNodeKindV1,
     SubstrateProvenanceV1,
     SubstrateSignalBundleV1,
     SubstrateTemporalWindowV1,
@@ -599,6 +602,30 @@ def decode_assertion_node(row: Mapping[str, Any]) -> AssertionNodeV1 | None:
         signals=_signals_from_row(row),
         provenance=_provenance_from_row(row),
         metadata=_decay_stamp_metadata_from_row(row),
+    )
+
+
+# Forward tolerance (#2515 review, 2026-10-06): a row of a shape newer than this code
+# (a node kind, predicate, endpoint kind or edge role it does not know) is SKIPPED and
+# counted by the caller, never fatal. A future shape then cannot take a reader down; the
+# reader_capability gate covers code that predates this check.
+_KNOWN_NODE_KINDS = frozenset(get_args(SubstrateNodeKindV1))
+_KNOWN_PREDICATES = frozenset(get_args(SubstrateEdgePredicateV1))
+_KNOWN_EDGE_ROLES = frozenset(get_args(SubstrateEdgeRoleV1))
+
+
+def node_row_is_known(row: Mapping[str, Any]) -> bool:
+    """A node row this code can decode durably (its kind is one of DURABLE_NODE_KINDS)."""
+    return row.get("node_kind") in DURABLE_NODE_KINDS
+
+
+def edge_row_is_known(row: Mapping[str, Any]) -> bool:
+    role = row.get("edge_role")
+    return (
+        row.get("predicate") in _KNOWN_PREDICATES
+        and (row.get("source_kind") or "concept") in _KNOWN_NODE_KINDS
+        and (row.get("target_kind") or "concept") in _KNOWN_NODE_KINDS
+        and (role is None or role in _KNOWN_EDGE_ROLES)
     )
 
 

@@ -37,6 +37,48 @@ def walkable_edge(edge: SubstrateEdgeV1, assertion: BaseSubstrateNodeV1 | None) 
             and getattr(assertion, "revision", None) == edge.assertion_revision)
 
 
+def walkable_optional_match(edge: str = "e", assertion: str = "assertion") -> str:
+    """Cypher: bind the edge's Assertion (null for legacy edges). Pair with walkable_condition."""
+    return f"OPTIONAL MATCH ({assertion}:SubstrateNode) WHERE {assertion}.node_id = {edge}.assertion_id "
+
+
+def walkable_condition(edge: str = "e", assertion: str = "assertion") -> str:
+    """Cypher twin of walkable_edge(): one definition for every Falkor reader."""
+    states = ", ".join(f"'{s}'" for s in ACCEPTED_ASSERTION_STATES)
+    return (f"(coalesce({edge}.edge_role, 'legacy_unreviewed') = 'legacy_unreviewed' "
+            f"OR ({edge}.edge_role = 'semantic_projection' AND {assertion}.node_kind = 'assertion' "
+            f"AND {assertion}.promotion_state IN [{states}] "
+            f"AND {assertion}.assertion_revision = {edge}.assertion_revision))")
+
+
+def role_prefilter(edge: str = "e") -> str:
+    """Cypher: the join-free half of walkable_edge (drops structure/provenance edges).
+    For bulk scans (recall's concept region, graph compression), where a per-edge join is
+    too slow; the assertion half is then checked once per result with
+    accepted_projection_ids(). Today every live edge is legacy, so nothing reaches it."""
+    return f"coalesce({edge}.edge_role, 'legacy_unreviewed') IN ['legacy_unreviewed', 'semantic_projection']"
+
+
+ASSERTION_STATE_CYPHER = (
+    "MATCH (a:SubstrateNode) WHERE a.node_id IN $ids AND a.node_kind = 'assertion' "
+    "RETURN a.node_id AS node_id, a.promotion_state AS promotion_state, a.assertion_revision AS assertion_revision"
+)
+
+
+def accepted_revisions(rows) -> dict[str, int]:
+    """assertion_id -> revision, for accepted assertions only (rows of ASSERTION_STATE_CYPHER)."""
+    return {str(r["node_id"]): int(r["assertion_revision"] or 0) for r in rows
+            if r.get("promotion_state") in ACCEPTED_ASSERTION_STATES}
+
+
+def walkable_given(edge_role, assertion_id, assertion_revision, accepted: dict[str, int]) -> bool:
+    """walkable_edge() for a row, given accepted_revisions() of its assertions."""
+    role = edge_role or "legacy_unreviewed"
+    if role == "legacy_unreviewed":
+        return True
+    return role == "semantic_projection" and accepted.get(str(assertion_id)) == assertion_revision
+
+
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 

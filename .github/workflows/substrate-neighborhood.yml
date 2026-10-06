@@ -71,6 +71,7 @@ jobs:
           orion/substrate/tests/test_routed_store.py
           orion/substrate/tests/test_phase16_query_planning.py
           orion/substrate/tests/test_assertion_core.py
+          orion/substrate/tests/test_reader_capability.py
           orion/substrate/tests/test_reconcile.py
           orion/substrate/tests/test_attention_broadcast.py
       - name: Direct concept-region reads equal the hydrated cache (real FalkorDB)

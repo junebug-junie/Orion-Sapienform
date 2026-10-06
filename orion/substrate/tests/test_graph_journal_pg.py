@@ -25,6 +25,7 @@ from orion.substrate.assertion_projector import AssertionProjector, assertion_no
 from orion.substrate.graph_journal import RevisionConflict, SubstrateGraphJournal
 from orion.substrate.materializer import SubstrateGraphMaterializer
 from orion.substrate.neighborhood import NeighborhoodRequestV1
+from orion.substrate.reader_capability import ALWAYS_READY, ReadinessV1
 from orion.substrate.store import InMemorySubstrateGraphStore
 from orion.substrate.tests.test_assertion_core import FENCED, NOW, entity, prov
 
@@ -33,13 +34,13 @@ FALKOR_URI = os.getenv("ORION_TEST_FALKOR_URI", "").strip()
 SQL = Path(__file__).resolve().parents[3] / "services" / "orion-sql-db"
 pytestmark = pytest.mark.skipif(not ADMIN_DSN, reason="ORION_SUBSTRATE_TEST_DATABASE_URL not set")
 
-STATEMENT = "vincent|co_occurs_with|offsite|"
+STATEMENT = "quill|co_occurs_with|retreat|"
 TARGET = assertion_node_id(STATEMENT)
 
 
 def _run_sql(text: str) -> list[str]:
-    code = "\n".join(re.sub(r"--.*$", "", line) for line in text.splitlines())
-    return [stmt for stmt in code.split(";") if stmt.strip()]
+    """The whole file as one script (it holds a plpgsql function body, so no naive split)."""
+    return [text]
 
 
 async def _with_db(fn):
@@ -67,9 +68,9 @@ async def _with_db(fn):
 def _proposal(**kw) -> SubstrateGraphProposalV1:
     return SubstrateGraphProposalV1(
         proposal_id=kw.pop("proposal_id", "prop-1"), proposal_kind="relationship_assertion", target_id=TARGET,
-        actor=FENCED, subject_node_id="vincent", subject_kind="entity", object_node_id="offsite",
+        actor=FENCED, subject_node_id="quill", subject_kind="entity", object_node_id="retreat",
         object_kind="entity", predicate="co_occurs_with", statement_key=STATEMENT,
-        statement_text="Juniper named Vincent and the Austin offsite together", anchor_scope="juniper",
+        statement_text="Juniper named Quill and the spring retreat together", anchor_scope="juniper",
         authority="user_asserted", supporting_evidence_ids=kw.pop("evidence", ["ev-mem-1"]),
         recorded_at=NOW, **kw)
 
@@ -82,8 +83,8 @@ def _decision(decision_id: str, prior: int, state: str, *, minutes: int = 1) -> 
 
 
 def _seed(store) -> None:
-    for node in (entity("vincent", "vincent", producer=FENCED, scope="juniper"),
-                 entity("offsite", "austin offsite", producer=FENCED, scope="juniper"),
+    for node in (entity("quill", "quill", producer=FENCED, scope="juniper"),
+                 entity("retreat", "spring retreat", producer=FENCED, scope="juniper"),
                  EvidenceNodeV1(node_id="ev-mem-1", evidence_type="episode_memory", content_ref="episode_memory:1",
                                 anchor_scope="juniper", temporal=SubstrateTemporalWindowV1(observed_at=NOW),
                                 provenance=prov(FENCED))):
@@ -105,7 +106,7 @@ def _stores():
 
 
 def _walk(store) -> set[str]:
-    result = store.read_neighborhood(NeighborhoodRequestV1(focal_node_ids=("vincent",)))
+    result = store.read_neighborhood(NeighborhoodRequestV1(focal_node_ids=("quill",)))
     assert not result.degraded, result.reason
     return {e.edge_id for e in result.boundary_edges}
 
@@ -129,7 +130,8 @@ def test_accept_then_reject_projects_then_retracts_and_replays_idempotently(kind
         store = make_store()
         _seed(store)
         journal = SubstrateGraphJournal(pool)
-        projector = AssertionProjector(journal=journal, materializer=SubstrateGraphMaterializer(store=store))
+        projector = AssertionProjector(journal=journal, materializer=SubstrateGraphMaterializer(store=store),
+                                       readiness=ALWAYS_READY)
         await journal.append(_proposal())
         await journal.append(_decision("dec-1", 0, "provisional"))
 
@@ -160,7 +162,8 @@ def test_a_missing_endpoint_fails_closed_once_and_mints_no_placeholder():
         store = InMemorySubstrateGraphStore()
         _seed(store)
         journal = SubstrateGraphJournal(pool)
-        projector = AssertionProjector(journal=journal, materializer=SubstrateGraphMaterializer(store=store))
+        projector = AssertionProjector(journal=journal, materializer=SubstrateGraphMaterializer(store=store),
+                                       readiness=ALWAYS_READY)
         await journal.append(_proposal(proposal_id="prop-1", evidence=["ev-missing"]))
         await journal.append(_decision("dec-1", 0, "provisional"))
         for _ in range(3):
@@ -184,13 +187,15 @@ def test_revisions_apply_in_order_even_when_the_later_one_is_read_first():
         store = InMemorySubstrateGraphStore()
         _seed(store)
         journal = SubstrateGraphJournal(pool)
-        projector = AssertionProjector(journal=journal, materializer=SubstrateGraphMaterializer(store=store))
+        projector = AssertionProjector(journal=journal, materializer=SubstrateGraphMaterializer(store=store),
+                                       readiness=ALWAYS_READY)
         await journal.append(_proposal())
         # dec-2 is recorded first in wall time but builds on revision 1.
         await journal.append(_decision("dec-2", 1, "canonical", minutes=1))
         await journal.append(_decision("dec-1", 0, "provisional", minutes=2))
+        # dec-2 is not even listed until revision 1 has landed.
         first = await projector.run_once()
-        assert first.waiting == ["dec-2"] and first.applied == ["dec-1"]
+        assert first.applied == ["dec-1"] and first.waiting == []
         assert (await projector.run_once()).applied == ["dec-2"]
         assert store.get_node_by_id(TARGET).promotion_state == "canonical"
     asyncio.run(_with_db(body))
@@ -202,4 +207,118 @@ def test_rollback_drops_the_journal():
             for stmt in _run_sql((SQL / "manual_migration_substrate_graph_journal_v1_rollback.sql").read_text()):
                 await conn.execute(stmt)
             assert await conn.fetchval("SELECT to_regclass('substrate_graph_journal')") is None
+    asyncio.run(_with_db(body))
+
+
+def _prop(i: int, **kw) -> SubstrateGraphProposalV1:
+    key = f"quill|co_occurs_with|retreat|{i}"
+    return _proposal(proposal_id=f"prop-{i}", **kw).model_copy(update={
+        "target_id": assertion_node_id(key), "statement_key": key})
+
+
+def _dec(i: int, prior: int = 0, minutes: int = 1) -> SubstrateGraphDecisionV1:
+    return _decision(f"dec-{i}", prior, "provisional", minutes=minutes).model_copy(update={
+        "proposal_id": f"prop-{i}", "target_id": assertion_node_id(f"quill|co_occurs_with|retreat|{i}")})
+
+
+def test_101_stuck_decisions_cannot_starve_a_new_one():
+    async def body(pool):
+        store = InMemorySubstrateGraphStore()
+        _seed(store)
+        journal = SubstrateGraphJournal(pool)
+        projector = AssertionProjector(journal=journal, materializer=SubstrateGraphMaterializer(store=store),
+                                       readiness=ALWAYS_READY)
+        for i in range(101):  # transient poison: their evidence never lands
+            await journal.append(_prop(i, evidence=["ev-never"]))
+            await journal.append(_dec(i))
+        await projector.run_once(limit=100)
+        await projector.run_once(limit=100)  # every poison decision has now been attempted
+        await journal.append(_prop(500))
+        await journal.append(_dec(500, minutes=30))
+        report = await projector.run_once(limit=100)
+        assert "dec-500" in report.applied
+    asyncio.run(_with_db(body))
+
+
+def test_terminal_failures_leave_the_queue_and_a_b_a_is_three_records():
+    async def body(pool):
+        store = InMemorySubstrateGraphStore()
+        _seed(store)
+        journal = SubstrateGraphJournal(pool)
+        projector = AssertionProjector(journal=journal, materializer=SubstrateGraphMaterializer(store=store),
+                                       readiness=ALWAYS_READY)
+        await journal.append(_decision("dec-orphan", 0, "provisional").model_copy(  # no proposal: terminal
+            update={"proposal_id": "prop-missing", "target_id": assertion_node_id("orphan|x|y|")}))
+        await projector.run_once()
+        assert [d.decision_id for d in await journal.pending_decisions()] == []
+
+        await journal.append(_proposal(proposal_id="prop-1", evidence=["ev-a", "ev-b"]))
+        await journal.append(_decision("dec-1", 0, "provisional"))
+        reasons = []
+        for missing in ("ev-a", "ev-b", "ev-a"):  # A -> B -> A
+            store._nodes.pop("ev-a", None)
+            store._nodes.pop("ev-b", None)
+            if missing == "ev-b":
+                store.upsert_node(identity_key="x", node=EvidenceNodeV1(
+                    node_id="ev-a", evidence_type="t", content_ref="t:1", anchor_scope="juniper",
+                    temporal=SubstrateTemporalWindowV1(observed_at=NOW), provenance=prov(FENCED)))
+            await projector.run_once()
+            reasons.append((await journal.last_materialization("dec-1")).failure_reason)
+        assert reasons == ["endpoint_missing:ev-a", "endpoint_missing:ev-b", "endpoint_missing:ev-a"]
+        assert await journal.failed_attempts("dec-1") == 3
+    asyncio.run(_with_db(body))
+
+
+def test_the_journal_is_append_only_and_ids_are_namespaced_by_kind():
+    import asyncpg
+
+    async def body(pool):
+        journal = SubstrateGraphJournal(pool)
+        await journal.append(_proposal(proposal_id="same-id"))
+        await journal.append(_decision("same-id", 0, "provisional").model_copy(update={"proposal_id": "same-id"}))
+        async with pool.acquire() as conn:
+            ids = sorted(r["event_id"] for r in await conn.fetch("SELECT event_id FROM substrate_graph_journal"))
+            assert ids == ["decision:same-id", "proposal:same-id"]
+            for sql in ("UPDATE substrate_graph_journal SET actor = 'x'", "DELETE FROM substrate_graph_journal"):
+                with pytest.raises(asyncpg.RaiseError, match="append-only"):
+                    await conn.execute(sql)
+    asyncio.run(_with_db(body))
+
+
+def test_nothing_is_written_until_every_reader_is_ready():
+    async def body(pool):
+        store = InMemorySubstrateGraphStore()
+        _seed(store)
+        journal = SubstrateGraphJournal(pool)
+        state = {"ready": ReadinessV1(ready=False, missing=("orion-hub",), reason="readers_not_ready")}
+        projector = AssertionProjector(journal=journal, materializer=SubstrateGraphMaterializer(store=store),
+                                       readiness=lambda: state["ready"])
+        await journal.append(_proposal())
+        await journal.append(_decision("dec-1", 0, "provisional"))
+        blocked = await projector.run_once()
+        assert blocked.blocked.missing == ("orion-hub",) and blocked.applied == []
+        assert store.get_node_by_id(TARGET) is None
+        state["ready"] = ReadinessV1(ready=True)
+        assert (await projector.run_once()).applied == ["dec-1"]
+    asyncio.run(_with_db(body))
+
+
+def test_a_held_id_is_refused_before_anything_is_written():
+    async def body(pool):
+        store = InMemorySubstrateGraphStore()
+        _seed(store)
+        from orion.substrate.reconcile import SubstrateIdentityResolver
+        from orion.substrate.tests.test_assertion_core import assertion
+
+        squatter = assertion("someone-else")
+        store.upsert_node(identity_key=SubstrateIdentityResolver().canonical_node_key(
+            assertion(TARGET)), node=squatter)
+        journal = SubstrateGraphJournal(pool)
+        projector = AssertionProjector(journal=journal, materializer=SubstrateGraphMaterializer(store=store),
+                                       readiness=ALWAYS_READY)
+        await journal.append(_proposal())
+        await journal.append(_decision("dec-1", 0, "provisional"))
+        report = await projector.run_once()
+        assert report.failed == {"dec-1": "canonical_id_mismatch"}
+        assert store.get_node_by_id(TARGET) is None and len(store._edges) == 0
     asyncio.run(_with_db(body))

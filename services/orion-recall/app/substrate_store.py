@@ -31,7 +31,7 @@ import time
 from typing import Any, Callable, Optional
 
 from orion.substrate.falkor_direct import build_falkor_direct_concept_store_from_env
-from orion.substrate.falkor_store import ensure_substrate_indexes
+from orion.substrate.falkor_store import bootstrap_substrate_reader
 from orion.substrate.store import InMemorySubstrateGraphStore
 
 logger = logging.getLogger(__name__)
@@ -305,7 +305,7 @@ def _start_index_bootstrap() -> None:
 
     def _run() -> None:
         try:
-            ensure_substrate_indexes(uri, graph)
+            bootstrap_substrate_reader(uri, graph)
         except Exception as exc:  # noqa: BLE001 - background, best effort
             logger.warning("recall_substrate_index_bootstrap_failed error=%s", exc)
 

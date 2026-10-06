@@ -710,6 +710,27 @@ def _llm_machine_contract(
 
 MindLLMSynthesisOutcome = Union[MindRunResultV1, "MindLLMFailOpenRecord", None]
 
+# The pool route a live turn is lifted OFF (onto MIND_TURN_MODEL_ROUTE). Only plain `metacog`:
+# it is `system` in config/gpu_pool.yaml, so a heat shed refuses it; `metacog_turn` is the same
+# class at `interactive` (spec 2026-10-06-thermal-controller-redesign D4). Any other configured
+# phase route (an operator's `quick`, a deliberately yielding `metacog_background`) is left alone.
+TURN_LIFTED_ROUTE = "metacog"
+
+
+def carries_live_turn(req: MindRunRequestV1) -> bool:
+    """Is a human waiting on this run's answer?
+
+    Every Mind caller today is a turn path (enumerated 2026-10-06): cortex-orch runs Mind only
+    when the request's metadata has ``mind_enabled`` -- set solely by the Hub browser
+    (app.js, thought-process.js) -- and orion-thought runs it inside a unified turn. Both send
+    ``trigger="user_turn"`` (orch by default; no producer sets ``mind_trigger``). orion-thought
+    marks a turn Orion authored itself with ``utterance_origin="orion"``: nobody is waiting on
+    that one, so it stays on the sheddable route. ``scheduled``/``operator``/``replay`` runs are
+    not turns. Weakness: ``user_turn`` is the schema default, so a FUTURE background caller that
+    forgets to set ``trigger`` would be treated as a live turn (never shed) -- the safe direction
+    for a human, the wrong one for heat."""
+    return req.trigger == "user_turn" and req.utterance_origin != "orion"
+
 
 def run_mind_llm_synthesis(
     req: MindRunRequestV1,
@@ -773,6 +794,11 @@ def run_mind_llm_synthesis(
     appraisal_route = str(getattr(s, "MIND_APPRAISAL_MODEL_ROUTE", "metacog"))
     # chat is Juniper's reserved Hub lane; see scripts/check_chat_route_poachers.py
     stance_route = str(getattr(s, "MIND_STANCE_MODEL_ROUTE", "metacog"))
+    turn_route = str(getattr(s, "MIND_TURN_MODEL_ROUTE", "") or "").strip()
+    if turn_route and carries_live_turn(req):
+        semantic_route, appraisal_route, stance_route = (
+            turn_route if r == TURN_LIFTED_ROUTE else r for r in (semantic_route, appraisal_route, stance_route)
+        )
     phase_records: list[MindPhaseTelemetry] = []
 
     def _fail_open_or_error(

@@ -144,6 +144,10 @@ WHY_BY_REASON: dict[str, str] = {
     "orion_asks_direction": "I need your direction on this one.",
     "orion_relationship": "It's about us, so I don't want to decide it alone.",
 }
+# The identity line is only true when the memory is Orion's inference. When the memory is Juniper's
+# own words (chat, a Juniper voice; the validator keeps that voice only with a verified quote of her
+# prompt), "not something you said" would contradict the opener, so the card says why it is heavy.
+WHY_IDENTITY_QUOTED = "It's about how you see yourself, and I don't want to keep something that heavy without checking."
 # The validator's label for a memory escalated without a category, and pre-v3 rows with none.
 WHY_UNJUDGED = "I couldn't tell how personal this is, so I'm checking first."
 
@@ -197,6 +201,8 @@ def render_question(
     reason = (stakes_reason or "").strip().lower()
     why = WHY_BY_REASON.get(reason, WHY_UNJUDGED)
     closer = CLOSER_BY_REASON.get(reason, CLOSER_DEFAULT)
+    if reason == "identity_conclusion_about_juniper" and channel == "chat" and voice in ("juniper_said", "worked_out_together"):
+        why, closer = WHY_IDENTITY_QUOTED, CLOSER_DEFAULT
     return f"{opener(voice, channel, _when(occurred_at, created_at))} “{text}” {why} {closer}"
 
 

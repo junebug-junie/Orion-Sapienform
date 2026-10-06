@@ -122,6 +122,13 @@ pytest orion/substrate/tests/test_current_turn_signal_detector.py -q
 python services/orion-cortex-exec/evals/run_current_turn_signal_eval.py
 ```
 
+### Reverie glimpse voice label (memory Stage 2, PR D)
+
+`_project_reverie_glimpse` renders the latest reverie through `orion/memory/voice_render.py`, so it reads as
+Orion's own thought, "not something Juniper and I discussed". Only `chat_stance_brief.j2` (the legacy
+`chat_general` stance) renders `chat_reverie_glimpse`; the live `stance_react.j2` does not. Adding it there is
+pending Juniper's decision. Concept table: `orion/memory/README.md`.
+
 ### Grammar substrate (shadow observability)
 
 | Channel | Env Var | Kind | Description |

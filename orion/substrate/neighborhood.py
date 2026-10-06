@@ -133,6 +133,8 @@ def read_neighborhood(
 
     Read at most budget+1 edges per group, paging even through short pages.
     Missing/invalid data fails closed, without cache hydration or writeback.
+    ``nodes`` is called at most twice per read: once for the focal ids and
+    once, batched, for every admitted neighbor.
     """
     started = now()
     if request.continuation is not None:
@@ -217,7 +219,12 @@ def read_neighborhood(
                 if not direction_queue:
                     del directions[focal_id]
 
-        neighbors: dict[str, BaseSubstrateNodeV1] = {}
+        # Select edges first (the budget decision needs only ids), then fetch
+        # every admitted neighbor in ONE nodes() call instead of one call per
+        # neighbor. Any missing, duplicate or ineligible endpoint still fails
+        # the whole read closed, exactly as the per-neighbor fetch did.
+        neighbor_ids: list[str] = []
+        admitted: set[str] = set()
         boundary: list[SubstrateEdgeV1] = []
         seen_edges = {edge.edge_id for edge in internal}
         for edge in ordered:
@@ -226,15 +233,17 @@ def read_neighborhood(
             seen_edges.add(edge.edge_id)
             outside = edge.target.node_id if edge.source.node_id in focal else edge.source.node_id
             if (len(boundary) >= request.boundary_edge_limit or
-                    (outside not in neighbors and len(neighbors) >= request.neighbor_node_limit)):
+                    (outside not in admitted and len(admitted) >= request.neighbor_node_limit)):
                 truncated = True
                 continue
-            if outside not in neighbors:
-                found = _unique_nodes(nodes([outside]))
-                if set(found) != {outside} or not request.eligible(found[outside]):
-                    raise ValueError("endpoint_changed_or_unavailable")
-                neighbors[outside] = found[outside]
+            if outside not in admitted:
+                admitted.add(outside)
+                neighbor_ids.append(outside)
             boundary.append(edge)
+        found = _unique_nodes(nodes(neighbor_ids)) if neighbor_ids else {}
+        if set(found) != admitted or not all(request.eligible(node) for node in found.values()):
+            raise ValueError("endpoint_changed_or_unavailable")
+        neighbors = {key: found[key] for key in neighbor_ids}
         all_nodes = {**focal, **neighbors}
         for edge in internal + boundary:
             for ref in (edge.source, edge.target):

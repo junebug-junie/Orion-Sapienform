@@ -96,6 +96,12 @@ class HarnessGovernorSettings(BaseSettings):
         "orion:harness:run:cancel",
         alias="CHANNEL_HARNESS_RUN_CANCEL",
     )
+    # Draft-first display (spec L8): the grounded draft, published before the
+    # finalize judge when the Hub asks (HarnessRunRequestV1.draft_preview).
+    channel_harness_run_draft_preview: str = Field(
+        "orion:harness:run:draft_preview",
+        alias="CHANNEL_HARNESS_RUN_DRAFT_PREVIEW",
+    )
 
     # orion-llm-gateway base URL, read directly from the environment by
     # orion.harness.fcc_motor.run_fcc_turn: a turn holding a GPU pool lease sends
@@ -168,6 +174,12 @@ class HarnessGovernorSettings(BaseSettings):
     # turn, not a safety regression since the repo mount here is read-only).
     harness_fcc_setting_sources: str = Field(
         "user,local", alias="HARNESS_FCC_SETTING_SOURCES"
+    )
+    # Auto-memory off for Hub chat-reply turns only, read directly from the
+    # environment by orion.harness.fcc_motor.chat_auto_memory_disabled;
+    # mirrored here so operators see the effective value.
+    harness_fcc_chat_disable_auto_memory: bool = Field(
+        True, alias="HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY"
     )
     # Repeat-failing-call breaker threshold, read directly from the environment
     # by orion.harness.fcc_motor.repeat_failure_threshold; mirrored here so

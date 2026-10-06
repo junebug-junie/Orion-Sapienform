@@ -69,3 +69,62 @@ def seed_activation(
     if node.node_kind == "state_snapshot":
         activation += 0.15
     return _clamp(activation)
+
+
+# --- Decay bookkeeping (L6, 2026-10-06) -------------------------------------
+#
+# A node's stored ``signals.activation.activation`` is a value that has
+# ALREADY been decayed up to some moment. Decaying it again by the full time
+# since ``temporal.observed_at`` on every tick (the pre-2026-10-06 behavior,
+# still available as ``legacy``) re-applies decay that was already applied, so
+# the loss compounds: ~2.2% per 30 s tick on a 30-day half-life at 23 h of
+# age, instead of ~0.0008%. ``activation_decayed_at`` records the moment the
+# stored value is valid as of, so the next decay covers only the time since
+# then. Only writers that recompute activation set it (the dynamics tick and
+# the Hub decay scheduler); every other writer leaves it untouched.
+ACTIVATION_DECAYED_AT_KEY = "activation_decayed_at"
+
+DECAY_MODE_SINCE_LAST = "since_last"
+DECAY_MODE_LEGACY = "legacy"
+DECAY_MODES: frozenset[str] = frozenset({DECAY_MODE_SINCE_LAST, DECAY_MODE_LEGACY})
+
+
+def normalize_decay_mode(value: object) -> str:
+    """Return a valid decay mode; raise on anything unknown (a typo in the
+    rollback flag must not silently pick a mode)."""
+    mode = str(value or DECAY_MODE_SINCE_LAST).strip().lower()
+    if mode not in DECAY_MODES:
+        raise ValueError(f"unknown substrate decay mode {value!r}; expected one of {sorted(DECAY_MODES)}")
+    return mode
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+def parse_activation_decayed_at(raw: object) -> datetime | None:
+    """Parse a stored ``activation_decayed_at`` stamp. Unparseable -> None
+    (caller falls back to ``observed_at``), never raises."""
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return _as_utc(raw)
+    try:
+        return _as_utc(datetime.fromisoformat(str(raw).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def activation_decay_anchor(node: BaseSubstrateNodeV1) -> datetime:
+    """The moment the node's stored activation is valid as of.
+
+    ``max(stamp, observed_at)``: a missing/garbled stamp falls back to
+    ``observed_at``; a node re-observed after the last decay (a producer wrote
+    a fresh activation with a newer ``observed_at``) is decayed only from that
+    newer observation, never from the older stamp.
+    """
+    observed = _as_utc(node.temporal.observed_at)
+    stamp = parse_activation_decayed_at((node.metadata or {}).get(ACTIVATION_DECAYED_AT_KEY))
+    if stamp is None:
+        return observed
+    return max(stamp, observed)

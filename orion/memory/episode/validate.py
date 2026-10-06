@@ -16,8 +16,11 @@ lists, no "memorability" rules). It only checks things code can check exactly:
   is never rewritten.
 * **Structure.** Workflow-command turns produce no memories; a statement of five words or fewer,
   or a duplicate statement within the episode, is rejected.
-* **Stakes are the distiller's own field.** The stakes policy is Juniper's open decision (review of
-  2026-10-02 removed a word-list backstop); high stakes simply means pending confirmation.
+* **Stakes are the distiller's own judgment.** Juniper decided the rubric on 2026-10-06 (see
+  memory_episode_distill.j2). This module never reads the statement to judge stakes; it only checks
+  that ``stakes`` and ``stakes_reason`` are present and agree with each other and with
+  ``asks_direction``. A pair that does not agree is resolved toward high (ask Juniper), never toward
+  low, and the change is logged. High stakes means pending confirmation.
 
 Rejected memories are returned (with their reason) for logging; they are never stored.
 """
@@ -29,9 +32,11 @@ import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, get_args
 
 from orion.schemas.memory_episode import (
+    HIGH_STAKES_REASONS,
+    StakesReason,
     DistilledMemoryV1,
     DistilledQuestionV1,
     DistillEvidenceV1,
@@ -44,6 +49,7 @@ MEMORY_ID_NAMESPACE = uuid.UUID("6f1c7b8e-2d0a-4c35-9a51-3e7d9b0c4a21")
 REFERENT_KINDS = frozenset({"person", "event", "place", "service", "file", "pr", "concept", "project"})
 INTERNAL_CHANNELS = frozenset({"reverie", "curiosity", "dream", "journal", "topic_model"})
 JUNIPER_VOICES = frozenset({"juniper_said", "worked_out_together"})
+VALID_STAKES_REASONS = frozenset(get_args(StakesReason))
 MIN_STATEMENT_WORDS = 6  # "0 statements of 5 words or fewer" (Stage 1 acceptance 7)
 
 # Purpose -> (start strength, half-life days). Spec section 4.
@@ -248,6 +254,39 @@ def _supported_voice(voice: str, has_prompt: bool, has_response: bool) -> Option
     return voice  # orion_thought: any verified quote supports it
 
 
+def resolve_stakes(
+    stakes: str, stakes_reason: Optional[str], asks_direction: bool = False
+) -> tuple[str, Optional[str], Optional[MemoryEvent]]:
+    """(stakes, stakes_reason, event or None). Presence and consistency only, never vocabulary.
+
+    Consistent pairs pass unchanged: ``high`` with a high-stakes category, or ``low`` with "none"
+    (and ``asks_direction`` false). Anything else moves toward high, because high only means
+    "confirm with Juniper first" and a wrong low would be stored as settled fact:
+
+    * low + a high-stakes category      -> high with that category (the category is the judgment)
+    * asks_direction + low              -> high, "orion_asks_direction" (Juniper's rule)
+    * high + "none" / missing / unknown -> high, reason None
+    * low + missing / unknown           -> high, reason None (the distiller did not judge it)
+    """
+    reason = str(stakes_reason).strip().lower() if stakes_reason is not None else None
+    known = reason in VALID_STAKES_REASONS
+    detail = {"stakes": stakes, "stakes_reason": stakes_reason, "asks_direction": asks_direction}
+    if stakes == "high":
+        if known and reason in HIGH_STAKES_REASONS:
+            return "high", reason, None
+        if asks_direction:
+            return "high", "orion_asks_direction", MemoryEvent("stakes_reason_set", "asks_direction", detail)
+        return "high", None, MemoryEvent("stakes_reason_missing", "high_without_category", detail)
+    # stakes == "low"
+    if known and reason in HIGH_STAKES_REASONS:
+        return "high", reason, MemoryEvent("stakes_raised", "category_is_high_stakes", detail)
+    if asks_direction:
+        return "high", "orion_asks_direction", MemoryEvent("stakes_raised", "asks_direction", detail)
+    if reason == "none":
+        return "low", "none", None
+    return "high", None, MemoryEvent("stakes_raised", "stakes_reason_missing_or_unknown", detail)
+
+
 def validate_distillation(
     distillation: EpisodeDistillationV1,
     turns: list[EpisodeTurn],
@@ -314,11 +353,9 @@ def validate_distillation(
             if (key, r.role) not in referents:
                 referents.append((key, str(r.role or "about")))
 
-        # Stakes are the distiller's own field. The stakes policy (floor, backstops, which
-        # self-conclusions to ask about) is Juniper's open decision; the validator only checks
-        # evidence, voice and channel.
-        stakes = cand.stakes
-        stakes_reason = cand.stakes_reason
+        stakes, stakes_reason, stakes_event = resolve_stakes(cand.stakes, cand.stakes_reason, cand.asks_direction)
+        if stakes_event is not None:
+            events.append(stakes_event)
         confirmation_state = "pending_confirmation" if stakes == "high" else "auto"
         strength, half_life = STRENGTH_BY_PURPOSE[cand.purpose]
 

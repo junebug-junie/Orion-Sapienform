@@ -19,6 +19,8 @@ from orion.harness.cut_short import (
 from orion.harness.finalize import (
     DEFAULT_FINALIZE_INTERLOCUTOR,
     HarnessFinalizeFailedError,
+    draft_preview_display_text,
+    draft_preview_hold_reason,
     emit_post_turn_closure,
     run_harness_finalize_chain,
 )
@@ -30,6 +32,7 @@ from orion.harness.grammar_emit import (
 )
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.runner import HarnessRunner, _record_recall_gate_from_debug
+from orion.harness.step_stream import publish_harness_run_draft_preview
 from orion.harness.substrate_client import HarnessSubstrateClient
 from orion.schemas.harness_finalize import HarnessRunRequestV1, HarnessRunV1
 
@@ -324,6 +327,54 @@ def _recall_fields_from_thought(thought: Any) -> tuple[dict[str, Any] | None, st
     return recall_debug, memory_digest
 
 
+async def _maybe_publish_draft_preview(
+    bus: Any,
+    request: HarnessRunRequestV1,
+    motor: Any,
+    *,
+    repair_overlay: Any,
+    corr: str,
+    received_monotonic: float,
+) -> tuple[str | None, str | None]:
+    """Draft-first display (spec L8): publish the grounded draft before the judge.
+
+    Returns (published_text, held_reason). Both None when the caller did not
+    ask. Best-effort: a publish failure costs the early display, never the turn.
+    """
+    if not getattr(request, "draft_preview", False):
+        return None, None
+    held = draft_preview_hold_reason(
+        thought=request.thought_event,
+        repair_overlay=repair_overlay,
+        preserve_structured_output=bool(request.reading_only),
+        cut_short=bool(getattr(motor, "cut_short_reason", None)),
+    )
+    if held is not None:
+        logger.info("harness_draft_preview_held corr=%s reason=%s", corr, held)
+        return None, held
+    text = draft_preview_display_text(motor.draft_text, motor.reading_receipts)
+    if not text.strip():
+        return None, "empty_draft"
+    try:
+        await publish_harness_run_draft_preview(
+            bus,
+            correlation_id=corr,
+            text=text,
+            channel=settings.channel_harness_run_draft_preview,
+            source_name=settings.service_name,
+        )
+    except Exception:  # noqa: BLE001 -- display is optional; the judge still runs
+        logger.warning("harness_draft_preview_publish_failed corr=%s", corr, exc_info=True)
+        return None, "publish_failed"
+    logger.info(
+        "harness_draft_preview_published corr=%s chars=%s since_request_ms=%.0f",
+        corr,
+        len(text),
+        (time.monotonic() - received_monotonic) * 1000.0,
+    )
+    return text, None
+
+
 async def handle_harness_run_request(
     bus: OrionBusAsync,
     request: HarnessRunRequestV1,
@@ -424,6 +475,15 @@ async def handle_harness_run_request(
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
 
+    preview_text, preview_held = await _maybe_publish_draft_preview(
+        bus,
+        request,
+        motor,
+        repair_overlay=repair_overlay,
+        corr=corr,
+        received_monotonic=received_monotonic,
+    )
+
     async def _substrate_client(molecule: Any) -> Any:
         try:
             return await substrate.finalize_appraisal(molecule, correlation_id=corr)
@@ -482,6 +542,8 @@ async def handle_harness_run_request(
             fcc_elapsed_sec=motor.fcc_elapsed_sec,
             reading_receipts=motor.reading_receipts,
             source_fetches=motor.source_fetches,
+            draft_preview_text=preview_text,
+            draft_preview_held_reason=preview_held,
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
@@ -531,7 +593,9 @@ async def handle_harness_run_request(
             )
         run = HarnessRunV1(
             correlation_id=corr,
-            final_text=motor.draft_text,
+            # When a grounded draft was already shown, deliver that same text:
+            # swapping it for the raw draft would read as a revision no judge made.
+            final_text=preview_text if preview_text is not None else motor.draft_text,
             draft_text=motor.draft_text,
             finalize_ran=False,
             finalize_degraded_reason=_SUBSTRATE_UNAVAILABLE_USER_REASON,
@@ -550,6 +614,8 @@ async def handle_harness_run_request(
             fcc_elapsed_sec=motor.fcc_elapsed_sec,
             reading_receipts=motor.reading_receipts,
             source_fetches=motor.source_fetches,
+            draft_preview_text=preview_text,
+            draft_preview_held_reason=preview_held,
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
@@ -571,6 +637,8 @@ async def handle_harness_run_request(
             fcc_elapsed_sec=motor.fcc_elapsed_sec,
             reading_receipts=motor.reading_receipts,
             source_fetches=motor.source_fetches,
+            draft_preview_text=preview_text,
+            draft_preview_held_reason=preview_held,
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
@@ -604,7 +672,16 @@ async def handle_harness_run_request(
         fcc_elapsed_sec=motor.fcc_elapsed_sec,
         reading_receipts=motor.reading_receipts,
         source_fetches=motor.source_fetches,
+        draft_preview_text=preview_text,
+        draft_preview_held_reason=preview_held,
     )
+    if preview_text is not None and (run.final_text or "").strip() != preview_text.strip():
+        logger.info(
+            "harness_draft_preview_revised corr=%s reason=%s repair_ran=%s",
+            corr,
+            run.response_repair_reason or "finalize_changed",
+            run.response_repair_ran,
+        )
     if motor.grammar_collector is not None and run.final_text:
         await _emit_finalize_lifecycle_grammar(
             bus,

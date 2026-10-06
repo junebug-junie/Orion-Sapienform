@@ -17,6 +17,8 @@ Checks reported (label-free; nobody labels anything):
   grounding (juniper_said with a verified prompt quote), downgrades, rejections by reason,
   coverage of non-command turns, junk (<=5 words / duplicates /
   command-only), referent-set Jaccard between repeated runs, tokens and latency per episode, and
+  stakes as stakes:category per kept memory (``--live`` adds the episodes the deployed shadow
+  distiller already ran, with the stakes their stored memories got as the "before"), and
   the Austin property checks (event referent with alias "austin"; juniper_said memory with a
   verified "introvert" quote; a follow_up due on/after 2026-09-30; no memory from command turns).
 """
@@ -79,6 +81,24 @@ def select_episodes(n_other: int = 5) -> list[dict[str, Any]]:
     return episodes
 
 
+def live_distilled_episodes() -> list[dict[str, Any]]:
+    """Episodes the deployed shadow distiller already ran (episode_distill_run), with the stakes the
+    stored memories got (counts only, no text) as the "before"."""
+    sql = """
+    SELECT coalesce(json_agg(json_build_object(
+        'name', 'live-' || left(r.episode_id::text, 8),
+        'episode_id', r.episode_id::text,
+        'prompt_version', r.prompt_version,
+        'turn_ids', (SELECT json_agg(t->>'correlation_id') FROM jsonb_array_elements(s.turns) t),
+        'before_stakes', (SELECT json_object_agg(k, n) FROM (
+            SELECT m.stakes || ':' || coalesce(m.stakes_reason, '-') AS k, count(*) AS n
+            FROM episode_memory m WHERE m.episode_id::text = r.episode_id::text GROUP BY 1) x)
+      ) ORDER BY s.started_at), '[]'::json)
+    FROM episode_distill_run r JOIN memory_episode_shadow s ON s.episode_id::text = r.episode_id::text
+    """
+    return _psql_json(sql)
+
+
 def load_rows(turn_ids: list[str]) -> list[dict[str, Any]]:
     ids = ",".join("'" + i.replace("'", "") + "'" for i in turn_ids)
     sql = (f"SELECT coalesce(json_agg(json_build_object('correlation_id', correlation_id, 'prompt', prompt, "
@@ -133,7 +153,7 @@ def austin_checks(result, turns) -> dict[str, bool]:
     }
 
 
-def score(result, turns, answer, parsed_count: int) -> dict[str, Any]:
+def score(result, turns, answer, parsed_count: int, parsed=None) -> dict[str, Any]:
     kept = result.memories
     js = [m for m in kept if m.voice == "juniper_said"]
     aj = [m for m in kept if m.purpose == "about_juniper"]
@@ -146,6 +166,12 @@ def score(result, turns, answer, parsed_count: int) -> dict[str, Any]:
         "juniper_said_grounded": sum(1 for m in js if any(e.verified and e.source_kind == "chat_prompt" for e in m.evidence)),
         "about_juniper": len(aj),
         "high_stakes": sum(1 for m in kept if m.stakes == "high"),
+        # Stakes after validation, as stakes:category (no text). "high:-" = high without a category.
+        "stakes": dict(Counter(f"{m.stakes}:{m.stakes_reason or '-'}" for m in kept)),
+        # What the distiller itself proposed, before the consistency check (all proposals).
+        "stakes_proposed": dict(Counter(f"{m.stakes}:{m.stakes_reason or '-'}" for m in (parsed.memories if parsed else []))),
+        # As the distiller proposed them, before the consistency check resolved anything.
+        "stakes_events": dict(Counter(e.op for m in kept for e in m.events if e.op.startswith("stakes"))),
         # The renderer contract is first person; a statement naming Orion is written about Orion, not by it.
         "statements_naming_orion": sum(1 for m in kept if "orion" in m.statement.lower().split()
                                        or "orion's" in m.statement.lower()),
@@ -180,12 +206,16 @@ async def main_async(args) -> dict[str, Any]:
     await bus.connect()
     summary: dict[str, Any] = {"generated_at": datetime.now(timezone.utc).isoformat(), "routes": {}, "episodes": []}
     try:
-        episodes = [e for e in select_episodes() if not args.only or e["name"] in args.only]
+        episodes = [] if args.live_only else select_episodes()
+        if args.live or args.live_only:
+            episodes += live_distilled_episodes()
+        episodes = [e for e in episodes if not args.only or e["name"] in args.only]
         for ep in episodes:
             rows = load_rows(ep["turn_ids"])
             turns = turns_from_rows(rows)
             prompt = render_prompt(episode_id=ep["name"], turns=turns)
-            info = {"name": ep["name"], "turns": len(turns), "commands": sum(t.is_command for t in turns),
+            info = {"name": ep["name"], "before_stakes": ep.get("before_stakes"),
+                    "before_prompt_version": ep.get("prompt_version"), "turns": len(turns), "commands": sum(t.is_command for t in turns),
                     "chars": sum(len(t.prompt) + len(t.response) for t in turns), "runs": {}}
             for route in [args.route] + ([args.compare_route] if args.compare_route else []):
                 runs = []
@@ -197,7 +227,7 @@ async def main_async(args) -> dict[str, Any]:
                         (out / f"{ep['name']}.{route}.{i}.answer.txt").write_text(answer["text"])
                         parsed = parse_distillation(answer["text"])
                         result = validate_distillation(parsed, turns, episode_id=ep["name"])
-                        s = score(result, turns, answer, len(parsed.memories))
+                        s = score(result, turns, answer, len(parsed.memories), parsed)
                         if ep["name"] == "austin":
                             s["austin_checks"] = austin_checks(result, turns)
                         s["referents"] = sorted({k for m in result.memories for k, _ in m.referents})
@@ -231,7 +261,15 @@ def main() -> int:
     ap.add_argument("--out", default="/tmp/memory-distill-eval")
     ap.add_argument("--summary-json", type=Path)
     ap.add_argument("--only", nargs="*", help="episode names to run (default: all)")
+    ap.add_argument("--template", type=Path, help="render this prompt template instead of the current one "
+                    "(e.g. the previous version via `git show <rev>:<path>`, for a before/after on the same lane)")
+    ap.add_argument("--live", action="store_true", help="also re-run the episodes the deployed distiller ran")
+    ap.add_argument("--live-only", action="store_true", help="only the episodes the deployed distiller ran")
     args = ap.parse_args()
+    if args.template:
+        import orion.memory.episode.distill as distill
+
+        distill.PROMPT_PATH = args.template.resolve()
     summary = asyncio.run(main_async(args))
     text = json.dumps(summary, indent=1, default=str)
     (Path(args.out) / "summary.json").write_text(text)

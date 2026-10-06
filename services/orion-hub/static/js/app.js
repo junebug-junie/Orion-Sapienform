@@ -8053,6 +8053,9 @@ document.addEventListener("DOMContentLoaded", () => {
         console.warn('[Hub] Chat stance debug panel failed', err);
       }
     }
+    // Returned so a draft-first turn can move the final into the draft's slot
+    // (draft-revision.js::settleWithFinal). Existing callers ignore it.
+    return div;
   }
 
   function collectConversationTurnsUpTo(anchorEl, maxTurns) {
@@ -11592,7 +11595,32 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             return;
           }
+          if (d.type === 'draft_preview') {
+            // Draft-first (spec L8): show the reply writer's draft now; the
+            // final frame for the same turn replaces it in place.
+            const draftApi = window.OrionDraftRevision;
+            if (draftApi && conversationDiv) {
+              try {
+                const md = window.ChatMarkdown && typeof window.ChatMarkdown.renderMarkdown === 'function'
+                  ? (t) => window.ChatMarkdown.renderMarkdown(t)
+                  : null;
+                if (draftApi.showDraft(conversationDiv, d, { renderMarkdown: md })) {
+                  conversationDiv.scrollTop = conversationDiv.scrollHeight;
+                }
+              } catch (err) { console.warn('draft_preview render failed', err); }
+            }
+            return;
+          }
+          // Only turn-ending frames can settle a draft; skip the DOM scan for
+          // the many step/hop frames that also carry a correlation id.
+          const pendingDraftNode = (
+            (d.type === 'final' || d.type === 'turn_error' || d.type === 'turn_deferred')
+            && window.OrionDraftRevision && conversationDiv && d.correlation_id
+          )
+            ? window.OrionDraftRevision.findDraft(conversationDiv, d.correlation_id)
+            : null;
           if (d.type === 'turn_deferred') {
+            if (pendingDraftNode) window.OrionDraftRevision.settleWithoutFinal(pendingDraftNode);
             appendMessage(
               'System',
               `Turn deferred: ${d.reason || 'stance unavailable'}`,
@@ -11612,7 +11640,11 @@ document.addEventListener("DOMContentLoaded", () => {
             const phase = d.phase ? ` (${d.phase})` : '';
             const detail = d.error || d.grounding_status || 'turn failed';
             const partialDraft = typeof d.partial_draft === 'string' ? d.partial_draft.trim() : '';
-            if (partialDraft) {
+            if (pendingDraftNode) {
+              // The draft is already on screen; label it unchecked rather
+              // than adding a second copy of the same text.
+              window.OrionDraftRevision.settleWithoutFinal(pendingDraftNode);
+            } else if (partialDraft) {
               appendMessage('Orion', partialDraft, 'text-yellow-200', {
                 correlationId: d.correlation_id,
                 mode: d.mode || 'orion',
@@ -11627,7 +11659,7 @@ document.addEventListener("DOMContentLoaded", () => {
           const displayText = resolveAssistantDisplayText(d);
           if (d.transcript && !d.is_text_input) appendMessage('You', d.transcript);
           if (shouldAppendOrionWsPayload(d)) {
-            appendMessage('Orion', displayText || '', 'text-white', {
+            const finalNode = appendMessage('Orion', displayText || '', 'text-white', {
               raw: d.raw,
               reasoning: d.reasoning,
               reasoningTrace: d.reasoning_trace,
@@ -11668,6 +11700,11 @@ document.addEventListener("DOMContentLoaded", () => {
               situationAffordances: d.situation_affordances,
               substrateEffectSummary: d.substrate_effect_summary || null,
             });
+            if (pendingDraftNode) {
+              try {
+                window.OrionDraftRevision.settleWithFinal(conversationDiv, pendingDraftNode, finalNode, d);
+              } catch (err) { console.warn('draft settle failed', err); }
+            }
             updateMemoryPanelFromResponse(d);
             syncSocialInspectionFromRouteDebug(d.routing_debug);
           }

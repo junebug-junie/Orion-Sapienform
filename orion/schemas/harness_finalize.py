@@ -229,12 +229,32 @@ class HarnessRunRequestV1(BaseModel):
     # attachments/recent_turns/situation_prompt_fragment convention of
     # getattr(request, "...", None) at every read site.
     mode: str | None = None
+    # Who the turn answers: "juniper" for a Hub chat reply (Juniper typed it),
+    # "orion" for Orion's own curiosity/self-inquiry/urgent runs, None for
+    # every other caller (outreach, collapse mirror, reading). Copied from
+    # execute_unified_turn's utterance_origin. The governor uses it to keep
+    # Claude Code auto-memory out of chat replies only
+    # (HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY). None from an older Hub build
+    # means "not a chat reply", i.e. today's behavior.
+    utterance_origin: str | None = None
     attachments: list[HarnessAttachmentV1] = Field(
         default_factory=list,
         description=(
             "Images staged into the sandbox for this turn. Empty for every "
             "text-only turn, which keeps the harness prompt byte-identical to "
             "its pre-attachment form."
+        ),
+    )
+    draft_preview: bool = Field(
+        default=False,
+        description=(
+            "Draft-first display (spec L8, 2026-10-06). True asks the governor "
+            "to publish the motor draft, after deterministic grounding only, on "
+            "orion:harness:run:draft_preview before the finalize judge runs, so "
+            "the caller can show it while the judge decides. Sensitive turns "
+            "(orion/harness/finalize.py::draft_preview_hold_reason) are held "
+            "back regardless. Only the Hub's interactive chat lane sets this; "
+            "False keeps judge-before-display."
         ),
     )
     situation_prompt_fragment: str | None = Field(
@@ -280,6 +300,21 @@ class HarnessRunStepV1(BaseModel):
     correlation_id: str
     step_index: int
     step: dict[str, Any]
+
+
+class HarnessRunDraftPreviewV1(BaseModel):
+    """The reply writer's draft, published before the finalize judge runs.
+
+    Producer: orion-harness-governor, only when HarnessRunRequestV1.draft_preview
+    is True and the turn is not held as sensitive. Consumer: orion-hub, which
+    shows it in chat and later replaces it with the final text. Not persisted
+    as a turn (chat history, memory, TTS and outreach read HarnessRunV1.final_text);
+    bus-mirror copies it like any other orion:harness:* event.
+    """
+
+    schema_version: Literal["harness.run.draft_preview.v1"] = "harness.run.draft_preview.v1"
+    correlation_id: str
+    text: str = Field(..., min_length=1, description="Draft after deterministic grounding; what the Hub shows.")
 
 
 class HarnessRunV1(BaseModel):
@@ -334,3 +369,10 @@ class HarnessRunV1(BaseModel):
     # Consumers that gate on evidence must treat ``None`` as "no evidence",
     # never as "assume it was read".
     source_fetches: list[SourceFetchEvidenceV1] | None = None
+    # Draft-first display (spec L8). The exact text published to the Hub
+    # before the judge ran, or None when no draft was shown. Together with
+    # final_text this records what Juniper saw first and what it became.
+    draft_preview_text: str | None = None
+    # Why a requested draft preview was held back (sensitive turn, structured
+    # output, cut short). None when not requested or when it was published.
+    draft_preview_held_reason: str | None = None

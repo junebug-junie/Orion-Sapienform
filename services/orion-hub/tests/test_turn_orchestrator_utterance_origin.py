@@ -291,3 +291,25 @@ async def test_execute_unified_turn_without_retrieval_query_sends_none() -> None
     stance_req = react_mock.await_args.args[0]
     assert stance_req.retrieval_query is None
     assert "retrieval_query" not in stance_req.stance_inputs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("origin", ["juniper", "orion", None])
+async def test_execute_unified_turn_threads_origin_into_harness_request(origin) -> None:
+    """L7: the governor keeps auto-memory out of chat replies only, so the
+    harness request must say who started the turn."""
+    harness_client_run = AsyncMock(return_value=_harness_run())
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    with patches[0], patches[1], patches[2]:
+        await execute_unified_turn(
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            payload={},
+            emit_observation_fn=lambda **_kwargs: None,
+            utterance_origin=origin,
+        )
+
+    harness_req = harness_client_run.await_args.args[0]
+    assert harness_req.utterance_origin == origin

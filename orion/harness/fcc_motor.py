@@ -768,6 +768,7 @@ def _build_subprocess_env(
     turn_step_stall_sec: Optional[float] = None,
     n_ctx: Optional[int] = None,
     gpu_lease: dict | None = None,
+    chat_reply: bool = False,
 ) -> Dict[str, str]:
     env = os.environ.copy()
     from orion.llm.resource_lease import GPU_LEASE_HEADER, encode_gpu_lease_header
@@ -872,7 +873,28 @@ def _build_subprocess_env(
         env["ORION_TURN_STEP_STALL_SEC"] = str(int(turn_step_stall_sec))
     else:
         env.pop("ORION_TURN_STEP_STALL_SEC", None)
+    # Claude Code auto-memory is keyed by working directory, and every FCC turn
+    # runs in the same sandbox checkout, so chat replies were reading notes that
+    # curiosity/urgent/self-inquiry/mutation runs wrote there -- ungoverned, no
+    # provenance (spec 2026-10-06-unified-turn-latency-design.md, L7). Chat
+    # replies get it switched off; anything that should reach a conversation
+    # comes through recall instead. Investigation turns keep it. Popped rather
+    # than left alone otherwise, so a container-wide value cannot silently
+    # change investigation turns too.
+    if chat_reply and chat_auto_memory_disabled():
+        env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
+    else:
+        env.pop("CLAUDE_CODE_DISABLE_AUTO_MEMORY", None)
     return env
+
+
+def chat_auto_memory_disabled() -> bool:
+    """HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY: keep Claude Code auto-memory out
+    of chat-reply turns. Default ON; only an explicit false-y value turns it off."""
+    raw = os.environ.get("HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY", "").strip().lower()
+    if not raw:
+        return True
+    return raw not in {"0", "false", "no", "off"}
 
 
 def repeat_failure_threshold() -> int:
@@ -967,6 +989,7 @@ async def run_fcc_turn(
     reading_only=False,
     gpu_lease: dict | None = None,
     pool_state: Mapping[str, Any] | None = None,
+    chat_reply: bool = False,
 ) -> AsyncIterator[Dict[str, object]]:
     """Orion capability: the actual FCC-Claude process.
 
@@ -1128,6 +1151,7 @@ async def run_fcc_turn(
             *argv,
             cwd=workspace,
             env=_build_subprocess_env(
+                chat_reply=chat_reply,
                 gpu_lease=gpu_lease,
                 n_ctx=lane_n_ctx,
                 fcc_server_url=fcc_server_url,

@@ -1658,6 +1658,12 @@ class Settings(BaseSettings):
     )
     # --- Unified Orion turn (orion-thought + harness governor) ---
     ORION_UNIFIED_TURN_ENABLED: bool = Field(default=False, alias="ORION_UNIFIED_TURN_ENABLED")
+    # Draft-first display (spec L8, 2026-10-06): on interactive unified chat
+    # turns, show the reply writer's draft as soon as it exists, then let the
+    # finalize judge replace it in place (marked "revised") if it repairs it.
+    # Sensitive turns stay judge-first in the governor regardless.
+    # False restores judge-before-display for every turn.
+    HUB_UNIFIED_DRAFT_FIRST_ENABLED: bool = Field(default=True, alias="HUB_UNIFIED_DRAFT_FIRST_ENABLED")
     ORION_HARNESS_GOVERNOR_ENABLED: bool = Field(default=False, alias="ORION_HARNESS_GOVERNOR_ENABLED")
     # 8300, raised from 2960 on 2026-09-19 alongside the motor's own
     # HARNESS_FCC_TIMEOUT_SEC 2400 -> 7200. Finalize is now substrate 5 +
@@ -1769,6 +1775,10 @@ class Settings(BaseSettings):
         default="orion:harness:run:cancel",
         alias="CHANNEL_HARNESS_RUN_CANCEL",
     )
+    CHANNEL_HARNESS_RUN_DRAFT_PREVIEW: str = Field(
+        default="orion:harness:run:draft_preview",
+        alias="CHANNEL_HARNESS_RUN_DRAFT_PREVIEW",
+    )
 
     ENABLE_PRE_TURN_APPRAISAL: bool = Field(default=False, alias="ENABLE_PRE_TURN_APPRAISAL")
     PRE_TURN_APPRAISAL_PARADIGMS: str = Field(default="repair_pressure", alias="PRE_TURN_APPRAISAL_PARADIGMS")
@@ -1819,6 +1829,11 @@ class Settings(BaseSettings):
     # the underlying writes blocking HTTP calls to Fuseki.
     SUBSTRATE_DECAY_SCHEDULER_ENABLED: bool = Field(default=True, alias="SUBSTRATE_DECAY_SCHEDULER_ENABLED")
     SUBSTRATE_DECAY_SCHEDULER_INTERVAL_SEC: float = Field(default=120.0, alias="SUBSTRATE_DECAY_SCHEDULER_INTERVAL_SEC")
+    # Same key and meaning as orion-substrate-runtime's: since_last decays each
+    # concept only by the time since its last decay (activation_decayed_at,
+    # shared with the runtime's dynamics tick so no interval is decayed twice);
+    # legacy = pre-2026-10-06 per-interval decay. Rollback only.
+    SUBSTRATE_DYNAMICS_DECAY_MODE: str = Field(default="since_last", alias="SUBSTRATE_DYNAMICS_DECAY_MODE")
     # Drives the graph-review loop unattended: seed substrate_review_queue_item
     # from the frontier when it is empty, then drain one due item per tick (see
     # api_routes.py::execute_substrate_review_scheduled_cycle). Before this

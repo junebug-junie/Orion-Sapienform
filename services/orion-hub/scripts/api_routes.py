@@ -130,6 +130,12 @@ from orion.core.schemas.substrate_mutation import (
     RecallStrategyProfileV1,
 )
 from orion.core.activation_decay import decay_activation
+from orion.substrate.activation import (
+    ACTIVATION_DECAYED_AT_KEY,
+    DECAY_MODE_LEGACY,
+    activation_decay_anchor,
+    normalize_decay_mode,
+)
 from orion.substrate import build_substrate_policy_store_from_env, build_substrate_store_from_env
 from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
 from orion.substrate.consolidation import GraphConsolidationEvaluator
@@ -388,10 +394,23 @@ def seed_golden_concepts_at_startup() -> int:
         return 0
 
 
-def decay_concept_activations(elapsed_seconds: Optional[float] = None) -> dict[str, Any]:
+def decay_concept_activations(
+    elapsed_seconds: Optional[float] = None,
+    decay_mode: Optional[str] = None,
+) -> dict[str, Any]:
     """Apply half-life activation decay to every concept-kind node in
     SUBSTRATE_SEMANTIC_STORE, in place (re-upserted with only
     signals.activation.activation changed).
+
+    ``decay_mode`` (default ``settings.SUBSTRATE_DYNAMICS_DECAY_MODE``,
+    ``since_last``): decay each node by the time since its own last decay
+    (``metadata['activation_decayed_at']``, falling back to ``observed_at``;
+    see ``orion.substrate.activation.activation_decay_anchor``) and stamp the
+    write, ignoring ``elapsed_seconds``. orion-substrate-runtime's dynamics
+    tick decays the same stored activation every 30 s and shares that stamp;
+    decaying by this scheduler's own interval on top of it would cover every
+    interval twice (an effective 15-day half-life on a 30-day setting).
+    ``legacy`` keeps the interval / observed_at behavior described below.
 
     This is the live writer that ``SubstrateActivationV1.activation`` has
     lacked -- see the honesty note in ``concept_atlas_routes.py``'s
@@ -463,6 +482,11 @@ def decay_concept_activations(elapsed_seconds: Optional[float] = None) -> dict[s
 
     identity_by_node_id = {node_id: identity for identity, node_id in snapshot.node_identity_index.items()}
 
+    mode = normalize_decay_mode(
+        decay_mode if decay_mode is not None else getattr(settings, "SUBSTRATE_DYNAMICS_DECAY_MODE", None)
+    )
+    since_last = mode != DECAY_MODE_LEGACY
+
     now = datetime.now(timezone.utc)
     for node in concept_nodes:
         try:
@@ -476,7 +500,15 @@ def decay_concept_activations(elapsed_seconds: Optional[float] = None) -> dict[s
             continue
 
         try:
-            if elapsed_seconds is not None:
+            decay_stamp: Optional[datetime] = None
+            if since_last:
+                anchor = activation_decay_anchor(node)
+                node_elapsed_seconds = max(0.0, (now - anchor).total_seconds())
+                # Never rewind the stamp. If this host's clock runs ahead of
+                # orion-substrate-runtime's, the runtime sees elapsed <= 0 and
+                # pauses decay for the skew window: under-decay, never double.
+                decay_stamp = max(anchor, now)
+            elif elapsed_seconds is not None:
                 node_elapsed_seconds = max(0.0, float(elapsed_seconds))
             else:
                 if observed_at.tzinfo is None:
@@ -493,7 +525,20 @@ def decay_concept_activations(elapsed_seconds: Optional[float] = None) -> dict[s
 
             updated_signal = activation_signal.model_copy(update={"activation": new_activation})
             updated_signals = node.signals.model_copy(update={"activation": updated_signal})
-            updated_node = node.model_copy(update={"signals": updated_signals})
+            node_update: dict[str, Any] = {"signals": updated_signals}
+            if decay_stamp is not None:
+                node_update["metadata"] = {
+                    **(node.metadata or {}),
+                    ACTIVATION_DECAYED_AT_KEY: decay_stamp.isoformat(),
+                }
+            elif ACTIVATION_DECAYED_AT_KEY in (node.metadata or {}):
+                # legacy never maintains the stamp; drop it (the store
+                # re-stamps with observed_at) so a later roll-forward doesn't
+                # re-apply the decay legacy already applied.
+                node_update["metadata"] = {
+                    k: v for k, v in (node.metadata or {}).items() if k != ACTIVATION_DECAYED_AT_KEY
+                }
+            updated_node = node.model_copy(update=node_update)
 
             # skip_metadata_keys: updated_node's metadata is node.metadata,
             # read moments earlier by SUBSTRATE_SEMANTIC_STORE.snapshot()

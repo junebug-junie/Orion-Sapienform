@@ -191,6 +191,16 @@ def build_coalition_snapshot(thought: ThoughtEventV1) -> CoalitionSnapshotV1:
     )
 
 
+def is_chat_reply_request(request: Any) -> bool:
+    """True only for a Hub chat reply: a turn Juniper started by typing.
+
+    Curiosity, self-inquiry and urgent runs carry utterance_origin="orion";
+    outreach, collapse-mirror and reading turns carry none. Missing field (an
+    older Hub build) reads as not-a-chat-reply, which is the pre-L7 behavior.
+    """
+    return str(getattr(request, "utterance_origin", None) or "").strip().lower() == "juniper"
+
+
 def _draft_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
 
@@ -269,12 +279,14 @@ async def default_fcc_runner(
     reading_only: bool = False,
     gpu_lease: dict[str, Any] | None = None,
     pool_state: dict[str, Any] | None = None,
+    chat_reply: bool = False,
     **_: Any,
 ) -> AsyncIterator[dict[str, Any]]:
     env_path = expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env"))
     env = load_fcc_env(env_path)
     token = resolve_auth_token(env, override=os.environ.get("HARNESS_FCC_AUTH_TOKEN", ""))
     async for event in run_fcc_turn(
+        chat_reply=chat_reply,
         gpu_lease=gpu_lease,
         pool_state=pool_state,
         reading_binding=reading_binding,
@@ -503,6 +515,9 @@ class HarnessRunner:
             **({"pool_state": turn_pool_state} if isinstance(turn_pool_state, dict) else {}),
             **({"reading_binding": request.reading_binding} if getattr(request, "reading_binding", None) else {}),
             **({"reading_only": True} if getattr(request, "reading_only", False) else {}),
+            # Only a Juniper-originated Hub chat reply. Passed only when true so
+            # custom fcc_runner callables that predate it keep working.
+            **({"chat_reply": True} if is_chat_reply_request(request) else {}),
             prompt=prompt,
             correlation_id=request.correlation_id,
             fcc_model_label=request.fcc_model_label,

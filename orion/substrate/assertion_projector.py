@@ -17,9 +17,13 @@ What it writes for one decision (revision r, state s):
   the neighborhood checks the assertion's state and revision.
 
 Fails closed, never mints placeholders: a missing endpoint or evidence node, an
-out-of-order revision, or a canonical id that differs from the deterministic one
-is recorded as ``outcome=failed`` and nothing more is written for that decision.
-A decision that keeps failing for the same reason is recorded once, not every tick.
+out-of-order revision, or a deterministic id already held by a different stored id
+(checked before writing) is recorded as ``outcome=failed`` and nothing is written for
+that decision. A failure is recorded again only when its reason changes; stale,
+mismatched and missing-proposal failures are terminal and never retried.
+
+Nothing is written until ``readiness()`` says every substrate reader can read the new
+shapes (orion/substrate/reader_capability.py).
 """
 
 from __future__ import annotations
@@ -48,6 +52,7 @@ from orion.core.schemas.substrate_graph_journal import (
 from .graph_journal import SubstrateGraphJournal
 from .materializer import SubstrateGraphMaterializer
 from .neighborhood import ACCEPTED_ASSERTION_STATES
+from .reader_capability import ReadinessCheck, ReadinessV1
 from .reconcile import SubstrateIdentityResolver
 
 logger = logging.getLogger(__name__)
@@ -65,8 +70,9 @@ def _edge_id(*parts: str) -> str:
     return f"edge-{uuid.uuid5(_ID_NAMESPACE, '|'.join(parts))}"
 
 
-def _materialization_id(decision_id: str, outcome: str, reason: str | None) -> str:
-    return f"mat-{uuid.uuid5(_ID_NAMESPACE, f'{decision_id}|{outcome}|{reason or ''}')}"
+def _materialization_id(decision_id: str, outcome: str, attempt: int = 0) -> str:
+    """Applied: one per decision. Failed: one per attempt whose reason CHANGED (A, B, A is three)."""
+    return f"mat-{uuid.uuid5(_ID_NAMESPACE, f'{decision_id}|{outcome}|{attempt}')}"
 
 
 @dataclass
@@ -74,10 +80,13 @@ class ProjectionReportV1:
     applied: list[str] = field(default_factory=list)
     failed: dict[str, str] = field(default_factory=dict)
     waiting: list[str] = field(default_factory=list)
+    blocked: ReadinessV1 | None = None     # set when readers are not ready: nothing was written
 
 
 class AssertionProjector:
-    def __init__(self, *, journal: SubstrateGraphJournal, materializer: SubstrateGraphMaterializer) -> None:
+    def __init__(self, *, journal: SubstrateGraphJournal, materializer: SubstrateGraphMaterializer,
+                 readiness: ReadinessCheck) -> None:
+        self._readiness = readiness
         self._journal = journal
         self._materializer = materializer
         self._store = materializer.store
@@ -85,6 +94,11 @@ class AssertionProjector:
 
     async def run_once(self, *, limit: int = 100) -> ProjectionReportV1:
         report = ProjectionReportV1()
+        ready = await asyncio.to_thread(self._readiness)
+        if not ready.ready:
+            report.blocked = ready
+            logger.info("assertion_projector_waiting reason=%s missing=%s", ready.reason, list(ready.missing))
+            return report
         for decision in await self._journal.pending_decisions(limit=limit):
             if decision.proposal_kind != "relationship_assertion":
                 continue
@@ -106,6 +120,11 @@ class AssertionProjector:
                 await self._fail(decision, f"endpoint_missing:{missing}", report)
                 continue
             record, expected_nodes, expected_edges = await asyncio.to_thread(self._record, proposal, decision)
+            if await asyncio.to_thread(self._identity_taken, record):
+                # Checked BEFORE writing: one of our deterministic ids is already held by a
+                # different stored id, so the write would land somewhere we would not report.
+                await self._fail(decision, "canonical_id_mismatch", report)
+                continue
             try:
                 result = await asyncio.to_thread(self._materializer.apply_record, record)
             except Exception as exc:  # noqa: BLE001 - recorded, never swallowed silently
@@ -115,8 +134,9 @@ class AssertionProjector:
             node_ids = [d.canonical_node_id for d in result.node_decisions]
             edge_ids = [d.canonical_edge_id for d in result.edge_decisions]
             if node_ids != expected_nodes or edge_ids != expected_edges:
-                # Reconcile resolved one of our deterministic ids onto something
-                # else. Do not claim a projection that is not where we said it is.
+                # Defense in depth after the pre-check above (should be unreachable): the write
+                # happened, but we do not claim a projection that is not where we said it is.
+                logger.error("assertion_projection_id_mismatch_after_write decision_id=%s", decision.decision_id)
                 await self._fail(decision, "canonical_id_mismatch", report)
                 continue
             await self._journal.append(
@@ -125,7 +145,7 @@ class AssertionProjector:
                     proposal_kind=decision.proposal_kind,
                     target_id=decision.target_id,
                     actor=PROJECTOR_ACTOR,
-                    materialization_id=_materialization_id(decision.decision_id, "applied", None),
+                    materialization_id=_materialization_id(decision.decision_id, "applied"),
                     decision_id=decision.decision_id,
                     revision=decision.resulting_revision,
                     outcome="applied",
@@ -153,13 +173,25 @@ class AssertionProjector:
                 proposal_kind=decision.proposal_kind,
                 target_id=decision.target_id,
                 actor=PROJECTOR_ACTOR,
-                materialization_id=_materialization_id(decision.decision_id, "failed", reason),
+                materialization_id=_materialization_id(
+                    decision.decision_id, "failed", 1 + await self._journal.failed_attempts(decision.decision_id)),
                 decision_id=decision.decision_id,
                 revision=decision.resulting_revision,
                 outcome="failed",
                 failure_reason=reason,
             )
         )
+
+    def _identity_taken(self, record: SubstrateGraphRecordV1) -> bool:
+        for node in record.nodes:
+            held = self._store.get_node_id_by_identity(self._identity.canonical_node_key(node) or "")
+            if held is not None and held != node.node_id:
+                return True
+        for edge in record.edges:
+            held = self._store.get_edge_id_by_identity(self._identity.canonical_edge_key(edge))
+            if held is not None and held != edge.edge_id:
+                return True
+        return False
 
     def _missing_nodes(self, proposal: SubstrateGraphProposalV1) -> str:
         wanted = [

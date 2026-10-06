@@ -48,7 +48,10 @@ from urllib.parse import urlparse
 
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1
 from orion.graph.falkor_client import FalkorGraphClient, RedisGraphQueryClient
-from orion.substrate.falkor_codec import decode_edge, decode_node
+from orion.substrate.falkor_codec import decode_edge, decode_node, edge_row_is_known
+from orion.substrate.neighborhood import (
+    ASSERTION_STATE_CYPHER, accepted_revisions, role_prefilter, walkable_given,
+)
 from orion.substrate.falkor_store import (
     NATIVE_EDGE_RETURN_FIELDS,
     NATIVE_NODE_RETURN_FIELDS,
@@ -57,6 +60,7 @@ from orion.substrate.falkor_store import (
     _edge_hydrate_return_clause,
     _normalize_rows,
     _return_clause,
+    bootstrap_substrate_reader,
     ensure_substrate_indexes,
 )
 from orion.substrate.store import SubstrateNeighborhoodSliceV1
@@ -118,6 +122,10 @@ CONCEPT_EDGE_CUT_CYPHER = (
     + _CONCEPT_RANKED
     + "MATCH (n)-[e]-(:SubstrateNode) WHERE e.substrate_edge = true AND e.payload_json IS NULL "
     + "WITH DISTINCT e "
+    # Edge-role gate, join-free half (no structure/provenance). The other half -- is a
+    # projection's assertion accepted at its revision -- is one batched lookup after the cut
+    # (_drop_unaccepted_projections); a per-edge join here timed out on the realistic fixture.
+    + "WITH e WHERE " + role_prefilter("e") + " "
     + f"WITH e, {_salience('e')} AS rank_salience, {_confidence('e')} AS rank_confidence "
     + "ORDER BY rank_salience DESC, rank_confidence DESC, id(e) ASC LIMIT $limit_edges "
     + "WITH e, startNode(e) AS source, endNode(e) AS target "
@@ -208,17 +216,31 @@ class FalkorDirectConceptStore:
         )
         decoded_edges: list[tuple[tuple[float, float, int], SubstrateEdgeV1]] = []
         for row in edge_rows:
+            if not edge_row_is_known(row):
+                # Forward-tolerant: a shape newer than this code is skipped, never fatal.
+                logger.info("falkor_direct_edge_row_unknown_shape_skipped object_id=%s", row.get("object_id"))
+                continue
             edge = decode_edge(row)
             if edge is None:
                 logger.warning("falkor_direct_edge_row_undecodable object_id=%s", row.get("object_id"))
                 continue
             decoded_edges.append((_edge_rank_key(edge, int(row["object_id"])), edge))
         decoded_edges.sort(key=lambda item: item[0])
+        decoded_edges = self._drop_unaccepted_projections(decoded_edges)
 
         return SubstrateNeighborhoodSliceV1(
             nodes=[node for _key, node in decoded_nodes],
             edges=[edge for _key, edge in decoded_edges],
         )
+
+    def _drop_unaccepted_projections(self, decoded_edges):
+        ids = sorted({e.assertion_id for _k, e in decoded_edges if e.edge_role == "semantic_projection"})
+        if not ids:
+            return decoded_edges
+        accepted = accepted_revisions(self._query(ASSERTION_STATE_CYPHER, {"ids": ids},
+                                                  ("node_id", "promotion_state", "assertion_revision")))
+        return [(k, e) for k, e in decoded_edges
+                if walkable_given(e.edge_role, e.assertion_id, e.assertion_revision, accepted)]
 
     def _node_row(self, node_id: str) -> dict[str, Any] | None:
         rows = self._query(NODE_BY_ID_CYPHER, {"node_id": str(node_id)}, NATIVE_NODE_RETURN_FIELDS)
@@ -291,7 +313,7 @@ def build_falkor_direct_concept_store_from_env(
     # The writer gets an injected client, so its own constructor skips the
     # index bootstrap; run it here on that client (same socket timeouts).
     if ensure_indexes:
-        ensure_substrate_indexes(uri, graph_name, client=write_client)
+        bootstrap_substrate_reader(uri, graph_name, client=write_client)
     logger.info(
         "substrate_store_backend_selected backend=falkor_direct uri_host=%s graph=%s",
         urlparse(uri).hostname or "",

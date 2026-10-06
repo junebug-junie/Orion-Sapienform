@@ -27,11 +27,18 @@ def _to_iri(value: str) -> str:
 # dynamically-typed relationships keyed by edge.predicate (CONTRADICTS/
 # SUPPORTS/REFINES/CO_OCCURS_WITH/...). type(r) recovers the predicate
 # without needing to enumerate the closed predicate set here.
-_QUERY = """
-MATCH (s:SubstrateNode)-[r]->(o:SubstrateNode)
-RETURN s.node_id AS s, type(r) AS p, o.node_id AS o
-LIMIT $max_edges
-"""
+# Only walkable relationships (orion.substrate.neighborhood): legacy edges as before and
+# accepted projections; never assertion structure, provenance, or a projection whose
+# assertion is not accepted at its revision (checked in one batched lookup after the scan).
+from orion.substrate.neighborhood import (  # noqa: E402
+    ASSERTION_STATE_CYPHER, accepted_revisions, role_prefilter, walkable_given,
+)
+
+_QUERY = (
+    "MATCH (s:SubstrateNode)-[r]->(o:SubstrateNode) WHERE " + role_prefilter("r")
+    + " RETURN s.node_id AS s, type(r) AS p, o.node_id AS o, r.edge_role AS edge_role,"
+    " r.assertion_id AS assertion_id, r.assertion_revision AS assertion_revision LIMIT $max_edges"
+)
 
 
 class FalkorSubstrateFederator:
@@ -61,8 +68,19 @@ class FalkorSubstrateFederator:
         except Exception as exc:
             logger.warning("substrate_falkor_federator_fetch_failed reason=%s", exc)
             return []
+        rows = list(rows or [])
+        ids = sorted({str(r.get("assertion_id")) for r in rows if r.get("edge_role") == "semantic_projection"})
+        accepted: dict = {}
+        if ids:
+            try:
+                accepted = accepted_revisions(client.graph_query(ASSERTION_STATE_CYPHER, {"ids": ids}) or [])
+            except Exception as exc:
+                logger.warning("substrate_falkor_federator_assertion_lookup_failed reason=%s", exc)
         triples: List[Triple] = []
-        for row in rows or []:
+        for row in rows:
+            if not walkable_given(row.get("edge_role"), row.get("assertion_id"), row.get("assertion_revision"),
+                                  accepted):
+                continue
             s = row.get("s")
             p = row.get("p")
             o = row.get("o")

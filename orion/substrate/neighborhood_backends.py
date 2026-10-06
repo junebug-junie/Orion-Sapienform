@@ -1,19 +1,15 @@
 """Durable neighborhood adapters. All queries are reads and bypass store caches."""
 from __future__ import annotations
 
-from .neighborhood import ACCEPTED_ASSERTION_STATES, NeighborhoodRequestV1, read_neighborhood
+from .neighborhood import (
+    NeighborhoodRequestV1, read_neighborhood, walkable_condition, walkable_optional_match,
+)
 
-# Cypher form of neighborhood.walkable_edge(): legacy edges walk as before; a
-# semantic projection walks only while its Assertion is accepted at the edge's
-# revision. Provenance and assertion-structure edges never walk. Appended AFTER
-# the focal/endpoint filter so the OPTIONAL MATCH runs only for candidate edges.
+# Cypher form of neighborhood.walkable_edge(), appended AFTER the focal/endpoint filter so
+# the OPTIONAL MATCH runs only for candidate edges.
 _WALKABLE_EDGE_TAIL = (
-    "OPTIONAL MATCH (assertion:SubstrateNode) WHERE assertion.node_id = e.assertion_id "
-    "WITH source, e, target, assertion WHERE "
-    "(coalesce(e.edge_role, 'legacy_unreviewed') = 'legacy_unreviewed' "
-    "OR (e.edge_role = 'semantic_projection' AND assertion.node_kind = 'assertion' "
-    "AND assertion.promotion_state IN $accepted_assertion_states "
-    "AND assertion.assertion_revision = e.assertion_revision)) "
+    walkable_optional_match("e", "assertion") + "WITH source, e, target, assertion WHERE "
+    + walkable_condition("e", "assertion") + " "
 )
 
 
@@ -63,8 +59,7 @@ def read_falkor_neighborhood(store, request: NeighborhoodRequestV1):
 
     def where(ids, group=None):
         params = {"ids": ids, "states": list(request.semantic_states),
-                  "scopes": list(request.anchor_scopes),
-                  "accepted_assertion_states": list(ACCEPTED_ASSERTION_STATES)}
+                  "scopes": list(request.anchor_scopes)}
         condition = ("e.substrate_edge = true "
             "AND source.node_kind IN ['concept', 'entity'] "
             "AND target.node_kind IN ['concept', 'entity'] "

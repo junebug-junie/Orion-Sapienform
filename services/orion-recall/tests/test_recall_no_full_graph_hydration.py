@@ -569,7 +569,7 @@ def test_index_bootstrap_runs_off_the_lock_and_off_the_caller(monkeypatch) -> No
         release.wait(5.0)
         return True
 
-    monkeypatch.setattr(substrate_store, "ensure_substrate_indexes", _slow_ensure)
+    monkeypatch.setattr(substrate_store, "bootstrap_substrate_reader", _slow_ensure)
     monkeypatch.setattr(falkor_direct, "RedisGraphQueryClient", _FakeFalkorClient)
     monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "falkor")
     monkeypatch.setenv("FALKORDB_URI", "redis://falkor.test:6379")

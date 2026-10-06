@@ -140,7 +140,48 @@ lanes above. Production Falkor/Postgres were not touched.
 
 ## Review findings fixed
 
-The orchestrator runs the review subagent. To be filled in after review.
+Review of #2515 (2026-10-06). Prod check by the reviewer: 0 role edges and 0 assertions live today; the neighborhood join costs +5-10% on a 1,932-edge hub and uses the index.
+
+- **Finding (SHOULD):** the walkability gate covered only the neighborhood read. Recall's concept region, graph compression, and the Hub typed-relation classifier would all have read assertion structure edges and rejected projections as ordinary relationships.
+  - **Fix:**
+    - in-memory region reads and `falkor_direct` apply the gate: a join-free role prefilter in Cypher, plus one batched assertion-state lookup after the cut. The cache does the same in the same order, so the #2505 equivalence holds;
+    - the graph-compression federator applies the same gate;
+    - the Hub classifier reads only the cognitive view.
+  - **Evidence:**
+    - `test_concept_region_drops_structure_and_unaccepted_projections_and_equals_cache` (real Falkor: direct == cache, only legacy + accepted);
+    - `test_recall_region_reads_drop_structure_and_unaccepted_projections`;
+    - `test_only_walkable_edges_reach_compression`;
+    - `test_typed_relation_classifier_never_reads_projections_or_memory_nodes`;
+    - the existing legacy equivalence lane (`test_full_slice_equals_hydrated_cache`, 5 cases) is unchanged and green.
+  - **Found along the way:** a per-edge `OPTIONAL MATCH` in the concept-region cut timed out on the realistic fixture, hence the prefilter-plus-batch shape.
+- **Finding (SHOULD):** old-vs-new safety depended on deploy order.
+  - **Fix, part 1 (forward-tolerant readers):** unknown node kinds, predicates, endpoint kinds and roles are skipped and counted (and so are edges touching a skipped node), never fatal.
+  - **Fix, part 2 (one mechanical gate):**
+    - every reader advertises `assertion_core_v1` (`reader_capability.py`) from `bootstrap_substrate_reader`, which runs off the request path;
+    - `AssertionProjector` requires a `readiness` check and writes nothing until every required reader has advertised;
+    - the memory referent projector (#2520) uses the same gate.
+  - **Evidence:** `test_a_shape_newer_than_this_reader_is_skipped_and_counted_not_fatal`, `test_reader_capability.py` (5), `test_nothing_is_written_until_every_reader_is_ready`.
+  - **Regression caught by recall's own suite and fixed:** advertising first ran inside recall's no-network builder, costing 2 s per turn on a hung Falkor. It now rides recall's background index bootstrap.
+- **Finding (SHOULD):** projector starvation.
+  - **Fix:** the pending queue lists only the next revision of each target, drops terminal failures (stale revision, missing proposal, id held elsewhere), and orders never-attempted decisions first, then retries by oldest attempt.
+  - **Evidence:** `test_101_stuck_decisions_cannot_starve_a_new_one` (fails under the old ordering, checked by mutation).
+- **Finding (NIT):** the canonical-id mismatch was detected only after writing.
+  - **Fix:** `_identity_taken` checks before writing. The after-write check stays as an error-level defense.
+  - **Evidence:** `test_a_held_id_is_refused_before_anything_is_written`.
+- **Finding (NIT):** append-only was a convention only.
+  - **Fix:** a trigger refuses UPDATE and DELETE.
+  - **Evidence:** `test_the_journal_is_append_only_and_ids_are_namespaced_by_kind`.
+- **Finding (NIT):** failure ids collapsed A→B→A into two records, and event ids could collide across kinds.
+  - **Fix:** a failed attempt is recorded each time the reason changes, with an attempt counter in its id; `event_id` is `<kind>:<id>`.
+  - **Evidence:** `test_terminal_failures_leave_the_queue_and_a_b_a_is_three_records`, and the namespacing test.
+- **Reported, not fixed (pre-existing):** `brain_frame_producer.py:319` edge samples are always empty.
+- **Privacy (public repo):** real third-party names in this PR's tests and README were replaced with synthetic ones. They remain in commit `f44c3e948` (no force-push).
+- **Also changed:** the Concept Atlas no longer reaches Assertion nodes, because region reads drop their structure edges. The `statement_text` label added earlier was dead code and was removed.
+
+## Rollout (A + B together)
+
+1. Apply the journal migration, then deploy this code to every substrate reader (substrate-runtime, hub, recall, cortex-exec incl. background, cortex-orch, spark-concept-induction, field-digester, world-pulse, meta-tags). Each one advertises `assertion_core_v1` at boot and skips unknown shapes from then on. Deploy order among them does not matter.
+2. Deploy the writers (#2520). They check readiness before every pass and log `*_waiting reason=readers_not_ready missing=[...]` (also shown on consolidation `/health`) until step 1 is complete everywhere. Then they open by themselves.
 
 ## Restart required
 

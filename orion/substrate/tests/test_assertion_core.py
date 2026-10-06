@@ -68,7 +68,7 @@ def assertion(node_id: str = "assertion-1", *, state: str = "provisional", revis
     return AssertionNodeV1(node_id=node_id, anchor_scope="juniper", promotion_state=state,
                            temporal=SubstrateTemporalWindowV1(observed_at=NOW), provenance=prov(FENCED),
                            predicate="co_occurs_with", statement_key="ref-a|co_occurs_with|ref-b|",
-                           statement_text="Vincent and the Austin offsite were named together", revision=revision,
+                           statement_text="Quill and the spring retreat were named together", revision=revision,
                            decision_ref="dec-1")
 
 
@@ -276,24 +276,24 @@ def test_attention_never_offers_a_fenced_node_or_an_assertion():
 
 def _walk_store(*, state: str = "provisional", revision: int = 1, edge_revision: int = 1):
     store = InMemorySubstrateGraphStore()
-    for node in (entity("vincent", "vincent", producer=FENCED, scope="juniper"),
-                 entity("offsite", "austin offsite", producer=FENCED, scope="juniper"),
+    for node in (entity("quill", "quill", producer=FENCED, scope="juniper"),
+                 entity("retreat", "spring retreat", producer=FENCED, scope="juniper"),
                  entity("legacy-n", "legacy", scope="juniper"),
                  assertion("as1", state=state, revision=revision)):
         store.upsert_node(identity_key=node.node_id, node=node)
-    store.upsert_edge(identity_key="proj", edge=edge("proj", ("vincent", "entity"), ("offsite", "entity"),
+    store.upsert_edge(identity_key="proj", edge=edge("proj", ("quill", "entity"), ("retreat", "entity"),
                                                      edge_role="semantic_projection", assertion_id="as1",
                                                      assertion_revision=edge_revision))
-    store.upsert_edge(identity_key="leg", edge=edge("leg", ("vincent", "entity"), ("legacy-n", "entity"),
+    store.upsert_edge(identity_key="leg", edge=edge("leg", ("quill", "entity"), ("legacy-n", "entity"),
                                                     predicate="associated_with"))
-    store.upsert_edge(identity_key="struct", edge=edge("struct", ("as1", "assertion"), ("vincent", "entity"),
+    store.upsert_edge(identity_key="struct", edge=edge("struct", ("as1", "assertion"), ("quill", "entity"),
                                                        predicate="assertion_subject",
                                                        edge_role="assertion_structure"))
     return store
 
 
 def _boundary(store) -> set[str]:
-    result = store.read_neighborhood(NeighborhoodRequestV1(focal_node_ids=("vincent",)))
+    result = store.read_neighborhood(NeighborhoodRequestV1(focal_node_ids=("quill",)))
     assert not result.degraded, result.reason
     return {e.edge_id for e in result.boundary_edges}
 
@@ -320,3 +320,16 @@ def test_walkable_edge_refuses_provenance_and_missing_assertions():
     proj = edge("x", ("n-a", "entity"), ("n-b", "entity"), edge_role="semantic_projection", assertion_id="gone",
                 assertion_revision=1)
     assert walkable_edge(proj, None) is False
+
+
+def test_recall_region_reads_drop_structure_and_unaccepted_projections():
+    """#2515 review item 1, in-memory backend: legacy edges unchanged, an accepted
+    projection kept, structure and a rejected projection dropped."""
+    store = _walk_store(state="rejected", revision=2, edge_revision=2)
+    for node in (entity("quill", "quill", scope="juniper"),):
+        store.upsert_node(identity_key="v", node=node)
+    region = store.read_hotspot_region(min_salience=0.0, limit_nodes=10, limit_edges=10)
+    assert {e.edge_id for e in region.edges} == {"leg"}
+    accepted = _walk_store(state="provisional", revision=1, edge_revision=1)
+    region = accepted.read_hotspot_region(min_salience=0.0, limit_nodes=10, limit_edges=10)
+    assert {e.edge_id for e in region.edges} == {"leg", "proj"}

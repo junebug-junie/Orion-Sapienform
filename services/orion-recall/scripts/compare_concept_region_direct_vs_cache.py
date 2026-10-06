@@ -19,8 +19,10 @@ Two modes:
   ``fetch_concept_region_fragment_and_reinforce`` (worker.py), including the
   activation-bump reads and ``MERGE`` writes. Only for a throwaway copy of the
   graph (e.g. ``redis-cli DUMP``/``RESTORE`` into a scratch FalkorDB); refuses
-  to run without ``--confirm-throwaway`` and refuses port 6380 (production's
-  published port on this host).
+  to run without ``--confirm-throwaway`` and refuses anything that looks like
+  production: host ``orion-athena-falkordb``, port 6380 (production's published
+  port on this host), or the same resolved address as the configured
+  ``FALKORDB_URI``.
 
 Timings are per query, every sample: ``max`` is the true maximum over all
 samples, not the max of per-query medians.
@@ -38,6 +40,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import socket
 import statistics
 import sys
 import time
@@ -58,6 +62,8 @@ from orion.substrate.falkor_direct import FalkorDirectConceptStore  # noqa: E402
 from orion.substrate.falkor_store import FalkorSubstrateStore, FalkorSubstrateStoreConfig  # noqa: E402
 
 PRODUCTION_HOST_PORT = 6380
+PRODUCTION_HOSTNAME = "orion-athena-falkordb"
+PRODUCTION_URI_DEFAULT = f"redis://{PRODUCTION_HOSTNAME}:6379"
 
 
 class _RefuseWrites:
@@ -94,8 +100,38 @@ def hydrate_is_complete(store: FalkorSubstrateStore) -> bool:
     return store.last_hydrate_ok is True and receipt is not None and bool(receipt.complete)
 
 
+def _endpoints(uri: str) -> set[tuple[str, int]]:
+    parsed = urlparse(uri)
+    host = parsed.hostname or "localhost"
+    port = int(parsed.port or 6379)
+    try:
+        addrs = {info[4][0] for info in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)}
+    except OSError:
+        addrs = set()
+    return {(addr, port) for addr in addrs} | {(host.lower(), port)}
+
+
+def _production_uris() -> list[str]:
+    uris = [PRODUCTION_URI_DEFAULT]
+    configured = str(os.getenv("FALKORDB_URI", "")).strip()
+    if configured:
+        uris.append(configured)
+    return uris
+
+
+def is_production_uri(uri: str) -> bool:
+    """True if ``uri`` names production FalkorDB: its container hostname, its
+    published host port, or the same resolved address+port as the default
+    production URI or the configured FALKORDB_URI."""
+    parsed = urlparse(uri)
+    if (parsed.hostname or "").lower() == PRODUCTION_HOSTNAME or parsed.port == PRODUCTION_HOST_PORT:
+        return True
+    target = _endpoints(uri)
+    return any(target & _endpoints(prod) for prod in _production_uris())
+
+
 def reinforce_allowed(uri: str, confirm_throwaway: bool) -> bool:
-    return bool(confirm_throwaway) and urlparse(uri).port != PRODUCTION_HOST_PORT
+    return bool(confirm_throwaway) and not is_production_uri(uri)
 
 
 def main(argv: list[str] | None = None) -> int:

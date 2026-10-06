@@ -69,3 +69,17 @@ def test_reinforce_mode_refuses_production() -> None:
     assert not mod.reinforce_allowed("redis://127.0.0.1:6380", True)
     assert not mod.reinforce_allowed("redis://127.0.0.1:16401", False)
     assert mod.reinforce_allowed("redis://127.0.0.1:16401", True)
+
+
+def test_production_guard_covers_hostname_port_and_configured_uri(monkeypatch) -> None:
+    mod = _load()
+    monkeypatch.delenv("FALKORDB_URI", raising=False)
+    assert mod.is_production_uri("redis://orion-athena-falkordb:6379")
+    assert mod.is_production_uri("redis://ORION-ATHENA-FALKORDB:6379")
+    assert mod.is_production_uri("redis://127.0.0.1:6380")
+    assert not mod.is_production_uri("redis://127.0.0.1:16401")
+    # Same resolved address and port as the configured production URI.
+    monkeypatch.setenv("FALKORDB_URI", "redis://127.0.0.1:17777")
+    assert mod.is_production_uri("redis://localhost:17777")
+    assert not mod.reinforce_allowed("redis://localhost:17777", True)
+    assert mod.reinforce_allowed("redis://127.0.0.1:16401", True)

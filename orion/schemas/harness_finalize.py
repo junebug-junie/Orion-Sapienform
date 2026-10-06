@@ -299,8 +299,9 @@ class HarnessRunDraftPreviewV1(BaseModel):
 
     Producer: orion-harness-governor, only when HarnessRunRequestV1.draft_preview
     is True and the turn is not held as sensitive. Consumer: orion-hub, which
-    shows it in chat and later replaces it with the final text. Never persisted
-    as a turn: chat history, memory and outreach read HarnessRunV1.final_text.
+    shows it in chat and later replaces it with the final text. Not persisted
+    as a turn (chat history, memory, TTS and outreach read HarnessRunV1.final_text);
+    bus-mirror copies it like any other orion:harness:* event.
     """
 
     schema_version: Literal["harness.run.draft_preview.v1"] = "harness.run.draft_preview.v1"

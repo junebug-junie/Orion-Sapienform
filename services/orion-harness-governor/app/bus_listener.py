@@ -332,6 +332,7 @@ async def _maybe_publish_draft_preview(
     request: HarnessRunRequestV1,
     motor: Any,
     *,
+    repair_overlay: Any,
     corr: str,
     received_monotonic: float,
 ) -> tuple[str | None, str | None]:
@@ -344,7 +345,7 @@ async def _maybe_publish_draft_preview(
         return None, None
     held = draft_preview_hold_reason(
         thought=request.thought_event,
-        repair_overlay=map_repair_pressure_contract(request.repair_pressure_contract),
+        repair_overlay=repair_overlay,
         preserve_structured_output=bool(request.reading_only),
         cut_short=bool(getattr(motor, "cut_short_reason", None)),
     )
@@ -475,7 +476,12 @@ async def handle_harness_run_request(
         return run
 
     preview_text, preview_held = await _maybe_publish_draft_preview(
-        bus, request, motor, corr=corr, received_monotonic=received_monotonic
+        bus,
+        request,
+        motor,
+        repair_overlay=repair_overlay,
+        corr=corr,
+        received_monotonic=received_monotonic,
     )
 
     async def _substrate_client(molecule: Any) -> Any:
@@ -587,7 +593,9 @@ async def handle_harness_run_request(
             )
         run = HarnessRunV1(
             correlation_id=corr,
-            final_text=motor.draft_text,
+            # When a grounded draft was already shown, deliver that same text:
+            # swapping it for the raw draft would read as a revision no judge made.
+            final_text=preview_text if preview_text is not None else motor.draft_text,
             draft_text=motor.draft_text,
             finalize_ran=False,
             finalize_degraded_reason=_SUBSTRATE_UNAVAILABLE_USER_REASON,
@@ -667,7 +675,7 @@ async def handle_harness_run_request(
         draft_preview_text=preview_text,
         draft_preview_held_reason=preview_held,
     )
-    if preview_text is not None and run.final_text != preview_text:
+    if preview_text is not None and (run.final_text or "").strip() != preview_text.strip():
         logger.info(
             "harness_draft_preview_revised corr=%s reason=%s repair_ran=%s",
             corr,

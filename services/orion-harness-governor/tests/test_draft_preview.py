@@ -183,3 +183,50 @@ async def test_substrate_degraded_path_still_records_the_shown_draft() -> None:
         )
     assert run.finalize_degraded_reason is not None
     assert run.draft_preview_text == DRAFT
+
+
+@pytest.mark.asyncio
+async def test_degraded_path_delivers_the_grounded_text_that_was_shown() -> None:
+    """Review finding: the degraded branch delivered the raw draft after the
+    grounded draft was on screen, which the Hub reads as a revision no judge made.
+    Grounding is stubbed to change the text so the two are distinguishable."""
+    from app import bus_listener
+
+    thought = make_thought()
+
+    class _Timeout:
+        async def finalize_appraisal(self, molecule, *, correlation_id=None):
+            raise TimeoutError("rpc timeout")
+
+    bus = AsyncMock()
+    with patch.object(
+        bus_listener, "HarnessRunner", return_value=AsyncMock(run=AsyncMock(return_value=_motor(thought)))
+    ), patch.object(bus_listener, "draft_preview_display_text", lambda text, receipts: text + " [grounded]"):
+        run = await bus_listener.handle_harness_run_request(
+            bus, _request(thought), reply_to="orion:harness:run:result:c-1", substrate_client=_Timeout()
+        )
+    assert run.draft_preview_text == DRAFT + " [grounded]"
+    assert run.final_text == run.draft_preview_text
+    assert run.draft_text == DRAFT
+
+
+@pytest.mark.asyncio
+async def test_degraded_path_without_preview_keeps_the_raw_draft() -> None:
+    from app import bus_listener
+
+    thought = make_thought()
+
+    class _Timeout:
+        async def finalize_appraisal(self, molecule, *, correlation_id=None):
+            raise TimeoutError("rpc timeout")
+
+    with patch.object(
+        bus_listener, "HarnessRunner", return_value=AsyncMock(run=AsyncMock(return_value=_motor(thought)))
+    ), patch.object(bus_listener, "draft_preview_display_text", lambda text, receipts: text + " [grounded]"):
+        run = await bus_listener.handle_harness_run_request(
+            AsyncMock(),
+            _request(thought, draft_preview=False),
+            reply_to="orion:harness:run:result:c-1",
+            substrate_client=_Timeout(),
+        )
+    assert run.final_text == DRAFT

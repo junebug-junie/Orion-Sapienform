@@ -202,6 +202,51 @@ async def test_error_after_draft_tells_the_browser_a_draft_is_on_screen() -> Non
     assert turn_frames[1]["draft_shown"] is True
 
 
+@pytest.mark.asyncio
+async def test_hub_exception_after_draft_still_settles_the_bubble() -> None:
+    """Review finding: an exception after the draft was shown left no frame
+    naming the turn, so the browser bubble said "still being checked" forever."""
+    from scripts.settings import settings as hub_settings
+
+    async def _boom(**kwargs: Any) -> list[dict[str, Any]]:
+        await kwargs["harness_step_queue"].put({"kind": DRAFT_PREVIEW_ITEM_KIND, "correlation_id": CORR, "text": "d"})
+        await asyncio.sleep(0.15)
+        raise RuntimeError("history publish failed")
+
+    ws = _FakeWs()
+    with patch.object(hub_settings, "HUB_UNIFIED_DRAFT_FIRST_ENABLED", True), patch.object(
+        orch, "execute_unified_turn", _boom
+    ), patch.object(orch, "publish_cockpit_frames", AsyncMock()):
+        with pytest.raises(RuntimeError, match="history publish failed"):
+            await orch.run_unified_turn(
+                ws, bus=object(), correlation_id=CORR, session_id="s", user_message="hi",
+                harness_step_relay=_FakeRelay(),
+            )
+    types = [f.get("type") for f in ws.sent if f.get("type")]
+    assert types == ["draft_preview", "turn_error"]
+    assert ws.sent[-1]["draft_shown"] is True
+    assert ws.sent[-1]["correlation_id"] == CORR
+
+
+@pytest.mark.asyncio
+async def test_hub_exception_without_draft_sends_nothing_extra() -> None:
+    from scripts.settings import settings as hub_settings
+
+    async def _boom(**kwargs: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("boom")
+
+    ws = _FakeWs()
+    with patch.object(hub_settings, "HUB_UNIFIED_DRAFT_FIRST_ENABLED", True), patch.object(
+        orch, "execute_unified_turn", _boom
+    ), patch.object(orch, "publish_cockpit_frames", AsyncMock()):
+        with pytest.raises(RuntimeError):
+            await orch.run_unified_turn(
+                ws, bus=object(), correlation_id=CORR, session_id="s", user_message="hi",
+                harness_step_relay=_FakeRelay(),
+            )
+    assert ws.sent == []
+
+
 def test_success_frames_carry_repair_reason() -> None:
     from orion.schemas.harness_finalize import HarnessRunV1
 

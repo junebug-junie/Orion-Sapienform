@@ -3551,7 +3551,7 @@ channels:
   # Draft-first display (spec L8). The reply writer's draft, after
   # deterministic grounding, published before the finalize judge runs. The Hub
   # shows it and later replaces it in place with the final text. Display only:
-  # nothing persists this as a turn.
+  # nothing persists this as a turn (bus-mirror copies it like other events).
   - name: "orion:harness:run:draft_preview"
     kind: "event"
     schema_id: "HarnessRunDraftPreviewV1"

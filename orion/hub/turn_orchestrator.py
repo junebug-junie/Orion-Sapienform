@@ -2091,6 +2091,8 @@ async def run_unified_turn(
             name=f"harness-steps-{correlation_id}",
         )
 
+    turn_exc: BaseException | None = None
+    frames: list[dict[str, Any]] = []
     try:
         frames = await execute_unified_turn(
             bus=bus,
@@ -2109,6 +2111,10 @@ async def run_unified_turn(
             client_meta=client_meta,
             draft_preview=draft_first,
         )
+    except Exception as exc:  # noqa: BLE001 -- re-raised below, after the drain flush
+        # Held until the step drain has flushed, so a draft still queued is
+        # sent before (not after) the error frame that settles it.
+        turn_exc = exc
     finally:
         if harness_step_relay is not None and step_queue is not None:
             drain_stop.set()
@@ -2142,6 +2148,22 @@ async def run_unified_turn(
             # arrived while RPC was returning still land in Soft HUD.
             harness_step_relay.unregister_queue(correlation_id, step_queue)
             harness_step_relay.forget(correlation_id)
+    if turn_exc is not None:
+        if shown_draft:
+            # Otherwise the browser's draft bubble would read "still being
+            # checked" forever: no final/turn_error ever names this turn.
+            with contextlib.suppress(Exception):
+                await _send_ws(
+                    {
+                        "type": "turn_error",
+                        "correlation_id": correlation_id,
+                        "phase": "hub",
+                        "error": "hub_turn_failed",
+                        "finalize_ran": False,
+                        "draft_shown": True,
+                    }
+                )
+        raise turn_exc
     has_final = any(frame.get("type") == "final" for frame in frames)
     if shown_draft:
         draft_outcome = annotate_frames_after_draft(frames, shown_draft_text=str(shown_draft["text"]))

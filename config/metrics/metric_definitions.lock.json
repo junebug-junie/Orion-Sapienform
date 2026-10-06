@@ -1,11 +1,15 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 693,
+  "metric_count": 698,
   "_last_change": {
-    "change_count": 1,
+    "change_count": 5,
     "high_severity_count": 0,
     "changes": [
-      "medium added metric://bus_channel/orion-hardware-watch/orion:hardware:watch:reflex_shed"
+      "medium added metric://bus_channel/orion-cortex-exec/orion:cortex:exec:stance_prepare_result:*",
+      "medium added metric://bus_channel/orion-thought/orion:cortex:exec:stance_prepare",
+      "medium added metric://bus_channel/orion-thought/orion:cortex:exec:stance_prepare:background",
+      "medium added metric://bus_channel/orion-thought/orion:cortex:exec:stance_prepare:chat",
+      "medium added metric://bus_channel/orion-thought/orion:cortex:exec:stance_prepare:spark"
     ]
   },
   "definitions": {
@@ -824,6 +828,17 @@
         "orion-collapse-mirror"
       ],
       "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-cortex-exec/orion:cortex:exec:stance_prepare_result:*": {
+      "schema_id": "StanceContextPrepareResultV1",
+      "all_producers": [
+        "orion-cortex-exec"
+      ],
+      "declared_consumers": [
+        "orion-thought"
+      ],
+      "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-cortex-exec/orion:cortex:pre_turn_appraisal:result:*": {
@@ -3191,6 +3206,50 @@
         "orion-thought"
       ],
       "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-thought/orion:cortex:exec:stance_prepare": {
+      "schema_id": "StanceContextPrepareRequestV1",
+      "all_producers": [
+        "orion-thought"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-thought/orion:cortex:exec:stance_prepare:background": {
+      "schema_id": "StanceContextPrepareRequestV1",
+      "all_producers": [
+        "orion-thought"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-thought/orion:cortex:exec:stance_prepare:chat": {
+      "schema_id": "StanceContextPrepareRequestV1",
+      "all_producers": [
+        "orion-thought"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=request stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-thought/orion:cortex:exec:stance_prepare:spark": {
+      "schema_id": "StanceContextPrepareRequestV1",
+      "all_producers": [
+        "orion-thought"
+      ],
+      "declared_consumers": [
+        "orion-cortex-exec"
+      ],
+      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-thought/orion:dream:compaction-request": {

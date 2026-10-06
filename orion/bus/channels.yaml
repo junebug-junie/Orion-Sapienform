@@ -198,6 +198,60 @@ channels:
     stability: "experimental"
     since: "2026-05-13"
 
+  # Unified-turn latency L4 (2026-10-06): orion-thought asks cortex-exec to
+  # build stance_react's brain reply context while orion-mind runs. One channel
+  # per exec lane, derived from the exec request channel
+  # (orion.schemas.stance_context_prepare.stance_context_prepare_channel) so the
+  # prepare lands on the same container as the later stance_react.
+  - name: "orion:cortex:exec:stance_prepare"
+    kind: "request"
+    schema_id: "StanceContextPrepareRequestV1"
+    message_kind: "cortex.stance_context_prepare.request.v1"
+    producer_services: ["orion-thought"]
+    consumer_services: ["orion-cortex-exec"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-10-06"
+
+  - name: "orion:cortex:exec:stance_prepare:chat"
+    kind: "request"
+    schema_id: "StanceContextPrepareRequestV1"
+    message_kind: "cortex.stance_context_prepare.request.v1"
+    producer_services: ["orion-thought"]
+    consumer_services: ["orion-cortex-exec"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-10-06"
+
+  - name: "orion:cortex:exec:stance_prepare:spark"
+    kind: "request"
+    schema_id: "StanceContextPrepareRequestV1"
+    message_kind: "cortex.stance_context_prepare.request.v1"
+    producer_services: ["orion-thought"]
+    consumer_services: ["orion-cortex-exec"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-10-06"
+
+  - name: "orion:cortex:exec:stance_prepare:background"
+    kind: "request"
+    schema_id: "StanceContextPrepareRequestV1"
+    message_kind: "cortex.stance_context_prepare.request.v1"
+    producer_services: ["orion-thought"]
+    consumer_services: ["orion-cortex-exec"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-10-06"
+
+  - name: "orion:cortex:exec:stance_prepare_result:*"
+    kind: "result"
+    schema_id: "StanceContextPrepareResultV1"
+    message_kind: "cortex.stance_context_prepare.result.v1"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-thought"]
+    stability: "experimental"
+    since: "2026-10-06"
+
   - name: "orion:cortex:pre_turn_appraisal:request"
     kind: "request"
     schema_id: "PreTurnAppraisalRequestV1"

@@ -80,6 +80,11 @@ class ThoughtSettings(BaseSettings):
     # completed correctly at 122s was thrown away at 120.006s. Must stay under
     # Hub's own TIMEOUT_SEC=400 outer wait. See services/orion-thought/.env_example.
     stance_react_timeout_sec: float = Field(360.0, alias="STANCE_REACT_TIMEOUT_SEC")
+    # Unified-turn latency L4 (2026-10-06): send cortex-exec a
+    # stance_context_prepare at the same time as the orion-mind call, so the
+    # ~9 s stance context build overlaps mind instead of following it. Off ->
+    # stance_react builds its context after mind, as before.
+    stance_prepare_parallel_enabled: bool = Field(True, alias="ORION_THOUGHT_STANCE_PREPARE_PARALLEL")
 
 
     # --- Reverie: spontaneous-thought mode (Phase A, default-off) ---

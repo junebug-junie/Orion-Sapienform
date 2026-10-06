@@ -3421,12 +3421,19 @@ snapshots feed only the per-hop EWMA baseline gate
 
 ## Orion is asking (open questions to Juniper)
 
-Walkway camera idea 3 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`). A card in the Vision panel ("Orion is asking", `#visionAsksCard`, `static/js/vision-asks.js`) lists Orion's open questions and lets Juniper answer or dismiss them. Routes in `scripts/ask_routes.py`, on the Hub's asyncpg pool (`RECALL_PG_DSN`, `conjourney`):
+Walkway camera idea 3 (`docs/superpowers/specs/2026-09-22-walkway-camera-busy-world-design.md`). The "Orion is asking" panel (`#visionAsksCard`, `static/js/vision-asks.js`; since 2026-10-06 the first card on the Hub home, no longer inside Vision) lists Orion's open questions and lets Juniper answer or dismiss them. Routes in `scripts/ask_routes.py`, on the Hub's asyncpg pool (`RECALL_PG_DSN`, `conjourney`):
 
 - `GET /api/asks?status=open` -- open, unexpired `orion_ask` rows, newest first.
 - `POST /api/asks/{ask_id}/answer` with `{"answer": "..."}` and `POST /api/asks/{ask_id}/dismiss` -- only an open, unexpired row moves (409 otherwise, 404 if unknown). Sets `status`, `answer`, `answered_at`, then publishes `OrionAskAnsweredV1` on `orion:ask:answered` (consumed by `orion-substrate-runtime`). If the publish fails the answer is still saved (`published: false` in the response); `orion-sql-writer` applies labels from the row itself.
 
-Asks are opened by `orion-sql-writer`'s individuals loop (row insert only, no bus event); the card polls every 60s. Needs `services/orion-sql-db/manual_migration_walkway_camera_v1.sql` applied, otherwise the routes return 503 `ask_schema_missing`. Pictures: a `thumb:<sha256>` ref is served by `GET /api/vision/crop-thumbs/{sha256}` from the read-only `HUB_VISION_CROP_THUMB_DIR` mount (hex-only ids, regular files only, size-capped); an http(s) URL is shown as-is; anything else is shown as text.
+Asks are opened by `orion-sql-writer`'s individuals loop (row insert only, no bus event); the card polls every 60s.
+
+**Memory confirmation cards (2026-10-06).** `orion-memory-consolidation` also opens cards here (`source_kind=memory_confirmation`, `source_ref=memory-confirm-<memory_id>`) for high-stakes shadow memories: at most 5 open, 7-day expiry. These cards show **Confirm / Revise / Reject** instead of Answer / Dismiss, and cannot be closed through `/answer` or `/dismiss` (409 `ask_needs_resolution`), because a close without an outcome would orphan the memory.
+
+- `POST /api/asks/{ask_id}/resolve` with `{"resolution": "confirmed"|"revised"|"rejected", "note": "..."}`. `revised` needs a note (422 `revised_needs_note`): the note is the new wording, and the panel's Revise box starts from the memory's current statement (`memory_statement`, added to these cards by `GET /api/asks`). In ONE transaction it closes the card (`answered`, or `dismissed` for a rejection) and inserts the `attention_loop_outcome` row (`outcome_id = uuid5(ask_id)`, `verdict` resolved/dismissed, `features_at_close = {resolution, ask_id, via: "orion_is_asking", memory_id, ...}`). After the commit it publishes `AttentionLoopOutcomeV1` on `orion:attention:loop_outcome` and the usual `OrionAskAnsweredV1`. A failed publish is reported (`published_outcome: false`) and recovered by the consumer's table catch-up.
+- Kill switch: `MEMORY_CONFIRMATION_LOOP_ENABLED=false` makes `/resolve` return 404 (cards stay open).
+- `orion-sql-writer`'s vision daily ask cap now counts only `vision_individual` asks, so memory cards do not use up the camera's budget.
+- Tests: `tests/test_ask_routes.py`, `tests/test_ask_resolve_pg.py` (real Postgres, end to end with the memory consumer), `tests/test_orion_is_asking_browser_smoke.py` (Chromium), `static/js/vision-asks.test.js`. Needs `services/orion-sql-db/manual_migration_walkway_camera_v1.sql` applied, otherwise the routes return 503 `ask_schema_missing`. Pictures: a `thumb:<sha256>` ref is served by `GET /api/vision/crop-thumbs/{sha256}` from the read-only `HUB_VISION_CROP_THUMB_DIR` mount (hex-only ids, regular files only, size-capped); an http(s) URL is shown as-is; anything else is shown as text.
 
 ## Dream operator surface
 

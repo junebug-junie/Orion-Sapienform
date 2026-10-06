@@ -166,6 +166,7 @@ once the grounding guardrail and prompt have been proven out on real data.
 | Direction | Channel |
 |-----------|---------|
 | In | `orion:memory:turn:persisted` |
+| In (confirmation loop) | `orion:attention:loop_outcome` (`attention.loop.outcome.v1`, `memory-confirm-*` loops only) |
 | Out | `orion:chat:history:spark_meta:patch` |
 | Out (threshold) | `orion:signals:memory_consolidation` (`signal.memory_consolidation.turn_change`) |
 | Out (propose) | `orion:memory:crystallization:proposed` (`memory.crystallization.proposed.v1`) |
@@ -186,6 +187,46 @@ Spec: `docs/superpowers/specs/2026-09-30-memory-episode-redesign-design.md`.
 | `MEMORY_EPISODE_SHADOW_ENABLED` | `true` | Kill switch for the Rule 3 shadow tracker and its close event |
 | `CHANNEL_MEMORY_EPISODE_CLOSED` | `orion:memory:episode:closed` | Close event channel |
 | `MEMORY_LEGACY_BOUNDARY_USE_PHASE` | `false` | Let the live window rule and classify prompt read the phase stamp (changes live windows) |
+
+## Memory confirmation loop ("Orion is asking", shadow)
+
+Spec: `docs/superpowers/specs/2026-09-30-memory-episode-redesign-design.md` sections 3 and 5, pulled forward from Stage 3 (Juniper, 2026-10-06). Code: `orion/memory/episode/confirmation.py`, wired here by `app/confirmation_loop.py`.
+
+When the shadow distiller stores a high-stakes memory, Orion asks Juniper about it once, in the Hub's "Orion is asking" panel, and her answer changes the shadow memory. Nothing outside the shadow `episode_memory*` tables and the card she sees changes.
+
+- **Open.** A ticker (`MEMORY_CONFIRMATION_TICK_SEC`) gives each `stakes=high`, `pending_confirmation`, unasked memory an `orion_ask` card (`source_kind=memory_confirmation`, `source_ref=memory-confirm-<memory_id>`, expires in 7 days) and sets `confirmation_loop_id`. At most **5** cards (memory + open-question kinds) are open at once; the rest wait, oldest first. Trace: `episode_memory_event` `confirm_asked`.
+- **Wording** is deterministic: the memory's statement, quoted, framed by where it came from and why Orion is asking. A memory from an internal channel (reverie, dream, curiosity, journal, topic model) is always "This came from my own ..., not from anything you told me", whatever its voice.
+- **Apply.** Juniper's Confirm / Revise / Reject arrives as `AttentionLoopOutcomeV1` on `CHANNEL_ATTENTION_LOOP_OUTCOME` and, every tick, from the `attention_loop_outcome` table (any outcome no event carries yet), so a lost publish delays an answer but never drops it. Confirm: `confirmed`, voice -> `worked_out_together`, reinforced (strength +0.2, half-life x2 capped at 365 d). Revise: a new `confirmed` / `worked_out_together` memory in her words supersedes the original (kept as `corrected` / `superseded`). Reject: `rejected` / status `rejected`, excluded by `confirmation.RECALLABLE_WHERE` (every recall/seed reader must use it). First answer wins; replays are no-ops.
+- **Expire.** An unanswered card after 7 days: card `expired`, memory `unconfirmed`. Never a yes, no outcome row, never re-asked by the panel.
+- **Not built: answering in chat.** Deferred (see the PR report): it needs a model judgment on the turn after an asked card, and the panel path is complete without it.
+
+| Concept | Plain-English meaning | Producer | Consumer | Test |
+|---|---|---|---|---|
+| `stakes=high` | Orion should check with Juniper before keeping this as settled | distiller + `validate.resolve_stakes` | `confirmation.open_cards` (only high memories get a card) | `test_high_stakes_memory_gets_one_card_and_low_gets_none` |
+| `stakes_reason=health` | About her or her family's health | distiller (v3 rubric) | card line "It's about health, so I'd rather check than assume." | `test_every_high_stakes_category_has_its_own_card_wording` |
+| `stakes_reason=family_relationships` | About her family and close relationships | distiller | card line "...the people close to you, so I want to get it right." | same |
+| `stakes_reason=juniper_feelings` | About how she was feeling | distiller | card line "...I don't want to put words in your mouth." | same |
+| `stakes_reason=identity_conclusion_about_juniper` | Orion's read on who she is, beyond her words | distiller | card line "It's my read on who you are..." + closer "Is that fair, and should I keep it?" | same + `test_direction_and_identity_cards_close_with_their_own_question` |
+| `stakes_reason=orion_machinery` | Orion's conclusion about how it works | distiller | card line "...you can check it better than I can." | same |
+| `stakes_reason=orion_asks_direction` | Orion needs her direction | distiller / validator (`asks_direction`) | card line "I need your direction on this one." + closer "Is that the right direction?" | same |
+| `stakes_reason=orion_relationship` | About the two of them | distiller | card line "It's about us, so I don't want to decide it alone." | same |
+| `stakes_reason=unjudged` (or none on a high row) | High, but no category was given | validator | card line "I couldn't tell how personal this is, so I'm checking first." | `test_uncategorized_high_stakes_says_so` |
+| `stakes_reason=none` | Low stakes | distiller | never asked (no card) | `test_high_stakes_memory_gets_one_card_and_low_gets_none` |
+| `confirmation_state=pending_confirmation` | Waiting to be asked or answered | validator | `open_cards`, `expire_cards`, daily report flag | `test_confirmation_pg.py` |
+| `confirmation_loop_id` | Which card asks about this memory | `open_cards` | `expire_cards` join, Hub `memory_statement` lookup, `apply_outcome` | `test_high_stakes_memory_gets_one_card_and_low_gets_none` |
+| `confirmation_state=unconfirmed` | Asked, no answer in 7 days; not a yes | `expire_cards` | daily report flag; `apply_outcome` still accepts a later answer | `test_seven_day_expiry_marks_unconfirmed_never_confirmed_and_frees_the_slot` |
+| `confirmation_state=confirmed` | Juniper said yes | `apply_outcome` | voice relabel, reinforcement, daily report flag | `test_confirm_relabels_voice_reinforces_and_records_the_outcome` |
+| `confirmation_state=corrected` | Juniper reworded it; superseded | `apply_outcome` | supersede chain, daily report flag | `test_revise_supersedes_the_original_and_confirms_her_wording` |
+| `confirmation_state=rejected` | Juniper said no; never recalled | `apply_outcome` | `RECALLABLE_WHERE`, daily report flag | `test_reject_excludes_the_memory_from_recall` |
+| `attention_loop_outcome` (`memory-confirm-*`) | Her answer, the one resolution record | Hub `POST /api/asks/{id}/resolve` | `handle_loop_outcome` (bus) + `pending_outcomes` (table) | `test_ask_resolve_pg.py`, `test_catch_up_applies_an_outcome_whose_bus_event_was_lost` |
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `MEMORY_CONFIRMATION_LOOP_ENABLED` | `true` | Kill switch: stops opening, expiring and applying |
+| `MEMORY_CONFIRMATION_TICK_SEC` | `60` | Ticker period (expire, catch up, open) |
+| `CHANNEL_ATTENTION_LOOP_OUTCOME` | `orion:attention:loop_outcome` | Outcome event channel |
+
+Needs `services/orion-sql-db/manual_migration_memory_confirmation_v1.sql` (indexes) after the episode-memory, walkway-camera and attention-loop-outcome migrations. Eval: `python services/orion-memory-consolidation/evals/run_memory_confirmation_replay_eval.py --scratch-dsn <throwaway admin DSN> [--live-dsn <read-only>]` (counts only).
 
 ## Turn change appraisal
 

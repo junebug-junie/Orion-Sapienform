@@ -525,6 +525,8 @@ This rule was adopted by Juniper on 2026-10-01. Private self-observations (for e
 
 Open questions with `answer_via='conversation'` (section 8) use the same panel, with `source_kind='open_question'`.
 
+> **Implemented 2026-10-06 (panel path; Juniper pulled it forward from Stage 3).** `orion/memory/episode/confirmation.py`, Hub `POST /api/asks/{id}/resolve`, PR report `docs/superpowers/pr-reports/2026-10-06-memory-confirmation-loop-pr.md`. Differences from the text below: an expired card moves the memory to `confirmation_state='unconfirmed'` (asked, no answer; never a yes) rather than leaving it `pending_confirmation`; Revise writes the revised memory immediately from Juniper's note (her words become the statement, the original is superseded) instead of waiting for the next distill; Reject sets `status='rejected'`. The chat path is deferred, and the card wording is a deterministic frame around the quoted statement, not a rewrite.
+
 **When there is no answer:** the ask card expires after 7 days (`orion_ask.status='expired'`, an existing status). Orion may raise it once more in chat. After that the memory stays `pending_confirmation` and is only ever recalled with its "Unconfirmed" label. An expiry is not a resolution, and no outcome is written for it.
 
 **What an answer does:**

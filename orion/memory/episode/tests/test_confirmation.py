@@ -121,3 +121,18 @@ def test_outcome_to_apply_reads_resolution_and_ask_from_features():
 def test_recall_predicate_excludes_rejected():
     assert "confirmation_state <> 'rejected'" in c.RECALLABLE_WHERE
     assert "status = 'active'" in c.RECALLABLE_WHERE
+
+
+def test_daily_report_names_every_state_the_loop_writes():
+    """Each confirmation state the loop writes has a reader that says it in words (the daily
+    old-vs-new report), so no state is a label nothing shows."""
+    import inspect
+
+    from orion.memory.episode.report import CONFIRMATION_FLAG
+
+    src = inspect.getsource(c)
+    # Every state the module sets or filters on (SET and WHERE clauses alike).
+    named = set(re.findall(r"confirmation_state = '([a-z_]+)'", src))
+    assert named == {"pending_confirmation", "unconfirmed", "confirmed", "rejected", "corrected"}
+    assert named <= set(CONFIRMATION_FLAG)
+    assert "auto" not in CONFIRMATION_FLAG

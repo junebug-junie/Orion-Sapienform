@@ -1,0 +1,170 @@
+{
+ "generated_at": "2026-10-06T08:24:40.230098+00:00",
+ "note": "Counts only. The real producer (orion.memory.episode.confirmation.run_tick) replayed in a throwaway Postgres, one tick per simulated day. 'never_answered': no answers, cards expire after 7 days. 'all_confirmed': every open card confirmed the day it opens. v3_relabel voices are ASSUMED from the category (Orion-self categories = orion_thought), so its framing counts restate that assumption.",
+ "cap": 5,
+ "ask_ttl_days": 7,
+ "inputs": {
+  "live": {
+   "rows": {
+    "memories": 31,
+    "by_stakes": {
+     "low:-": 31
+    },
+    "by_state": {
+     "auto": 31
+    },
+    "by_voice_channel": {
+     "juniper_said/chat": 27,
+     "orion_thought/chat": 4
+    }
+   },
+   "never_answered": {
+    "cards_opened": 0,
+    "cards_by_category": {},
+    "cards_framed_as_juniper_said": 0,
+    "cards_framed_as_orions_own_take": 0,
+    "cards_framed_as_internal_channel": 0,
+    "max_open_at_once": 0,
+    "cap_held": true,
+    "high_stakes_end_states": {},
+    "ticks_with_activity": []
+   },
+   "all_confirmed": {
+    "cards_opened": 0,
+    "cards_by_category": {},
+    "cards_framed_as_juniper_said": 0,
+    "cards_framed_as_orions_own_take": 0,
+    "cards_framed_as_internal_channel": 0,
+    "max_open_at_once": 0,
+    "cap_held": true,
+    "high_stakes_end_states": {},
+    "ticks_with_activity": []
+   }
+  },
+  "v3_relabel": {
+   "rows": {
+    "memories": 69,
+    "by_stakes": {
+     "high:juniper_feelings": 7,
+     "low:none": 54,
+     "high:orion_asks_direction": 2,
+     "high:orion_relationship": 3,
+     "high:identity_conclusion_about_juniper": 1,
+     "high:family_relationships": 2
+    },
+    "by_state": {
+     "pending_confirmation": 15,
+     "auto": 54
+    },
+    "by_voice_channel": {
+     "juniper_said/chat": 64,
+     "orion_thought/chat": 5
+    }
+   },
+   "never_answered": {
+    "cards_opened": 15,
+    "cards_by_category": {
+     "juniper_feelings": 7,
+     "orion_asks_direction": 2,
+     "orion_relationship": 3,
+     "identity_conclusion_about_juniper": 1,
+     "family_relationships": 2
+    },
+    "cards_framed_as_juniper_said": 10,
+    "cards_framed_as_orions_own_take": 5,
+    "cards_framed_as_internal_channel": 0,
+    "max_open_at_once": 5,
+    "cap_held": true,
+    "high_stakes_end_states": {
+     "unconfirmed": 15
+    },
+    "ticks_with_activity": [
+     {
+      "day": 0,
+      "expired": 0,
+      "applied": 0,
+      "opened": 5,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 7,
+      "expired": 5,
+      "applied": 0,
+      "opened": 5,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 14,
+      "expired": 5,
+      "applied": 0,
+      "opened": 5,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 21,
+      "expired": 5,
+      "applied": 0,
+      "opened": 0,
+      "open_after": 0,
+      "answered": 0
+     }
+    ]
+   },
+   "all_confirmed": {
+    "cards_opened": 15,
+    "cards_by_category": {
+     "juniper_feelings": 7,
+     "orion_asks_direction": 2,
+     "orion_relationship": 3,
+     "identity_conclusion_about_juniper": 1,
+     "family_relationships": 2
+    },
+    "cards_framed_as_juniper_said": 10,
+    "cards_framed_as_orions_own_take": 5,
+    "cards_framed_as_internal_channel": 0,
+    "max_open_at_once": 5,
+    "cap_held": true,
+    "high_stakes_end_states": {
+     "confirmed": 15
+    },
+    "ticks_with_activity": [
+     {
+      "day": 0,
+      "expired": 0,
+      "applied": 0,
+      "opened": 5,
+      "open_after": 5,
+      "answered": 5
+     },
+     {
+      "day": 1,
+      "expired": 0,
+      "applied": 5,
+      "opened": 5,
+      "open_after": 5,
+      "answered": 5
+     },
+     {
+      "day": 2,
+      "expired": 0,
+      "applied": 5,
+      "opened": 5,
+      "open_after": 5,
+      "answered": 5
+     },
+     {
+      "day": 3,
+      "expired": 0,
+      "applied": 5,
+      "opened": 0,
+      "open_after": 0,
+      "answered": 0
+     }
+    ]
+   }
+  }
+ }
+}

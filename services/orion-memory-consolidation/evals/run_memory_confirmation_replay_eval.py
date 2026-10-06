@@ -64,6 +64,12 @@ async def load_live(live_dsn: str) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+# The summary records stakes only, not voice. ASSUMED voice per category: Orion's conclusions about
+# itself are its own view from chat; everything else is something Juniper said. Counts of cards
+# "framed as Juniper said" for this input therefore restate the assumption, not a measurement.
+ORION_SELF_REASONS = frozenset({"orion_machinery", "orion_asks_direction", "orion_relationship"})
+
+
 def synth_v3(summary_path: Path = V3_SUMMARY) -> list[dict[str, Any]]:
     """One synthetic memory per v3 'high:<category>' count, in episode order. Placeholder text."""
     data = json.loads(summary_path.read_text())
@@ -71,10 +77,12 @@ def synth_v3(summary_path: Path = V3_SUMMARY) -> list[dict[str, Any]]:
     for i, ep in enumerate(data["episodes"]):
         for key, n in sorted((ep.get("v3_final") or {}).items()):
             stakes, _, reason = key.partition(":")
+            own = reason in ORION_SELF_REASONS
             for j in range(int(n)):
                 out.append({
-                    "memory_id": uuid.uuid4(), "episode_id": ep["name"], "purpose": "about_juniper",
-                    "voice": "juniper_said", "channel": "chat",
+                    "memory_id": uuid.uuid4(), "episode_id": ep["name"],
+                    "purpose": "orion_view" if own else "about_juniper",
+                    "voice": "orion_thought" if own else "juniper_said", "channel": "chat",
                     "statement": f"synthetic memory {i}.{j} ({key})", "occurred_at": None, "stakes": stakes,
                     "stakes_reason": reason if reason != "-" else None,
                     "confirmation_state": "pending_confirmation" if stakes == "high" else "auto",
@@ -157,7 +165,8 @@ async def run_scenario(admin_dsn: str, rows: list[dict[str, Any]], *, answers: b
             "cards_by_category": dict(Counter(r["stakes_reason"] or "uncategorized" for r in cards)),
             # Source monitoring, counted on the real rendered text (the text itself is not kept).
             "cards_framed_as_juniper_said": sum(1 for r in cards if r["question"].startswith("You told me")),
-            "cards_framed_as_orions_own": sum(1 for r in cards if "not from anything you told me" in r["question"]),
+            "cards_framed_as_orions_own_take": sum(1 for r in cards if "my own take" in r["question"]),
+            "cards_framed_as_internal_channel": sum(1 for r in cards if "not from anything you told me" in r["question"]),
             "max_open_at_once": max_open,
             "cap_held": max_open <= c.MAX_OPEN_CARDS,
             "high_stakes_end_states": dict(states),
@@ -181,7 +190,9 @@ async def main_async(args) -> dict:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "note": "Counts only. The real producer (orion.memory.episode.confirmation.run_tick) replayed in a "
                 "throwaway Postgres, one tick per simulated day. 'never_answered': no answers, cards expire "
-                "after 7 days. 'all_confirmed': every open card confirmed the day it opens.",
+                "after 7 days. 'all_confirmed': every open card confirmed the day it opens. v3_relabel voices are "
+                "ASSUMED from the category (Orion-self categories = orion_thought), so its framing counts restate "
+                "that assumption.",
         "cap": c.MAX_OPEN_CARDS,
         "ask_ttl_days": c.ASK_TTL.days,
         "inputs": {},

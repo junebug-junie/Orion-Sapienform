@@ -877,7 +877,16 @@ confidence and returns only their labels; the labels are matched in Python. No m
 (~11ms median live). On a match, two more bounded reads fetch the matched concepts' full rows and
 the edges among the top 500 most salient edges touching the top 500 concepts that touch a
 matched concept (~140ms median live, most of it FalkorDB walking ~32k edges to rank them).
-The reinforcement reads are single-node lookups and the write is one `MERGE ... SET`.
+Reinforcement reads each matched concept once (node and identity key in one query) and
+writes it with one `MERGE ... SET`; if the recall gives up mid-loop (deadline), no further
+node is written. With the reinforcement included, a matched turn measured ~100ms median,
+175ms max on a copy of the production graph (2026-10-06 follow-up PR).
+**Hung FalkorDB:** each socket read is capped at 1.5s, and after 3 consecutive timeouts a
+circuit breaker skips concept_region for 60s (`recall_concept_region_breaker_open` /
+`recall_concept_region_breaker_skip` log lines, counters in `app.substrate_store.breaker_stats()`).
+No fallback: a skipped turn just has no concept fragments.
+**Index:** every substrate store bootstraps `CREATE INDEX FOR (n:SubstrateNode) ON (n.node_id)`
+(idempotent, bounded, never blocks startup; `orion/substrate/falkor_store.py::ensure_substrate_indexes`).
 The selection is identical to the old cache read: 152/152 real recall queries produced the
 same fragments in the same order (`scripts/compare_concept_region_direct_vs_cache.py`).
 Before this, recall built a complete in-process copy of the graph (17-25s since PR #2500)

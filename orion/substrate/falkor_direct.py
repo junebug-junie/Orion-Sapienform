@@ -57,6 +57,7 @@ from orion.substrate.falkor_store import (
     _edge_hydrate_return_clause,
     _normalize_rows,
     _return_clause,
+    ensure_substrate_indexes,
 )
 from orion.substrate.store import SubstrateNeighborhoodSliceV1
 
@@ -226,6 +227,15 @@ class FalkorDirectConceptStore:
             return None
         return rows[0]
 
+    def get_node_and_identity_key(self, node_id: str) -> tuple[BaseSubstrateNodeV1 | None, str | None]:
+        """One query for both halves of a reinforcement read (the separate
+        getters below each issue NODE_BY_ID_CYPHER for the same row)."""
+        row = self._node_row(node_id)
+        if row is None:
+            return None, None
+        identity = row.get("identity_key")
+        return decode_node(row), (str(identity) if identity else None)
+
     def get_node_by_id(self, node_id: str) -> BaseSubstrateNodeV1 | None:
         row = self._node_row(node_id)
         return decode_node(row) if row is not None else None
@@ -253,10 +263,16 @@ def build_falkor_direct_concept_store_from_env(
     *,
     socket_timeout_s: float | None = None,
     socket_connect_timeout_s: float | None = None,
+    ensure_indexes: bool = True,
 ) -> FalkorDirectConceptStore | None:
     """Build from ``FALKORDB_URI``/``FALKORDB_SUBSTRATE_GRAPH``. No network I/O
     happens here (redis-py connects lazily), so construction cannot block.
-    Returns None when ``FALKORDB_URI`` is unset."""
+    Returns None when ``FALKORDB_URI`` is unset.
+
+    ``ensure_indexes=True`` runs the node_id index bootstrap synchronously
+    here (a network call, bounded by the socket timeouts). A latency-bound
+    caller (orion-recall) passes False and runs ``ensure_substrate_indexes``
+    off its request path instead."""
     uri = str(os.getenv("FALKORDB_URI", "")).strip()
     if not uri:
         logger.warning("falkor_direct_concept_store_unconfigured reason=FALKORDB_URI_missing")
@@ -272,6 +288,10 @@ def build_falkor_direct_concept_store_from_env(
     writer = FalkorSubstrateStore(
         FalkorSubstrateStoreConfig(uri=uri, graph_name=graph_name), client=write_client, hydrate=False
     )
+    # The writer gets an injected client, so its own constructor skips the
+    # index bootstrap; run it here on that client (same socket timeouts).
+    if ensure_indexes:
+        ensure_substrate_indexes(uri, graph_name, client=write_client)
     logger.info(
         "substrate_store_backend_selected backend=falkor_direct uri_host=%s graph=%s",
         urlparse(uri).hostname or "",

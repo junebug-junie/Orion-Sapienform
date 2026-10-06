@@ -113,7 +113,8 @@ a complete copy of the graph built once at boot (17-25s after PR #2500) and neve
 so reinforcement read activation values frozen at boot. Recall's store is now
 `FalkorDirectConceptStore` (`orion/substrate/falkor_direct.py`): `get_node_by_id()` and
 `get_identity_key_by_node_id()` are single-node `GRAPH.RO_QUERY` lookups against FalkorDB
-(~5ms each live), so the activation bump starts from the current durable value. The write is
+(~5ms each live; since the review follow-up the live path reads both in one query via
+`get_node_and_identity_key()`, ~4ms without the node_id index, ~1ms with it), so the activation bump starts from the current durable value. The write is
 unchanged (one `MERGE ... SET`, reducer-owned metadata keys skipped).
 
 ## Acceptance checks

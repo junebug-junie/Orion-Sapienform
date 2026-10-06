@@ -198,6 +198,7 @@ def reinforce_matched_concepts(
     *,
     store: SubstrateGraphStore | None,
     boost: float = _RECALL_REINFORCEMENT_BOOST,
+    abandoned: "threading.Event | None" = None,
 ) -> int:
     """Bump activation for concept nodes that were actually surfaced in a live turn.
 
@@ -217,8 +218,13 @@ def reinforce_matched_concepts(
     Never calls `store.snapshot()` (a complete graph read). In the live
     service `store` is `FalkorDirectConceptStore`
     (`orion/substrate/falkor_direct.py`), which has no snapshot at all:
-    `get_node_by_id()` and `get_identity_key_by_node_id()` are single-node
-    `GRAPH.RO_QUERY` reads and `upsert_node()` is one `MERGE ... SET`.
+    `get_node_and_identity_key()` is one single-node `GRAPH.RO_QUERY` and
+    `upsert_node()` is one `MERGE ... SET`. Stores without the combined read
+    (the in-memory store) use `get_node_by_id()` + `get_identity_key_by_node_id()`.
+
+    ``abandoned``: checked before every node, so once the recall stops waiting
+    for this call (deadline passed mid-loop) no further node is read or
+    written. Nodes already written before that moment stay written.
     """
     node_ids = {str(node_id) for node_id in matched_node_ids if node_id}
     if not node_ids or store is None:
@@ -226,19 +232,31 @@ def reinforce_matched_concepts(
 
     clamped_boost = min(1.0, max(0.0, boost))
 
+    read_both = getattr(store, "get_node_and_identity_key", None)
+
     reinforced = 0
-    for node_id in node_ids:
+    for node_id in sorted(node_ids):
+        if abandoned is not None and abandoned.is_set():
+            logger.debug(
+                "concept_region reinforcement stopped: recall abandoned this call reinforced=%s remaining=%s",
+                reinforced,
+                len(node_ids) - reinforced,
+            )
+            break
         try:
-            node = store.get_node_by_id(node_id)
+            if callable(read_both):
+                node, identity_key = read_both(node_id)
+            else:
+                node = store.get_node_by_id(node_id)
+                identity_key = (
+                    store.get_identity_key_by_node_id(node_id)
+                    if node is not None and getattr(node, "node_kind", None) == "concept"
+                    else None
+                )
         except Exception as exc:  # noqa: BLE001 - must degrade, never raise
-            logger.debug("concept_region reinforcement: get_node_by_id(%s) failed: %s", node_id, exc)
+            logger.debug("concept_region reinforcement: read of %s failed: %s", node_id, exc)
             continue
         if node is None or getattr(node, "node_kind", None) != "concept":
-            continue
-        try:
-            identity_key = store.get_identity_key_by_node_id(node_id)
-        except Exception as exc:  # noqa: BLE001 - must degrade, never raise
-            logger.debug("concept_region reinforcement: get_identity_key_by_node_id(%s) failed: %s", node_id, exc)
             continue
         if not identity_key:
             # Falkor's codec writes `identity_key or ""` unconditionally on
@@ -255,6 +273,8 @@ def reinforce_matched_concepts(
             updated_signal = activation_signal.model_copy(update={"activation": boosted})
             updated_signals = node.signals.model_copy(update={"activation": updated_signal})
             updated_node = node.model_copy(update={"signals": updated_signals})
+            if abandoned is not None and abandoned.is_set():
+                break
             # skip_metadata_keys: updated_node's metadata is node.metadata,
             # read moments earlier by get_node_by_id() above -- only
             # signals.activation is actually recomputed here, but
@@ -294,8 +314,9 @@ def fetch_concept_region_fragment_and_reinforce(
     function the live turn-assembly pipeline should call.
 
     ``abandoned``: set by the caller when it stops waiting for this call (the
-    recall deadline passed while this ran in a worker thread). Checked right
-    before the reinforcement write, so fragments the recall dropped are not
+    recall deadline passed while this ran in a worker thread). Checked before
+    reinforcement starts and again before every node's write (inside
+    `reinforce_matched_concepts`), so fragments the recall dropped are not
     reinforced as if they had been surfaced in the turn.
     """
     fragments = fetch_concept_region_fragment(
@@ -316,7 +337,7 @@ def fetch_concept_region_fragment_and_reinforce(
                 len(matched_node_ids),
             )
             return fragments
-        reinforce_matched_concepts(matched_node_ids, store=store)
+        reinforce_matched_concepts(matched_node_ids, store=store, abandoned=abandoned)
 
     return fragments
 

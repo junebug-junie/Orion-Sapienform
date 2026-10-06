@@ -117,6 +117,10 @@ class FalkorSubstrateStoreConfig:
     client_socket_timeout_s: float | None = None
     client_socket_connect_timeout_s: float | None = None
     hydration_page_size: int = 1000
+    # Create the node_id index on construction (see ensure_substrate_indexes).
+    # Only applies when the store builds its own client; injected clients
+    # (tests, read-only replay tools) are left alone.
+    ensure_indexes: bool = True
 
     def __post_init__(self) -> None:
         if not 1 <= self.hydration_page_size <= 10000:
@@ -273,6 +277,69 @@ def _with_sanitized_metadata(model: Any) -> Any:
     return model.model_copy(update={"metadata": cleaned})
 
 
+# Every substrate writer MERGEs on SubstrateNode.node_id (upsert_node,
+# upsert_edge's two endpoint MERGEs) and every single-node reader filters on
+# it (falkor_direct NODE_BY_ID, neighborhood_backends). Without an index each
+# of those is a label scan of every SubstrateNode. identity_key is NOT indexed:
+# no Cypher query filters on it (identity lookups go through the in-process
+# cache). Mirrors services/orion-bus-mirror/app/graph_writer.py::ensure_indexes.
+SUBSTRATE_INDEXES: tuple[tuple[str, str], ...] = (("SubstrateNode", "node_id"),)
+# Bounded: a dedicated client with its own short timeouts, so a down or hung
+# FalkorDB delays construction by at most ~connect+read, never indefinitely.
+ENSURE_INDEX_SOCKET_TIMEOUT_S = 5.0
+ENSURE_INDEX_CONNECT_TIMEOUT_S = 2.0
+
+
+def substrate_index_cypher(label: str, prop: str) -> str:
+    return f"CREATE INDEX FOR (n:{label}) ON (n.{prop})"
+
+
+def ensure_substrate_indexes(uri: str, graph_name: str, *, client: FalkorGraphClient | None = None) -> bool:
+    """Idempotent, never raises. Returns True when every index exists afterwards.
+
+    FalkorDB 4.18 and 6.0 both answer a repeat with "Attribute 'x' is already
+    indexed" (neither accepts IF NOT EXISTS); that is the steady state, not a
+    failure. Rollback: ``DROP INDEX ON :SubstrateNode(node_id)``.
+    """
+    owned = client is None
+    try:
+        if client is None:
+            client = RedisGraphQueryClient(
+                uri=uri,
+                graph_name=graph_name,
+                socket_timeout=ENSURE_INDEX_SOCKET_TIMEOUT_S,
+                socket_connect_timeout=ENSURE_INDEX_CONNECT_TIMEOUT_S,
+            )
+    except Exception as exc:  # noqa: BLE001 - must never block construction
+        logger.warning("falkor_substrate_index_client_failed graph=%s error=%s", graph_name, exc)
+        return False
+    ok = True
+    try:
+        for label, prop in SUBSTRATE_INDEXES:
+            try:
+                client.graph_query(substrate_index_cypher(label, prop))
+                logger.info("falkor_substrate_index_created graph=%s label=%s prop=%s", graph_name, label, prop)
+            except Exception as exc:  # noqa: BLE001
+                if "already indexed" in str(exc):
+                    continue
+                ok = False
+                logger.warning(
+                    "falkor_substrate_index_create_failed graph=%s label=%s prop=%s error=%s",
+                    graph_name, label, prop, exc,
+                )
+    finally:
+        # A client this function built is throwaway: release its pool so
+        # every store construction does not leak a connection.
+        if owned:
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("falkor_substrate_index_client_close_failed error=%s", exc)
+    return ok
+
+
 class FalkorSubstrateStore:
     """SubstrateGraphStore with Falkor write-through and in-memory read cache.
 
@@ -289,6 +356,7 @@ class FalkorSubstrateStore:
         hydrate: bool = True,
     ) -> None:
         self._cfg = cfg
+        client_was_default = client is None
         if client is None:
             client_kwargs: dict[str, float] = {}
             if cfg.client_socket_timeout_s is not None:
@@ -342,6 +410,8 @@ class FalkorSubstrateStore:
         self._hydrate_stats_logged_at: float | None = None
         self.last_scan_receipt: CompleteScanReceipt | None = None
         self._last_successful_refresh_at: str | None = None
+        if client_was_default and cfg.ensure_indexes:
+            ensure_substrate_indexes(cfg.uri, cfg.graph_name)
         if hydrate:
             self._hydrate_from_durable()
 

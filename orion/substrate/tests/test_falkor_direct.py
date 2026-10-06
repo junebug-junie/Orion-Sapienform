@@ -142,6 +142,11 @@ def test_single_node_reads_go_to_falkor_and_reject_duplicates() -> None:
     assert read.calls[0][1] == {"node_id": "c1"}
 
     dup_store, _r, _w = _direct({NODE_BY_ID_CYPHER: [row, dict(row)]})
+    both, _r, _w = _direct({NODE_BY_ID_CYPHER: [row]})
+    node2, identity2 = both.get_node_and_identity_key("c1")
+    assert node2 == node and identity2 == "concept:c1"
+    assert len(_r.calls) == 1  # one query for both halves
+    assert dup_store.get_node_and_identity_key("c1") == (None, None)
     assert dup_store.get_node_by_id("c1") is None
     assert dup_store.get_identity_key_by_node_id("c1") is None
     missing, _r, _w = _direct({})
@@ -167,14 +172,21 @@ def test_builder_uses_a_read_only_client_and_never_hydrates(monkeypatch) -> None
     import orion.substrate.falkor_direct as mod
 
     built: list[dict] = []
+    clients: list = []
 
     class _FakeRedisClient:
         def __init__(self, **kwargs):
             built.append(kwargs)
             self.read_only = bool(kwargs.get("read_only"))
+            self.queries: list[str] = []
+            clients.append(self)
 
-        def graph_query(self, *_a, **_k):  # pragma: no cover
-            raise AssertionError("construction must not query")
+        def graph_query(self, cypher, *_a, **_k):
+            # The only thing construction may run is the node_id index DDL.
+            self.queries.append(cypher)
+            if not cypher.startswith("CREATE INDEX"):
+                raise AssertionError("construction must not read the graph")
+            raise RuntimeError("Attribute 'node_id' is already indexed")
 
     monkeypatch.setattr(mod, "RedisGraphQueryClient", _FakeRedisClient)
     monkeypatch.setattr(
@@ -186,6 +198,9 @@ def test_builder_uses_a_read_only_client_and_never_hydrates(monkeypatch) -> None
     assert isinstance(store, FalkorDirectConceptStore)
     assert [b.get("read_only", False) for b in built] == [True, False]
     assert all(b["socket_timeout"] == 5.0 and b["graph_name"] == "g1" for b in built)
+    reader, writer = clients
+    assert reader.queries == []
+    assert writer.queries == ["CREATE INDEX FOR (n:SubstrateNode) ON (n.node_id)"]
 
     monkeypatch.delenv("FALKORDB_URI")
     assert build_falkor_direct_concept_store_from_env() is None
@@ -310,6 +325,10 @@ def test_single_node_reads_equal_cache(fixture_graph) -> None:
     for node_id in ["c000", "c001", "c002", "c005", "ev003", "en001", "missing"]:
         assert direct.get_node_by_id(node_id) == cache_store.get_node_by_id(node_id)
         assert direct.get_identity_key_by_node_id(node_id) == cache_store.get_identity_key_by_node_id(node_id)
+        assert direct.get_node_and_identity_key(node_id) == (
+            cache_store.get_node_by_id(node_id),
+            cache_store.get_identity_key_by_node_id(node_id),
+        )
 
 
 @live
@@ -366,3 +385,135 @@ def test_concept_region_latency_on_a_realistic_fixture() -> None:
         assert timings["match"] < 1500
     finally:
         client._r.execute_command("GRAPH.DELETE", graph_name)
+
+
+# ── node_id index bootstrap ─────────────────────────────────────────────────
+
+
+def test_ensure_indexes_is_idempotent_and_never_raises(caplog) -> None:
+    from orion.substrate.falkor_store import ensure_substrate_indexes
+
+    class _Client:
+        def __init__(self, error):
+            self.error = error
+            self.calls = []
+
+        def graph_query(self, cypher, params=None):
+            self.calls.append(cypher)
+            if self.error:
+                raise self.error
+
+    fresh = _Client(None)
+    assert ensure_substrate_indexes("redis://x", "g", client=fresh) is True
+    assert fresh.calls == ["CREATE INDEX FOR (n:SubstrateNode) ON (n.node_id)"]
+    # 4.18 and 6.0 both say exactly this on a repeat.
+    assert ensure_substrate_indexes("redis://x", "g", client=_Client(RuntimeError("Attribute 'node_id' is already indexed"))) is True
+    with caplog.at_level("WARNING"):
+        assert ensure_substrate_indexes("redis://x", "g", client=_Client(ConnectionError("down"))) is False
+    assert "falkor_substrate_index_create_failed" in caplog.text
+
+
+def test_store_bootstraps_index_only_with_its_own_client(monkeypatch) -> None:
+    import orion.substrate.falkor_store as fs
+
+    seen: list = []
+    monkeypatch.setattr(fs, "ensure_substrate_indexes", lambda uri, graph, **kw: seen.append((uri, graph)) or True)
+    monkeypatch.setattr(fs, "RedisGraphQueryClient", lambda **kw: _ScriptedClient())
+    fs.FalkorSubstrateStore(fs.FalkorSubstrateStoreConfig(uri="redis://h:1", graph_name="g"), hydrate=False)
+    assert seen == [("redis://h:1", "g")]
+    fs.FalkorSubstrateStore(fs.FalkorSubstrateStoreConfig(uri="redis://h:1", graph_name="g"), client=_ScriptedClient(), hydrate=False)
+    fs.FalkorSubstrateStore(
+        fs.FalkorSubstrateStoreConfig(uri="redis://h:1", graph_name="g", ensure_indexes=False), hydrate=False
+    )
+    assert seen == [("redis://h:1", "g")]
+
+
+@live
+@pytest.mark.parametrize("cypher_key", ["node_by_id", "merge", "edge_merge"])
+def test_node_id_queries_use_the_index(cypher_key) -> None:
+    """EXPLAIN on the real engine: with the index, NODE_BY_ID and the upsert
+    MERGE plan an index scan instead of a label scan."""
+    from orion.graph.falkor_client import RedisGraphQueryClient
+    from orion.substrate.falkor_store import ensure_substrate_indexes
+
+    graph_name = f"test_falkor_index_{uuid.uuid4().hex[:8]}"
+    client = RedisGraphQueryClient(uri=_FALKOR_URI, graph_name=graph_name)
+    client.graph_query("CREATE (:SubstrateNode:Concept {node_id: 'a', node_kind: 'concept'})")
+    cypher = {
+        "node_by_id": NODE_BY_ID_CYPHER,
+        "merge": "MERGE (n:SubstrateNode:Concept {node_id: $node_id}) SET n.activation = 0.5",
+        "edge_merge": (
+            "MERGE (source:SubstrateNode {node_id: $node_id}) MERGE (target:SubstrateNode {node_id: $node_id}) "
+            "MERGE (source)-[e:`supports` {edge_id: 'e1'}]->(target) SET e.salience = 1"
+        ),
+    }[cypher_key]
+    try:
+        def plan():
+            return "\n".join(
+                # FalkorDB 4.18 refuses EXPLAIN with unbound $params; inline them.
+                str(line) for line in client._r.execute_command("GRAPH.EXPLAIN", graph_name, "CYPHER node_id='a' " + cypher)
+            )
+
+        assert "Index Scan" not in plan()
+        assert ensure_substrate_indexes(_FALKOR_URI, graph_name) is True
+        assert ensure_substrate_indexes(_FALKOR_URI, graph_name) is True  # repeat is fine
+        assert "Index Scan" in plan(), plan()
+    finally:
+        client._r.execute_command("GRAPH.DELETE", graph_name)
+
+
+def test_ensure_indexes_closes_only_the_client_it_built(monkeypatch) -> None:
+    """#2513 review finding 4: the throwaway client's pool leaked."""
+    import orion.substrate.falkor_store as fs
+
+    made: list = []
+
+    class _Owned:
+        def __init__(self, error=None, **kw):
+            self.closed = 0
+            self.error = error
+            made.append(self)
+
+        def graph_query(self, cypher, params=None):
+            if self.error:
+                raise self.error
+
+        def close(self):
+            self.closed += 1
+
+    monkeypatch.setattr(fs, "RedisGraphQueryClient", lambda **kw: _Owned())
+    assert fs.ensure_substrate_indexes("redis://x", "g") is True
+    monkeypatch.setattr(fs, "RedisGraphQueryClient", lambda **kw: _Owned(error=ConnectionError("down")))
+    assert fs.ensure_substrate_indexes("redis://x", "g") is False
+    monkeypatch.setattr(fs, "RedisGraphQueryClient", lambda **kw: _Owned(error=KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        fs.ensure_substrate_indexes("redis://x", "g")
+    assert [m.closed for m in made] == [1, 1, 1]  # closed even on the way out
+
+    injected = _Owned()
+    fs.ensure_substrate_indexes("redis://x", "g", client=injected)
+    assert injected.closed == 0
+
+
+def test_redis_graph_client_close_releases_the_pool() -> None:
+    from orion.graph.falkor_client import RedisGraphQueryClient
+
+    client = RedisGraphQueryClient(uri="redis://127.0.0.1:1", graph_name="g")
+    closed: list = []
+    client._r.close = lambda: closed.append(1)  # type: ignore[method-assign]
+    client.close()
+    assert closed == [1]
+    RedisGraphQueryClient.__new__(RedisGraphQueryClient).close()  # no _r: no error
+
+
+def test_builder_can_skip_the_index_bootstrap(monkeypatch) -> None:
+    import orion.substrate.falkor_direct as mod
+
+    calls: list = []
+    monkeypatch.setattr(mod, "ensure_substrate_indexes", lambda *a, **k: calls.append(1))
+    monkeypatch.setattr(mod, "RedisGraphQueryClient", lambda **kw: _ScriptedClient())
+    monkeypatch.setenv("FALKORDB_URI", "redis://falkor.test:6379")
+    assert mod.build_falkor_direct_concept_store_from_env(ensure_indexes=False) is not None
+    assert calls == []
+    assert mod.build_falkor_direct_concept_store_from_env() is not None
+    assert calls == [1]

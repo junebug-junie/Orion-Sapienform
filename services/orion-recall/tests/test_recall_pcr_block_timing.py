@@ -310,7 +310,7 @@ def _concept_region_split(monkeypatch, *, fetch_block_s: float):
         return [{"id": f"{cr._NODE_FRAGMENT_ID_PREFIX}concept-a", "source": "concept_region", "snippet": "x", "score": 0.7}]
 
     monkeypatch.setattr(cr, "fetch_concept_region_fragment", _fetch)
-    monkeypatch.setattr(cr, "reinforce_matched_concepts", lambda ids, *, store: reinforced.append(list(ids)) or 1)
+    monkeypatch.setattr(cr, "reinforce_matched_concepts", lambda ids, *, store, abandoned=None: reinforced.append(list(ids)) or 1)
     monkeypatch.setattr(worker, "fetch_concept_region_fragment_and_reinforce", cr.fetch_concept_region_fragment_and_reinforce)
     return reinforced, fetch_done
 

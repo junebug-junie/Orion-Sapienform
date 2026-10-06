@@ -57,6 +57,7 @@ from orion.substrate.falkor_store import (
     _edge_hydrate_return_clause,
     _normalize_rows,
     _return_clause,
+    ensure_substrate_indexes,
 )
 from orion.substrate.store import SubstrateNeighborhoodSliceV1
 
@@ -226,6 +227,15 @@ class FalkorDirectConceptStore:
             return None
         return rows[0]
 
+    def get_node_and_identity_key(self, node_id: str) -> tuple[BaseSubstrateNodeV1 | None, str | None]:
+        """One query for both halves of a reinforcement read (the separate
+        getters below each issue NODE_BY_ID_CYPHER for the same row)."""
+        row = self._node_row(node_id)
+        if row is None:
+            return None, None
+        identity = row.get("identity_key")
+        return decode_node(row), (str(identity) if identity else None)
+
     def get_node_by_id(self, node_id: str) -> BaseSubstrateNodeV1 | None:
         row = self._node_row(node_id)
         return decode_node(row) if row is not None else None
@@ -272,6 +282,9 @@ def build_falkor_direct_concept_store_from_env(
     writer = FalkorSubstrateStore(
         FalkorSubstrateStoreConfig(uri=uri, graph_name=graph_name), client=write_client, hydrate=False
     )
+    # The writer gets an injected client, so its own constructor skips the
+    # index bootstrap; run it here on that client (same socket timeouts).
+    ensure_substrate_indexes(uri, graph_name, client=write_client)
     logger.info(
         "substrate_store_backend_selected backend=falkor_direct uri_host=%s graph=%s",
         urlparse(uri).hostname or "",

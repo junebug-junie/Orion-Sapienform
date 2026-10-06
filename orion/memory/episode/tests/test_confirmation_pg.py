@@ -327,3 +327,24 @@ def test_reverie_memory_card_is_never_framed_as_something_juniper_said():
         assert "You told me something" not in frame and "not from anything you told me" in frame
         assert c.WHY_BY_REASON["orion_relationship"] in q
     run(body)
+
+
+def test_migration_applies_rolls_back_and_reapplies():
+    names = {"idx_episode_memory_event_outcome", "idx_attention_loop_outcome_memory_confirm",
+             "idx_episode_memory_pending_confirmation", "idx_episode_memory_confirmation_loop"}
+
+    async def body(pool):
+        async def present():
+            rows = await pool.fetch("SELECT indexname FROM pg_indexes WHERE indexname = ANY($1::text[])", list(names))
+            return {r["indexname"] for r in rows}
+
+        assert await present() == names
+        await pool.execute((SQL_DIR / "manual_migration_memory_confirmation_v1_rollback.sql").read_text())
+        assert await present() == set()
+        for _ in range(2):  # idempotent re-apply
+            await pool.execute((SQL_DIR / "manual_migration_memory_confirmation_v1.sql").read_text())
+        assert await present() == names
+        # The catch-up read uses the partial index's predicate as written.
+        plan = "\n".join(r[0] for r in await pool.fetch("EXPLAIN " + c.PENDING_OUTCOMES_SQL.replace("$1", "50")))
+        assert "attention_loop_outcome" in plan
+    run(body)

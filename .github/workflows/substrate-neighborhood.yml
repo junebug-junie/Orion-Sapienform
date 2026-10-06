@@ -53,7 +53,7 @@ jobs:
       - name: Direct concept-region reads equal the hydrated cache (real FalkorDB)
         env:
           ORION_TEST_FALKOR_URI: redis://localhost:6379
-        run: python -m pytest -q -rs orion/substrate/tests/test_falkor_direct.py
+        run: python -m pytest -q -rs orion/substrate/tests/test_falkor_direct.py orion/substrate/tests/test_falkor_anchor_store.py
       - name: Hub-heavy budget and coverage eval
         run: python -m orion.substrate.evals.run_neighborhood_eval
       - name: Complete scan and dynamics equivalence eval

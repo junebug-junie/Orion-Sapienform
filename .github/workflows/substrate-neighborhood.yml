@@ -6,6 +6,8 @@ on:
       - 'services/orion-sql-db/manual_migration_substrate_graph_journal_v1*.sql'
       - 'services/orion-substrate-runtime/app/worker.py'
       - 'orion/substrate/**'
+      - 'services/*/.env_example'
+      - 'services/*/docker-compose.yml'
       - 'orion/graph/falkor_client.py'
       - 'orion/graph/tests/test_falkor_client.py'
       - 'orion/core/schemas/cognitive_substrate.py'
@@ -19,6 +21,8 @@ on:
       - 'services/orion-sql-db/manual_migration_substrate_graph_journal_v1*.sql'
       - 'services/orion-substrate-runtime/app/worker.py'
       - 'orion/substrate/**'
+      - 'services/*/.env_example'
+      - 'services/*/docker-compose.yml'
       - 'orion/graph/falkor_client.py'
       - 'orion/graph/tests/test_falkor_client.py'
       - 'orion/core/schemas/cognitive_substrate.py'
@@ -78,6 +82,7 @@ jobs:
           orion/substrate/tests/test_routed_store.py
           orion/substrate/tests/test_phase16_query_planning.py
           orion/substrate/tests/test_assertion_core.py
+          orion/substrate/tests/test_required_reader_names_match_services.py
           orion/substrate/tests/test_reader_capability.py
           orion/substrate/tests/test_reconcile.py
           orion/substrate/tests/test_attention_broadcast.py

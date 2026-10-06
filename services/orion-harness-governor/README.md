@@ -196,17 +196,18 @@ where t.created_at > now() - interval '7 days';
 
 ### Warm Claude Code pool for chat replies (spec L5)
 
-A spawned `claude -p` spends about 3.4 s starting its MCP servers before it can talk to the model (measured in this container, PR #2509). Chat replies now skip that. The governor keeps `HARNESS_FCC_CHAT_WARM_POOL_SIZE` (default 1) `claude` processes running in streaming-input mode. Each chat-reply turn (`utterance_origin=juniper`, no reading binding) borrows one, wipes its conversation with `/clear`, sends the prompt on stdin, and reads until the CLI's own `result` event. Investigation, curiosity, outreach and reading turns always spawn.
+A spawned `claude -p` spends about 3.4 s starting its MCP servers before it can talk to the model (measured in this container, PR #2509). Chat replies now skip that. The governor keeps `HARNESS_FCC_CHAT_WARM_POOL_SIZE` (default 1) `claude` processes running in streaming-input mode. Each chat-reply turn (`utterance_origin=juniper`, not reading-only) borrows one, wipes its conversation with `/clear`, sends the prompt on stdin, and reads until the CLI's own `result` event. Investigation, curiosity, outreach and reading turns always spawn.
 
 Nothing per-turn lives in the warm process's environment:
 
 - **Model upstream, credential, GPU lease header, correlation id.** The process's `ANTHROPIC_BASE_URL` points at a relay inside the container (`127.0.0.1:${HARNESS_FCC_CHAT_WARM_POOL_RELAY_PORT}`, one URL per slot, guarded by a per-process secret). The relay applies the current turn's values to every request. A model call with no turn bound gets 409 (not retryable), so a killed or overrun turn cannot keep spending its lease.
 - **Turn clock** (`ORION_TURN_BUDGET_SEC` / `_DEADLINE_EPOCH` / `_STEP_STALL_SEC`). Rewritten per turn into the slot's `CLAUDE_ENV_FILE`, which the CLI re-reads on every Bash call.
+- **Reading/introspect tool binding.** Every Unified Chat turn carries a reading binding (which turn a `recommend_reading` belongs to). The warm slot's `orion-reading`/`orion-introspect` MCP servers read it from a per-slot file (`ORION_READING_BINDING_FILE` / `ORION_INTROSPECT_BINDING_FILE`, `orion/fcc/turn_binding_file.py`) on every tool call; the motor writes it before the prompt and empties it when the turn ends, so a call with no turn bound fails instead of acting for the previous turn. (Until 2026-10-06 any turn with a binding spawned, so no Hub chat turn ever used the pool.)
 - **Model and context window.** Part of the slot's signature. A turn that needs a different one spawns as before, and the idle slot is respawned for it.
 
 Deadline and stall limits are enforced exactly as for a spawned turn. On overrun the process group is killed and the slot respawns. Slots recycle after `..._MAX_TURNS` turns or `..._MAX_AGE_SEC` seconds. A health loop respawns dead slots and `/clear`-probes slots that have been idle for 5 minutes.
 
-Any failure before the prompt is sent falls back to a per-turn spawn: pool not started, slot busy or warming, signature mismatch, `/clear` timeout, or the process dying before it says anything. It is logged as `fcc_warm_pool_fallback corr=... reason=...`. Every turn, in both modes, logs `fcc_turn_start_timing corr=... mode=warm|spawn spawn_or_acquire_ms=... first_event_ms=...`, and the same values go into the final frame metadata.
+Any failure before the prompt is sent falls back to a per-turn spawn: pool not started, slot busy or warming, signature mismatch, `/clear` timeout, or the process dying before it says anything. It is logged as `fcc_warm_pool_fallback corr=... reason=...`. Every turn also logs `fcc_warm_path_decision corr=... decision=try_warm|spawn:not_chat_reply|spawn:reading_only|spawn:no_pool_running chat_reply=... reading_only=... has_reading_binding=...`. Every turn, in both modes, logs `fcc_turn_start_timing corr=... mode=warm|spawn spawn_or_acquire_ms=... first_event_ms=...`, and the same values go into the final frame metadata.
 
 `GET /health` → `fcc_warm_pool` shows the slot states and hit/miss/respawn counters.
 

@@ -138,6 +138,14 @@ class CognitiveUnificationLayer:
             )
             return _lightweight_belief_set(anchors_resolved)
 
+        # A store that only snapshots some anchor scopes (FalkorAnchorStanceStore)
+        # cannot answer for the others; refuse rather than return an empty slice.
+        served_scopes = getattr(self._store, "snapshot_anchor_scopes", None)
+        if served_scopes is not None:
+            unserved = sorted(set(anchors) - set(served_scopes))
+            if unserved:
+                raise ValueError(f"store does not snapshot anchor scopes {unserved}")
+
         # Fresh ephemeral store per call (snapshot_ephemeral nodes are never cached)
         ephemeral_store = InMemorySubstrateGraphStore()
         ephemeral_materializer = SubstrateGraphMaterializer(store=ephemeral_store)

@@ -443,6 +443,10 @@ class Settings(BaseSettings):
     HUB_VISION_CROP_THUMB_DIR: str = Field(
         default="/mnt/telemetry/orion-vision-host/crop_thumbs", alias="HUB_VISION_CROP_THUMB_DIR"
     )
+    # Memory confirmation loop (2026-10-06): Confirm / Revise / Reject on "Orion is asking" memory
+    # cards (POST /api/asks/{id}/resolve -> attention_loop_outcome + orion:attention:loop_outcome).
+    # Kill switch: false returns 404 from the resolve route; the cards stay open, unanswered.
+    MEMORY_CONFIRMATION_LOOP_ENABLED: bool = Field(default=True, alias="MEMORY_CONFIRMATION_LOOP_ENABLED")
 
     # --- Biometrics Cache (Hub) ---
     BIOMETRICS_ENABLED: bool = Field(default=True, alias="BIOMETRICS_ENABLED")

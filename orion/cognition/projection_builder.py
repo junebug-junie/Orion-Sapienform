@@ -20,7 +20,6 @@ import os
 from typing import Any, Sequence
 
 from orion.cognition.projection import CognitiveProjectionV1, project_unified_beliefs_for_mind
-from orion.substrate import build_substrate_store_from_env
 from orion.substrate.relational import (
     CONCEPT_INDUCED,
     CONCEPT_INDUCED_EPHEMERAL,
@@ -224,7 +223,12 @@ def get_projection_unification_layer() -> CognitiveUnificationLayer:
     """Return the process-level CognitiveUnificationLayer used by projection builders."""
     global _UNIFICATION_LAYER
     if _UNIFICATION_LAYER is None:
-        store = build_substrate_store_from_env()
+        # Never hydrates the whole graph (14 s at 38k edges, paid on every
+        # human turn once the 30 s refresh ceiling had lapsed); reads only the
+        # anchor-scoped nodes and concept region the layer uses.
+        from orion.substrate.falkor_anchor_store import build_unification_store_from_env
+
+        store = build_unification_store_from_env()
         registry = build_projection_unification_registry(concept_store=store)
         _UNIFICATION_LAYER = CognitiveUnificationLayer(registry=registry, store=store)
     return _UNIFICATION_LAYER

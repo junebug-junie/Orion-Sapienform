@@ -1,6 +1,6 @@
 ## Summary
 
-Stacked on #2508 (`fix/turn-latency-l1-l3`). Unified-turn latency L6 step 2 (spec `docs/superpowers/specs/2026-10-06-unified-turn-latency-design.md`, corrections #1 and #4). Step 1 (decay fix, #2504) is merged and was verified live before this.
+Follows #2508 (built on it; #2508 merged to main while this was in progress, so this targets main). Unified-turn latency L6 step 2 (spec `docs/superpowers/specs/2026-10-06-unified-turn-latency-design.md`, corrections #1 and #4). Step 1 (decay fix, #2504) is merged and was verified live before this.
 
 - Every stance build used to write Orion's concept nodes back into the graph. That write made the store think something changed, so it reloaded the whole graph from Falkor a second time in the same build (about 4.5 s). The concept producer now keeps its copy for the turn only and writes nothing. One reload per build instead of two.
 - The concept producer read from its own private copy of the graph that was loaded once when the service started and never refreshed. It now reads the stance layer's own store, which the layer has just refreshed, so new concepts show up and no second Falkor connection is opened.
@@ -106,6 +106,6 @@ cd /mnt/scripts/Orion-Sapienform && ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2510
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

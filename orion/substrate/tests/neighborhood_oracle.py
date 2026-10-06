@@ -1,64 +1,22 @@
-"""Bounded semantic reads. These receipts are not transactional snapshots or ACLs."""
+"""Test oracle: read_neighborhood as merged in #2497 (origin/main 029322db2),
+before memory Stage 2 PR E batched the neighbor fetch. Frozen verbatim except
+for the function name. Do not edit to match the live code: its only job is to
+prove the live algorithm returns the same receipts.
+"""
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Callable, Literal, get_args
-
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Callable, get_args
 
 from orion.core.schemas.cognitive_substrate import (
-    BaseSubstrateNodeV1, SubstrateAnchorScopeV1, SubstrateEdgePredicateV1,
-    SubstrateEdgeV1, SubstratePromotionStateV1,
+    BaseSubstrateNodeV1, SubstrateEdgePredicateV1, SubstrateEdgeV1,
+)
+from orion.substrate.neighborhood import (
+    Group, NeighborhoodRequestV1, NeighborhoodResultV1, _unique_nodes, now,
 )
 
 
-def now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-class NeighborhoodRequestV1(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    focal_node_ids: tuple[str, ...] = Field(max_length=16)
-    direction: Literal["both", "incoming", "outgoing"] = "both"
-    semantic_states: tuple[SubstratePromotionStateV1, ...] = ("provisional", "canonical")
-    anchor_scopes: tuple[SubstrateAnchorScopeV1, ...] = get_args(SubstrateAnchorScopeV1)
-    internal_edge_limit: int = Field(default=12, ge=0, le=256)
-    boundary_edge_limit: int = Field(default=16, ge=0, le=256)
-    neighbor_node_limit: int = Field(default=16, ge=0, le=256)
-    # No stable snapshot token exists yet. Never silently reuse a mutable cursor.
-    continuation: str | None = None
-
-    def eligible(self, node: BaseSubstrateNodeV1) -> bool:
-        return (node.node_kind in {"concept", "entity"}
-                and node.promotion_state in self.semantic_states
-                and node.anchor_scope in self.anchor_scopes)
-
-
-@dataclass(frozen=True)
-class NeighborhoodResultV1:
-    focal_nodes: list[BaseSubstrateNodeV1] = field(default_factory=list)
-    neighbor_nodes: list[BaseSubstrateNodeV1] = field(default_factory=list)
-    internal_edges: list[SubstrateEdgeV1] = field(default_factory=list)
-    boundary_edges: list[SubstrateEdgeV1] = field(default_factory=list)
-    source_kind: str = "cache"
-    read_started_at: str = field(default_factory=now)
-    read_finished_at: str = field(default_factory=now)
-    complete_for_request: bool = False
-    truncated: bool = False
-    degraded: bool = False
-    reason: str | None = None
-    missing_focal_node_ids: tuple[str, ...] = ()
-    continuations: tuple[str, ...] = ()
-    consistency: str = "best_effort_non_atomic"
-
-
-# A boundary group has one focal node, one direction, and one predicate.
-Group = tuple[str, str, str]
-
-
-def read_neighborhood(
+def read_neighborhood_per_neighbor(
     request: NeighborhoodRequestV1, *, source_kind: str,
     nodes: Callable[[list[str]], list[BaseSubstrateNodeV1]],
     groups: Callable[[list[str]], list[Group]],
@@ -68,8 +26,6 @@ def read_neighborhood(
 
     Read at most budget+1 edges per group, paging even through short pages.
     Missing/invalid data fails closed, without cache hydration or writeback.
-    ``nodes`` is called at most twice per read: once for the focal ids and
-    once, batched, for every admitted neighbor.
     """
     started = now()
     if request.continuation is not None:
@@ -154,12 +110,7 @@ def read_neighborhood(
                 if not direction_queue:
                     del directions[focal_id]
 
-        # Select edges first (the budget decision needs only ids), then fetch
-        # every admitted neighbor in ONE nodes() call instead of one call per
-        # neighbor. Any missing, duplicate or ineligible endpoint still fails
-        # the whole read closed, exactly as the per-neighbor fetch did.
-        neighbor_ids: list[str] = []
-        admitted: set[str] = set()
+        neighbors: dict[str, BaseSubstrateNodeV1] = {}
         boundary: list[SubstrateEdgeV1] = []
         seen_edges = {edge.edge_id for edge in internal}
         for edge in ordered:
@@ -168,17 +119,15 @@ def read_neighborhood(
             seen_edges.add(edge.edge_id)
             outside = edge.target.node_id if edge.source.node_id in focal else edge.source.node_id
             if (len(boundary) >= request.boundary_edge_limit or
-                    (outside not in admitted and len(admitted) >= request.neighbor_node_limit)):
+                    (outside not in neighbors and len(neighbors) >= request.neighbor_node_limit)):
                 truncated = True
                 continue
-            if outside not in admitted:
-                admitted.add(outside)
-                neighbor_ids.append(outside)
+            if outside not in neighbors:
+                found = _unique_nodes(nodes([outside]))
+                if set(found) != {outside} or not request.eligible(found[outside]):
+                    raise ValueError("endpoint_changed_or_unavailable")
+                neighbors[outside] = found[outside]
             boundary.append(edge)
-        found = _unique_nodes(nodes(neighbor_ids)) if neighbor_ids else {}
-        if set(found) != admitted or not all(request.eligible(node) for node in found.values()):
-            raise ValueError("endpoint_changed_or_unavailable")
-        neighbors = {key: found[key] for key in neighbor_ids}
         all_nodes = {**focal, **neighbors}
         for edge in internal + boundary:
             for ref in (edge.source, edge.target):
@@ -197,47 +146,3 @@ def read_neighborhood(
         # can contain backend credentials; expose only its type, not its message.
         return NeighborhoodResultV1(source_kind=source_kind, read_started_at=started,
             read_finished_at=now(), degraded=True, reason=f"unavailable:{type(exc).__name__}")
-
-
-def _unique_nodes(values: list[BaseSubstrateNodeV1]) -> dict[str, BaseSubstrateNodeV1]:
-    result = {node.node_id: node for node in values}
-    if len(result) != len(values):
-        raise ValueError("duplicate_node_id")
-    return result
-
-
-def read_memory_neighborhood(store, request: NeighborhoodRequestV1) -> NeighborhoodResultV1:
-    # Local fixture store already owns the whole graph. Never call snapshot(),
-    # which could trigger durable hydration on a different backend.
-    def eligible_edges(ids):
-        for edge in store._edges.values():
-            src, dst = store._nodes.get(edge.source.node_id), store._nodes.get(edge.target.node_id)
-            if src and dst and request.eligible(src) and request.eligible(dst):
-                if src.node_id in ids or dst.node_id in ids:
-                    yield edge
-
-    def groups(ids):
-        result = set()
-        for edge in eligible_edges(ids):
-            src, dst = edge.source.node_id, edge.target.node_id
-            if src in ids and dst not in ids:
-                result.add((src, "outgoing", edge.predicate))
-            if dst in ids and src not in ids:
-                result.add((dst, "incoming", edge.predicate))
-        return sorted(result)
-
-    def edges(ids, group, after, limit):
-        values = []
-        for edge in eligible_edges(ids):
-            src, dst = edge.source.node_id, edge.target.node_id
-            match = src in ids and dst in ids if group is None else (
-                edge.predicate == group[2] and (
-                    (group[1] == "incoming" and dst == group[0] and src not in ids) or
-                    (group[1] == "outgoing" and src == group[0] and dst not in ids)))
-            if match and edge.edge_id > after:
-                values.append(edge)
-        return sorted(values, key=lambda edge: edge.edge_id)[:limit]
-
-    return read_neighborhood(request, source_kind="cache",
-        nodes=lambda ids: [store._nodes[key] for key in ids if key in store._nodes],
-        groups=groups, edges=edges)

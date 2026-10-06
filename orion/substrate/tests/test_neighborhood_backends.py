@@ -7,6 +7,7 @@ from orion.substrate.graphdb_store import GraphDBSubstrateStore, GraphDBSubstrat
 from orion.substrate.neighborhood import NeighborhoodRequestV1
 from orion.substrate.query_planning import SubstrateSemanticReadCoordinator, SubstrateQueryPlanStepV1, SubstrateQueryPlanV1
 from orion.substrate.tests.test_neighborhood import concept, edge, graph, assert_endpoints
+from orion.substrate.evals.neighborhood_fixture import hub_fixture
 
 
 class NativeFixture:
@@ -19,9 +20,11 @@ class NativeFixture:
         self.calls.append((query, params))
         assert not any(word in query for word in ("MERGE", "SET ", "DELETE", "CREATE"))
         if "MATCH (n:SubstrateNode)" in query:
-            assert "n.node_id = $node_id" in query and "LIMIT 2" in query
-            node = self.store._nodes.get(params["node_id"])
-            return [encode_node_properties(node, node.node_id)] if node else []
+            # Batched: one IN-list read per call, LIMIT 2n keeps duplicates visible.
+            assert "n.node_id IN $node_ids" in query
+            assert f"LIMIT {2 * len(params['node_ids'])}" in query
+            return [encode_node_properties(self.store._nodes[key], key)
+                    for key in params["node_ids"] if key in self.store._nodes]
         assert "source.promotion_state IN $states" in query
         assert "target.anchor_scope IN $scopes" in query
         items = []
@@ -32,6 +35,10 @@ class NativeFixture:
                 continue
             if "focal" in params:
                 incoming = "target.node_id = $focal" in query
+                # Group reads bind the focal endpoint before the expand so
+                # FalkorDB seeks the node_id index instead of a label scan.
+                inside = "target" if incoming else "source"
+                assert query.startswith(f"MATCH ({inside}:SubstrateNode) WHERE {inside}.node_id = $focal WITH {inside} ")
                 inside, outside = (dst, src) if incoming else (src, dst)
                 if inside.node_id != params["focal"] or outside.node_id in params["ids"]:
                     continue
@@ -116,3 +123,47 @@ def test_planner_exposes_distinct_internal_and_boundary_refs():
     assert result.details["focal_edge_refs"] == ["internal-1", "internal-2"]
     assert set(result.details["boundary_edge_refs"]) == {"incoming", "outgoing"}
     assert set(result.details["neighbor_node_refs"]) == {"ccc", "ddd"}
+
+
+def test_neighbors_are_fetched_in_one_batched_node_call(monkeypatch):
+    """PR E: the per-neighbor round trip is gone; receipts are unchanged."""
+    import orion.substrate.neighborhood as module
+
+    store, focal = hub_fixture(40)
+    request = NeighborhoodRequestV1(focal_node_ids=focal)
+    expected = module.read_memory_neighborhood(store, request)
+    calls = []
+    original = module.read_neighborhood
+
+    def counting(request, *, nodes, **kwargs):
+        return original(request, nodes=lambda ids: calls.append(list(ids)) or nodes(ids), **kwargs)
+
+    monkeypatch.setattr(module, "read_neighborhood", counting)
+    actual = module.read_memory_neighborhood(store, request)
+    assert len(calls) == 2, calls
+    assert calls[0] == sorted(focal)
+    assert calls[1] == [n.node_id for n in actual.neighbor_nodes] and len(calls[1]) > 1
+    assert ids(actual) == ids(expected)
+    assert (actual.truncated, actual.complete_for_request, actual.degraded, actual.reason) == (
+        expected.truncated, expected.complete_for_request, expected.degraded, expected.reason)
+
+
+def test_batched_neighbor_fetch_still_fails_closed_on_a_vanished_endpoint():
+    store, focal = hub_fixture(5)
+    from orion.substrate.neighborhood import read_neighborhood
+    result = read_neighborhood(NeighborhoodRequestV1(focal_node_ids=focal), source_kind="test",
+        nodes=lambda ids: [store._nodes[key] for key in ids if key in store._nodes and key != "neighbor-0003"],
+        groups=lambda ids: sorted({(e.target.node_id, "incoming", e.predicate) for e in store._edges.values()
+                                   if e.target.node_id in ids and e.source.node_id not in ids}
+                                  | {(e.source.node_id, "outgoing", e.predicate) for e in store._edges.values()
+                                     if e.source.node_id in ids and e.target.node_id not in ids}),
+        edges=lambda ids, group, after, limit: sorted(
+            [e for e in store._edges.values() if e.edge_id > after and (
+                (group is None and e.source.node_id in ids and e.target.node_id in ids) or
+                (group is not None and e.predicate == group[2] and (
+                    (group[1] == "incoming" and e.target.node_id == group[0] and e.source.node_id not in ids) or
+                    (group[1] == "outgoing" and e.source.node_id == group[0] and e.target.node_id not in ids))))],
+            key=lambda e: e.edge_id)[:limit])
+    assert result.degraded and not result.complete_for_request
+    assert not result.neighbor_nodes and not result.boundary_edges
+    assert result.reason == "unavailable:ValueError"

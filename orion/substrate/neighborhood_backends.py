@@ -36,16 +36,19 @@ def read_falkor_neighborhood(store, request: NeighborhoodRequestV1):
         return _normalize_rows(store._client.graph_query(text, params=params), fields=fields)
 
     def nodes(ids):
+        # One indexed IN-list read per call. LIMIT 2n keeps a duplicate
+        # node_id visible to _unique_nodes, as LIMIT 2 per id did.
+        if not ids:
+            return []
+        fields = NATIVE_NODE_RETURN_FIELDS
+        rows = query("MATCH (n:SubstrateNode) WHERE n.node_id IN $node_ids RETURN "
+            + _return_clause("n", fields) + f" LIMIT {2 * len(ids)}", {"node_ids": list(ids)}, fields)
         result = []
-        for node_id in ids:
-            fields = NATIVE_NODE_RETURN_FIELDS
-            rows = query("MATCH (n:SubstrateNode) WHERE n.node_id = $node_id RETURN "
-                + _return_clause("n", fields) + " LIMIT 2", {"node_id": node_id}, fields)
-            for row in rows:
-                node = decode_node(row)
-                if node is None:
-                    raise ValueError("invalid_node")
-                result.append(node)
+        for row in rows:
+            node = decode_node(row)
+            if node is None:
+                raise ValueError("invalid_node")
+            result.append(node)
         return result
 
     def where(ids, group=None):
@@ -68,12 +71,23 @@ def read_falkor_neighborhood(store, request: NeighborhoodRequestV1):
                 params["predicate"] = predicate
         return condition, params
 
-    match = "MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode) WHERE "
+    edge_match = "MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode) WHERE "
+
+    def match(group):
+        # Without the WITH barrier both FalkorDB 4.18 and 6.0 plan an
+        # incoming group as a label scan over every source node (~50-120 ms
+        # on the live graph). Binding the focal endpoint first makes it an
+        # index seek (~1 ms). The WHERE clause is unchanged, so the rows are.
+        if group is None:
+            return edge_match
+        inside = "target" if group[1] == "incoming" else "source"
+        return (f"MATCH ({inside}:SubstrateNode) WHERE {inside}.node_id = $focal "
+                f"WITH {inside} " + edge_match)
 
     def predicates(ids, focal, direction, after):
         condition, params = where(ids, (focal, direction, None))
         params["after"] = after
-        rows = query(match + condition + "AND e.predicate > $after "
+        rows = query(match((focal, direction, None)) + condition + "AND e.predicate > $after "
             "RETURN DISTINCT e.predicate AS predicate ORDER BY predicate LIMIT 16",
             params, ("predicate",))
         return [row["predicate"] for row in rows]
@@ -82,7 +96,7 @@ def read_falkor_neighborhood(store, request: NeighborhoodRequestV1):
         condition, params = where(ids, group)
         params.update(after=after)
         fields = NATIVE_EDGE_RETURN_FIELDS
-        rows = query(match + condition + "AND e.edge_id > $after RETURN "
+        rows = query(match(group) + condition + "AND e.edge_id > $after RETURN "
             + _edge_hydrate_return_clause(fields) + f" ORDER BY e.edge_id LIMIT {limit}", params, fields)
         result = []
         for row in rows:
@@ -96,8 +110,24 @@ def read_falkor_neighborhood(store, request: NeighborhoodRequestV1):
         groups=lambda ids: _groups(ids, request, predicates), edges=edges)
 
 
-def read_sparql_neighborhood(store, request: NeighborhoodRequestV1):
+def sparql_nodes(store, ids):
+    """Per-id reads: a SPARQL endpoint may cap result rows, and a capped
+    batched read would drop nodes. Not the hot path (production is Falkor)."""
     from .graphdb_store import NODE_ADAPTER, ORION_SUBSTRATE_NS
+
+    prefix = f"PREFIX orion: <{ORION_SUBSTRATE_NS}>\n"
+    graph = f"GRAPH <{store._cfg.graph_uri}>"
+    result = []
+    for node_id in ids:
+        rows = store._select(prefix + f"SELECT ?payload_json WHERE {{ {graph} {{ "
+            f"?n orion:nodeId {store._lit(node_id)} ; orion:payloadJson ?payload_json . }} }} LIMIT 2")
+        for row in rows:
+            result.append(NODE_ADAPTER.validate_json(store._binding_str(row, "payload_json")))
+    return result
+
+
+def read_sparql_neighborhood(store, request: NeighborhoodRequestV1):
+    from .graphdb_store import ORION_SUBSTRATE_NS
     from orion.core.schemas.cognitive_substrate import SubstrateEdgeV1
 
     prefix = f"PREFIX orion: <{ORION_SUBSTRATE_NS}>\n"
@@ -108,13 +138,7 @@ def read_sparql_neighborhood(store, request: NeighborhoodRequestV1):
         return ", ".join(lit(item) for item in items)
 
     def nodes(ids):
-        result = []
-        for node_id in ids:
-            rows = store._select(prefix + f"SELECT ?payload_json WHERE {{ {graph} {{ "
-                f"?n orion:nodeId {lit(node_id)} ; orion:payloadJson ?payload_json . }} }} LIMIT 2")
-            for row in rows:
-                result.append(NODE_ADAPTER.validate_json(store._binding_str(row, "payload_json")))
-        return result
+        return sparql_nodes(store, ids)
 
     def pattern(ids, group=None):
         # Empty IN lists are not portable SPARQL. The driver has no eligible

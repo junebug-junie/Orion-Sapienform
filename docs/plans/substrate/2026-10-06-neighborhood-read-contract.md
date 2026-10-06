@@ -99,3 +99,41 @@ Local evidence: `/tmp/reading-neighborhood/candidate.json`, `request.json`,
 `live-replay.json`, and `live-census.json`. No service restart or production write
 was performed. The proposed reading assertion → review → projection → UI path
 remains **UNVERIFIED** and outside this patch.
+
+## Round trips and index seeks (memory Stage 2, PR E)
+
+Same contract, same receipts; fewer and cheaper queries.
+
+- **Neighbors are fetched in one call.** The algorithm first decides which
+  boundary edges fit the budgets (that needs only ids), then calls `nodes()`
+  once with every admitted neighbor. `nodes()` now runs at most twice per read
+  (focal, then neighbors). A missing, duplicate or ineligible neighbor still
+  fails the whole read closed. Falkor reads them with one indexed
+  `n.node_id IN $node_ids` query (`LIMIT 2n`, so duplicates stay visible).
+  SPARQL keeps per-id reads, because an endpoint may cap result rows.
+- **Group reads seek the `node_id` index.** Both FalkorDB 4.18 and 6.0 planned
+  every *incoming* group read as a label scan over all source nodes (50–120 ms
+  each on the live graph). Group reads now bind the focal endpoint first
+  (`MATCH (target:SubstrateNode) WHERE target.node_id = $focal WITH target …`);
+  the WHERE clause is unchanged. `test_neighborhood_falkor_live.py` EXPLAINs
+  every query a real read issues and fails on any label scan.
+
+Measured on throwaway FalkorDB copies of production (read-only DUMP, 5,051
+nodes, 38,393 edges, `node_id` index present), 20 runs each:
+
+| Request | 4.18.11 p95 before → after | 6.0.1 p95 before → after |
+|---|---|---|
+| circe entity, 4/8/8 | 249.6 → 26.5 ms | 391.6 → 25.2 ms |
+| GPU concept, 12/16/16 | 430.8 → 53.7 ms | 330.7 → 71.9 ms |
+| #2497's 8 hub nodes, 12/16/16 | 1,077.4 → 104.5 ms | 1,326.0 → 127.8 ms |
+
+Equivalence: 305 requests (5 named + 300 random focal sets, budgets, states,
+directions) gave byte-identical receipts before and after on both engines.
+
+## Evidence handles: not in this patch
+
+A bounded `read_evidence_handles` read (which source items back a node, as of
+a time) was built and measured for this patch, then cut under the rule that no
+concept lands without a runtime consumer. It lands in memory Stage 2 PR F
+together with recall-by-referent, its first consumer. Concept table:
+`orion/substrate/README.md`.

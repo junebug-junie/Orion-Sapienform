@@ -185,6 +185,6 @@ python scripts/backfill_referents_from_episodes.py --dsn "$DSN"            # dry
 
 ## PR link
 
-(filled in after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2520
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

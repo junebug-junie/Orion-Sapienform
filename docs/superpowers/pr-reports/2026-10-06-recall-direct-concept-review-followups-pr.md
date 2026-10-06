@@ -182,7 +182,8 @@ Not deployed (instruction). No new dependencies. Throwaway FalkorDB containers o
 - Both 4.18 and 6.0 answer a repeat create with "Attribute 'node_id' is already indexed", which the bootstrap treats as success. Neither version accepts `IF NOT EXISTS`.
 
 **Startup safety:**
-- The bootstrap uses its own client with a 5 s read and 2 s connect timeout. In recall it uses the store's 1.5 s / 1.0 s timeouts.
+- The bootstrap uses its own client with a 5 s read and 2 s connect timeout, and closes that client when it is done.
+- In recall it runs once, in a background thread started after the store is built and outside `_STORE_LOCK`, so it never adds time to a turn.
 - It catches every exception and logs `falkor_substrate_index_create_failed`.
 - It returns, never raises, so a down FalkorDB delays construction by at most a few seconds and never fails it.
 
@@ -218,7 +219,42 @@ The bootstrap also creates the same index on the AI Town and Self graphs (`orion
 - Finding: the comparison script did not check that the cached graph load completed, and mixed matched and empty turns together.
   - Fix: exits 2 before comparing when the load is incomplete; separate matched/empty summaries with true maxima.
   - Evidence: `test_compare_concept_region_script.py` (4 tests).
-- Code review of this follow-up: not run here. The orchestrator runs it.
+
+### Second review (#2513), fixed on this branch
+
+- Finding: the circuit breaker could be fooled while open.
+  - What went wrong: `record_success` reset the timeout count even when the breaker was open. A call that started before the breaker opened, and then succeeded, wiped the count. After the cooldown it then took 3 more timeouts to reopen.
+  - Fix: the breaker now has three states: closed, open, and half-open. Counts reset only when closed, and successes while open are ignored. After the cooldown, `allow()` lets exactly one caller through as a test request (atomically, under the lock); everyone else keeps skipping. If that test request succeeds the breaker closes; if it times out the breaker reopens right away; if it fails for another reason, the slot is freed for the next caller. The comment block now describes exactly this.
+  - Evidence (all with an injected clock):
+    - `test_in_flight_success_does_not_mask_an_open_breaker`
+    - `test_half_open_admits_exactly_one_probe_under_concurrency` (16 threads behind a barrier: exactly 1 admitted)
+    - `test_probe_success_closes_and_probe_timeout_reopens_immediately` (one timeout reopens, trips go to 2)
+    - `test_probe_non_timeout_error_frees_the_probe_slot`
+  - Mutation checks: putting back the reset-while-open, or removing the single-probe rule, fails the matching tests.
+- Finding: the first store build in recall touched the network while holding `_STORE_LOCK` (`CREATE INDEX` in the direct-store builder), and the breaker did not count its timeout.
+  - Fix: the builder takes `ensure_indexes=False`. Recall starts `ensure_substrate_indexes` in a background daemon thread after the build, outside the lock. The `get_substrate_store` docstring is updated to match.
+  - Evidence:
+    - `test_hung_falkor_at_first_build_does_not_delay_the_first_turn`: against a real server that accepts connections and never answers, with a 0.5 s read timeout, the build takes under 0.1 s and the whole first turn under 0.85 s, i.e. one read timeout.
+    - `test_index_bootstrap_runs_off_the_lock_and_off_the_caller`: the bootstrap is still blocked, yet the lock is free and the store is served.
+    - Mutation check: putting the index call back in the build fails both tests.
+- Finding: `ensure_substrate_indexes` leaked the connection pool of the client it builds for itself.
+  - Fix: `RedisGraphQueryClient.close()` added; a client the function built is closed in `finally`, and an injected client is never closed.
+  - Evidence: `test_ensure_indexes_closes_only_the_client_it_built` (closed on success, on an error, and when a `KeyboardInterrupt` propagates; an injected client is never closed) and `test_redis_graph_client_close_releases_the_pool`.
+- Finding: the comparison script's production guard checked only port 6380.
+  - Fix: `--reinforce` now also refuses host `orion-athena-falkordb`, and any URI that resolves to the same address and port as the default production URI or the configured `FALKORDB_URI`.
+  - Evidence: `test_production_guard_covers_hostname_port_and_configured_uri`.
+
+**Pre-existing failures, unrelated to this PR.** The following fail identically on origin/main (checked in a detached worktree of main):
+- `orion/substrate/tests/test_felt_state_self_definition_lane.py`, 3 tests: `test_where_clause_and_aliases_are_rendered_into_the_query`, `test_a_miss_is_remembered_for_the_cache_ttl_and_does_not_leak_into_ctx`, `test_a_failing_query_is_also_remembered_as_a_miss`;
+- the 2 `test_falkor_materialization` and 3 orion-substrate-runtime failures listed above.
+
+**Re-run after the second-review fixes:**
+- orion-recall: 368 passed, plus the same 2 known failures.
+- `orion/substrate` + `orion/graph` + concept-induction tests: 1171 passed, 15 skipped, 5 pre-existing failures.
+- Real-FalkorDB lane: 26/26 on 4.18.11 and 26/26 on 6.0.1.
+- Static gates: 25/25. Env parity: pass.
+
+Code review of the second-review fixes: not run here; the orchestrator runs it.
 
 ## Restart required
 
@@ -229,6 +265,8 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && ORION_ALLOW_SHARED_CHE
 ```
 
 The other substrate services (cortex-exec, hub, substrate-runtime, concept induction) get the bootstrap on their next normal rebuild. The one-line `CREATE INDEX` above covers production until then.
+
+**Status update:** the production index was created and verified with EXPLAIN by the orchestrator on 2026-10-06.
 
 ## Risks / concerns
 

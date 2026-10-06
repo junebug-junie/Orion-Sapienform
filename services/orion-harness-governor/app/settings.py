@@ -169,6 +169,12 @@ class HarnessGovernorSettings(BaseSettings):
     harness_fcc_setting_sources: str = Field(
         "user,local", alias="HARNESS_FCC_SETTING_SOURCES"
     )
+    # Auto-memory off for Hub chat-reply turns only, read directly from the
+    # environment by orion.harness.fcc_motor.chat_auto_memory_disabled;
+    # mirrored here so operators see the effective value.
+    harness_fcc_chat_disable_auto_memory: bool = Field(
+        True, alias="HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY"
+    )
     # Repeat-failing-call breaker threshold, read directly from the environment
     # by orion.harness.fcc_motor.repeat_failure_threshold; mirrored here so
     # operators see the effective value. 0 disables.

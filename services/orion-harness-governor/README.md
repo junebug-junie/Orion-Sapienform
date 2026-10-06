@@ -157,6 +157,22 @@ The unified-turn introspection experiment for these flags lives at `scripts/run_
 
 **This is genuinely full, unprompted Bash/tool access, not a narrowed grant** — know what the container can reach before relying on it. This container mounts `/var/run/docker.sock` (host Docker daemon) and `${HOME}/.ssh:/root/.ssh:ro` (the operator's real SSH key, for `git push`) — both real capabilities, not repo-write-only. The two things standing between a bad turn and real damage are (1) `HARNESS_FCC_WORKSPACE`'s disposable sandbox checkout, whose only path back to this repo is `git push` to a non-main branch gated by GitHub branch protection (`orion/fcc/sandbox_sync.py`), and (2) `--setting-sources user,local`, which drops this repo's own project-level hooks (including `destructive_git_guard`) for FCC turns — deliberately, since the read-only repo mount already covers what that hook protects, but it means no repo-committed hook gates a root FCC Bash call; whatever gates it must live in the operator-managed `harness-claude-config` volume instead (not checked by this repo or its tests).
 
+### Chat replies do not read Claude Code auto-memory
+
+Claude Code keeps an "auto-memory" notes folder per working directory and loads it into every session. Every FCC turn runs in the same sandbox checkout, so Hub chat replies were reading notes that curiosity, urgent, self-inquiry and mutation runs wrote there, with no review or provenance.
+
+`HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY=true` (default, shipped on) spawns `claude` with `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` for chat-reply turns only: requests whose `utterance_origin` is `juniper` (`orion/harness/runner.py::is_chat_reply_request`). Investigation turns (`utterance_origin=orion`) and other callers (outreach, collapse mirror, reading) keep today's behavior. Nothing is deleted. Rollback: set it to `false` and restart. Spec: `docs/superpowers/specs/2026-10-06-unified-turn-latency-design.md`, L7.
+
+Proof query (read-only; phrase leak in Hub chat replies over 7 days):
+
+```sql
+select count(*) turns,
+  count(*) filter (where t.run_artifact->>'final_text' ~* '(prediction[ _-]?error|bus[ _-]?synaptic)') turns_with_phrase
+from harness_turn_trace t
+join chat_history_log c on c.correlation_id = t.correlation_id and c.source = 'hub_orion'
+where t.created_at > now() - interval '7 days';
+```
+
 ### Stream stall detection
 
 Claude Code only writes a `stream-json` line once a step fully completes — with no `--include-partial-messages`, a single assistant message that never reaches a stop condition produces zero output. Before `HARNESS_FCC_STREAM_STALL_TIMEOUT_SEC` existed, the governor's only defense was `HARNESS_FCC_TIMEOUT_SEC` (900s default) applied to *each* `readline()` call, so one stuck message could hang a turn for the full 15 minutes with the Hub UI showing nothing.

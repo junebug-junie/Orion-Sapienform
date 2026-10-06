@@ -229,6 +229,14 @@ class HarnessRunRequestV1(BaseModel):
     # attachments/recent_turns/situation_prompt_fragment convention of
     # getattr(request, "...", None) at every read site.
     mode: str | None = None
+    # Who the turn answers: "juniper" for a Hub chat reply (Juniper typed it),
+    # "orion" for Orion's own curiosity/self-inquiry/urgent runs, None for
+    # every other caller (outreach, collapse mirror, reading). Copied from
+    # execute_unified_turn's utterance_origin. The governor uses it to keep
+    # Claude Code auto-memory out of chat replies only
+    # (HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY). None from an older Hub build
+    # means "not a chat reply", i.e. today's behavior.
+    utterance_origin: str | None = None
     attachments: list[HarnessAttachmentV1] = Field(
         default_factory=list,
         description=(

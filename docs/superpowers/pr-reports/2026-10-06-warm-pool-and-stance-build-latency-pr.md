@@ -120,6 +120,6 @@ scripts/safe_docker_build.sh orion-cortex-exec up -d --build
 
 ## PR link
 
-(filled after creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2518
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

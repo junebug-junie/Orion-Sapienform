@@ -72,22 +72,28 @@ async def _seed(pool):
     cid = uuid.uuid4()
     await pool.execute("INSERT INTO memory_crystallizations VALUES ($1, 'semantic', 'active', 'Headed to Austin and will fly back on Wednesday.')", cid)
     await pool.execute("INSERT INTO memory_crystallization_sources VALUES ($1, 'chat_turn', 'c-1')", cid)
-    said, unverified, reverie = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-    for mid, voice, channel, statement in (
-        (said, "juniper_said", "chat", "Juniper flew to Austin for her team offsite."),
-        (unverified, "juniper_said", "chat", "Juniper prefers the window seat on flights."),
-        (reverie, "orion_thought", "reverie", "Juniper is probably nervous about the Austin offsite."),
+    said, unverified, reverie, together, rejected = (uuid.uuid4() for _ in range(5))
+    for mid, voice, channel, statement, state in (
+        (said, "juniper_said", "chat", "Juniper flew to Austin for her team offsite.", "auto"),
+        (unverified, "juniper_said", "chat", "Juniper prefers the window seat on flights.", "auto"),
+        (reverie, "orion_thought", "reverie", "Juniper is probably nervous about the Austin offsite.", "auto"),
+        (together, "worked_out_together", "chat", "We agreed the offsite slides go out on Tuesday.", "auto"),
+        (rejected, "juniper_said", "chat", "Juniper plans to move to Austin next spring.", "rejected"),
     ):
         await pool.execute(
             """INSERT INTO episode_memory (memory_id, episode_id, purpose, voice, channel, statement, stakes,
                confirmation_state, strength, half_life_days, last_reinforced_at, occurred_at)
-               VALUES ($1, 'ep-1', 'happened', $2, $3, $4, 'low', 'auto', 0.8, 14, now(), $5)""",
-            mid, voice, channel, statement, T0)
+               VALUES ($1, 'ep-1', 'happened', $2, $3, $4, 'low', $5, 0.8, 14, now(), $6)""",
+            mid, voice, channel, statement, state, T0)
     # Only the first memory has a verified quote from one of Juniper's own prompts.
     await pool.execute(
         """INSERT INTO episode_memory_evidence (memory_id, source_kind, source_id, quote, quote_sha256, verified)
            VALUES ($1, 'chat_prompt', 'c-1', 'Headed to Austin', 'h1', true),
-                  ($2, 'chat_prompt', 'c-1', 'window seat please', 'h2', false)""", said, unverified)
+                  ($2, 'chat_prompt', 'c-1', 'window seat please', 'h2', false),
+                  ($3, 'chat_prompt', 'c-2', 'slides Tuesday?', 'h3', true),
+                  ($3, 'chat_response', 'c-2', 'Tuesday works for the slides', 'h4', true),
+                  ($4, 'chat_prompt', 'c-1', 'Austin next spring', 'h5', true)""",
+        said, unverified, together, rejected)
     await pool.execute(
         """INSERT INTO episode_memory_event (event_id, op, actor, episode_id, reason)
            VALUES ($1, 'rejected_invalid', 'memory.episode_distill', 'ep-1', 'no_verified_quote')""", uuid.uuid4())
@@ -108,7 +114,7 @@ async def test_report_puts_old_rows_next_to_new_memories(tmp_path):
         path = await episode_report.write_due_report(pool, settings, now=now)
         assert path is not None and path.name == "2026-09-28.md"
         text = path.read_text()
-        assert "1 episodes closed" in text and "Totals: 1 old crystallization rows, 3 new memories." in text
+        assert "1 episodes closed" in text and "Totals: 1 old crystallization rows, 5 new memories." in text
         assert "[semantic, active] Headed to Austin" in text
         # Each memory is shown exactly as Orion would read it (orion.memory.voice_render).
         assert ("[happened, juniper_said/chat] Juniper told me (09-28): "
@@ -117,6 +123,10 @@ async def test_report_puts_old_rows_next_to_new_memories(tmp_path):
                 "Juniper prefers the window seat on flights.") in text
         assert ("[happened, orion_thought/reverie] Something I was turning over on my own (reverie, 09-28), "
                 "not something Juniper and I discussed: Juniper is probably nervous") in text
+        assert ("[happened, worked_out_together/chat] Juniper and I worked out (09-28): "
+                "We agreed the offsite slides go out on Tuesday.") in text
+        assert ("[happened, juniper_said/chat] Something I had remembered (09-28) that Juniper rejected, "
+                "not true: Juniper plans to move to Austin next spring.") in text
         assert "rejected_invalid no_verified_quote x1" in text
         assert "900 tokens in, 120 out" in text
         assert (tmp_path / "latest.md").read_text() == text

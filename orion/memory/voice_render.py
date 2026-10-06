@@ -1,38 +1,36 @@
-"""One voice renderer for recalled memory (memory redesign rev 3, section 7).
+"""One voice renderer for remembered items (memory redesign rev 3, section 7).
 
 Turns a remembered item into the line Orion reads, saying whose thought it
 is. Pure function; no I/O.
 
-Source monitoring is one-directional, as in the Stage 1 validator
-(``orion/memory/episode/validate.py``):
+Source monitoring reuses the Stage 1 validator's own rules
+(``orion/memory/episode/validate.py``), so the renderer can never be looser
+than what the writer would have kept:
 
-* Only two paths may put words in Juniper's mouth or claim the two of them
-  worked something out: ``juniper_said`` and ``worked_out_together``, and
-  only on the ``chat`` channel (``worked_out_together`` also on
-  ``confirmation``). ``juniper_said`` also needs a verified quote from one of
-  Juniper's own prompts.
+* Juniper's voices only arrive through ``chat`` (``validate.py`` rejects
+  them on any other channel).
+* The voice is first re-checked against the verified evidence with the
+  validator's ``_supported_voice``: ``worked_out_together`` needs a verified
+  quote from Juniper's prompt AND from Orion's reply; ``juniper_said`` needs
+  a verified prompt quote; ``orion_thought`` needs any verified quote. Missing
+  evidence moves the voice only AWAY from Juniper, never toward her.
 * Anything on an internal channel (reverie, curiosity, dream, journal,
   topic_model) renders as Orion's own private thought, whatever its voice
-  says. It informs Orion as a prior; it is never something Juniper said and
-  never something the two of them discussed.
-* Every other mismatch (unknown voice, ``juniper_said`` without a verified
-  quote, a voice on the wrong channel) falls back to Orion's own voice, never
-  toward Juniper's.
+  says: an informed prior, never something Juniper said or discussed.
+* Everything else falls back to "My own note…, not Juniper's words".
+* A memory Juniper rejected or corrected never renders as current truth.
 
-Callers today: the chat stance's reverie glimpse
-(``services/orion-cortex-exec/app/chat_stance.py``) and the Stage 1 episode
-report (``orion/memory/episode/report.py``).
+Callers: the daily episode report (``orion/memory/episode/report.py``, live)
+and the legacy ``chat_general`` stance's reverie glimpse
+(``services/orion-cortex-exec/app/chat_stance.py``; rendered only by
+``chat_stance_brief.j2``, which had no live traffic on 2026-10-06).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from orion.memory.episode.validate import INTERNAL_CHANNELS
-
-# Channels on which Juniper and Orion actually exchanged words.
-_SHARED_CHANNELS = frozenset({"chat"})
-_WORKED_OUT_CHANNELS = frozenset({"chat", "confirmation"})
+from orion.memory.episode.validate import INTERNAL_CHANNELS, _supported_voice
 
 
 @dataclass(frozen=True)
@@ -43,14 +41,11 @@ class VoicedMemory:
     channel: str
     statement: str
     when: date | datetime | None = None
-    # juniper_said only renders as Juniper's words with a verified quote from
-    # one of her own chat prompts (episode_memory_evidence: source_kind
-    # chat_prompt, verified).
+    # Verified quotes behind the memory (episode_memory_evidence, verified):
+    # from one of Juniper's chat prompts, and from one of Orion's replies.
     has_verified_juniper_quote: bool = False
+    has_verified_orion_quote: bool = False
     confirmation_state: str = "auto"  # auto | pending_confirmation | confirmed | corrected | rejected
-    # Not here yet, on purpose (no producer today): a reading's title and claim
-    # status, a graphify build date, and the "faded" marker. They arrive with
-    # the producers that can fill them (Stage 2 PR F; fading is Stage 4).
 
 
 def _day(value: date | datetime | None) -> str:
@@ -63,22 +58,19 @@ def speaker(item: VoicedMemory) -> str:
     """Whose words the rendered line attributes the statement to.
 
     One of ``juniper``, ``together``, ``orion_to_juniper``, ``orion_private``
-    (internal channel), ``orion_note`` (any other mismatch), ``orion_read``,
-    ``orion_self_knowledge``. Tests and evals key on this, not on wording.
+    (internal channel) or ``orion_note`` (anything else). Tests key on this.
     """
-    voice, channel = item.voice, item.channel
-    if channel in INTERNAL_CHANNELS:
+    if item.channel in INTERNAL_CHANNELS:
         return "orion_private"
-    if voice == "juniper_said" and channel in _SHARED_CHANNELS and item.has_verified_juniper_quote:
-        return "juniper"
-    if voice == "worked_out_together" and channel in _WORKED_OUT_CHANNELS:
+    if item.channel != "chat":
+        return "orion_note"
+    voice = _supported_voice(item.voice, item.has_verified_juniper_quote, item.has_verified_orion_quote)
+    if voice == "worked_out_together":
         return "together"
-    if voice == "orion_thought" and channel in _SHARED_CHANNELS:
+    if voice == "juniper_said":
+        return "juniper"
+    if voice == "orion_thought" and (item.has_verified_juniper_quote or item.has_verified_orion_quote):
         return "orion_to_juniper"
-    if voice == "orion_read" and channel == "reading":
-        return "orion_read"
-    if voice == "orion_self_knowledge" and channel == "graphify":
-        return "orion_self_knowledge"
     return "orion_note"
 
 
@@ -86,6 +78,10 @@ def render_memory(item: VoicedMemory) -> str:
     """The single line Orion reads for one remembered item."""
     statement = " ".join(str(item.statement or "").split())
     when = _day(item.when)
+    if item.confirmation_state == "rejected":
+        return f"Something I had remembered ({when}) that Juniper rejected, not true: {statement}"
+    if item.confirmation_state == "corrected":
+        return f"Something I had remembered ({when}) that Juniper corrected, superseded: {statement}"
     who = speaker(item)
     if who == "juniper":
         line = f"Juniper told me ({when}): {statement}"
@@ -93,10 +89,6 @@ def render_memory(item: VoicedMemory) -> str:
         line = f"Juniper and I worked out ({when}): {statement}"
     elif who == "orion_to_juniper":
         line = f"I told Juniper ({when}): {statement}"
-    elif who == "orion_read":
-        line = f"I read ({when}): {statement}"
-    elif who == "orion_self_knowledge":
-        line = f"From my own code and docs ({when}): {statement}"
     elif who == "orion_private":
         line = (f"Something I was turning over on my own ({item.channel}, {when}), "
                 f"not something Juniper and I discussed: {statement}")

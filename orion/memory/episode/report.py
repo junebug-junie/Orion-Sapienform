@@ -33,7 +33,9 @@ NEW_ROWS_SQL = """
 SELECT m.memory_id::text AS id, m.purpose, m.voice, m.channel, m.statement, m.stakes, m.stakes_reason,
        m.confirmation_state, coalesce(m.occurred_at, m.created_at) AS remembered_at,
        EXISTS (SELECT 1 FROM episode_memory_evidence e WHERE e.memory_id = m.memory_id
-               AND e.source_kind = 'chat_prompt' AND e.verified) AS has_verified_juniper_quote
+               AND e.source_kind = 'chat_prompt' AND e.verified) AS has_verified_juniper_quote,
+       EXISTS (SELECT 1 FROM episode_memory_evidence e WHERE e.memory_id = m.memory_id
+               AND e.source_kind = 'chat_response' AND e.verified) AS has_verified_orion_quote
 FROM episode_memory m WHERE m.episode_id = $1 ORDER BY m.purpose, m.statement
 """
 EVENTS_SQL = """
@@ -62,6 +64,7 @@ def _voiced(m: dict[str, Any], tz: ZoneInfo) -> VoicedMemory:
         voice=str(m["voice"]), channel=str(m["channel"]), statement=str(m["statement"]),
         when=remembered.astimezone(tz) if isinstance(remembered, datetime) else None,
         has_verified_juniper_quote=bool(m.get("has_verified_juniper_quote")),
+        has_verified_orion_quote=bool(m.get("has_verified_orion_quote")),
         confirmation_state=str(m.get("confirmation_state") or "auto"),
     )
 

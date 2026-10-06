@@ -122,13 +122,12 @@ pytest orion/substrate/tests/test_current_turn_signal_detector.py -q
 python services/orion-cortex-exec/evals/run_current_turn_signal_eval.py
 ```
 
-### PCR retrieval intent and the reverie glimpse voice (memory Stage 2, PR D)
+### Reverie glimpse voice label (memory Stage 2, PR D)
 
-PCR phase 3 picks its recall profile with `orion/memory/retrieval_intent.py`. Since 2026-10-06 it reads
-only model judgments (stance brief, turn-change appraisal, `ctx["current_turn_llm_signals"]`) and explicit
-ids; a loop in the attention frame no longer forces `open_loop` (630 of 630 recalls were `open_loop` before).
-The reverie glimpse in the stance prompt goes through `orion/memory/voice_render.py`, so it always reads as
-Orion's own thought. Concept table: `orion/memory/README.md`.
+`_project_reverie_glimpse` renders the latest reverie through `orion/memory/voice_render.py`, so it reads as
+Orion's own thought, "not something Juniper and I discussed". Only `chat_stance_brief.j2` (the legacy
+`chat_general` stance) renders `chat_reverie_glimpse`; the live `stance_react.j2` does not. Adding it there is
+pending Juniper's decision. Concept table: `orion/memory/README.md`.
 
 ### Grammar substrate (shadow observability)
 

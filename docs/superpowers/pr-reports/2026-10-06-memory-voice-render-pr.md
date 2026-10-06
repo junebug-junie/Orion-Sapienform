@@ -1,123 +1,110 @@
-# feat(memory): voice renderer + intent fix
+# feat(memory): voice renderer
 
-Memory Stage 2, PR D (design: `docs/superpowers/specs/2026-10-06-memory-stage2-referent-graph-design.md`, PR #2496, section 4.2 and row D of 7.5; voice contract: rev 3 section 7). This PR does two things. It makes Orion's remembered items say whose thought they are. And it stops chat recall from picking the same "open loop" mode on every single turn.
+Memory Stage 2, PR D (design: `docs/superpowers/specs/2026-10-06-memory-stage2-referent-graph-design.md`, PR #2496, row D of 7.5; voice contract: rev 3 section 7). This PR makes Orion's remembered items say whose thought they are. The intent fix that was first in this PR has been removed after review: its signals are dead on the live path. It moves to PR F (see "Input for PR F" below).
 
 ## Summary
 
-- **One voice renderer, `orion/memory/voice_render.py`.** It turns a remembered item into the line Orion reads: "Juniper told me (10-04): …", "I told Juniper …", or "Something I was turning over on my own (reverie, 10-04), not something Juniper and I discussed: …". It is a pure function with two live callers in this PR.
-- **A reverie can never be rendered as something Juniper said.** Anything on an internal channel (reverie, curiosity, dream, journal, topic_model) renders as Orion's own private thought, whatever voice it carries. "Juniper told me" needs a `juniper_said` chat memory *and* a verified quote from one of her prompts. Every other mismatch falls back to "My own note…, not Juniper's words". It never falls toward Juniper.
-- **Live caller 1, the chat stance's reverie glimpse.** Today the latest reverie reaches the stance prompt as a bare `reverie_glimpse:` line, with nothing saying it was Orion's own idea. It now arrives labelled. Checked on the 20 newest real reveries: 20 of 20 render as Orion's own thought.
-- **Live caller 2, the daily episode report.** Each memory now shows exactly the line Orion would read. The old label map (`_VOICE_LABEL`) is deleted, not kept alongside.
-- **The intent fix.** Purposeful recall used `open_loop` for 630 of 630 chat turns in the last 7 days. Any loop in the attention frame forced it, and live chat frames always carry several substrate "prediction error" loops. Now the intent comes from model judgments (stance, turn-change appraisal, and the same-turn LLM's typed reading of the message) and explicit ids. There are no word lists. The old capitalized-word regex and the "plan/step/…" substring list are removed.
+- **One voice renderer, `orion/memory/voice_render.py`.** It turns a remembered item into the line Orion reads:
+  - "Juniper told me (10-04): …"
+  - "Juniper and I worked out …"
+  - "I told Juniper …"
+  - "Something I was turning over on my own (reverie, 10-04), not something Juniper and I discussed: …"
+  - "My own note …, not Juniper's words: …"
+  - It is a pure function.
+- **It uses the Stage 1 validator's own rules, so it can never be looser than the writer.** It calls `validate.py`'s `_supported_voice` and its channel rule:
+  - "Juniper and I worked out" needs a chat memory with verified quotes from both her prompt and Orion's reply.
+  - "Juniper told me" needs a verified prompt quote.
+  - Juniper's voices exist only on `chat` (not `confirmation`).
+  - Missing evidence moves the voice only away from Juniper.
+- **A reverie is never rendered as something Juniper said.** Anything on an internal channel renders as Orion's own private thought, whatever its voice claims.
+- **Rejected and corrected memories never render as truth.** They read "Something I had remembered (…) that Juniper rejected, not true: …" or "…that Juniper corrected, superseded: …".
+- **The live consumer is the daily episode report.** Each memory now shows exactly the line Orion would read; the report's old label map is deleted.
+- **The reverie glimpse is also wired, but only on the legacy path.** `chat_stance._project_reverie_glimpse` renders through the renderer. Only `chat_stance_brief.j2` (the legacy `chat_general` stance) shows `chat_reverie_glimpse`, and it had no live turns on 2026-10-06. The live `stance_react.j2` never renders it. Adding it there is pending Juniper's decision and is not done here.
 
 ## Outcome moved
 
-- **Source monitoring on the live path.** Before: the stance prompt received reverie text unlabelled. After: every reverie is labelled as Orion's own thought, "not something Juniper and I discussed" (20/20 real reveries). Run through the renderer, the 31 live episode memories give 27 "Juniper told me" (all 27 have a verified prompt quote) and 4 "I told Juniper".
-- **Intent before (live, read-only `recall_telemetry`, 7 days):** `chat.belief.open_loop.v1` 630; every other `chat.belief.*` profile 0. The cortex log confirms `rule_id=open_loops_present` on the turns still in the log buffer.
-- **Intent after: UNVERIFIED live** (not deployed, per instruction). Offline evidence:
-  - The per-turn inputs are mostly not persisted (the stance brief and attention frame are never stored), so a full replay is impossible.
-  - The one stored model signal, the turn-change appraisal in `chat_history_log.spark_meta`, covers 44 of the phase-3 turns over 30 days. It says TOPIC shift ≥ 0.35 on 15 and STANCE shift on 3. Under the old rule all 44 were `open_loop`; under the new rules those 18 alone become `semantic` or `relational`.
-  - Caveat: nothing in cortex-exec puts that appraisal into the turn context before phase 3 runs (it is computed after the turn). The shift rules may therefore rarely fire live. The live variation is expected to come from the stance fields and the same-turn LLM signals, which are present on human turns (cortex log: `current_turn_llm_read … items=1`).
-- **Post-deploy check (the spec's acceptance, "≥ 3 intents over 7 days"):**
-  ```sql
-  SELECT profile, count(*) FROM recall_telemetry
-  WHERE created_at > now() - interval '7 days' AND profile LIKE 'chat.%' GROUP BY 1 ORDER BY 2 DESC;
-  ```
-  Turns whose intent is `continuity` skip phase 3, so they show only `chat.continuity.v1`. Per-turn `rule_id` is in the cortex log line `pcr_phase3_* … rule_id=`.
+- **The daily report shows source monitoring as rendered**, not just the stored voice label. The 31 live episode memories render as 27 "Juniper told me" (each with a verified prompt quote) and 4 "I told Juniper" (each with a verified quote). Checked read-only.
+- **No live chat behavior changes in this PR.** The stance prompt that live chat uses is untouched, and so is PCR intent selection (reverted to main).
 
 ## Current architecture
 
-- `derive_retrieval_intent` checked `attention_frame.open_loops` first, and returned `open_loop` if the list was non-empty.
-- After that it used a capitalized-word regex (`entity_query`, which matches the first word of almost any sentence) and a substring list over `response_priorities`.
-- The procedural rule needed `task_mode == "instrumental"`, which is not one of the stance template's `task_mode` literals.
-- `voice_render.py` did not exist. The reverie glimpse was passed through raw. The episode report used its own label dict.
+- `voice_render.py` did not exist.
+- The episode report printed its own label map (`_VOICE_LABEL`) next to the raw statement.
+- The reverie glimpse passed the raw interpretation into `chat_stance_brief.j2` (legacy path).
 
 ## Architecture touched
 
-- `orion/memory/voice_render.py` (new): `VoicedMemory`, `render_memory`, `speaker`. It reuses the Stage 1 validator's `INTERNAL_CHANNELS`, so there is one definition of "internal".
-- `orion/memory/retrieval_intent.py`, rule order:
-  - skip;
-  - relational stance;
-  - STANCE shift;
-  - TOPIC shift;
-  - REPAIR shift (now the only `open_loop` trigger);
-  - contradiction seed;
-  - procedural stance (`conversation_frame=planning` or `task_mode=technical_collaboration`);
-  - the turn-signal referent rule (person → relational, plan → procedural, anything else named → semantic);
-  - brain-lane default;
-  - continuity.
-- `services/orion-cortex-exec/app/pcr_chat_memory.py`: passes `ctx["current_turn_llm_signals"]` instead of the raw user message.
-- `services/orion-cortex-exec/app/chat_stance.py`: the reverie glimpse goes through the renderer.
-- `orion/memory/episode/report.py`: renders each memory through the renderer. Its query adds `remembered_at` and a `has_verified_juniper_quote` EXISTS check.
+- `orion/memory/voice_render.py` (new): `VoicedMemory`, `render_memory`, `speaker`. It imports `INTERNAL_CHANNELS` and `_supported_voice` from `orion/memory/episode/validate.py`.
+- `orion/memory/episode/report.py`: renders through the renderer. The query adds `remembered_at` and two EXISTS checks: a verified prompt quote and a verified reply quote.
+- `services/orion-cortex-exec/app/chat_stance.py`: the legacy reverie glimpse goes through the renderer.
 
 ## Concepts (producer → consumer → test)
 
 | Concept | Producer | Consumer | Test |
 |---|---|---|---|
-| `render_memory` / `VoicedMemory` / `speaker` | reverie glimpse; episode report rows | stance prompt (`chat_stance_brief.j2` `reverie_glimpse`); daily report file | `test_voice_render.py` (672-case matrix + contract rows), glimpse tests, PG report test |
-| "Juniper told me" (`juniper`) | live distiller `juniper_said`/chat with verified prompt quote (27 rows) | report | matrix, `test_juniper_said_needs_a_verified_prompt_quote` |
-| "Juniper and I worked out" (`together`) | validator keeps `worked_out_together` when prompt and response quotes both verify | report | matrix |
-| "I told Juniper" (`orion_to_juniper`) | live `orion_thought`/chat (4 rows) | report | matrix |
-| "…on my own…, not something Juniper and I discussed" (`orion_private`) | every reverie glimpse; any internal-channel memory | stance prompt; report | matrix, `test_the_180_hecate_reveries_case`, `test_glimpse_is_never_presented_as_juniper_or_as_shared` |
-| "My own note…, not Juniper's words" (`orion_note`) | any other mismatch (e.g. `juniper_said` without a verified quote) | report | PG report test (unverified row) |
-| "I read" / "From my own code and docs" | validator keeps `orion_read` / `orion_self_knowledge` with response evidence | report | `test_contract_table_rows` |
-| "Unconfirmed, check with Juniper if natural:" | validator sets `pending_confirmation` for high stakes | report | `test_pending_marker` |
-| Intent rule ids (`relational_mode`, `stance_shift`, `topic_shift`, `repair_shift`, `contradiction_seed`, `procedural_mode`, `brain_lane_belief_default`, `continuity_only`) | `derive_retrieval_intent` | `run_pcr_phase3` → `chat.belief.<intent>.v1` or skip; `rule_id` in recall `task_hints`, log line, `ctx.debug.pcr` | `tests/test_retrieval_intent.py` (22), `test_phase3_profile_follows_the_turn_not_the_frame` |
-| `turn_names_person` / `turn_names_plan` / `turn_names_topic` (new) | same-turn LLM signals (`current_turn_llm_signals.py`) | same as above | `test_turn_signal_referent_rule`, caller test |
+| `render_memory` / `VoicedMemory` / `speaker` | episode report rows (live); legacy reverie glimpse | daily report file (live); `chat_stance_brief.j2` (legacy, 0 live turns) | `test_voice_render.py`, `test_episode_report_pg.py`, glimpse tests |
+| "Juniper told me" | live `juniper_said`/chat rows with a verified prompt quote (27) | report | matrix, `test_juniper_said_needs_a_verified_prompt_quote`, PG test |
+| "Juniper and I worked out" | validator keeps `worked_out_together` only with prompt + reply quotes on chat | report | `test_worked_out_together_needs_both_quotes_and_chat`, PG test |
+| "I told Juniper" | live `orion_thought`/chat rows with a verified quote (4) | report | matrix |
+| "…on my own…, not something Juniper and I discussed" | internal-channel memories; legacy glimpse | report; legacy stance prompt | matrix, `test_the_180_hecate_reveries_case`, PG test |
+| "My own note…, not Juniper's words" | any row failing the checks above | report | matrix, PG test |
+| "Unconfirmed, check with Juniper if natural:" | validator sets `pending_confirmation` for high stakes | report | `test_pending_marker_and_whitespace` |
+| "…that Juniper rejected, not true" / "…corrected, superseded" | `episode_memory.confirmation_state` | report | `test_rejected_and_corrected_are_never_plain_truth`, matrix, PG test |
 
-The same table is in `orion/memory/README.md` (new) with a plain-English column, and `services/orion-cortex-exec/README.md` points to it.
+The same table, with a plain-English column, is in `orion/memory/README.md` (new). `services/orion-cortex-exec/README.md` notes that the glimpse is legacy-only.
 
-**Cut on purpose (no producer or no consumer in this PR):**
-- **The intent → memory-kind table.** Live PCR does not retrieve episode memories at all, so wiring the table in means building recall-by-referent. That is PR F.
-- **`MemoryItemV1` voice/`recall_reason` fields.** Their consumer is recall's render, which is PR F.
-- **The renderer's reading title and claim status, graphify build date, and "faded" suffix.** Nothing produces them today; `status=faded` has no writer.
-- **The open-loop rules for "a loop that persists across turns" and "an open follow-up whose referents appear in the turn".** No in-turn input exists for either until PR F.
+**Cut on purpose (no producer or no consumer):**
+- **The intent change** (below).
+- **"I read" / "From my own code and docs".** The validator turns `orion_read`/`orion_self_knowledge` into `orion_thought` for chat episodes, so nothing produces them. This PR's first report wrongly said the validator kept them.
+- **Reading titles, claim status, graphify build dates and the "faded" marker.** Nothing produces them yet.
+- **The intent → memory-kind table and the `MemoryItemV1` voice fields.** Both go to PR F.
 
-**How intent avoids a word list:** each input is a model's own closed-vocabulary output or an id:
-- stance `task_mode`/`conversation_frame` literals from `chat_stance_brief.j2`;
-- turn-change `shift_kind` from the LLM classifier in `classify.py`;
-- the same-turn LLM's `type` field (`person|place|plan|belief|concept|activity|other`, `_ALLOWED_TYPES` in `current_turn_llm_signals.py`);
-- seed and contradiction ids.
+## Input for PR F: why the intent change was removed
 
-No rule reads the message text.
+This PR first changed `derive_retrieval_intent` so that `open_loop` stopped winning on every turn (630 of 630 purposeful recalls in 7 days used `chat.belief.open_loop.v1`). Review of #2521 (orchestrator, 2026-10-06) replayed 590 live turns and found the replacement does not work on the live path:
+
+- **The turn-change appraisal is post-turn.** `chat_stance_belief_log.shift_kind` is null on 56,520 of 56,520 rows, so the TOPIC/STANCE/REPAIR shift rules never fire live.
+- **Repair pressure is absent too.** `thought_decision.repair_pressure_level` is null on 659 of 659 rows.
+- **The net effect would have been a shift, not a fix.** On the 590-turn replay, the change cut phase 3 by about 50%, and the remaining intents came out about 85% `relational`. One dominant intent replaced another.
+
+This PR's own work had flagged the post-turn appraisal as UNVERIFIED; the review confirmed it dead.
+
+For PR F: intent and memory selection should key on **referents known before the turn**, i.e. recall by referent from the alias map, not on post-turn appraisals. These two observations also hold and stay useful there:
+- the same-turn LLM signal (`current_turn_llm_signals`) is present on human turns;
+- the old `entity_query` regex matches the first capitalized word of nearly any sentence.
+
+`orion/memory/retrieval_intent.py`, its tests and its cortex-exec caller are byte-identical to origin/main in this PR.
 
 ## Files changed
 
 - `orion/memory/voice_render.py`: new renderer.
-- `orion/memory/retrieval_intent.py`: intent rules from model signals; `open_loops_present`, `entity_query` and the priority word list removed.
-- `orion/memory/episode/report.py`: renders through `voice_render`; `_VOICE_LABEL` deleted; query adds `remembered_at` and `has_verified_juniper_quote`.
-- `services/orion-cortex-exec/app/chat_stance.py`: reverie glimpse rendered as Orion's own thought.
-- `services/orion-cortex-exec/app/pcr_chat_memory.py`: passes `current_turn_llm_signals`.
-- `orion/memory/tests/test_voice_render.py` (new), `tests/test_retrieval_intent.py`, `services/orion-cortex-exec/tests/test_pcr_chat_memory.py`, `services/orion-cortex-exec/tests/test_chat_stance_reverie_glimpse_projection.py`, `services/orion-memory-consolidation/tests/test_episode_report_pg.py`: tests.
-- `.github/workflows/memory-voice-intent-tests.yml` (new): runs the renderer, intent and cortex caller tests. Nothing in CI ran `tests/test_retrieval_intent.py` or the cortex PCR tests before.
+- `orion/memory/episode/report.py`: renders through `voice_render`; `_VOICE_LABEL` deleted; query adds `remembered_at`, `has_verified_juniper_quote`, `has_verified_orion_quote`.
+- `services/orion-cortex-exec/app/chat_stance.py`: legacy reverie glimpse labelled.
+- `orion/memory/tests/test_voice_render.py` (new): 1,680-case matrix over voice × channel × evidence × confirmation state, plus contract tests.
+- `services/orion-memory-consolidation/tests/test_episode_report_pg.py`: five memories through the real SQL (verified, unverified, reverie, worked-out-together with both quotes, rejected).
+- `services/orion-cortex-exec/tests/test_chat_stance_reverie_glimpse_projection.py`: the glimpse expects the labelled line, and never presents a reverie as Juniper's or shared.
+- `.github/workflows/memory-voice-render-tests.yml` (new): the renderer matrix and glimpse tests.
 - `orion/memory/README.md` (new), `services/orion-cortex-exec/README.md`: concepts.
 
 ## Schema / bus / API changes
 
-- Added: none on the bus or in the registry. `derive_retrieval_intent` takes `turn_signals` instead of `user_message` (one in-repo caller, updated).
-- Removed: rule ids `open_loops_present` and `entity_query`.
+- None on the bus or in the registry. New internal function `orion.memory.voice_render.render_memory`.
 - Behavior changed:
-  - PCR phase 3 profile selection, as above.
-  - The stance prompt's `reverie_glimpse` text now carries a voice label.
-  - The episode report's memory lines changed format.
-- Compatibility: `RetrievalIntentV1` values and `PROFILE_FOR_INTENT` are unchanged.
+  - The daily episode report's memory lines.
+  - The legacy `chat_general` stance prompt's `reverie_glimpse` text, which gains a label.
 
 ## Env/config changes
 
-- None. No `.env_example` touched, so no `.env` sync was needed. No new flags. Rollback is a revert; the old rule was the bug.
+- None. No `.env_example` touched, so no `.env` sync was needed. No flags.
 
 ## Tests run
 
 ```text
-renderer + intent (PYTHONPATH=.):                       699 passed
+renderer matrix + contract (orion/memory/tests):                           1685 passed
 orion/memory/episode/tests + orion/memory/tests + orion-memory-consolidation tests + evals,
-  against a throwaway postgres:16 (ORION_MEMORY_EPISODE_TEST_DATABASE_URL set):  1145 passed, 0 skipped
-orion-cortex-exec PCR + glimpse + grounding + retrieval-query callers:          49 passed
-new CI workflow's dependency set, verified in a clean venv:                      699 + 21 passed
-orion-cortex-exec full suite: 1084 passed; failure set equals origin/main 029322db2's except
-  2 situation-freshness tests (test_fresh_capture_is_available, test_fresh_percept_is_available) that
-  fail only in full-suite order and pass alone; they touch nothing changed here
-mutation check: restoring "any frame loop -> open_loop" fails 4 caller tests and 5 intent tests
+  against a throwaway postgres:16 (ORION_MEMORY_EPISODE_TEST_DATABASE_URL set): 2153 passed, 0 skipped
+orion-cortex-exec glimpse + PCR + grounding + unified phase01:               30 passed
+tests/test_retrieval_intent.py (main's behavior, unchanged):                 8 passed
 static gates (all 25 run steps of orion-static-gates.yml, incl. check_definition_drift --gate): 25/25 PASS
 pyflakes on touched files: clean; git diff --check: clean
 ```
@@ -125,49 +112,51 @@ pyflakes on touched files: clean; git diff --check: clean
 ## Evals run
 
 ```text
-No eval harness exists for PCR intent selection. Live/offline checks instead:
-- 31 live episode memories through the renderer: 27 "Juniper told me" (27/27 with a verified prompt quote), 4 "I told Juniper"
-- 20 newest live reverie thoughts through the real glimpse projection: 20/20 "on my own ... not something Juniper and I discussed"
-- recall_telemetry 7 d before: chat.belief.open_loop.v1 = 630 of 630 purposeful recalls
-Follow-up: the spec's eval 4 (source monitoring over 7 days of shadow recall) belongs to PR F's evals/referent/.
+No eval harness for rendering. Live read-only check: 31 live episode memories through the renderer with
+their real evidence flags -> 27 "Juniper told me", 4 "I told Juniper", 0 other.
+The spec's eval 4 (source monitoring over 7 days of shadow recall) belongs to PR F's evals/referent/.
 ```
 
 ## Docker/build/smoke checks
 
 ```text
 Not deployed (instruction). No dependency changes. Throwaway postgres:16 container for the PG-backed tests.
-Production was only read (read-only transactions on recall_telemetry, episode_memory*, substrate_reverie_thought,
-chat_history_log, attention_salience_trace; docker logs).
+Production was only read (read-only transactions; docker logs).
 ```
 
 ## Review findings fixed
 
-Review subagent not run (instruction). Self-found during the work:
-- Finding: the procedural rule required `task_mode == "instrumental"`, which the stance template never emits.
-  - Fix: use the template's own literals (`conversation_frame=planning`, `task_mode=technical_collaboration`).
-  - Evidence: `test_derive_retrieval_intent_rules` procedural rows.
-- Finding: a `juniper_said` chat memory without a verified quote would have read "on my own… not something we discussed", which is false for a chat item.
-  - Fix: a separate `orion_note` fallback ("My own note…, not Juniper's words").
-  - Evidence: PG report test.
-- Finding: the new caller test passed alone but failed in the full suite, because other tests re-import `app.*`.
-  - Fix: patch `run_pcr_phase3.__globals__` directly.
-  - Evidence: full-suite run.
+Review of #2521 (orchestrator, 2026-10-06):
+- Finding: the intent change's signals are dead live (post-turn appraisal; null repair pressure). The 590-turn replay showed a ~50% phase-3 cut and ~85% relational.
+  - Fix: removed; the intent files are identical to main. Recorded above as input for PR F.
+  - Evidence: `git diff origin/main` on those 4 files is empty.
+- Finding: the claim that the reverie label changes live chat is false. Only the legacy `chat_stance_brief.j2` renders the glimpse.
+  - Fix: claims corrected here and in both READMEs. The live consumer is the daily report. `stance_react.j2` is untouched pending Juniper.
+- Finding: `worked_out_together` rendered without evidence and on `confirmation`.
+  - Fix: the renderer runs the validator's `_supported_voice` (prompt and reply quotes) and its chat-only rule.
+  - Evidence: `test_worked_out_together_needs_both_quotes_and_chat`, matrix.
+- Finding: `rejected` was missing from the test states, and a rejected memory could render as "Juniper told me".
+  - Fix: rejected and corrected render explicitly marked as not true or superseded.
+  - Evidence: matrix now covers 5 states; PG test includes a rejected row.
+- Finding: tests injected an appraisal no live turn has.
+  - Fix: removed with the intent change.
+
+Self-found earlier: a `juniper_said` chat memory without a verified quote would have read "on my own…", which is false for chat; it now reads "My own note…, not Juniper's words".
 
 ## Restart required
 
-After merge, from the primary checkout on main (one line each):
+After merge, from the primary checkout on main (one line each). The report change is picked up by orion-memory-consolidation. orion-cortex-exec only affects the legacy path.
 
 ```bash
-cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh orion-cortex-exec up -d --build
-cd /mnt/scripts/Orion-Sapienform && ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh orion-memory-consolidation up -d --build
+cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh orion-memory-consolidation up -d --build
+cd /mnt/scripts/Orion-Sapienform && ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh orion-cortex-exec up -d --build
 ```
 
 ## Risks / concerns
 
-- Severity: medium. Concern: fewer purposeful recalls. A turn with no relational/procedural stance, no shift, no seed and no typed signal now gets `continuity` and skips phase 3. Before, every such turn ran an `open_loop` belief recall (p50 ~1.2 s). Orion's own turns never have same-turn signals. Mitigation: this is the designed behavior that the open-loop flood was masking. Watch `chat.belief.*` volume in `recall_telemetry` after deploy. Restoring the old rule is a revert.
-- Severity: medium. Concern: the intent mix after deploy is unknown. The stance brief is not persisted, so `relational_mode` could dominate as `open_loop` did. Mitigation: the SQL above. If one intent dominates, the next step is persisting the stance fields per turn, not a word list.
-- Severity: low. Concern: the reverie glimpse wording changes the stance prompt. Mitigation: the statement text is unchanged and only a label is added.
-- UNVERIFIED: the live intent distribution; whether `turn_change_appraisal` is ever present in the context at phase-3 time (no producer found in cortex-exec).
+- Severity: low. Concern: live chat does not use the renderer yet. Mitigation: that is PR F's recall render, plus Juniper's pending decision on `stance_react.j2`; stated here and in the READMEs.
+- Severity: low. Concern: the renderer imports a private validator helper (`_supported_voice`). Mitigation: it is deliberate, so writer and renderer cannot drift apart; any change to it is covered by both test sets.
+- UNVERIFIED: the daily report file after deploy (not deployed).
 
 ## PR link
 

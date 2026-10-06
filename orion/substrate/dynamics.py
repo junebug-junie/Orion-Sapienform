@@ -6,7 +6,15 @@ from datetime import datetime, timezone
 
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1
 
-from .activation import ActivationConfig, decay_activation, seed_activation
+from .activation import (
+    ACTIVATION_DECAYED_AT_KEY,
+    DECAY_MODE_LEGACY,
+    ActivationConfig,
+    activation_decay_anchor,
+    decay_activation,
+    normalize_decay_mode,
+    seed_activation,
+)
 from .falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS
 from .pressure import (
     PressureConfig,
@@ -60,8 +68,14 @@ class SubstrateDynamicsEngine:
         pressure_config: PressureConfig | None = None,
         dormancy_threshold: float = 0.08,
         revival_threshold: float = 0.2,
+        decay_mode: str = "since_last",
     ) -> None:
         self._store = store
+        # since_last (default): decay the stored activation only by the time
+        # since it was last decayed (metadata[activation_decayed_at]).
+        # legacy: decay by the full time since observed_at every tick, which
+        # compounds. Rollback only; see orion/substrate/activation.py.
+        self._decay_mode = normalize_decay_mode(decay_mode)
         self._activation_config = activation_config or ActivationConfig()
         self._pressure_config = pressure_config or PressureConfig()
         self._dormancy_threshold = dormancy_threshold
@@ -113,16 +127,56 @@ class SubstrateDynamicsEngine:
         dormancy_transitions: list[DormancyTransitionV1] = []
         pressure_changed_ids = {update.node_id for update in pressure_updates}
 
+        legacy_decay = self._decay_mode == DECAY_MODE_LEGACY
         for node_id, node in updated_nodes.items():
             prev_activation = node.signals.activation.activation
-            new_activation = activations.get(node_id, prev_activation)
-            elapsed_seconds = max(0.0, (tick_at - node.temporal.observed_at).total_seconds())
-            new_activation = decay_activation(
-                current=new_activation,
-                elapsed_seconds=elapsed_seconds,
-                half_life_seconds=node.signals.activation.decay_half_life_seconds,
-                floor=node.signals.activation.decay_floor,
-            )
+            combined_activation = activations.get(node_id, prev_activation)
+            half_life = node.signals.activation.decay_half_life_seconds
+            floor = node.signals.activation.decay_floor
+            observed_at = node.temporal.observed_at
+            if observed_at.tzinfo is None:
+                observed_at = observed_at.replace(tzinfo=timezone.utc)
+            age_seconds = max(0.0, (tick_at - observed_at).total_seconds())
+            new_decay_stamp: datetime | None = None
+            if legacy_decay:
+                # Pre-2026-10-06: the stored (already-decayed) value is folded
+                # into combined_activation and decayed again by the node's full
+                # age, so the loss compounds tick over tick.
+                new_activation = decay_activation(
+                    current=combined_activation,
+                    elapsed_seconds=age_seconds,
+                    half_life_seconds=half_life,
+                    floor=floor,
+                )
+            else:
+                # Two terms, each decayed exactly once per unit of real time:
+                # - fresh input (seed from recency/salience/pressure, plus
+                #   propagation) is recomputed from node state every tick, so
+                #   decaying it by full age is a closed form, not a compound;
+                # - the stored value is already decayed up to its anchor, so it
+                #   decays only by the time since then.
+                # max() of the two equals the legacy max(seed, stored) whenever
+                # the anchor is observed_at (no stamp yet).
+                anchor = activation_decay_anchor(node)
+                since_last_seconds = max(0.0, (tick_at - anchor).total_seconds())
+                fresh_activation = activations.get(f"{node_id}:fresh", combined_activation)
+                new_activation = max(
+                    decay_activation(
+                        current=fresh_activation,
+                        elapsed_seconds=age_seconds,
+                        half_life_seconds=half_life,
+                        floor=floor,
+                    ),
+                    decay_activation(
+                        current=prev_activation,
+                        elapsed_seconds=since_last_seconds,
+                        half_life_seconds=half_life,
+                        floor=floor,
+                    ),
+                )
+                # Never move the stamp backwards (clock skew, or an
+                # observed_at in the future relative to this tick).
+                new_decay_stamp = max(anchor, tick_at)
             metadata = dict(node.metadata)
             dormant_prev = bool(metadata.get("dormant", False))
             dormant_new = dormant_prev
@@ -163,9 +217,26 @@ class SubstrateDynamicsEngine:
             # any node changed, which is indistinguishable on disk from real growth and
             # forces far more frequent compaction than actual data volume warrants.
             if activation_changed or dormant_new != dormant_prev or node_id in pressure_changed_ids:
+                if legacy_decay:
+                    persisted_activation = round(new_activation, 6)
+                elif activation_changed:
+                    # Unrounded on purpose: the stamp says "this exact value is
+                    # valid as of tick_at". Rounding to 6 places would drop up
+                    # to 5e-7 per write, a systematic bias for slow-decaying
+                    # nodes that only cross the 1e-6 write threshold every few
+                    # ticks.
+                    persisted_activation = new_activation
+                    metadata[ACTIVATION_DECAYED_AT_KEY] = new_decay_stamp.isoformat()
+                else:
+                    # Written only for pressure/dormancy. Keep the stored value
+                    # AND its stamp together: persisting a sub-threshold decay
+                    # with a fresh stamp would round it away and restart the
+                    # clock every tick, freezing decay for any node whose
+                    # pressure moves every tick.
+                    persisted_activation = prev_activation
                 activation_bundle = node.signals.activation.model_copy(
                     update={
-                        "activation": round(new_activation, 6),
+                        "activation": persisted_activation,
                         "recency_score": round(fresh_recency, 6),
                     }
                 )
@@ -280,6 +351,10 @@ class SubstrateDynamicsEngine:
         now: datetime,
     ) -> dict[str, float]:
         activations: dict[str, float] = {}
+        # Fresh input only (seed + propagation), excluding the stored value.
+        # tick() decays this by full age and the stored value by time since
+        # last decay; see the since_last branch there.
+        fresh: dict[str, float] = {}
         recency_scores: dict[str, float] = {}
         for node in nodes.values():
             contradiction_boost = 0.0
@@ -293,6 +368,7 @@ class SubstrateDynamicsEngine:
                 contradiction_boost=contradiction_boost,
             )
             recency_scores[node.node_id] = max(0.0, min(1.0, 1.0 - max(0.0, (now - node.temporal.observed_at).total_seconds()) / self._activation_config.recency_horizon_seconds))
+            fresh[node.node_id] = base
             activations[node.node_id] = max(base, node.signals.activation.activation)
 
         frontier = [(node_id, value, 0) for node_id, value in activations.items() if value >= self._activation_config.min_delta]
@@ -310,10 +386,12 @@ class SubstrateDynamicsEngine:
                 if propagated <= activations.get(target_id, 0.0) + 1e-6:
                     continue
                 activations[target_id] = max(0.0, min(1.0, propagated))
+                fresh[target_id] = max(fresh.get(target_id, 0.0), activations[target_id])
                 frontier.append((target_id, propagated, depth + 1))
 
         out: dict[str, float] = {}
         for node_id, value in activations.items():
             out[node_id] = max(0.0, min(1.0, value))
             out[f"{node_id}:recency"] = recency_scores.get(node_id, 0.0)
+            out[f"{node_id}:fresh"] = max(0.0, min(1.0, fresh.get(node_id, value)))
         return out

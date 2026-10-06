@@ -40,6 +40,7 @@ from orion.graph.falkor_client import (
     set_assignments as _set_assignments,
 )
 from orion.graph.property_guard import sanitize_metadata
+from orion.substrate.activation import ACTIVATION_DECAYED_AT_KEY
 from orion.substrate.falkor_codec import (
     DURABLE_NODE_KINDS,
     JSON_SUFFIXED_EXTERNALLY_OWNED_METADATA_KEYS,
@@ -179,6 +180,10 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     # as-is here; that is pre-existing and out of scope for this patch.
     "perception_staleness",
     "perception_yield",
+    # L6 (2026-10-06): without this the stamp never survives a rehydrate and
+    # every tick falls back to observed_at -- i.e. the compounding decay the
+    # stamp exists to remove (falkor_codec._decay_stamp_metadata_from_row).
+    "activation_decayed_at",
 )
 
 NATIVE_EDGE_RETURN_FIELDS: tuple[str, ...] = (
@@ -634,10 +639,25 @@ class FalkorSubstrateStore:
         node = _with_sanitized_metadata(node)
 
         cache_node = node
+        # The codec omits activation_decayed_at from the SET clause when this
+        # write doesn't carry it (durable value preserved); mirror that in the
+        # cache so a stamp-unaware writer doesn't make the cache report the
+        # stamp missing while the graph still holds it.
+        if ACTIVATION_DECAYED_AT_KEY not in (node.metadata or {}):
+            existing_for_stamp = self._cache.get_node_by_id(node.node_id)
+            existing_stamp = (
+                (existing_for_stamp.metadata or {}).get(ACTIVATION_DECAYED_AT_KEY)
+                if existing_for_stamp is not None
+                else None
+            )
+            if existing_stamp is not None:
+                cache_node = node.model_copy(
+                    update={"metadata": {**(node.metadata or {}), ACTIVATION_DECAYED_AT_KEY: existing_stamp}}
+                )
         skip_encoded_keys: set[str] = set()
         if skip_metadata_keys:
             existing_cached = self._cache.get_node_by_id(node.node_id)
-            merged_metadata = dict(node.metadata or {})
+            merged_metadata = dict(cache_node.metadata or {})
             existing_metadata = (existing_cached.metadata or {}) if existing_cached is not None else {}
             for key in skip_metadata_keys:
                 if key in existing_metadata:
@@ -652,7 +672,7 @@ class FalkorSubstrateStore:
                     # deliberately skipped -- cache/durable divergence until
                     # the next generation-triggered rehydrate.
                     merged_metadata.pop(key, None)
-            cache_node = node.model_copy(update={"metadata": merged_metadata})
+            cache_node = cache_node.model_copy(update={"metadata": merged_metadata})
             # Translate raw metadata keys into the encoded Cypher property
             # names actually present in the SET clause -- contributing_turn_ids
             # becomes contributing_turn_ids_json only once

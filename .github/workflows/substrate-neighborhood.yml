@@ -39,6 +39,7 @@ jobs:
           orion/substrate/tests/test_falkor_store_hydrate_signal.py
           orion/substrate/tests/test_dynamics.py
           orion/substrate/tests/test_dynamics_falkor_routed.py
+          orion/substrate/tests/test_dynamics_decay_since_last.py
           orion/substrate/tests/test_graphdb_store.py
           orion/substrate/tests/test_routed_store.py
           orion/substrate/tests/test_phase16_query_planning.py
@@ -46,3 +47,5 @@ jobs:
         run: python -m orion.substrate.evals.run_neighborhood_eval
       - name: Complete scan and dynamics equivalence eval
         run: python -m orion.substrate.evals.run_complete_hydration_eval
+      - name: Activation decay since-last-tick eval (no compounding)
+        run: python -m orion.substrate.evals.run_decay_since_last_eval

@@ -197,6 +197,16 @@ seeds and propagates activation pressure from those `prediction_error` values.
 - `SUBSTRATE_DYNAMICS_TICK_INTERVAL_SEC` (default `30.0`): tick cadence. Deliberately slower
   than `GRAMMAR_POLL_INTERVAL_SEC` because each tick issues a bounded but real query
   (`snapshot()`, `limit_nodes=500`) against the configured store backend, not an in-memory read.
+- `SUBSTRATE_DYNAMICS_DECAY_MODE` (default `since_last`): how the tick decays a node's stored
+  activation. `since_last` decays it only by the time since its last decay, recorded on the
+  node as `activation_decayed_at` (durable Falkor property, decoded into `metadata`), falling
+  back to `observed_at` when absent; a node re-observed later than the stamp decays from the
+  newer `observed_at`. Fresh input (seed + propagation) is still decayed by full age, which is a
+  closed form, not a compound. `legacy` is the pre-2026-10-06 behavior: the already-decayed
+  stored value is decayed again by full age every tick, so loss compounds (~2.2% per 30 s tick
+  for a concept 23 h past `observed_at` on the default 30-day half-life). Rollback only. The Hub
+  decay scheduler (`SUBSTRATE_DECAY_SCHEDULER_ENABLED`) reads and writes the same stamp, so the
+  two writers don't decay the same interval twice.
 
 Only meaningful once `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true` and
 `SUBSTRATE_STORE_BACKEND=sparql` (Fuseki) are set — with the in-memory default store the

@@ -26,6 +26,7 @@ from orion.core.schemas.cognitive_substrate import (
     SubstrateSignalBundleV1,
     SubstrateTemporalWindowV1,
 )
+from orion.substrate.activation import ACTIVATION_DECAYED_AT_KEY
 
 _LABEL_BY_KIND: dict[str, str] = {
     "entity": "Entity",
@@ -98,7 +99,33 @@ def _common_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None)
         "provenance_trace_id": provenance.trace_id,
         "provenance_tier_rank": provenance.tier_rank,
         "evidence_refs_json": _json_list(provenance.evidence_refs),
+        **_decay_stamp_properties_from_metadata(node.metadata),
     }
+
+
+# `activation_decayed_at` (2026-10-06, L6): the moment a node's stored
+# activation is valid as of; written by SubstrateDynamicsEngine.tick() and the
+# Hub decay scheduler so decay covers only the time since the last decay
+# (orion/substrate/activation.py::activation_decay_anchor). Stored on every
+# durable kind, since activation itself is a common property.
+#
+# Omitted from the SET clause when absent, so a writer that does not know the
+# stamp (concept_induction re-save, materializer, seed loader...) leaves the
+# durable value alone instead of nulling it. Nulling it would send the next
+# tick back to observed_at as the anchor and re-apply decay already applied --
+# the exact compounding this key exists to remove.
+def _decay_stamp_properties_from_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
+    raw = (metadata or {}).get(ACTIVATION_DECAYED_AT_KEY)
+    if raw is None:
+        return {}
+    if isinstance(raw, datetime):
+        return {ACTIVATION_DECAYED_AT_KEY: _dt(raw)}
+    return {ACTIVATION_DECAYED_AT_KEY: str(raw)}
+
+
+def _decay_stamp_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    raw = row.get(ACTIVATION_DECAYED_AT_KEY)
+    return {ACTIVATION_DECAYED_AT_KEY: raw} if raw is not None else {}
 
 
 # Node kinds this codec can round-trip through durable Falkor storage.
@@ -204,6 +231,7 @@ DYNAMICS_ENGINE_OWNED_METADATA_KEYS: tuple[str, ...] = (
     "dynamic_pressure_reason",
     "dormant",
     "dormancy_updated_at",
+    ACTIVATION_DECAYED_AT_KEY,
 )
 
 # The reverse-direction ownership problem, confirmed live 2026-07-29 as a real
@@ -486,7 +514,11 @@ def decode_concept_node(row: Mapping[str, Any]) -> ConceptNodeV1 | None:
         temporal=_temporal_from_row(row),
         signals=_signals_from_row(row),
         provenance=_provenance_from_row(row),
-        metadata={**_dynamics_metadata_from_row(row), **_topic_foundry_metadata_from_row(row)},
+        metadata={
+            **_dynamics_metadata_from_row(row),
+            **_topic_foundry_metadata_from_row(row),
+            **_decay_stamp_metadata_from_row(row),
+        },
     )
 
 
@@ -504,7 +536,7 @@ def decode_evidence_node(row: Mapping[str, Any]) -> EvidenceNodeV1 | None:
         temporal=_temporal_from_row(row),
         signals=_signals_from_row(row),
         provenance=_provenance_from_row(row),
-        metadata={},
+        metadata=_decay_stamp_metadata_from_row(row),
     )
 
 
@@ -527,7 +559,7 @@ def decode_entity_node(row: Mapping[str, Any]) -> EntityNodeV1 | None:
         temporal=_temporal_from_row(row),
         signals=_signals_from_row(row),
         provenance=_provenance_from_row(row),
-        metadata={},
+        metadata=_decay_stamp_metadata_from_row(row),
     )
 
 

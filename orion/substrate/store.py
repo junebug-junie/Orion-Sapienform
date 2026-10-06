@@ -13,11 +13,29 @@ def _utc_now_iso() -> str:
 
 
 @dataclass(frozen=True)
+class CompleteScanReceipt:
+    """Operational coverage receipt; a paged read is never snapshot isolation."""
+
+    started_at: str
+    finished_at: str
+    complete: bool
+    stale: bool
+    node_count: int
+    edge_count: int
+    pages_read: int
+    last_successful_refresh_at: str | None
+    reason: str | None = None
+    consistency: str = "non_atomic_keyset"
+    edge_identity_aliases: int = 0
+
+
+@dataclass(frozen=True)
 class MaterializedSubstrateGraphState:
     nodes: dict[str, BaseSubstrateNodeV1]
     edges: dict[str, SubstrateEdgeV1]
     node_identity_index: dict[str, str]
     edge_identity_index: dict[str, str]
+    scan_receipt: CompleteScanReceipt | None = None
 
 
 @dataclass(frozen=True)

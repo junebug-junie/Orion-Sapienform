@@ -663,6 +663,7 @@ def test_falkor_hydrates_edge_source_target_node_ids_correctly():
     # literal string "None" that a missing/NULL source_id previously
     # produced via decode_edge()'s str(row["source_id"]) coercion.
     client = RecordingFalkorClient(
+        hydrate_node_rows=[_hydrated_node_row(n, n) for n in ("sub-concept-a", "sub-concept-b")],
         hydrate_edge_rows=[
             {
                 "edge_id": "sub-edge-a-b",
@@ -925,12 +926,14 @@ def test_falkor_hydrates_from_redis_py_result_set_lists():
 
         def graph_query(self, cypher: str, params: dict | None = None):
             self.calls.append((cypher, params))
+            if params and params.get("after_id", -1) >= 0:
+                return []
             if "WHERE n.payload_json IS NOT NULL" in cypher:
-                return [[legacy.model_dump_json(), "concept:legacy-list"]]
+                return [[legacy.model_dump_json(), "concept:legacy-list", 0]]
             if "WHERE e.payload_json IS NOT NULL" in cypher:
                 return []
             if "RETURN n.node_id AS node_id" in cypher:
-                return [values]
+                return [values + [0]]
             if "RETURN e.edge_id AS edge_id" in cypher:
                 return []
             return []
@@ -990,8 +993,13 @@ def test_falkor_hydrates_edge_from_redis_py_result_set_lists():
 
     class EdgeListRowClient:
         def graph_query(self, cypher: str, params: dict | None = None):
+            if params and params.get("after_id", -1) >= 0:
+                return []
+            if "RETURN n.node_id AS node_id" in cypher:
+                return [dict(_hydrated_node_row(n, n), object_id=i) for i, n in enumerate(
+                    ("sub-concept-redis-py-a", "sub-concept-redis-py-b"))]
             if "MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode)" in cypher:
-                return [values]
+                return [values + [0]]
             return []
 
     store = FalkorSubstrateStore(
@@ -1211,7 +1219,7 @@ def test_falkor_snapshot_same_generation_reuses_cache_no_new_query():
 
     first = store.snapshot()
     calls_after_first = len(client.calls)
-    assert calls_after_first == 4  # node query, edge query, 2 legacy queries
+    assert calls_after_first == 5  # node page + empty terminal page, edge + 2 legacy scans
     assert "concept-a" in first.nodes
 
     second = store.snapshot()

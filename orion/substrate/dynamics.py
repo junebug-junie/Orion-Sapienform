@@ -239,12 +239,12 @@ class SubstrateDynamicsEngine:
                     # with a fresh stamp would round it away and restart the
                     # clock every tick, freezing decay for any node whose
                     # pressure moves every tick. The stamp is written
-                    # explicitly (not left to whatever is durable) because
-                    # another writer -- the Hub decay scheduler -- may have
-                    # stamped a newer, lower value since this tick's snapshot;
-                    # writing prev_activation without its own stamp would pair
-                    # the older, higher value with that newer stamp and undo
-                    # the other writer's decay.
+                    # explicitly (not left to whatever is durable) so the
+                    # value and its stamp always travel as a pair: writing
+                    # prev_activation without its own stamp could pair it with
+                    # a different stamp already durable and mis-time the next
+                    # decay. (This tick is the only decay writer since
+                    # 2026-10-06; the Hub's second one was removed.)
                     persisted_activation = prev_activation
                     metadata[ACTIVATION_DECAYED_AT_KEY] = anchor.isoformat()
                 activation_bundle = node.signals.activation.model_copy(

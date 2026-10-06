@@ -2216,7 +2216,8 @@ class BiometricsSubstrateWorker:
         Runs SubstrateDynamicsEngine.tick() against the same durable store
         _write_prediction_error_node writes to, so pressure seeded from
         metadata['prediction_error'] actually propagates instead of sitting
-        inert. Default-off, fail-open: never raises out of a tick.
+        inert. Default-on (sole activation-decay writer since 2026-10-06),
+        fail-open: never raises out of a tick.
         """
         if not self._settings.enable_dynamics_tick:
             return

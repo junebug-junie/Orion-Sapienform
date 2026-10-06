@@ -37,6 +37,7 @@ from orion.schemas.reverie import SpontaneousThoughtV1
 from orion.substrate import build_substrate_store_from_env
 from orion.substrate.relational import (
     CONCEPT_INDUCED,
+    CONCEPT_INDUCED_EPHEMERAL,
     GRAPHDB_DURABLE,
     SNAPSHOT_EPHEMERAL,
     CognitiveUnificationLayer,
@@ -188,8 +189,19 @@ def _hydrate_and_unify_beliefs(ctx: Dict[str, Any]) -> UnifiedRelationalBeliefSe
     return _unified_beliefs_for_stance(ctx)
 
 
-def _build_unification_registry() -> ProducerRegistryV1:
-    """Construct the ProducerRegistryV1 wiring all known producer lanes."""
+def _concept_adapter(store: Any, adapter_fn: Any) -> Any:
+    """Bind concept_induction to the layer's own store (None = adapter fallback)."""
+    if store is None:
+        return adapter_fn
+    return functools.partial(adapter_fn, store=store)
+
+
+def _build_unification_registry(*, concept_store: Any = None) -> ProducerRegistryV1:
+    """Construct the ProducerRegistryV1 wiring all known producer lanes.
+
+    ``concept_store`` is the layer's durable store; concept_induction reads
+    its concept region through it instead of opening a second store.
+    """
     from orion.substrate.relational.adapters.autonomy_ctx import map_autonomy_ctx_to_substrate
     from orion.substrate.relational.adapters.concept_induction_ctx import map_concept_induction_ctx_to_substrate
     from orion.substrate.relational.adapters.self_definition_ctx import map_self_definition_ctx_to_substrate
@@ -243,12 +255,20 @@ def _build_unification_registry() -> ProducerRegistryV1:
                 adapter_fn=map_autonomy_ctx_to_substrate,
             ),
             ProducerEntryV1(
+                # Not write-through (2026-10-06, unified-turn latency L6 step
+                # 2). It reads concept nodes that already live in the durable
+                # store, so writing them back only re-saved stale copies (the
+                # max-merge undid activation decay) and bumped the store's
+                # write generation, forcing a full Falkor rehydrate on the
+                # layer's second snapshot(). The copies land in the per-call
+                # ephemeral store; the layer dedupes them against the durable
+                # nodes by node_id. Safe only after the decay fix (PR #2504).
                 producer_id="concept_induction",
-                trust_tier=CONCEPT_INDUCED,
+                trust_tier=CONCEPT_INDUCED_EPHEMERAL,
                 anchor_scopes=("orion", "relationship", "juniper"),
                 freshness_ttl_sec=300,
                 pull_on_cold=True,
-                adapter_fn=map_concept_induction_ctx_to_substrate,
+                adapter_fn=_concept_adapter(concept_store, map_concept_induction_ctx_to_substrate),
             ),
             ProducerEntryV1(
                 producer_id="spark",
@@ -282,8 +302,8 @@ def _get_unification_layer() -> CognitiveUnificationLayer:
     """Return (or initialise) the process-level CognitiveUnificationLayer."""
     global _UNIFICATION_LAYER
     if _UNIFICATION_LAYER is None:
-        registry = _build_unification_registry()
         store = build_substrate_store_from_env()
+        registry = _build_unification_registry(concept_store=store)
         _UNIFICATION_LAYER = CognitiveUnificationLayer(registry=registry, store=store)
     return _UNIFICATION_LAYER
 

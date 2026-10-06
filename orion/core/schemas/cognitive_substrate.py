@@ -168,9 +168,9 @@ class ConceptNodeV1(BaseSubstrateNodeV1):
         at the pure schema default (activation=0.0, decay_half_life_seconds=None).
 
         Every real ConceptNodeV1 producer historically left this sub-object
-        untouched, which made Hub's live decay scheduler
-        (services/orion-hub/scripts/api_routes.py::decay_concept_activations())
-        a permanent no-op: decay_activation() treats a falsy half-life as "clamp
+        untouched, which made the live decay writer (then the Hub's
+        decay_concept_activations scheduler, removed 2026-10-06; now
+        orion/substrate/dynamics.py's tick) a permanent no-op: decay_activation() treats a falsy half-life as "clamp
         to floor, don't decay." Enforcing the seed here, at the schema boundary,
         means every current and future producer gets working decay for free
         instead of each adapter needing to remember to call a helper by hand

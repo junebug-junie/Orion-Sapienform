@@ -1821,19 +1821,6 @@ class Settings(BaseSettings):
     # (see main.py's startup_event) since SUBSTRATE_STORE_BACKEND=sparql (this
     # service's own default) makes the underlying writes blocking HTTP calls to Fuseki.
     SUBSTRATE_CONCEPT_SEED_ENABLED: bool = Field(default=True, alias="SUBSTRATE_CONCEPT_SEED_ENABLED")
-    # Applies half-life activation decay to every concept-kind node in
-    # SUBSTRATE_SEMANTIC_STORE on a fixed interval -- see
-    # api_routes.py::decay_concept_activations(). Runs in a background thread
-    # (see main.py's startup_event) for the same reason the concept-seed step
-    # does: SUBSTRATE_STORE_BACKEND=sparql (this service's own default) makes
-    # the underlying writes blocking HTTP calls to Fuseki.
-    SUBSTRATE_DECAY_SCHEDULER_ENABLED: bool = Field(default=True, alias="SUBSTRATE_DECAY_SCHEDULER_ENABLED")
-    SUBSTRATE_DECAY_SCHEDULER_INTERVAL_SEC: float = Field(default=120.0, alias="SUBSTRATE_DECAY_SCHEDULER_INTERVAL_SEC")
-    # Same key and meaning as orion-substrate-runtime's: since_last decays each
-    # concept only by the time since its last decay (activation_decayed_at,
-    # shared with the runtime's dynamics tick so no interval is decayed twice);
-    # legacy = pre-2026-10-06 per-interval decay. Rollback only.
-    SUBSTRATE_DYNAMICS_DECAY_MODE: str = Field(default="since_last", alias="SUBSTRATE_DYNAMICS_DECAY_MODE")
     # Drives the graph-review loop unattended: seed substrate_review_queue_item
     # from the frontier when it is empty, then drain one due item per tick (see
     # api_routes.py::execute_substrate_review_scheduled_cycle). Before this

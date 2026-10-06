@@ -151,8 +151,12 @@ def test_expand_modal_clones_and_refuses_to_open_on_nothing() -> None:
 
 
 def test_turn_timer_chip_exists_and_is_driven_by_turn_in_flight() -> None:
-    assert 'id="chatTurnTimer"' in _html()
+    # The clock now lives on each turn (a chip in the user message header), not
+    # in the card header.
+    assert 'id="chatTurnTimer"' not in _html()
     js = _js()
+    assert "chip.dataset.turnClock = '1'" in js
+    assert "insertBefore(chip" in js
     assert "function setTurnInFlight(" in js
     assert "startTurnTimer(owner)" in js
 
@@ -291,3 +295,41 @@ def test_append_message_builds_why_i_spoke_details_for_outreach_provenance() -> 
     assert "om-outreach-why" in body
     assert "summary_line" in body or "summaryLine" in body
     assert "prompt_text" in body or "promptText" in body
+
+
+# --- Voice box collapses when idle -----------------------------------------
+
+
+def test_voice_box_starts_collapsed_and_opens_only_for_playback() -> None:
+    assert "hidden" in _classes(_html(), "visualizerContainer")
+    js = _js()
+    assert "setVoiceBoxVisible(true);\n        drawVisualizer();" in js
+    # every playback exit funnels through processAudioQueue / interrupt
+    assert "if (!isPlayingAudio && !audioQueue.length) setVoiceBoxVisible(false);" in js
+    assert "setVoiceBoxVisible(false);\n      updateStatusBasedOnState();" in js
+
+
+# --- EKG drawer + harness modal button + asks cap --------------------------
+
+
+def test_ekg_card_is_a_drawer_with_toggle_rail_and_script() -> None:
+    html = _html()
+    for needle in ('id="ekgDrawer"', 'id="ekgDrawerToggle"', 'id="ekgDrawerRail"', "hub-ekg-drawer.js", "hub-chat-card"):
+        assert needle in html, needle
+    assert "md:w-1/2" not in html.split('id="appPanels"')[1].split("Oríon + Juniper")[0]
+
+
+def test_harness_trace_becomes_a_modal_button_not_an_inline_card() -> None:
+    js = _js()
+    body = _slice(js, "function addHarnessButton(", "// ── Chat attachments")
+    assert "openChatMessageExpandModal('FCC harness', [panel]" in body
+    assert "if (panel) addHarnessButton(messageEl, panel);" in js
+    trace = (REPO_ROOT / "services/orion-hub/static/js/agent-claude-trace.js").read_text(encoding="utf-8")
+    assert "panel.parentNode.removeChild(panel)" in trace
+    assert "insertBefore(panel, beforeEl)" not in trace
+
+
+def test_asks_list_scrolls_and_is_capped_at_two() -> None:
+    assert "overflow-y-auto" in _classes(_html(), "visionAsksList")
+    js = (REPO_ROOT / "services/orion-hub/static/js/vision-asks.js").read_text(encoding="utf-8")
+    assert "capVisibleAsks(doc.defaultView, list)" in js

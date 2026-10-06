@@ -310,3 +310,10 @@ test('a meta-note revision is refused in the card, points at Reject, and does no
   assert.ok(find(card, (n) => /same as what I have/.test(n.textContent)));
   handle.stop();
 });
+
+test('asks list: only the first two cards are visible, the rest scroll', () => {
+  assert.equal(asks.visibleAsksMaxHeight([100, 120, 90, 300], 8), 228);
+  assert.equal(asks.visibleAsksMaxHeight([100, 120], 8), null);
+  assert.equal(asks.visibleAsksMaxHeight([], 8), null);
+  assert.equal(asks.visibleAsksMaxHeight([50, 60, 70], 0), 110);
+});

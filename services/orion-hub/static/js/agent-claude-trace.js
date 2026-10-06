@@ -221,8 +221,11 @@
       heading.textContent = formatHarnessHeading(list.length, false);
     }
 
-    if (beforeEl && beforeEl.parentNode && panel.parentNode === beforeEl.parentNode) {
-      beforeEl.parentNode.insertBefore(panel, beforeEl);
+    // With a message to pin to, the card leaves the transcript: the caller
+    // turns it into a hover button that reopens it in a modal. Without one the
+    // finished card stays inline where it streamed.
+    if (beforeEl && panel.parentNode) {
+      panel.parentNode.removeChild(panel);
     }
 
     return panel;

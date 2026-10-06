@@ -27,7 +27,13 @@ from app.admitted_graph import (
     AdmissionDeps, HoldLost, HoldRecalled, RunControlPending, WorkflowDeadline, replay_if_requeued,
     resource_nodes, taken_back,
 )
-from orion.memory.episode.distill import parse_distillation, render_prompt, turns_from_state
+from orion.memory.episode.distill import (
+    UNMARKED_TEMPLATE_VERSION,
+    parse_distillation,
+    render_prompt,
+    template_prompt_version,
+    turns_from_state,
+)
 from orion.memory.episode.validate import coverage, validate_distillation
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 from orion.schemas.memory_episode import EpisodeDistillBriefV1
@@ -66,6 +72,9 @@ class EpisodeDistillState(TypedDict, total=False):
     loaded_at: str | None
     distill_started_at: str | None
     answer_text: str | None
+    # The version of the template the answer was generated from (stamped at render time). Absent on
+    # checkpoints written before this field existed: those were rendered from the unmarked v2 template.
+    rendered_prompt_version: str | None
     usage: dict[str, Any]
     model: str | None
     llm_latency_ms: int | None
@@ -97,6 +106,13 @@ def _hold_wait_ms(state: dict[str, Any]) -> int | None:
     return max(0, int((end - start).total_seconds() * 1000))
 
 
+def rendered_prompt_version(state: dict[str, Any]) -> str:
+    """The template version the stored answer came from. A checkpoint written before the graph
+    stamped it was rendered by the unmarked (v2) template; the brief's version is not used, because
+    the brief comes from memory-consolidation's image, not the one that rendered the prompt."""
+    return str(state.get("rendered_prompt_version") or UNMARKED_TEMPLATE_VERSION)
+
+
 def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: PersistFn, admission: AdmissionDeps,
                                 checkpointer: Any):
     from langgraph.graph import END, START, StateGraph
@@ -117,6 +133,7 @@ def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: Pers
         ref = GpuLeaseRefV1.model_validate({k: lease[k] for k in ("lease_id", "generation", "role", "holder")})
         brief = EpisodeDistillBriefV1.model_validate(state["brief"])
         started = admission.now().isoformat()
+        rendered_version = template_prompt_version()
         prompt = render_prompt(episode_id=brief.episode_id, turns=turns_from_state(state["turns"]),
                                candidate_referents=state.get("candidate_referents") or [])
         answer = await call_llm(prompt, brief=brief, run_id=state["run_id"],
@@ -125,7 +142,8 @@ def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: Pers
         if not text.strip():
             raise ValueError("empty_generation")
         parse_distillation(text)  # raises -> a bounded attempt; the text is re-parsed in persist
-        return {"answer_text": text, "usage": dict(answer.get("usage") or {}), "model": answer.get("model"),
+        return {"answer_text": text, "rendered_prompt_version": rendered_version,
+                "usage": dict(answer.get("usage") or {}), "model": answer.get("model"),
                 "llm_latency_ms": answer.get("latency_ms"), "distill_started_at": started,
                 "attempt": int(state.get("attempt") or 0) + 1}
 
@@ -168,11 +186,12 @@ def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: Pers
         released = await admission.release(dict(state), "completed")
         brief = EpisodeDistillBriefV1.model_validate(state["brief"])
         turns = turns_from_state(state["turns"])
+        prompt_version = rendered_prompt_version(dict(state))
         result = validate_distillation(parse_distillation(state["answer_text"] or ""), turns,
-                                       episode_id=brief.episode_id)
+                                       episode_id=brief.episode_id, prompt_version=prompt_version)
         counts = await persist(
             episode_id=brief.episode_id, run_id=state["run_id"], result=result, model_route=brief.llm_route,
-            model=state.get("model"), prompt_version=brief.prompt_version, usage=state.get("usage") or {},
+            model=state.get("model"), prompt_version=prompt_version, usage=state.get("usage") or {},
             llm_latency_ms=state.get("llm_latency_ms"), hold_wait_ms=_hold_wait_ms(dict(state)),
             coverage=coverage(result, turns)["coverage"],
         )

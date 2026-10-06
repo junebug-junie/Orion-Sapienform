@@ -21,7 +21,12 @@ from langgraph.types import Command
 
 from test_admitted_graph import CFG, World
 from app.admitted_graph import AdmissionDeps
-from app.episode_distill_graph import build_episode_distill_graph, finish_detail, request_from_closed_event
+from app.episode_distill_graph import (
+    build_episode_distill_graph,
+    finish_detail,
+    rendered_prompt_version,
+    request_from_closed_event,
+)
 from orion.memory.episode.distill import turns_from_rows, turns_to_state
 from orion.schemas.durable_run import DurableRunRequestV1
 from orion.schemas.memory_episode import MEMORY_EPISODE_DISTILL_WORKFLOW, EpisodeDistillBriefV1
@@ -180,3 +185,29 @@ def test_the_hold_route_is_agent_class_at_system_priority():
     req = request_from_closed_event(CLOSED, settings=SETTINGS, now=T0)
     work_class, priority, _ = hold_placement(load_pool_config(), req.admission.model_dump(mode="json"))
     assert (work_class, priority) == ("memory_distill", "system")
+
+
+def test_stored_prompt_version_is_the_rendered_template_not_the_brief():
+    """Mixed deploy: memory-consolidation still on the old image sends a v2 brief, durable-runs renders
+    v3. The run must record v3 and judge stakes as a v3 answer."""
+    async def run():
+        world, saver = World(), InMemorySaver()
+        d = Distiller(world, [GOOD])
+        state = initial()
+        state["brief"] = {**BRIEF, "prompt_version": "memory_episode_distill.v2"}
+        await asyncio.wait_for(graph(world, saver, d).ainvoke(state, CFG), 1)
+        world.grant()
+        result = await graph(world, saver, d).ainvoke(Command(resume={}), CFG)
+        assert result["status"] == "completed"
+        kw = d.persisted[0]
+        assert kw["prompt_version"] == "memory_episode_distill.v3"
+        assert result["rendered_prompt_version"] == "memory_episode_distill.v3"
+        # GOOD names no stakes category: under v3 that is escalated and labelled, not left NULL.
+        assert [(m.stakes, m.stakes_reason) for m in kw["result"].memories] == [("high", "unjudged")]
+
+    asyncio.run(run())
+
+
+def test_checkpoint_without_a_stamp_was_rendered_from_v2():
+    assert rendered_prompt_version({}) == "memory_episode_distill.v2"
+    assert rendered_prompt_version({"rendered_prompt_version": "memory_episode_distill.v3"}) == "memory_episode_distill.v3"

@@ -45,7 +45,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(HERE))
 
-from orion.memory.episode.distill import parse_distillation, render_prompt, turns_from_rows  # noqa: E402
+from orion.memory.episode.distill import (  # noqa: E402
+    parse_distillation,
+    render_prompt,
+    template_prompt_version,
+    turns_from_rows,
+)
 from orion.memory.episode.validate import coverage, validate_distillation  # noqa: E402
 
 PG_CONTAINER = "orion-athena-sql-db"
@@ -226,7 +231,8 @@ async def main_async(args) -> dict[str, Any]:
                         # Save the raw answer first: a scoring bug must never cost a model call.
                         (out / f"{ep['name']}.{route}.{i}.answer.txt").write_text(answer["text"])
                         parsed = parse_distillation(answer["text"])
-                        result = validate_distillation(parsed, turns, episode_id=ep["name"])
+                        result = validate_distillation(parsed, turns, episode_id=ep["name"],
+                                                       prompt_version=template_prompt_version())
                         s = score(result, turns, answer, len(parsed.memories), parsed)
                         if ep["name"] == "austin":
                             s["austin_checks"] = austin_checks(result, turns)

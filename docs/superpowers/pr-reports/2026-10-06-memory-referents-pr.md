@@ -1,192 +1,212 @@
 ## Summary
 
-This is memory Stage 2 PR B, stacked on PR A (#2515). It makes the things Orion's memories are about (Hecate, Rachel, the Austin offsite) into nodes in Orion's one graph, under the names Juniper actually uses for them. Spec: `docs/superpowers/specs/2026-10-06-memory-stage2-referent-graph-design.md` (approved 2026-10-06).
+This is memory Stage 2 PR B, stacked on PR A (#2515). It makes the things Orion's memories are about into nodes in Orion's one graph, under the names Juniper actually uses for them. Spec: `docs/superpowers/specs/2026-10-06-memory-stage2-referent-graph-design.md` (approved 2026-10-06). Every name in this report and its tests is synthetic; live data is reported as counts only.
 
-- **Names stop being thrown away.** The validator now keeps the distiller's aliases. After each distill, every referent key is resolved to a graph node id, and Juniper's names for it are stored in Postgres (`referent_alias`).
-- **A name only counts if Juniper said it** (`alias_grounding_v1`). A name found in one of her verified sentences is usable at once. Anything else (e.g. Orion's own "the new server") is kept but never used.
-- **Relative names work as soon as she says them** (Juniper's decision). "my boss" and "my sister" are usable at once and lapse 90 days after their last use. A relative name never decides who someone is; it can only collide, which becomes a question. Relative names are recognised without a word list: by how common their first word is in Juniper's own prompts.
-- **Nothing ever merges silently.** A name on two things, or our "circe" meeting topic-foundry's "circe", becomes an identity question (`memory_tension_shadow`). The new node waits as "proposed".
-- **Things named together become walkable** (`source_cooccurrence_v1`). Two things in one verified sentence of Juniper's become a `co_occurs_with` link, through PR A's claim journal. The limits: never Juniper or Orion themselves, and at most 6 per memory.
-- **The graph is built by a projector** in orion-memory-consolidation: referent nodes, one evidence node per memory, and "mentioned in" provenance edges with real start/end times. It is idempotent and can be rebuilt from Postgres. A checkpoint backfill recovers the names Stage 1 dropped.
+- **Names stop being thrown away, and the distiller says what kind each one is.** Prompt v4 asks for `alias_kind` on every name, including the key's own name:
+  - `proper_name` is a name for exactly one thing, e.g. a machine's name or a town's name;
+  - `descriptor` is a role or relation that can point at different things over time, e.g. "my boss".
+
+  Code never classifies a name by its words. A name with no judgment (every answer from before v4) counts as a descriptor.
+- **Only proper names can tie a key to an existing thing.** A key resolves onto an existing node only in two ways:
+  - by its exact key;
+  - by a grounded proper name that matches exactly one node of the same kind, provided the key's own proper name doesn't point elsewhere.
+
+  Anything else that touches another node becomes a question. Descriptors never decide identity.
+- **`alias_grounding_v1`**: a name is usable only if it appears in Juniper's verified words. Descriptors lapse 90 days after their last use, and reuse extends them.
+- **`source_cooccurrence_v1`**: two things named in one of Juniper's verified sentences get a walkable "mentioned together" link. Juniper's and Orion's own nodes are excluded by node id, and a memory yields at most 6 such links.
+- **A projector in orion-memory-consolidation** writes the nodes, one evidence node per memory, and "mentioned in" provenance edges.
+  - It writes nothing until every substrate reader has advertised that it can read these shapes. This is the same gate PR A's `AssertionProjector` uses. `/health` shows which readers are missing.
+  - A same-named node from another producer triggers a question; our node stays walkable.
+  - The rebuild script replays accepted assertions too.
+- **Checkpoint backfill** recovers dropped names under the §14 protocol: the dry run computes what would change and rolls it back, progress is logged live, and a failing episode is counted while the run continues.
 
 ## Outcome moved
 
-Proven on a read-only copy of the live episode tables (31 memories, 4 distill runs), loaded into a throwaway Postgres and run through the real backfill:
-- 15 referent nodes;
-- 0 memory→referent links left unresolved;
-- Hecate gets exactly its 4 grounded names ("hecate", "inspur nf5288m5", "agx-2 gpu", "8x smx2 gpus");
-- 6 relative names ("my boss", "my sister", "a marriott", "camera", "ogden, utah", "austin team");
-- 2 accepted "mentioned together" links (Rachel–Vincent, Vincent–Jackalope bar);
-- a second run was byte-identical.
+Before this PR, the referent keys in Stage 1 memories led nowhere. After it, each key resolves to one graph node with Juniper's grounded names attached. Names only merge things on the distiller's explicit proper-name judgment, and every collision becomes a question.
 
-Recall does not use any of this yet (spec PR D–F). This PR only builds the graph it will walk.
+Recall does not use any of this yet (spec PR D–F).
 
 ## Current architecture
 
-- Stage 1 stored `episode_memory_referent (memory_id, referent_key, role)`. `validate.py` dropped the writer's aliases.
-- Nothing linked a key to a substrate node.
-- `memory_tension_shadow` had a writer and no reader.
-- PR A shipped the claim journal, `AssertionProjector`, the reconcile fence and the cognitive-isolation rule, with no live producer.
+- Stage 1 stored `episode_memory_referent (memory_id, referent_key, role)`.
+- The validator dropped aliases.
+- `memory_tension_shadow` had no reader.
+- PR A provides the claim journal, `AssertionProjector`, the reconcile fence, cognitive isolation and the reader-capability gate.
 
 ## Architecture touched
 
-- **orion-durable-runs persist** (same transaction, in a savepoint) → `orion/memory/referents/store.py` writes:
+- **Prompt and schema:** `memory_episode_distill.j2` is now v4 with `alias_kind`; `DistillReferentV1` and `DistillAliasV1` are lenient (`extra="ignore"`, bare strings coerced to descriptors).
+- **orion-durable-runs persist,** inside a savepoint, writes:
   - `referent_alias`;
   - `episode_memory_referent.node_id`;
   - identity questions;
-  - journal proposals/decisions.
-- **orion-memory-consolidation**: new `referent_projector.py` loop (Postgres → Falkor `orion_substrate`, producer `memory.referents`), which then runs PR A's `AssertionProjector`.
-- **orion/substrate/falkor_store.py**: two direct reads for single-writer projectors, so this one never hydrates the whole graph.
-- **Daily memory report**: new "Referents" section. It is the reader of identity questions, of which rule admitted each name, and of claims held back.
+  - journal proposals and decisions.
+
+  It no longer reads `chat_history_log` at all.
+- **orion-memory-consolidation:** `referent_projector.py`, gated on reader readiness; `/health` gains `referent_projector`.
+- **The daily memory report** gains a "Referents" section.
+- **Scripts:** `scripts/backfill_referents_from_episodes.py` and `scripts/rebuild_referent_graph.py`.
 
 ## Files changed
 
-- `orion/memory/referents/{aliases,resolve,cooccurrence,store,backfill}.py` (new) and `README.md` (Concepts table).
-- `orion/memory/episode/validate.py`: `ValidatedMemory.referent_aliases`.
-- `orion/memory/episode/store.py`: `referent_policy` kwarg; savepointed `_persist_referents`.
-- `orion/memory/episode/report.py`: `render_referents`.
-- `services/orion-durable-runs/app/{admission_runtime,settings}.py`, `.env_example`, `docker-compose.yml`, `README.md`: three kill switches (all ON).
-- `services/orion-memory-consolidation/app/{referent_projector,main,settings}.py`, `.env_example`, `docker-compose.yml`, `README.md`: projector loop, `FALKORDB_URI`, `FALKORDB_SUBSTRATE_GRAPH`, `MEMORY_REFERENT_PROJECTOR_{ENABLED,TICK_SEC}`.
+- `orion/cognition/prompts/memory_episode_distill.j2`, `orion/schemas/memory_episode.py`: `alias_kind` and v4.
+- `orion/memory/episode/validate.py`: keeps `(text, alias_kind)` per alias plus each key's own kind.
+- `orion/memory/episode/store.py`: savepointed referent step.
+- `orion/memory/episode/report.py`: Referents section.
+- `orion/memory/referents/{aliases,resolve,cooccurrence,store,backfill}.py` and `README.md`.
+- `services/orion-durable-runs/app/{admission_runtime,settings}.py`, `.env_example`, `docker-compose.yml`, `README.md`.
+- `services/orion-memory-consolidation/app/{referent_projector,main,settings}.py`, `.env_example`, `docker-compose.yml`, `requirements.txt` (redis 5.2.1), `README.md`.
 - `orion/substrate/falkor_store.py`: `prime_cache_for_producers`, `find_semantic_node_ids_by_label`.
-- `orion/substrate/README.md`, `orion/core/schemas/substrate_graph_journal.py`: producers named; docstring.
-- `orion/schema_skew_discovery.py`: declares durable-runs as the writer of the journal schemas consolidation reads.
-- `services/orion-sql-db/manual_migration_referent_alias_v1{,_rollback}.sql` (new).
-- `scripts/backfill_referents_from_episodes.py` (new; dry run by default; the AGENTS.md §14 snapshot/progress/report protocol on `--apply`).
-- Tests/evals: `orion/memory/referents/tests/{test_resolve,test_referents_pg}.py`, `services/orion-memory-consolidation/tests/test_referent_projector_pg.py`, `services/orion-memory-consolidation/evals/test_referent_graph_discipline_eval.py`, `services/orion-durable-runs/tests/test_episode_distill_referent_policy.py`.
-- `.github/workflows/orion-memory-episode-tests.yml`: FalkorDB service, new lanes (still fails on any skip), redis 5.2.1.
-- `services/orion-memory-consolidation/requirements.txt`: `redis==5.2.1` (the Falkor client on Python 3.12).
+- `orion/schema_skew_discovery.py`: declares the journal's writer.
+- `services/orion-sql-db/manual_migration_referent_alias_v1{,_rollback}.sql`.
+- `scripts/backfill_referents_from_episodes.py`, `scripts/rebuild_referent_graph.py`.
+- Tests/evals:
+  - `orion/memory/referents/tests/{test_resolve,test_referents_pg}.py`;
+  - `services/orion-memory-consolidation/tests/test_referent_projector_pg.py`;
+  - `services/orion-memory-consolidation/evals/test_referent_graph_discipline_eval.py`;
+  - `services/orion-durable-runs/tests/test_episode_distill_referent_policy.py`;
+  - prompt-version pins in `test_distill_prompt.py` and `test_episode_distill_graph.py`.
+- `.github/workflows/orion-memory-episode-tests.yml`: FalkorDB service and new lanes; fails on any skip.
 
 ## Concepts (each with a producer, a consumer and a test)
 
+The full table, with plain-English meanings, is in `orion/memory/referents/README.md` and `services/orion-memory-consolidation/README.md`.
+
 | Concept | Producer | Consumer | Test |
 |---|---|---|---|
-| Referent node (`key` row in `referent_alias`) | `persist_referents` | next resolution; projector | `test_persist_resolves_every_referent_and_keeps_juniper_s_names` |
-| `episode_memory_referent.node_id` | `persist_referents` | projector memory pass | same (0 NULLs) |
-| alias class `name` | `candidate_aliases` | resolution step 3; collision check | `test_a_grounded_name_resolves_a_later_key_to_the_same_node` |
-| alias class `descriptor` (relative name, 90 days) | first-word frequency in `chat_history_log` prompts | collision check while live; projector display while live | `test_a_relative_name_resolves_now_and_lapses_90_days_after_last_use`, `test_a_collision_on_a_relative_name_becomes_a_question_never_a_merge`, `test_a_thing_s_own_key_name_is_a_proper_name_however_often_juniper_says_it` |
-| `alias_grounding_v1` + `MEMORY_ALIAS_GROUNDING_AUTO_ACCEPT` | `_admit_aliases` | resolution, co-occurrence, projector (live names only) | `test_the_grounding_kill_switch_flips_grounded_names_to_proposed` (flips the outcome), `test_the_kill_switches_flip_aliases_and_claims_to_proposed` |
-| kind refinement (project ↔ service) | `resolve_referent` | resolution | `test_kind_refinement_files_the_same_thing_under_a_second_key` |
-| identity questions (`referent_identity` / `alias_collision` / `label_collision`) | resolution; projector | daily report "Referents" | `test_a_name_on_two_nodes_mints_a_proposed_node_and_asks`, `test_the_daily_report_shows_held_claims_names_by_rule_and_open_questions`, projector test |
-| `source_cooccurrence_v1` + `MEMORY_COOCCURRENCE_AUTO_ACCEPT` | `cooccurrence_claims` | `AssertionProjector` → neighborhood; report counts held claims | `test_the_cooccurrence_kill_switch_leaves_proposals_only` (flips), `test_more_than_six_claims_from_one_memory_are_all_held_for_review` (flips at 7+), projector walk test |
-| `MEMORY_REFERENTS_ENABLED` | settings | `AdmissionRuntime._referent_policy` | `test_referents_disabled_skips_the_step` |
-| memory Evidence node + `observed_in` provenance edge | projector | `AssertionProjector` endpoint check; neighborhood/eligibility exclusion | projector test (6 provenance edges, closed on supersede) |
-| `referent_projection` ledger | projector | projector | projector test (second tick writes nothing), discipline eval (rebuild) |
-| label-collision demotion | projector | identity questions → report | projector test |
-| checkpoint alias recovery | `backfill_all` | `persist_referents` | `test_checkpoint_backfill_recovers_aliases_and_is_idempotent` |
+| `alias_kind` | distiller v4 → validator | identity rule; descriptor expiry | `test_unjudged_names_are_descriptors`, both review repros |
+| identity rule | `resolve_referent` | resolution | `test_the_same_descriptor_for_two_people_is_a_question_not_a_merge`, `test_a_misjudged_proper_name_still_cannot_override_the_key_s_own_name`, `test_a_descriptor_key_never_resolves_another_key` |
+| descriptor expiry | `_admit_aliases` | collisions and projector display (live only) | `test_a_descriptor_lapses_90_days_after_last_use_and_is_refreshed_by_reuse` |
+| `alias_grounding_v1` + switch | `_admit_aliases` | resolution, co-occurrence, projector | `test_the_grounding_kill_switch_flips_grounded_names_to_proposed` (flips) |
+| `source_cooccurrence_v1` + switch | `cooccurrence_claims` | `AssertionProjector`; report | `test_the_cooccurrence_kill_switch_leaves_proposals_only` (flips), 6-cap test, node-id self-exclusion test |
+| identity questions | resolution; projector | daily report | report test, projector test |
+| readiness gate | readers' advertisement (PR A) | `ReferentProjector`, `/health` | `test_projector_writes_nothing_until_every_reader_is_ready`, `test_health_reports_the_missing_readers` |
+| `referent_projection` ledger + `rebuild()` | projector | projector | projector test; discipline eval (rebuild into an empty graph gives the same ids and adds no journal rows) |
+| §14 backfill | `backfill_all` + CLI | `persist_referents` | `test_checkpoint_backfill_recovers_aliases_and_is_idempotent`, `test_backfill_cli_dry_run_writes_nothing_logs_progress_and_survives_a_bad_episode` |
 
-**Cut, because nothing reads them in this PR:**
-- the `machine` kind. Nothing behaves differently for it yet, so Hecate stays `entity_type=project`, against the spec's PR B acceptance row;
-- role normalization, and roles on the graph edge (roles stay in Postgres, which is unchanged);
-- `via`/`matched_text` on provenance edges;
-- evidence `voice`/`channel` (the memory's voice stays in `episode_memory.voice`);
-- the `referent_identity` journal kind. Identity questions live in `memory_tension_shadow` until a Stage 3 decision applier exists;
-- dormant graphify/git-log candidates (spec PR C).
+**Removed in review:**
+- the prompt-frequency classifier (`TokenFrequency`, `RARE_DF_FRAC`, the per-token `to_tsvector` scans in the persist transaction);
+- kind refinement (project↔service). Cross-kind same names now become a question.
+
+**Cut earlier, because nothing reads them yet:** `machine` kind, role normalization, provenance `via`/`matched_text`, evidence `voice`/`channel`, the `referent_identity` journal kind.
 
 ## Schema / bus / API changes
 
 - **Added:**
   - Postgres `referent_alias`, `referent_projection`, and the column `episode_memory_referent.node_id`;
-  - `ValidatedMemory.referent_aliases` (an in-process dataclass);
-  - `FalkorSubstrateStore.prime_cache_for_producers` / `find_semantic_node_ids_by_label`.
-- **Bus:** none. Journal rows are Postgres-only (PR A).
-- **Behavior changed:**
-  - the persist now writes referent rows (savepointed);
-  - consolidation writes `memory.referents` nodes and edges into Falkor `orion_substrate`;
-  - the daily report gains a section.
-- **Compatibility:** no extra-forbid bus model changed. `orion/schema_skew_discovery.py` now declares the journal's cross-service writer.
+  - `DistillAliasV1`, plus `alias_kind` on `DistillReferentV1` (LLM-output models, `extra="ignore"`, old answers still parse);
+  - prompt version `memory_episode_distill.v4`.
+- **Bus:** none.
+- **Behavior:**
+  - the persist writes referent rows in a savepoint;
+  - consolidation writes `memory.referents` shapes into Falkor, gated on reader readiness;
+  - `/health` and the report show referent status.
 
 ## Env/config changes
 
-- **Added keys:**
-  - orion-durable-runs: `MEMORY_REFERENTS_ENABLED=true`, `MEMORY_ALIAS_GROUNDING_AUTO_ACCEPT=true`, `MEMORY_COOCCURRENCE_AUTO_ACCEPT=true`;
-  - orion-memory-consolidation: `MEMORY_REFERENT_PROJECTOR_ENABLED=true`, `MEMORY_REFERENT_PROJECTOR_TICK_SEC=30`, `FALKORDB_URI=redis://orion-athena-falkordb:6379`, `FALKORDB_SUBSTRATE_GRAPH=orion_substrate`.
-- `.env_example`, settings and compose updated for both services. All flags ship ON.
-- Local `.env` synced: `python scripts/sync_local_env_from_example.py --all-keys orion-durable-runs orion-memory-consolidation`. All 7 keys were added to the primary checkout's `.env`; none were skipped. Three pre-existing diverged keys were left untouched.
-- `check_service_env_compose_parity`:
-  - durable-runs is OK;
-  - consolidation shows the same 14 pre-existing missing keys as main, and all 4 new keys are exposed.
+- **orion-durable-runs:** `MEMORY_REFERENTS_ENABLED=true`, `MEMORY_ALIAS_GROUNDING_AUTO_ACCEPT=true`, `MEMORY_COOCCURRENCE_AUTO_ACCEPT=true`.
+- **orion-memory-consolidation:** `MEMORY_REFERENT_PROJECTOR_ENABLED=true`, `MEMORY_REFERENT_PROJECTOR_TICK_SEC=30`, `FALKORDB_URI=redis://orion-athena-falkordb:6379`, `FALKORDB_SUBSTRATE_GRAPH=orion_substrate`, `SUBSTRATE_ASSERTION_REQUIRED_READERS=<the 9 reader services>`.
+- All flags ship ON.
+- **Local `.env`:** synced with `sync_local_env_from_example.py --all-keys`. Every key was added; none were skipped. The pre-existing diverged keys were left alone.
+- **Env/compose parity:** durable-runs is OK. Consolidation shows the same 14 missing keys as main, and every new key is exposed.
 
 ## Tests run
 
 ```text
-orion/memory/referents/tests/test_resolve.py            20 passed (pure)
-orion/memory/referents/tests/test_referents_pg.py         5 passed (throwaway Postgres 16 + FalkorDB 6.0.1)
-services/orion-memory-consolidation/tests/test_referent_projector_pg.py   1 passed (real Falkor + Postgres)
-memory-episode CI set (episode + referents + consolidation tests + evals)   494 passed, 0 skipped
-durable-runs episode tests (CI set + new policy test)    19 passed; full durable-runs tests 273 passed / 71 env-skipped
-orion/substrate/tests                                     1025 passed, 3 failed (pre-existing felt_state, same on main)
-Static gates (every python gate in orion-static-gates.yml incl. check_definition_drift --gate,
-  schema-skew discovery after declaring the journal writer): 22/22 PASS; git diff --check clean
-Live-copy dry run (read-only copy of prod episode tables -> throwaway Postgres, real backfill):
-  15 nodes, 0 unresolved, Hecate 4 grounded names, 6 descriptors, 2 accepted co-occurrences,
-  second run identical. The copy was deleted afterwards.
+memory-episode CI set (episode + referents + consolidation tests + evals; real Postgres + FalkorDB)  498 passed, 0 skipped
+  incl. orion/memory/referents/tests/test_resolve.py 20, test_referents_pg.py 6, projector 3, discipline eval 1
+durable-runs tests                                       273 passed, 71 env-skipped (same as main)
+orion/substrate/tests (after merging #2515's fixes)      1037 passed, 3 failed (pre-existing felt_state, also on main)
+static gates (every python gate in orion-static-gates.yml, incl. check_definition_drift --gate)  all PASS; git diff --check clean
 ```
 
 ## Evals run
 
 ```text
 services/orion-memory-consolidation/evals/test_referent_graph_discipline_eval.py   1 passed
-  spec eval 5: every walkable projection backed by an accepted assertion at its revision;
-  no memory.referents node outside what the referent step minted; topic-foundry "circe" untouched;
-  ledger + graph wiped -> rebuild from Postgres gives identical node and edge id sets.
+  every walkable projection backed by an accepted assertion at its revision; no memory.referents
+  node outside what the referent step minted; the other producer's same-named node untouched;
+  ReferentProjector.rebuild() into an EMPTY graph -> identical node and edge ids, 0 new journal rows.
 ```
-
-Evals 1–4 and 6–9 need recall (spec PR F).
 
 ## Docker/build/smoke checks
 
 ```text
-Not run: no deploy requested, and production Falkor/Postgres must not be written. The real-store
-lanes above use throwaway FalkorDB/Postgres containers. Production Falkor was only READ
-(GRAPH.RO_QUERY) to count label collisions.
+Not run: no deploy requested; production Falkor/Postgres not written. The backfill --apply was not
+run anywhere near production. Real-store lanes use throwaway FalkorDB 6.0.1 / Postgres 16.
 ```
 
-## Review findings fixed
+## Review findings fixed (#2520 review)
 
-The orchestrator runs the review subagent. Found and fixed while building:
-- **Finding:** a relative name ("my boss") resolved a *different* writer key (person:dana) onto Rachel. That is a silent merge.
-  - **Fix:** descriptors never decide identity; they can only collide.
-  - **Evidence:** `test_a_collision_on_a_relative_name_becomes_a_question_never_a_merge`.
-- **Finding (live data):** "circe", "chicago" and "space" were classed as relative names because Juniper says them often.
-  - **Fix:** a thing's own key name is always a proper name; the frequency rule applies only to extra aliases.
-  - **Evidence:** `test_a_thing_s_own_key_name_is_a_proper_name_however_often_juniper_says_it`, and the live-copy rerun (descriptors went from 16 to 6, all genuinely relative or generic).
+- **HIGH 1:** the word-frequency classification was inverted ("boss" became a permanent proper name, so two people with that name merged).
+  - **Fix:** it is removed. The distiller emits `alias_kind`, defined in the prompt with examples (no word lists). Only a grounded proper name of the same kind can resolve a key; descriptors never do.
+  - **Evidence:** `test_the_same_descriptor_for_two_people_is_a_question_not_a_merge`, plus `test_a_misjudged_proper_name_still_cannot_override_the_key_s_own_name` for the case where the distiller mislabels a name.
+- **HIGH 2:** "a key's own name is always proper" let a descriptor key swallow a person.
+  - **Fix:** the key's own name uses the distiller's `alias_kind` like any alias, and a descriptor-derived key never resolves another key.
+  - **Evidence:** `test_a_descriptor_key_never_resolves_another_key`.
+- **HIGH 3:** the projector flag was ON with no sequencing guard.
+  - **Fix:** one mechanical gate shared with PR A. Readers advertise `assertion_core_v1` from their off-path bootstrap. The projector writes nothing until all of `SUBSTRATE_ASSERTION_REQUIRED_READERS` have advertised, and it logs `referent_projector_waiting reason=readers_not_ready missing=[...]`, which `/health` also shows.
+  - **Evidence:** `test_projector_writes_nothing_until_every_reader_is_ready`, `test_health_reports_the_missing_readers`, and PR A's `test_reader_capability.py`.
+- **HIGH 4 (privacy):** real names were in fixtures and docs.
+  - **Fix:** fixtures, tests, docstrings, READMEs, this report and the PR body now use synthetic names, and live figures are counts only. The real names remain in already-pushed history (see "Pushed commits with real names").
+- **MEDIUM 5:** a label collision demoted our node.
+  - **Fix:** the node stays walkable and a question is asked; `admitted_by` is recorded on the question only. The question id is deterministic, so a rebuild re-asks nothing.
+  - **Evidence:** projector test (Hecate→Circe is walkable).
+- **MEDIUM 6:** normalization was inconsistent.
+  - **Fix:** one rule for keys and aliases: all punctuation becomes a space.
+  - **Evidence:** `test_one_normalization_for_keys_and_aliases`, and `test_a_place_name_with_punctuation_never_splits_into_a_second_node` (100 days later, the same node).
+- **MEDIUM 7:** the backfill did not really follow §14.
+  - **Fix:** live progress lines (percent, ETA, processed/total, rate, errors), per-episode savepoints with errors counted, a dry run that computes and rolls back, and `report.md` plus `before_after.csv` in both modes.
+  - **Evidence:** `test_backfill_cli_dry_run_writes_nothing_logs_progress_and_survives_a_bad_episode`.
+- **MEDIUM 8:** the rebuild was underspecified.
+  - **Fix:** `ReferentProjector.rebuild()` and `scripts/rebuild_referent_graph.py`. Assertions are replayed from the journal's latest applied decisions, with no new journal rows.
+  - **Evidence:** discipline eval.
+- **LOW 9:** self-exclusion compared keys.
+  - **Fix:** it compares node ids.
+  - **Evidence:** `test_juniper_and_orion_are_excluded_by_node_id_not_key`.
+- **LOW 10:** the per-token prompt scans were inside the persist transaction.
+  - **Fix:** removed entirely; the persist no longer touches `chat_history_log`.
+- **Earlier (CI):** the consolidation redis pin moves to 5.2.1, because redis 5.0.x imports `distutils`, which Python 3.12 removed.
 
-- **Finding (CI):** orion-memory-consolidation pinned `redis==5.0.7`. Its graph module imports `distutils`, which Python 3.12 (the consolidation image) removed, so the projector's Falkor client would have crashed in production.
-  - **Fix:** the pin moves to `redis==5.2.1` (substrate-runtime's pin); the CI lane installs the same version.
-  - **Evidence:** CI run 37440072022 failed on exactly this, and `pip install --dry-run -r services/orion-memory-consolidation/requirements.txt` resolves cleanly.
+## Pushed commits with real names
+
+Not force-pushed. The history needs scrubbing separately:
+- **PR B:** `2d39c3856`, `a9e749016`, `1e39bdbba`, and `cb79c338f` (the last one only because it left the old report file in place; fixed in the next commit).
+- **PR A:** `f44c3e948`.
+- **Spec branch (#2496):** the spec file itself names real people and places, including in my `4ae3279fb`, which only added the Decisions section.
+- **Already on main before this work:** `services/orion-durable-runs/tests/test_episode_distill_graph.py` contains a real travel destination.
 
 ## Restart required
 
-Deploy order (PR A #2515 first):
+Rollout (A + B), mechanical rather than deploy-order dependent:
 
 ```bash
-psql "$DSN" -f services/orion-sql-db/manual_migration_substrate_graph_journal_v1.sql   # PR A
+psql "$DSN" -f services/orion-sql-db/manual_migration_substrate_graph_journal_v1.sql
 psql "$DSN" -f services/orion-sql-db/manual_migration_referent_alias_v1.sql
-# PR A step 2: rebuild EVERY substrate reader first (substrate-runtime, hub, recall, cortex-exec, cortex-orch,
-# spark-concept-induction, field-digester, world-pulse, meta-tags) -- old code cannot hydrate an Assertion node.
+# phase 1: every substrate reader on #2515's code (order free); each advertises assertion_core_v1
+scripts/safe_docker_build.sh <reader> up -d --build      # substrate-runtime hub recall cortex-exec cortex-orch spark-concept-induction field-digester world-pulse meta-tags
+# phase 2: writers; they wait (logged, /health) until phase 1 is complete, then open on their own
 scripts/safe_docker_build.sh orion-durable-runs up -d --build
 scripts/safe_docker_build.sh orion-memory-consolidation up -d --build
-python scripts/backfill_referents_from_episodes.py --dsn "$DSN"            # dry run, then add --apply
+python scripts/backfill_referents_from_episodes.py --dsn "$DSN"          # dry run (rolled back), then --apply
 ```
 
 ## Risks / concerns
 
-- **Severity: high (product decision)**
-  - **Concern:** the spec's rule "a slug equal to another producer's node label means an identity question, and our node waits as proposed" fires on 6 of today's 15 live names. A read-only Falkor check found hecate, circe, juniper, orion, ogden and space already present as topic-foundry or seed nodes. So Hecate and Juniper's own nodes would start as "proposed" (not walkable), and 6 questions would open.
-  - **Mitigation:** implemented exactly as the approved spec says. The alternative, keep our node walkable and only ask, is a one-line change in `_demote_on_label_collision`. **Needs Juniper's call.**
 - **Severity: medium**
-  - **Concern:** a co-occurrence decided at persist time stays "accepted" even if an endpoint is later demoted by a label collision.
-  - **Mitigation:** the neighborhood refuses proposed endpoints, so it is not walkable; the eval covers this.
+  - **Concern:** old answers (prompt v3 and earlier, i.e. the backfill) carry no `alias_kind`, so every recovered name is a descriptor. They lapse after 90 days and never resolve a key; only exact keys link memories to nodes.
+  - **Mitigation:** this is safe by design. New distills carry real judgments.
 - **Severity: medium**
-  - **Concern:** a second memory naming the same pair adds a proposal but no new `supports` edge (only the first decided proposal's evidence is drawn).
-  - **Follow-up:** add evidence on later proposals.
+  - **Concern:** an alias's class is frozen at insert. A later proper/descriptor relabel by the distiller does not change it. A frozen descriptor still never decides identity.
+- **Severity: medium**
+  - **Concern:** the readiness gate is only as good as the required list. A substrate reader missing from `SUBSTRATE_ASSERTION_REQUIRED_READERS` is not waited for. A reader rolled back to old code keeps its key until someone deletes `orion:substrate:reader_capability:<name>`.
 - **Severity: low**
-  - **Concern:** relative-name detection depends on the prompt corpus. Borderline words such as "austin" (3 of 576 prompts, 0.52%) can flip as the corpus grows. A row's class is fixed at insert, so old rows do not change.
+  - **Concern:** a second memory naming the same pair adds a proposal but no new `supports` edge.
 - **UNVERIFIED:**
   - the live persist path;
-  - the projector against production Falkor;
-  - Falkor write latency at production graph size;
-  - the backfill `--apply` on production. Not run, by instruction.
+  - distiller v4 output quality on `alias_kind` (no live distill was run);
+  - the projector against production Falkor and its write latency;
+  - backfill `--apply` (not run, by instruction).
 
 ## PR link
 

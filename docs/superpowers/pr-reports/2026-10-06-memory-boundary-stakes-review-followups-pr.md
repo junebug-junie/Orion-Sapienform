@@ -148,6 +148,6 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && ORION_ALLOW_SHARED_CHE
 
 ## PR link
 
-(see the PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2506
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

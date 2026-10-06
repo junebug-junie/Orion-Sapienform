@@ -66,6 +66,7 @@ from orion.memory.episode.confirmation import (
     memory_id_from_loop,
     outcome_features,
     outcome_id_for,
+    revision_problem,
 )
 from orion.schemas.ask import OrionAskAnsweredV1
 from orion.schemas.attention_salience import AttentionLoopOutcomeV1
@@ -359,8 +360,12 @@ async def resolve_ask(request: Request, ask_id: str, body: AskResolveBody) -> di
     if not _confirmation_loop_enabled():
         raise HTTPException(status_code=404, detail="memory_confirmation_disabled")
     note = " ".join(body.note.split())
-    if body.resolution == "revised" and not note:
-        raise HTTPException(status_code=422, detail="revised_needs_note")
+    if body.resolution == "revised":
+        # Structural checks first (no DB): empty or too short to be wording. "Unchanged" needs the
+        # memory's current statement and is checked inside the transaction below.
+        problem = revision_problem(note, None)
+        if problem:
+            raise HTTPException(status_code=422, detail=problem)
     new_status = RESOLUTION_ASK_STATUS[body.resolution]
     answer = body.resolution if not note else f"{body.resolution}: {note}"
     pool = _pool(request)
@@ -392,6 +397,14 @@ async def resolve_ask(request: Request, ask_id: str, body: AskResolveBody) -> di
                     )
                 else:
                     loop_id = row["source_ref"]
+                    if body.resolution == "revised":
+                        current = await conn.fetchval(
+                            "SELECT statement FROM episode_memory WHERE memory_id = $1::uuid",
+                            memory_id_from_loop(loop_id),
+                        )
+                        problem = revision_problem(note, current)
+                        if problem:  # raising inside the transaction rolls the card update back
+                            raise HTTPException(status_code=422, detail=problem)
                     outcome = AttentionLoopOutcomeV1(
                         outcome_id=outcome_id_for(row["ask_id"]),
                         loop_id=loop_id,

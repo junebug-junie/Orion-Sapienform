@@ -118,9 +118,24 @@ def test_outcome_to_apply_reads_resolution_and_ask_from_features():
                             features={"resolution": "maybe"}).resolution is None
 
 
-def test_recall_predicate_excludes_rejected():
-    assert "confirmation_state <> 'rejected'" in c.RECALLABLE_WHERE
-    assert "status = 'active'" in c.RECALLABLE_WHERE
+def test_revision_problem_is_structural_not_a_word_list():
+    assert c.revision_problem("", "x") == "revised_needs_note"
+    assert c.revision_problem("no that's wrong", None) == "revised_too_short"
+    assert c.revision_problem(" A b c d e f ", "a B c  d e f") == "revised_unchanged"
+    assert c.revision_problem("a b c d e f g", "a b c d e f") is None
+
+
+def test_no_recall_predicate_ships_without_a_reader():
+    """Review of #2517: recall exclusion of rejected memories lands with the Stage 2 recall PR (F),
+    which is its first reader. A predicate with no reader is a label without a consumer."""
+    assert not hasattr(c, "RECALLABLE_WHERE")
+
+
+def test_local_day_start_uses_juniper_timezone():
+    assert c.local_day_start(datetime(2026, 10, 7, 5, 30, tzinfo=timezone.utc)) == datetime(
+        2026, 10, 6, 6, 0, tzinfo=timezone.utc)
+    assert c.local_day_start(datetime(2026, 10, 7, 6, 30, tzinfo=timezone.utc)) == datetime(
+        2026, 10, 7, 6, 0, tzinfo=timezone.utc)
 
 
 def test_daily_report_names_every_state_the_loop_writes():

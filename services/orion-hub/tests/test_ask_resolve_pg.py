@@ -161,3 +161,20 @@ def test_legacy_answer_and_dismiss_cannot_orphan_a_memory_card(monkeypatch):
         assert await pool.fetchval("SELECT count(*) FROM attention_loop_outcome") == 0
 
     _run(body, monkeypatch, bus_alive=True)
+
+
+@pytest.mark.parametrize("note,detail", [
+    ("no, wrong", "revised_too_short"),
+    ("  juniper told me her SISTER feels   distant. ", "revised_unchanged"),
+])
+def test_a_meta_note_revise_is_refused_and_the_card_stays_open(monkeypatch, note, detail):
+    """Review of #2517: the unchanged check reads the memory inside the same transaction and its
+    refusal rolls the card update back, so no outcome is written and the card stays answerable."""
+    async def body(pool, client, published):
+        _mid, ask_id = await _seed(pool)
+        r = await client.post(f"/api/asks/{ask_id}/resolve", json={"resolution": "revised", "note": note})
+        assert r.status_code == 422 and r.json()["detail"] == detail
+        assert await pool.fetchval("SELECT status FROM orion_ask WHERE ask_id = $1", ask_id) == "open"
+        assert await pool.fetchval("SELECT count(*) FROM attention_loop_outcome") == 0 and published == []
+
+    _run(body, monkeypatch, bus_alive=True)

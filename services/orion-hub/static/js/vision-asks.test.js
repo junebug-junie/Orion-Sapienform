@@ -200,7 +200,7 @@ test('a thumbnail that fails to load is hidden, not shown broken', () => {
 const MEM_ASK = {
   ask_id: 'm1', question: 'You told me something on Oct 3, and I wrote it down like this: “X.” Want me to remember that?',
   source_kind: 'memory_confirmation', source_ref: 'memory-confirm-00000000-0000-0000-0000-000000000007',
-  memory_statement: 'Juniper told me X happened.',
+  memory_statement: 'Juniper told me that X happened today.',
 };
 
 function memMount(postReply) {
@@ -256,7 +256,7 @@ test('Revise opens a box prefilled with the current wording and posts the edit',
   assert.equal(panel.hidden, true);
   action(card, 'revise').listeners.click();
   assert.equal(panel.hidden, false);
-  assert.equal(box.value, 'Juniper told me X happened.');
+  assert.equal(box.value, 'Juniper told me that X happened today.');
   box.value = '  Juniper told me Y happened, not X. ';
   await action(card, 'save-revision').listeners.click();
   await settle();
@@ -283,5 +283,30 @@ test('a stale memory card (409) explains and refreshes', async () => {
   await action(card, 'confirm').listeners.click();
   await settle();
   assert.ok(find(card, (n) => /already answered/.test(n.textContent)));
+  handle.stop();
+});
+
+test('revisionProblem mirrors the server: empty, too short, unchanged (structural, no word list)', () => {
+  assert.equal(asks.revisionProblem('   ', 'a b c d e f'), 'revised_needs_note');
+  assert.equal(asks.revisionProblem("no that's wrong", 'a b c d e f'), 'revised_too_short');
+  assert.equal(asks.revisionProblem(' Juniper told me X   happened today ', 'juniper told me x happened today'), 'revised_unchanged');
+  assert.equal(asks.revisionProblem('Juniper told me Y happened, not X.', 'Juniper told me X happened.'), null);
+});
+
+test('a meta-note revision is refused in the card, points at Reject, and does not POST', async () => {
+  const { doc, posts, handle } = memMount();
+  await handle.refresh();
+  const card = doc.byId.visionAsksList.children[0];
+  action(card, 'revise').listeners.click();
+  find(card, (n) => n.tagName === 'textarea').value = 'no, wrong';
+  await action(card, 'save-revision').listeners.click();
+  await settle();
+  assert.equal(posts.length, 0);
+  assert.ok(find(card, (n) => /press Reject/.test(n.textContent)));
+  find(card, (n) => n.tagName === 'textarea').value = ' juniper told me that X happened today. ';  // the prefill, unchanged
+  await action(card, 'save-revision').listeners.click();
+  await settle();
+  assert.equal(posts.length, 0);
+  assert.ok(find(card, (n) => /same as what I have/.test(n.textContent)));
   handle.stop();
 });

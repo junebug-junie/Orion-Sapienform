@@ -1,7 +1,8 @@
 {
- "generated_at": "2026-10-06T08:24:40.230098+00:00",
+ "generated_at": "2026-10-06T08:57:53.707900+00:00",
  "note": "Counts only. The real producer (orion.memory.episode.confirmation.run_tick) replayed in a throwaway Postgres, one tick per simulated day. 'never_answered': no answers, cards expire after 7 days. 'all_confirmed': every open card confirmed the day it opens. v3_relabel voices are ASSUMED from the category (Orion-self categories = orion_thought), so its framing counts restate that assumption.",
  "cap": 5,
+ "daily_cap": 3,
  "ask_ttl_days": 7,
  "inputs": {
   "live": {
@@ -83,30 +84,78 @@
       "day": 0,
       "expired": 0,
       "applied": 0,
-      "opened": 5,
+      "apply_failed": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 0
+     },
+     {
+      "day": 1,
+      "expired": 0,
+      "applied": 0,
+      "apply_failed": 0,
+      "reaped": 0,
+      "opened": 2,
       "open_after": 5,
       "answered": 0
      },
      {
       "day": 7,
-      "expired": 5,
+      "expired": 3,
       "applied": 0,
-      "opened": 5,
+      "apply_failed": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 8,
+      "expired": 2,
+      "applied": 0,
+      "apply_failed": 0,
+      "reaped": 0,
+      "opened": 2,
       "open_after": 5,
       "answered": 0
      },
      {
       "day": 14,
-      "expired": 5,
+      "expired": 3,
       "applied": 0,
-      "opened": 5,
+      "apply_failed": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 5,
+      "answered": 0
+     },
+     {
+      "day": 15,
+      "expired": 2,
+      "applied": 0,
+      "apply_failed": 0,
+      "reaped": 0,
+      "opened": 2,
       "open_after": 5,
       "answered": 0
      },
      {
       "day": 21,
-      "expired": 5,
+      "expired": 3,
       "applied": 0,
+      "apply_failed": 0,
+      "reaped": 0,
+      "opened": 0,
+      "open_after": 2,
+      "answered": 0
+     },
+     {
+      "day": 22,
+      "expired": 2,
+      "applied": 0,
+      "apply_failed": 0,
+      "reaped": 0,
       "opened": 0,
       "open_after": 0,
       "answered": 0
@@ -119,13 +168,13 @@
      "juniper_feelings": 7,
      "orion_asks_direction": 2,
      "orion_relationship": 3,
-     "identity_conclusion_about_juniper": 1,
-     "family_relationships": 2
+     "family_relationships": 2,
+     "identity_conclusion_about_juniper": 1
     },
     "cards_framed_as_juniper_said": 10,
     "cards_framed_as_orions_own_take": 5,
     "cards_framed_as_internal_channel": 0,
-    "max_open_at_once": 5,
+    "max_open_at_once": 3,
     "cap_held": true,
     "high_stakes_end_states": {
      "confirmed": 15
@@ -135,30 +184,58 @@
       "day": 0,
       "expired": 0,
       "applied": 0,
-      "opened": 5,
-      "open_after": 5,
-      "answered": 5
+      "apply_failed": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 3
      },
      {
       "day": 1,
       "expired": 0,
-      "applied": 5,
-      "opened": 5,
-      "open_after": 5,
-      "answered": 5
+      "applied": 3,
+      "apply_failed": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 3
      },
      {
       "day": 2,
       "expired": 0,
-      "applied": 5,
-      "opened": 5,
-      "open_after": 5,
-      "answered": 5
+      "applied": 3,
+      "apply_failed": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 3
      },
      {
       "day": 3,
       "expired": 0,
-      "applied": 5,
+      "applied": 3,
+      "apply_failed": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 3
+     },
+     {
+      "day": 4,
+      "expired": 0,
+      "applied": 3,
+      "apply_failed": 0,
+      "reaped": 0,
+      "opened": 3,
+      "open_after": 3,
+      "answered": 3
+     },
+     {
+      "day": 5,
+      "expired": 0,
+      "applied": 3,
+      "apply_failed": 0,
+      "reaped": 0,
       "opened": 0,
       "open_after": 0,
       "answered": 0

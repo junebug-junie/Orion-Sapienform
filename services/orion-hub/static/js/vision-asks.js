@@ -59,8 +59,23 @@
     return "Orion has " + n + " questions for you.";
   }
 
+  // Mirrors orion.memory.episode.confirmation.MIN_REVISION_WORDS / revision_problem: structural
+  // checks only. A note that only says "no" belongs on Reject, which the hint says.
+  const MIN_REVISION_WORDS = 6;
+
+  function revisionProblem(note, current) {
+    const words = String(note || "").split(/\s+/).filter(Boolean);
+    if (words.length === 0) return "revised_needs_note";
+    if (words.length < MIN_REVISION_WORDS) return "revised_too_short";
+    const norm = function (t) { return String(t || "").split(/\s+/).filter(Boolean).join(" ").toLowerCase(); };
+    if (current && norm(note) === norm(current)) return "revised_unchanged";
+    return null;
+  }
+
   function errorLine(status, detail) {
     if (detail === "revised_needs_note") return "Write how I should remember it first.";
+    if (detail === "revised_too_short") return "Write it as a full sentence (at least " + MIN_REVISION_WORDS + " words). To drop it, press Reject.";
+    if (detail === "revised_unchanged") return "That is the same as what I have. Change it, or press Confirm.";
     if (status === 409) return "Someone already answered this one, or it expired.";
     if (status === 404) return "That question no longer exists.";
     if (status === 503) return "Can't reach the question store right now.";
@@ -95,7 +110,8 @@
     revise.setAttribute("data-ask-revise", vm.askId);
     // The hidden attribute as well as the class: hidden must not depend on the stylesheet.
     revise.hidden = true;
-    revise.appendChild(el(doc, "div", "text-[11px] text-gray-400", "How should I remember it?"));
+    revise.appendChild(el(doc, "div", "text-[11px] text-gray-400",
+      "How should I remember it? Rewrite it in full. If it should not be kept at all, press Reject instead."));
     const box = el(doc, "textarea", "w-full bg-gray-900 text-gray-100 text-xs rounded px-2 py-1 border border-gray-700");
     box.setAttribute("maxlength", "500");
     box.setAttribute("rows", "3");
@@ -119,7 +135,15 @@
       if (!String(box.value || "").trim()) box.value = vm.statement;
       if (box.focus) box.focus();
     });
-    saveBtn.addEventListener("click", function () { return run("revised", box.value); });
+    saveBtn.addEventListener("click", function () {
+      const problem = revisionProblem(box.value, vm.statement);
+      if (problem) {
+        note.textContent = errorLine(422, problem);
+        note.classList.remove("hidden");
+        return;
+      }
+      return run("revised", box.value);
+    });
     row.appendChild(confirmBtn);
     row.appendChild(reviseBtn);
     row.appendChild(rejectBtn);
@@ -281,6 +305,7 @@
     statusLine: statusLine,
     errorLine: errorLine,
     isResolvable: isResolvable,
+    revisionProblem: revisionProblem,
     submitAction: submitAction,
     renderAsk: renderAsk,
     mount: mount,

@@ -105,7 +105,7 @@ def test_high_stakes_memory_gets_one_card_and_low_gets_none():
         high = await _memory(pool, reason="health")
         low = await _memory(pool, stakes="low", reason="none")
         summary = await c.run_tick(pool, now=T0)
-        assert summary == {"expired": 0, "applied": 0, "opened": 1}
+        assert summary == {"expired": 0, "applied": 0, "apply_failed": 0, "reaped": 0, "opened": 1}
         ask = await pool.fetchrow("SELECT * FROM orion_ask")
         assert ask["source_kind"] == "memory_confirmation"
         assert ask["source_ref"] == c.loop_id_for(high) and ask["ask_id"] == c.ask_id_for(c.loop_id_for(high))
@@ -126,16 +126,16 @@ def test_high_stakes_memory_gets_one_card_and_low_gets_none():
 def test_cap_of_five_open_cards_and_the_queue_behind_it():
     async def body(pool):
         mids = [await _memory(pool, created=T0 + timedelta(minutes=i)) for i in range(8)]
-        assert (await c.run_tick(pool, now=T0))["opened"] == 5
+        assert (await c.run_tick(pool, now=T0, daily_cap=99))["opened"] == 5
         asked = {r["source_ref"] for r in await pool.fetch("SELECT source_ref FROM orion_ask WHERE status='open'")}
         assert asked == {c.loop_id_for(m) for m in mids[:5]}  # oldest first
-        assert (await c.run_tick(pool, now=T0))["opened"] == 0
+        assert (await c.run_tick(pool, now=T0, daily_cap=99))["opened"] == 0
         # An open vision ask does not take a memory slot; an open_question card does.
         await pool.execute("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref) "
                            "VALUES ('v', 'q', 'vision_individual', 'ind')")
         await _answer(pool, mids[0], "confirmed")
-        summary = await c.run_tick(pool, now=T0)
-        assert summary == {"expired": 0, "applied": 1, "opened": 1}
+        summary = await c.run_tick(pool, now=T0, daily_cap=99)
+        assert summary == {"expired": 0, "applied": 1, "apply_failed": 0, "reaped": 0, "opened": 1}
         assert await pool.fetchval("SELECT count(*) FROM orion_ask WHERE status='open' "
                                    "AND source_kind='memory_confirmation'") == 5
         assert (await _mem(pool, mids[5]))["confirmation_loop_id"] == c.loop_id_for(mids[5])
@@ -150,7 +150,7 @@ def test_concurrent_openers_never_exceed_the_cap():
 
         async def opener():
             async with pool.acquire() as conn:
-                return await c.open_cards(conn, now=T0)
+                return await c.open_cards(conn, now=T0, daily_cap=99)
 
         results = await asyncio.gather(opener(), opener(), opener())
         assert sum(len(r) for r in results) == 5
@@ -161,9 +161,9 @@ def test_concurrent_openers_never_exceed_the_cap():
 def test_seven_day_expiry_marks_unconfirmed_never_confirmed_and_frees_the_slot():
     async def body(pool):
         mids = [await _memory(pool, created=T0 + timedelta(minutes=i)) for i in range(6)]
-        await c.run_tick(pool, now=T0)
-        assert (await c.run_tick(pool, now=T0 + timedelta(days=6, hours=23)))["expired"] == 0
-        summary = await c.run_tick(pool, now=T0 + timedelta(days=7))
+        await c.run_tick(pool, now=T0, daily_cap=99)
+        assert (await c.run_tick(pool, now=T0 + timedelta(days=6, hours=23), daily_cap=99))["expired"] == 0
+        summary = await c.run_tick(pool, now=T0 + timedelta(days=7), daily_cap=99)
         assert summary["expired"] == 5 and summary["opened"] == 1
         for m in mids[:5]:
             row = await _mem(pool, m)
@@ -173,7 +173,7 @@ def test_seven_day_expiry_marks_unconfirmed_never_confirmed_and_frees_the_slot()
         assert await pool.fetchval("SELECT count(*) FROM orion_ask WHERE status='expired'") == 5
         assert await pool.fetchval("SELECT count(*) FROM attention_loop_outcome") == 0  # expiry is not an answer
         # Never re-asked: an expired memory keeps its loop id, so it does not re-enter the queue.
-        assert (await c.run_tick(pool, now=T0 + timedelta(days=8)))["opened"] == 0
+        assert (await c.run_tick(pool, now=T0 + timedelta(days=8), daily_cap=99))["opened"] == 0
     run(body)
 
 
@@ -221,11 +221,17 @@ def test_revise_supersedes_the_original_and_confirms_her_wording():
         assert new["statement"] == "Juniper told me her brother feels distant, not her sister."
         assert (new["confirmation_state"], new["voice"], new["status"]) == ("confirmed", "worked_out_together", "active")
         assert new["prompt_version"] == "juniper_revision" and new["stakes_reason"] == "family_relationships"
-        assert await pool.fetchval("SELECT referent_key FROM episode_memory_referent WHERE memory_id=$1",
-                                   new["memory_id"]) == "person:sister"
-        kinds = {r["source_kind"] for r in await pool.fetch(
-            "SELECT source_kind FROM episode_memory_evidence WHERE memory_id=$1", new["memory_id"])}
-        assert kinds == {"chat_prompt", "juniper_revision"}
+        # Review of #2517: the old quotes supported the OLD wording, so none are copied as verified
+        # evidence for hers. Her note is the only evidence; the old memory is reachable only
+        # through supersedes_memory_id. Referents are not copied either (she changed who it is about).
+        ev = await pool.fetch("SELECT source_kind, source_id, quote, verified FROM episode_memory_evidence "
+                              "WHERE memory_id=$1", new["memory_id"])
+        assert [(r["source_kind"], r["quote"], r["verified"]) for r in ev] == [
+            ("confirmation_revise", "Juniper told me her brother feels distant, not her sister.", True)]
+        assert await pool.fetchval("SELECT count(*) FROM episode_memory_referent WHERE memory_id=$1",
+                                   new["memory_id"]) == 0
+        assert await pool.fetchval("SELECT count(*) FROM episode_memory_evidence WHERE memory_id=$1",
+                                   uuid.UUID(mid)) == 1  # the original keeps its own quote
         assert await _events(pool, mid) == ["confirm_asked", "revised"]
         ops = {r["op"]: r["outcome_id"] for r in await pool.fetch(
             "SELECT op, outcome_id FROM episode_memory_event WHERE memory_id=$1", new["memory_id"])}
@@ -235,19 +241,27 @@ def test_revise_supersedes_the_original_and_confirms_her_wording():
     run(body)
 
 
-def test_reject_excludes_the_memory_from_recall():
+def test_reject_marks_rejected_and_an_exact_repeat_is_never_asked():
+    """Do-not-remint (review of #2517): a later memory whose statement is word-for-word one Juniper
+    rejected (whitespace and case folded) is never asked; anything else still is. Exact match only."""
     async def body(pool):
-        keep = await _memory(pool)
-        drop = await _memory(pool, created=T0 + timedelta(minutes=1))
+        drop = await _memory(pool, statement="Juniper told me her sister feels distant lately.")
         await c.run_tick(pool, now=T0)
         await _answer(pool, drop, "rejected")
         await c.run_tick(pool, now=T0 + timedelta(minutes=1))
         m = await _mem(pool, drop)
         assert (m["confirmation_state"], m["status"]) == ("rejected", "rejected")
-        recallable = {str(r["memory_id"]) for r in await pool.fetch(
-            f"SELECT memory_id FROM episode_memory WHERE {c.RECALLABLE_WHERE}")}
-        assert keep in recallable and drop not in recallable
         assert await _events(pool, drop) == ["confirm_asked", "rejected"]
+
+        repeat = await _memory(pool, statement="  juniper told me her SISTER   feels distant lately. ",
+                               created=T0 + timedelta(hours=1))
+        other = await _memory(pool, statement="Juniper told me her sister feels close again.",
+                              created=T0 + timedelta(hours=2))
+        for k in range(2):
+            await c.run_tick(pool, now=T0 + timedelta(hours=3, minutes=k))
+        assert (await _mem(pool, repeat))["confirmation_loop_id"] is None
+        assert await _events(pool, repeat) == ["confirm_skipped"]  # logged once, not every tick
+        assert (await _mem(pool, other))["confirmation_loop_id"] == c.loop_id_for(other)
     run(body)
 
 
@@ -314,7 +328,8 @@ def test_revise_without_a_note_is_invalid_and_leaves_the_memory_pending():
         await _answer(pool, mid, "revised", "")
         await c.run_tick(pool, now=T0)
         assert (await _mem(pool, mid))["confirmation_state"] == "pending_confirmation"
-        assert await _events(pool, mid) == ["confirm_asked", "outcome_invalid"]
+        # Refused, then (review of #2517) reaped and asked again with a fresh card.
+        assert sorted(await _events(pool, mid)) == ["ask_reaped", "confirm_asked", "confirm_asked", "outcome_invalid"]
     run(body)
 
 
@@ -347,4 +362,98 @@ def test_migration_applies_rolls_back_and_reapplies():
         # The catch-up read uses the partial index's predicate as written.
         plan = "\n".join(r[0] for r in await pool.fetch("EXPLAIN " + c.PENDING_OUTCOMES_SQL.replace("$1", "50")))
         assert "attention_loop_outcome" in plan
+    run(body)
+
+
+def test_daily_cap_counts_new_cards_per_local_day():
+    """Answering promptly frees open slots; the daily cap (3, Juniper's local day) still holds."""
+    async def body(pool):
+        mids = [await _memory(pool, created=T0 + timedelta(minutes=i)) for i in range(8)]
+        day1 = datetime(2026, 10, 6, 15, 0, tzinfo=timezone.utc)  # 09:00 MDT
+        assert (await c.run_tick(pool, now=day1))["opened"] == 3
+        for m in mids[:3]:
+            await _answer(pool, m, "confirmed", now=day1)
+        s = await c.run_tick(pool, now=day1 + timedelta(hours=1))
+        assert (s["applied"], s["opened"]) == (3, 0)  # slots free, but today's 3 are used
+        # 23:30 MDT is still the same local day (05:30 UTC the next day).
+        assert (await c.run_tick(pool, now=datetime(2026, 10, 7, 5, 30, tzinfo=timezone.utc)))["opened"] == 0
+        # 00:30 MDT: a new local day.
+        assert (await c.run_tick(pool, now=datetime(2026, 10, 7, 6, 30, tzinfo=timezone.utc)))["opened"] == 3
+        async with pool.acquire() as conn:
+            assert await c.open_cards(conn, now=day1 + timedelta(days=2), daily_cap=0) == []
+    run(body)
+
+
+def test_one_poison_outcome_never_stops_the_tick(monkeypatch):
+    async def body(pool):
+        a = await _memory(pool)
+        b = await _memory(pool, created=T0 + timedelta(minutes=1))
+        later = await _memory(pool, created=T0 + timedelta(minutes=2))
+        await c.run_tick(pool, now=T0, cap=2)
+        poison = await _answer(pool, a, "confirmed")
+        await _answer(pool, b, "confirmed")
+        real = c.apply_outcome
+
+        async def flaky(conn, outcome, now=None):
+            if outcome.outcome_id == poison:
+                raise RuntimeError("poison")
+            return await real(conn, outcome, now=now)
+
+        monkeypatch.setattr(c, "apply_outcome", flaky)
+        s = await c.run_tick(pool, now=T0 + timedelta(minutes=5), cap=2)
+        assert (s["apply_failed"], s["applied"], s["opened"]) == (1, 1, 1)
+        assert (await _mem(pool, b))["confirmation_state"] == "confirmed"
+        assert (await _mem(pool, later))["confirmation_loop_id"] == c.loop_id_for(later)
+        assert (await _mem(pool, a))["confirmation_state"] == "pending_confirmation"  # retried next tick
+        monkeypatch.setattr(c, "apply_outcome", real)
+        assert (await c.run_tick(pool, now=T0 + timedelta(minutes=6), cap=2))["applied"] == 1
+        assert (await _mem(pool, a))["confirmation_state"] == "confirmed"
+    run(body)
+
+
+def test_reaper_frees_a_memory_whose_card_closed_without_an_answer_and_it_is_asked_again():
+    async def body(pool):
+        stuck = await _memory(pool)
+        answered = await _memory(pool, created=T0 + timedelta(minutes=1))
+        await c.run_tick(pool, now=T0)
+        loop = c.loop_id_for(stuck)
+        # Closed outside the resolve bridge (an old Hub, a hand edit): no outcome row.
+        await pool.execute("UPDATE orion_ask SET status='dismissed' WHERE source_ref=$1", loop)
+        await _answer(pool, answered, "confirmed")  # closed WITH an outcome: not stuck
+        s = await c.run_tick(pool, now=T0 + timedelta(hours=1))
+        assert s["reaped"] == 1 and s["opened"] == 1
+        assert sorted(await _events(pool, stuck)) == ["ask_reaped", "confirm_asked", "confirm_asked"]
+        cards = await pool.fetch("SELECT ask_id, status FROM orion_ask WHERE source_ref=$1 ORDER BY created_at", loop)
+        assert [r["status"] for r in cards] == ["dismissed", "open"]
+        assert cards[1]["ask_id"] == c.ask_id_for(f"{loop}#1") != cards[0]["ask_id"]  # a fresh card
+        assert (await _mem(pool, stuck))["confirmation_loop_id"] == loop
+        # The re-asked card resolves normally.
+        oid = c.outcome_id_for(cards[1]["ask_id"])
+        await pool.execute("UPDATE orion_ask SET status='answered' WHERE ask_id=$1", cards[1]["ask_id"])
+        await pool.execute(
+            "INSERT INTO attention_loop_outcome (outcome_id, loop_id, theme_key, verdict, actor, note, features_at_close,"
+            " created_at) VALUES ($1, $2, $2, 'resolved', 'juniper', '', $3::jsonb, $4)",
+            oid, loop, json.dumps(c.outcome_features(resolution="confirmed", ask_id=cards[1]["ask_id"], memory_id=stuck)),
+            T0 + timedelta(hours=2))
+        s = await c.run_tick(pool, now=T0 + timedelta(hours=2))
+        assert (s["applied"], s["reaped"]) == (1, 0)
+        assert (await _mem(pool, stuck))["confirmation_state"] == "confirmed"
+        # Open and expired cards are never reaped.
+        assert (await _mem(pool, answered))["confirmation_state"] == "confirmed"
+    run(body)
+
+
+def test_an_invalid_revise_that_slipped_past_the_hub_is_refused_and_reasked():
+    async def body(pool):
+        mid = await _memory(pool, statement="Juniper told me her sister feels distant lately.")
+        await c.run_tick(pool, now=T0)
+        await _answer(pool, mid, "revised", "no, wrong")  # a meta-note, not wording
+        s = await c.run_tick(pool, now=T0 + timedelta(minutes=1))
+        m = await _mem(pool, mid)
+        assert m["confirmation_state"] == "pending_confirmation" and m["statement"].endswith("distant lately.")
+        ev = await pool.fetchrow("SELECT reason FROM episode_memory_event WHERE op='outcome_invalid'")
+        assert ev["reason"] == "revised_too_short"
+        assert s["reaped"] == 1 and s["opened"] == 1  # asked again, fresh card
+        assert await pool.fetchval("SELECT count(*) FROM orion_ask WHERE status='open' AND source_ref=$1",
+                                   c.loop_id_for(mid)) == 1
     run(body)

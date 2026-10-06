@@ -236,3 +236,32 @@ def test_write_traceability_csv_marks_untraceable_rows(tmp_path) -> None:
     assert lines[1].endswith("True")
     assert "open-loop-dangling" in lines[2]
     assert lines[2].endswith("False")
+
+
+def test_loop_outcome_count_leaves_out_memory_confirmation_answers():
+    """Memory confirmation answers (loop_id memory-confirm-*) share attention_loop_outcome since
+    2026-10-06; they are not attention loops and must not inflate this count (review of #2517)."""
+    seen: list[tuple[str, tuple]] = []
+
+    class _Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params):
+            seen.append((sql, params))
+
+        def fetchone(self):
+            return (4,)
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+    since = datetime(2026, 10, 6, tzinfo=timezone.utc)
+    assert mod.fetch_loop_outcome_count(_Conn(), since) == 4
+    sql, params = seen[0]
+    assert "loop_id NOT LIKE 'memory-confirm-%%'" in sql  # %% : psycopg paramstyle escape
+    assert params == (since,)

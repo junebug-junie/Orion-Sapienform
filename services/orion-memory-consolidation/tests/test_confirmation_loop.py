@@ -93,6 +93,10 @@ def test_flag_ships_on_everywhere():
     assert "\nMEMORY_CONFIRMATION_LOOP_ENABLED=true\n" in env_example
     assert "MEMORY_CONFIRMATION_LOOP_ENABLED=${MEMORY_CONFIRMATION_LOOP_ENABLED:-true}" in compose
     assert "CHANNEL_ATTENTION_LOOP_OUTCOME=${CHANNEL_ATTENTION_LOOP_OUTCOME:-orion:attention:loop_outcome}" in compose
+    assert Settings.model_fields["MEMORY_CONFIRMATION_DAILY_CAP"].default == 3
+    assert "\nMEMORY_CONFIRMATION_DAILY_CAP=3\n" in env_example
+    assert "MEMORY_CONFIRMATION_DAILY_CAP=${MEMORY_CONFIRMATION_DAILY_CAP:-3}" in compose
+    assert "MEMORY_CONFIRMATION_TZ=${MEMORY_CONFIRMATION_TZ:-America/Denver}" in compose
 
 
 def test_main_subscribes_the_outcome_channel_and_starts_the_ticker():
@@ -108,8 +112,8 @@ def test_main_subscribes_the_outcome_channel_and_starts_the_ticker():
 def test_ticker_runs_only_when_enabled(monkeypatch, enabled, expected_calls):
     calls = []
 
-    async def _tick(pool):
-        calls.append(pool)
+    async def _tick(pool, **kw):
+        calls.append((pool, kw))
         return {"expired": 0, "applied": 0, "opened": 0}
 
     async def _sleep(_s):
@@ -117,7 +121,10 @@ def test_ticker_runs_only_when_enabled(monkeypatch, enabled, expected_calls):
 
     monkeypatch.setattr(loop, "run_tick", _tick)
     monkeypatch.setattr(loop.asyncio, "sleep", _sleep)
-    settings = SimpleNamespace(MEMORY_CONFIRMATION_LOOP_ENABLED=enabled, MEMORY_CONFIRMATION_TICK_SEC=60)
+    settings = SimpleNamespace(MEMORY_CONFIRMATION_LOOP_ENABLED=enabled, MEMORY_CONFIRMATION_TICK_SEC=60,
+                               MEMORY_CONFIRMATION_DAILY_CAP=3, MEMORY_CONFIRMATION_TZ="America/Denver")
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(loop.run_confirmation_loop("pool", settings))
     assert len(calls) == expected_calls
+    if calls:  # the daily cap and Juniper's timezone reach the opener
+        assert calls[0] == ("pool", {"daily_cap": 3, "tz_name": "America/Denver"})

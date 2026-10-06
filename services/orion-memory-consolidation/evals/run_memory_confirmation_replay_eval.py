@@ -13,7 +13,7 @@ Postgres (``--scratch-dsn``, an admin DSN; a database is created and dropped per
   this is the closest honest preview of what the loop will be asked to carry.
 
 Each input runs two scenarios: Juniper never answers (cards expire every 7 days, the next five
-open), and Juniper confirms every card within a day. Both check the 5-open-card cap on every tick.
+open), and Juniper confirms every card within a day. Both check the 5-open-card cap and the 3-new-cards-a-day cap on every tick.
 
     python services/orion-memory-consolidation/evals/run_memory_confirmation_replay_eval.py \\
         --scratch-dsn postgresql://postgres:postgres@127.0.0.1:55499/postgres \\
@@ -194,6 +194,7 @@ async def main_async(args) -> dict:
                 "ASSUMED from the category (Orion-self categories = orion_thought), so its framing counts restate "
                 "that assumption.",
         "cap": c.MAX_OPEN_CARDS,
+        "daily_cap": c.DAILY_CAP,
         "ask_ttl_days": c.ASK_TTL.days,
         "inputs": {},
     }

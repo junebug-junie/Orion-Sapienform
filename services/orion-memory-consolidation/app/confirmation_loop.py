@@ -70,7 +70,11 @@ async def run_confirmation_loop(pool: Any, settings: Any) -> None:
     while True:
         if settings.MEMORY_CONFIRMATION_LOOP_ENABLED:
             try:
-                summary = await run_tick(pool)
+                summary = await run_tick(
+                    pool,
+                    daily_cap=int(settings.MEMORY_CONFIRMATION_DAILY_CAP),
+                    tz_name=str(settings.MEMORY_CONFIRMATION_TZ),
+                )
                 if any(summary.values()):
                     logger.info("memory_confirmation_tick %s", summary)
             except Exception:  # noqa: BLE001 -- the next tick retries; the table is the truth

@@ -87,6 +87,10 @@ class Settings(BaseSettings):
     # orion:attention:loop_outcome plus a table catch-up. Kill switch: false stops all three.
     MEMORY_CONFIRMATION_LOOP_ENABLED: bool = Field(default=True, alias="MEMORY_CONFIRMATION_LOOP_ENABLED")
     MEMORY_CONFIRMATION_TICK_SEC: float = Field(default=60.0, gt=0.0, alias="MEMORY_CONFIRMATION_TICK_SEC")
+    # At most this many NEW cards per local day (MEMORY_CONFIRMATION_TZ), on top of the 5-open cap,
+    # so prompt answers do not let the queue refill all day.
+    MEMORY_CONFIRMATION_DAILY_CAP: int = Field(default=3, ge=0, alias="MEMORY_CONFIRMATION_DAILY_CAP")
+    MEMORY_CONFIRMATION_TZ: str = Field(default="America/Denver", alias="MEMORY_CONFIRMATION_TZ")
     CHANNEL_ATTENTION_LOOP_OUTCOME: str = Field(
         default="orion:attention:loop_outcome", alias="CHANNEL_ATTENTION_LOOP_OUTCOME"
     )

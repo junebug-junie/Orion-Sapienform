@@ -31,10 +31,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 # --- contract constants -----------------------------------------------------------------------
 
@@ -44,6 +47,10 @@ SOURCE_KIND = "memory_confirmation"
 RESOLVABLE_KINDS: tuple[str, ...] = (SOURCE_KIND, "open_question")
 LOOP_PREFIX = "memory-confirm-"
 MAX_OPEN_CARDS = 5
+# New memory cards per local day (review of #2517): when Juniper answers promptly, slots free fast,
+# and without this the 5-card cap alone would let the queue refill all day.
+DAILY_CAP = 3
+DEFAULT_TZ = "America/Denver"
 ASK_TTL = timedelta(days=7)
 ACTOR = "memory.confirmation"
 VIA_PANEL = "orion_is_asking"
@@ -58,10 +65,9 @@ RESOLUTIONS = ("confirmed", "revised", "rejected")
 RESOLUTION_VERDICT = {"confirmed": "resolved", "revised": "resolved", "rejected": "dismissed"}
 RESOLUTION_ASK_STATUS = {"confirmed": "answered", "revised": "answered", "rejected": "dismissed"}
 
-# A memory in one of these states is never served by recall or the reverie seed. Every Stage 2
-# reader of episode_memory must filter with RECALLABLE_WHERE (tested in test_confirmation.py).
-NOT_RECALLABLE_STATES = ("rejected",)
-RECALLABLE_WHERE = "status = 'active' AND confirmation_state <> 'rejected'"
+# A revise note must be real wording, not a meta-note ("no", "wrong"). Same floor the distiller
+# validator applies to every statement (validate.MIN_STATEMENT_WORDS). Rejection has its own button.
+MIN_REVISION_WORDS = 6
 
 CONFIRMATION_NAMESPACE = uuid.UUID("9b0e4c1a-5f7d-4e62-8a3b-c2d1f0e9a8b7")
 # pg_advisory_xact_lock key: one card opener at a time, so two replicas cannot both fill slot 5.
@@ -90,6 +96,24 @@ def ask_id_for(loop_id: str) -> str:
 def outcome_id_for(ask_id: str) -> str:
     """uuid5(ask_id): one panel answer per card, whatever the retries."""
     return str(uuid.uuid5(CONFIRMATION_NAMESPACE, f"outcome|{ask_id}"))
+
+
+def normalize_statement(text: str) -> str:
+    return " ".join(str(text or "").split()).casefold()
+
+
+def revision_problem(note: str, current_statement: Optional[str]) -> Optional[str]:
+    """Why a revise note cannot become the memory's new wording, or None when it can. Structural
+    checks only (no word lists): it must say something (>= MIN_REVISION_WORDS words) and differ
+    from the wording it replaces. A note that only rejects belongs on the Reject button."""
+    words = str(note or "").split()
+    if not words:
+        return "revised_needs_note"
+    if len(words) < MIN_REVISION_WORDS:
+        return "revised_too_short"
+    if current_statement is not None and normalize_statement(note) == normalize_statement(current_statement):
+        return "revised_unchanged"
+    return None
 
 
 def _event_id(key: str) -> str:
@@ -248,18 +272,64 @@ async def _event(conn, *, key: str, memory_id: Optional[str], op: str, actor: st
     return row is not None
 
 
-async def open_cards(conn, *, now: Optional[datetime] = None, cap: int = MAX_OPEN_CARDS) -> list[str]:
-    """Open cards for the oldest unasked high-stakes memories, up to the cap. Returns the loop ids
-    opened. One transaction under an advisory lock, so concurrent openers never exceed the cap."""
+def local_day_start(now: datetime, tz_name: str = DEFAULT_TZ) -> datetime:
+    from zoneinfo import ZoneInfo
+
+    local = now.astimezone(ZoneInfo(tz_name))
+    return local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+
+
+# A pending memory whose statement is word-for-word one Juniper already rejected (whitespace and
+# case folded) is never asked again: exact match only, no similarity (review of #2517). Matching on
+# the referent set + purpose was considered and left as a follow-up: too coarse (one rejected
+# "person:sister" memory would silence every later one about her sister).
+_SKIP_REJECTED_SQL = """
+SELECT m.memory_id::text AS memory_id, m.episode_id, r.memory_id::text AS rejected_memory_id
+FROM episode_memory m
+JOIN LATERAL (
+    SELECT memory_id FROM episode_memory x
+    WHERE x.confirmation_state = 'rejected' AND x.memory_id <> m.memory_id
+      AND lower(regexp_replace(btrim(x.statement), '\\s+', ' ', 'g'))
+        = lower(regexp_replace(btrim(m.statement), '\\s+', ' ', 'g'))
+    LIMIT 1
+) r ON true
+WHERE m.stakes = 'high' AND m.confirmation_state = 'pending_confirmation' AND m.status = 'active'
+  AND m.confirmation_loop_id IS NULL
+"""
+
+
+async def open_cards(
+    conn,
+    *,
+    now: Optional[datetime] = None,
+    cap: int = MAX_OPEN_CARDS,
+    daily_cap: int = DAILY_CAP,
+    tz_name: str = DEFAULT_TZ,
+) -> list[str]:
+    """Open cards for the oldest unasked high-stakes memories, up to the open cap AND the number of
+    new cards still allowed today (local day). Returns the loop ids opened. One transaction under an
+    advisory lock, so concurrent openers never exceed either cap."""
     now = now or datetime.now(timezone.utc)
     opened: list[str] = []
     async with conn.transaction():
         await conn.execute("SELECT pg_advisory_xact_lock($1)", OPEN_LOCK_KEY)
+        # Do-not-remint: log (once) and hold back exact repeats of a rejected statement.
+        held = await conn.fetch(_SKIP_REJECTED_SQL)
+        for h in held:
+            await _event(conn, key=f"{h['memory_id']}|skipped_rejected_before", memory_id=h["memory_id"],
+                         op="confirm_skipped", actor=ACTOR, episode_id=h["episode_id"], outcome_id=None,
+                         evidence={"rejected_memory_id": h["rejected_memory_id"]},
+                         reason="same_statement_rejected_before", now=now)
+        held_ids = [uuid.UUID(h["memory_id"]) for h in held]
         open_n = await conn.fetchval(
             "SELECT count(*) FROM orion_ask WHERE source_kind = ANY($1::text[]) AND status = 'open'",
             list(RESOLVABLE_KINDS),
         )
-        slots = max(0, int(cap) - int(open_n or 0))
+        today_n = await conn.fetchval(
+            "SELECT count(*) FROM orion_ask WHERE source_kind = $1 AND created_at >= $2",
+            SOURCE_KIND, local_day_start(now, tz_name),
+        )
+        slots = max(0, min(int(cap) - int(open_n or 0), int(daily_cap) - int(today_n or 0)))
         if slots == 0:
             return opened
         rows = await conn.fetch(
@@ -268,16 +338,21 @@ async def open_cards(conn, *, now: Optional[datetime] = None, cap: int = MAX_OPE
                    occurred_at, created_at
             FROM episode_memory
             WHERE stakes = 'high' AND confirmation_state = 'pending_confirmation' AND status = 'active'
-              AND confirmation_loop_id IS NULL
+              AND confirmation_loop_id IS NULL AND NOT (memory_id = ANY($2::uuid[]))
             ORDER BY created_at, memory_id
             LIMIT $1
             """,
-            slots,
+            slots, held_ids,
         )
         for r in rows:
             memory_id = r["memory_id"]
             loop_id = loop_id_for(memory_id)
-            ask_id = ask_id_for(loop_id)
+            # A memory re-asked after the reaper (attempt n > 0) needs a fresh card id: the first
+            # card's row still exists, closed.
+            attempt = int(await conn.fetchval(
+                "SELECT count(*) FROM orion_ask WHERE source_kind = $1 AND source_ref = $2", SOURCE_KIND, loop_id
+            ) or 0)
+            ask_id = ask_id_for(loop_id if attempt == 0 else f"{loop_id}#{attempt}")
             refs = await conn.fetch(
                 "SELECT DISTINCT source_kind, source_id FROM episode_memory_evidence WHERE memory_id = $1 "
                 "ORDER BY 1, 2",
@@ -301,9 +376,11 @@ async def open_cards(conn, *, now: Optional[datetime] = None, cap: int = MAX_OPE
                 "UPDATE episode_memory SET confirmation_loop_id = $2, updated_at = $3 WHERE memory_id = $1",
                 uuid.UUID(memory_id), loop_id, now,
             )
-            await _event(conn, key=f"{loop_id}|confirm_asked", memory_id=memory_id, op="confirm_asked", actor=ACTOR,
+            await _event(conn, key=f"{loop_id}|confirm_asked" + (f"|{attempt}" if attempt else ""),
+                         memory_id=memory_id, op="confirm_asked", actor=ACTOR,
                          episode_id=r["episode_id"], outcome_id=None,
                          evidence={"ask_id": ask_id, "loop_id": loop_id, "stakes_reason": r["stakes_reason"],
+                                   "attempt": attempt,
                                    "expires_at": (now + ASK_TTL).isoformat()},
                          reason=None, now=now)
             opened.append(loop_id)
@@ -398,9 +475,16 @@ async def apply_outcome(conn, outcome: OutcomeToApply, *, now: Optional[datetime
             return "already_resolved"
         resolution = outcome.resolution
         note = " ".join(outcome.note.split())[:MAX_NOTE_CHARS]
-        if resolution is None or (resolution == "revised" and not note):
-            await mark("outcome_invalid", "unknown_resolution" if resolution is None else "revised_without_note")
+        if resolution is None:
+            await mark("outcome_invalid", "unknown_resolution")
             return "invalid"
+        if resolution == "revised":
+            problem = revision_problem(note, mem["statement"])
+            if problem:
+                # The Hub refuses these before the card closes; this is the backstop. The memory
+                # stays as it was, and the reaper lets it be asked again.
+                await mark("outcome_invalid", problem)
+                return "invalid"
 
         half_life = mem["half_life_days"]
         new_half_life = None if half_life is None else min(float(half_life) * 2.0, HALF_LIFE_CAP_DAYS)
@@ -448,18 +532,10 @@ async def apply_outcome(conn, outcome: OutcomeToApply, *, now: Optional[datetime
             mem["stakes"], mem["stakes_reason"], mem["confirmation_loop_id"], new_strength, new_half_life, now,
             int(mem["reinforcement_count"] or 0) + 1, mem["due_after"], mem["expires_at"], uuid.UUID(memory_id),
         )
-        await conn.execute(
-            "INSERT INTO episode_memory_referent (memory_id, referent_key, role) "
-            "SELECT $1, referent_key, role FROM episode_memory_referent WHERE memory_id = $2 ON CONFLICT DO NOTHING",
-            uuid.UUID(new_id), uuid.UUID(memory_id),
-        )
-        await conn.execute(
-            "INSERT INTO episode_memory_evidence (memory_id, source_kind, source_id, quote, quote_sha256, verified) "
-            "SELECT $1, source_kind, source_id, quote, quote_sha256, verified FROM episode_memory_evidence "
-            "WHERE memory_id = $2 ON CONFLICT DO NOTHING",
-            uuid.UUID(new_id), uuid.UUID(memory_id),
-        )
-        await _add_juniper_evidence(conn, new_id, "juniper_revision", outcome, note)
+        # The old quotes supported the OLD wording, so none are copied (review of #2517): the new
+        # memory's only evidence is her note, verified as her own words. Referents are not copied
+        # either (a revision can change who it is about). History is supersedes_memory_id alone.
+        await _add_juniper_evidence(conn, new_id, "confirmation_revise", outcome, note)
         await conn.execute(
             "UPDATE episode_memory SET confirmation_state = 'corrected', status = 'superseded', updated_at = $2 "
             "WHERE memory_id = $1",
@@ -481,13 +557,74 @@ async def _add_juniper_evidence(conn, memory_id: str, source_kind: str, outcome:
     )
 
 
-async def run_tick(pool: Any, *, now: Optional[datetime] = None, cap: int = MAX_OPEN_CARDS) -> dict[str, int]:
-    """One pass, in the order that frees slots before filling them: expire, catch up, open."""
-    summary = {"expired": 0, "applied": 0, "opened": 0}
+async def reap_stuck(conn, *, now: Optional[datetime] = None) -> list[str]:
+    """Free memories stuck behind a card that closed without an answer record.
+
+    A ``pending_confirmation`` memory whose card is answered/dismissed (or gone) while no
+    ``attention_loop_outcome`` exists for its loop can never move: the opener skips it (it has a
+    loop id) and the applier has nothing to apply. That happens if a card is closed outside the
+    resolve bridge (an old Hub, a manual UPDATE) or a revise note was refused after the close.
+    Clearing the loop id lets the opener ask again with a fresh card. Expired cards are not stuck:
+    they move the memory to ``unconfirmed``. An outcome the applier refused as invalid counts as no
+    answer. Returns the memory ids freed."""
+    now = now or datetime.now(timezone.utc)
+    freed: list[str] = []
+    async with conn.transaction():
+        rows = await conn.fetch(
+            """
+            SELECT m.memory_id::text AS memory_id, m.episode_id, m.confirmation_loop_id AS loop_id,
+                   (SELECT string_agg(a.status, ',') FROM orion_ask a
+                     WHERE a.source_kind = $1 AND a.source_ref = m.confirmation_loop_id) AS card_statuses
+            FROM episode_memory m
+            WHERE m.confirmation_state = 'pending_confirmation' AND m.confirmation_loop_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM orion_ask a WHERE a.source_kind = $1
+                              AND a.source_ref = m.confirmation_loop_id AND a.status IN ('open', 'expired'))
+              -- No usable answer: no outcome, or only outcomes the applier refused as invalid.
+              AND NOT EXISTS (SELECT 1 FROM attention_loop_outcome o WHERE o.loop_id = m.confirmation_loop_id
+                              AND NOT EXISTS (SELECT 1 FROM episode_memory_event e
+                                              WHERE e.outcome_id = o.outcome_id AND e.op = 'outcome_invalid'))
+            FOR UPDATE OF m
+            """,
+            SOURCE_KIND,
+        )
+        for r in rows:
+            await conn.execute(
+                "UPDATE episode_memory SET confirmation_loop_id = NULL, updated_at = $2 WHERE memory_id = $1",
+                uuid.UUID(r["memory_id"]), now,
+            )
+            await _event(conn, key=f"{r['loop_id']}|reaped|{now.isoformat()}", memory_id=r["memory_id"],
+                         op="ask_reaped", actor=ACTOR, episode_id=r["episode_id"], outcome_id=None,
+                         evidence={"loop_id": r["loop_id"], "card_statuses": r["card_statuses"]},
+                         reason="card_closed_without_outcome", now=now)
+            freed.append(r["memory_id"])
+    return freed
+
+
+async def run_tick(
+    pool: Any,
+    *,
+    now: Optional[datetime] = None,
+    cap: int = MAX_OPEN_CARDS,
+    daily_cap: int = DAILY_CAP,
+    tz_name: str = DEFAULT_TZ,
+) -> dict[str, int]:
+    """One pass, in the order that frees slots before filling them: expire, catch up, reap, open.
+    One bad outcome is logged and counted (``apply_failed``) and never stops the rest."""
+    summary = {"expired": 0, "applied": 0, "apply_failed": 0, "reaped": 0, "opened": 0}
     async with pool.acquire() as conn:
         summary["expired"] = len(await expire_cards(conn, now=now))
         for outcome in await pending_outcomes(conn):
-            if await apply_outcome(conn, outcome, now=now) not in ("already_applied", "not_memory"):
+            try:
+                result = await apply_outcome(conn, outcome, now=now)
+            except Exception:  # noqa: BLE001 -- a poison outcome is retried next tick, never blocks
+                logger.exception("memory_confirmation_apply_failed outcome_id=%s loop_id=%s",
+                                 outcome.outcome_id, outcome.loop_id)
+                summary["apply_failed"] += 1
+                continue
+            if result not in ("already_applied", "not_memory"):
                 summary["applied"] += 1
-        summary["opened"] = len(await open_cards(conn, now=now, cap=cap))
+        summary["reaped"] = len(await reap_stuck(conn, now=now))
+        if summary["reaped"]:
+            logger.warning("memory_confirmation_reaped count=%s", summary["reaped"])
+        summary["opened"] = len(await open_cards(conn, now=now, cap=cap, daily_cap=daily_cap, tz_name=tz_name))
     return summary

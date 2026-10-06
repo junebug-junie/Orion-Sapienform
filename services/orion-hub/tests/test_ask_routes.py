@@ -66,6 +66,11 @@ class _FakeConn:
 
         return _Tx()
 
+    async def fetchval(self, sql: str, *args):
+        self.sql.append(sql)
+        assert "FROM episode_memory" in sql
+        return self.statements.get(args[0])
+
     async def execute(self, sql: str, *args):
         self.sql.append(sql)
         if "INSERT INTO attention_loop_outcome" in sql:
@@ -419,7 +424,7 @@ def menv(monkeypatch, env):
     mem = _memory_row()
     rows[mem["ask_id"]] = mem
     pool = client.app.state.memory_pg_pool
-    pool.conn.statements[MEM_ID] = "Juniper told me X happened."
+    pool.conn.statements[MEM_ID] = "Juniper told me that X happened today."
     outcomes: list[AttentionLoopOutcomeV1] = []
 
     async def _pub_outcome(o):
@@ -457,11 +462,19 @@ def test_resolve_closes_card_writes_outcome_in_one_tx_and_publishes(menv, resolu
     assert published[0].ask_id == ask_id and published[0].status == ask_status
 
 
-def test_revise_without_note_is_422_and_touches_nothing(menv):
+@pytest.mark.parametrize("note,detail", [
+    ("   ", "revised_needs_note"),
+    ("no that's wrong", "revised_too_short"),          # a meta-note, not wording: Reject is the button
+    (" juniper TOLD me that X  happened today. ", "revised_unchanged"),  # the prefilled text sent back as-is
+])
+def test_revise_refuses_a_note_that_is_not_new_wording_and_touches_nothing(menv, note, detail):
     client, rows, published, outcomes, ask_id, conn = menv
-    r = client.post(f"/api/asks/{ask_id}/resolve", json={"resolution": "revised", "note": "   "})
-    assert r.status_code == 422 and r.json()["detail"] == "revised_needs_note"
-    assert rows[ask_id]["status"] == "open" and conn.outcomes == [] and outcomes == [] and published == []
+    conn.statements[MEM_ID] = "Juniper told me that X happened today."
+    r = client.post(f"/api/asks/{ask_id}/resolve", json={"resolution": "revised", "note": note})
+    assert r.status_code == 422 and r.json()["detail"] == detail
+    assert conn.outcomes == [] and outcomes == [] and published == []
+    # The real route raises inside the transaction, so the card update rolls back. The fake has no
+    # rollback; the Postgres test (test_ask_resolve_pg.py) pins that the card stays open.
 
 
 def test_second_resolve_is_409_without_a_second_outcome(menv):
@@ -509,7 +522,7 @@ def test_outcome_publish_failure_still_commits(menv, monkeypatch):
 def test_list_adds_the_memory_statement_for_revise(menv):
     client, _rows, _p, _o, ask_id, _c = menv
     asks = {a["ask_id"]: a for a in client.get("/api/asks?status=open").json()["asks"]}
-    assert asks[ask_id]["memory_statement"] == "Juniper told me X happened."
+    assert asks[ask_id]["memory_statement"] == "Juniper told me that X happened today."
     assert "memory_statement" not in asks["a1"]
 
 

@@ -17,7 +17,7 @@ Keep this table in sync with the code in the same PR.
 | "I told Juniper" | Something Orion said in chat, with a verified quote | live `orion_thought`/chat rows (4) | report | matrix test |
 | "…on my own…, not something Juniper and I discussed" | A private thought: anything on an internal channel (reverie, curiosity, dream, journal, topic_model), whatever its voice claims | internal-channel memories; the legacy reverie glimpse | report; legacy stance prompt | matrix test, `test_the_180_hecate_reveries_case` |
 | "My own note…, not Juniper's words" | Fallback for anything else, e.g. `juniper_said` without a verified quote. Always away from Juniper | report rows failing the checks above | report | matrix test, PG report test |
-| "Unconfirmed, check with Juniper if natural:" | A high-stakes memory Juniper has not confirmed | validator sets `pending_confirmation` for high stakes | report | `test_pending_marker_and_whitespace` |
+| "Unconfirmed, check with Juniper if natural:" | A high-stakes memory Juniper has not confirmed, including one she was asked about and did not answer within 7 days | validator sets `pending_confirmation` for high stakes; `episode/confirmation.py` sets `unconfirmed` when the ask expires | report | `test_pending_marker_and_whitespace` |
 | "…that Juniper rejected, not true" / "…that Juniper corrected, superseded" | A memory Juniper turned down or corrected; never shown as current truth | `confirmation_state` values in `episode_memory` | report | `test_rejected_and_corrected_are_never_plain_truth`, matrix test |
 
 Not here on purpose: "I read" / "From my own code and docs" voices (the

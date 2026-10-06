@@ -80,7 +80,7 @@ For PR F: intent and memory selection should key on **referents known before the
 - `orion/memory/voice_render.py`: new renderer.
 - `orion/memory/episode/report.py`: renders through `voice_render`; `_VOICE_LABEL` deleted; query adds `remembered_at`, `has_verified_juniper_quote`, `has_verified_orion_quote`.
 - `services/orion-cortex-exec/app/chat_stance.py`: legacy reverie glimpse labelled.
-- `orion/memory/tests/test_voice_render.py` (new): 1,680-case matrix over voice × channel × evidence × confirmation state, plus contract tests.
+- `orion/memory/tests/test_voice_render.py` (new): 2,016-case matrix over voice × channel × evidence × the 6 confirmation states, plus contract tests.
 - `services/orion-memory-consolidation/tests/test_episode_report_pg.py`: five memories through the real SQL (verified, unverified, reverie, worked-out-together with both quotes, rejected).
 - `services/orion-cortex-exec/tests/test_chat_stance_reverie_glimpse_projection.py`: the glimpse expects the labelled line, and never presents a reverie as Juniper's or shared.
 - `.github/workflows/memory-voice-render-tests.yml` (new): the renderer matrix and glimpse tests.
@@ -100,10 +100,11 @@ For PR F: intent and memory selection should key on **referents known before the
 ## Tests run
 
 ```text
-renderer matrix + contract (orion/memory/tests):                           1685 passed
+After merging origin/main (incl. #2517's confirmation loop):
+renderer matrix + contract (orion/memory/tests):                           2021 passed
 orion/memory/episode/tests + orion/memory/tests + orion-memory-consolidation tests + evals,
-  against a throwaway postgres:16 (ORION_MEMORY_EPISODE_TEST_DATABASE_URL set): 2153 passed, 0 skipped
-orion-cortex-exec glimpse + PCR + grounding + unified phase01:               30 passed
+  against a throwaway postgres:16 (ORION_MEMORY_EPISODE_TEST_DATABASE_URL set): 2601 passed, 0 skipped
+orion-cortex-exec glimpse + PCR + grounding:                                  27 passed
 tests/test_retrieval_intent.py (main's behavior, unchanged):                 8 passed
 static gates (all 25 run steps of orion-static-gates.yml, incl. check_definition_drift --gate): 25/25 PASS
 pyflakes on touched files: clean; git diff --check: clean
@@ -123,6 +124,13 @@ The spec's eval 4 (source monitoring over 7 days of shadow recall) belongs to PR
 Not deployed (instruction). No dependency changes. Throwaway postgres:16 container for the PG-backed tests.
 Production was only read (read-only transactions; docker logs).
 ```
+
+## Merge with main (2026-10-06, after #2517)
+
+`origin/main` was merged into this branch with a merge commit (no rebase, no force push).
+- `orion/memory/episode/report.py`: #2517 added `CONFIRMATION_FLAG`, which records what the confirmation loop did to each memory. Both are kept. Each line is `[purpose, voice/channel, stakes]{CONFIRMATION_FLAG} {rendered line}`: the bracket and flag are the operator's audit, and the rest is what Orion would read.
+- `orion/memory/voice_render.py`: #2517 introduced the state `unconfirmed` (asked, no answer in 7 days). It now keeps the "Unconfirmed, check with Juniper if natural:" prefix, matching the spec ("an expiry is not a resolution"). It is in the test matrix.
+- `services/orion-cortex-exec/app/chat_stance.py`: an import-only conflict. Main removed the now-unused `build_substrate_store_from_env` import (a2992e217); this branch's `voice_render` import is kept.
 
 ## Review findings fixed
 

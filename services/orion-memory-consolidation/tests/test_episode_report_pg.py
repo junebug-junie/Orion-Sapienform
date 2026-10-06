@@ -125,7 +125,9 @@ async def test_report_puts_old_rows_next_to_new_memories(tmp_path):
                 "not something Juniper and I discussed: Juniper is probably nervous") in text
         assert ("[happened, worked_out_together/chat] Juniper and I worked out (09-28): "
                 "We agreed the offsite slides go out on Tuesday.") in text
-        assert ("[happened, juniper_said/chat] Something I had remembered (09-28) that Juniper rejected, "
+        # Bracket + confirmation-loop flag are the operator's audit (#2517); the rest is the rendered line.
+        assert ("[happened, juniper_said/chat] (rejected by Juniper; never recalled) "
+                "Something I had remembered (09-28) that Juniper rejected, "
                 "not true: Juniper plans to move to Austin next spring.") in text
         assert "rejected_invalid no_verified_quote x1" in text
         assert "900 tokens in, 120 out" in text

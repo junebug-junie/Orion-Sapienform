@@ -29,6 +29,14 @@ FROM memory_crystallization_sources s JOIN memory_crystallizations c USING (crys
 WHERE s.source_kind = 'chat_turn' AND s.source_id = ANY($1::text[])
 ORDER BY c.kind, c.summary
 """
+# What the confirmation loop (orion.memory.episode.confirmation) has done with each memory, in words.
+CONFIRMATION_FLAG = {
+    "pending_confirmation": " (waiting to ask Juniper)",
+    "unconfirmed": " (asked, no answer in 7 days: unconfirmed)",
+    "confirmed": " (confirmed by Juniper)",
+    "corrected": " (Juniper revised this; superseded)",
+    "rejected": " (rejected by Juniper; never recalled)",
+}
 NEW_ROWS_SQL = """
 SELECT m.memory_id::text AS id, m.purpose, m.voice, m.channel, m.statement, m.stakes, m.stakes_reason,
        m.confirmation_state, coalesce(m.occurred_at, m.created_at) AS remembered_at,
@@ -105,10 +113,11 @@ def render_episode(ep: dict[str, Any], old: Iterable[dict], new: Iterable[dict],
     else:
         lines.append(f"**New writer ({len(new)} memories):**")
         for m in new:
-            # The line is exactly what Orion would read for this memory (voice_render), so the
-            # report shows source monitoring as rendered, not just the stored voice label.
+            # The bracket and flag are the operator's audit (stored voice, stakes, what the
+            # confirmation loop did); the rest is exactly the line Orion would read (voice_render).
+            flag = CONFIRMATION_FLAG.get(m["confirmation_state"], "")
             stakes = f", high: {m['stakes_reason'] or 'no category'}" if m["stakes"] == "high" else ""
-            lines.append(f"- [{m['purpose']}, {m['voice']}/{m['channel']}{stakes}] {render_memory(_voiced(m, tz))}")
+            lines.append(f"- [{m['purpose']}, {m['voice']}/{m['channel']}{stakes}]{flag} {render_memory(_voiced(m, tz))}")
         if not new:
             lines.append("- (none)")
     ev = list(events)

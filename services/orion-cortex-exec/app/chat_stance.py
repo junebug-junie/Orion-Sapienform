@@ -35,7 +35,6 @@ from orion.reasoning import InMemoryReasoningRepository, ReasoningSummaryCompile
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.reverie import SpontaneousThoughtV1
 from orion.memory.voice_render import VoicedMemory, render_memory
-from orion.substrate import build_substrate_store_from_env
 from orion.substrate.relational import (
     CONCEPT_INDUCED,
     CONCEPT_INDUCED_EPHEMERAL,
@@ -158,6 +157,8 @@ _UNIFICATION_LAYER: CognitiveUnificationLayer | None = None
 # worker cannot be cancelled), not the whole process as before.
 _STANCE_BUILD_EXECUTOR: ThreadPoolExecutor | None = None
 _STANCE_BUILD_EXECUTOR_LOCK = threading.Lock()
+# Per worker thread: the queue wait of the step currently running on it.
+_STANCE_WORKER_STATE = threading.local()
 
 
 def _stance_build_executor() -> ThreadPoolExecutor:
@@ -177,17 +178,60 @@ async def _run_on_stance_worker(fn, /, *args, **kwargs):
     Copies the caller's contextvars (run_in_executor does not) so anything
     contextvar-scoped behaves as it did on the loop."""
     loop = asyncio.get_running_loop()
-    call = functools.partial(contextvars.copy_context().run, fn, *args, **kwargs)
-    return await loop.run_in_executor(_stance_build_executor(), call)
+    caller_ctx = contextvars.copy_context()
+    submitted = time.perf_counter()
+
+    def _on_worker():
+        # How long this step sat behind earlier stance steps on the one worker.
+        _STANCE_WORKER_STATE.queue_wait_ms = (time.perf_counter() - submitted) * 1000.0
+        return caller_ctx.run(fn, *args, **kwargs)
+
+    return await loop.run_in_executor(_stance_build_executor(), _on_worker)
+
+
+def _unification_store_snapshot_stats() -> tuple[int, float]:
+    """(snapshot calls, total ms) across the unification layers' stores that count them."""
+    from orion.cognition import projection_builder
+
+    stores = []
+    for layer in (_UNIFICATION_LAYER, getattr(projection_builder, "_UNIFICATION_LAYER", None)):
+        store = getattr(layer, "_store", None)
+        if store is not None and hasattr(store, "snapshot_calls") and all(store is not s for s in stores):
+            stores.append(store)
+    return (
+        sum(int(getattr(s, "snapshot_calls", 0)) for s in stores),
+        sum(float(getattr(s, "snapshot_ms_total", 0.0)) for s in stores),
+    )
 
 
 def _hydrate_and_unify_beliefs(ctx: Dict[str, Any]) -> UnifiedRelationalBeliefSetV1 | None:
     from app.substrate_felt_state_reader import hydrate_felt_state_ctx
 
+    started = time.perf_counter()
+    queue_wait_ms = getattr(_STANCE_WORKER_STATE, "queue_wait_ms", None)
     hydrate_felt_state_ctx(ctx)
+    felt_done = time.perf_counter()
+    snaps_before, snap_ms_before = _unification_store_snapshot_stats()
     # Module-global lookup at call time: chat_stance_shared_spine swaps this
     # name for the shared projection path.
-    return _unified_beliefs_for_stance(ctx)
+    beliefs = _unified_beliefs_for_stance(ctx)
+    beliefs_done = time.perf_counter()
+    snaps_after, snap_ms_after = _unification_store_snapshot_stats()
+    # Per-phase cost of the stance build's worker step (turn latency, 2026-10-06):
+    # the 17-28 s builds were one full-graph Falkor hydrate inside beliefs_ms.
+    # snapshot_calls/ms are process-wide counter deltas, so a concurrent
+    # projection build on another thread can add to them: approximate.
+    logger.info(
+        "stance_build_phase_timing corr=%s queue_wait_ms=%s felt_state_ms=%.1f beliefs_ms=%.1f "
+        "snapshot_calls=%d snapshot_ms=%.1f",
+        ctx.get("correlation_id") or ctx.get("trace_id"),
+        f"{queue_wait_ms:.1f}" if queue_wait_ms is not None else "na",
+        (felt_done - started) * 1000.0,
+        (beliefs_done - felt_done) * 1000.0,
+        snaps_after - snaps_before,
+        snap_ms_after - snap_ms_before,
+    )
+    return beliefs
 
 
 def _concept_adapter(store: Any, adapter_fn: Any) -> Any:
@@ -303,7 +347,12 @@ def _get_unification_layer() -> CognitiveUnificationLayer:
     """Return (or initialise) the process-level CognitiveUnificationLayer."""
     global _UNIFICATION_LAYER
     if _UNIFICATION_LAYER is None:
-        store = build_substrate_store_from_env()
+        # Never hydrates the whole graph (14 s at 38k edges, paid on every
+        # human turn once the 30 s refresh ceiling had lapsed); reads only the
+        # anchor-scoped nodes and concept region the layer uses.
+        from orion.substrate.falkor_anchor_store import build_unification_store_from_env
+
+        store = build_unification_store_from_env()
         registry = _build_unification_registry(concept_store=store)
         _UNIFICATION_LAYER = CognitiveUnificationLayer(registry=registry, store=store)
     return _UNIFICATION_LAYER

@@ -113,3 +113,28 @@ def test_dimensions_for_shift_branches():
 
     none_low = dimensions_for_shift(shift_kind="NONE", novelty_score=0.2)
     assert none_low["salience"] == pytest.approx(0.04)
+
+
+def test_boundary_is_defined_and_output_format_unchanged():
+    from orion.memory.turn_change_classify import BOUNDARY_DEFINITION
+
+    p = build_turn_change_prompt(
+        prompt="and what about the second one?", response="It ran fine.",
+        baseline_mode="prior_turn", baseline_text="User: old\nOrion: prior\n", phase="unknown",
+    )
+    assert BOUNDARY_DEFINITION in p
+    assert "does not depend on BASELINE" in p
+    assert "a return to the same subject" in p
+    assert "Output exactly four lines." in p
+    for line in ("NOVEL: YES or NO\n", "SHIFT: NONE or TOPIC or STANCE or REPAIR\n",
+                 "MEMORY: YES or NO\n", "BOUNDARY: YES or NO\n\n"):
+        assert line in p
+    # The definition precedes the answer template, so the model's four lines stay last.
+    assert p.index(BOUNDARY_DEFINITION) < p.index("NOVEL: YES or NO\n")
+
+
+def test_boundary_answer_still_parses():
+    from orion.memory.consolidation_classify import parse_classify_lines
+
+    assert parse_classify_lines("NOVEL: NO\nSHIFT: NONE\nMEMORY: NO\nBOUNDARY: NO\n") == ("NO", "NO")
+    assert parse_classify_lines("NOVEL: YES\nSHIFT: TOPIC\nMEMORY: YES\nBOUNDARY: YES") == ("YES", "YES")

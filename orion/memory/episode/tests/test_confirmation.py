@@ -44,8 +44,8 @@ def test_every_high_stakes_category_has_its_own_card_wording():
     assert set(c.WHY_BY_REASON) == set(HIGH_STAKES_REASONS)
     assert len(set(c.WHY_BY_REASON.values())) == len(c.WHY_BY_REASON)
     for reason, why in c.WHY_BY_REASON.items():
-        assert why in _q(stakes_reason=reason)
-        assert c.WHY_UNJUDGED not in _q(stakes_reason=reason)
+        assert why in _q(stakes_reason=reason, voice="orion_thought")
+        assert c.WHY_UNJUDGED not in _q(stakes_reason=reason, voice="orion_thought")
 
 
 @pytest.mark.parametrize("reason", [UNJUDGED_STAKES_LABEL, None, "", "something_new"])
@@ -55,7 +55,23 @@ def test_uncategorized_high_stakes_says_so(reason):
 
 def test_direction_and_identity_cards_close_with_their_own_question():
     assert _q(stakes_reason="orion_asks_direction").endswith("Is that the right direction?")
-    assert _q(stakes_reason="identity_conclusion_about_juniper").endswith("Is that fair, and should I keep it?")
+    assert _q(stakes_reason="identity_conclusion_about_juniper", voice="orion_thought").endswith(
+        "Is that fair, and should I keep it?")
+
+
+@pytest.mark.parametrize("voice", ["juniper_said", "worked_out_together"])
+def test_identity_card_on_her_own_words_never_says_she_did_not_say_it(voice):
+    """Regression (2026-10-06): a verified direct quote was framed 'You told me...' and then 'not
+    something you said in so many words'."""
+    q = _q(stakes_reason="identity_conclusion_about_juniper", voice=voice)
+    assert "not something you said" not in q and "Is that fair" not in q
+    assert c.WHY_IDENTITY_QUOTED in q and q.endswith("Want me to remember that?")
+
+
+def test_identity_card_on_orions_inference_still_says_it_is_a_read():
+    for kw in ({"voice": "orion_thought"}, {"voice": "juniper_said", "channel": "reverie"}):
+        q = _q(stakes_reason="identity_conclusion_about_juniper", **kw)
+        assert "not something you said in so many words" in q
 
 
 @pytest.mark.parametrize("channel", sorted(INTERNAL_CHANNELS))

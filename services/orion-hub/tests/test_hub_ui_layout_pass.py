@@ -317,6 +317,7 @@ def test_ekg_card_is_a_drawer_with_toggle_rail_and_script() -> None:
     for needle in ('id="ekgDrawer"', 'id="ekgDrawerToggle"', 'id="ekgDrawerRail"', "hub-ekg-drawer.js", "hub-chat-card"):
         assert needle in html, needle
     assert "md:w-1/2" not in html.split('id="appPanels"')[1].split("Oríon + Juniper")[0]
+    assert "hub-ekg-drawer w-full" not in html  # w-full would beat the md width rule
 
 
 def test_harness_trace_becomes_a_modal_button_not_an_inline_card() -> None:

@@ -241,9 +241,11 @@
 
   function capVisibleAsks(win, list) {
     const kids = Array.prototype.slice.call(list.children);
-    const gap = parseFloat(win.getComputedStyle(list).rowGap) || 0;
+    // space-y-* spaces cards with margins, not row-gap.
+    const gap = kids[1] ? parseFloat(win.getComputedStyle(kids[1]).marginTop) || 0 : 0;
     const px = visibleAsksMaxHeight(kids.map(function (k) { return k.offsetHeight; }), gap);
-    list.style.maxHeight = px == null ? "" : Math.ceil(px) + "px";
+    // px of 0 means the Hub tab is hidden (nothing measurable): do not cap.
+    list.style.maxHeight = !px ? "" : Math.ceil(px) + "px";
   }
 
   function mount(doc, fetchFn) {

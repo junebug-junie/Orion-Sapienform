@@ -3208,7 +3208,7 @@ let chatTurnTimer = null;
     // repaint:false freezes the chip on its last painted value. Used when the
     // socket dies mid-turn: the turn is over, and the time since is dead air,
     // not thinking time.
-    if (opts.repaint !== false) paintTurnTimer();
+    if (opts.repaint !== false && chatTurnTimer) paintTurnTimer();
     if (chatTurnTimer) chatTurnTimer.classList.remove('is-running');
     // Detach: a later turn must never reuse (and overwrite) this recorded clock.
     chatTurnTimer = null;

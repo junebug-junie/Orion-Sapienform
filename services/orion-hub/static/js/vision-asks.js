@@ -225,6 +225,29 @@
     return { ok: resp.ok, status: resp.status, body: body };
   }
 
+  // At most this many questions show at once; the rest scroll inside the list so
+  // a long queue cannot push the chat off the top of the Hub.
+  const MAX_VISIBLE_ASKS = 2;
+
+  // Pixel height of the first `max` cards plus the gaps between them, or null
+  // when everything already fits (no cap needed).
+  function visibleAsksMaxHeight(heights, gap, max) {
+    const limit = max == null ? MAX_VISIBLE_ASKS : max;
+    if (!heights || heights.length <= limit) return null;
+    let total = 0;
+    for (let i = 0; i < limit; i++) total += Number(heights[i]) || 0;
+    return total + (Number(gap) || 0) * (limit - 1);
+  }
+
+  function capVisibleAsks(win, list) {
+    const kids = Array.prototype.slice.call(list.children);
+    // space-y-* spaces cards with margins, not row-gap.
+    const gap = kids[1] ? parseFloat(win.getComputedStyle(kids[1]).marginTop) || 0 : 0;
+    const px = visibleAsksMaxHeight(kids.map(function (k) { return k.offsetHeight; }), gap);
+    // px of 0 means the Hub tab is hidden (nothing measurable): do not cap.
+    list.style.maxHeight = !px ? "" : Math.ceil(px) + "px";
+  }
+
   function mount(doc, fetchFn) {
     const list = doc.getElementById("visionAsksList");
     const status = doc.getElementById("visionAsksStatus");
@@ -261,6 +284,7 @@
         asks.forEach(function (ask) {
           list.appendChild(renderAsk(doc, ask, onAction));
         });
+        if (doc.defaultView) capVisibleAsks(doc.defaultView, list);
       } catch (_e) {
         status.textContent = "Can't reach the Hub to load Orion's questions.";
       }
@@ -309,6 +333,7 @@
     submitAction: submitAction,
     renderAsk: renderAsk,
     mount: mount,
+    visibleAsksMaxHeight: visibleAsksMaxHeight,
   };
 
   global.OrionVisionAsks = api;

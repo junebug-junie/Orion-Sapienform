@@ -1,0 +1,503 @@
+{
+ "turns": 106,
+ "phase_histogram": {
+  "unknown": 22,
+  "resumed_thread": 26,
+  "long_gap": 7,
+  "next_day": 4,
+  "short_pause": 46,
+  "stale_thread": 1
+ },
+ "before": {
+  "score_distribution": {
+   "n": 105,
+   "mean": 0.896,
+   "median": 0.986,
+   "share_ge_0_92": 0.695,
+   "share_ge_0_5": 0.952,
+   "deciles": {
+    "0.0-0.1": 1,
+    "0.1-0.2": 2,
+    "0.2-0.3": 1,
+    "0.3-0.4": 0,
+    "0.4-0.5": 1,
+    "0.5-0.6": 5,
+    "0.6-0.7": 4,
+    "0.7-0.8": 4,
+    "0.8-0.9": 9,
+    "0.9-1.0": 78
+   }
+  },
+  "score_by_shift": {
+   "NONE": {
+    "n": 8,
+    "mean": 0.628,
+    "share_ge_0_5": 0.75
+   },
+   "REPAIR": {
+    "n": 4,
+    "mean": 0.856,
+    "share_ge_0_5": 1.0
+   },
+   "STANCE": {
+    "n": 30,
+    "mean": 0.952,
+    "share_ge_0_5": 1.0
+   },
+   "TOPIC": {
+    "n": 63,
+    "mean": 0.907,
+    "share_ge_0_5": 0.952
+   }
+  },
+  "score_by_phase": {
+   "long_gap": {
+    "n": 7,
+    "mean": 0.852,
+    "share_ge_0_5": 0.857
+   },
+   "next_day": {
+    "n": 4,
+    "mean": 0.996,
+    "share_ge_0_5": 1.0
+   },
+   "resumed_thread": {
+    "n": 26,
+    "mean": 0.854,
+    "share_ge_0_5": 0.923
+   },
+   "short_pause": {
+    "n": 46,
+    "mean": 0.881,
+    "share_ge_0_5": 0.957
+   },
+   "stale_thread": {
+    "n": 1,
+    "mean": 0.984,
+    "share_ge_0_5": 1.0
+   },
+   "unknown": {
+    "n": 21,
+    "mean": 0.973,
+    "share_ge_0_5": 1.0
+   }
+  },
+  "unscored_turns": 0,
+  "resumed_thread_scored": 26,
+  "resumed_thread_ge_0_92": 18,
+  "episodes": 52,
+  "active_days": 24,
+  "episodes_per_active_day_mean": 2.17,
+  "episodes_per_day": {
+   "2026-09-06": 5,
+   "2026-09-07": 4,
+   "2026-09-08": 4,
+   "2026-09-09": 1,
+   "2026-09-10": 3,
+   "2026-09-12": 2,
+   "2026-09-13": 1,
+   "2026-09-14": 4,
+   "2026-09-15": 2,
+   "2026-09-16": 2,
+   "2026-09-18": 1,
+   "2026-09-19": 2,
+   "2026-09-20": 1,
+   "2026-09-21": 1,
+   "2026-09-22": 3,
+   "2026-09-23": 1,
+   "2026-09-25": 4,
+   "2026-09-26": 1,
+   "2026-09-28": 4,
+   "2026-10-01": 1,
+   "2026-10-02": 1,
+   "2026-10-03": 1,
+   "2026-10-04": 2,
+   "2026-10-05": 1
+  },
+  "sessions": {
+   "chicago_2026_10_05": {
+    "episodes": 2,
+    "turns_in_window": 12,
+    "episode_sizes_in_window": [
+     9,
+     3
+    ],
+    "turn_scores": [
+     {
+      "utc": "10-05 02:55",
+      "phase": "unknown",
+      "score": 0.889
+     },
+     {
+      "utc": "10-05 02:59",
+      "phase": "short_pause",
+      "score": 0.735
+     },
+     {
+      "utc": "10-05 03:07",
+      "phase": "short_pause",
+      "score": 0.857
+     },
+     {
+      "utc": "10-05 03:13",
+      "phase": "short_pause",
+      "score": 0.597
+     },
+     {
+      "utc": "10-05 03:16",
+      "phase": "short_pause",
+      "score": 0.723
+     },
+     {
+      "utc": "10-05 03:21",
+      "phase": "short_pause",
+      "score": 0.937
+     },
+     {
+      "utc": "10-05 03:30",
+      "phase": "short_pause",
+      "score": 0.696
+     },
+     {
+      "utc": "10-05 03:34",
+      "phase": "short_pause",
+      "score": 0.893
+     },
+     {
+      "utc": "10-05 03:51",
+      "phase": "short_pause",
+      "score": 0.999
+     },
+     {
+      "utc": "10-05 04:12",
+      "phase": "resumed_thread",
+      "score": 0.992
+     },
+     {
+      "utc": "10-05 04:16",
+      "phase": "short_pause",
+      "score": 0.902
+     },
+     {
+      "utc": "10-05 04:20",
+      "phase": "short_pause",
+      "score": 0.901
+     }
+    ]
+   },
+   "austin_2026_09_28": {
+    "episodes": 3,
+    "turns_in_window": 11,
+    "episode_sizes_in_window": [
+     5,
+     3,
+     3
+    ],
+    "turn_scores": [
+     {
+      "utc": "09-28 06:26",
+      "phase": "unknown",
+      "score": 1.0
+     },
+     {
+      "utc": "09-28 06:31",
+      "phase": "short_pause",
+      "score": 0.984
+     },
+     {
+      "utc": "09-28 06:38",
+      "phase": "short_pause",
+      "score": 0.986
+     },
+     {
+      "utc": "09-28 06:44",
+      "phase": "short_pause",
+      "score": 0.595
+     },
+     {
+      "utc": "09-28 06:59",
+      "phase": "short_pause",
+      "score": 0.763
+     },
+     {
+      "utc": "09-28 08:45",
+      "phase": "resumed_thread",
+      "score": 0.973
+     },
+     {
+      "utc": "09-28 08:57",
+      "phase": "short_pause",
+      "score": 0.963
+     },
+     {
+      "utc": "09-28 09:06",
+      "phase": "short_pause",
+      "score": 0.99
+     },
+     {
+      "utc": "09-28 09:44",
+      "phase": "resumed_thread",
+      "score": 0.999
+     },
+     {
+      "utc": "09-28 09:50",
+      "phase": "short_pause",
+      "score": 1.0
+     },
+     {
+      "utc": "09-28 09:54",
+      "phase": "short_pause",
+      "score": 0.999
+     }
+    ]
+   }
+  }
+ },
+ "after": {
+  "score_distribution": {
+   "n": 105,
+   "mean": 0.306,
+   "median": 0.0,
+   "share_ge_0_92": 0.286,
+   "share_ge_0_5": 0.305,
+   "deciles": {
+    "0.0-0.1": 69,
+    "0.1-0.2": 2,
+    "0.2-0.3": 2,
+    "0.3-0.4": 0,
+    "0.4-0.5": 0,
+    "0.5-0.6": 1,
+    "0.6-0.7": 0,
+    "0.7-0.8": 0,
+    "0.8-0.9": 1,
+    "0.9-1.0": 30
+   }
+  },
+  "score_by_shift": {
+   "NONE": {
+    "n": 6,
+    "mean": 0.499,
+    "share_ge_0_5": 0.5
+   },
+   "REPAIR": {
+    "n": 6,
+    "mean": 0.163,
+    "share_ge_0_5": 0.167
+   },
+   "STANCE": {
+    "n": 26,
+    "mean": 0.033,
+    "share_ge_0_5": 0.038
+   },
+   "TOPIC": {
+    "n": 67,
+    "mean": 0.408,
+    "share_ge_0_5": 0.403
+   }
+  },
+  "score_by_phase": {
+   "long_gap": {
+    "n": 7,
+    "mean": 0.714,
+    "share_ge_0_5": 0.714
+   },
+   "next_day": {
+    "n": 4,
+    "mean": 0.252,
+    "share_ge_0_5": 0.25
+   },
+   "resumed_thread": {
+    "n": 26,
+    "mean": 0.16,
+    "share_ge_0_5": 0.154
+   },
+   "short_pause": {
+    "n": 46,
+    "mean": 0.165,
+    "share_ge_0_5": 0.174
+   },
+   "stale_thread": {
+    "n": 1,
+    "mean": 0.207,
+    "share_ge_0_5": 0.0
+   },
+   "unknown": {
+    "n": 21,
+    "mean": 0.676,
+    "share_ge_0_5": 0.667
+   }
+  },
+  "unscored_turns": 0,
+  "resumed_thread_scored": 26,
+  "resumed_thread_ge_0_92": 4,
+  "episodes": 38,
+  "active_days": 24,
+  "episodes_per_active_day_mean": 1.58,
+  "episodes_per_day": {
+   "2026-09-06": 2,
+   "2026-09-07": 2,
+   "2026-09-08": 3,
+   "2026-09-09": 1,
+   "2026-09-10": 2,
+   "2026-09-12": 1,
+   "2026-09-13": 1,
+   "2026-09-14": 3,
+   "2026-09-15": 2,
+   "2026-09-16": 2,
+   "2026-09-18": 1,
+   "2026-09-19": 1,
+   "2026-09-20": 1,
+   "2026-09-21": 1,
+   "2026-09-22": 1,
+   "2026-09-23": 1,
+   "2026-09-25": 4,
+   "2026-09-26": 1,
+   "2026-09-28": 3,
+   "2026-10-01": 1,
+   "2026-10-02": 1,
+   "2026-10-03": 1,
+   "2026-10-04": 1,
+   "2026-10-05": 1
+  },
+  "sessions": {
+   "chicago_2026_10_05": {
+    "episodes": 1,
+    "turns_in_window": 12,
+    "episode_sizes_in_window": [
+     12
+    ],
+    "turn_scores": [
+     {
+      "utc": "10-05 02:55",
+      "phase": "unknown",
+      "score": 1.0
+     },
+     {
+      "utc": "10-05 02:59",
+      "phase": "short_pause",
+      "score": 0.0
+     },
+     {
+      "utc": "10-05 03:07",
+      "phase": "short_pause",
+      "score": 0.0
+     },
+     {
+      "utc": "10-05 03:13",
+      "phase": "short_pause",
+      "score": 0.0
+     },
+     {
+      "utc": "10-05 03:16",
+      "phase": "short_pause",
+      "score": 0.0
+     },
+     {
+      "utc": "10-05 03:21",
+      "phase": "short_pause",
+      "score": 0.0
+     },
+     {
+      "utc": "10-05 03:30",
+      "phase": "short_pause",
+      "score": 0.001
+     },
+     {
+      "utc": "10-05 03:34",
+      "phase": "short_pause",
+      "score": 0.0
+     },
+     {
+      "utc": "10-05 03:51",
+      "phase": "short_pause",
+      "score": 0.0
+     },
+     {
+      "utc": "10-05 04:12",
+      "phase": "resumed_thread",
+      "score": 0.0
+     },
+     {
+      "utc": "10-05 04:16",
+      "phase": "short_pause",
+      "score": 0.0
+     },
+     {
+      "utc": "10-05 04:20",
+      "phase": "short_pause",
+      "score": 0.0
+     }
+    ]
+   },
+   "austin_2026_09_28": {
+    "episodes": 2,
+    "turns_in_window": 11,
+    "episode_sizes_in_window": [
+     8,
+     3
+    ],
+    "turn_scores": [
+     {
+      "utc": "09-28 06:26",
+      "phase": "unknown",
+      "score": 1.0
+     },
+     {
+      "utc": "09-28 06:31",
+      "phase": "short_pause",
+      "score": 0.0
+     },
+     {
+      "utc": "09-28 06:38",
+      "phase": "short_pause",
+      "score": 0.0
+     },
+     {
+      "utc": "09-28 06:44",
+      "phase": "short_pause",
+      "score": 0.0
+     },
+     {
+      "utc": "09-28 06:59",
+      "phase": "short_pause",
+      "score": 0.097
+     },
+     {
+      "utc": "09-28 08:45",
+      "phase": "resumed_thread",
+      "score": 0.025
+     },
+     {
+      "utc": "09-28 08:57",
+      "phase": "short_pause",
+      "score": 0.0
+     },
+     {
+      "utc": "09-28 09:06",
+      "phase": "short_pause",
+      "score": 0.0
+     },
+     {
+      "utc": "09-28 09:44",
+      "phase": "resumed_thread",
+      "score": 1.0
+     },
+     {
+      "utc": "09-28 09:50",
+      "phase": "short_pause",
+      "score": 0.999
+     },
+     {
+      "utc": "09-28 09:54",
+      "phase": "short_pause",
+      "score": 0.953
+     }
+    ]
+   }
+  }
+ },
+ "generated_at": "2026-10-06T04:08:51.930382+00:00",
+ "route": "metacog_background",
+ "days": 30,
+ "errors": {}
+}

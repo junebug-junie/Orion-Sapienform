@@ -1558,6 +1558,7 @@ async def execute_unified_turn(
         # function -- also what stance_req.llm_route above was derived from.)
         fcc_model_label=resolved_fcc_model_label,
         mode=mode_tag,
+        utterance_origin=utterance_origin,
         situation_prompt_fragment=situation_prompt_fragment,
         draft_preview=bool(draft_preview),
     )

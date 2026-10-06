@@ -469,7 +469,7 @@ episode_memory(
   statement text NOT NULL,           -- Orion's words, first person, one claim
   occurred_at timestamptz NULL,
   stakes text NOT NULL,              -- low | high
-  stakes_reason text NULL,           -- health | family | identity_conclusion_about_juniper | relationship | safety_location | orion_self_conclusion
+  stakes_reason text NULL,           -- 2026-10-06: health | family_relationships | juniper_feelings | identity_conclusion_about_juniper | orion_machinery | orion_asks_direction | orion_relationship | none
   confirmation_state text NOT NULL,  -- auto | pending_confirmation | confirmed | corrected | rejected
   confirmation_loop_id text NULL,    -- attention loop id carrying the confirmation request
   strength real NOT NULL, half_life_days real NULL,
@@ -500,6 +500,8 @@ Each purpose has a named consumer:
 **Voice** is whose thought it is; **channel** is where it surfaced. The renderer keys on the pair.
 
 ### 3. Stakes and confirmation
+
+> **Superseded 2026-10-06 (Juniper's decision).** The live shadow distiller marked 25/25 memories low. The rule is now: high stakes = health; family and relationships; Juniper's feelings and emotional states; conclusions about who she is; and Orion's conclusions about itself that are about its machinery, ask for direction, or concern the relationship. Everything else is low. The distiller judges the category from definitions with examples in `orion/cognition/prompts/memory_episode_distill.j2` (v3) and must name it in `stakes_reason` (`none` for low). The validator never reads the statement: it only checks `stakes`/`stakes_reason`/`asks_direction` agree, resolving disagreement toward high. The location/safety category, the word backstop and the referent-kind rule below are not implemented. PR report: `docs/superpowers/pr-reports/2026-10-06-memory-boundary-and-stakes-prompts-pr.md`.
 
 **The stakes floor** is deterministic, and the model cannot lower it. Stakes are `high` when:
 - the memory is about Juniper's or her family's health, or about family;

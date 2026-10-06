@@ -13,7 +13,7 @@ deployed before a producer adds a field (consumer-first).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -53,7 +53,7 @@ class MemoryEpisodeClosedV1(BaseModel):
 # --- Stage 1 PR 2: the shadow distiller (memory.episode_distill) ---------------------------
 
 MEMORY_EPISODE_DISTILL_WORKFLOW = "memory.episode_distill"
-MEMORY_EPISODE_DISTILL_PROMPT_VERSION = "memory_episode_distill.v2"
+MEMORY_EPISODE_DISTILL_PROMPT_VERSION = "memory_episode_distill.v3"  # v3: stakes rubric (2026-10-06)
 
 Purpose = Literal["happened", "about_juniper", "orion_view", "follow_up"]
 Voice = Literal["juniper_said", "worked_out_together", "orion_thought", "orion_read", "orion_self_knowledge"]
@@ -61,9 +61,22 @@ Channel = Literal[
     "chat", "reverie", "curiosity", "dream", "reading", "journal", "topic_model", "graphify", "legacy_crystallization"
 ]
 Stakes = Literal["low", "high"]
-StakesReason = Literal[
-    "health", "family", "identity_conclusion_about_juniper", "relationship", "safety_location", "orion_self_conclusion"
+# Juniper's stakes decision (2026-10-06): high = health, family/relationships, her feelings and
+# emotional states, conclusions about who she is; plus Orion's conclusions about itself that are
+# about its machinery, ask for direction, or concern the relationship. Everything else is low,
+# and a low memory names "none". The distiller judges the category from definitions in
+# memory_episode_distill.j2; the validator only checks the pair is present and consistent.
+HighStakesReason = Literal[
+    "health",
+    "family_relationships",
+    "juniper_feelings",
+    "identity_conclusion_about_juniper",
+    "orion_machinery",
+    "orion_asks_direction",
+    "orion_relationship",
 ]
+StakesReason = Literal[HighStakesReason, "none"]
+HIGH_STAKES_REASONS: frozenset[str] = frozenset(get_args(HighStakesReason))
 EvidenceField = Literal["prompt", "response"]
 
 
@@ -119,7 +132,9 @@ class DistilledMemoryV1(BaseModel):
     statement: str
     occurred_at: Optional[str] = None
     stakes: Stakes = "low"
-    stakes_reason: Optional[StakesReason] = None
+    # A plain string on purpose: an unknown category must not drop the whole memory in
+    # parse_distillation. The validator checks it against StakesReason.
+    stakes_reason: Optional[str] = None
     asks_direction: bool = False
     referents: List[DistillReferentV1] = Field(default_factory=list)
     evidence: List[DistillEvidenceV1] = Field(default_factory=list)

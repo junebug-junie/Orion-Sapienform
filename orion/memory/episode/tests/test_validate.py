@@ -39,7 +39,7 @@ TURNS = [
 
 
 def _mem(**kw):
-    base = {"purpose": "happened", "voice": "juniper_said", "channel": "chat",
+    base = {"purpose": "happened", "voice": "juniper_said", "channel": "chat", "stakes": "low", "stakes_reason": "none",
             "statement": "Juniper flew to Austin for a work offsite this week.",
             "referents": [{"key": "event:austin-ai-ml-offsite-2026-09", "aliases": ["austin", "offsite"]}],
             "evidence": [{"turn": "t2", "field": "prompt", "quote": "Headed to Austin"}]}
@@ -137,7 +137,7 @@ def test_short_and_duplicate_statements_are_rejected():
 
 
 def test_high_stakes_from_the_distiller_means_pending_confirmation():
-    r = _run(_mem(stakes="high", stakes_reason="safety_location"))
+    r = _run(_mem(stakes="high", stakes_reason="family_relationships"))
     assert (r.memories[0].stakes, r.memories[0].confirmation_state) == ("high", "pending_confirmation")
 
 
@@ -179,3 +179,59 @@ def test_coverage_counts_non_command_turns_cited():
     r = _run(_mem(), _mem(statement="Juniper will be busy with work travel for a few days.",
                           evidence=[{"turn": "t1", "field": "prompt", "quote": "busy the next few days"}]))
     assert coverage(r, TURNS) == {"content_turns": 3, "cited_turns": 2, "coverage": 0.667}
+
+
+# --- stakes: presence and consistency only (Juniper's rubric, 2026-10-06) -------------------------
+
+from typing import get_args  # noqa: E402
+
+from orion.memory.episode.validate import resolve_stakes  # noqa: E402
+from orion.schemas.memory_episode import HIGH_STAKES_REASONS, StakesReason  # noqa: E402
+
+
+@pytest.mark.parametrize("reason", sorted(HIGH_STAKES_REASONS))
+def test_high_with_a_category_is_kept_as_is(reason):
+    assert resolve_stakes("high", reason) == ("high", reason, None)
+
+
+def test_low_with_none_is_auto():
+    r = _run(_mem(stakes="low", stakes_reason="none"))
+    m = r.memories[0]
+    assert (m.stakes, m.stakes_reason, m.confirmation_state, m.events) == ("low", "none", "auto", [])
+
+
+@pytest.mark.parametrize("stakes, reason, asks, expect, op", [
+    ("low", "juniper_feelings", False, ("high", "juniper_feelings"), "stakes_raised"),   # category is the judgment
+    ("low", None, False, ("high", None), "stakes_raised"),                               # not judged
+    ("low", "safety_location", False, ("high", None), "stakes_raised"),                  # retired / unknown
+    ("low", "none", True, ("high", "orion_asks_direction"), "stakes_raised"),            # asks for direction
+    ("high", "none", False, ("high", None), "stakes_reason_missing"),
+    ("high", None, False, ("high", None), "stakes_reason_missing"),
+    ("high", None, True, ("high", "orion_asks_direction"), "stakes_reason_set"),
+])
+def test_inconsistent_pairs_resolve_toward_high_and_are_logged(stakes, reason, asks, expect, op):
+    got_stakes, got_reason, event = resolve_stakes(stakes, reason, asks)
+    assert (got_stakes, got_reason) == expect
+    assert event is not None and event.op == op
+
+
+def test_stakes_never_lowered_and_statement_never_read():
+    """The same statement gets whatever the distiller's pair says; vocabulary changes nothing."""
+    scary = "Juniper told me she was terrified her sister was in the hospital."
+    low = _run(_mem(statement=scary, stakes="low", stakes_reason="none")).memories[0]
+    assert (low.stakes, low.confirmation_state) == ("low", "auto")
+    calm = "Juniper flew to Austin for a work offsite this week."
+    high = _run(_mem(statement=calm, stakes="high", stakes_reason="health")).memories[0]
+    assert (high.stakes, high.confirmation_state) == ("high", "pending_confirmation")
+
+
+def test_unknown_reason_does_not_drop_the_memory_at_parse():
+    from orion.memory.episode.distill import parse_distillation
+
+    d = parse_distillation('{"memories": [{"purpose": "happened", "voice": "juniper_said", '
+                           '"statement": "s", "stakes": "low", "stakes_reason": "made_up"}]}')
+    assert len(d.memories) == 1
+
+
+def test_none_is_the_only_low_reason():
+    assert set(get_args(StakesReason)) - HIGH_STAKES_REASONS == {"none"}

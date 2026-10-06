@@ -77,11 +77,12 @@ def test_quotes_are_folded_on_both_sides(quote, text):
 def test_stakes_are_the_distillers_own():
     low = _run({"purpose": "about_juniper", "voice": "juniper_said", "channel": "chat",
                 "statement": "Juniper is anxious about flying to Austin next week.", "stakes": "low",
+                "stakes_reason": "none",
                 "evidence": [{"turn": "t2", "field": "prompt", "quote": "Headed to Austin and"}]})
     assert (low.memories[0].stakes, low.memories[0].confirmation_state) == ("low", "auto")
     assert not any(e.op == "stakes_raised" for e in low.memories[0].events)
     high = _run({"purpose": "happened", "voice": "juniper_said", "channel": "chat", "stakes": "high",
-                 "stakes_reason": "safety_location", "statement": "Juniper flew to Austin for a work offsite.",
+                 "stakes_reason": "family_relationships", "statement": "Juniper flew to Austin for a work offsite.",
                  "evidence": [{"turn": "t2", "field": "prompt", "quote": "Headed to Austin and"}]})
     assert (high.memories[0].stakes, high.memories[0].confirmation_state) == ("high", "pending_confirmation")
 

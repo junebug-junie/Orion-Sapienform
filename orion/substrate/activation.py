@@ -80,8 +80,9 @@ def seed_activation(
 # the loss compounds: ~2.2% per 30 s tick on a 30-day half-life at 23 h of
 # age, instead of ~0.0008%. ``activation_decayed_at`` records the moment the
 # stored value is valid as of, so the next decay covers only the time since
-# then. Only writers that recompute activation set it (the dynamics tick and
-# the Hub decay scheduler); every other writer leaves it untouched.
+# then. Only the dynamics tick recomputes activation and sets it (the Hub's
+# second decay writer was removed 2026-10-06: one owner, so writes cannot land
+# out of order); every other writer leaves it untouched.
 ACTIVATION_DECAYED_AT_KEY = "activation_decayed_at"
 
 DECAY_MODE_SINCE_LAST = "since_last"

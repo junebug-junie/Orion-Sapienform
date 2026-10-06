@@ -54,7 +54,6 @@ async def test_startup_event_starts_and_shutdown_stops_heartbeat_chassis(monkeyp
     monkeypatch.setattr(hub_main.settings, "ORION_BUS_ENABLED", False)
     monkeypatch.setattr(hub_main.settings, "SUBSTRATE_CONCEPT_SEED_ENABLED", False)
     monkeypatch.setattr(hub_main.settings, "SUBSTRATE_AUTONOMY_ENABLED", False)
-    monkeypatch.setattr(hub_main.settings, "SUBSTRATE_DECAY_SCHEDULER_ENABLED", False)
     monkeypatch.setattr(hub_main.settings, "SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED", False)
     monkeypatch.setattr(hub_main.settings, "RECALL_PG_DSN", "")
 
@@ -79,7 +78,6 @@ async def test_startup_event_survives_heartbeat_start_failure(monkeypatch) -> No
     monkeypatch.setattr(hub_main.settings, "ORION_BUS_ENABLED", False)
     monkeypatch.setattr(hub_main.settings, "SUBSTRATE_CONCEPT_SEED_ENABLED", False)
     monkeypatch.setattr(hub_main.settings, "SUBSTRATE_AUTONOMY_ENABLED", False)
-    monkeypatch.setattr(hub_main.settings, "SUBSTRATE_DECAY_SCHEDULER_ENABLED", False)
     monkeypatch.setattr(hub_main.settings, "SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED", False)
     monkeypatch.setattr(hub_main.settings, "RECALL_PG_DSN", "")
 

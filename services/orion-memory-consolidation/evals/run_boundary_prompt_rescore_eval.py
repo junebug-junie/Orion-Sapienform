@@ -206,8 +206,16 @@ def report(turns: list[dict[str, Any]]) -> dict[str, Any]:
         rs = [t[key] for t in resumed if t.get(key) is not None]
         eps = split(turns, key)
         per_day = Counter(ep[0]["at_dt"].astimezone(LOCAL).date().isoformat() for ep in eps)
+        # Label-free coherence: does the judge's BOUNDARY agree with its own SHIFT line and with the
+        # wall clock? A definition that only pushed every score to 0 would flatten these splits too.
+        by_shift = {k: distribution([t[key] for t in turns if t.get(f"{key}_shift") == k and t.get(key) is not None])
+                    for k in sorted({str(t.get(f"{key}_shift")) for t in turns if t.get(f"{key}_shift")})}
+        by_phase = {ph: distribution([t[key] for t in turns if t["phase"] == ph and t.get(key) is not None])
+                    for ph in sorted({t["phase"] for t in turns})}
         out[key] = {
             "score_distribution": distribution(scored),
+            "score_by_shift": {k: {f: v.get(f) for f in ("n", "mean", "share_ge_0_5")} for k, v in by_shift.items()},
+            "score_by_phase": {k: {f: v.get(f) for f in ("n", "mean", "share_ge_0_5")} for k, v in by_phase.items()},
             "unscored_turns": sum(1 for t in turns[1:] if t.get(key) is None),
             "resumed_thread_scored": len(rs),
             "resumed_thread_ge_0_92": sum(s >= OVERRIDE_THRESHOLD for s in rs),
@@ -237,6 +245,7 @@ async def main_async(args) -> dict[str, Any]:
                     try:
                         s = await classify(bus, prompt, route=args.route, timeout=args.timeout)
                         t[key] = s.get("conversation_boundary_score")
+                        t[f"{key}_shift"] = s.get("shift_kind")
                         break
                     except Exception as exc:  # noqa: BLE001
                         errors[f"{key}:{type(exc).__name__}"] += 1

@@ -123,8 +123,9 @@ def test_boundary_is_defined_and_output_format_unchanged():
         baseline_mode="prior_turn", baseline_text="User: old\nOrion: prior\n", phase="unknown",
     )
     assert BOUNDARY_DEFINITION in p
-    assert "does not depend on BASELINE" in p
-    assert "a return to the same subject" in p
+    assert "moved on from the BASELINE thread" in p
+    assert "a subject unrelated to it" in p
+    assert "a return to the same subject" in p and "small talk inside that thread" in p
     assert "Output exactly four lines." in p
     for line in ("NOVEL: YES or NO\n", "SHIFT: NONE or TOPIC or STANCE or REPAIR\n",
                  "MEMORY: YES or NO\n", "BOUNDARY: YES or NO\n\n"):

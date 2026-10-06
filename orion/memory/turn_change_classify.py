@@ -119,12 +119,15 @@ def _clip_pair(prompt: str, response: str, *, limit: int = 300) -> tuple[str, st
 # What BOUNDARY means (Juniper, 2026-10-06). Without it the judge scored near 1.0 on turns that
 # continue the same conversation, and Rule 3 (services/orion-memory-consolidation/app/boundary.py)
 # splits a resumed_thread turn on a score >= 0.92. A definition, not a word list: the model judges
-# whether CURRENT still depends on BASELINE.
+# whether CURRENT still continues the BASELINE thread. Wording chosen 2026-10-06 among three
+# phrasings of the same definition on 30 days of real turns (PR report): a first phrasing ("YES only
+# when ... does not depend on BASELINE to be understood") pushed every score to ~0, including real
+# switches, so Rule 3 could never split on the judge.
 BOUNDARY_DEFINITION = (
-    "BOUNDARY: YES only when the conversational thread has ended or switched to something unrelated, "
-    "so that CURRENT does not depend on BASELINE to be understood.\n"
-    "BOUNDARY: NO for a pause, a follow-up, an elaboration, a reaction, a return to the same subject, "
-    "or small talk inside an ongoing thread.\n"
+    "BOUNDARY: YES when the user has moved on from the BASELINE thread: that thread ended, or CURRENT is about "
+    "a subject unrelated to it, so CURRENT can be understood without BASELINE.\n"
+    "BOUNDARY: NO when CURRENT continues the BASELINE thread: a pause, a follow-up, an elaboration, a reaction, "
+    "a return to the same subject, or small talk inside that thread.\n"
 )
 
 

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import json
 import logging
 import os
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List
 
@@ -34,7 +38,6 @@ from orion.substrate import build_substrate_store_from_env
 from orion.substrate.relational import (
     CONCEPT_INDUCED,
     GRAPHDB_DURABLE,
-    OPERATOR_STATIC,
     SNAPSHOT_EPHEMERAL,
     CognitiveUnificationLayer,
     ProducerEntryV1,
@@ -131,6 +134,59 @@ logger = logging.getLogger("orion.cortex.exec.chat_stance")
 
 _UNIFICATION_LAYER: CognitiveUnificationLayer | None = None
 
+# ---------------------------------------------------------------------------
+# Stance-build worker (2026-10-06, turn-latency L2)
+# ---------------------------------------------------------------------------
+# The synchronous half of build_chat_stance_inputs (felt-state hydrate, the
+# unified-beliefs Falkor snapshots, the dispatch-actions read, the attention
+# frame) used to run on the event loop and froze every other handler in this
+# process for ~9 s per build. It now runs here.
+#
+# One worker on purpose: it keeps today's one-build-at-a-time ordering for the
+# lazy, unlocked state the beliefs path touches (_UNIFICATION_LAYER, the
+# layer's _last_materialized_at, the layer's Falkor store), and it keeps this
+# ~9 s work out of the default executor that cortex-exec's ~38
+# asyncio.to_thread calls share. Each container (cortex-exec, -chat,
+# -background, -spark) gets its own worker.
+#
+# Not covered by the worker: the felt-state reader is also called straight
+# from the loop (identity injection, metacog). Its lazy init is locked and its
+# TTL cache is single-key dict get/set, so the worst overlap is a duplicate
+# fetch. A hung build blocks later stance builds in this container (the
+# worker cannot be cancelled), not the whole process as before.
+_STANCE_BUILD_EXECUTOR: ThreadPoolExecutor | None = None
+_STANCE_BUILD_EXECUTOR_LOCK = threading.Lock()
+
+
+def _stance_build_executor() -> ThreadPoolExecutor:
+    global _STANCE_BUILD_EXECUTOR
+    if _STANCE_BUILD_EXECUTOR is None:
+        with _STANCE_BUILD_EXECUTOR_LOCK:
+            if _STANCE_BUILD_EXECUTOR is None:
+                _STANCE_BUILD_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="stance-build"
+                )
+    return _STANCE_BUILD_EXECUTOR
+
+
+async def _run_on_stance_worker(fn, /, *args, **kwargs):
+    """Run a synchronous stance-build step on the dedicated worker.
+
+    Copies the caller's contextvars (run_in_executor does not) so anything
+    contextvar-scoped behaves as it did on the loop."""
+    loop = asyncio.get_running_loop()
+    call = functools.partial(contextvars.copy_context().run, fn, *args, **kwargs)
+    return await loop.run_in_executor(_stance_build_executor(), call)
+
+
+def _hydrate_and_unify_beliefs(ctx: Dict[str, Any]) -> UnifiedRelationalBeliefSetV1 | None:
+    from app.substrate_felt_state_reader import hydrate_felt_state_ctx
+
+    hydrate_felt_state_ctx(ctx)
+    # Module-global lookup at call time: chat_stance_shared_spine swaps this
+    # name for the shared projection path.
+    return _unified_beliefs_for_stance(ctx)
+
 
 def _build_unification_registry() -> ProducerRegistryV1:
     """Construct the ProducerRegistryV1 wiring all known producer lanes."""
@@ -140,12 +196,19 @@ def _build_unification_registry() -> ProducerRegistryV1:
 
     return ProducerRegistryV1(
         producers=[
+            # snapshot_ephemeral, re-read from ctx every call (2026-10-06,
+            # turn-latency L3). It was operator_static write-through, but its
+            # StateSnapshotNodeV1 is not a Falkor durable kind (concept/
+            # evidence/entity only), so every cold turn failed with
+            # producer_materialize_failed and marked the orion anchor degraded.
+            # Its input is ctx identity that _inject_identity_context already
+            # put there; nothing is lost by not persisting it.
             ProducerEntryV1(
                 producer_id="identity_yaml",
-                trust_tier=OPERATOR_STATIC,
+                trust_tier=SNAPSHOT_EPHEMERAL,
                 anchor_scopes=("orion",),
-                freshness_ttl_sec=86400,
-                pull_on_cold=True,
+                freshness_ttl_sec=0,
+                pull_on_cold=False,
                 adapter_fn=map_identity_yaml_to_substrate,
             ),
             ProducerEntryV1(
@@ -153,14 +216,25 @@ def _build_unification_registry() -> ProducerRegistryV1:
                 # curiosity line (orion/curiosity/self_inquiry.py) via the
                 # felt-state reader's `orion_self_definition` lane. Read into
                 # the identity kernel by `_project_identity_from_beliefs`.
+                # snapshot_ephemeral (2026-10-06, turn-latency L3): ctx-only
+                # StateSnapshotNodeV1, not a Falkor durable kind, same failure
+                # as identity_yaml above.
                 producer_id="self_definition",
-                trust_tier=GRAPHDB_DURABLE,
+                trust_tier=SNAPSHOT_EPHEMERAL,
                 anchor_scopes=("orion",),
-                freshness_ttl_sec=300,
-                pull_on_cold=True,
+                freshness_ttl_sec=0,
+                pull_on_cold=False,
                 adapter_fn=map_self_definition_ctx_to_substrate,
             ),
             ProducerEntryV1(
+                # Left write-through on purpose (2026-10-06, turn-latency L3).
+                # Its GoalNodeV1 is not a Falkor durable kind, so a non-None
+                # record would fail like identity_yaml did -- but live it
+                # returns None (autonomy graph gate off; 0 failures in 24 h).
+                # A non-write-through + pull_on_cold producer would make goals
+                # appear on cold turns and vanish on warm ones (the ephemeral
+                # store is per call), and this network adapter can't move to
+                # the always-run ephemeral path. Fix with the gate, not here.
                 producer_id="autonomy",
                 trust_tier=GRAPHDB_DURABLE,
                 anchor_scopes=("orion", "relationship", "juniper"),
@@ -2513,10 +2587,8 @@ def _inject_prior_stance_to_inputs(ctx: Dict[str, Any], inputs: Dict[str, Any]) 
 
 async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     # Single unified beliefs call replaces independent producer fan-outs for
-    # identity, orionmem, recall, and social lanes.
-    from app.substrate_felt_state_reader import hydrate_felt_state_ctx
-    hydrate_felt_state_ctx(ctx)
-    beliefs = _unified_beliefs_for_stance(ctx)
+    # identity, orionmem, recall, and social lanes. Off the event loop (L2).
+    beliefs = await _run_on_stance_worker(_hydrate_and_unify_beliefs, ctx)
 
     identity = _project_identity_from_beliefs(beliefs, ctx)
     ctx.update(identity)
@@ -2615,7 +2687,9 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     # Queries load_action_outcomes(subject="orion") directly (see
     # _project_recent_dispatch_actions' docstring) rather than reading ctx.
     # Fail-open: [] on any failure.
-    ctx["chat_recent_dispatch_actions"] = _project_recent_dispatch_actions(ctx)
+    ctx["chat_recent_dispatch_actions"] = await _run_on_stance_worker(
+        _project_recent_dispatch_actions, ctx
+    )
 
     # Built here (ctx key "autonomy_slice", matching what stance_react.j2 reads
     # directly) so it's present BEFORE the stance_react LLM step renders its
@@ -2665,7 +2739,8 @@ async def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
             ctx["current_turn_llm_signals"] = []
             ctx["current_turn_llm_read"] = {"ok": False, "wants_direct_answer": None}
         try:
-            attention_frame = build_attention_frame(
+            attention_frame = await _run_on_stance_worker(
+                build_attention_frame,
                 ctx=ctx,
                 inputs=inputs,
                 belief_lineage=(beliefs.lineage if beliefs is not None else []),

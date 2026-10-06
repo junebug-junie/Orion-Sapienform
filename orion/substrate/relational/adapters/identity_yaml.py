@@ -52,7 +52,12 @@ def _make_op_static_provenance(*, source_kind: str) -> SubstrateProvenanceV1:
 
 
 def map_identity_yaml_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV1 | None:
-    """Map identity ctx keys into substrate nodes (operator_static, anchor=orion).
+    """Map identity ctx keys into one snapshot node (anchor=orion).
+
+    Registered as a snapshot_ephemeral, ctx-only producer (2026-10-06): the
+    StateSnapshotNodeV1 is not a Falkor durable kind, so it is rebuilt from
+    ctx every call rather than persisted. Provenance tier_rank stays 1
+    (operator-authored content).
 
     Reads ``orion_identity_summary``, ``juniper_relationship_summary``, and
     ``response_policy_summary`` from ctx.  Returns None if ctx is empty or None.

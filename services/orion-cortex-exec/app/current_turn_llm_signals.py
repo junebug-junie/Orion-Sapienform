@@ -432,6 +432,11 @@ async def _llm_call(bus: OrionBusAsync, *, prompt: str) -> str:
             "purpose": "current_turn_signal_probe",
             "skip_spark_candidate_publish": True,
             "chat_template_kwargs": {"enable_thinking": False},
+            # Tell the gateway how long this caller actually waits. Without it
+            # the gateway assumed its default budget (700 s live) for a probe the
+            # caller abandons after a few seconds, and admission queued it as if
+            # someone were still listening (2026-10-06, turn-latency L3).
+            "gateway_read_timeout_sec": float(settings.current_turn_signal_probe_timeout_sec),
         },
     )
     env = BaseEnvelope(

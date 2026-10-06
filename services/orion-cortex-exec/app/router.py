@@ -12,6 +12,7 @@ from orion.core.bus.bus_schemas import ServiceRef
 
 from .executor import (
     _forward_llm_uncertainty_metadata,
+    brain_reply_context_skipped,
     call_step_services,
     prepare_brain_reply_context,
     prepare_chat_quick_reply_context,
@@ -1042,13 +1043,9 @@ class PlanRunner:
                     prepare_chat_quick_reply_context(ctx)
             elif verb_lc == "chat_kids_story":
                 prepare_chat_quick_reply_context(ctx)
-            elif (
-                ctx.get("skip_brain_reply_context")
-                or str(plan.verb_name or "").strip().lower()
-                in {"introspect_spark", "memory_graph_suggest"}
-            ):
+            elif brain_reply_context_skipped(plan.verb_name, ctx):
                 logger.info(
-                    "router_skip_prepare_brain_reply_context corr=%s verb=%s reason=spark_or_skip_flag",
+                    "router_skip_prepare_brain_reply_context corr=%s verb=%s reason=skip_verb_or_flag",
                     correlation_id,
                     plan.verb_name,
                 )

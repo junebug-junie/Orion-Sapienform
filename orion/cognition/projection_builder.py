@@ -23,7 +23,6 @@ from orion.substrate import build_substrate_store_from_env
 from orion.substrate.relational import (
     CONCEPT_INDUCED,
     GRAPHDB_DURABLE,
-    OPERATOR_STATIC,
     SNAPSHOT_EPHEMERAL,
     CognitiveUnificationLayer,
     ProducerEntryV1,
@@ -68,15 +67,30 @@ def build_projection_unification_registry() -> ProducerRegistryV1:
     """Construct the shared producer registry for cognitive projection reads."""
     return ProducerRegistryV1(
         producers=[
+            # snapshot_ephemeral, re-read from ctx every call (2026-10-06,
+            # turn-latency L3). It was operator_static write-through, but its
+            # StateSnapshotNodeV1 is not a Falkor durable kind (concept/
+            # evidence/entity only), so every cold turn failed with
+            # producer_materialize_failed and marked the orion anchor degraded.
+            # Its input is ctx identity that _inject_identity_context already
+            # put there; nothing is lost by not persisting it.
             ProducerEntryV1(
                 producer_id="identity_yaml",
-                trust_tier=OPERATOR_STATIC,
+                trust_tier=SNAPSHOT_EPHEMERAL,
                 anchor_scopes=("orion",),
-                freshness_ttl_sec=86400,
-                pull_on_cold=True,
+                freshness_ttl_sec=0,
+                pull_on_cold=False,
                 adapter_fn=map_identity_yaml_to_substrate,
             ),
             ProducerEntryV1(
+                # Left write-through on purpose (2026-10-06, turn-latency L3).
+                # Its GoalNodeV1 is not a Falkor durable kind, so a non-None
+                # record would fail like identity_yaml did -- but live it
+                # returns None (autonomy graph gate off; 0 failures in 24 h).
+                # A non-write-through + pull_on_cold producer would make goals
+                # appear on cold turns and vanish on warm ones (the ephemeral
+                # store is per call), and this network adapter can't move to
+                # the always-run ephemeral path. Fix with the gate, not here.
                 producer_id="autonomy",
                 trust_tier=GRAPHDB_DURABLE,
                 anchor_scopes=("orion", "relationship", "juniper"),

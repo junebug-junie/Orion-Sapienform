@@ -309,6 +309,15 @@ class FalkorSubstrateStore:
         # "first call" branch is needed in snapshot() itself.
         self._last_snapshot_generation = -1
         self._snapshot_lock = threading.Lock()
+        # Guards the in-process cache and ``_write_generation`` against
+        # concurrent writers. ``_snapshot_lock`` only serializes snapshot()
+        # callers; writes never took it. Before cortex-exec moved the stance
+        # build off the event loop (2026-10-06 turn-latency L2) a write could not
+        # overlap a snapshot because the build blocked the whole loop. Now it
+        # can, and the unified layer's cold fan-out already writes from pool
+        # threads. Held only for in-memory work (never across a Falkor round
+        # trip), so a 4 s rehydrate never blocks a writer for 4 s.
+        self._cache_lock = threading.RLock()
         self.last_scan_receipt: CompleteScanReceipt | None = None
         self._last_successful_refresh_at: str | None = None
         if hydrate:
@@ -420,8 +429,15 @@ class FalkorSubstrateStore:
             ):
                 add_edge(row, SubstrateEdgeV1.model_validate_json(row["payload_json"]))
                 legacy_edges.append(row)
-            if self._write_generation != generation:
-                raise ValueError("local mutation during scan; retry required")
+            # Generation check and cache swap are one atomic step under
+            # _cache_lock: a local write landing between a bare check and the
+            # swap would go into the old cache and then be dropped by the swap,
+            # handing the caller a snapshot missing that write.
+            with self._cache_lock:
+                if self._write_generation != generation:
+                    raise ValueError("local mutation during scan; retry required")
+                self._cache = fresh
+                self._last_snapshot_generation = generation
         except Exception as exc:
             logger.warning("falkor_substrate_hydrate_failed error=%s", exc)
             self.last_hydrate_ok = False
@@ -434,12 +450,10 @@ class FalkorSubstrateStore:
             )
             return
 
-        self._cache = fresh
         self.last_hydrate_ok = True
         self.last_hydrate_node_count = len(node_ids)
         finished = datetime.now(timezone.utc).isoformat()
         self._last_snapshot_at = time.monotonic()
-        self._last_snapshot_generation = generation
         self._last_successful_refresh_at = finished
         self.last_scan_receipt = CompleteScanReceipt(
             started_at=started, finished_at=finished, complete=True, stale=False,
@@ -471,7 +485,8 @@ class FalkorSubstrateStore:
             identity = row.get("identity_key")
             identity_key = str(identity) if identity else None
             # Seed cache first so a transient rewrite failure cannot empty Atlas.
-            self._cache.upsert_node(identity_key=identity_key, node=node)
+            with self._cache_lock:
+                self._cache.upsert_node(identity_key=identity_key, node=node)
             try:
                 # Rewrite to native properties. upsert_node()'s MERGE keys on
                 # (SubstrateNode:<type-label> {node_id}) -- a label pattern
@@ -548,9 +563,10 @@ class FalkorSubstrateStore:
                 logger.warning("falkor_substrate_legacy_edge_invalid")
                 continue
             identity = row.get("identity_key") or self._edge_identity(edge)
-            representative_id = self._cache.get_edge_id_by_identity(str(identity))
-            representative = self._cache.get_edge_by_id(representative_id) if representative_id else None
-            self._cache.upsert_edge(identity_key=str(identity), edge=edge)
+            with self._cache_lock:
+                representative_id = self._cache.get_edge_id_by_identity(str(identity))
+                representative = self._cache.get_edge_by_id(representative_id) if representative_id else None
+                self._cache.upsert_edge(identity_key=str(identity), edge=edge)
             try:
                 self.upsert_edge(identity_key=str(identity), edge=edge)
                 logger.info(
@@ -569,7 +585,8 @@ class FalkorSubstrateStore:
                 # Native rewriting must not change the lookup selected by the
                 # validated staging scan, including when rewriting fails.
                 if representative is not None and representative.edge_id < edge.edge_id:
-                    self._cache.upsert_edge(identity_key=str(identity), edge=representative)
+                    with self._cache_lock:
+                        self._cache.upsert_edge(identity_key=str(identity), edge=representative)
 
     @staticmethod
     def _edge_identity(edge: SubstrateEdgeV1) -> str:
@@ -615,17 +632,10 @@ class FalkorSubstrateStore:
         value. See falkor_codec.EXTERNALLY_OWNED_METADATA_KEYS's docstring
         for the full trace.
 
-        **Known, bounded race, same shape as the cache-swap race documented
-        on ``_hydrate_from_durable()`` above**: the ``self._cache.get_node_by_id()``
-        read used to build the skip-preserving merge isn't lock-protected. A
-        second concurrent ``upsert_node()`` call landing between that read
-        and this call's own ``self._cache.upsert_node(...)`` could still
-        leave the *local cache* (not the durable Falkor graph -- the Cypher
-        SET-clause exclusion is unconditional and independent of this cache
-        read) briefly holding a stale copy of a skipped key. Self-heals the
-        same way: this write still bumps ``self._write_generation``, so the
-        next ``snapshot()`` call detects the mismatch and re-hydrates from
-        durable Falkor, which is unaffected by this narrow window.
+        The skip-preserving merge read, the cache write and the
+        ``_write_generation`` bump run together under ``_cache_lock`` after the
+        durable write, so a concurrent writer or a snapshot cache swap cannot
+        interleave between them (2026-10-06, turn-latency L2).
         """
         # Derived from the codec's DURABLE_NODE_KINDS rather than repeating the
         # tuple: these two guards were separate hardcoded copies of the same
@@ -664,26 +674,8 @@ class FalkorSubstrateStore:
         node = node.model_copy(
             update={"metadata": {**(node.metadata or {}), ACTIVATION_DECAYED_AT_KEY: decay_stamp}}
         )
-        cache_node = node
         skip_encoded_keys: set[str] = set()
         if skip_metadata_keys:
-            existing_cached = self._cache.get_node_by_id(node.node_id)
-            merged_metadata = dict(cache_node.metadata or {})
-            existing_metadata = (existing_cached.metadata or {}) if existing_cached is not None else {}
-            for key in skip_metadata_keys:
-                if key in existing_metadata:
-                    merged_metadata[key] = existing_metadata[key]
-                else:
-                    # No cached copy to fall back on -- an honest "unknown"
-                    # (key absent) beats caching this caller's own unverified
-                    # guess for a field it doesn't own. Review finding
-                    # 2026-07-29: without this, a cache miss (e.g. mid-
-                    # rehydrate) would leave the LOCAL cache holding the
-                    # caller's copy for a field the durable Cypher write
-                    # deliberately skipped -- cache/durable divergence until
-                    # the next generation-triggered rehydrate.
-                    merged_metadata.pop(key, None)
-            cache_node = cache_node.model_copy(update={"metadata": merged_metadata})
             # Translate raw metadata keys into the encoded Cypher property
             # names actually present in the SET clause -- contributing_turn_ids
             # becomes contributing_turn_ids_json only once
@@ -719,8 +711,28 @@ class FalkorSubstrateStore:
         except Exception as exc:
             logger.error("falkor_substrate_upsert_node_failed node_id=%s error=%s", node.node_id, exc)
             raise
-        self._cache.upsert_node(identity_key=identity_key, node=cache_node)
-        self._write_generation += 1
+        with self._cache_lock:
+            cache_node = node
+            if skip_metadata_keys:
+                existing_cached = self._cache.get_node_by_id(node.node_id)
+                merged_metadata = dict(node.metadata or {})
+                existing_metadata = (existing_cached.metadata or {}) if existing_cached is not None else {}
+                for key in skip_metadata_keys:
+                    if key in existing_metadata:
+                        merged_metadata[key] = existing_metadata[key]
+                    else:
+                        # No cached copy to fall back on -- an honest "unknown"
+                        # (key absent) beats caching this caller's own unverified
+                        # guess for a field it doesn't own. Review finding
+                        # 2026-07-29: without this, a cache miss (e.g. mid-
+                        # rehydrate) would leave the LOCAL cache holding the
+                        # caller's copy for a field the durable Cypher write
+                        # deliberately skipped -- cache/durable divergence until
+                        # the next generation-triggered rehydrate.
+                        merged_metadata.pop(key, None)
+                cache_node = node.model_copy(update={"metadata": merged_metadata})
+            self._cache.upsert_node(identity_key=identity_key, node=cache_node)
+            self._write_generation += 1
 
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None:
         edge = _with_sanitized_metadata(edge)
@@ -739,8 +751,9 @@ class FalkorSubstrateStore:
         except Exception as exc:
             logger.error("falkor_substrate_upsert_edge_failed edge_id=%s error=%s", edge.edge_id, exc)
             raise
-        self._cache.upsert_edge(identity_key=identity_key, edge=edge)
-        self._write_generation += 1
+        with self._cache_lock:
+            self._cache.upsert_edge(identity_key=identity_key, edge=edge)
+            self._write_generation += 1
 
     def snapshot(self) -> MaterializedSubstrateGraphState:
         with self._snapshot_lock:
@@ -762,80 +775,86 @@ class FalkorSubstrateStore:
             if not (same_generation and within_ceiling and self.last_hydrate_ok):
                 self._hydrate_from_durable()
             receipt = self.last_scan_receipt
-            if receipt and self._last_snapshot_generation != self._write_generation:
-                receipt = replace(receipt, stale=True)
-            return replace(self._cache.snapshot(), scan_receipt=receipt)
+            with self._cache_lock:
+                if receipt and self._last_snapshot_generation != self._write_generation:
+                    receipt = replace(receipt, stale=True)
+                state = self._cache.snapshot()
+            return replace(state, scan_receipt=receipt)
 
     def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1:
         from .neighborhood_backends import read_falkor_neighborhood
         return read_falkor_neighborhood(self, request)
 
+    # Region reads iterate the in-memory cache's dicts; InMemorySubstrateGraphStore
+    # has no lock of its own, so they share _cache_lock with writers.
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1:
-        return _retag_source(
-            self._cache.query_focal_slice(node_ids=node_ids, max_edges=max_edges),
-            self._result_source_kind,
-        )
+        with self._cache_lock:
+            result = self._cache.query_focal_slice(node_ids=node_ids, max_edges=max_edges)
+        return _retag_source(result, self._result_source_kind)
 
     def query_hotspot_region(
         self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateQueryResultV1:
-        result = self._cache.query_hotspot_region(
-            min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
-        )
+        with self._cache_lock:
+            result = self._cache.query_hotspot_region(
+                min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
+            )
         return _retag_source(result, self._result_source_kind)
 
     def query_contradiction_region(
         self, *, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateQueryResultV1:
-        return _retag_source(
-            self._cache.query_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges),
-            self._result_source_kind,
-        )
+        with self._cache_lock:
+            result = self._cache.query_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
+        return _retag_source(result, self._result_source_kind)
 
     def query_concept_region(
         self, *, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateQueryResultV1:
-        return _retag_source(
-            self._cache.query_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges),
-            self._result_source_kind,
-        )
+        with self._cache_lock:
+            result = self._cache.query_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
+        return _retag_source(result, self._result_source_kind)
 
     def query_provenance_neighborhood(
         self, *, evidence_ref: str, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateQueryResultV1:
-        return _retag_source(
-            self._cache.query_provenance_neighborhood(
+        with self._cache_lock:
+            result = self._cache.query_provenance_neighborhood(
                 evidence_ref=evidence_ref, limit_nodes=limit_nodes, limit_edges=limit_edges
-            ),
-            self._result_source_kind,
-        )
+            )
+        return _retag_source(result, self._result_source_kind)
 
     def read_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateNeighborhoodSliceV1:
-        return self._cache.read_focal_slice(node_ids=node_ids, max_edges=max_edges)
+        with self._cache_lock:
+            return self._cache.read_focal_slice(node_ids=node_ids, max_edges=max_edges)
 
     def read_hotspot_region(
         self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateNeighborhoodSliceV1:
-        return self._cache.read_hotspot_region(
-            min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
-        )
+        with self._cache_lock:
+            return self._cache.read_hotspot_region(
+                min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
+            )
 
     def read_contradiction_region(
         self, *, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateNeighborhoodSliceV1:
-        return self._cache.read_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
+        with self._cache_lock:
+            return self._cache.read_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
 
     def read_concept_region(
         self, *, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateNeighborhoodSliceV1:
-        return self._cache.read_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
+        with self._cache_lock:
+            return self._cache.read_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
 
     def read_provenance_neighborhood(
         self, *, evidence_ref: str, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateNeighborhoodSliceV1:
-        return self._cache.read_provenance_neighborhood(
-            evidence_ref=evidence_ref, limit_nodes=limit_nodes, limit_edges=limit_edges
-        )
+        with self._cache_lock:
+            return self._cache.read_provenance_neighborhood(
+                evidence_ref=evidence_ref, limit_nodes=limit_nodes, limit_edges=limit_edges
+            )
 
 
 def _retag_source(result: SubstrateQueryResultV1, source_kind: str) -> SubstrateQueryResultV1:

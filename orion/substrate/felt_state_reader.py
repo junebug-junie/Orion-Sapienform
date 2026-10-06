@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -329,16 +330,22 @@ class SubstrateFeltStateReader:
 
 
 _READER: SubstrateFeltStateReader | None = None
+# cortex-exec now hydrates from its stance-build worker thread as well as from
+# the event loop (identity injection, metacog); without this two first calls
+# could each build a reader and leak one SQLAlchemy engine.
+_READER_LOCK = threading.Lock()
 
 
 def _get_reader() -> SubstrateFeltStateReader:
     global _READER
     if _READER is None:
-        _READER = SubstrateFeltStateReader(
-            enabled=_flag_enabled(),
-            database_url=_database_url(),
-            max_age_sec=_max_age_sec(),
-        )
+        with _READER_LOCK:
+            if _READER is None:
+                _READER = SubstrateFeltStateReader(
+                    enabled=_flag_enabled(),
+                    database_url=_database_url(),
+                    max_age_sec=_max_age_sec(),
+                )
     return _READER
 
 

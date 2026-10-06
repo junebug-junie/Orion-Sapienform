@@ -504,6 +504,9 @@ def decay_concept_activations(
             if since_last:
                 anchor = activation_decay_anchor(node)
                 node_elapsed_seconds = max(0.0, (now - anchor).total_seconds())
+                # Never rewind the stamp. If this host's clock runs ahead of
+                # orion-substrate-runtime's, the runtime sees elapsed <= 0 and
+                # pauses decay for the skew window: under-decay, never double.
                 decay_stamp = max(anchor, now)
             elif elapsed_seconds is not None:
                 node_elapsed_seconds = max(0.0, float(elapsed_seconds))
@@ -527,6 +530,13 @@ def decay_concept_activations(
                 node_update["metadata"] = {
                     **(node.metadata or {}),
                     ACTIVATION_DECAYED_AT_KEY: decay_stamp.isoformat(),
+                }
+            elif ACTIVATION_DECAYED_AT_KEY in (node.metadata or {}):
+                # legacy never maintains the stamp; drop it (the store
+                # re-stamps with observed_at) so a later roll-forward doesn't
+                # re-apply the decay legacy already applied.
+                node_update["metadata"] = {
+                    k: v for k, v in (node.metadata or {}).items() if k != ACTIVATION_DECAYED_AT_KEY
                 }
             updated_node = node.model_copy(update=node_update)
 

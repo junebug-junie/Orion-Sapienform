@@ -138,6 +138,7 @@ class SubstrateDynamicsEngine:
                 observed_at = observed_at.replace(tzinfo=timezone.utc)
             age_seconds = max(0.0, (tick_at - observed_at).total_seconds())
             new_decay_stamp: datetime | None = None
+            anchor = observed_at
             if legacy_decay:
                 # Pre-2026-10-06: the stored (already-decayed) value is folded
                 # into combined_activation and decayed again by the node's full
@@ -219,6 +220,11 @@ class SubstrateDynamicsEngine:
             if activation_changed or dormant_new != dormant_prev or node_id in pressure_changed_ids:
                 if legacy_decay:
                     persisted_activation = round(new_activation, 6)
+                    # legacy never maintains the stamp; drop it so the store
+                    # re-stamps with observed_at. Carrying a stale stamp
+                    # forward would make a later roll-forward to since_last
+                    # re-apply all the decay legacy applied since that stamp.
+                    metadata.pop(ACTIVATION_DECAYED_AT_KEY, None)
                 elif activation_changed:
                     # Unrounded on purpose: the stamp says "this exact value is
                     # valid as of tick_at". Rounding to 6 places would drop up
@@ -232,8 +238,15 @@ class SubstrateDynamicsEngine:
                     # AND its stamp together: persisting a sub-threshold decay
                     # with a fresh stamp would round it away and restart the
                     # clock every tick, freezing decay for any node whose
-                    # pressure moves every tick.
+                    # pressure moves every tick. The stamp is written
+                    # explicitly (not left to whatever is durable) because
+                    # another writer -- the Hub decay scheduler -- may have
+                    # stamped a newer, lower value since this tick's snapshot;
+                    # writing prev_activation without its own stamp would pair
+                    # the older, higher value with that newer stamp and undo
+                    # the other writer's decay.
                     persisted_activation = prev_activation
+                    metadata[ACTIVATION_DECAYED_AT_KEY] = anchor.isoformat()
                 activation_bundle = node.signals.activation.model_copy(
                     update={
                         "activation": persisted_activation,
@@ -351,9 +364,12 @@ class SubstrateDynamicsEngine:
         now: datetime,
     ) -> dict[str, float]:
         activations: dict[str, float] = {}
-        # Fresh input only (seed + propagation), excluding the stored value.
+        # Seed input plus propagation, excluding this node's OWN stored value.
         # tick() decays this by full age and the stored value by time since
-        # last decay; see the since_last branch there.
+        # last decay; see the since_last branch there. Note propagation is
+        # still sourced from a neighbor's combined (stored-including) value,
+        # so a propagated term carries the neighbor's stored activation and is
+        # decayed by this node's age -- same as legacy, not a new behavior.
         fresh: dict[str, float] = {}
         recency_scores: dict[str, float] = {}
         for node in nodes.values():

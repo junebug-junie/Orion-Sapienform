@@ -406,3 +406,21 @@ def test_since_last_repeated_calls_match_closed_form(monkeypatch) -> None:
 
     result = store.get_node_by_id("concept-closed-form").signals.activation.activation
     assert abs(result - 0.5) < 1e-9
+
+
+def test_legacy_mode_drops_stale_stamp(monkeypatch) -> None:
+    node = _make_concept_node(
+        node_id="concept-legacy-stamp",
+        activation=0.8,
+        decay_half_life_seconds=600,
+        decay_floor=0.0,
+        observed_at=datetime.now(timezone.utc) - timedelta(hours=1),
+    )
+    node = node.model_copy(update={"metadata": {"activation_decayed_at": "2026-10-06T00:00:00+00:00", "foo": 1}})
+    store = InMemorySubstrateGraphStore()
+    store.upsert_node(identity_key=node.node_id, node=node)
+    monkeypatch.setattr(api_routes, "SUBSTRATE_SEMANTIC_STORE", store)
+
+    api_routes.decay_concept_activations(elapsed_seconds=120.0, decay_mode="legacy")
+
+    assert store.get_node_by_id("concept-legacy-stamp").metadata == {"foo": 1}

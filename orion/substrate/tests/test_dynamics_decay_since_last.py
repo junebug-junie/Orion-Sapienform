@@ -292,7 +292,11 @@ def test_stamp_round_trips_through_falkor_codec_for_every_durable_kind() -> None
     assert ACTIVATION_DECAYED_AT_KEY in DYNAMICS_ENGINE_OWNED_METADATA_KEYS
 
 
-def test_stamp_unaware_writer_does_not_clear_durable_stamp() -> None:
+def test_stamp_unaware_writer_is_stamped_with_its_own_observed_at() -> None:
+    """concept_induction's blind re-save writes a fresh model with no stamp and
+    an old observed_at. Its activation must be treated as valid as of that
+    observation (decayed by real age next tick), not as fresh as of the newer
+    durable stamp -- which would pin a re-saved seed at 1.0 indefinitely."""
     client = RecordingFalkorClient()
     store = FalkorSubstrateStore(
         FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
@@ -300,12 +304,56 @@ def test_stamp_unaware_writer_does_not_clear_durable_stamp() -> None:
         hydrate=False,
     )
     store.upsert_node(identity_key="id:a", node=_concept(node_id="a", metadata={ACTIVATION_DECAYED_AT_KEY: T0.isoformat()}))
-    assert f"n.{ACTIVATION_DECAYED_AT_KEY} = ${ACTIVATION_DECAYED_AT_KEY}" in client.calls[-1][0]
+    assert client.calls[-1][1][ACTIVATION_DECAYED_AT_KEY] == T0.isoformat()
 
-    # e.g. concept_induction re-save: a freshly built model with no stamp.
-    store.upsert_node(identity_key="id:a", node=_concept(node_id="a"))
+    resaved = _concept(node_id="a")  # observed_at = T0 - 23h, no stamp
+    store.upsert_node(identity_key="id:a", node=resaved)
     cypher, params = client.calls[-1]
-    assert ACTIVATION_DECAYED_AT_KEY not in cypher
-    assert ACTIVATION_DECAYED_AT_KEY not in params
-    # The in-process cache mirrors the durable graph (stamp still present).
-    assert store.get_node_by_id("a").metadata[ACTIVATION_DECAYED_AT_KEY] == T0.isoformat()
+    expected = resaved.temporal.observed_at.isoformat()
+    assert f"n.{ACTIVATION_DECAYED_AT_KEY} = ${ACTIVATION_DECAYED_AT_KEY}" in cypher
+    assert params[ACTIVATION_DECAYED_AT_KEY] == expected
+    cached = store.get_node_by_id("a")
+    assert cached.metadata[ACTIVATION_DECAYED_AT_KEY] == expected
+    assert activation_decay_anchor(cached) == resaved.temporal.observed_at
+
+
+def test_codec_omits_absent_stamp_rather_than_writing_null() -> None:
+    props = encode_node_properties(_concept(), "id")
+    assert ACTIVATION_DECAYED_AT_KEY not in props
+
+
+def test_pressure_only_write_pairs_value_with_its_own_stamp() -> None:
+    """Race from review: this tick's snapshot holds (v0, s0); another writer
+    (Hub scheduler) has since stored a newer, lower value with a newer stamp.
+    A pressure-only write of v0 must carry s0, never inherit the newer stamp."""
+    s0 = T0
+    node = _concept(activation=0.05, metadata={ACTIVATION_DECAYED_AT_KEY: s0.isoformat()})
+    store = _store_with(node)
+    engine = SubstrateDynamicsEngine(store=store)
+    engine._compute_pressures = lambda nodes, outgoing, now: ({node.node_id: 0.1}, {node.node_id: "t"})  # type: ignore[method-assign]
+    engine.tick(now=T0 + timedelta(seconds=30))
+
+    written = store.get_node_by_id(node.node_id)
+    assert written.signals.activation.activation == 0.05
+    assert written.metadata[ACTIVATION_DECAYED_AT_KEY] == s0.isoformat()
+
+
+def test_legacy_mode_drops_stale_stamp_so_roll_forward_does_not_double_decay() -> None:
+    node = _concept(metadata={ACTIVATION_DECAYED_AT_KEY: (T0 - timedelta(hours=5)).isoformat()})
+    store = _store_with(node)
+    SubstrateDynamicsEngine(store=store, decay_mode="legacy").tick(now=T0)
+    assert ACTIVATION_DECAYED_AT_KEY not in store.get_node_by_id(node.node_id).metadata
+
+
+def test_stamp_survives_the_metadata_key_cap() -> None:
+    """A node already at the 16-key metadata cap must not lose its stamp to the
+    sanitizer (it would be re-filled from observed_at and compound again)."""
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(uri="redis://localhost:6379", graph_name="orion_substrate"),
+        client=RecordingFalkorClient(),
+        hydrate=False,
+    )
+    metadata = {f"k{i}": i for i in range(20)}
+    metadata[ACTIVATION_DECAYED_AT_KEY] = T0.isoformat()  # inserted last
+    store.upsert_node(identity_key="id:full", node=_concept(node_id="full", metadata=metadata))
+    assert store.get_node_by_id("full").metadata[ACTIVATION_DECAYED_AT_KEY] == T0.isoformat()

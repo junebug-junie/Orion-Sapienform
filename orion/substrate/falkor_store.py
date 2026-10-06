@@ -636,24 +636,35 @@ class FalkorSubstrateStore:
                 f"FalkorSubstrateStore durable writes support {', '.join(DURABLE_NODE_KINDS)} nodes only; "
                 f"got node_kind={getattr(node, 'node_kind', None)!r}"
             )
-        node = _with_sanitized_metadata(node)
-
-        cache_node = node
-        # The codec omits activation_decayed_at from the SET clause when this
-        # write doesn't carry it (durable value preserved); mirror that in the
-        # cache so a stamp-unaware writer doesn't make the cache report the
-        # stamp missing while the graph still holds it.
-        if ACTIVATION_DECAYED_AT_KEY not in (node.metadata or {}):
-            existing_for_stamp = self._cache.get_node_by_id(node.node_id)
-            existing_stamp = (
-                (existing_for_stamp.metadata or {}).get(ACTIVATION_DECAYED_AT_KEY)
-                if existing_for_stamp is not None
-                else None
+        # activation_decayed_at is a typed durable property (one ISO string),
+        # not free-form metadata: keep it out of the metadata key-count cap so
+        # a node already carrying 16 keys can't have its stamp trimmed -- a
+        # trimmed stamp would be re-filled from observed_at below and bring
+        # back the compounding decay every tick.
+        #
+        # A write that doesn't carry the stamp (concept_induction's blind
+        # re-save, the seed loader, the materializer's fresh-node branch) is
+        # stamped with its own observed_at: its activation is taken to be valid
+        # as of its observation, so the next since_last tick decays it by its
+        # real age once. Leaving the older durable stamp in place instead would
+        # treat a stale, undecayed value as fresh as of that stamp and hold it
+        # there indefinitely under repeated re-saves.
+        decay_stamp = (node.metadata or {}).get(ACTIVATION_DECAYED_AT_KEY)
+        if decay_stamp is None:
+            decay_stamp = node.temporal.observed_at.isoformat()
+        node = _with_sanitized_metadata(
+            node.model_copy(
+                update={
+                    "metadata": {
+                        k: v for k, v in (node.metadata or {}).items() if k != ACTIVATION_DECAYED_AT_KEY
+                    }
+                }
             )
-            if existing_stamp is not None:
-                cache_node = node.model_copy(
-                    update={"metadata": {**(node.metadata or {}), ACTIVATION_DECAYED_AT_KEY: existing_stamp}}
-                )
+        )
+        node = node.model_copy(
+            update={"metadata": {**(node.metadata or {}), ACTIVATION_DECAYED_AT_KEY: decay_stamp}}
+        )
+        cache_node = node
         skip_encoded_keys: set[str] = set()
         if skip_metadata_keys:
             existing_cached = self._cache.get_node_by_id(node.node_id)

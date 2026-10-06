@@ -109,11 +109,10 @@ def _common_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None)
 # (orion/substrate/activation.py::activation_decay_anchor). Stored on every
 # durable kind, since activation itself is a common property.
 #
-# Omitted from the SET clause when absent, so a writer that does not know the
-# stamp (concept_induction re-save, materializer, seed loader...) leaves the
-# durable value alone instead of nulling it. Nulling it would send the next
-# tick back to observed_at as the anchor and re-apply decay already applied --
-# the exact compounding this key exists to remove.
+# Omitted from the SET clause when absent (never written as null).
+# FalkorSubstrateStore.upsert_node() fills it with the node's own observed_at
+# before encoding when a writer doesn't carry it, so in practice every durable
+# write sets it; the omission is a backstop for any other caller of this codec.
 def _decay_stamp_properties_from_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
     raw = (metadata or {}).get(ACTIVATION_DECAYED_AT_KEY)
     if raw is None:

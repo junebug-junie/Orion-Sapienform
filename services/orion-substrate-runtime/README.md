@@ -206,7 +206,14 @@ seeds and propagates activation pressure from those `prediction_error` values.
   stored value is decayed again by full age every tick, so loss compounds (~2.2% per 30 s tick
   for a concept 23 h past `observed_at` on the default 30-day half-life). Rollback only. The Hub
   decay scheduler (`SUBSTRATE_DECAY_SCHEDULER_ENABLED`) reads and writes the same stamp, so the
-  two writers don't decay the same interval twice.
+  two writers don't decay the same interval twice. A write that doesn't carry the stamp (e.g.
+  concept_induction's re-save, the seed loader) is stamped with its own `observed_at` by
+  `FalkorSubstrateStore.upsert_node`, so its value decays by real age once instead of being
+  held fresh. Expect one visible drop per node on the first tick after deploy (no stamp yet,
+  so it decays by full age once), then a smooth curve. Known gap: `reconcile.merge_node` keeps
+  the existing stamp when an incoming record with an older `observed_at` wins the activation
+  max, so a replayed record's value is treated as fresh as of that stamp (under-decay, not
+  compounding).
 
 Only meaningful once `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true` and
 `SUBSTRATE_STORE_BACKEND=sparql` (Fuseki) are set — with the in-memory default store the

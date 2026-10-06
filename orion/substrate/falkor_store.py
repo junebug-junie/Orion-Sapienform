@@ -543,6 +543,8 @@ class FalkorSubstrateStore:
                 logger.warning("falkor_substrate_legacy_edge_invalid")
                 continue
             identity = row.get("identity_key") or self._edge_identity(edge)
+            representative_id = self._cache.get_edge_id_by_identity(str(identity))
+            representative = self._cache.get_edge_by_id(representative_id) if representative_id else None
             self._cache.upsert_edge(identity_key=str(identity), edge=edge)
             try:
                 self.upsert_edge(identity_key=str(identity), edge=edge)
@@ -557,6 +559,12 @@ class FalkorSubstrateStore:
                     edge.edge_id,
                     exc,
                 )
+
+            finally:
+                # Native rewriting must not change the lookup selected by the
+                # validated staging scan, including when rewriting fails.
+                if representative is not None and representative.edge_id < edge.edge_id:
+                    self._cache.upsert_edge(identity_key=str(identity), edge=representative)
 
     @staticmethod
     def _edge_identity(edge: SubstrateEdgeV1) -> str:

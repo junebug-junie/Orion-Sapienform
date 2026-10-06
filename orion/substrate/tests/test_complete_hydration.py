@@ -164,3 +164,45 @@ def test_bad_legacy_payload_is_not_silently_skipped():
 def test_page_size_is_bounded(size):
     with pytest.raises(ValueError):
         build(CappedClient(), hydration_page_size=size)
+
+
+@pytest.mark.parametrize("fail_rewrite", [False, True])
+def test_writable_legacy_rewrite_preserves_staged_lookup_representative(fail_rewrite):
+    from orion.substrate.falkor_codec import decode_edge
+    client = CappedClient(nodes=2, edges=1)
+    client._hydrate_edge_rows[0]["identity_key"] = "shared"
+    client._hydrate_legacy_edge_rows = [dict(payload_json=decode_edge(edge_row(9)).model_dump_json(),
+                                           identity_key="shared")]
+    original = client.graph_query
+    def query(cypher, params=None):
+        if fail_rewrite and "MERGE" in cypher:
+            raise ConnectionError("rewrite outage")
+        return original(cypher, params)
+    client.graph_query = query
+    store = build(client)
+    assert store.last_hydrate_ok
+    assert store.get_edge_id_by_identity("shared") == "edge0"
+    assert len(store._cache.snapshot().edges) == 2
+    assert store.last_scan_receipt.edge_identity_aliases == 1
+
+
+@pytest.mark.parametrize("malformed", [None, [None], [1], {"unexpected": "shape"}])
+def test_real_client_parser_cannot_hide_malformed_refresh(malformed):
+    from types import SimpleNamespace
+    from orion.graph.falkor_client import RedisGraphQueryClient
+    client = RedisGraphQueryClient.__new__(RedisGraphQueryClient)
+    rows = CappedClient()
+    class Graph:
+        fail = False
+        def query(self, cypher, params=None):
+            return SimpleNamespace(header=[], result_set=malformed if self.fail else rows.graph_query(cypher, params))
+    client._graph = Graph()
+    store = build(client)
+    assert store.last_hydrate_ok
+    old_cache, old_cursor = store._cache, store._last_snapshot_at
+    client._graph.fail = True
+    store._write_generation += 1
+    state = store.snapshot()
+    assert not state.scan_receipt.complete and state.scan_receipt.stale
+    assert store._cache is old_cache and store._last_snapshot_at == old_cursor
+    assert "malformed Falkor result" in state.scan_receipt.reason

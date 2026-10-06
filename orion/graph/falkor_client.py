@@ -188,8 +188,8 @@ def _header_field_names(header: Any) -> list[str]:
 
 
 def _rows_from_query_result(header: Any, result_set: Any) -> list[dict[str, Any]]:
-    if result_set is None:
-        return []
+    if not isinstance(result_set, (list, tuple)):
+        raise ValueError("malformed Falkor result set")
     names = _header_field_names(header)
     out: list[dict[str, Any]] = []
     for record in result_set:
@@ -200,4 +200,6 @@ def _rows_from_query_result(header: Any, result_set: Any) -> list[dict[str, Any]
                 out.append(dict(zip(names, record)))
             else:
                 out.append({"_positional": list(record)})
+        else:
+            raise ValueError("malformed Falkor result row")
     return out

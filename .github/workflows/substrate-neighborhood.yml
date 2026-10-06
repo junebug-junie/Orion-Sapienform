@@ -4,6 +4,7 @@ on:
     paths:
       - 'orion/substrate/**'
       - 'orion/graph/falkor_client.py'
+      - 'orion/graph/tests/test_falkor_client.py'
       - 'orion/core/schemas/cognitive_substrate.py'
       - 'scripts/replay_substrate_neighborhood.py'
       - 'scripts/replay_substrate_complete_scan.py'
@@ -13,6 +14,7 @@ on:
     paths:
       - 'orion/substrate/**'
       - 'orion/graph/falkor_client.py'
+      - 'orion/graph/tests/test_falkor_client.py'
       - 'orion/core/schemas/cognitive_substrate.py'
       - 'scripts/replay_substrate_neighborhood.py'
       - 'scripts/replay_substrate_complete_scan.py'
@@ -31,6 +33,7 @@ jobs:
           python -m pytest -q
           orion/substrate/tests/test_neighborhood.py
           orion/substrate/tests/test_neighborhood_backends.py
+          orion/graph/tests/test_falkor_client.py
           orion/substrate/tests/test_falkor_store.py
           orion/substrate/tests/test_complete_hydration.py
           orion/substrate/tests/test_falkor_store_hydrate_signal.py

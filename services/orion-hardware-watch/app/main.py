@@ -67,8 +67,8 @@ async def lifespan(app: FastAPI):
     await _bus.connect()
     notify = NotifyClient(_settings.notify_base_url, api_token=_settings.notify_api_token or None)
     watcher = Watcher(settings=_settings, store=_store, publish=_bus.publish, notify=notify.send, source=_source())
-    logger.info("hardware_watch_ready enabled=%s shed=%s urgent=%s test_hook=%s tick=%ss",
-                _settings.enabled, _settings.shed_enabled, _settings.urgent_enabled,
+    logger.info("hardware_watch_ready enabled=%s controller=%s shed=%s urgent=%s test_hook=%s tick=%ss",
+                _settings.enabled, _settings.heat_controller, _settings.shed_enabled, _settings.urgent_enabled,
                 _settings.test_hook_enabled, _settings.tick_sec)
     _stop.clear()
     _tasks.append(asyncio.create_task(_tick_forever()))
@@ -108,6 +108,10 @@ async def health() -> dict[str, Any]:
         "service": _settings.service_name,
         "enabled": _settings.enabled, "shed_enabled": _settings.shed_enabled,
         "urgent_enabled": _settings.urgent_enabled, "test_hook_enabled": _settings.test_hook_enabled,
+        "heat_controller": _settings.heat_controller,
+        # v2 (D2): the reflex's own current claim. Orion's learned shed (orion/autonomy/self_shed.py,
+        # D8) is refused only while this is active -- not by any open incident.
+        "reflex_shed": watcher.reflex_snapshot() if watcher else None,
         "last_tick_at": last.at.isoformat() if last and last.at else None,
         "last_tick_ok": last.ok if last else None,
         "errors": last.errors if last else {},

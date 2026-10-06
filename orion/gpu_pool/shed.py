@@ -20,7 +20,14 @@ reasons combine lives here.
 Orion's learned "shed background GPU" action (attend-to-act loop A1, amended 2026-09-29) is the
 one lower-precedence reason, ``orion_self_shed``: precedence 1, background only, set and cleared
 by ``orion/gpu_pool/orion_shed.py`` through the pool's shed RPC -- never by an incident, and the
-RPC can never name ``cooling_incident``. The reflex ``cooling_incident`` keeps precedence 0.
+RPC can only name ``orion_self_shed``.
+
+Thermal controller v2 (docs/superpowers/specs/2026-10-06-thermal-controller-redesign-design.md, D2):
+the reflex reasons are ``cabinet_hot`` (cabinet >= 34 C, or unreadable with the AC low: background
++ system) and ``cabinet_unknown`` (cabinet unreadable past grace: background only), both precedence
+0, asserted per tick by hardware-watch on ``orion:hardware:watch:reflex_shed``. ``cooling_incident``
+is the v1 reflex: it stays ONLY while ``HARDWARE_WATCH_HEAT_CONTROLLER=v1`` is the one-week rollback
+path, then it is deleted (spec "Rollback"); a v2 watcher never asserts it.
 """
 from __future__ import annotations
 
@@ -40,9 +47,16 @@ class ShedReasonSpec:
 
 
 SHED_REASONS: dict[str, ShedReasonSpec] = {
+    "cabinet_hot": ShedReasonSpec(
+        "cabinet_hot", 0, ("background", "system"),
+        "orion-hardware-watch reflex (v2): the cabinet is at/above 34 C, or unreadable while the AC reads low"),
+    "cabinet_unknown": ShedReasonSpec(
+        "cabinet_unknown", 0, ("background",),
+        "orion-hardware-watch reflex (v2): no cabinet reading past the grace window (counts as elevated)"),
+    # v1 rollback path only (HARDWARE_WATCH_HEAT_CONTROLLER=v1); delete after v2 runs clean a week.
     "cooling_incident": ShedReasonSpec(
         "cooling_incident", 0, ("background", "system"),
-        "orion-hardware-watch: the cabinet AC incident is open and the cabinet is warming (reflex)"),
+        "orion-hardware-watch (v1 rollback): the cabinet AC incident is open and the cabinet is warming"),
     # Background only, never system: system work is Orion's own cognition/execution; shedding it on a
     # routine warm afternoon is the self-DOS failure mode (design, "Background only, not system").
     "orion_self_shed": ShedReasonSpec(
@@ -50,6 +64,10 @@ SHED_REASONS: dict[str, ShedReasonSpec] = {
         "Orion's learned action: the cabinet is elevated and rising with the AC healthy; no new "
         "background grants for a bounded TTL (caps enforced by the pool)"),
 }
+
+
+# Reasons the hardware-watch reflex asserts (precedence 0). Orion's learned shed is refused while any is active.
+REFLEX_REASONS: frozenset[str] = frozenset({"cabinet_hot", "cabinet_unknown", "cooling_incident"})
 
 
 def _validate(reasons: dict[str, ShedReasonSpec]) -> None:

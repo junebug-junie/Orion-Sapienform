@@ -34,6 +34,7 @@ import gzip
 import io
 import json
 import logging
+import statistics
 import subprocess
 import sys
 from collections import Counter
@@ -188,8 +189,11 @@ class NoCooling(Watcher):
 
 
 def _settings(**kw) -> Settings:
+    # The legacy (2026-09-30 fixture) checks are the v1 rules' own regression: they stay pinned to v1
+    # while v1 remains the rollback path (spec "Rollback"). The v2 gate passes its own controller.
     base = dict(ORION_BUS_URL="redis://replay", POSTGRES_URI="replay", HARDWARE_WATCH_ENABLED=True,
-                HARDWARE_WATCH_SHED_ENABLED=True, HARDWARE_WATCH_URGENT_ENABLED=True)
+                HARDWARE_WATCH_SHED_ENABLED=True, HARDWARE_WATCH_URGENT_ENABLED=True,
+                HARDWARE_WATCH_HEAT_CONTROLLER="v1")
     base.update(kw)
     return Settings(**base)
 
@@ -348,12 +352,363 @@ def injection_stats(cooling, temps, cutoff) -> list[dict]:
     return out
 
 
+# =============================================================================================
+# Thermal controller v2: the 7-day hour-by-hour gate
+# Spec: docs/superpowers/specs/2026-10-06-thermal-controller-redesign-design.md, Acceptance check 1,
+# adapted to the APPROVED 34 C critical line (Decisions): the reflex sheds only at >= 34 C (or on
+# sensor loss); 29.5-34 C is Orion's learned shed's band (D2/D8).
+# =============================================================================================
+
+V2_FIXTURE = HERE / "fixtures" / "thermal_v2_replay.csv.gz"
+REFLEX_SHED_CHANNEL_FALLBACK = "orion:hardware:watch:reflex_shed"
+CRITICAL_C = 34.0
+ELEVATED_C = 29.5
+EMAIL_WINDOW = timedelta(hours=6)
+# The real week never reached 34 C (peak 33.5 C, 10-05 19:00). So the >= 34 C assertion is not
+# vacuous, a second replay shifts 10-05's cabinet readings up by this much (peak 34.5 C).
+HOT_DAY_SHIFT_C = 1.0
+
+
+def _reflex_channel() -> str:
+    try:
+        from orion.schemas.hardware_watch import HARDWARE_WATCH_REFLEX_SHED_CHANNEL
+        return HARDWARE_WATCH_REFLEX_SHED_CHANNEL
+    except ImportError:   # pre-v2 code: no reflex channel exists, so the board only sees incidents
+        return REFLEX_SHED_CHANNEL_FALLBACK
+
+
+class PoolBoardSink(Sink):
+    """Sink that also plays the pool's side of the shed board, the way services/orion-gpu-pool
+    consumes it: v1 cooling incidents with ``shed.requested`` set ``cooling_incident``; v2 reflex
+    signals set/clear their own reason. The board's own ``valid_until`` expiry applies."""
+
+    def __init__(self, clock):
+        super().__init__()
+        from orion.gpu_pool.shed import ShedBoard, ShedSignal
+        self._Sig = ShedSignal
+        self.board = ShedBoard()
+        self.clock = clock
+        self.reflex: list[dict] = []
+        self.reflex_channel = _reflex_channel()
+        self.notice_at: dict[int, datetime] = {}
+
+    def notify(self, req):
+        self.notice_at[id(req)] = self.clock()
+        return super().notify(req)
+
+    async def publish(self, channel, env):
+        await super().publish(channel, env)
+        now = self.clock()
+        p = env.payload
+        if channel == HARDWARE_WATCH_INCIDENT_CHANNEL and p["rule"] == "cooling":
+            shed = p.get("shed") or {}
+            if p["status"] == "open" and shed.get("requested"):
+                vu = datetime.fromisoformat(shed["valid_until"]) if shed.get("valid_until") else now + timedelta(seconds=300)
+                self.board.set(self._Sig("cooling_incident", p["incident_id"], now, min(vu, now + timedelta(seconds=900))))
+            else:
+                self.board.clear("cooling_incident", p["incident_id"])
+        elif channel == self.reflex_channel:
+            from orion.schemas.hardware_watch import HardwareWatchReflexShedV1
+            sig = HardwareWatchReflexShedV1.model_validate(p)   # the contract the pool consumes
+            self.reflex.append(p)
+            for reason in ("cabinet_hot", "cabinet_unknown"):
+                if reason != sig.reason or not sig.active:
+                    self.board.clear(reason, sig.source_id)
+            if sig.active and sig.reason:
+                self.board.set(self._Sig(sig.reason, sig.source_id, now,
+                                         min(sig.valid_until, now + timedelta(seconds=900))))
+
+
+def load_episodes(path: Path = V2_FIXTURE):
+    """The real shed episodes exported with the fixture (``e`` rows; D11's input)."""
+    from orion.hardware_watch.shed_effect import ShedEpisode
+    out = []
+    with gzip.open(path, "rt") as fh:
+        fh.readline()
+        for row in csv.reader(fh):
+            if row[0] == "e":
+                out.append(ShedEpisode(row[1], row[2], row[3], _ts(row[4]), _ts(row[5]) if row[5] else None))
+    return out
+
+
+def d11_report(temps, episodes) -> dict:
+    """D11 / Acceptance check 4: cabinet delta after each real shed, against a matched no-shed control."""
+    from orion.hardware_watch.shed_effect import control_deltas, shed_effect, summarize
+    cab = temps.get(("athena", "cabinet_temp_c"), [])
+    gpu = temps.get(("athena", "gpu_watts_total"), [])
+    rows = [shed_effect(e, cab, gpu, episodes) for e in episodes]
+    # Live sanity on the 10-04/05 hot days: can the control read both warming and cooling (not degenerate)?
+    hot = [p for p in cab if p.ts.strftime("%m-%d") in ("10-04", "10-05")]
+    ctrl = control_deltas(hot, episodes, near_c=32.0, band_c=0.5, minutes=15)
+    sanity = {"n": len(ctrl), "min": min(ctrl) if ctrl else None, "max": max(ctrl) if ctrl else None,
+              "median": round(statistics.median(ctrl), 3) if ctrl else None,
+              "share_negative": round(sum(1 for d in ctrl if d < 0) / len(ctrl), 2) if ctrl else None}
+    return {"episodes": rows, "summary": summarize(rows), "control_15m_at_32c_on_10_04_05": sanity}
+
+
+def load_v2(path: Path = V2_FIXTURE):
+    cooling: list[CoolingPoint] = []
+    temps: dict[tuple[str, str], list[TempPoint]] = {}
+    with gzip.open(path, "rt") as fh:
+        head = fh.readline()
+        since = datetime.fromisoformat(head.split("since=")[1].split()[0])
+        cutoff = datetime.fromisoformat(head.split("cutoff=")[1].split()[0])
+        for row in csv.reader(fh):
+            if row[0] == "c":
+                cooling.append(CoolingPoint(_ts(row[1]), float(row[2]) if row[2] else None, _bool(row[3]),
+                                            bool(_bool(row[4])), bool(_bool(row[5]))))
+            elif row[0] == "t" and row[4]:
+                temps.setdefault((row[1], row[2]), []).append(TempPoint(_ts(row[3]), float(row[4])))
+    cooling.sort(key=lambda p: p.ts)
+    for pts in temps.values():
+        pts.sort(key=lambda p: p.ts)
+    return since, cutoff, cooling, temps
+
+
+def _shift_day(temps, day: str, delta: float):
+    out = dict(temps)
+    out[("athena", "cabinet_temp_c")] = [
+        TempPoint(p.ts, round(p.value + delta, 2)) if p.ts.strftime("%m-%d") == day else p
+        for p in temps[("athena", "cabinet_temp_c")]]
+    return out
+
+
+def _health(w, store) -> dict:
+    """What hardware-watch's /health would say right now (the learned shed reads this)."""
+    last = w.last
+    snap = getattr(w, "reflex_snapshot", None)
+    return {"enabled": True, "last_tick_at": last.at.isoformat() if last.at else None,
+            "last_tick_ok": last.ok, "open_incidents": [
+                {"incident_id": r["incident_id"], "rule": r["rule"], "subject": r["subject"],
+                 "open_reason": r["open_reason"], "shed_requested": r.get("shed_requested"),
+                 "shed_reason": r.get("shed_reason")} for r in store.open_incidents()],
+            **({"reflex_shed": snap()} if callable(snap) else {})}
+
+
+def replay_v2(cooling, temps, start, end, **settings_kw):
+    """One pass through the real Watcher, recording per tick: the pool board's blocked map, the
+    cabinet reading, the learned shed's eligibility, and the open incidents."""
+    from orion.autonomy.cabinet_heat import read_cabinet_heat
+    from orion.autonomy.self_shed import HardwareWatchView, evaluate_shed_eligibility
+
+    clock = Clock(start)
+    store = ReplayStore(clock, cooling, temps)
+    sink = PoolBoardSink(clock)
+    s = _settings(**{"HARDWARE_WATCH_HEAT_CONTROLLER": "v2", **settings_kw})
+    w = Watcher(settings=s, store=store, publish=sink.publish, notify=sink.notify, clock=clock, run_sync=_inline)
+    ticks: list[dict] = []
+    cab_key = ("athena", "cabinet_temp_c")
+
+    async def run():
+        while clock.t <= end:
+            now = clock.t
+            await w.tick()
+            sink.board.prune(now)
+            blocked = dict(sink.board.view(now, True).blocked)
+            cab = store.temp_points(*cab_key, now - timedelta(minutes=30))
+            reading = read_cabinet_heat(cab, now)
+            hw = HardwareWatchView.from_health(_health(w, store), now=now)
+            elig = evaluate_shed_eligibility(cabinet=reading, hardware_watch=hw, background_granted=1,
+                                             background_queued=0, in_flight_episode_ids=[],
+                                             holdback_fraction=0.5, now=now)
+            ticks.append({"t": now, "blocked": blocked, "temp": reading.temp_c, "state": reading.thermal_state,
+                          "eligible": elig["eligible"], "refusals": elig["refusals"],
+                          "cooling_open": [r["open_reason"] for r in store.open_incidents() if r["rule"] == "cooling"]})
+            clock.t += TICK
+
+    asyncio.run(run())
+    return SimpleNamespace(store=store, sink=sink, ticks=ticks, watcher=w)
+
+
+def _hour(t: datetime) -> str:
+    return t.strftime("%m-%d %H")
+
+
+def thermal_v2_gate(path: Path = V2_FIXTURE) -> tuple[dict, list[str]]:
+    since, cutoff, cooling, temps = load_v2(path)
+    start = since + timedelta(minutes=70)   # the AC rule's lookback is filled
+    res = replay_v2(cooling, temps, start, cutoff)
+    fails: list[str] = []
+    by_hour: dict[str, list[dict]] = {}
+    for tk in res.ticks:
+        by_hour.setdefault(_hour(tk["t"]), []).append(tk)
+    cab = temps[("athena", "cabinet_temp_c")]
+    hour_max: dict[str, float] = {}
+    for p in cab:
+        h = _hour(p.ts)
+        hour_max[h] = max(hour_max.get(h, -1e9), p.value)
+    incidents = _incidents(res.store)
+    alerts = [n for n in res.sink.notices if n.severity == "critical"]
+
+    # 1. 10-06 00:00-04:00: no shed, no cooling incident, no email.
+    win = [tk for tk in res.ticks if datetime(2026, 10, 6, tzinfo=timezone.utc) <= tk["t"] < datetime(2026, 10, 6, 4, tzinfo=timezone.utc)]
+    shed_win = [tk for tk in win if tk["blocked"]]
+    open_win = [tk for tk in win if tk["cooling_open"]]
+    mail_win = [n for n in alerts if n.context.get("rule") == "cooling" and
+                _hour(_notice_at(res, n)) >= "10-06 00" and _hour(_notice_at(res, n)) < "10-06 04"]
+    if shed_win:
+        fails.append(f"cool night 10-06 00-04: shed active on {len(shed_win)} ticks (first {shed_win[0]['t'].isoformat()} "
+                     f"{shed_win[0]['blocked']})")
+    if open_win:
+        fails.append(f"cool night 10-06 00-04: a cooling incident open on {len(open_win)} ticks "
+                     f"({sorted(set(r for tk in open_win for r in tk['cooling_open']))})")
+    if mail_win:
+        fails.append(f"cool night 10-06 00-04: {len(mail_win)} cooling email(s)")
+
+    # 2. 10-04/10-05 hour by hour: 29.5-34 C -> no reflex shed, learned shed eligible wherever the
+    #    cabinet is elevated/hot; >= 34 C never happened on the real days (checked in 2b).
+    hot_hours = []
+    for h in sorted(by_hour):
+        if not (h.startswith("10-04") or h.startswith("10-05")):
+            continue
+        mx = hour_max.get(h)
+        if mx is None or mx < ELEVATED_C:
+            continue
+        tks = by_hour[h]
+        if mx >= CRITICAL_C:
+            hot_hours.append(h)
+            continue
+        reflex = [tk for tk in tks if tk["blocked"]]
+        warm = [tk for tk in tks if tk["state"] in ("elevated", "hot")]
+        not_elig = [tk for tk in warm if not tk["eligible"]]
+        if reflex:
+            fails.append(f"{h} (max {mx:.2f} C, below critical): reflex shed on {len(reflex)}/{len(tks)} ticks "
+                         f"{reflex[0]['blocked']}")
+        if not warm:
+            fails.append(f"{h} (max {mx:.2f} C): cabinet never read elevated/hot")
+        elif not_elig:
+            why = Counter(r for tk in not_elig for r in tk["refusals"]).most_common(2)
+            fails.append(f"{h} (max {mx:.2f} C): learned shed NOT eligible on {len(not_elig)}/{len(warm)} warm ticks {why}")
+    if hot_hours:
+        fails.append(f"real data reached >= {CRITICAL_C} C in {hot_hours}: re-check the gate's assumptions")
+
+    # 2b. >= 34 C (10-05 shifted +1.0 C): every tick at >= 34 C has cabinet_hot within one tick, and it
+    #     blocks background + system; it is gone once the cabinet is below the 33 C re-arm.
+    shifted = _shift_day(temps, "10-05", HOT_DAY_SHIFT_C)
+    d5 = datetime(2026, 10, 5, tzinfo=timezone.utc)
+    hot = replay_v2(cooling, shifted, d5, d5 + timedelta(days=1))
+    hot_ticks = [tk for tk in hot.ticks if tk["temp"] is not None and tk["temp"] >= CRITICAL_C]
+    missed = [tk for i, tk in enumerate(hot.ticks) if tk in hot_ticks and
+              hot.ticks[min(i + 1, len(hot.ticks) - 1)]["blocked"].get("system") != "cabinet_hot"]
+    cool_shed = [tk for tk in hot.ticks if tk["temp"] is not None and tk["temp"] < CRITICAL_C - 1.0 and tk["blocked"]]
+    shifted_hours = sorted({_hour(tk["t"]) for tk in hot_ticks})
+    if not hot_ticks:
+        fails.append("shifted 10-05 never reached 34 C (fixture changed?)")
+    if missed:
+        fails.append(f">= 34 C: cabinet_hot missing on {len(missed)}/{len(hot_ticks)} ticks (first {missed[0]['t'].isoformat()} "
+                     f"{missed[0]['temp']} C blocked={missed[0]['blocked']})")
+    if cool_shed:
+        fails.append(f"shifted 10-05: reflex shed below the 33 C re-arm on {len(cool_shed)} ticks "
+                     f"(first {cool_shed[0]['t'].isoformat()} {cool_shed[0]['temp']} C {cool_shed[0]['blocked']})")
+
+    # 3. 10-03 outage (AC + cabinet silent 20:44-21:14 and 21:23-22:23): an alert fires; the shed is at
+    #    most cabinet_unknown (background only); it lapses within 3 ticks of readings resuming.
+    o0, o1 = datetime(2026, 10, 3, 20, 40, tzinfo=timezone.utc), datetime(2026, 10, 3, 23, 0, tzinfo=timezone.utc)
+    out_alerts = [n for n in alerts if o0 <= _notice_at(res, n) <= o1]
+    out_ticks = [tk for tk in res.ticks if o0 <= tk["t"] <= o1]
+    too_much = [tk for tk in out_ticks if set(tk["blocked"]) - {"background"} or
+                any(r != "cabinet_unknown" for r in tk["blocked"].values())]
+    if not out_alerts:
+        fails.append("10-03 outage: no alert")
+    if too_much:
+        fails.append(f"10-03 outage: shed beyond cabinet_unknown/background on {len(too_much)} ticks "
+                     f"(first {too_much[0]['t'].isoformat()} {too_much[0]['blocked']})")
+    if not any(tk["blocked"].get("background") == "cabinet_unknown" for tk in out_ticks):
+        fails.append("10-03 outage: cabinet_unknown never shed background while the sensor was silent")
+    for resume in (datetime(2026, 10, 3, 21, 14, 39, tzinfo=timezone.utc), datetime(2026, 10, 3, 22, 23, 48, tzinfo=timezone.utc)):
+        after = [tk for tk in res.ticks if tk["t"] >= resume + 3 * TICK and tk["t"] <= resume + 10 * TICK]
+        stuck = [tk for tk in after if tk["blocked"]]
+        if stuck:
+            fails.append(f"10-03 outage: shed still active {(stuck[0]['t'] - resume).total_seconds():.0f}s after readings "
+                         f"resumed at {resume.strftime('%H:%M:%S')} ({stuck[0]['blocked']})")
+
+    # 4. gpu_heat: zero incidents for 73-80 C (only the 85 C ceiling opens one).
+    gpu_bad = [i for i in incidents if i["rule"] == "gpu_heat" and i["open_reason"] != "above_ceiling"]
+    if gpu_bad:
+        fails.append(f"gpu_heat: {len(gpu_bad)} incident(s) below the ceiling: "
+                     f"{[(i['subject'], i['open_reason'], i['opened_at'][:16]) for i in gpu_bad[:4]]}")
+    cpu_bad = [i for i in incidents if i["rule"] == "cpu_heat" and i["open_reason"] != "above_ceiling"]
+    if cpu_bad:
+        fails.append(f"cpu_heat: {len(cpu_bad)} incident(s) below the ceiling: "
+                     f"{[(i['subject'], i['open_reason'], i['opened_at'][:16]) for i in cpu_bad[:4]]}")
+
+    # 5. emails: at most one per rule+subject per 6 h (sliding).
+    sent: dict[tuple, list[datetime]] = {}
+    for n in alerts:
+        sent.setdefault((n.context.get("rule"), n.context.get("subject")), []).append(_notice_at(res, n))
+    for key, ts in sent.items():
+        ts.sort()
+        close = [(a, b) for a, b in zip(ts, ts[1:]) if b - a < EMAIL_WINDOW]
+        if close:
+            fails.append(f"emails {key}: {len(close)} pair(s) < 6 h apart (first {close[0][0].isoformat()} -> "
+                         f"{close[0][1].isoformat()})")
+    urgent = Counter((u.get("trigger"), u.get("subject")) for u in res.sink.urgent)
+
+    # 6. D5 on real history, synthetic AC death (the real week had none): on a hot afternoon a dead AC
+    #    opens low_power within the 15-min window; on the cool night it opens nothing; AC dead + cabinet
+    #    sensor dead escalates the reflex to cabinet_hot after the grace window (D1).
+    inj = []
+    for label, at, kill_cabinet, want_incident, want_reflex in (
+            ("hot_afternoon_ac_dies", datetime(2026, 10, 5, 14, 0, tzinfo=timezone.utc), False, True, None),
+            ("cool_night_ac_dies", datetime(2026, 10, 6, 1, 0, tzinfo=timezone.utc), False, False, None),
+            ("ac_and_sensor_die", datetime(2026, 10, 5, 14, 0, tzinfo=timezone.utc), True, True, "cabinet_hot")):
+        ac = inject(cooling, at, "zero")
+        tt = dict(temps)
+        if kill_cabinet:
+            tt[("athena", "cabinet_temp_c")] = [p for p in temps[("athena", "cabinet_temp_c")] if p.ts < at]
+        r = replay_v2(ac, tt, at - timedelta(minutes=70), at + timedelta(minutes=40))
+        low = [i for i in _incidents(r.store) if i["rule"] == "cooling" and i["open_reason"] == "low_power"]
+        lat = (datetime.fromisoformat(low[0]["opened_at"]) - at).total_seconds() if low else None
+        sys_hot = [tk for tk in r.ticks if tk["blocked"].get("system") == "cabinet_hot"]
+        reflex_lat = (sys_hot[0]["t"] - at).total_seconds() if sys_hot else None
+        # Sensor gone: cabinet_unknown after grace (300 s); AC confirmed low (the 15-min mean) -> cabinet_hot.
+        unk = [tk for tk in r.ticks if tk["blocked"].get("background") == "cabinet_unknown"]
+        unk_lat = (unk[0]["t"] - at).total_seconds() if unk else None
+        ok = (bool(low) == want_incident and (lat is None or lat <= 900 + 30)
+              and (want_reflex is None) == (reflex_lat is None) and (reflex_lat is None or reflex_lat <= 900 + 30)
+              and (not kill_cabinet or (unk_lat is not None and unk_lat <= 300 + 60)))
+        inj.append({"case": label, "at": at.isoformat(), "low_power_after_sec": lat,
+                    "cabinet_hot_after_sec": reflex_lat, "cabinet_unknown_after_sec": unk_lat, "ok": ok})
+        if not ok:
+            fails.append(f"injection {label}: low_power after {lat}s (want {'<=930s' if want_incident else 'none'}), "
+                         f"cabinet_hot after {reflex_lat}s (want {want_reflex or 'none'})")
+
+    n = len(res.ticks)
+    share = lambda pred: round(100 * sum(1 for tk in res.ticks if pred(tk)) / n, 2)  # noqa: E731
+    report = {
+        "fixture": str(path.name), "since": since.isoformat(), "cutoff": cutoff.isoformat(), "ticks": n,
+        "calibration_pct_of_ticks": {
+            "temp_ge_29_5": share(lambda tk: tk["temp"] is not None and tk["temp"] >= ELEVATED_C),
+            "temp_ge_32": share(lambda tk: tk["temp"] is not None and tk["temp"] >= 32.0),
+            "temp_ge_34": share(lambda tk: tk["temp"] is not None and tk["temp"] >= CRITICAL_C),
+            "reflex_shed_any": share(lambda tk: bool(tk["blocked"])),
+            "learned_shed_eligible": share(lambda tk: tk["eligible"]),
+        },
+        "incidents": incidents,
+        "alerts": [(n.context.get("rule"), n.context.get("subject"), _notice_at(res, n).isoformat()) for n in alerts],
+        "urgent_requests": dict(Counter(f"{k[0]}:{k[1]}" for k in urgent.elements())),
+        "reflex_signals": len(res.sink.reflex),
+        "ac_death_injection": inj,
+        "d11_shed_effect": d11_report(temps, load_episodes(path)),
+        "shifted_10_05": {"hot_ticks": len(hot_ticks), "hours_ge_34": shifted_hours,
+                          "reflex_ticks": sum(1 for tk in hot.ticks if tk["blocked"])},
+    }
+    return report, fails
+
+
+def _notice_at(res, n) -> datetime:
+    """Notices carry no timestamp; the sink stamps them on arrival (PoolBoardSink.notify)."""
+    return res.sink.notice_at[id(n)]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--export", action="store_true", help="refresh the fixture from production Postgres")
     ap.add_argument("--cutoff", help="export cutoff (UTC ISO); default now rounded down to the hour")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--verbose", action="store_true", help="show the watcher's own transition logs")
+    ap.add_argument("--gate-only", action="store_true", help="only the thermal-v2 7-day gate")
+    ap.add_argument("--legacy-only", action="store_true", help="only the 2026-09-30 v1-rules checks")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO if args.verbose else logging.ERROR)
     if not args.verbose:
@@ -363,6 +718,14 @@ def main() -> int:
                   else datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0))
         export(cutoff.astimezone(timezone.utc))
         return 0
+
+    gate_report, gate_fails = (None, []) if args.legacy_only else thermal_v2_gate()
+    if args.gate_only:
+        if args.json:
+            print(json.dumps({"thermal_v2_gate": gate_report, "failures": gate_fails}, indent=2, default=str))
+        else:
+            _print_gate(gate_report, gate_fails)
+        return 0 if not gate_fails else 1
 
     cutoff, cooling, temps = load()
     s = _settings(HARDWARE_WATCH_HEAT_NODES="", HARDWARE_WATCH_GPU_NODES="")
@@ -439,6 +802,8 @@ def main() -> int:
     for r in inj:
         if not r["ok"]:
             failures.append(f"injected {r['mode']} at {r['at']}: want {r['want']}, got {r['got']} after {r['latency_sec']}s")
+    report["thermal_v2_gate"] = gate_report
+    failures += [f"v2 gate: {f}" for f in gate_fails]
     report["failures"] = failures
 
     if args.json:
@@ -468,8 +833,36 @@ def main() -> int:
         for r in report["fault_injection"]:
             print(f"  {r['at']} {r['mode']:8s} -> {r['got']} after {r['latency_sec']}s shed={r['shed_reason']} "
                   f"{'ok' if r['ok'] else 'FAIL'}")
+        if gate_report is not None:
+            _print_gate(gate_report, [])
         print("PASS" if not failures else "FAIL:\n  " + "\n  ".join(failures))
     return 0 if not failures else 1
+
+
+def _print_gate(rep: dict | None, fails: list[str]) -> None:
+    if rep is None:
+        return
+    print(f"Thermal v2 gate ({rep['fixture']}, {rep['since']} -> {rep['cutoff']}, {rep['ticks']} ticks):")
+    print(f"  calibration % of ticks: {rep['calibration_pct_of_ticks']}")
+    print(f"  incidents: {len(rep['incidents'])}; alerts: {rep['alerts']}; urgent: {rep['urgent_requests']}; "
+          f"reflex signals sent: {rep['reflex_signals']}")
+    for i in rep["incidents"]:
+        print(f"    {i['rule']}:{i['subject']} {i['open_reason']} {i['opened_at'][:19]} ({i['minutes']} min)")
+    print(f"  shifted 10-05 (+{HOT_DAY_SHIFT_C} C): {rep['shifted_10_05']}")
+    d11 = rep.get("d11_shed_effect") or {}
+    print(f"  D11 shed effect: {d11.get('summary')}; control at 32 C (10-04/05): "
+          f"{d11.get('control_15m_at_32c_on_10_04_05')}")
+    for e in d11.get("episodes", []):
+        print(f"    {e['source']} {e['reason']} {e['start'][:16]} ({e['minutes']} min): cabinet {e['cabinet_c_start']} -> "
+              f"+15 {e['cabinet_c_plus15']} / +30 {e['cabinet_c_plus30']}; effect vs control 15m "
+              f"{e['effect_c_15m']} (n={e['control_n_15m']}), 30m {e['effect_c_30m']}; gpu W {e['gpu_w_before']} -> "
+              f"{e['gpu_w_first15m']}")
+    for r in rep.get("ac_death_injection", []):
+        print(f"  inject {r['case']:22s} at {r['at'][:16]}: low_power after {r['low_power_after_sec']}s, "
+              f"cabinet_unknown after {r['cabinet_unknown_after_sec']}s, cabinet_hot after {r['cabinet_hot_after_sec']}s "
+              f"{'ok' if r['ok'] else 'FAIL'}")
+    if fails:
+        print("FAIL:\n  " + "\n  ".join(fails))
 
 
 if __name__ == "__main__":

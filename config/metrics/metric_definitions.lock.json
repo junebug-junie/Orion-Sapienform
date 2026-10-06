@@ -1,11 +1,11 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 692,
+  "metric_count": 693,
   "_last_change": {
     "change_count": 1,
     "high_severity_count": 0,
     "changes": [
-      "medium added metric://bus_channel/orion-harness-governor/orion:harness:run:draft_preview"
+      "medium added metric://bus_channel/orion-hardware-watch/orion:hardware:watch:reflex_shed"
     ]
   },
   "definitions": {
@@ -1758,6 +1758,17 @@
     },
     "metric://bus_channel/orion-hardware-watch/orion:hardware:watch:incident": {
       "schema_id": "HardwareWatchIncidentV1",
+      "all_producers": [
+        "orion-hardware-watch"
+      ],
+      "declared_consumers": [
+        "orion-gpu-pool"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-hardware-watch/orion:hardware:watch:reflex_shed": {
+      "schema_id": "HardwareWatchReflexShedV1",
       "all_producers": [
         "orion-hardware-watch"
       ],

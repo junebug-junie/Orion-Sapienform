@@ -327,13 +327,15 @@ class OrionShedController:
         return OrionShedRecord.from_row(row) if row else None
 
     # --- reflex ------------------------------------------------------------------------
-    async def preempt_by_reflex(self, incident_id: str) -> bool:
-        """A cabinet AC incident opened: the learned action's premise (AC healthy) is gone."""
+    async def preempt_by_reflex(self, source: str) -> bool:
+        """The hardware-watch reflex started shedding (``source``: ``<reason>:<source_id>``, e.g.
+        ``cabinet_hot:hardware-watch:cabinet`` or v1 ``cooling_incident:<incident_id>``): the reflex
+        now covers background, so the learned shed ends."""
         rec = self.active
         if rec is None:
             return False
-        rec.detail = {**rec.detail, "preempted_by_incident": incident_id}
-        await self._end(rec, "preempted_by_reflex", f"cabinet_ac_incident:{incident_id}")
+        rec.detail = {**rec.detail, "preempted_by_reflex": source}
+        await self._end(rec, "preempted_by_reflex", f"reflex:{source}"[:200])
         return True
 
     # --- tick --------------------------------------------------------------------------

@@ -119,6 +119,6 @@ Deploy from the primary checkout on main after merge, not from this worktree.
 
 ## PR link
 
-See the PR page.
+https://github.com/junebug-junie/Orion-Sapienform/pull/2511
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

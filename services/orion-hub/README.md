@@ -1604,7 +1604,7 @@ tab (`GET /concept-atlas`, backed by `GET /api/substrate/concepts/summary` and `
 | Stage | Where | Flag (default) |
 |---|---|---|
 | Seed golden concepts at startup | `api_routes.py::seed_golden_concepts_at_startup()` | `SUBSTRATE_CONCEPT_SEED_ENABLED` (`true`) |
-| Live activation decay | `api_routes.py::decay_concept_activations()`, ticked by `main.py`'s `substrate_decay_task` | `SUBSTRATE_DECAY_SCHEDULER_ENABLED` (`true`), interval `SUBSTRATE_DECAY_SCHEDULER_INTERVAL_SEC` (`120`) |
+| Live activation decay | `api_routes.py::decay_concept_activations()`, ticked by `main.py`'s `substrate_decay_task` | `SUBSTRATE_DECAY_SCHEDULER_ENABLED` (`true`), interval `SUBSTRATE_DECAY_SCHEDULER_INTERVAL_SEC` (`120`); `SUBSTRATE_DYNAMICS_DECAY_MODE` (`since_last`) decays each concept only since its `activation_decayed_at` stamp, shared with orion-substrate-runtime's dynamics tick (`legacy` = old per-interval decay, rollback only) |
 | Manual topic-foundry ingestion | `POST /api/substrate/concepts/ingest-topic-foundry` (`concept_atlas_routes.py`) | operator-triggered, no flag |
 | Typed relation classification (supports/contradicts/refines) | `concept_atlas_routes.py::_classify_typed_concept_relations()`, called from the ingestion route above | runs automatically as part of ingestion, capped at `_RELATION_CLASSIFICATION_PAIR_CAP=10` pairs/call — see `services/orion-hub/scripts/concept_relation_classifier.py` for the real LLM classifier |
 | Autonomous scheduled training + ingestion | `main.py`'s `substrate_topic_foundry_scheduler_task`, calling `concept_atlas_routes.py::trigger_topic_foundry_training_run()` then the ingestion route above | `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED` (**`true`** — flipped on live 2026-07-17; shipped disabled by default, real compute cost), interval `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC` (`86400`), window `SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS` (`30`) |
@@ -1843,6 +1843,28 @@ The tab anchors keep their ids and `data-hash-target`, so `app.js` and the `*_ta
 Topic Studio relies on the Topic Foundry `/capabilities` endpoint to configure supported segmentation modes and defaults, uses `/runs?limit=20` to populate the recent run picker, and the segments list uses `include_snippet=true&include_bounds=true` with `limit/offset` for faster previews and paging.
 
 ---
+
+## Draft-first chat replies (spec L8)
+
+`HUB_UNIFIED_DRAFT_FIRST_ENABLED=true` (default): on Unified Chat turns the
+Hub shows Orion's draft as soon as the reply writer finishes, while the
+finalize judge is still checking it. If the judge rewrites it, the message is
+replaced in place and marked "revised: <reason>"; if not, the draft is swapped
+for the identical final message with no mark. Sensitive turns (boundary,
+trust rupture, repair pressure) are never shown early. `false` restores
+judge-before-display for every turn.
+
+- Wire: governor publishes `HarnessRunDraftPreviewV1` on
+  `orion:harness:run:draft_preview` (`CHANNEL_HARNESS_RUN_DRAFT_PREVIEW`);
+  `HarnessStepRelay` subscribes alongside the step channel and queues it to
+  the turn; `run_unified_turn` sends `{"type": "draft_preview", "draft_text"}`
+  and annotates the `final` frame with `replaces_draft`, `revised`,
+  `revised_reason`. Browser: `static/js/draft-revision.js`.
+- Only the final text is persisted (chat history, memory, TTS); the draft
+  never is, so a revision cannot create a duplicate turn.
+- Measure: `unified_turn_first_visible corr=... kind=draft_preview|final
+  elapsed_ms=...`, `unified_turn_final_visible`, `unified_turn_revision
+  corr=... reason=...` in Hub logs.
 
 ## Voice debugging
 

@@ -27,11 +27,32 @@ sandbox checkout is already a supported, pre-existing case, not a new risk this 
 | `CHANNEL_HARNESS_RUN_ARTIFACT` | `orion:harness:run:artifact` | Audit publish after each run |
 | `CHANNEL_FINALIZE_APPRAISAL_REQUEST` | `orion:substrate:finalize_appraisal:request` | 5a draft molecule RPC |
 | `CHANNEL_POST_TURN_CLOSURE` | `orion:substrate:post_turn_closure` | Step 7 learning closure |
+| `CHANNEL_HARNESS_RUN_DRAFT_PREVIEW` | `orion:harness:run:draft_preview` | Draft-first display: grounded draft published before the finalize judge when the request sets `draft_preview` (see below) |
 
 Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
 `HEARTBEAT_INTERVAL_SEC` (default 10s), independent of the request/cancel bus workers above.
 `GET /health` reports `lane_chat_alive` / `lane_agent_alive` so a dispatch loop that dies
 silently is visible immediately rather than inferred later from turns going unanswered.
+
+## Draft-first display (spec L8)
+
+When the Hub sets `HarnessRunRequestV1.draft_preview` (interactive chat only,
+Hub flag `HUB_UNIFIED_DRAFT_FIRST_ENABLED`), the governor publishes the motor
+draft, after the same deterministic reading-receipt grounding finalize applies
+(no LLM call), as `HarnessRunDraftPreviewV1` on
+`orion:harness:run:draft_preview`, then runs the finalize judge as usual.
+
+- Held back (judge-first, as before) when the stance marks the turn sensitive:
+  boundary register, trust rupture at or above the defer threshold, repair
+  pressure at or above the quick-lane ceiling, or a non-default repair overlay
+  (`orion/harness/finalize.py::sensitive_turn_reason`, shared with the quick
+  lane). Also held for structured (reading) output and cut-short drafts.
+- `HarnessRunV1.draft_preview_text` records exactly what was published and
+  `draft_preview_held_reason` why not, so `harness_turn_trace.run_artifact`
+  holds both what Juniper saw first and the `final_text` it became.
+- Logs: `harness_draft_preview_published` / `_held` / `_revised` with `corr=`.
+- Nothing persists the draft as a turn; chat history and memory read
+  `final_text` only.
 
 ## RPC-health publish (on by default)
 
@@ -156,6 +177,22 @@ The unified-turn introspection experiment for these flags lives at `scripts/run_
 `HARNESS_FCC_SKIP_PERMISSIONS=true` (default in compose) makes `orion/fcc/claude_spawn.py::claude_permission_argv()` pass full-auto-approve permissions to `claude -p` — `--dangerously-skip-permissions` on the host, `--permission-mode bypassPermissions` when running as root (this container always does; no `USER` directive), requiring the Dockerfile's `ENV IS_SANDBOX=1`. See that function's docstring for why (Claude Code's own root-sandbox gate, and why the previous `dontAsk` mode was silently deny-by-default rather than auto-approve — confirmed live 2026-08-13). Otherwise Bash/MCP steps stall or get silently denied with no operator in Orion mode.
 
 **This is genuinely full, unprompted Bash/tool access, not a narrowed grant** — know what the container can reach before relying on it. This container mounts `/var/run/docker.sock` (host Docker daemon) and `${HOME}/.ssh:/root/.ssh:ro` (the operator's real SSH key, for `git push`) — both real capabilities, not repo-write-only. The two things standing between a bad turn and real damage are (1) `HARNESS_FCC_WORKSPACE`'s disposable sandbox checkout, whose only path back to this repo is `git push` to a non-main branch gated by GitHub branch protection (`orion/fcc/sandbox_sync.py`), and (2) `--setting-sources user,local`, which drops this repo's own project-level hooks (including `destructive_git_guard`) for FCC turns — deliberately, since the read-only repo mount already covers what that hook protects, but it means no repo-committed hook gates a root FCC Bash call; whatever gates it must live in the operator-managed `harness-claude-config` volume instead (not checked by this repo or its tests).
+
+### Chat replies do not read Claude Code auto-memory
+
+Claude Code keeps an "auto-memory" notes folder per working directory and loads it into every session. Every FCC turn runs in the same sandbox checkout, so Hub chat replies were reading notes that curiosity, urgent, self-inquiry and mutation runs wrote there, with no review or provenance.
+
+`HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY=true` (default, shipped on) spawns `claude` with `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` for chat-reply turns only: requests whose `utterance_origin` is `juniper` (`orion/harness/runner.py::is_chat_reply_request`). Investigation turns (`utterance_origin=orion`) and other callers (outreach, collapse mirror, reading) keep today's behavior. Nothing is deleted. Rollback: set it to `false` and restart. Spec: `docs/superpowers/specs/2026-10-06-unified-turn-latency-design.md`, L7.
+
+Proof query (read-only; phrase leak in Hub chat replies over 7 days):
+
+```sql
+select count(*) turns,
+  count(*) filter (where t.run_artifact->>'final_text' ~* '(prediction[ _-]?error|bus[ _-]?synaptic)') turns_with_phrase
+from harness_turn_trace t
+join chat_history_log c on c.correlation_id = t.correlation_id and c.source = 'hub_orion'
+where t.created_at > now() - interval '7 days';
+```
 
 ### Stream stall detection
 

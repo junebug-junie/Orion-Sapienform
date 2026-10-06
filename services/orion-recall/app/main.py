@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager
 import logging
 
@@ -25,31 +24,10 @@ from .storage.falkor_entity_relatedness import (
     fetch_related_entities,
 )
 from .worker import handle_recall, process_recall, persist_decision_async, set_recall_pg_pool
-from .substrate_store import warm_substrate_store
 
 from orion.core.contracts.recall import RecallQueryV1
 
 logger = logging.getLogger("orion-recall.main")
-
-
-def _start_substrate_store_warmup() -> "asyncio.Task | None":
-    """Kick off the substrate-store warmup as a background task.
-
-    Only when the concept_region collector can actually use the store
-    (RECALL_PCR_ENABLED and RECALL_CONCEPT_REGION_ENABLED). Not awaited, so
-    it never delays boot; warm_substrate_store never raises and bounds its
-    own wait.
-    """
-    if not (
-        bool(getattr(settings, "RECALL_PCR_ENABLED", False))
-        and bool(getattr(settings, "RECALL_CONCEPT_REGION_ENABLED", False))
-    ):
-        return None
-    try:
-        return asyncio.ensure_future(warm_substrate_store())
-    except Exception as exc:
-        logger.warning("recall_substrate_store_warmup_not_started error=%s", exc)
-        return None
 
 
 def _check_rdf_endpoint() -> None:
@@ -80,10 +58,6 @@ async def lifespan(app: FastAPI):
     except Exception:
         if settings.RECALL_RDF_ENDPOINT_URL:
             logger.info("recall_graph_backend_selected backend=sparql query_url=%s", settings.RECALL_RDF_ENDPOINT_URL)
-
-    # First purposeful recall after a restart used to pay the cold Falkor
-    # hydration (6.25s measured live 2026-09-30) inside the request.
-    app.state.substrate_store_warmup = _start_substrate_store_warmup()
 
     rabbit = Rabbit(
         chassis_cfg(),
@@ -131,9 +105,6 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
         set_recall_pg_pool(None)
-    warmup = getattr(app.state, "substrate_store_warmup", None)
-    if warmup is not None and not warmup.done():
-        warmup.cancel()
     await rabbit.stop()
 
 

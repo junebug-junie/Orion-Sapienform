@@ -272,6 +272,69 @@ def format_tool_execution_digest(receipts: list[GrammarReceiptV1] | None) -> str
     )
 
 
+def sensitive_turn_reason(
+    *,
+    thought: ThoughtEventV1,
+    repair_overlay: HarnessRepairOverlayV1,
+) -> str | None:
+    """Return why this turn is identity/boundary-sensitive, else None.
+
+    Uses only inputs known before the draft exists (the stance thought and the
+    repair overlay), so callers can decide before finalize starts. Shared by
+    quick_lane_block_reason (the judge must run) and draft_preview_hold_reason
+    (the draft must not be shown before the judge).
+    """
+    repair = thought.repair_pressure_level
+    if repair is not None and repair >= REPAIR_PRESSURE_MAX:
+        return "repair_pressure_level"
+
+    trust = thought.trust_rupture_score
+    if trust is not None and trust >= TRUST_RUPTURE_DEFER_THRESHOLD:
+        return "trust_rupture_score"
+
+    if thought.boundary_register:
+        return "boundary_register"
+
+    if repair_overlay.mode != "default":
+        return "repair_overlay_mode"
+
+    return None
+
+
+def draft_preview_hold_reason(
+    *,
+    thought: ThoughtEventV1,
+    repair_overlay: HarnessRepairOverlayV1,
+    preserve_structured_output: bool = False,
+    cut_short: bool = False,
+) -> str | None:
+    """Why the draft must wait for the judge (spec L8); None means show it now.
+
+    Sensitive turns keep judge-before-display. Structured (machine) output and
+    cut-short drafts are not chat prose a person should see unjudged.
+    """
+    if preserve_structured_output:
+        return "structured_output"
+    if cut_short:
+        return "cut_short"
+    sensitive = sensitive_turn_reason(thought=thought, repair_overlay=repair_overlay)
+    if sensitive is not None:
+        return f"sensitive:{sensitive}"
+    return None
+
+
+def draft_preview_display_text(
+    draft_text: str,
+    reading_receipts: list[ReadingRecommendationOutcomeV1] | None,
+) -> str:
+    """The draft after the same deterministic grounding finalize applies.
+
+    No LLM call. When the judge leaves the draft alone, the chain's final text
+    is exactly this string, so an unrevised turn shows identical text twice.
+    """
+    return enforce_reading_receipt_grounding(draft_text, list(reading_receipts or []))
+
+
 def quick_lane_block_reason(
     *,
     substrate_appraisal: SubstrateFinalizeAppraisalV1,
@@ -292,19 +355,9 @@ def quick_lane_block_reason(
     if substrate_appraisal.open_loop_pressure >= OPEN_LOOP_PRESSURE_MAX:
         return "open_loop_pressure"
 
-    repair = thought.repair_pressure_level
-    if repair is not None and repair >= REPAIR_PRESSURE_MAX:
-        return "repair_pressure_level"
-
-    trust = thought.trust_rupture_score
-    if trust is not None and trust >= TRUST_RUPTURE_DEFER_THRESHOLD:
-        return "trust_rupture_score"
-
-    if thought.boundary_register:
-        return "boundary_register"
-
-    if repair_overlay.mode != "default":
-        return "repair_overlay_mode"
+    sensitive = sensitive_turn_reason(thought=thought, repair_overlay=repair_overlay)
+    if sensitive is not None:
+        return sensitive
 
     # See _PERCEPTION_INTENT_RE docstring: a substrate-calm turn can still
     # explicitly ask Orion to look at something, and the tool-recall loop

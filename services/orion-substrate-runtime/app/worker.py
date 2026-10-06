@@ -2230,7 +2230,10 @@ class BiometricsSubstrateWorker:
         try:
             from orion.substrate.dynamics import SubstrateDynamicsEngine
 
-            engine = SubstrateDynamicsEngine(store=store)
+            engine = SubstrateDynamicsEngine(
+                store=store,
+                decay_mode=self._settings.dynamics_decay_mode,
+            )
             result = engine.tick(now=datetime.now(timezone.utc))
             logger.info(
                 "substrate_dynamics_tick_completed activation_updates=%d "

@@ -803,6 +803,11 @@ async def startup_event():
 
             harness_step_relay = HarnessStepRelay(
                 channel=settings.CHANNEL_HARNESS_RUN_STEP,
+                draft_preview_channel=(
+                    settings.CHANNEL_HARNESS_RUN_DRAFT_PREVIEW
+                    if settings.HUB_UNIFIED_DRAFT_FIRST_ENABLED
+                    else None
+                ),
                 last_seen_ttl_sec=settings.HUB_HARNESS_STEP_RELAY_LIVENESS_TTL_SEC,
                 last_seen_max_entries=settings.HUB_HARNESS_STEP_RELAY_LIVENESS_MAX_ENTRIES,
             )

@@ -22,6 +22,13 @@ on:
 jobs:
   neighborhood:
     runs-on: ubuntu-latest
+    services:
+      # Throwaway FalkorDB for the direct-read equivalence lane: the concept
+      # ranking and edge cut run in Cypher, so a fake client cannot prove them.
+      falkordb:
+        image: falkordb/falkordb:latest
+        ports:
+          - 6379:6379
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,10 +46,17 @@ jobs:
           orion/substrate/tests/test_falkor_store_hydrate_signal.py
           orion/substrate/tests/test_dynamics.py
           orion/substrate/tests/test_dynamics_falkor_routed.py
+          orion/substrate/tests/test_dynamics_decay_since_last.py
           orion/substrate/tests/test_graphdb_store.py
           orion/substrate/tests/test_routed_store.py
           orion/substrate/tests/test_phase16_query_planning.py
+      - name: Direct concept-region reads equal the hydrated cache (real FalkorDB)
+        env:
+          ORION_TEST_FALKOR_URI: redis://localhost:6379
+        run: python -m pytest -q -rs orion/substrate/tests/test_falkor_direct.py
       - name: Hub-heavy budget and coverage eval
         run: python -m orion.substrate.evals.run_neighborhood_eval
       - name: Complete scan and dynamics equivalence eval
         run: python -m orion.substrate.evals.run_complete_hydration_eval
+      - name: Activation decay since-last-tick eval (no compounding)
+        run: python -m orion.substrate.evals.run_decay_since_last_eval

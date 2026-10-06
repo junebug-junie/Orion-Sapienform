@@ -54,8 +54,19 @@ def test_dynamics_tick_calls_engine_against_shared_store(monkeypatch):
         worker._dynamics_tick()  # second call must reuse the cached store
 
     build.assert_called_once()
-    engine_cls.assert_called_with(store=fake_store)
+    engine_cls.assert_called_with(store=fake_store, decay_mode="since_last")
     assert worker._substrate_graph_store is fake_store
+
+
+def test_dynamics_tick_passes_legacy_decay_mode_rollback(monkeypatch):
+    monkeypatch.setenv("SUBSTRATE_DYNAMICS_DECAY_MODE", "legacy")
+    worker = _make_worker(monkeypatch, dynamics_tick_enabled=True)
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=MagicMock(),
+    ), patch("orion.substrate.dynamics.SubstrateDynamicsEngine") as engine_cls:
+        worker._dynamics_tick()
+    assert engine_cls.call_args.kwargs["decay_mode"] == "legacy"
 
 
 def test_dynamics_tick_fails_open_on_store_init_error(monkeypatch):

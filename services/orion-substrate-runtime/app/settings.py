@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     grammar_poll_interval_sec: float = Field(5.0, alias="GRAMMAR_POLL_INTERVAL_SEC")
     enable_dynamics_tick: bool = Field(False, alias="SUBSTRATE_DYNAMICS_TICK_ENABLED")
     dynamics_tick_interval_sec: float = Field(30.0, alias="SUBSTRATE_DYNAMICS_TICK_INTERVAL_SEC")
+    # since_last: decay stored activation only by the time since its last decay
+    # (metadata activation_decayed_at). legacy: pre-2026-10-06 compounding decay
+    # by full age every tick -- rollback only. Validated in
+    # orion.substrate.activation.normalize_decay_mode (unknown value raises).
+    dynamics_decay_mode: str = Field("since_last", alias="SUBSTRATE_DYNAMICS_DECAY_MODE")
     enable_episodic_tick: bool = Field(False, alias="SUBSTRATE_EPISODIC_TICK_ENABLED")
     episodic_tick_interval_sec: float = Field(300.0, alias="SUBSTRATE_EPISODIC_TICK_INTERVAL_SEC")
     # bus_synaptic_prediction_error: own explicit flag, not piggybacked on

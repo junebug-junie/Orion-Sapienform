@@ -54,8 +54,8 @@ _NODE_FRAGMENT_ID_PREFIX = "concept_region:node:"
 # Search breadth for the label-match pass. `read_concept_region` ranks and
 # truncates by salience/confidence, so a low-salience concept could be cut
 # before we ever get to compare its label against the turn text unless we
-# ask for a generous slice up front. This is still a single bounded call
-# into the store's existing region-read API -- no new traversal method.
+# ask for a generous slice up front. On Falkor this ranking runs in the
+# database (orion/substrate/falkor_direct.py); only matched rows come back.
 _DEFAULT_SEARCH_LIMIT_NODES = 500
 _DEFAULT_SEARCH_LIMIT_EDGES = 500
 
@@ -156,7 +156,19 @@ def fetch_concept_region_fragment(
     turn_text_lower = turn_text.lower()
 
     try:
-        region = store.read_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
+        # A store that can apply the label filter itself (the hydration-free
+        # Falkor handle, orion/substrate/falkor_direct.py) only fetches full
+        # rows for what matches. Same result as filtering the full slice
+        # below -- the filter below is idempotent on it.
+        matching = getattr(store, "read_concept_region_matching", None)
+        if callable(matching):
+            region = matching(
+                keep_label=lambda label: _label_matches(label, turn_text_lower),
+                limit_nodes=limit_nodes,
+                limit_edges=limit_edges,
+            )
+        else:
+            region = store.read_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
     except Exception as exc:  # noqa: BLE001 - collector must degrade, never raise
         logger.debug("concept_region collector: store read failed: %s", exc)
         return []
@@ -202,15 +214,11 @@ def reinforce_matched_concepts(
     module's read-side conventions. Returns the count of nodes actually
     reinforced.
 
-    Deliberately does not call `store.snapshot()`. On `FalkorSubstrateStore`,
-    `snapshot()` can trigger a full, currently-unbounded re-hydrate query
-    whenever the write generation has moved since the last call (see
-    `orion/substrate/falkor_store.py`) -- fine for Hub's 120s decay-scheduler
-    cadence, but this function runs on a live per-turn hot path where that
-    cost compounds with every reinforcing turn. `get_node_by_id()` and
-    `get_identity_key_by_node_id()` both read straight from the store's
-    in-process cache with no such refresh cost (confirmed by reading
-    `FalkorSubstrateStore`'s own implementation of both).
+    Never calls `store.snapshot()` (a complete graph read). In the live
+    service `store` is `FalkorDirectConceptStore`
+    (`orion/substrate/falkor_direct.py`), which has no snapshot at all:
+    `get_node_by_id()` and `get_identity_key_by_node_id()` are single-node
+    `GRAPH.RO_QUERY` reads and `upsert_node()` is one `MERGE ... SET`.
     """
     node_ids = {str(node_id) for node_id in matched_node_ids if node_id}
     if not node_ids or store is None:

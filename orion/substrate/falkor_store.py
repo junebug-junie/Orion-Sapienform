@@ -89,9 +89,9 @@ class FalkorSubstrateStoreConfig:
     # bounding staleness from writes this process can't see (a different
     # process's write, or a direct external mutation like an operator
     # running Cypher DELETE by hand). Without any periodic refresh, a direct
-    # external deletion is invisible to this cache forever, AND the decay
-    # scheduler (services/orion-hub/scripts/api_routes.py::
-    # decay_concept_activations) durably re-upserts every node in every
+    # external deletion is invisible to this cache forever, AND a decay
+    # writer (then the Hub's decay_concept_activations, removed 2026-10-06;
+    # now SubstrateDynamicsEngine.tick()) durably re-upserts nodes from every
     # snapshot() it reads on every tick -- so a stale cache doesn't just
     # show old data, it actively resurrects deleted durable data on the next
     # tick. Confirmed live: this exact resurrection loop was observed and
@@ -318,6 +318,19 @@ class FalkorSubstrateStore:
         # threads. Held only for in-memory work (never across a Falkor round
         # trip), so a 4 s rehydrate never blocks a writer for 4 s.
         self._cache_lock = threading.RLock()
+        # Local writes that land while a hydrate scan is in flight. Each write
+        # is durable in Falkor before it is journaled, so the scan may or may
+        # not have read it; replaying it onto the staged cache at swap time
+        # makes the swapped cache include it either way. Before 2026-10-06 the
+        # scan aborted on any such write instead ("local mutation during scan;
+        # retry required"), and orion-substrate-runtime writes from several
+        # tick loops at once, so ~1 in 2 refreshes aborted and ticks ran on a
+        # stale cache. None = no scan in flight. Guarded by _cache_lock.
+        self._scan_journal: list[tuple[str, Any, Any, frozenset[str] | None]] | None = None
+        self.hydrate_ok_total = 0
+        self.hydrate_failed_total = 0
+        self.hydrate_replayed_writes_total = 0
+        self._hydrate_stats_logged_at: float | None = None
         self.last_scan_receipt: CompleteScanReceipt | None = None
         self._last_successful_refresh_at: str | None = None
         if hydrate:
@@ -353,11 +366,14 @@ class FalkorSubstrateStore:
 
         Object IDs are scan cursors, never business identities. Concurrent
         external mutation can produce a mixed-time view; detected missing
-        endpoints or local writes reject the scan. Legacy rewrite remains a
+        endpoints reject the scan. Local writes made during the scan are
+        journaled and replayed onto the staged cache at swap (see
+        ``_scan_journal``), so they never abort it. Legacy rewrite remains a
         best-effort compatibility step after validation, never in read-only mode.
         """
         started = datetime.now(timezone.utc).isoformat()
-        generation = self._write_generation
+        with self._cache_lock:
+            self._scan_journal = []
         progress = {"pages": 0, "edge_identity_aliases": 0}
         fresh = InMemorySubstrateGraphStore()
         legacy_nodes, legacy_edges = [], []
@@ -429,17 +445,28 @@ class FalkorSubstrateStore:
             ):
                 add_edge(row, SubstrateEdgeV1.model_validate_json(row["payload_json"]))
                 legacy_edges.append(row)
-            # Generation check and cache swap are one atomic step under
-            # _cache_lock: a local write landing between a bare check and the
-            # swap would go into the old cache and then be dropped by the swap,
-            # handing the caller a snapshot missing that write.
+            # Replay and swap are one atomic step under _cache_lock: every
+            # local write since the scan began is in the journal, and no new
+            # one can land until the swap is done, so the swapped cache holds
+            # the scan plus every local write and is current as of
+            # _write_generation. A write landing between a bare replay and the
+            # swap would otherwise go into the old cache and be dropped.
             with self._cache_lock:
-                if self._write_generation != generation:
-                    raise ValueError("local mutation during scan; retry required")
+                journal, self._scan_journal = self._scan_journal or [], None
+                for kind, identity_key, obj, skip_keys in journal:
+                    if kind == "node":
+                        self._apply_node_to_cache(fresh, identity_key, obj, skip_keys)
+                    else:
+                        fresh.upsert_edge(identity_key=identity_key, edge=obj)
                 self._cache = fresh
-                self._last_snapshot_generation = generation
+                self._last_snapshot_generation = self._write_generation
+                self.hydrate_replayed_writes_total += len(journal)
         except Exception as exc:
+            with self._cache_lock:
+                self._scan_journal = None
             logger.warning("falkor_substrate_hydrate_failed error=%s", exc)
+            self.hydrate_failed_total += 1
+            self._maybe_log_hydrate_stats()
             self.last_hydrate_ok = False
             self.last_scan_receipt = CompleteScanReceipt(
                 started_at=started, finished_at=datetime.now(timezone.utc).isoformat(),
@@ -451,6 +478,8 @@ class FalkorSubstrateStore:
             return
 
         self.last_hydrate_ok = True
+        self.hydrate_ok_total += 1
+        self._maybe_log_hydrate_stats()
         self.last_hydrate_node_count = len(node_ids)
         finished = datetime.now(timezone.utc).isoformat()
         self._last_snapshot_at = time.monotonic()
@@ -464,6 +493,55 @@ class FalkorSubstrateStore:
         if not getattr(self._client, "read_only", False):
             self._migrate_legacy_payload_nodes(legacy_nodes)
             self._migrate_legacy_payload_edges(legacy_edges)
+
+    _HYDRATE_STATS_LOG_INTERVAL_SEC = 300.0
+
+    def _maybe_log_hydrate_stats(self) -> None:
+        """Cumulative refresh success/failure counts, at most every 5 min, so
+        the success rate is readable from logs without a line per refresh."""
+        now = time.monotonic()
+        if (self._hydrate_stats_logged_at is not None
+                and now - self._hydrate_stats_logged_at < self._HYDRATE_STATS_LOG_INTERVAL_SEC):
+            return
+        self._hydrate_stats_logged_at = now
+        logger.info(
+            "falkor_substrate_hydrate_stats graph=%s ok_total=%d failed_total=%d replayed_writes_total=%d",
+            self._cfg.graph_name, self.hydrate_ok_total, self.hydrate_failed_total,
+            self.hydrate_replayed_writes_total,
+        )
+
+    @staticmethod
+    def _apply_node_to_cache(
+        cache: InMemorySubstrateGraphStore,
+        identity_key: str | None,
+        node: BaseSubstrateNodeV1,
+        skip_metadata_keys: frozenset[str] | None,
+    ) -> None:
+        """Cache half of upsert_node; also replays journaled writes onto a
+        freshly scanned cache, merging skipped keys against that cache."""
+        cache_node = node
+        if skip_metadata_keys:
+            existing_cached = cache.get_node_by_id(node.node_id)
+            merged_metadata = dict(node.metadata or {})
+            existing_metadata = (existing_cached.metadata or {}) if existing_cached is not None else {}
+            for key in skip_metadata_keys:
+                if key in existing_metadata:
+                    merged_metadata[key] = existing_metadata[key]
+                else:
+                    # No cached copy to fall back on -- an honest "unknown"
+                    # (key absent) beats caching this caller's own unverified
+                    # guess for a field it doesn't own. Review finding
+                    # 2026-07-29: without this, a cache miss (e.g. mid-
+                    # rehydrate) would leave the LOCAL cache holding the
+                    # caller's copy for a field the durable Cypher write
+                    # deliberately skipped -- cache/durable divergence until
+                    # the next generation-triggered rehydrate.
+                    merged_metadata.pop(key, None)
+            cache_node = node.model_copy(update={"metadata": merged_metadata})
+        # skip_metadata_keys=None: the merge above already applied the
+        # Falkor-specific semantics (pop on miss), which differ from the
+        # in-memory store's (keep on miss).
+        cache.upsert_node(identity_key=identity_key, node=cache_node)
 
     def _migrate_legacy_payload_nodes(self, rows: list[dict[str, Any]]) -> None:
         for row in rows:
@@ -712,26 +790,9 @@ class FalkorSubstrateStore:
             logger.error("falkor_substrate_upsert_node_failed node_id=%s error=%s", node.node_id, exc)
             raise
         with self._cache_lock:
-            cache_node = node
-            if skip_metadata_keys:
-                existing_cached = self._cache.get_node_by_id(node.node_id)
-                merged_metadata = dict(node.metadata or {})
-                existing_metadata = (existing_cached.metadata or {}) if existing_cached is not None else {}
-                for key in skip_metadata_keys:
-                    if key in existing_metadata:
-                        merged_metadata[key] = existing_metadata[key]
-                    else:
-                        # No cached copy to fall back on -- an honest "unknown"
-                        # (key absent) beats caching this caller's own unverified
-                        # guess for a field it doesn't own. Review finding
-                        # 2026-07-29: without this, a cache miss (e.g. mid-
-                        # rehydrate) would leave the LOCAL cache holding the
-                        # caller's copy for a field the durable Cypher write
-                        # deliberately skipped -- cache/durable divergence until
-                        # the next generation-triggered rehydrate.
-                        merged_metadata.pop(key, None)
-                cache_node = node.model_copy(update={"metadata": merged_metadata})
-            self._cache.upsert_node(identity_key=identity_key, node=cache_node)
+            self._apply_node_to_cache(self._cache, identity_key, node, skip_metadata_keys)
+            if self._scan_journal is not None:
+                self._scan_journal.append(("node", identity_key, node, skip_metadata_keys))
             self._write_generation += 1
 
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None:
@@ -753,6 +814,8 @@ class FalkorSubstrateStore:
             raise
         with self._cache_lock:
             self._cache.upsert_edge(identity_key=identity_key, edge=edge)
+            if self._scan_journal is not None:
+                self._scan_journal.append(("edge", identity_key, edge, None))
             self._write_generation += 1
 
     def snapshot(self) -> MaterializedSubstrateGraphState:

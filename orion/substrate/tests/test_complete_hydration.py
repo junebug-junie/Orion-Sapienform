@@ -109,7 +109,10 @@ def test_nonadvancing_cursor_fails_instead_of_looping():
     assert "cursor" in store.last_scan_receipt.reason
 
 
-def test_local_write_during_refresh_keeps_writer_cache_and_retries():
+def test_local_write_during_refresh_is_replayed_not_aborted():
+    """A local write mid-scan used to abort the refresh ("local mutation during
+    scan; retry required"). It is now journaled and replayed onto the staged
+    cache, so the refresh completes and holds both the scan and the write."""
     client = CappedClient()
     store = build(client)
     original = client.graph_query
@@ -119,15 +122,96 @@ def test_local_write_during_refresh_keeps_writer_cache_and_retries():
         result = original(cypher, params)
         if not mutated:
             mutated = True
+            # Not added to the durable rows: the scan must not need to see it.
             store.upsert_node(identity_key="new", node=_concept(node_id="new"))
-            client._hydrate_node_rows.append(_hydrated_node_row("new", "new"))
         return result
     client.graph_query = query
-    store._hydrate_from_durable()
-    assert not store.last_hydrate_ok
-    assert store.get_node_by_id("new") is not None
-    assert store.snapshot().scan_receipt.complete
-    assert store.get_node_by_id("new") is not None
+    store._write_generation += 1
+    state = store.snapshot()
+    assert store.last_hydrate_ok
+    assert state.scan_receipt.complete and not state.scan_receipt.stale
+    assert "new" in state.nodes and state.node_identity_index["new"] == "new"
+    assert {f"node{i}" for i in range(7)} <= set(state.nodes)
+    assert store._last_snapshot_generation == store._write_generation
+    assert store._scan_journal is None
+    assert store.hydrate_replayed_writes_total == 1
+
+
+def test_continuous_local_writes_no_longer_abort_every_refresh():
+    """Regression for the live abort loop (orion-athena-substrate-runtime,
+    2026-10-06: ~1 refresh in 2 failed). A process whose tick loops write
+    during every scan never completed a refresh under the abort rule; every
+    one now completes."""
+    client = CappedClient()
+    store = build(client)
+    original = client.graph_query
+    counter = {"n": 0}
+    def query(cypher, params=None):
+        result = original(cypher, params)
+        # Bounded per scan: appended durable rows extend the scan, so an
+        # unbounded writer would keep it running forever.
+        if params and params.get("after_id") == -1:
+            counter["n"] += 1
+            n = counter["n"]
+            store.upsert_node(identity_key=f"w:{n}", node=_concept(node_id=f"w{n}"))
+            client._hydrate_node_rows.append(_hydrated_node_row(f"w{n}", f"w:{n}"))
+        return result
+    client.graph_query = query
+    ok_before, failed_before = store.hydrate_ok_total, store.hydrate_failed_total
+    for i in range(5):
+        # A write between snapshots forces a real refresh, as in the runtime.
+        store.upsert_node(identity_key=f"between:{i}", node=_concept(node_id=f"between{i}"))
+        client._hydrate_node_rows.append(_hydrated_node_row(f"between{i}", f"between:{i}"))
+        state = store.snapshot()
+        assert state.scan_receipt.complete, state.scan_receipt.reason
+        assert {f"w{i}" for i in range(1, counter["n"] + 1)} <= set(state.nodes)
+    assert store.hydrate_ok_total - ok_before == 5
+    assert store.hydrate_failed_total == failed_before
+
+
+def test_replayed_edge_and_skip_keys_merge_against_fresh_scan():
+    """Journaled edges land in the swapped cache, and a journaled write that
+    skips an externally owned key keeps the freshly scanned durable value, not
+    the old cache's or the caller's copy."""
+    from orion.substrate.falkor_codec import EXTERNALLY_OWNED_METADATA_KEYS, encode_node_properties
+    from orion.core.schemas.cognitive_substrate import NodeRefV1, SubstrateEdgeV1
+    client = CappedClient()
+    durable = _concept(node_id="node0").model_copy(update={"metadata": {"prediction_error": 0.9}})
+    client._hydrate_node_rows[0] = encode_node_properties(durable, identity_key="node:0")
+    store = build(client)
+    original = client.graph_query
+    done = False
+    def query(cypher, params=None):
+        nonlocal done
+        result = original(cypher, params)
+        if not done:
+            done = True
+            stale = _concept(node_id="node0").model_copy(update={"metadata": {"prediction_error": 0.1}})
+            store.upsert_node(identity_key="node:0", node=stale, skip_metadata_keys=EXTERNALLY_OWNED_METADATA_KEYS)
+            base = _concept()
+            store.upsert_edge(identity_key="local-edge", edge=SubstrateEdgeV1(
+                edge_id="local-edge", source=NodeRefV1(node_id="node0", node_kind="concept"),
+                target=NodeRefV1(node_id="node2", node_kind="concept"), predicate="associated_with",
+                temporal=base.temporal, provenance=base.provenance))
+        return result
+    client.graph_query = query
+    store._write_generation += 1
+    state = store.snapshot()
+    assert state.scan_receipt.complete
+    assert state.nodes["node0"].metadata.get("prediction_error") == 0.9
+    assert "local-edge" in state.edges
+
+
+def test_failed_refresh_stops_journaling():
+    client = CappedClient()
+    store = build(client)
+    client.fail = True
+    store._write_generation += 1
+    store.snapshot()
+    assert not store.last_hydrate_ok and store._scan_journal is None
+    store.upsert_node(identity_key="after", node=_concept(node_id="after"))
+    assert store._scan_journal is None
+    assert store.hydrate_failed_total >= 1
 
 
 def test_detected_external_insertion_with_missing_endpoint_rejects_scan():

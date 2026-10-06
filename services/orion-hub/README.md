@@ -1604,7 +1604,7 @@ tab (`GET /concept-atlas`, backed by `GET /api/substrate/concepts/summary` and `
 | Stage | Where | Flag (default) |
 |---|---|---|
 | Seed golden concepts at startup | `api_routes.py::seed_golden_concepts_at_startup()` | `SUBSTRATE_CONCEPT_SEED_ENABLED` (`true`) |
-| Live activation decay | `api_routes.py::decay_concept_activations()`, ticked by `main.py`'s `substrate_decay_task` | `SUBSTRATE_DECAY_SCHEDULER_ENABLED` (`true`), interval `SUBSTRATE_DECAY_SCHEDULER_INTERVAL_SEC` (`120`); `SUBSTRATE_DYNAMICS_DECAY_MODE` (`since_last`) decays each concept only since its `activation_decayed_at` stamp, shared with orion-substrate-runtime's dynamics tick (`legacy` = old per-interval decay, rollback only) |
+| Live activation decay | **Not in the Hub.** orion-substrate-runtime's `SubstrateDynamicsEngine.tick()` is the single owner (every 30 s). The Hub scheduler (`decay_concept_activations`, `SUBSTRATE_DECAY_SCHEDULER_*`) was removed 2026-10-06: two processes decaying the same Falkor nodes landed writes out of order | n/a |
 | Manual topic-foundry ingestion | `POST /api/substrate/concepts/ingest-topic-foundry` (`concept_atlas_routes.py`) | operator-triggered, no flag |
 | Typed relation classification (supports/contradicts/refines) | `concept_atlas_routes.py::_classify_typed_concept_relations()`, called from the ingestion route above | runs automatically as part of ingestion, capped at `_RELATION_CLASSIFICATION_PAIR_CAP=10` pairs/call — see `services/orion-hub/scripts/concept_relation_classifier.py` for the real LLM classifier |
 | Autonomous scheduled training + ingestion | `main.py`'s `substrate_topic_foundry_scheduler_task`, calling `concept_atlas_routes.py::trigger_topic_foundry_training_run()` then the ingestion route above | `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_ENABLED` (**`true`** — flipped on live 2026-07-17; shipped disabled by default, real compute cost), interval `SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC` (`86400`), window `SUBSTRATE_TOPIC_FOUNDRY_WINDOW_DAYS` (`30`) |
@@ -1683,22 +1683,15 @@ salient:
   `concept_region` collector (see `services/orion-recall/README.md` § 15, PR #1133) — a
   cheap label-substring match against the current turn's text, empty when nothing matches.
 
-**Decay math, if you're debugging why an activation value looks wrong:**
-`decay_concept_activations()` takes an explicit `elapsed_seconds` parameter from its caller
-(the scheduler passes true wall-clock time since the previous tick, tracked via
-`time.monotonic()`) rather than deriving elapsed time from `node.temporal.observed_at`
-internally — the latter is only a documented one-shot fallback for ad-hoc/manual invocation.
-A function called repeatedly on a loop that re-derives elapsed time from a never-advancing
-`observed_at` on every call compounds: each tick re-decays an already-shrunk value against
-an ever-growing elapsed-since-creation window, collapsing activation to `decay_floor` within
-roughly one configured half-life regardless of the half-life value (a real bug caught in
-review during PR #1131 — see that PR's description for the numeric trace).
+**Decay math, if you're debugging why an activation value looks wrong:** see
+`orion/substrate/dynamics.py` (`since_last` mode, `activation_decayed_at` stamp). The Hub no
+longer decays anything (removed 2026-10-06, see the table above).
 
 **Activation was seeded at 0.0 with no half-life until 2026-07-17 (fixed):** decay math
 being correct is meaningless if there's nothing to decay. No `ConceptNodeV1` producer ever
 set `signals.activation` when constructing a node — every concept was born at the schema
 default (`activation=0.0`, `decay_half_life_seconds=None`), and `decay_activation()` treats
-a falsy half-life as "clamp to floor, don't decay." So the live scheduler above was decaying
+a falsy half-life as "clamp to floor, don't decay." So the live scheduler (since removed) was decaying
 an input that was permanently `(0.0, None)` — 120s ticks that correctly computed nothing,
 forever. This was not limited to the two organic-growth adapters (`topic_foundry.py`,
 `concept_induction.py`) — a code-review pass on the first version of this fix found 16+ live

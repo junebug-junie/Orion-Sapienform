@@ -193,7 +193,7 @@ nothing ever reads them back — the seeded surprise just sits inert on the node
 `SubstrateDynamicsEngine.tick()` against the same shared substrate graph store, which
 seeds and propagates activation pressure from those `prediction_error` values.
 
-- `SUBSTRATE_DYNAMICS_TICK_ENABLED` (default `false`): enable the tick loop.
+- `SUBSTRATE_DYNAMICS_TICK_ENABLED` (default `true` since 2026-10-06; it is the sole activation-decay writer): enable the tick loop.
 - `SUBSTRATE_DYNAMICS_TICK_INTERVAL_SEC` (default `30.0`): tick cadence. Deliberately slower
   than `GRAMMAR_POLL_INTERVAL_SEC` because each tick issues a bounded but real query
   (`snapshot()`, `limit_nodes=500`) against the configured store backend, not an in-memory read.
@@ -204,9 +204,10 @@ seeds and propagates activation pressure from those `prediction_error` values.
   newer `observed_at`. Fresh input (seed + propagation) is still decayed by full age, which is a
   closed form, not a compound. `legacy` is the pre-2026-10-06 behavior: the already-decayed
   stored value is decayed again by full age every tick, so loss compounds (~2.2% per 30 s tick
-  for a concept 23 h past `observed_at` on the default 30-day half-life). Rollback only. The Hub
-  decay scheduler (`SUBSTRATE_DECAY_SCHEDULER_ENABLED`) reads and writes the same stamp, so the
-  two writers don't decay the same interval twice. A write that doesn't carry the stamp (e.g.
+  for a concept 23 h past `observed_at` on the default 30-day half-life). Rollback only. This tick
+  is the only decay writer: the Hub's decay scheduler was removed 2026-10-06, because two processes
+  decaying the same nodes from their own caches landed writes out of order (stamp stepping back,
+  activation ticking up). A write that doesn't carry the stamp (e.g.
   concept_induction's re-save, the seed loader) is stamped with its own `observed_at` by
   `FalkorSubstrateStore.upsert_node`, so its value decays by real age once instead of being
   held fresh. Expect one visible drop per node on the first tick after deploy (no stamp yet,

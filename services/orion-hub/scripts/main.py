@@ -368,7 +368,6 @@ embodiment_outcome_cache: Optional[EmbodimentOutcomeCache] = None
 presence_state: Optional["PresenceState"] = None
 presence_context_store: Optional["PresenceContextStore"] = None
 substrate_autonomy_task: Optional[asyncio.Task] = None
-substrate_decay_task: Optional[asyncio.Task] = None
 substrate_review_task: Optional[asyncio.Task] = None
 substrate_topic_foundry_scheduler_task: Optional[asyncio.Task] = None
 affect_ambient_loop_task: Optional[asyncio.Task] = None
@@ -463,7 +462,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global reading_turn_listener, reading_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, orion_day_letter, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, orion_day_letter, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -998,45 +997,6 @@ async def startup_event():
     else:
         logger.info("substrate_autonomy_scheduler_disabled reason=env_disabled")
 
-    if settings.SUBSTRATE_DECAY_SCHEDULER_ENABLED:
-        decay_interval_sec = max(1.0, float(settings.SUBSTRATE_DECAY_SCHEDULER_INTERVAL_SEC))
-
-        async def _run_substrate_decay_scheduler() -> None:
-            # Tracks true wall-clock time between ticks (not just decay_interval_sec)
-            # so a slow to_thread call or scheduling jitter doesn't desync the decay
-            # window from what actually elapsed -- see decay_concept_activations()'s
-            # docstring for why passing an explicit, per-tick elapsed_seconds (rather
-            # than falling back to its node.temporal.observed_at-based one-shot mode)
-            # is required for a function called repeatedly on a loop.
-            last_tick_monotonic = time.monotonic()
-            while True:
-                await asyncio.sleep(decay_interval_sec)
-                now_monotonic = time.monotonic()
-                tick_elapsed_sec = now_monotonic - last_tick_monotonic
-                last_tick_monotonic = now_monotonic
-                try:
-                    summary = await asyncio.to_thread(
-                        api_routes_runtime.decay_concept_activations,
-                        elapsed_seconds=tick_elapsed_sec,
-                    )
-                    logger.info(
-                        "substrate_decay_scheduler_tick decayed=%s skipped=%s errors=%s total_concepts=%s elapsed_sec=%.1f",
-                        summary.get("decayed"),
-                        summary.get("skipped"),
-                        summary.get("errors"),
-                        summary.get("total_concepts"),
-                        tick_elapsed_sec,
-                    )
-                except Exception as exc:  # advisory runtime loop; never crash service startup
-                    logger.warning("substrate_decay_scheduler_error error=%s", exc)
-
-        substrate_decay_task = asyncio.create_task(
-            _run_substrate_decay_scheduler(),
-            name="hub-substrate-decay-scheduler",
-        )
-        logger.info("substrate_decay_scheduler_enabled interval_sec=%s", decay_interval_sec)
-    else:
-        logger.info("substrate_decay_scheduler_disabled reason=env_disabled")
 
     if settings.SUBSTRATE_REVIEW_SCHEDULER_ENABLED:
         review_interval_sec = max(1.0, float(settings.SUBSTRATE_REVIEW_SCHEDULER_INTERVAL_SEC))
@@ -1493,7 +1453,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global reading_turn_listener, reading_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, orion_day_letter, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_decay_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, bus, rpc_bus, biometrics_cache, notification_cache, bus_synaptic_trigger_notifier, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, orion_day_letter, room_claude_relay, agent_step_relay, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1521,13 +1481,6 @@ async def shutdown_event() -> None:
         except asyncio.CancelledError:
             pass
         substrate_autonomy_task = None
-    if substrate_decay_task is not None:
-        substrate_decay_task.cancel()
-        try:
-            await substrate_decay_task
-        except asyncio.CancelledError:
-            pass
-        substrate_decay_task = None
     if substrate_review_task is not None:
         substrate_review_task.cancel()
         try:

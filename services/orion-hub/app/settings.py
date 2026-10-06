@@ -1658,6 +1658,12 @@ class Settings(BaseSettings):
     )
     # --- Unified Orion turn (orion-thought + harness governor) ---
     ORION_UNIFIED_TURN_ENABLED: bool = Field(default=False, alias="ORION_UNIFIED_TURN_ENABLED")
+    # Draft-first display (spec L8, 2026-10-06): on interactive unified chat
+    # turns, show the reply writer's draft as soon as it exists, then let the
+    # finalize judge replace it in place (marked "revised") if it repairs it.
+    # Sensitive turns stay judge-first in the governor regardless.
+    # False restores judge-before-display for every turn.
+    HUB_UNIFIED_DRAFT_FIRST_ENABLED: bool = Field(default=True, alias="HUB_UNIFIED_DRAFT_FIRST_ENABLED")
     ORION_HARNESS_GOVERNOR_ENABLED: bool = Field(default=False, alias="ORION_HARNESS_GOVERNOR_ENABLED")
     # 8300, raised from 2960 on 2026-09-19 alongside the motor's own
     # HARNESS_FCC_TIMEOUT_SEC 2400 -> 7200. Finalize is now substrate 5 +
@@ -1768,6 +1774,10 @@ class Settings(BaseSettings):
     CHANNEL_HARNESS_RUN_CANCEL: str = Field(
         default="orion:harness:run:cancel",
         alias="CHANNEL_HARNESS_RUN_CANCEL",
+    )
+    CHANNEL_HARNESS_RUN_DRAFT_PREVIEW: str = Field(
+        default="orion:harness:run:draft_preview",
+        alias="CHANNEL_HARNESS_RUN_DRAFT_PREVIEW",
     )
 
     ENABLE_PRE_TURN_APPRAISAL: bool = Field(default=False, alias="ENABLE_PRE_TURN_APPRAISAL")

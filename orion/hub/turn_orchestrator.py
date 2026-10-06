@@ -527,6 +527,8 @@ def _success_frames(
         "llm_response": final_text,
         "finalize_ran": run.finalize_ran,
         "finalize_changed": run.finalize_changed,
+        "response_repair_ran": run.response_repair_ran,
+        "response_repair_reason": run.response_repair_reason,
         "harness_step_count": run.step_count,
         "harness_grounding_status": run.grounding_status,
         # The FCC leg's own duration. Distinct from any wall time Hub can
@@ -970,6 +972,7 @@ async def execute_unified_turn(
     client_meta: dict[str, Any] | None = None,
     urgent: bool = False,
     retrieval_query: str | None = None,
+    draft_preview: bool = False,
 ) -> list[dict[str, Any]]:
     """Orion capability: unified Hub chat turn.
 
@@ -996,6 +999,11 @@ async def execute_unified_turn(
     self-initiated turn's standing question, a reading's source and claim).
     None keeps today's behavior: recall condenses the turn text itself. It
     rides StanceReactRequestV1.retrieval_query to cortex-exec's recall calls.
+
+    `draft_preview=True` (interactive chat only, via run_unified_turn) asks the
+    governor to publish the draft before the finalize judge (spec L8). The
+    draft reaches the client through the step relay; this function's returned
+    frames still carry only the final text, which is all that is persisted.
     """
     from scripts.settings import settings as hub_settings
 
@@ -1551,6 +1559,7 @@ async def execute_unified_turn(
         fcc_model_label=resolved_fcc_model_label,
         mode=mode_tag,
         situation_prompt_fragment=situation_prompt_fragment,
+        draft_preview=bool(draft_preview),
     )
     harness_bus = harness_rpc_bus or bus
     if harness_step_relay is not None and harness_step_queue is not None:
@@ -1909,6 +1918,56 @@ async def _publish_unified_turn_chat_history(
     )
 
 
+# Draft-first display (spec L8). The relay queue item the governor's draft
+# preview becomes (services/orion-hub/scripts/harness_step_relay.py), and the
+# WebSocket frame type the browser renders as a provisional Orion message.
+# The frame carries the text under `draft_text`, never `llm_response`/`text`,
+# so a browser running older JS ignores it instead of rendering a second bubble.
+DRAFT_PREVIEW_ITEM_KIND = "draft_preview"
+DRAFT_PREVIEW_FRAME_TYPE = "draft_preview"
+
+
+def draft_preview_frame(item: Mapping[str, Any], *, correlation_id: str) -> dict[str, Any] | None:
+    text = item.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    return {
+        "type": DRAFT_PREVIEW_FRAME_TYPE,
+        "correlation_id": correlation_id,
+        "draft_text": _with_overflow_hint(text) or text,
+    }
+
+
+def annotate_frames_after_draft(
+    frames: list[dict[str, Any]], *, shown_draft_text: str
+) -> dict[str, Any]:
+    """Tell the browser how the turn's outcome relates to the draft it shows.
+
+    Mutates the final / turn_error frames in place and returns a summary for
+    logging. `revised` is computed from the text actually shown versus the
+    text actually delivered, not from the governor's own flags, so it can only
+    claim a revision the person could see.
+    """
+    summary: dict[str, Any] = {"revised": False, "revised_reason": None, "outcome": "none"}
+    for frame in frames:
+        ftype = frame.get("type")
+        if ftype == "final":
+            final_text = str(frame.get("llm_response") or "")
+            revised = final_text.strip() != shown_draft_text.strip()
+            reason = None
+            if revised:
+                reason = str(frame.get("response_repair_reason") or "finalize_changed")
+            frame["replaces_draft"] = True
+            frame["revised"] = revised
+            frame["revised_reason"] = reason
+            summary = {"revised": revised, "revised_reason": reason, "outcome": "final"}
+        elif ftype in ("turn_error", "turn_deferred"):
+            frame["draft_shown"] = True
+            if summary["outcome"] == "none":
+                summary = {"revised": False, "revised_reason": None, "outcome": str(ftype)}
+    return summary
+
+
 async def run_unified_turn(
     websocket: _WebSocketLike,
     *,
@@ -1924,10 +1983,28 @@ async def run_unified_turn(
     harness_step_relay: Any | None = None,
     client_meta: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Execute unified turn and emit WS frames."""
+    """Execute unified turn and emit WS frames.
+
+    With HUB_UNIFIED_DRAFT_FIRST_ENABLED (spec L8) the governor's pre-judge
+    draft is forwarded as a `draft_preview` frame the moment it arrives, and
+    the final frame is annotated (`replaces_draft`/`revised`/`revised_reason`)
+    so the browser swaps it in place. Logs `unified_turn_first_visible` and
+    `unified_turn_final_visible` (corr, elapsed_ms) as the before/after
+    measure, plus `unified_turn_revision` when the shown text changed.
+    """
+    from scripts.settings import settings as hub_settings
+
+    turn_started = time.monotonic()
+    draft_first = bool(getattr(hub_settings, "HUB_UNIFIED_DRAFT_FIRST_ENABLED", False)) and (
+        harness_step_relay is not None
+    )
+    shown_draft: dict[str, Any] = {}
     step_queue: asyncio.Queue | None = None
     drain_task: asyncio.Task | None = None
     cockpit_run_holder: dict[str, Any] = {}
+
+    def _elapsed_ms() -> int:
+        return int((time.monotonic() - turn_started) * 1000)
 
     async def _send_ws(frame: dict[str, Any]) -> None:
         outbound = frame
@@ -1949,6 +2026,20 @@ async def run_unified_turn(
                 )
 
     async def _emit_relay_frame(frame: dict[str, Any]) -> None:
+        if frame.get("kind") == DRAFT_PREVIEW_ITEM_KIND:
+            draft_frame = draft_preview_frame(frame, correlation_id=correlation_id) if draft_first else None
+            if draft_frame is None or shown_draft:
+                return
+            await _send_ws(draft_frame)
+            shown_draft["text"] = draft_frame["draft_text"]
+            shown_draft["elapsed_ms"] = _elapsed_ms()
+            logger.info(
+                "unified_turn_first_visible corr=%s kind=draft_preview elapsed_ms=%s chars=%s",
+                correlation_id,
+                shown_draft["elapsed_ms"],
+                len(shown_draft["text"]),
+            )
+            return
         if frame.get("kind") == "claude_step":
             step = frame.get("step")
             step_dict = step if isinstance(step, dict) else {}
@@ -2016,6 +2107,7 @@ async def run_unified_turn(
             cockpit_run_holder=cockpit_run_holder,
             utterance_origin="juniper",
             client_meta=client_meta,
+            draft_preview=draft_first,
         )
     finally:
         if harness_step_relay is not None and step_queue is not None:
@@ -2050,8 +2142,32 @@ async def run_unified_turn(
             # arrived while RPC was returning still land in Soft HUD.
             harness_step_relay.unregister_queue(correlation_id, step_queue)
             harness_step_relay.forget(correlation_id)
+    has_final = any(frame.get("type") == "final" for frame in frames)
+    if shown_draft:
+        draft_outcome = annotate_frames_after_draft(frames, shown_draft_text=str(shown_draft["text"]))
+        if draft_outcome["revised"]:
+            logger.info(
+                "unified_turn_revision corr=%s reason=%s draft_visible_ms=%s",
+                correlation_id,
+                draft_outcome["revised_reason"],
+                _elapsed_ms() - int(shown_draft["elapsed_ms"]),
+            )
+    elif has_final:
+        logger.info(
+            "unified_turn_first_visible corr=%s kind=final elapsed_ms=%s",
+            correlation_id,
+            _elapsed_ms(),
+        )
     for frame in frames:
         await _send_ws(frame)
+    if has_final:
+        logger.info(
+            "unified_turn_final_visible corr=%s elapsed_ms=%s draft_shown=%s revised=%s",
+            correlation_id,
+            _elapsed_ms(),
+            bool(shown_draft),
+            any(bool(frame.get("revised")) for frame in frames),
+        )
     try:
         run_dump = cockpit_run_holder.get("run")
         if isinstance(run_dump, dict) and any(frame.get("type") == "final" for frame in frames):

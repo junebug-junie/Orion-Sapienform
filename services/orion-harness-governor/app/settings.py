@@ -96,6 +96,12 @@ class HarnessGovernorSettings(BaseSettings):
         "orion:harness:run:cancel",
         alias="CHANNEL_HARNESS_RUN_CANCEL",
     )
+    # Draft-first display (spec L8): the grounded draft, published before the
+    # finalize judge when the Hub asks (HarnessRunRequestV1.draft_preview).
+    channel_harness_run_draft_preview: str = Field(
+        "orion:harness:run:draft_preview",
+        alias="CHANNEL_HARNESS_RUN_DRAFT_PREVIEW",
+    )
 
     # orion-llm-gateway base URL, read directly from the environment by
     # orion.harness.fcc_motor.run_fcc_turn: a turn holding a GPU pool lease sends

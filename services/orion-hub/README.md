@@ -1844,6 +1844,28 @@ Topic Studio relies on the Topic Foundry `/capabilities` endpoint to configure s
 
 ---
 
+## Draft-first chat replies (spec L8)
+
+`HUB_UNIFIED_DRAFT_FIRST_ENABLED=true` (default): on Unified Chat turns the
+Hub shows Orion's draft as soon as the reply writer finishes, while the
+finalize judge is still checking it. If the judge rewrites it, the message is
+replaced in place and marked "revised: <reason>"; if not, the draft is swapped
+for the identical final message with no mark. Sensitive turns (boundary,
+trust rupture, repair pressure) are never shown early. `false` restores
+judge-before-display for every turn.
+
+- Wire: governor publishes `HarnessRunDraftPreviewV1` on
+  `orion:harness:run:draft_preview` (`CHANNEL_HARNESS_RUN_DRAFT_PREVIEW`);
+  `HarnessStepRelay` subscribes alongside the step channel and queues it to
+  the turn; `run_unified_turn` sends `{"type": "draft_preview", "draft_text"}`
+  and annotates the `final` frame with `replaces_draft`, `revised`,
+  `revised_reason`. Browser: `static/js/draft-revision.js`.
+- Only the final text is persisted (chat history, memory, TTS); the draft
+  never is, so a revision cannot create a duplicate turn.
+- Measure: `unified_turn_first_visible corr=... kind=draft_preview|final
+  elapsed_ms=...`, `unified_turn_final_visible`, `unified_turn_revision
+  corr=... reason=...` in Hub logs.
+
 ## Voice debugging
 
 Hub records PCM in the browser, resamples to 16 kHz WAV, and sends `client_audio_meta` with peak, RMS, duration, and chunk count. Low peak warns in the UI but still sends audio. STT silence rejection is configured in `orion-whisper-tts` via `STT_NEAR_SILENT_PEAK_INT16` (default `50`).

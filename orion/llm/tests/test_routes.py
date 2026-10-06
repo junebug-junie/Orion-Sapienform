@@ -115,14 +115,14 @@ def test_chat_burst_is_a_system_route_the_pool_places() -> None:
 
 
 def test_turn_routes_are_accepted_system_only_and_known_to_the_pool() -> None:
-    # 2026-10-06 thermal redesign D4: the interactive twins of metacog/quick/agent. Both route
+    # 2026-10-06 thermal redesign D4: the interactive twin of metacog. Both route
     # registries must carry them (the pool YAML places them; this module catalogs them), and they
     # stay off the human picker / override paths (SYSTEM_LLM_ROUTES).
     from orion.gpu_pool.config import load_pool_config
     from orion.llm.routes import METACOG_LLM_ROUTES, fcc_model_for_route
 
     pool_routes = load_pool_config().routes
-    for name in ("metacog_turn", "quick_turn", "agent_turn"):
+    for name in ("metacog_turn",):
         assert name in ACCEPTED_LLM_ROUTES and name in LLM_ROUTE_DISPLAY_ORDER
         assert name in SYSTEM_LLM_ROUTES and name not in BACKGROUND_LLM_ROUTES
         assert normalize_llm_route(name) is None
@@ -130,6 +130,8 @@ def test_turn_routes_are_accepted_system_only_and_known_to_the_pool() -> None:
         assert pool_routes[name].priority == "interactive"
     # same worker as metacog: the gateway must pin the metacog profile for it too
     assert "metacog_turn" in METACOG_LLM_ROUTES
+    # no caller sends quick/agent on a live turn yet: no route without its caller (keyword cathedral)
+    assert "quick_turn" not in pool_routes and "agent_turn" not in pool_routes
 
 
 def test_every_accepted_route_is_a_pool_route() -> None:

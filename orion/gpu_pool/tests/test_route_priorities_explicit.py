@@ -49,7 +49,6 @@ def test_turn_routes_are_interactive_and_their_plain_twins_stay_system():
     """D4: the turn routes are the fix; the plain routes keep shedding their background callers."""
     doc = yaml.safe_load(POOL_YAML.read_text(encoding="utf-8"))
     routes = doc["routes"]
-    for turn, plain, cls in (("metacog_turn", "metacog", "metacog"), ("quick_turn", "quick", "fast"),
-                             ("agent_turn", "agent", "agent")):
-        assert routes[turn] == {"class": cls, "priority": "interactive"}
+    assert routes["metacog_turn"] == {"class": "metacog", "priority": "interactive"}
+    for plain, cls in (("metacog", "metacog"), ("quick", "fast"), ("agent", "agent")):
         assert routes[plain] == {"class": cls, "priority": "system"}

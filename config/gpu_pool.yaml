@@ -118,13 +118,13 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   metacog_background: {class: metacog, priority: background}
   quick: {class: fast, priority: system}
   quick_background: {class: fast, priority: background}
-  # Calls on a human's critical path (spec 2026-10-06-thermal-controller-redesign D4): same classes
-  # as metacog/quick/agent, but interactive, so a heat shed never holds a live Hub turn. The plain
-  # routes stay system: they also carry background callers that should shed. agent_turn is the
-  # unconfirmed Q4 default (split, not "make agent interactive").
+  # Calls on a human's critical path (spec 2026-10-06-thermal-controller-redesign D4): same class
+  # as metacog, but interactive, so a heat shed never holds a live Hub turn (orion-mind on a Hub
+  # turn, MIND_TURN_MODEL_ROUTE). metacog stays system: it also carries background callers.
+  # quick_turn / agent_turn (spec D4, Q4) are NOT added: no live-turn caller sends quick or agent
+  # today (cortex-orch's memory annotation listens to finished turns; Hub Agent mode runs through the
+  # FCC harness). Add each with the caller that uses it, not before.
   metacog_turn: {class: metacog, priority: interactive}
-  quick_turn: {class: fast, priority: interactive}
-  agent_turn: {class: agent, priority: interactive}
   # The old "burst" lanes: agent work on a borrowed card. The pool now decides which card
   # (agent -> gpu2 seat when loaded -> gpu0 when lent), so both are just agent work.
   agent-burst: {class: agent, priority: system}

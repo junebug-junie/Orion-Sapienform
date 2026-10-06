@@ -199,7 +199,7 @@ def test_build_models_list_payload_lists_every_pool_route(configured_routes: Any
     ids = [entry["id"] for entry in payload["data"]]
     assert ids == sorted(["chat", "harness", "agent", "metacog", "metacog_background", "quick",
                           "quick_background", "agent-burst", "chat-burst", "memory_distill",
-                          "metacog_turn", "quick_turn", "agent_turn"])
+                          "metacog_turn"])
     # Placement is per call, so no static served_by claim.
     assert all(entry["served_by"] is None for entry in payload["data"])
 

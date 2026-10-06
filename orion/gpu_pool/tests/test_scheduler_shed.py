@@ -185,7 +185,11 @@ def test_board_blocks_background_and_system_for_cooling():
     assert b.set(sig())
     v = b.view(T0, enabled=True)
     assert v.blocked == COOLING and v.active_reason == "cooling_incident"
-    assert v.reasons[0]["sources"][0]["source_id"] == "inc1"
+    assert _row(v, "cooling_incident")["sources"][0]["source_id"] == "inc1"
+
+
+def _row(view, name):
+    return next(r for r in view.reasons if r["name"] == name)
 
 
 def test_board_kill_switch_blocks_nothing_but_still_shows_the_signal():
@@ -193,7 +197,31 @@ def test_board_kill_switch_blocks_nothing_but_still_shows_the_signal():
     b.set(sig())
     v = b.view(T0, enabled=False)
     assert v.blocked == {} and v.active_reason is None
-    assert v.reasons[0]["active"] and not v.reasons[0]["effective"]
+    assert _row(v, "cooling_incident")["active"] and not _row(v, "cooling_incident")["effective"]
+
+
+# --- thermal controller v2 (D2): the reflex reasons -----------------------------------------
+
+def test_cabinet_hot_blocks_background_and_system_cabinet_unknown_background_only():
+    b = ShedBoard()
+    b.set(sig(reason="cabinet_unknown", source="hw"))
+    assert b.view(T0, True).blocked == {"background": "cabinet_unknown"}
+    b.set(sig(reason="cabinet_hot", source="hw"))
+    assert b.view(T0, True).blocked == {"background": "cabinet_hot", "system": "cabinet_hot"}
+
+
+def test_reflex_signal_lapses_after_valid_until_when_the_watcher_stops_sending():
+    """D2: re-sent per tick with valid_until = now + 3 ticks; a dead watcher's shed lapses (fail-open)."""
+    b = ShedBoard()
+    b.set(sig(reason="cabinet_hot", source="hw", valid=90))
+    assert b.view(T0 + timedelta(seconds=89), True).blocked
+    assert b.view(T0 + timedelta(seconds=90), True).blocked == {}
+
+
+def test_reflex_reasons_are_precedence_zero_and_never_shed_interactive():
+    for name in ("cabinet_hot", "cabinet_unknown"):
+        spec = SHED_REASONS[name]
+        assert spec.precedence == 0 and "interactive" not in spec.blocks and "urgent" not in spec.blocks
 
 
 def test_board_signal_lapses_at_valid_until():

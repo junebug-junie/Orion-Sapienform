@@ -83,7 +83,8 @@ def test_kill_switch_shows_the_signal_but_blocks_nothing():
         assert r.status == "granted"
         shed = (await rt.snapshot()).shed
         assert shed["enabled"] is False and shed["blocked"] == {}
-        assert shed["reasons"][0]["active"] and not shed["reasons"][0]["effective"]
+        row = next(r for r in shed["reasons"] if r["name"] == "cooling_incident")
+        assert row["active"] and not row["effective"]
     run(go())
 
 

@@ -102,12 +102,10 @@ ACCEPTED_LLM_ROUTES: FrozenSet[str] = frozenset(
         # Memory episode distiller (2026-10-02, spec 2026-09-30-memory-episode-redesign):
         # agent class at system priority, its own name so pool telemetry can see it.
         "memory_distill",
-        # Human-turn twins of metacog/quick/agent (2026-10-06, spec
-        # 2026-10-06-thermal-controller-redesign D4): same pool class, interactive priority, so a
-        # heat shed never holds a live Hub turn. System-only: see SYSTEM_LLM_ROUTES.
+        # Human-turn twin of metacog (2026-10-06, spec 2026-10-06-thermal-controller-redesign D4):
+        # same pool class, interactive priority, so a heat shed never holds a live Hub turn.
+        # System-only: see SYSTEM_LLM_ROUTES.
         "metacog_turn",
-        "quick_turn",
-        "agent_turn",
     }
 )
 
@@ -140,8 +138,6 @@ LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
     "chat-burst",
     "memory_distill",
     "metacog_turn",
-    "quick_turn",
-    "agent_turn",
 )
 
 if set(LLM_ROUTE_DISPLAY_ORDER) != set(ACCEPTED_LLM_ROUTES) or len(
@@ -216,7 +212,7 @@ if not METACOG_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
 # fail-safe/fail-open reasoning for keeping a *definitional* copy here, not just relying on the
 # route table, mirrors BACKGROUND_LLM_ROUTES above.
 #
-# The `*_turn` routes (2026-10-06, thermal redesign D4) are system-only for the same reason as
+# `metacog_turn` (2026-10-06, thermal redesign D4) are system-only for the same reason as
 # `harness`: they exist for an AUTOMATED caller that is carrying a live human turn (orion-mind on
 # a Hub turn sends `metacog_turn` straight to the gateway on the bus -- no normalize_llm_route on
 # that path; the gateway resolves routes from config/gpu_pool.yaml). A human picking one in the
@@ -226,7 +222,7 @@ if not METACOG_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:
 # POST /api/chat body) and so by fcc_model_for_route. A future caller that must reach one through
 # those override paths needs an explicit decision here, not a quiet removal from this set.
 SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset(
-    {"harness", "agent-burst", "chat-burst", "memory_distill", "metacog_turn", "quick_turn", "agent_turn"}
+    {"harness", "agent-burst", "chat-burst", "memory_distill", "metacog_turn"}
 )
 
 if not SYSTEM_LLM_ROUTES <= ACCEPTED_LLM_ROUTES:

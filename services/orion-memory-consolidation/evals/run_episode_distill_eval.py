@@ -153,7 +153,7 @@ def austin_checks(result, turns) -> dict[str, bool]:
     }
 
 
-def score(result, turns, answer, parsed_count: int) -> dict[str, Any]:
+def score(result, turns, answer, parsed_count: int, parsed=None) -> dict[str, Any]:
     kept = result.memories
     js = [m for m in kept if m.voice == "juniper_said"]
     aj = [m for m in kept if m.purpose == "about_juniper"]
@@ -168,6 +168,8 @@ def score(result, turns, answer, parsed_count: int) -> dict[str, Any]:
         "high_stakes": sum(1 for m in kept if m.stakes == "high"),
         # Stakes after validation, as stakes:category (no text). "high:-" = high without a category.
         "stakes": dict(Counter(f"{m.stakes}:{m.stakes_reason or '-'}" for m in kept)),
+        # What the distiller itself proposed, before the consistency check (all proposals).
+        "stakes_proposed": dict(Counter(f"{m.stakes}:{m.stakes_reason or '-'}" for m in (parsed.memories if parsed else []))),
         # As the distiller proposed them, before the consistency check resolved anything.
         "stakes_events": dict(Counter(e.op for m in kept for e in m.events if e.op.startswith("stakes"))),
         # The renderer contract is first person; a statement naming Orion is written about Orion, not by it.
@@ -225,7 +227,7 @@ async def main_async(args) -> dict[str, Any]:
                         (out / f"{ep['name']}.{route}.{i}.answer.txt").write_text(answer["text"])
                         parsed = parse_distillation(answer["text"])
                         result = validate_distillation(parsed, turns, episode_id=ep["name"])
-                        s = score(result, turns, answer, len(parsed.memories))
+                        s = score(result, turns, answer, len(parsed.memories), parsed)
                         if ep["name"] == "austin":
                             s["austin_checks"] = austin_checks(result, turns)
                         s["referents"] = sorted({k for m in result.memories for k, _ in m.referents})

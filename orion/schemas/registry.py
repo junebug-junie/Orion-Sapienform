@@ -650,7 +650,12 @@ from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.curiosity_peer import HelpRequestV1, PeerBriefConsumedV1, PeerBriefV1
 from orion.schemas.curiosity_supervisor import READING_KIND, HopReadingV1
 from orion.schemas.curiosity_urgent import URGENT_REQUEST_KIND, CuriosityUrgentRequestV1
-from orion.schemas.hardware_watch import HARDWARE_WATCH_INCIDENT_KIND, HardwareWatchIncidentV1
+from orion.schemas.hardware_watch import (
+    HARDWARE_WATCH_INCIDENT_KIND,
+    HARDWARE_WATCH_REFLEX_SHED_KIND,
+    HardwareWatchIncidentV1,
+    HardwareWatchReflexShedV1,
+)
 from orion.schemas.compactor_digest_run import CompactorDigestResultV1, CompactorDigestRunBriefV1
 from orion.schemas.durable_run import (
     CuriosityTurnRequestV1,
@@ -1050,6 +1055,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CuriosityTurnResultV1": CuriosityTurnResultV1,
     "CuriosityUrgentRequestV1": CuriosityUrgentRequestV1,
     "HardwareWatchIncidentV1": HardwareWatchIncidentV1,
+    "HardwareWatchReflexShedV1": HardwareWatchReflexShedV1,
     "HelpRequestV1": HelpRequestV1,
     "PeerBriefV1": PeerBriefV1,
     "PeerBriefConsumedV1": PeerBriefConsumedV1,
@@ -1925,6 +1931,7 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "CuriosityTurnResultV1": SchemaRegistration(model=CuriosityTurnResultV1, kind="curiosity.turn.result.v1"),
     "CuriosityUrgentRequestV1": SchemaRegistration(model=CuriosityUrgentRequestV1, kind=URGENT_REQUEST_KIND),
     "HardwareWatchIncidentV1": SchemaRegistration(model=HardwareWatchIncidentV1, kind=HARDWARE_WATCH_INCIDENT_KIND),
+    "HardwareWatchReflexShedV1": SchemaRegistration(model=HardwareWatchReflexShedV1, kind=HARDWARE_WATCH_REFLEX_SHED_KIND),
     "HelpRequestV1": SchemaRegistration(
         model=HelpRequestV1,
         kind="curiosity.help.request.v1",

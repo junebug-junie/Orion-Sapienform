@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -49,8 +50,21 @@ class Settings(BaseSettings):
 
     # --- shed (cabinet sensor on this node's biometrics summary) ---
     cabinet_node: str = Field("athena", alias="HARDWARE_WATCH_CABINET_NODE")
+    # v1 only (incident-scoped rise shed); deleted with v1 after v2 runs clean for a week.
     shed_rise_c: float = Field(1.0, alias="HARDWARE_WATCH_SHED_RISE_C")
     shed_rise_window_sec: float = Field(900.0, alias="HARDWARE_WATCH_SHED_RISE_WINDOW_SEC")
+
+    # --- thermal controller v2 (docs/superpowers/specs/2026-10-06-thermal-controller-redesign-design.md) ---
+    # v2: the reflex sheds on cabinet heat (>= 34 C -> cabinet_hot, unreadable -> cabinet_unknown) every
+    # tick, and AC power only opens an alert-only incident while the cabinet is warm (D2/D5).
+    # v1: the 2026-09-29 rules (AC-power incident + latched shed), the one-week rollback path.
+    heat_controller: Literal["v1", "v2"] = Field("v2", alias="HARDWARE_WATCH_HEAT_CONTROLLER")
+    reading_grace_sec: float = Field(300.0, gt=0, alias="HARDWARE_WATCH_READING_GRACE_SEC")
+    heat_lookahead_min: float = Field(20.0, ge=0, alias="HARDWARE_WATCH_HEAT_LOOKAHEAD_MIN")
+    ac_low_mean_w: float = Field(140.0, gt=0, alias="HARDWARE_WATCH_AC_LOW_MEAN_W")
+    ac_low_window_sec: float = Field(900.0, gt=0, alias="HARDWARE_WATCH_AC_LOW_WINDOW_SEC")
+    # D6: no second alert / urgent investigation for the same rule+subject within this sliding window.
+    alert_dedupe_window_sec: float = Field(21600.0, ge=0, alias="HARDWARE_WATCH_ALERT_DEDUPE_WINDOW_SEC")
 
     # --- heat ---
     heat_nodes: str = Field("athena,circe", alias="HARDWARE_WATCH_HEAT_NODES")
@@ -63,6 +77,12 @@ class Settings(BaseSettings):
     gpu_ceiling_c: float = Field(85.0, alias="HARDWARE_WATCH_GPU_CEILING_C")
     gpu_ceiling_sustain_sec: float = Field(120.0, alias="HARDWARE_WATCH_GPU_CEILING_SUSTAIN_SEC")
     gpu_ceiling_rearm_c: float = Field(80.0, alias="HARDWARE_WATCH_GPU_CEILING_REARM_C")
+    # D7: heat incidents open on fixed ceilings only; the trailing p95 is an annotation.
+    # CPU 90 C is the spec's Q3 proposed default (typical Xeon throttle territory), unconfirmed.
+    cpu_ceiling_c: float = Field(90.0, alias="HARDWARE_WATCH_CPU_CEILING_C")
+    cpu_ceiling_rearm_c: float = Field(85.0, alias="HARDWARE_WATCH_CPU_CEILING_REARM_C")
+    # An open heat incident whose sensor is silent this long resolves as sensor_lost (C12).
+    heat_sensor_lost_sec: float = Field(900.0, gt=0, alias="HARDWARE_WATCH_HEAT_SENSOR_LOST_SEC")
 
     @model_validator(mode="after")
     def _shed_signal_outlives_refresh(self) -> "Settings":

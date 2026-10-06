@@ -6,24 +6,40 @@ effect is recorded on the row; one that failed is retried on the next tick, neve
 succeeded (a restart reads the row, so it does not re-fire either).
 
 Plan: docs/superpowers/plans/2026-09-29-urgent-curiosity-plan-4-5-hardware-watch-and-shedding.md.
+
+Thermal controller v2 (HARDWARE_WATCH_HEAT_CONTROLLER=v2, the default; spec
+docs/superpowers/specs/2026-10-06-thermal-controller-redesign-design.md):
+- D1/D2 every tick: read the cabinet once (``read_cabinet_heat``; a failed query re-uses the last good
+  readings within grace), and while it is critical (>= 34 C) or unreadable past grace publish one
+  ``HardwareWatchReflexShedV1`` (``cabinet_hot`` / ``cabinet_unknown``, valid 3 ticks). No latch: when
+  the state drops, one ``active=false`` clear is sent and the signal stops.
+- D5 the cooling rule is ``cooling_verdict_v2``: AC power opens an incident only while the cabinet is
+  warm; every v2 incident is alert-only (``shed=None`` on the event).
+- D6 alerts and urgent investigations: at most one per rule+subject per sliding window; no urgent run
+  for a p95 heat outlier. D7 heat opens on fixed ceilings, p95 is an annotation, a silent sensor
+  resolves ``sensor_lost``. D9 an operator resolve snoozes only the reason it resolved.
+v1 keeps the 2026-09-29 cooling + latched shed path for the one-week rollback window.
 """
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
+from orion.autonomy.cabinet_heat import CabinetHeatReading, read_cabinet_heat
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.hardware_watch.rules import (
-    Baseline, CoolingRuleConfig, HeatRuleConfig, ShedRuleConfig, ShedVerdict, cooling_verdict, heat_verdict,
-    shed_verdict,
+    AcLowConfig, Baseline, CoolingRuleConfig, HeatRuleConfig, ShedRuleConfig, ShedVerdict, cooling_verdict,
+    cooling_verdict_v2, heat_verdict, shed_verdict,
 )
 from orion.schemas.curiosity_urgent import URGENT_REQUEST_CHANNEL, URGENT_REQUEST_KIND, CuriosityUrgentRequestV1
 from orion.schemas.hardware_watch import (
-    HARDWARE_WATCH_INCIDENT_CHANNEL, HARDWARE_WATCH_INCIDENT_KIND, HardwareWatchIncidentV1, HardwareWatchShedV1,
+    HARDWARE_WATCH_INCIDENT_CHANNEL, HARDWARE_WATCH_INCIDENT_KIND, HARDWARE_WATCH_REFLEX_SHED_CHANNEL,
+    HARDWARE_WATCH_REFLEX_SHED_KIND, HardwareWatchIncidentV1, HardwareWatchReflexShedV1, HardwareWatchShedV1,
 )
 from orion.schemas.notify import NotificationRequest
 
@@ -35,6 +51,12 @@ COOLING_SUBJECT = "cabinet_ac"
 CPU_KEY = "temp_c_max"
 CABINET_KEY = "cabinet_temp_c"
 EVIDENCE_POINTS = 40
+# D2: a reflex signal lives this many ticks past its emit; the watcher re-sends it every tick.
+REFLEX_VALID_TICKS = 3
+# How much cabinet history one read covers (the 15-min rise window plus margin; hysteresis is seeded
+# from the previous reading, so the window does not need to reach back to the trip).
+CABINET_WINDOW_SEC = 1800
+HEAT_RULES = ("cpu_heat", "gpu_heat")
 
 Publish = Callable[[str, BaseEnvelope], Awaitable[None]]
 Notify = Callable[[NotificationRequest], Any]   # sync, returns NotificationAccepted-like (.ok, .detail)
@@ -46,6 +68,8 @@ REASON_TEXT = {
     "controller_not_ready": "the Z-Wave controller has not been ready for 5+ minutes",
     "no_samples": "no AC reading has arrived at all for 5+ minutes (orion-zwave or sql-writer down?)",
     "frozen": "the AC plug has reported the exact same wattage for 60+ minutes (a stuck or lying reading)",
+    "low_power_v2": ("the AC plug's {window:.0f}-minute mean draw is {mean} W, under the {low:.0f} W duty-cycle "
+                     "floor, while the cabinet is {state} ({temp} C)"),
     "simulated": "SIMULATED incident from the hardware-watch test hook (a drill; the AC is probably fine)",
 }
 
@@ -86,13 +110,28 @@ class Watcher:
             frozen_sec=settings.ac_frozen_sec, resolve_watts=settings.ac_resolve_w,
             resolve_sec=settings.ac_resolve_sec)
         self.shed_cfg = ShedRuleConfig(rise_c=settings.shed_rise_c, window_sec=settings.shed_rise_window_sec)
+        self.ac_cfg = AcLowConfig(low_mean_w=settings.ac_low_mean_w, window_sec=settings.ac_low_window_sec,
+                                  lookahead_min=settings.heat_lookahead_min)
+        self.v2 = settings.heat_controller == "v2"
+        # D7: fixed ceilings open heat incidents; the p95 rides along as an annotation.
         self.cpu_cfg = HeatRuleConfig(sustain_sec=settings.heat_sustain_sec,
-                                      min_history_sec=settings.cpu_min_history_sec)
+                                      min_history_sec=settings.cpu_min_history_sec,
+                                      ceiling_c=settings.cpu_ceiling_c, ceiling_sustain_sec=settings.heat_sustain_sec,
+                                      ceiling_rearm_c=settings.cpu_ceiling_rearm_c, p95_opens=False,
+                                      lost_sec=settings.heat_sensor_lost_sec)
         self.gpu_cfg = HeatRuleConfig(sustain_sec=settings.heat_sustain_sec,
                                       min_history_sec=settings.gpu_min_history_sec,
                                       ceiling_c=settings.gpu_ceiling_c,
                                       ceiling_sustain_sec=settings.gpu_ceiling_sustain_sec,
-                                      ceiling_rearm_c=settings.gpu_ceiling_rearm_c)
+                                      ceiling_rearm_c=settings.gpu_ceiling_rearm_c, p95_opens=False,
+                                      lost_sec=settings.heat_sensor_lost_sec)
+        # v2 cabinet state (D1/D2)
+        self._cab: CabinetHeatReading | None = None
+        self._cab_points: list = []
+        self._cab_points_at: datetime | None = None
+        self._ac_low: bool | None = None
+        self._reflex_sent: str | None = None          # reason last asserted (None = cleared/never)
+        self._reflex: dict[str, Any] = {"controller": settings.heat_controller, "active": False, "reason": None}
         self._baselines: dict[str, _BaselineCache] = {}
         self._last_refresh: dict[str, datetime] = {}
         self._last_shed: dict[str, Any] = {}          # incident_id -> latest ShedVerdict (for the event)
@@ -128,7 +167,10 @@ class Watcher:
             logger.warning("hardware_watch_store_unreadable err=%s", exc)
             self.last = report
             return report
-        for name, step in (("cooling", self._cooling), ("cpu_heat", self._cpu_heat), ("gpu_heat", self._gpu_heat)):
+        steps = (("cabinet", self._cabinet), ("cooling", self._cooling), ("reflex", self._reflex_tick),
+                 ("cpu_heat", self._cpu_heat), ("gpu_heat", self._gpu_heat)) if self.v2 else (
+                 ("cooling", self._cooling), ("cpu_heat", self._cpu_heat), ("gpu_heat", self._gpu_heat))
+        for name, step in steps:
             try:
                 await step(now, open_rows, report)
             except Exception as exc:  # noqa: BLE001 -- one rule failing must not stop the others
@@ -145,7 +187,65 @@ class Watcher:
         return report
 
     # --- rules --------------------------------------------------------------------------------
+    async def _cabinet(self, now: datetime, open_rows: dict, report: TickReport) -> None:
+        """D1: one cabinet read per tick. A failed query re-uses the last good readings, re-judged at
+        ``now`` -- within grace that is the last state; past grace it is unknown (C10)."""
+        try:
+            pts = await self._sync(self.store.temp_points, self.s.cabinet_node, CABINET_KEY,
+                                   now - timedelta(seconds=CABINET_WINDOW_SEC))
+            self._cab_points, self._cab_points_at = list(pts), now
+        except Exception as exc:  # noqa: BLE001 -- recorded; the reading below decides what it means
+            report.errors["cabinet_read"] = f"{type(exc).__name__}: {exc}"[:300]
+            logger.warning("hardware_watch_cabinet_read_failed err=%s (re-using readings from %s)", str(exc)[:200],
+                           self._cab_points_at.isoformat() if self._cab_points_at else None)
+        self._cab = read_cabinet_heat(self._cab_points, now, grace_sec=self.s.reading_grace_sec, previous=self._cab)
+        report.verdicts["cabinet"] = self._cab.as_dict()
+
+    def _cabinet_now(self, now: datetime) -> CabinetHeatReading:
+        return self._cab if self._cab is not None else read_cabinet_heat([], now, grace_sec=self.s.reading_grace_sec)
+
+    async def _reflex_tick(self, now: datetime, open_rows: dict, report: TickReport) -> None:
+        """D2: assert the reflex reason every tick while it holds; one clear when it stops."""
+        reading = dataclasses.replace(self._cabinet_now(now), ac_low=self._ac_low)
+        reason = reading.reflex
+        valid_until = now + timedelta(seconds=REFLEX_VALID_TICKS * self.s.tick_sec)
+        self._reflex = {"controller": "v2", "active": bool(reason) and self.s.shed_enabled,
+                        "reason": reason if self.s.shed_enabled else None, "would_shed": reason,
+                        "shed_enabled": self.s.shed_enabled, "evaluated_at": now.isoformat(),
+                        "valid_until": valid_until.isoformat() if reason and self.s.shed_enabled else None,
+                        "cabinet": reading.as_dict()}
+        report.verdicts["reflex"] = {k: v for k, v in self._reflex.items() if k != "cabinet"}
+        if reason and self.s.shed_enabled:
+            sig = HardwareWatchReflexShedV1(source_id=self._reflex_source(), active=True, reason=reason,
+                                            valid_until=valid_until, cabinet=reading.as_dict(), emitted_at=now)
+        elif self._reflex_sent is not None:
+            sig = HardwareWatchReflexShedV1(source_id=self._reflex_source(), active=False,
+                                            cabinet=reading.as_dict(), emitted_at=now)
+        else:
+            return
+        try:
+            await self.publish(HARDWARE_WATCH_REFLEX_SHED_CHANNEL, BaseEnvelope(
+                kind=HARDWARE_WATCH_REFLEX_SHED_KIND, source=self.source, payload=sig.model_dump(mode="json")))
+        except Exception as exc:  # noqa: BLE001 -- re-sent next tick; a lost one lapses at valid_until
+            report.errors["reflex_publish"] = f"{type(exc).__name__}: {exc}"[:300]
+            logger.error("hardware_watch_reflex_publish_failed reason=%s err=%s", reason, exc)
+            return
+        if (reason if sig.active else None) != self._reflex_sent:
+            logger.warning("hardware_watch_reflex_%s reason=%s temp_c=%s state=%s age_sec=%s ac_low=%s",
+                           "on" if sig.active else "off", reason or self._reflex_sent, reading.temp_c,
+                           reading.thermal_state, reading.age_sec, reading.ac_low)
+        self._reflex_sent = reason if sig.active else None
+
+    def _reflex_source(self) -> str:
+        return f"{self.s.service_name}:{self.s.cabinet_node}:cabinet"[:120]
+
+    def reflex_snapshot(self) -> dict[str, Any]:
+        """What /health shows (and Orion's learned shed reads, D8): the reflex's own current claim."""
+        return dict(self._reflex)
+
     async def _cooling(self, now: datetime, open_rows: dict, report: TickReport) -> None:
+        if self.v2:
+            return await self._cooling_v2(now, open_rows, report)
         lookback = max(self.cooling_cfg.frozen_sec, self.cooling_cfg.resolve_sec) + 300
         points = await self._sync(self.store.cooling_points, now - timedelta(seconds=lookback))
         v = cooling_verdict(points, now, self.cooling_cfg)
@@ -168,6 +268,34 @@ class Watcher:
             await self._resolve(row, now, "recovered", "rule")
             return
         await self._update_shed(row, now)
+
+    async def _cooling_v2(self, now: datetime, open_rows: dict, report: TickReport) -> None:
+        """D5: AC power is a diagnosis. Alert-only incidents; the shed is the reflex's (D2)."""
+        lookback = max(self.cooling_cfg.frozen_sec, self.ac_cfg.window_sec) + 300
+        row = open_rows.get(("cooling", COOLING_SUBJECT))
+        try:
+            points = await self._sync(self.store.cooling_points, now - timedelta(seconds=lookback))
+        except Exception:
+            self._ac_low = None     # an unreadable AC is not "AC low" (D1: the outage case is elevated)
+            raise
+        cabinet = self._cabinet_now(now)
+        v = cooling_verdict_v2(points, now, cabinet, cfg=self.cooling_cfg, ac=self.ac_cfg,
+                               open_reason=row["open_reason"] if row else None)
+        self._ac_low = v.detail.get("ac_low")
+        report.verdicts["cooling"] = {"open_reason": v.open_reason, "resolve": v.resolve,
+                                      **{k: x for k, x in v.detail.items() if k != "cabinet"}}
+        evidence = {"verdict": v.detail, "recent": _compact_cooling(points)}
+        if row is None:
+            if v.open_reason:
+                await self._open("cooling", COOLING_SUBJECT, v.open_reason, now, evidence)
+            return
+        if row["open_reason"] == "simulated":
+            if v.open_reason:
+                await self._resolve(row, now, "superseded", "rule")
+                await self._open("cooling", COOLING_SUBJECT, v.open_reason, now, evidence)
+            return
+        if v.resolve:
+            await self._resolve(row, now, "recovered", "rule")
 
     async def _cpu_heat(self, now: datetime, open_rows: dict, report: TickReport) -> None:
         nodes = list(dict.fromkeys(self.s.heat_node_list + [s for (r, s) in open_rows if r == "cpu_heat"]))
@@ -202,7 +330,7 @@ class Watcher:
                 evidence = {"verdict": v.detail, "recent": [[p.ts.isoformat(), p.value] for p in points][-EVIDENCE_POINTS:]}
                 await self._open(rule, subject, v.open_reason, now, evidence)
         elif v.resolve:
-            await self._resolve(row, now, "recovered", "rule")
+            await self._resolve(row, now, v.detail.get("resolve_reason") or "recovered", "rule")
 
     async def _baseline(self, node: str, key: str, now: datetime) -> Baseline:
         ck = f"{node}:{key}"
@@ -219,14 +347,15 @@ class Watcher:
     # --- transitions --------------------------------------------------------------------------
     async def _open(self, rule: str, subject: str, reason: str, now: datetime, evidence: dict,
                     *, by: str = "rule") -> dict | None:
-        snooze = await self._sync(self.store.snoozed_until, rule, subject)
+        snooze = await self._sync(self.store.snoozed_until, rule, subject, reason)   # D9: this reason only
         if by == "rule" and snooze is not None and snooze > now:
-            logger.info("hardware_watch_open_snoozed rule=%s subject=%s until=%s", rule, subject, snooze.isoformat())
+            logger.info("hardware_watch_open_snoozed rule=%s subject=%s reason=%s until=%s", rule, subject, reason,
+                        snooze.isoformat())
             return None
         row: dict[str, Any] = {"incident_id": uuid.uuid4().hex, "rule": rule, "subject": subject, "status": "open",
                                "open_reason": reason, "opened_at": now, "evidence": evidence, "updated_at": now}
         sv = None
-        if rule == "cooling":
+        if rule == "cooling" and not self.v2:
             sv = await self._shed_now(now)
             row.update(self._shed_fields(sv, now))
         if not await self._sync(self.store.insert_incident, row):
@@ -258,8 +387,8 @@ class Watcher:
         if not await self._emit(row, "resolved", now):
             self._pending_resolved[row["incident_id"]] = row   # retried next tick
         self._last_refresh.pop(row["incident_id"], None)
-        if row["rule"] == "cooling":
-            await self._send_recovered(row, now)
+        if row["rule"] == "cooling" and row.get("alert_sent_at"):
+            await self._send_recovered(row, now)    # no "closed" notice for an incident whose alert was deduped
         return row
 
     async def resolve_by_operator(self, incident_id: str, by: str = "juniper") -> dict | None:
@@ -309,13 +438,33 @@ class Watcher:
             await self._emit(row, "refresh", now)
 
     # --- side effects -------------------------------------------------------------------------
+    async def _deduped(self, column: str, row: dict, now: datetime) -> datetime | None:
+        """D6: the time an alert/urgent request already went out for this rule+subject within the
+        sliding window (from another incident), else None."""
+        if self.s.alert_dedupe_window_sec <= 0 or row["open_reason"] == "simulated":
+            return None
+        last = await self._sync(self.store.last_side_effect_at, column, row["rule"], row["subject"])
+        if last is not None and (now - last).total_seconds() < self.s.alert_dedupe_window_sec:
+            return last
+        return None
+
     async def _send_alert(self, row: dict, now: datetime) -> None:
         if row.get("alert_sent_at") or (row.get("alert_attempts") or 0) >= self.s.alert_max_attempts:
+            return
+        if str(row.get("alert_error") or "").startswith("deduped:"):
+            return
+        prior = await self._deduped("alert_sent_at", row, now)
+        if prior is not None:
+            fields = {"alert_error": f"deduped:alert_sent_at={prior.isoformat()}"[:300]}
+            await self._sync(self.store.update_incident, row["incident_id"], **fields)
+            row.update(fields)
+            logger.warning("hardware_watch_alert_deduped id=%s rule=%s subject=%s prior=%s", row["incident_id"],
+                           row["rule"], row["subject"], prior.isoformat())
             return
         attempts = (row.get("alert_attempts") or 0) + 1
         req = NotificationRequest(
             source_service=self.s.service_name, event_kind="hardware.watch.cooling.alert", severity="critical",
-            title=_alert_title(row), body_text=_alert_body(row, self.cooling_cfg),
+            title=_alert_title(row), body_text=_alert_body(row, self.cooling_cfg, self.ac_cfg if self.v2 else None),
             context={"incident_id": row["incident_id"], "rule": row["rule"], "subject": row["subject"],
                      "open_reason": row["open_reason"]},
             tags=["hardware-watch", "cooling"], channels_requested=["in_app", "email"],
@@ -353,9 +502,24 @@ class Watcher:
     async def _request_urgent(self, row: dict, now: datetime) -> None:
         if row.get("urgent_requested_at") or not self.s.urgent_enabled:
             return
+        if str(row.get("urgent_error") or "").startswith(("deduped:", "skipped:")):
+            return
+        if row["rule"] in HEAT_RULES and row["open_reason"] == "above_p95":
+            # D6/C9: a p95 outlier is true ~5 % of the time by construction; it is not worth an agent run.
+            await self._sync(self.store.update_incident, row["incident_id"], urgent_error="skipped:p95_outlier")
+            row["urgent_error"] = "skipped:p95_outlier"
+            return
+        prior = await self._deduped("urgent_requested_at", row, now)
+        if prior is not None:
+            err = f"deduped:urgent_requested_at={prior.isoformat()}"[:300]
+            await self._sync(self.store.update_incident, row["incident_id"], urgent_error=err)
+            row["urgent_error"] = err
+            logger.warning("hardware_watch_urgent_deduped id=%s rule=%s subject=%s prior=%s", row["incident_id"],
+                           row["rule"], row["subject"], prior.isoformat())
+            return
         try:
             req = CuriosityUrgentRequestV1(
-                incident_id=row["incident_id"], question=_question(row, self.cooling_cfg),
+                incident_id=row["incident_id"], question=_question(row, self.cooling_cfg, self.ac_cfg if self.v2 else None),
                 trigger="cooling" if row["rule"] == "cooling" else "heat", subject=row["subject"],
                 evidence=_bounded({"rule": row["rule"], "open_reason": row["open_reason"],
                                    "opened_at": row["opened_at"].isoformat(), **(row.get("evidence") or {})}),
@@ -374,7 +538,7 @@ class Watcher:
 
     async def _emit(self, row: dict, transition: str, now: datetime) -> bool:
         shed = None
-        if row["rule"] == "cooling":
+        if row["rule"] == "cooling" and not self.v2:
             # The watcher's switch also stops a request latched before it was turned off.
             requested = bool(row.get("shed_requested")) and row["status"] == "open" and self.s.shed_enabled
             sv = self._last_shed.get(row["incident_id"])
@@ -409,9 +573,9 @@ class Watcher:
                 self._pending_resolved.pop(iid, None)
         for row in await self._sync(self.store.open_incidents):
             if row["rule"] == "cooling" and not row.get("alert_sent_at"):
-                await self._send_alert(row, now)
+                await self._send_alert(row, now)        # returns at once for a deduped one
             if not row.get("urgent_requested_at"):
-                await self._request_urgent(row, now)
+                await self._request_urgent(row, now)    # likewise
             last = self._last_refresh.get(row["incident_id"])
             if last is None or (now - last).total_seconds() >= self.s.refresh_sec:
                 await self._emit(row, "refresh", now)
@@ -435,7 +599,12 @@ def _bounded(evidence: dict, limit: int = 30_000) -> dict:
     return {"verdict": "trimmed", "keys": sorted(evidence)[:20]}
 
 
-def _reason_text(row: dict, cfg: CoolingRuleConfig) -> str:
+def _reason_text(row: dict, cfg: CoolingRuleConfig, ac: AcLowConfig | None = None) -> str:
+    if ac is not None and row["open_reason"] == "low_power":
+        v = (row.get("evidence") or {}).get("verdict") or {}
+        cab = v.get("cabinet") or {}
+        return REASON_TEXT["low_power_v2"].format(window=ac.window_sec / 60, mean=v.get("ac_mean_w"), low=ac.low_mean_w,
+                                                  state=cab.get("effective_state"), temp=cab.get("temp_c"))
     return REASON_TEXT.get(row["open_reason"], row["open_reason"]).format(low=cfg.low_watts)
 
 
@@ -444,32 +613,38 @@ def _alert_title(row: dict) -> str:
     return f"{prefix}AC FAILURE: cabinet AC {row['open_reason']} - investigating"
 
 
-def _alert_body(row: dict, cfg: CoolingRuleConfig) -> str:
+def _alert_body(row: dict, cfg: CoolingRuleConfig, ac: AcLowConfig | None = None) -> str:
     v = (row.get("evidence") or {}).get("verdict") or {}
     shed = row.get("shed_reason")
+    if ac is not None:   # v2: incidents never shed; the reflex follows the cabinet itself
+        pool = ("GPU pool: no shed from this alert. The reflex sheds on its own when the cabinet reaches 34 C "
+                "(or its sensor goes silent); Orion may hold back background work while it is warm.")
+    elif row.get("shed_requested"):
+        pool = f"GPU pool: shedding new background/system work ({shed})."
+    else:
+        pool = f"GPU pool: not shedding ({shed or 'cabinet not warming yet'})."
     lines = [
         f"The hardware watcher opened cooling incident {row['incident_id']} at {row['opened_at'].isoformat()}:",
-        f"  {_reason_text(row, cfg)}.",
+        f"  {_reason_text(row, cfg, ac)}.",
         f"Last live reading: {v.get('last_live_watts')} W at {v.get('last_live_ts')}; "
         f"no live reading for {v.get('silent_sec')} s.",
         "Check the portable AC now (power, the Shelly plug, the Z-Wave stick).",
-        (f"GPU pool: shedding new background/system work ({shed})." if row.get("shed_requested")
-         else f"GPU pool: not shedding ({shed or 'cabinet not warming yet'})."),
-        "An urgent investigation follows; its report arrives separately.",
+        pool,
+        "An urgent investigation follows (at most one per 6 h); its report arrives separately.",
         f"Close it by hand: POST /incidents/{row['incident_id']}/resolve on orion-hardware-watch.",
     ]
     return "\n".join(lines)
 
 
-def _question(row: dict, cfg: CoolingRuleConfig) -> str:
+def _question(row: dict, cfg: CoolingRuleConfig, ac: AcLowConfig | None = None) -> str:
     v = (row.get("evidence") or {}).get("verdict") or {}
     when = row["opened_at"].strftime("%H:%M UTC")
     if row["rule"] == "cooling":
-        return (f"The cabinet AC watcher opened an incident at {when}: {_reason_text(row, cfg)}. "
+        return (f"The cabinet AC watcher opened an incident at {when}: {_reason_text(row, cfg, ac)}. "
                 "Is the cabinet actually losing cooling, or is this a sensor/Z-Wave/plumbing fault? "
                 "Find the cause, rate the severity, and name the one thing Juniper should do now.")
     what = "hottest CPU/board sensor" if row["rule"] == "cpu_heat" else "GPU die temperature"
-    arm = ("above the absolute ceiling for 2+ minutes" if row["open_reason"] == "above_ceiling"
+    arm = (f"above its fixed ceiling (its own 7-day p95 is {v.get('p95')} C)" if row["open_reason"] == "above_ceiling"
            else f"above its own 7-day p95 ({v.get('p95')} C) for 10+ minutes")
     return (f"{row['subject']}'s {what} has been {arm} as of {when} (latest {v.get('newest')} C). "
             "Is this real heat or a sensor fault? What load or condition is driving it, how severe is it, "

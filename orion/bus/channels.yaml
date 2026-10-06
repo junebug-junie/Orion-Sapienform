@@ -3457,6 +3457,16 @@ channels:
     since: "2026-09-29"
     description: "Hardware watcher incident facts (cooling / cpu_heat / gpu_heat): opened, resolved, and a refresh of every open incident each minute. Cooling incidents carry the shed request the GPU pool reads as shed reason cooling_incident (scheduler U4). docs/superpowers/plans/2026-09-29-urgent-curiosity-plan-4-5-hardware-watch-and-shedding.md"
 
+  - name: "orion:hardware:watch:reflex_shed"
+    kind: "event"
+    schema_id: "HardwareWatchReflexShedV1"
+    message_kind: "hardware.watch.reflex_shed.v1"
+    producer_services: ["orion-hardware-watch"]
+    consumer_services: ["orion-gpu-pool"]
+    stability: "experimental"
+    since: "2026-10-06"
+    description: "Thermal controller v2 reflex (HARDWARE_WATCH_HEAT_CONTROLLER=v2): re-sent every tick while the cabinet is critical (>=34 C, shed reason cabinet_hot: background+system) or unreadable past grace (cabinet_unknown: background), valid_until = now + 3 ticks; one active=false clear when it drops. Deploy the pool consumer first. docs/superpowers/specs/2026-10-06-thermal-controller-redesign-design.md (D2)"
+
   - name: "orion:curiosity:help:request"
     kind: "event"
     schema_id: "HelpRequestV1"

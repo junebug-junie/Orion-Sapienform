@@ -616,6 +616,35 @@ def thermal_v2_gate(path: Path = V2_FIXTURE) -> tuple[dict, list[str]]:
                          f"{close[0][1].isoformat()})")
     urgent = Counter((u.get("trigger"), u.get("subject")) for u in res.sink.urgent)
 
+    # 6. D5 on real history, synthetic AC death (the real week had none): on a hot afternoon a dead AC
+    #    opens low_power within the 15-min window; on the cool night it opens nothing; AC dead + cabinet
+    #    sensor dead escalates the reflex to cabinet_hot after the grace window (D1).
+    inj = []
+    for label, at, kill_cabinet, want_incident, want_reflex in (
+            ("hot_afternoon_ac_dies", datetime(2026, 10, 5, 14, 0, tzinfo=timezone.utc), False, True, None),
+            ("cool_night_ac_dies", datetime(2026, 10, 6, 1, 0, tzinfo=timezone.utc), False, False, None),
+            ("ac_and_sensor_die", datetime(2026, 10, 5, 14, 0, tzinfo=timezone.utc), True, True, "cabinet_hot")):
+        ac = inject(cooling, at, "zero")
+        tt = dict(temps)
+        if kill_cabinet:
+            tt[("athena", "cabinet_temp_c")] = [p for p in temps[("athena", "cabinet_temp_c")] if p.ts < at]
+        r = replay_v2(ac, tt, at - timedelta(minutes=70), at + timedelta(minutes=40))
+        low = [i for i in _incidents(r.store) if i["rule"] == "cooling" and i["open_reason"] == "low_power"]
+        lat = (datetime.fromisoformat(low[0]["opened_at"]) - at).total_seconds() if low else None
+        sys_hot = [tk for tk in r.ticks if tk["blocked"].get("system") == "cabinet_hot"]
+        reflex_lat = (sys_hot[0]["t"] - at).total_seconds() if sys_hot else None
+        # Sensor gone: cabinet_unknown after grace (300 s); AC confirmed low (the 15-min mean) -> cabinet_hot.
+        unk = [tk for tk in r.ticks if tk["blocked"].get("background") == "cabinet_unknown"]
+        unk_lat = (unk[0]["t"] - at).total_seconds() if unk else None
+        ok = (bool(low) == want_incident and (lat is None or lat <= 900 + 30)
+              and (want_reflex is None) == (reflex_lat is None) and (reflex_lat is None or reflex_lat <= 900 + 30)
+              and (not kill_cabinet or (unk_lat is not None and unk_lat <= 300 + 60)))
+        inj.append({"case": label, "at": at.isoformat(), "low_power_after_sec": lat,
+                    "cabinet_hot_after_sec": reflex_lat, "cabinet_unknown_after_sec": unk_lat, "ok": ok})
+        if not ok:
+            fails.append(f"injection {label}: low_power after {lat}s (want {'<=930s' if want_incident else 'none'}), "
+                         f"cabinet_hot after {reflex_lat}s (want {want_reflex or 'none'})")
+
     n = len(res.ticks)
     share = lambda pred: round(100 * sum(1 for tk in res.ticks if pred(tk)) / n, 2)  # noqa: E731
     report = {
@@ -631,6 +660,7 @@ def thermal_v2_gate(path: Path = V2_FIXTURE) -> tuple[dict, list[str]]:
         "alerts": [(n.context.get("rule"), n.context.get("subject"), _notice_at(res, n).isoformat()) for n in alerts],
         "urgent_requests": dict(Counter(f"{k[0]}:{k[1]}" for k in urgent.elements())),
         "reflex_signals": len(res.sink.reflex),
+        "ac_death_injection": inj,
         "shifted_10_05": {"hot_ticks": len(hot_ticks), "hours_ge_34": shifted_hours,
                           "reflex_ticks": sum(1 for tk in hot.ticks if tk["blocked"])},
     }
@@ -790,6 +820,10 @@ def _print_gate(rep: dict | None, fails: list[str]) -> None:
     for i in rep["incidents"]:
         print(f"    {i['rule']}:{i['subject']} {i['open_reason']} {i['opened_at'][:19]} ({i['minutes']} min)")
     print(f"  shifted 10-05 (+{HOT_DAY_SHIFT_C} C): {rep['shifted_10_05']}")
+    for r in rep.get("ac_death_injection", []):
+        print(f"  inject {r['case']:22s} at {r['at'][:16]}: low_power after {r['low_power_after_sec']}s, "
+              f"cabinet_unknown after {r['cabinet_unknown_after_sec']}s, cabinet_hot after {r['cabinet_hot_after_sec']}s "
+              f"{'ok' if r['ok'] else 'FAIL'}")
     if fails:
         print("FAIL:\n  " + "\n  ".join(fails))
 

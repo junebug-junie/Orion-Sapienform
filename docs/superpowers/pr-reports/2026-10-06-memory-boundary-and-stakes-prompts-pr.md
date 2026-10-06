@@ -126,6 +126,6 @@ Rebuild both services together. The validator and the prompt ship in the same im
 
 ## PR link
 
-(see the PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2502
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

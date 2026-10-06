@@ -140,7 +140,10 @@ def test_decay_concept_activations_only_touches_activation_field(monkeypatch) ->
     updated = fresh_store.get_node_by_id("concept-preserve")
     assert updated is not None
     assert updated.promotion_state == "canonical"
-    assert updated.metadata == {"foo": "bar"}
+    # since_last (default) adds only the decay stamp; nothing else in metadata moves.
+    metadata = dict(updated.metadata)
+    assert metadata.pop("activation_decayed_at")
+    assert metadata == {"foo": "bar"}
     assert updated.label == "concept-concept-preserve"
     # Only the activation value changed -- recency_score/decay_half_life_seconds/decay_floor untouched.
     assert updated.signals.activation.recency_score == 0.5
@@ -308,7 +311,7 @@ def test_decay_concept_activations_repeated_ticks_match_single_equivalent_call(m
     monkeypatch.setattr(api_routes, "SUBSTRATE_SEMANTIC_STORE", repeated_store)
 
     for _ in range(ticks):
-        api_routes.decay_concept_activations(elapsed_seconds=tick_seconds)
+        api_routes.decay_concept_activations(elapsed_seconds=tick_seconds, decay_mode="legacy")
 
     repeated_result = repeated_store.get_node_by_id("concept-repeated").signals.activation.activation
 
@@ -325,7 +328,7 @@ def test_decay_concept_activations_repeated_ticks_match_single_equivalent_call(m
     )
     monkeypatch.setattr(api_routes, "SUBSTRATE_SEMANTIC_STORE", single_call_store)
 
-    api_routes.decay_concept_activations(elapsed_seconds=ticks * tick_seconds)
+    api_routes.decay_concept_activations(elapsed_seconds=ticks * tick_seconds, decay_mode="legacy")
     single_call_result = single_call_store.get_node_by_id("concept-repeated").signals.activation.activation
 
     assert abs(repeated_result - single_call_result) < 1e-9
@@ -333,3 +336,91 @@ def test_decay_concept_activations_repeated_ticks_match_single_equivalent_call(m
     # exactly one half-life that's max(0.1, 1.0 * 0.5) == 0.5, not collapsed near floor.
     expected = max(floor, start_activation * 0.5)
     assert abs(repeated_result - expected) < 1e-6
+
+
+class _FakeClock:
+    def __init__(self, start: datetime) -> None:
+        self.now_value = start
+
+    def install(self, monkeypatch) -> None:
+        clock = self
+
+        class _FakeDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):  # noqa: D401 - test double
+                return clock.now_value
+
+        monkeypatch.setattr(api_routes, "datetime", _FakeDatetime)
+
+
+def test_since_last_decays_only_since_stamp_not_scheduler_interval(monkeypatch) -> None:
+    """L6: the runtime's dynamics tick decayed this node 30 s ago and stamped it.
+    The Hub scheduler must cover only those 30 s, not its own 120 s interval
+    (which would decay 90 s the dynamics tick already covered)."""
+    start = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
+    clock = _FakeClock(start)
+    clock.install(monkeypatch)
+    half_life = 600
+    node = _make_concept_node(
+        node_id="concept-stamped",
+        activation=0.8,
+        decay_half_life_seconds=half_life,
+        decay_floor=0.0,
+        observed_at=start - timedelta(hours=23),
+    )
+    node = node.model_copy(
+        update={"metadata": {"activation_decayed_at": (start - timedelta(seconds=30)).isoformat()}}
+    )
+    store = InMemorySubstrateGraphStore()
+    store.upsert_node(identity_key=node.node_id, node=node)
+    monkeypatch.setattr(api_routes, "SUBSTRATE_SEMANTIC_STORE", store)
+
+    api_routes.decay_concept_activations(elapsed_seconds=120.0, decay_mode="since_last")
+
+    updated = store.get_node_by_id("concept-stamped")
+    assert abs(updated.signals.activation.activation - 0.8 * 0.5 ** (30 / half_life)) < 1e-9
+    assert updated.metadata["activation_decayed_at"] == start.isoformat()
+
+
+def test_since_last_repeated_calls_match_closed_form(monkeypatch) -> None:
+    """N calls spaced 120 s apart land where one closed-form decay over N*120 s
+    would, starting from a node with no stamp (falls back to observed_at)."""
+    start = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
+    clock = _FakeClock(start)
+    clock.install(monkeypatch)
+    half_life = 3600
+    node = _make_concept_node(
+        node_id="concept-closed-form",
+        activation=1.0,
+        decay_half_life_seconds=half_life,
+        decay_floor=0.0,
+        observed_at=start,
+    )
+    store = InMemorySubstrateGraphStore()
+    store.upsert_node(identity_key=node.node_id, node=node)
+    monkeypatch.setattr(api_routes, "SUBSTRATE_SEMANTIC_STORE", store)
+
+    for tick in range(1, 31):
+        clock.now_value = start + timedelta(seconds=120 * tick)
+        api_routes.decay_concept_activations(elapsed_seconds=120.0, decay_mode="since_last")
+
+    result = store.get_node_by_id("concept-closed-form").signals.activation.activation
+    assert abs(result - 0.5) < 1e-9
+
+
+def test_legacy_mode_drops_stale_stamp(monkeypatch) -> None:
+    node = _make_concept_node(
+        node_id="concept-legacy-stamp",
+        activation=0.8,
+        decay_half_life_seconds=600,
+        decay_floor=0.0,
+        observed_at=datetime.now(timezone.utc) - timedelta(hours=1),
+    )
+    node = node.model_copy(update={"metadata": {"activation_decayed_at": "2026-10-06T00:00:00+00:00", "foo": 1}})
+    store = InMemorySubstrateGraphStore()
+    store.upsert_node(identity_key=node.node_id, node=node)
+    monkeypatch.setattr(api_routes, "SUBSTRATE_SEMANTIC_STORE", store)
+
+    api_routes.decay_concept_activations(elapsed_seconds=120.0, decay_mode="legacy")
+
+    assert store.get_node_by_id("concept-legacy-stamp").metadata == {"foo": 1}

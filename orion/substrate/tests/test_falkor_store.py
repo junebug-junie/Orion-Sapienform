@@ -731,7 +731,9 @@ def test_falkor_sanitizes_metadata_cathedral():
     store.upsert_node(identity_key="id-b", node=node)
     stored = store.get_node_by_id(node.node_id)
     assert stored is not None
-    assert len(stored.metadata) <= 16
+    # activation_decayed_at is a typed durable property exempt from the cap
+    # (falkor_store.upsert_node); every other key is still capped at 16.
+    assert len({k: v for k, v in stored.metadata.items() if k != "activation_decayed_at"}) <= 16
 
 
 def test_falkor_edge_is_persisted_as_typed_relationship():

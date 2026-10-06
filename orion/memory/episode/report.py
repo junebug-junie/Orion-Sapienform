@@ -14,6 +14,8 @@ from datetime import datetime
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
+from orion.memory.voice_render import VoicedMemory, render_memory
+
 EPISODES_SQL = """
 SELECT episode_id, started_at, last_turn_at, closed_at, close_reason, close_lag_sec, episode_status,
        skip_reason, juniper_turn_count, command_turn_count, turns
@@ -36,8 +38,13 @@ CONFIRMATION_FLAG = {
     "rejected": " (rejected by Juniper; never recalled)",
 }
 NEW_ROWS_SQL = """
-SELECT memory_id::text AS id, purpose, voice, channel, statement, stakes, stakes_reason, confirmation_state
-FROM episode_memory WHERE episode_id = $1 ORDER BY purpose, statement
+SELECT m.memory_id::text AS id, m.purpose, m.voice, m.channel, m.statement, m.stakes, m.stakes_reason,
+       m.confirmation_state, coalesce(m.occurred_at, m.created_at) AS remembered_at,
+       EXISTS (SELECT 1 FROM episode_memory_evidence e WHERE e.memory_id = m.memory_id
+               AND e.source_kind = 'chat_prompt' AND e.verified) AS has_verified_juniper_quote,
+       EXISTS (SELECT 1 FROM episode_memory_evidence e WHERE e.memory_id = m.memory_id
+               AND e.source_kind = 'chat_response' AND e.verified) AS has_verified_orion_quote
+FROM episode_memory m WHERE m.episode_id = $1 ORDER BY m.purpose, m.statement
 """
 EVENTS_SQL = """
 SELECT op, reason, count(*) AS n FROM episode_memory_event
@@ -58,13 +65,16 @@ SELECT run_id, model, prompt_tokens, completion_tokens, llm_latency_ms, hold_wai
 FROM episode_distill_run WHERE episode_id = $1
 """
 
-_VOICE_LABEL = {
-    "juniper_said": "Juniper said",
-    "worked_out_together": "worked out together",
-    "orion_thought": "Orion thought",
-    "orion_read": "Orion read",
-    "orion_self_knowledge": "Orion self-knowledge",
-}
+def _voiced(m: dict[str, Any], tz: ZoneInfo) -> VoicedMemory:
+    """Map a NEW_ROWS_SQL row onto the shared voice renderer's input."""
+    remembered = m.get("remembered_at")
+    return VoicedMemory(
+        voice=str(m["voice"]), channel=str(m["channel"]), statement=str(m["statement"]),
+        when=remembered.astimezone(tz) if isinstance(remembered, datetime) else None,
+        has_verified_juniper_quote=bool(m.get("has_verified_juniper_quote")),
+        has_verified_orion_quote=bool(m.get("has_verified_orion_quote")),
+        confirmation_state=str(m.get("confirmation_state") or "auto"),
+    )
 
 
 def _turn_ids(turns: Any) -> list[str]:
@@ -103,10 +113,11 @@ def render_episode(ep: dict[str, Any], old: Iterable[dict], new: Iterable[dict],
     else:
         lines.append(f"**New writer ({len(new)} memories):**")
         for m in new:
+            # The bracket and flag are the operator's audit (stored voice, stakes, what the
+            # confirmation loop did); the rest is exactly the line Orion would read (voice_render).
             flag = CONFIRMATION_FLAG.get(m["confirmation_state"], "")
             stakes = f", high: {m['stakes_reason'] or 'no category'}" if m["stakes"] == "high" else ""
-            lines.append(f"- [{m['purpose']}, {_VOICE_LABEL.get(m['voice'], m['voice'])}/{m['channel']}{stakes}]"
-                         f"{flag} {m['statement']}")
+            lines.append(f"- [{m['purpose']}, {m['voice']}/{m['channel']}{stakes}]{flag} {render_memory(_voiced(m, tz))}")
         if not new:
             lines.append("- (none)")
     ev = list(events)

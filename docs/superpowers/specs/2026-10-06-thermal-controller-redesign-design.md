@@ -1,8 +1,22 @@
 # Thermal controller redesign: protect on cabinet heat, not on AC power
 
-Date: 2026-10-06. Status: **design, awaiting Juniper's answers to "Missing questions".** Nothing implemented.
+Date: 2026-10-06. Status: **design APPROVED 2026-10-06** (Juniper: reflex line 34°C; D8 yes). Q3/Q4/Q6 small defaults unconfirmed. See "Decisions".
 
 Supersedes the shed/open/resolve logic of `docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md` (Part 4) and its plan `docs/superpowers/plans/2026-09-29-urgent-curiosity-plan-4-5-hardware-watch-and-shedding.md`. The alert, urgent-run and pool-shed plumbing they built stays. The rules deciding when to use it change.
+
+## Decisions (Juniper, 2026-10-06)
+
+- **The reflex sheds at 34°C, not 32°C.**
+  - New constant `DEFAULT_CRITICAL_C = 34.0` in `orion/autonomy/thermal_gate.py`, re-arming at 33.0°C (1°C hysteresis).
+  - `ThermalState` names and the existing 32°C `hot` line are **unchanged**. These consumers keep using `hot`:
+    - orion-thought visual-chain pause (`ORION_THERMAL_HOT_C`);
+    - `world_settlement.py`;
+    - the gpu2 swap guard.
+  - Where this spec says the reflex acts "at `hot`", read **"at ≥ critical (34°C)"**.
+  - Orion's learned shed owns 29.5–34°C, covering `elevated` and `hot`.
+  - Live 7-day calibration of the ≥ 34°C share is to be computed by the replay. Peak seen: 33.5°C, so the reflex would not have fired on 10-04/05. That is intended: Orion acts there.
+- **D8 approved** (Orion's learned shed reachable in the band).
+- Q3 (CPU ceiling 90°C), Q4 (`agent_turn` split) and Q6 (one urgent investigation per 6 h) are proposed defaults; Juniper has not confirmed them.
 
 ## Arsonist summary
 
@@ -131,7 +145,8 @@ Reuse it. No new transport.
 |---|---|---|
 | normal | no signal | not eligible |
 | elevated | no shed; blocks gpu2 swap loads (guard) | **eligible**: Orion decides whether to hold back `background` |
-| hot | signal `cabinet_hot` → blocks `background` + `system` | not needed (reflex covers it) |
+| hot (32–34°C) | no shed; blocks gpu2 swap loads | **eligible** |
+| critical (≥ 34°C) | signal `cabinet_hot` → blocks `background` + `system` | not needed (reflex covers it) |
 | unknown, past grace | signal `cabinet_unknown` → blocks `background` (→ `cabinet_hot` if AC also low) | eligible |
 
 - **Why split it this way.** "Elevated" holds 34% of the time. A reflex that sheds background a third of the week would starve Orion's background cognition, and it would make Orion's learned action a permanent no-op: a lower-precedence reason can only add blocks (`shed.py:14-16`), so it would never get the chance to act.
@@ -209,10 +224,10 @@ So the change is scoped:
 - The trailing p95 is kept as an *annotation* on the incident ("this card is 22°C above its usual"), not as a trigger (C9).
 - A heat incident whose sensor has gone silent for more than 15 min resolves as `sensor_lost`, so it cannot block anything indefinitely (C12).
 
-### D8. PROPOSAL (autonomy change): Orion's learned shed owns the elevated band
+### D8. APPROVED 2026-10-06 (autonomy change): Orion's learned shed owns the elevated band
 
 In `orion/autonomy/self_shed.py`:
-- Eligible when the cabinet is `elevated` or `unknown`, and not otherwise. At `hot` the reflex already blocks background, so Orion's signal would add nothing.
+- Eligible when the cabinet is `elevated`, `hot` (below 34°C critical) or `unknown`. At ≥ 34°C the reflex already blocks background, so Orion's signal would add nothing.
 - Drop the `cabinet_not_rising` requirement. In the elevated band, the decision belongs to Orion's attend-to-act loop, not a fixed rise threshold.
 - Blocked only while the reflex's own signal is active (`cabinet_hot`/`cabinet_unknown`), not by *any* incident (`self_shed.py:130`, C7). Junk heat incidents can no longer disable it.
 

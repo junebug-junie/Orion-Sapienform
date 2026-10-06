@@ -202,11 +202,11 @@ def test_low_with_none_is_auto():
 
 @pytest.mark.parametrize("stakes, reason, asks, expect, op", [
     ("low", "juniper_feelings", False, ("high", "juniper_feelings"), "stakes_raised"),   # category is the judgment
-    ("low", None, False, ("high", None), "stakes_raised"),                               # not judged
-    ("low", "safety_location", False, ("high", None), "stakes_raised"),                  # retired / unknown
+    ("low", None, False, ("high", "unjudged"), "stakes_raised"),                         # not judged
+    ("low", "safety_location", False, ("high", "unjudged"), "stakes_raised"),            # retired / unknown
     ("low", "none", True, ("high", "orion_asks_direction"), "stakes_raised"),            # asks for direction
-    ("high", "none", False, ("high", None), "stakes_reason_missing"),
-    ("high", None, False, ("high", None), "stakes_reason_missing"),
+    ("high", "none", False, ("high", "unjudged"), "stakes_reason_missing"),
+    ("high", None, False, ("high", "unjudged"), "stakes_reason_missing"),
     ("high", None, True, ("high", "orion_asks_direction"), "stakes_reason_set"),
 ])
 def test_inconsistent_pairs_resolve_toward_high_and_are_logged(stakes, reason, asks, expect, op):
@@ -235,3 +235,26 @@ def test_unknown_reason_does_not_drop_the_memory_at_parse():
 
 def test_none_is_the_only_low_reason():
     assert set(get_args(StakesReason)) - HIGH_STAKES_REASONS == {"none"}
+
+
+def test_v2_answer_is_not_forced_high_but_real_signals_still_escalate():
+    """A checkpoint answered from the v2 prompt (no category asked) keeps the distiller's stakes."""
+    from orion.memory.episode.validate import stakes_category_required
+
+    assert stakes_category_required("memory_episode_distill.v2") is False
+    assert stakes_category_required("memory_episode_distill.v3") is True
+    assert stakes_category_required(None) is True
+    d = EpisodeDistillationV1.model_validate({"memories": [
+        {k: v for k, v in _mem().items() if k != "stakes_reason"},
+        _mem(statement="Juniper told me her brother is moving in with her soon.", stakes="high",
+             stakes_reason=None),
+        _mem(statement="Juniper asked me which project I would like to focus on next.", stakes="low",
+             stakes_reason=None, asks_direction=True),
+    ]})
+    r = validate_distillation(d, TURNS, episode_id="ep-v2", prompt_version="memory_episode_distill.v2")
+    got = [(m.stakes, m.stakes_reason, m.confirmation_state) for m in r.memories]
+    assert got == [("low", None, "auto"), ("high", None, "pending_confirmation"),
+                   ("high", "orion_asks_direction", "pending_confirmation")]
+    assert [m.events[-1].op for m in r.memories] == ["stakes_uncategorized", "stakes_uncategorized", "stakes_raised"]
+    strict = validate_distillation(d, TURNS, episode_id="ep-v3", prompt_version="memory_episode_distill.v3")
+    assert strict.memories[0].stakes_reason == "unjudged"

@@ -1,5 +1,7 @@
 # Memory redesign: define "boundary" for the judge, and give the distiller Juniper's stakes rubric
 
+> **Correction (2026-10-06, follow-up PR).** This report says the boundary score only matters under the shadow Rule 3 ("the only place the score decides anything"). That is wrong. The LIVE legacy window rule closes a window on a boundary score of at least 0.85, and every close runs the live crystallization intake. With this prompt, live windows go from 89 to 49 over 30 days. The measured live effect, plus the follow-up fixes, are in `docs/superpowers/pr-reports/2026-10-06-memory-boundary-stakes-review-followups-pr.md`.
+
 ## Summary
 
 - The judge that decides whether a conversation has ended was asked "BOUNDARY: YES or NO", but nobody told it what a boundary is. It said yes to almost everything, so one evening's chat was cut into several episodes. The prompt now defines it in Juniper's terms: yes means the thread ended or moved to something unrelated; no means a pause, a follow-up, an elaboration, a reaction, a return to the same subject, or small talk inside the thread. (`orion/memory/turn_change_classify.py`, `BOUNDARY_DEFINITION`)

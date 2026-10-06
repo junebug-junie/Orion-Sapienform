@@ -168,6 +168,113 @@ def split(turns: list[dict[str, Any]], key: str) -> list[list[dict[str, Any]]]:
     return episodes
 
 
+LEGACY_LLM_ONLY_THRESHOLD = 0.85  # settings.MEMORY_BOUNDARY_LLM_ONLY_THRESHOLD
+
+
+def legacy_live_windows(turns: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+    """The LIVE window rule as it runs today (worker.py -> window_fetch.legacy_close_decision).
+
+    legacy_view() hides the phase stamp, so every turn is phase "unknown": the window closes when
+    the boundary score is >= 0.85 (``legacy:unknown_phase+llm``), else when the gap between the
+    window's last two turns is >= 5400 s (``legacy:time_gap``). The closing turn ends this window and
+    seeds the next (WindowStore.close_current_window). Each close runs the live crystallization intake.
+    """
+    windows: list[dict[str, Any]] = []
+    cur: list[dict[str, Any]] = []
+    for t in turns:
+        cur.append(t)
+        score = t.get(key)
+        reason = None
+        if isinstance(score, (int, float)) and score >= LEGACY_LLM_ONLY_THRESHOLD:
+            reason = "llm"
+        elif len(cur) >= 2 and (cur[-1]["at_dt"] - cur[-2]["at_dt"]).total_seconds() >= FALLBACK_GAP_SEC:
+            reason = "time_gap"
+        if reason and len(cur) > 1:
+            windows.append({"turns": cur, "reason": reason})
+            cur = [t]
+    if cur:
+        windows.append({"turns": cur, "reason": None})
+    return windows
+
+
+def legacy_summary(turns: list[dict[str, Any]], key: str) -> dict[str, Any]:
+    ws = legacy_live_windows(turns, key)
+    closed = [w for w in ws if w["reason"]]
+    sizes = [len(w["turns"]) for w in ws]
+    return {
+        "windows": len(ws),
+        "closed": len(closed),
+        "closed_by": dict(Counter(w["reason"] for w in closed)),
+        "turns_per_window_mean": round(statistics.mean(sizes), 2) if sizes else None,
+        "turns_per_window_median": statistics.median(sizes) if sizes else None,
+    }
+
+
+_SIGNIFICANT = {"TOPIC", "STANCE", "REPAIR"}
+
+
+def consumer_flags(sc: dict[str, Any]) -> dict[str, bool]:
+    """Per-turn decisions the live consumers of the SAME classify call make from the first pass.
+
+    Thresholds are the live defaults: turn_change signal (worker._maybe_publish_turn_change_signal:
+    novelty >= 0.65 and confidence >= 0.15), consolidation_gate substantive_shift (shift in
+    TOPIC/STANCE/REPAIR and novelty >= 0.35), recall_skip_gate (novelty < 0.25 floor; a significant
+    shift with novelty >= 0.35 blocks the skip), retrieval_intent (REPAIR -> open_loop, STANCE ->
+    relational, both at novelty >= 0.35), should_session_reappraise (margin 0.15), the
+    consolidation gate's significance floor (MEMORY >= 0.40), and the live window close (>= 0.85).
+    """
+    from orion.memory.turn_change_classify import should_session_reappraise
+
+    nov = sc.get("novelty_score")
+    n = float(nov) if isinstance(nov, (int, float)) else None
+    shift = str(sc.get("shift_kind") or "NONE").upper()
+    conf = sc.get("confidence")
+    mem = sc.get("memory_significance_score")
+    bnd = sc.get("conversation_boundary_score")
+    return {
+        "turn_change_signal_emitted": n is not None and n >= 0.65 and isinstance(conf, (int, float)) and conf >= 0.15,
+        "substantive_shift": shift in _SIGNIFICANT and n is not None and n >= 0.35,
+        "recall_novelty_below_floor": n is None or n < 0.25,
+        "retrieval_intent_open_loop": shift == "REPAIR" and n is not None and n >= 0.35,
+        "retrieval_intent_relational": shift == "STANCE" and n is not None and n >= 0.35,
+        "session_reappraise": should_session_reappraise(sc, margin=0.15, prior_turn_count=1),
+        "memory_significance_ge_0_40": isinstance(mem, (int, float)) and mem >= 0.40,
+        "live_window_close_ge_0_85": isinstance(bnd, (int, float)) and bnd >= LEGACY_LLM_ONLY_THRESHOLD,
+    }
+
+
+def other_lines_report(turns: list[dict[str, Any]], runs: int) -> dict[str, Any]:
+    """NOVEL / SHIFT / MEMORY before vs after on the same turns, with run-to-run noise as the yardstick."""
+    keys = [f"{p}_r{i}" for p in ("before", "after") for i in range(runs)]
+    scored = [t for t in turns if all(k in (t.get("scores") or {}) for k in keys)]
+    per_run = {}
+    for k in keys:
+        sc = [t["scores"][k] for t in scored]
+        per_run[k] = {
+            "novelty": distribution([x["novelty_score"] for x in sc if isinstance(x.get("novelty_score"), (int, float))]),
+            "memory": distribution([x["memory_significance_score"] for x in sc
+                                    if isinstance(x.get("memory_significance_score"), (int, float))]),
+            "shift_counts": dict(Counter(str(x.get("shift_kind") or "missing") for x in sc)),
+            "consumer_true_counts": dict(Counter(f for x in sc for f, v in consumer_flags(x).items() if v)),
+        }
+
+    def flips(a: str, b: str) -> dict[str, int]:
+        out = Counter()
+        for t in scored:
+            fa, fb = consumer_flags(t["scores"][a]), consumer_flags(t["scores"][b])
+            for f in fa:
+                out[f] += int(fa[f] != fb[f])
+            out["shift_kind"] += int(str(t["scores"][a].get("shift_kind")) != str(t["scores"][b].get("shift_kind")))
+        return dict(out)
+
+    comparisons = {"before_vs_after": flips("before_r0", "after_r0")}
+    if runs >= 2:
+        comparisons["noise_before_r0_vs_r1"] = flips("before_r0", "before_r1")
+        comparisons["noise_after_r0_vs_r1"] = flips("after_r0", "after_r1")
+        comparisons["before_vs_after_r1"] = flips("before_r1", "after_r1")
+    return {"turns_scored_every_run": len(scored), "per_run": per_run, "per_turn_flips": comparisons}
+
+
 def distribution(scores: list[float]) -> dict[str, Any]:
     if not scores:
         return {"n": 0}
@@ -224,7 +331,20 @@ def report(turns: list[dict[str, Any]]) -> dict[str, Any]:
             "episodes_per_active_day_mean": round(len(eps) / len(per_day), 2) if per_day else None,
             "episodes_per_day": dict(sorted(per_day.items())),
             "sessions": {name: session_view(eps, win, key) for name, win in SESSIONS.items()},
+            "live_legacy_windows": legacy_summary(turns, key),
         }
+    runs = max((int(k.rsplit("_r", 1)[1]) + 1 for t in turns for k in (t.get("scores") or {})), default=0)
+    if runs:
+        out["runs_per_prompt"] = runs
+        if runs >= 2:
+            out["live_legacy_windows_noise"] = {
+                k: legacy_summary(turns, k) for k in ("before_r1", "after_r1")
+            }
+            out["resumed_thread_ge_0_92_noise"] = {
+                k: sum(1 for t in resumed if isinstance(t.get(k), (int, float)) and t[k] >= OVERRIDE_THRESHOLD)
+                for k in ("before_r1", "after_r1")
+            }
+        out["other_answer_lines"] = other_lines_report(turns, runs)
     return out
 
 
@@ -240,15 +360,22 @@ async def main_async(args) -> dict[str, Any]:
             if i == 0:
                 continue
             before, after = prompts_for(t, turns[i - 1])
-            for key, prompt in (("before", before), ("after", after)):
-                for attempt in range(2):
-                    try:
-                        s = await classify(bus, prompt, route=args.route, timeout=args.timeout)
-                        t[key] = s.get("conversation_boundary_score")
-                        t[f"{key}_shift"] = s.get("shift_kind")
-                        break
-                    except Exception as exc:  # noqa: BLE001
-                        errors[f"{key}:{type(exc).__name__}"] += 1
+            t["scores"] = {}
+            for run in range(args.runs):
+                for key, prompt in (("before", before), ("after", after)):
+                    for attempt in range(2):
+                        try:
+                            s = await classify(bus, prompt, route=args.route, timeout=args.timeout)
+                            t["scores"][f"{key}_r{run}"] = {
+                                k: s.get(k) for k in ("conversation_boundary_score", "novelty_score", "shift_kind",
+                                                      "memory_significance_score", "confidence", "shift_scores")}
+                            t[f"{key}_r{run}"] = s.get("conversation_boundary_score")
+                            if run == 0:
+                                t[key] = s.get("conversation_boundary_score")
+                                t[f"{key}_shift"] = s.get("shift_kind")
+                            break
+                        except Exception as exc:  # noqa: BLE001
+                            errors[f"{key}:{type(exc).__name__}"] += 1
             print(f"{i}/{len(turns) - 1} {t['phase']} before={t.get('before')} after={t.get('after')}", flush=True)
     finally:
         await bus.close()
@@ -263,6 +390,7 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=30)
     ap.add_argument("--route", default="metacog_background")
     ap.add_argument("--timeout", type=float, default=30.0)
+    ap.add_argument("--runs", type=int, default=2, help="runs per prompt; run-to-run disagreement is the noise yardstick")
     ap.add_argument("--bus-url", default=DEFAULT_BUS)
     ap.add_argument("--summary-json", type=Path)
     args = ap.parse_args()

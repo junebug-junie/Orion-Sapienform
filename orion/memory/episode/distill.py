@@ -18,6 +18,23 @@ from orion.memory.episode.validate import EpisodeTurn
 from orion.schemas.memory_episode import EpisodeDistillationV1
 
 PROMPT_PATH = Path(__file__).resolve().parents[2] / "cognition" / "prompts" / "memory_episode_distill.j2"
+# The template states its own version in its first line. Templates from before the marker existed
+# (v1/v2) have none; v2 is the last of those.
+_VERSION_MARKER = re.compile(r"\{#-?\s*prompt_version:\s*(\S+?)\s*-?#\}")
+UNMARKED_TEMPLATE_VERSION = "memory_episode_distill.v2"
+
+
+def template_prompt_version(path: Path | None = None) -> str:
+    """The version of the template that ``render_prompt`` renders (default: the current PROMPT_PATH).
+
+    The durable graph stamps THIS on the run, not the brief's ``prompt_version``: the brief is built
+    by memory-consolidation and can come from a different image than the one rendering the prompt.
+    """
+    head = (path or PROMPT_PATH).read_text(encoding="utf-8")[:300]
+    m = _VERSION_MARKER.search(head)
+    return m.group(1) if m else UNMARKED_TEMPLATE_VERSION
+
+
 DEFAULT_TZ = "America/Denver"
 
 # A workflow-command turn is identified by the Hub workflow runtime's own reply header

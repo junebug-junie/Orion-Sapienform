@@ -33,7 +33,8 @@ FROM episode_memory WHERE episode_id = $1 ORDER BY purpose, statement
 """
 EVENTS_SQL = """
 SELECT op, reason, count(*) AS n FROM episode_memory_event
-WHERE episode_id = $1 AND op IN ('rejected_invalid', 'downgraded_voice', 'stakes_raised', 'evidence_dropped')
+WHERE episode_id = $1 AND op IN ('rejected_invalid', 'downgraded_voice', 'stakes_raised', 'stakes_reason_missing',
+                                    'stakes_reason_set', 'stakes_uncategorized', 'evidence_dropped')
 GROUP BY op, reason ORDER BY op, reason
 """
 # Closed (not skipped) episodes in the window whose distill run has not finished yet: while any
@@ -95,7 +96,7 @@ def render_episode(ep: dict[str, Any], old: Iterable[dict], new: Iterable[dict],
         lines.append(f"**New writer ({len(new)} memories):**")
         for m in new:
             flag = " (unconfirmed)" if m["confirmation_state"] == "pending_confirmation" else ""
-            stakes = f", high: {m['stakes_reason']}" if m["stakes"] == "high" else ""
+            stakes = f", high: {m['stakes_reason'] or 'no category'}" if m["stakes"] == "high" else ""
             lines.append(f"- [{m['purpose']}, {_VOICE_LABEL.get(m['voice'], m['voice'])}/{m['channel']}{stakes}]"
                          f"{flag} {m['statement']}")
         if not new:

@@ -263,10 +263,16 @@ def build_falkor_direct_concept_store_from_env(
     *,
     socket_timeout_s: float | None = None,
     socket_connect_timeout_s: float | None = None,
+    ensure_indexes: bool = True,
 ) -> FalkorDirectConceptStore | None:
     """Build from ``FALKORDB_URI``/``FALKORDB_SUBSTRATE_GRAPH``. No network I/O
     happens here (redis-py connects lazily), so construction cannot block.
-    Returns None when ``FALKORDB_URI`` is unset."""
+    Returns None when ``FALKORDB_URI`` is unset.
+
+    ``ensure_indexes=True`` runs the node_id index bootstrap synchronously
+    here (a network call, bounded by the socket timeouts). A latency-bound
+    caller (orion-recall) passes False and runs ``ensure_substrate_indexes``
+    off its request path instead."""
     uri = str(os.getenv("FALKORDB_URI", "")).strip()
     if not uri:
         logger.warning("falkor_direct_concept_store_unconfigured reason=FALKORDB_URI_missing")
@@ -284,7 +290,8 @@ def build_falkor_direct_concept_store_from_env(
     )
     # The writer gets an injected client, so its own constructor skips the
     # index bootstrap; run it here on that client (same socket timeouts).
-    ensure_substrate_indexes(uri, graph_name, client=write_client)
+    if ensure_indexes:
+        ensure_substrate_indexes(uri, graph_name, client=write_client)
     logger.info(
         "substrate_store_backend_selected backend=falkor_direct uri_host=%s graph=%s",
         urlparse(uri).hostname or "",

@@ -460,3 +460,60 @@ def test_node_id_queries_use_the_index(cypher_key) -> None:
         assert "Index Scan" in plan(), plan()
     finally:
         client._r.execute_command("GRAPH.DELETE", graph_name)
+
+
+def test_ensure_indexes_closes_only_the_client_it_built(monkeypatch) -> None:
+    """#2513 review finding 4: the throwaway client's pool leaked."""
+    import orion.substrate.falkor_store as fs
+
+    made: list = []
+
+    class _Owned:
+        def __init__(self, error=None, **kw):
+            self.closed = 0
+            self.error = error
+            made.append(self)
+
+        def graph_query(self, cypher, params=None):
+            if self.error:
+                raise self.error
+
+        def close(self):
+            self.closed += 1
+
+    monkeypatch.setattr(fs, "RedisGraphQueryClient", lambda **kw: _Owned())
+    assert fs.ensure_substrate_indexes("redis://x", "g") is True
+    monkeypatch.setattr(fs, "RedisGraphQueryClient", lambda **kw: _Owned(error=ConnectionError("down")))
+    assert fs.ensure_substrate_indexes("redis://x", "g") is False
+    monkeypatch.setattr(fs, "RedisGraphQueryClient", lambda **kw: _Owned(error=KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        fs.ensure_substrate_indexes("redis://x", "g")
+    assert [m.closed for m in made] == [1, 1, 1]  # closed even on the way out
+
+    injected = _Owned()
+    fs.ensure_substrate_indexes("redis://x", "g", client=injected)
+    assert injected.closed == 0
+
+
+def test_redis_graph_client_close_releases_the_pool() -> None:
+    from orion.graph.falkor_client import RedisGraphQueryClient
+
+    client = RedisGraphQueryClient(uri="redis://127.0.0.1:1", graph_name="g")
+    closed: list = []
+    client._r.close = lambda: closed.append(1)  # type: ignore[method-assign]
+    client.close()
+    assert closed == [1]
+    RedisGraphQueryClient.__new__(RedisGraphQueryClient).close()  # no _r: no error
+
+
+def test_builder_can_skip_the_index_bootstrap(monkeypatch) -> None:
+    import orion.substrate.falkor_direct as mod
+
+    calls: list = []
+    monkeypatch.setattr(mod, "ensure_substrate_indexes", lambda *a, **k: calls.append(1))
+    monkeypatch.setattr(mod, "RedisGraphQueryClient", lambda **kw: _ScriptedClient())
+    monkeypatch.setenv("FALKORDB_URI", "redis://falkor.test:6379")
+    assert mod.build_falkor_direct_concept_store_from_env(ensure_indexes=False) is not None
+    assert calls == []
+    assert mod.build_falkor_direct_concept_store_from_env() is not None
+    assert calls == [1]

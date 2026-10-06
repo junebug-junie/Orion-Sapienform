@@ -1,6 +1,6 @@
 # Memory Stage 2: the things Orion knows about, as one graph, and recall that starts from them
 
-Status: **PROPOSAL, revision 2** (design mode + proposal mode). Nothing here is implemented.
+Status: **APPROVED 2026-10-06, revision 2** (Juniper). Implementation starts with PR A, then PR B. See "Decisions" below.
 Date: 2026-10-06
 Parent: `2026-09-30-memory-episode-redesign-design.md` (rev 3, APPROVED 2026-10-01), its "Stage 2" rows.
 Builds on:
@@ -20,6 +20,12 @@ Evidence base:
 All of it was taken on 2026-10-06. Anything not checked live is marked **UNVERIFIED**.
 
 The repo is public. Memories about Juniper's family, body, feelings or whereabouts are counted here, never quoted.
+
+## Decisions (Juniper, 2026-10-06)
+
+1. **Recall by referent becomes primary at Stage 2**, once the shadow-week gates in 7.2 pass (not at Stage 4). This answers open product question 1.
+2. **Relative names ("my boss", "my sister") resolve as soon as Juniper says them**, under the 90-day descriptor expiry; a collision always becomes a question, never a silent merge. This answers open product question 2.
+3. **Go-ahead to build PR A, the shared assertion core** that #2497 deferred, renaming #2497's proposed `ReadingGraph*V1` events to `SubstrateGraph*V1` with `proposal_kind`. Stay backward compatible wherever #2497 already shipped code; the PR A report lists what the #2497 owner must review.
 
 ## What changed in revision 2
 

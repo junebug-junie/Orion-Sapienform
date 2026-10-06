@@ -14,7 +14,7 @@ class FakeRedis:
     def __init__(self):
         self.data = {}
 
-    def set(self, key, value):
+    def set(self, key, value, ex=None):
         self.data[key] = value
 
     def get(self, key):
@@ -47,7 +47,7 @@ def test_an_old_capability_or_an_unreachable_server_is_not_ready():
 
 def test_advertising_never_raises():
     class Down:
-        def set(self, *_a):
+        def set(self, *_a, **_k):
             raise ConnectionError("down")
 
     assert advertise("redis://x", name="r", client=Down()) is False

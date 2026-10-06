@@ -59,6 +59,11 @@ async def lifespan(app: FastAPI):
         if settings.RECALL_RDF_ENDPOINT_URL:
             logger.info("recall_graph_backend_selected backend=sparql query_url=%s", settings.RECALL_RDF_ENDPOINT_URL)
 
+    # Advertise that this process reads the assertion-core graph shapes, so the referent/
+    # assertion projectors' readiness gate can open. Background thread; never blocks or raises.
+    from orion.substrate.reader_capability import advertise_at_startup
+
+    advertise_at_startup()
     rabbit = Rabbit(
         chassis_cfg(),
         request_channel=settings.RECALL_BUS_INTAKE,

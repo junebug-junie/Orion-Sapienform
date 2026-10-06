@@ -469,6 +469,11 @@ async def startup_event():
     # docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md).
     # Own bus connection, independent of Hub's main `bus`/`rpc_bus` below.
     # ------------------------------------------------------------
+    # Advertise that this process reads the assertion-core graph shapes, so the referent/
+    # assertion projectors' readiness gate can open. Background thread; never blocks or raises.
+    from orion.substrate.reader_capability import advertise_at_startup
+
+    advertise_at_startup()
     try:
         heartbeat_chassis = build_heartbeat_chassis()
         await heartbeat_chassis.start_background()

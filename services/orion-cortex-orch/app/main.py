@@ -700,6 +700,11 @@ async def main() -> None:
             "exec_lane_routing_enabled=true: run one cortex-exec consumer per lane (chat, spark, background) "
             "subscribed to the lane exec channels; a missing subscriber causes PlanExecution RPC timeouts."
         )
+    # Advertise that this process reads the assertion-core graph shapes, so the referent/
+    # assertion projectors' readiness gate can open. Background thread; never blocks or raises.
+    from orion.substrate.reader_capability import advertise_at_startup
+
+    advertise_at_startup()
     await svc.bus.connect()
     from .health_http import create_health_app, start_health_server
 

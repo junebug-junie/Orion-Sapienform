@@ -1039,6 +1039,11 @@ async def main() -> None:
         "on" if verb_listener is not None else "off",
         "on" if settings.enable_pre_turn_appraisal_handler else "off",
     )
+    # Advertise that this process reads the assertion-core graph shapes, so the referent/
+    # assertion projectors' readiness gate can open. Background thread; never blocks or raises.
+    from orion.substrate.reader_capability import advertise_at_startup
+
+    advertise_at_startup()
     _run_autonomy_graph_probe()
     await svc.bus.connect()
     from .health_http import create_health_app, start_health_server

@@ -76,6 +76,11 @@ def build_heartbeat_chassis() -> HeartbeatOnly:
 async def lifespan(app: FastAPI):
     global heartbeat_chassis, _goal_state_bus, _goal_state_task, _goal_state_stop
     _install_stdlib_logging_bridge(settings.log_level)
+    # Advertise that this process reads the assertion-core graph shapes, so the referent/
+    # assertion projectors' readiness gate can open. Background thread; never blocks or raises.
+    from orion.substrate.reader_capability import advertise_at_startup
+
+    advertise_at_startup()
     worker = ConceptWorker(settings)
     app.state.worker = worker
     app.state.concept_worker = worker

@@ -8,10 +8,10 @@ then primary-only) -- after adapter is proven live." This file is that proof
 at the worker level, mirroring the library-level pattern already established
 in orion/substrate/tests/test_dynamics_falkor_routed.py.
 
-None of this flips any default -- SUBSTRATE_WRITE_PREDICTION_ERROR_NODES,
-SUBSTRATE_DYNAMICS_TICK_ENABLED, and SUBSTRATE_STORE_BACKEND=routed all stay
-off/unset in .env_example and .env; these tests set them only in-process via
-monkeypatch.
+These tests set SUBSTRATE_WRITE_PREDICTION_ERROR_NODES,
+SUBSTRATE_DYNAMICS_TICK_ENABLED and SUBSTRATE_STORE_BACKEND=routed in-process
+via monkeypatch, independent of the shipped defaults (the dynamics tick
+defaults on since 2026-10-06 as the sole activation-decay writer).
 """
 
 from __future__ import annotations

@@ -326,6 +326,15 @@ class FalkorSubstrateStore:
         # retry required"), and orion-substrate-runtime writes from several
         # tick loops at once, so ~1 in 2 refreshes aborted and ticks ran on a
         # stale cache. None = no scan in flight. Guarded by _cache_lock.
+        # Trade-off: a replayed local write wins over a newer write from
+        # another process that the same scan read, until the next refresh
+        # (the snapshot ceiling, or this process's next write). That matches
+        # steady state (a local write always wins in the cache until refresh);
+        # the old abort path recovered from it one snapshot sooner. Only one
+        # scan may run at a time: snapshot() holds _snapshot_lock, and the
+        # constructor hydrate runs before the store is shared.
+        # Counters below are updated outside _cache_lock; safe because hydrate
+        # callers are serialized the same way.
         self._scan_journal: list[tuple[str, Any, Any, frozenset[str] | None]] | None = None
         self.hydrate_ok_total = 0
         self.hydrate_failed_total = 0
@@ -456,8 +465,11 @@ class FalkorSubstrateStore:
                 for kind, identity_key, obj, skip_keys in journal:
                     if kind == "node":
                         self._apply_node_to_cache(fresh, identity_key, obj, skip_keys)
-                    else:
+                    elif all(fresh.get_node_by_id(end.node_id) is not None
+                             for end in (obj.source, obj.target)):
                         fresh.upsert_edge(identity_key=identity_key, edge=obj)
+                    # else: an endpoint is gone from the fresh scan (deleted
+                    # elsewhere mid-scan); never cache an edge to a missing node.
                 self._cache = fresh
                 self._last_snapshot_generation = self._write_generation
                 self.hydrate_replayed_writes_total += len(journal)

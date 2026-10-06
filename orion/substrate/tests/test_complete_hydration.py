@@ -290,3 +290,29 @@ def test_real_client_parser_cannot_hide_malformed_refresh(malformed):
     assert not state.scan_receipt.complete and state.scan_receipt.stale
     assert store._cache is old_cache and store._last_snapshot_at == old_cursor
     assert "malformed Falkor result" in state.scan_receipt.reason
+
+
+def test_replayed_edge_with_missing_endpoint_is_not_cached():
+    """A journaled edge whose endpoint the fresh scan does not contain (deleted
+    elsewhere mid-scan) is dropped rather than cached dangling."""
+    from orion.core.schemas.cognitive_substrate import NodeRefV1, SubstrateEdgeV1
+    client = CappedClient()
+    store = build(client)
+    original = client.graph_query
+    done = False
+    def query(cypher, params=None):
+        nonlocal done
+        result = original(cypher, params)
+        if not done:
+            done = True
+            base = _concept()
+            store.upsert_edge(identity_key="dangling", edge=SubstrateEdgeV1(
+                edge_id="dangling", source=NodeRefV1(node_id="node0", node_kind="concept"),
+                target=NodeRefV1(node_id="gone", node_kind="concept"), predicate="associated_with",
+                temporal=base.temporal, provenance=base.provenance))
+        return result
+    client.graph_query = query
+    store._write_generation += 1
+    state = store.snapshot()
+    assert state.scan_receipt.complete
+    assert "dangling" not in state.edges

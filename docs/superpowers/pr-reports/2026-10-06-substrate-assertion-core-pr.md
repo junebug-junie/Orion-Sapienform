@@ -166,6 +166,6 @@ Deploy order (nothing in this PR writes the new shapes, so it is safe to deploy 
 
 ## PR link
 
-(filled in after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2515
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

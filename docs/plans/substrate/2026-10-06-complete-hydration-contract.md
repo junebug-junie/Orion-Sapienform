@@ -6,7 +6,7 @@ Implements section 2 of [the reading property graph design](2026-10-06-reading-p
 
 - Service: shared `orion/substrate` store, used by substrate-runtime, Hub and Recall.
 - Entry points: `FalkorSubstrateStore.__init__`, `snapshot`; routed snapshots retain the primary's receipt.
-- Config path: existing Falkor store config/environment builder. `hydration_page_size` is a constructor parameter, default 1,000, bounded 1–10,000. No env key changes.
+- Config path: existing Falkor store config/environment builder; runtime settings live under `app/settings.py` (no root service `settings.py`). `hydration_page_size` is a constructor parameter, default 1,000, bounded 1–10,000. No env key changes.
 - Bus channels / schema registry entries: none; no wire event changes. Scan receipts are local dataclasses attached to snapshots.
 - Docker compose: consumers use `services/orion-substrate-runtime/docker-compose.yml`, `services/orion-hub/docker-compose.yml`, `services/orion-recall/docker-compose.yml`. No compose changes.
 - Tests: existing Falkor/store/dynamics tests plus `test_complete_hydration.py`.
@@ -33,6 +33,7 @@ Legacy payloads are validated into the staging cache before publication. Existin
 - Dynamics eval compares complete topology and every pressure/activation/dormancy result against an in-memory reference over a quiescent 43-node/173-edge fixture, across three page/cap combinations. It produces nonempty pressure and activation updates.
 - Read-only live command: `python -m scripts.replay_substrate_complete_scan --uri redis://localhost:6380`. Explicit client `read_only=True`; no bus connection or graph write.
 - Initial complete live scan: 2026-10-06 04:13:35–04:14:00 UTC, 4,973 nodes, 37,630 edges, 47 page queries, 16,269 additional compatible lookup aliases; complete, non-stale, about 25.54 seconds. Local evidence: `/tmp/substrate-complete-hydration/live-scan.json`.
+- Corrective re-review live scan with explicit 5,000-row pages: same 4,973 nodes / 37,630 edges, 13 queries, 17.335 seconds. The deployed unpaged reader returned only 10,000 edges in 5.924 seconds and reported success. These are sequential observations, not a controlled latency benchmark.
 - This proves the new reader against live durable data. New code in deployed service loops remains **UNVERIFIED** until deployed. No deployment is part of this patch.
 
 Falkor documents that its [result cap limits returned records](https://docs.falkordb.com/getting-started/configuration) and that [internal IDs are not immutable](https://docs.falkordb.com/cypher/functions). The live probe confirmed cursor syntax on this deployment.

@@ -32,7 +32,7 @@ No `.env_example` changes; local env sync is not needed. No env keys skipped. No
 
 ## Verification
 
-- Focused store/backend/dynamics/client regressions: final result recorded below before handoff.
+- Focused store/backend/dynamics/client regressions: **182 passed** (9.33 seconds).
 - Repository static gates: **143 passed** (substrate ladder, schema-skew discovery, SQL migration drift).
 - Complete-scan dynamics eval: three page/cap combinations over 43 nodes and 173 edges; identical complete topology, pressure, activation and dormancy results; 3 pressure and 43 activation updates in each case.
 - Existing hub-heavy neighborhood eval also rerun.
@@ -48,7 +48,7 @@ No `.env_example` changes; local env sync is not needed. No env keys skipped. No
 - Finding: Redis's row adapter discarded malformed rows before strict page validation.
   - Fix: reject malformed result sets/rows at the shared parser.
   - Evidence: regressions through the real client adapter prove the old cache and refresh cursor remain intact.
-- Independent review used `/home/athena/.claude/plugins/cache/claude-plugins-official/superpowers/6.4.1/skills/requesting-code-review/SKILL.md`. Corrective re-review pending at PR creation; final verdict will be recorded before handoff.
+- Independent review used `/home/athena/.claude/plugins/cache/claude-plugins-official/superpowers/6.4.1/skills/requesting-code-review/SKILL.md`. Corrective re-review independently passed 108 tests and found no remaining material issues; ready to merge subject to CI.
 
 ## Limits and rollout
 
@@ -67,3 +67,7 @@ scripts/safe_docker_build.sh orion-recall up -d --build
 ```
 
 These commands have not been run. Rollback is a code rollback; durable graph contents need no reversal.
+
+## PR
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/2500

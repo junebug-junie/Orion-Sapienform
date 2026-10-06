@@ -54,3 +54,45 @@ def test_compose_default_matches_env_example():
     match = re.search(r"SUBSTRATE_ASSERTION_REQUIRED_READERS:-([^}]+)\}", compose)
     assert match, "compose default missing"
     assert [n.strip() for n in match.group(1).split(",")] == _required_readers()
+
+
+def _services_declaring(name: str) -> list[Path]:
+    found = []
+    for service_dir in sorted((ROOT / "services").iterdir()):
+        for fname in (".env_example", "docker-compose.yml"):
+            path = service_dir / fname
+            if not path.is_file():
+                continue
+            for line in path.read_text(errors="ignore").splitlines():
+                match = _NAME_LINE.match(line)
+                if match and name in match.group(2):
+                    found.append(service_dir)
+                    break
+            else:
+                continue
+            break
+    return found
+
+
+def test_every_required_reader_advertises_at_process_startup():
+    """Regression, 2026-10-06: readers advertised only on first store construction (lazy or
+    never), so after a full redeploy 6 of 9 keys were missing and the gate stayed shut."""
+    missing = []
+    for name in _required_readers():
+        dirs = _services_declaring(name)
+        calls = [
+            path for d in dirs for path in (d / "app").rglob("*.py")
+            if "tests" not in path.parts and "advertise_at_startup()" in path.read_text(errors="ignore")
+        ] + [
+            path for d in dirs for path in (d / "scripts").glob("main.py")
+            if "advertise_at_startup()" in path.read_text(errors="ignore")
+        ]
+        if not calls:
+            missing.append(name)
+    assert not missing, f"required readers with no advertise_at_startup() call: {missing}"
+
+
+def test_code_default_matches_env_example():
+    from orion.substrate.reader_capability import DEFAULT_REQUIRED_READERS
+
+    assert list(DEFAULT_REQUIRED_READERS) == _required_readers()

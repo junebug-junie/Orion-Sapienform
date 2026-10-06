@@ -52,6 +52,14 @@ DEFAULT_ELEVATED_REARM_C = 28.0
 # A reading older than this is not evidence about the room now.
 DEFAULT_MAX_READING_AGE_SEC = 300.0
 
+# The reflex's "must act now" line (Juniper, 2026-10-06; docs/superpowers/specs/
+# 2026-10-06-thermal-controller-redesign-design.md "Decisions"). Above `hot` on purpose: `hot`
+# (32 C) is a daily afternoon state (3 % of the 09-29..10-06 week), which Orion's learned shed
+# owns; >= 34 C (0 % that week, peak 33.5 C) is where hardware-watch sheds without judgement.
+# Re-arms 1 C cooler. Not a ThermalState: the four state names and their consumers are unchanged.
+DEFAULT_CRITICAL_C = 34.0
+DEFAULT_CRITICAL_REARM_C = 33.0
+
 
 @dataclass(frozen=True)
 class ThermalVerdict:

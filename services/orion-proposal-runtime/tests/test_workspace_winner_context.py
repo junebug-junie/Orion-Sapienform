@@ -59,11 +59,16 @@ def test_unbound_winner_reads_nothing_else(monkeypatch):
     assert ctx.eligibility == {} and store.world_reads == 0
 
 
-def test_open_incident_and_unreachable_watcher_are_refusals(monkeypatch):
-    open_inc = {"enabled": True, "last_tick_ok": True, "last_tick_at": NOW.isoformat(),
-                "open_incidents": [{"incident_id": "abc", "rule": "cooling"}]}
-    snap = _worker(_Store(), monkeypatch, health=open_inc)._workspace_context(NOW).eligibility["shed_background_gpu"]
-    assert "hardware_watch_incident_open" in snap["refusals"]
+def test_active_reflex_and_unreachable_watcher_are_refusals(monkeypatch):
+    # Thermal v2 (D8/C7): the reflex's own shed signal refuses; an alert-only incident no longer does.
+    reflex = {"enabled": True, "last_tick_ok": True, "last_tick_at": NOW.isoformat(),
+              "open_incidents": [{"incident_id": "abc", "rule": "cooling"}],
+              "reflex_shed": {"active": True, "reason": "cabinet_hot"}}
+    snap = _worker(_Store(), monkeypatch, health=reflex)._workspace_context(NOW).eligibility["shed_background_gpu"]
+    assert "reflex_active:cabinet_hot" in snap["refusals"]
+    alert_only = {**reflex, "reflex_shed": {"active": False, "reason": None}}
+    snap = _worker(_Store(), monkeypatch, health=alert_only)._workspace_context(NOW).eligibility["shed_background_gpu"]
+    assert not any(r.startswith(("reflex_active", "hardware_watch_incident")) for r in snap["refusals"])
     import app.worker as wm
 
     w = _worker(_Store(), monkeypatch)

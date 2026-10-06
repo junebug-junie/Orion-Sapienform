@@ -7,7 +7,7 @@ from datetime import timedelta
 from orion.schemas.gpu_pool import GpuPoolStateV1
 from orion.schemas.hardware_watch import HardwareWatchIncidentV1, HardwareWatchShedV1
 
-from tests.test_runtime import acq, boot, make, run
+from tests.test_runtime import acq, acq_r, boot, make, run
 
 INC = "a1b2c3d4e5f6a1b2c3d4e5f6"
 
@@ -34,10 +34,13 @@ def test_open_cooling_incident_stops_new_background_and_system_grants():
         rt, clock = shed_pool()
         await boot(rt)
         assert rt.on_incident(incident(rt)) == "set"
-        bg = await rt.acquire(acq("metacog", priority="background"))
-        sys = await rt.acquire(acq("metacog", priority="system"))
+        # retryable leases wait under shed; a one-shot request is refused at once (D3)
+        bg = await rt.acquire(acq_r("metacog", priority="background"))
+        sys = await rt.acquire(acq_r("metacog", priority="system"))
         chat = await rt.acquire(acq("chat", priority="interactive"))
         assert bg.status == "queued" and sys.status == "queued" and chat.status == "granted"
+        one_shot = await rt.acquire(acq("metacog", priority="system"))
+        assert one_shot.status == "unavailable" and one_shot.reason == "shed:cooling_incident"
         await rt.tick()
         shed = [e for e in rt.bus.events("queued") if (e.get("detail") or {}).get("shed")]
         assert {e["lease_id"] for e in shed} == {bg.lease_id, sys.lease_id}
@@ -80,7 +83,8 @@ def test_kill_switch_shows_the_signal_but_blocks_nothing():
         assert r.status == "granted"
         shed = (await rt.snapshot()).shed
         assert shed["enabled"] is False and shed["blocked"] == {}
-        assert shed["reasons"][0]["active"] and not shed["reasons"][0]["effective"]
+        row = next(r for r in shed["reasons"] if r["name"] == "cooling_incident")
+        assert row["active"] and not row["effective"]
     run(go())
 
 

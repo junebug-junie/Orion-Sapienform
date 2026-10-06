@@ -272,15 +272,15 @@ async def run_pcr_phase3(
     skip_gate = _skip_gate_from_ctx(ctx)
     stance_brief = _stance_brief_from_ctx(ctx)
     attention_frame = _attention_frame_from_ctx(ctx)
-    user_message = _last_user_message(ctx) or str(ctx.get("user_message") or "")
-
     intent, rule_id = derive_retrieval_intent(
         skip_gate=skip_gate,
         stance_brief=stance_brief,
         attention_frame=attention_frame,
         appraisal=_extract_turn_change_appraisal(ctx),
         hub_chat_lane=hub_chat_lane_from_ctx(ctx),
-        user_message=user_message,
+        # Same-turn LLM reading of what the message names (chat_stance.py);
+        # absent on Orion's own turns.
+        turn_signals=ctx.get("current_turn_llm_signals"),
         shift_novelty_floor=cfg.chat_pcr_skip_shift_novelty_floor,
         seed_crystallization_id=str(ctx.get("seed_crystallization_id") or "").strip() or None,
         eligible_belief_count=int((ctx.get("eligible_belief_count") or 0)),

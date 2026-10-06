@@ -14,6 +14,8 @@ from datetime import datetime
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
+from orion.memory.voice_render import VoicedMemory, render_memory
+
 EPISODES_SQL = """
 SELECT episode_id, started_at, last_turn_at, closed_at, close_reason, close_lag_sec, episode_status,
        skip_reason, juniper_turn_count, command_turn_count, turns
@@ -28,8 +30,11 @@ WHERE s.source_kind = 'chat_turn' AND s.source_id = ANY($1::text[])
 ORDER BY c.kind, c.summary
 """
 NEW_ROWS_SQL = """
-SELECT memory_id::text AS id, purpose, voice, channel, statement, stakes, stakes_reason, confirmation_state
-FROM episode_memory WHERE episode_id = $1 ORDER BY purpose, statement
+SELECT m.memory_id::text AS id, m.purpose, m.voice, m.channel, m.statement, m.stakes, m.stakes_reason,
+       m.confirmation_state, coalesce(m.occurred_at, m.created_at) AS remembered_at,
+       EXISTS (SELECT 1 FROM episode_memory_evidence e WHERE e.memory_id = m.memory_id
+               AND e.source_kind = 'chat_prompt' AND e.verified) AS has_verified_juniper_quote
+FROM episode_memory m WHERE m.episode_id = $1 ORDER BY m.purpose, m.statement
 """
 EVENTS_SQL = """
 SELECT op, reason, count(*) AS n FROM episode_memory_event
@@ -50,13 +55,15 @@ SELECT run_id, model, prompt_tokens, completion_tokens, llm_latency_ms, hold_wai
 FROM episode_distill_run WHERE episode_id = $1
 """
 
-_VOICE_LABEL = {
-    "juniper_said": "Juniper said",
-    "worked_out_together": "worked out together",
-    "orion_thought": "Orion thought",
-    "orion_read": "Orion read",
-    "orion_self_knowledge": "Orion self-knowledge",
-}
+def _voiced(m: dict[str, Any], tz: ZoneInfo) -> VoicedMemory:
+    """Map a NEW_ROWS_SQL row onto the shared voice renderer's input."""
+    remembered = m.get("remembered_at")
+    return VoicedMemory(
+        voice=str(m["voice"]), channel=str(m["channel"]), statement=str(m["statement"]),
+        when=remembered.astimezone(tz) if isinstance(remembered, datetime) else None,
+        has_verified_juniper_quote=bool(m.get("has_verified_juniper_quote")),
+        confirmation_state=str(m.get("confirmation_state") or "auto"),
+    )
 
 
 def _turn_ids(turns: Any) -> list[str]:
@@ -95,10 +102,10 @@ def render_episode(ep: dict[str, Any], old: Iterable[dict], new: Iterable[dict],
     else:
         lines.append(f"**New writer ({len(new)} memories):**")
         for m in new:
-            flag = " (unconfirmed)" if m["confirmation_state"] == "pending_confirmation" else ""
+            # The line is exactly what Orion would read for this memory (voice_render), so the
+            # report shows source monitoring as rendered, not just the stored voice label.
             stakes = f", high: {m['stakes_reason'] or 'no category'}" if m["stakes"] == "high" else ""
-            lines.append(f"- [{m['purpose']}, {_VOICE_LABEL.get(m['voice'], m['voice'])}/{m['channel']}{stakes}]"
-                         f"{flag} {m['statement']}")
+            lines.append(f"- [{m['purpose']}, {m['voice']}/{m['channel']}{stakes}] {render_memory(_voiced(m, tz))}")
         if not new:
             lines.append("- (none)")
     ev = list(events)

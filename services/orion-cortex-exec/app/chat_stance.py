@@ -34,6 +34,7 @@ from orion.core.schemas.reasoning_summary import ReasoningSummaryRequestV1, Reas
 from orion.reasoning import InMemoryReasoningRepository, ReasoningSummaryCompiler
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.reverie import SpontaneousThoughtV1
+from orion.memory.voice_render import VoicedMemory, render_memory
 from orion.substrate import build_substrate_store_from_env
 from orion.substrate.relational import (
     CONCEPT_INDUCED,
@@ -1662,7 +1663,11 @@ def _project_reverie_glimpse(ctx: Dict[str, Any]) -> str | None:
         interpretation = thought.interpretation.strip()
         if not interpretation:
             return None
-        return interpretation
+        # Source monitoring: a reverie is Orion's own private thought. The
+        # shared renderer labels it so, never as something Juniper said or
+        # the two of them discussed (memory redesign rev 3, section 7).
+        return render_memory(VoicedMemory(
+            voice="orion_thought", channel="reverie", statement=interpretation, when=thought.created_at))
     except Exception:
         logger.debug("reverie_glimpse_projection_failed", exc_info=True)
         return None

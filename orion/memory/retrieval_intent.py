@@ -1,38 +1,53 @@
+"""PCR phase 3 retrieval intent: which purposeful recall profile a chat turn gets.
+
+Every input is a model judgment or a structured id. Nothing here matches
+words in the user's message:
+
+* ``stance_brief``: the stance LLM's ``task_mode`` / ``conversation_frame`` /
+  ``interaction_regime`` (closed literals in ``chat_stance_brief.j2``).
+* ``appraisal``: the turn-change LLM classifier's ``shift_kind`` and
+  ``novelty_score`` (orion-memory-consolidation ``classify.py``), when present.
+* ``turn_signals``: ``ctx["current_turn_llm_signals"]``, the same-turn LLM's
+  typed reading of what Juniper's message names (``person``, ``place``,
+  ``plan``, ``belief``, ``concept``, ``activity``, ``other``;
+  ``services/orion-cortex-exec/app/current_turn_llm_signals.py``). Empty on
+  Orion's own turns, which never run that call.
+* ``seed_crystallization_id`` / ``contradiction_refs``: explicit ids.
+
+Memory Stage 2 (2026-10-06) fixed the classifier that returned ``open_loop``
+for 630 of 630 purposeful recalls in 7 days: it fired whenever the attention
+frame listed any open loop, and live chat frames always list several
+(mostly substrate prediction-error concepts, not conversational threads).
+``open_loop`` now needs a repair shift. The spec's other two open-loop
+triggers (a loop that persists across turns; an open follow-up memory whose
+referents appear in the turn) have no in-turn input yet and arrive with
+recall-by-referent (Stage 2 PR F). The capitalized-word "entity" regex and the
+"plan/step/..." substring list over response priorities are gone; the turn's
+LLM-typed signals replace them.
+"""
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from orion.memory.recall_skip_gate import RecallSkipGateResult
 
-_ENTITY_QUERY_RE = re.compile(
-    r"[A-Z][A-Za-z0-9_]+(?:\s+[A-Z][A-Za-z0-9_]+)?"
-)
-
 _RELATIONAL_TASK_MODES = frozenset({"reflective_dialogue", "playful_exchange"})
 _RELATIONAL_CONVERSATION_FRAMES = frozenset({"reflective", "playful_relational"})
-_PLANNING_LIKE_MARKERS = ("plan", "step", "procedure", "roadmap", "debug_step")
+
+# The referent rule over the turn's LLM-typed signals (Stage 2 spec 4.2):
+# a person -> relational; a plan -> procedural; anything else it names ->
+# semantic. Checked in this order, so a turn naming a person and a plan is
+# relational.
+_TURN_SIGNAL_RULES: tuple[tuple[str, str, str], ...] = (
+    ("person", "relational", "turn_names_person"),
+    ("plan", "procedural", "turn_names_plan"),
+)
 
 
 def _stance_field(stance_brief: Any, key: str) -> str:
     if isinstance(stance_brief, dict):
         return str(stance_brief.get(key) or "").strip()
     return str(getattr(stance_brief, key, None) or "").strip()
-
-
-def _response_priorities(stance_brief: Any) -> list[Any]:
-    if isinstance(stance_brief, dict):
-        priorities = stance_brief.get("response_priorities")
-    else:
-        priorities = getattr(stance_brief, "response_priorities", None)
-    return priorities if isinstance(priorities, list) else []
-
-
-def _open_loops(attention_frame: dict | None) -> list[Any]:
-    if not isinstance(attention_frame, dict):
-        return []
-    loops = attention_frame.get("open_loops")
-    return loops if isinstance(loops, list) else []
 
 
 def _coerce_novelty(appraisal: dict | None) -> float | None:
@@ -57,21 +72,13 @@ def _is_relational_mode(stance_brief: Any) -> bool:
     return task_mode in _RELATIONAL_TASK_MODES or conversation_frame in _RELATIONAL_CONVERSATION_FRAMES
 
 
-def _is_instrumental_mode(stance_brief: Any) -> bool:
-    task_mode = _stance_field(stance_brief, "task_mode")
-    interaction_regime = _stance_field(stance_brief, "interaction_regime")
-    return task_mode == "instrumental" or interaction_regime == "instrumental"
-
-
-def _has_entity_query(user_message: str) -> bool:
-    """Capitalized entity / anchor token in user message (existing recall anchor pattern)."""
-    text = str(user_message or "").strip()
-    if not text:
-        return False
-    entities = [m.strip() for m in _ENTITY_QUERY_RE.findall(text) if m.strip()]
-    if entities:
-        return True
-    return bool(re.findall(r"\b[A-Za-z][A-Za-z0-9_]*\d+\b", text))
+def _is_procedural_mode(stance_brief: Any) -> bool:
+    # The stance LLM's own literals for "this turn is about doing/building":
+    # conversation_frame=planning or task_mode=technical_collaboration. (The
+    # old rule required task_mode=instrumental, which is not one of the
+    # template's task_mode literals, plus a substring word list.)
+    return (_stance_field(stance_brief, "conversation_frame") == "planning"
+            or _stance_field(stance_brief, "task_mode") == "technical_collaboration")
 
 
 def _has_contradiction_seed(
@@ -90,14 +97,15 @@ def _has_contradiction_seed(
     return False
 
 
-def _has_planning_like_priority(stance_brief: Any) -> bool:
-    if _stance_field(stance_brief, "conversation_frame") == "planning":
-        return True
-    for priority in _response_priorities(stance_brief):
-        normalized = str(priority).lower().replace("-", "_").replace(" ", "_")
-        if any(marker in normalized for marker in _PLANNING_LIKE_MARKERS):
-            return True
-    return False
+def turn_signal_types(turn_signals: Any) -> set[str]:
+    """Types the same-turn LLM assigned to what the message names."""
+    if not isinstance(turn_signals, list):
+        return set()
+    types = set()
+    for item in turn_signals:
+        if isinstance(item, dict) and str(item.get("phrase") or "").strip():
+            types.add(str(item.get("type") or "other").strip().lower() or "other")
+    return types
 
 
 def derive_retrieval_intent(
@@ -107,29 +115,29 @@ def derive_retrieval_intent(
     attention_frame: dict | None,
     appraisal: dict | None,
     hub_chat_lane: str | None,
-    user_message: str,
+    turn_signals: Any = None,
     shift_novelty_floor: float = 0.35,
     seed_crystallization_id: str | None = None,
     eligible_belief_count: int = 0,
     brain_belief_default_enabled: bool = True,
 ) -> tuple[str, str]:
-    """Derive PCR retrieval intent from stance, appraisal, and attention signals."""
+    """Return ``(intent, rule_id)``. ``rule_id`` names the rule that fired."""
 
     if skip_gate.skip:
         return "none", "phase0_skip"
 
-    if _open_loops(attention_frame):
-        return "open_loop", "open_loops_present"
-
     shift_kind = _shift_kind(appraisal)
-    if shift_kind == "REPAIR" and _novelty_meets_floor(appraisal, shift_novelty_floor):
-        return "open_loop", "repair_shift"
+    shifted = _novelty_meets_floor(appraisal, shift_novelty_floor)
 
+    # Relational and topic rules first (Stage 2 spec 4.2).
     if _is_relational_mode(stance_brief):
         return "relational", "relational_mode"
-
-    if shift_kind == "STANCE" and _novelty_meets_floor(appraisal, shift_novelty_floor):
+    if shift_kind == "STANCE" and shifted:
         return "relational", "stance_shift"
+    if shift_kind == "TOPIC" and shifted:
+        return "semantic", "topic_shift"
+    if shift_kind == "REPAIR" and shifted:
+        return "open_loop", "repair_shift"
 
     if _has_contradiction_seed(
         seed_crystallization_id=seed_crystallization_id,
@@ -137,14 +145,15 @@ def derive_retrieval_intent(
     ):
         return "contradiction", "contradiction_seed"
 
-    if _is_instrumental_mode(stance_brief) and _has_planning_like_priority(stance_brief):
+    if _is_procedural_mode(stance_brief):
         return "procedural", "procedural_mode"
 
-    if shift_kind == "TOPIC" and _novelty_meets_floor(appraisal, shift_novelty_floor):
-        return "semantic", "topic_shift"
-
-    if _has_entity_query(user_message):
-        return "semantic", "entity_query"
+    types = turn_signal_types(turn_signals)
+    for signal_type, intent, rule_id in _TURN_SIGNAL_RULES:
+        if signal_type in types:
+            return intent, rule_id
+    if types:
+        return "semantic", "turn_names_topic"
 
     if (
         brain_belief_default_enabled

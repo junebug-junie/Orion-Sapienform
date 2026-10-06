@@ -13,6 +13,7 @@ successful concept/edge decode.
 from __future__ import annotations
 
 from .neighborhood import NeighborhoodRequestV1, NeighborhoodResultV1
+from .evidence_handles import EvidenceHandleRequestV1, EvidenceHandleResultV1
 
 import logging
 import math
@@ -929,6 +930,10 @@ class FalkorSubstrateStore:
     def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1:
         from .neighborhood_backends import read_falkor_neighborhood
         return read_falkor_neighborhood(self, request)
+
+    def read_evidence_handles(self, request: EvidenceHandleRequestV1) -> EvidenceHandleResultV1:
+        from .evidence_handles import read_falkor_evidence_handles
+        return read_falkor_evidence_handles(self, request)
 
     # Region reads iterate the in-memory cache's dicts; InMemorySubstrateGraphStore
     # has no lock of its own, so they share _cache_lock with writers.

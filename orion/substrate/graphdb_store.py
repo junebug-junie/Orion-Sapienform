@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .neighborhood import NeighborhoodRequestV1, NeighborhoodResultV1
+from .evidence_handles import EvidenceHandleRequestV1, EvidenceHandleResultV1
 
 import json
 import logging
@@ -351,6 +352,10 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
     def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1:
         from .neighborhood_backends import read_sparql_neighborhood
         return read_sparql_neighborhood(self, request)
+
+    def read_evidence_handles(self, request: EvidenceHandleRequestV1) -> EvidenceHandleResultV1:
+        from .evidence_handles import read_sparql_evidence_handles
+        return read_sparql_evidence_handles(self, request)
 
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1:
         node_ids = [str(node_id).strip() for node_id in node_ids if str(node_id).strip()]

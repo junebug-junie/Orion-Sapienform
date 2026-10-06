@@ -99,3 +99,48 @@ Local evidence: `/tmp/reading-neighborhood/candidate.json`, `request.json`,
 `live-replay.json`, and `live-census.json`. No service restart or production write
 was performed. The proposed reading assertion → review → projection → UI path
 remains **UNVERIFIED** and outside this patch.
+
+## Round trips and index seeks (memory Stage 2, PR E)
+
+Same contract, same receipts; fewer and cheaper queries.
+
+- **Neighbors are fetched in one call.** The algorithm first decides which
+  boundary edges fit the budgets (that needs only ids), then calls `nodes()`
+  once with every admitted neighbor. `nodes()` now runs at most twice per read
+  (focal, then neighbors). A missing, duplicate or ineligible neighbor still
+  fails the whole read closed. Falkor reads them with one indexed
+  `n.node_id IN $node_ids` query (`LIMIT 2n`, so duplicates stay visible).
+  SPARQL keeps per-id reads, because an endpoint may cap result rows.
+- **Group reads seek the `node_id` index.** Both FalkorDB 4.18 and 6.0 planned
+  every *incoming* group read as a label scan over all source nodes (50–120 ms
+  each on the live graph). Group reads now bind the focal endpoint first
+  (`MATCH (target:SubstrateNode) WHERE target.node_id = $focal WITH target …`);
+  the WHERE clause is unchanged. `test_neighborhood_falkor_live.py` EXPLAINs
+  every query a real read issues and fails on any label scan.
+
+Measured on throwaway FalkorDB copies of production (read-only DUMP, 5,051
+nodes, 38,393 edges, `node_id` index present), 20 runs each:
+
+| Request | 4.18.11 p95 before → after | 6.0.1 p95 before → after |
+|---|---|---|
+| circe entity, 4/8/8 | 249.6 → 26.5 ms | 391.6 → 25.2 ms |
+| GPU concept, 12/16/16 | 430.8 → 53.7 ms | 330.7 → 71.9 ms |
+| #2497's 8 hub nodes, 12/16/16 | 1,077.4 → 104.5 ms | 1,326.0 → 127.8 ms |
+
+Equivalence: 305 requests (5 named + 300 random focal sets, budgets, states,
+directions) gave byte-identical receipts before and after on both engines.
+
+## Evidence handles
+
+`store.read_evidence_handles(EvidenceHandleRequestV1(node_ids=…,
+evidence_types=…, per_node_limit=6, at=…))` returns, for each Concept/Entity,
+the Evidence nodes linked by `node -observed_in-> evidence` or
+`evidence -supports-> node`, valid at `at` (start = `valid_from`, else
+`observed_at`; end = `valid_to`), newest first, ties by edge id, at most
+`per_node_limit` each. A handle is ids plus `content_ref`; no text is read.
+Receipts: `truncated_node_ids` (more existed), `missing_node_ids` (absent or
+not semantic, which also sets `degraded`), and a typed `unavailable:` reason on
+any backend error, with no cache fallback. Falkor answers in one Cypher query;
+SPARQL in one query per node with a 4,096-candidate cap that fails closed;
+the in-memory store is the reference rule all three are tested against.
+Concept table: `orion/substrate/README.md`.

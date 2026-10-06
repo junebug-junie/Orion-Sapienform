@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1
 from .neighborhood import NeighborhoodRequestV1, NeighborhoodResultV1, read_memory_neighborhood
+from .evidence_handles import EvidenceHandleRequestV1, EvidenceHandleResultV1, read_memory_evidence_handles
 
 
 def _utc_now_iso() -> str:
@@ -74,6 +75,7 @@ class SubstrateGraphStore(Protocol):
     def snapshot(self) -> MaterializedSubstrateGraphState: ...
 
     def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1: ...
+    def read_evidence_handles(self, request: EvidenceHandleRequestV1) -> EvidenceHandleResultV1: ...
 
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1: ...
     def query_hotspot_region(self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1: ...
@@ -161,6 +163,9 @@ class InMemorySubstrateGraphStore:
 
     def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1:
         return read_memory_neighborhood(self, request)
+
+    def read_evidence_handles(self, request: EvidenceHandleRequestV1) -> EvidenceHandleResultV1:
+        return read_memory_evidence_handles(self, request)
 
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1:
         edges_limit = max(1, int(max_edges))

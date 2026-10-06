@@ -24,7 +24,7 @@ A unified Hub turn takes about 68 s, made of serial steps:
 
 Changes in this doc:
 - **Ready now:** remove the unused second build, using the skip flag that already exists, and stop the build freezing cortex-exec.
-- **Design:** run orion-mind and the context build at the same time (they share nothing); keep the Claude Code reply writer warm between turns.
+- **Design:** run orion-mind and the context build at the same time (the build never uses mind's output); keep the Claude Code reply writer warm between turns.
 - **Proposals:** fix the substrate decay loop before touching the concept re-save; stop the reply writer loading a shared, ungoverned auto-memory; run the polishing judge after the reply is shown.
 
 Rough, untimed estimate if all land: 68 s → mid-30s. Each item carries its own before/after measurement.
@@ -33,16 +33,17 @@ Rough, untimed estimate if all land: 68 s → mid-30s. Each item carries its own
 
 1. **The concept re-save is load-bearing (handoff F2/Rec 1 was wrong).**
    - `SubstrateDynamicsEngine.tick()` runs every 30 s in orion-substrate-runtime.
-   - Every tick it decays the *already-decayed* stored activation by the full time since `observed_at` (`orion/substrate/dynamics.py:117-123`, `orion/core/activation_decay.py:8-20`). The loss compounds, about 2% per 30 s.
-   - The re-save writes stale stored values back (max-merge, `orion/substrate/reconcile.py:299-312`), which accidentally undoes the decay.
+   - Every tick it decays the *already-decayed* stored activation by the full time since `observed_at` (`orion/substrate/dynamics.py:118-125`, `orion/core/activation_decay.py:8-20`). The loss compounds, about 2% per 30 s.
+   - With the default 30-day half-life (`cognitive_substrate.py:91`) and a seed about 23 h past `observed_at`, each 30 s tick multiplies by about 0.978. That matches the live reads. The per-tick loss grows as a node ages. `decay_floor` defaults to 0.0 (`cognitive_substrate.py:84`).
+- The re-save writes stale stored values back (max-merge, `orion/substrate/reconcile.py:299-312`), which accidentally undoes the decay.
    - Live Falkor reads: `sub-concept-seed-juniper` activation went 1.0 → 0.978 → 0.956 → 0.934, then reset to 1.0 when a stance build ran (03:33:40 UTC). The relationship seed did the same.
-   - Making `concept_induction` ephemeral, as the handoff proposed, would let the seed concepts decay toward their floor within hours and flip `dormant`.
+   - Making `concept_induction` ephemeral, as the handoff proposed, would remove the only thing currently undoing that compounding: the seeds fall toward 0 (the default floor) and flip `dormant` within hours. After the decay fix they would fade on the true 30-day half-life instead, so the re-save can go only once decay is fixed.
 2. **Skipping the build in `router.py` alone saves nothing (handoff Rec 3).**
    - The step-time check `_should_prepare_brain_reply_context` (`services/orion-cortex-exec/app/executor.py:4828`, called at `:3120`) does not skip these verbs, so the build would run there instead.
    - The existing `skip_brain_reply_context` flag is honored by both places (`router.py:1046`, `executor.py:4841-4844`).
-3. **The whole build cannot move to a thread (handoff Rec 2).** `build_chat_stance_inputs` awaits bus publishes and the probe partway through (`chat_stance.py:2568,2654,2690,2697`). Only the synchronous parts can move.
+3. **The whole build cannot move to a thread (handoff Rec 2).** `build_chat_stance_inputs` awaits bus publishes and the probe partway through (`chat_stance.py:2575,2654,2693,2700`). Only the synchronous parts can move.
    - Also, `run_in_executor` does not copy contextvars; nothing uses them today.
-4. **Raising the 30 s snapshot ceiling (handoff Rec 7) does nothing for the second reload.** That reload is caused by this process's own write bumping its in-memory generation counter (`falkor_store.py:664,684`), not by the ceiling.
+4. **Raising the 30 s snapshot ceiling (handoff Rec 7) does nothing for the second reload.** That reload is caused by this process's own write bumping its in-memory generation counter (`falkor_store.py:666,686`), not by the ceiling.
 5. **The finalize step's reflection is not a no-op.** It triggers response repair on about 1 in 4 runs.
 
 ## Current architecture
@@ -71,14 +72,17 @@ Hub turn_orchestrator
 ### L1. Skip the unused build before finalize and repair (ready)
 
 - **Change:**
-  - Add `harness_finalize_reflect` and `orion_response_repair` to the shared skip check.
-  - Make the router call `_should_prepare_brain_reply_context` instead of keeping its own verb set (`router.py:1048`), so the two places cannot drift again.
-  - This is a cortex-exec-only deploy.
+  - Extract a verb-name helper, `brain_reply_context_skipped(verb, ctx, options)`, from `_should_prepare_brain_reply_context` (`executor.py:4828`), which takes an `ExecutionStep` the router doesn't have.
+  - Router (`router.py:1046-1048`) and step-time check (`executor.py:4839-4844`) both call the helper, so they cannot drift again.
+  - Add `harness_finalize_reflect` and `orion_response_repair` to the helper's skip set.
+  - Today the router checks the `skip_brain_reply_context` flag only in `ctx`. The executor checks `ctx` and `options`, and `options` is where `services/orion-hub/scripts/memory_graph_suggest.py:354` sets it. The helper reads both.
+  - This is a cortex-exec-only deploy. The alternative, setting the flag in `finalize.py:426`, would need a harness-governor redeploy and keep two mechanisms alive.
+  - Skipping also skips `_inject_identity_context`. The templates don't read identity keys; the PR must grep for any downstream reader of those keys on these verbs.
 - **Why safe:**
   - Neither template nor YAML reads stance keys.
   - Both callers read text only (`finalize.py:454,921`).
   - `orion_response_repair` runs only after a stance (`finalize.py:1471`, only caller in production).
-  - Recall's attention-frame read runs only for `chat_general`/`chat_quick`/`stance_react` (`router.py:1124-1129`).
+  - The PCR pre-recall gate (`router.py:1124-1129`) runs only for `chat_general`/`chat_quick`/`stance_react`, so these verbs never reach recall.
 - **Downstream effects** (all duplicates today: 60/60 finalize correlation ids are also stance ids):
   - `chat_stance_belief_log` and `substrate_attention_schema` (`cortex_turn`) roughly halve.
   - **Recent-attention cue** (`orion/substrate/recent_attention_cue.py:18-24`, newest 3 rows, no dedup) frees one slot per turn for a real item.
@@ -94,7 +98,7 @@ Hub turn_orchestrator
 
 ### L2. Take the synchronous half of the build off the event loop (ready)
 
-- **Change:** run `hydrate_felt_state_ctx` + `_unified_beliefs_for_stance` (`chat_stance.py:2518-2519`), `_project_recent_dispatch_actions` (`:2608`) and `build_attention_frame` on a **dedicated single-worker** `ThreadPoolExecutor` owned by the cortex-exec process. The async publishes stay on the loop.
+- **Change:** run `hydrate_felt_state_ctx` + `_unified_beliefs_for_stance` (`chat_stance.py:2518-2519`), `_project_recent_dispatch_actions` (`:2618`) and `build_attention_frame` on a **dedicated single-worker** `ThreadPoolExecutor` owned by the cortex-exec process. The async publishes stay on the loop.
 - **Why single worker:** it preserves today's one-at-a-time ordering. It also covers the unlocked lazy globals:
   - `_UNIFICATION_LAYER` `chat_stance.py:209`;
   - `_READER` `felt_state_reader.py:335`;
@@ -104,11 +108,16 @@ Hub turn_orchestrator
   It also avoids the default pool, which about 38 `asyncio.to_thread` calls in cortex-exec share (`feedback_a_shared_default_executor_is_a_hidden_fifo_across_lanes`).
 - **Thread safety checked:**
   - SQLAlchemy engine with a pool (`felt_state_reader.py:166`);
-  - Falkor store `_snapshot_lock` (`falkor_store.py:313`);
+  - Falkor store `_snapshot_lock` (`falkor_store.py:315`);
   - `beliefs_for_stance` is documented thread-safe (`layer.py:92`);
   - no loop calls in the synchronous path.
 
   The same image runs as 4 containers; each gets its own executor.
+- **A new race that the move creates.** Falkor store **writes** are not covered by `_snapshot_lock` (`falkor_store.py:404-414`), and the generation counter is a plain `+= 1` (`:666,686`). Today a write cannot overlap a snapshot, because the build blocks the whole loop. Once the build is off the loop, a loop task can write mid-snapshot. The fix ships with L2:
+  - list every caller of the layer's store (`chat_stance.py:212` `_UNIFICATION_LAYER`'s store) from loop code;
+  - either route those calls through the same single worker, or take `_snapshot_lock` around `upsert_node` and the counter bump.
+
+  Test: a write issued during a snapshot never produces a cache missing that write.
 - **Test:** a concurrent RPC is answered while a build is in progress (a fake slow build of 2 s, with an assert that a second handler completes in well under 2 s).
 - **Expected:** no seconds saved on the turn itself. cortex-exec stops freezing reverie, metacog and journal for about 9 s per build (handoff F1 freeze evidence: reply published 18:11:00.482, received 18:11:08.073).
 
@@ -127,7 +136,7 @@ Hub turn_orchestrator
   - `mind_coloring` is used only by `stance_react.j2:37-54`.
   - On the Hub path, `mind_appraisal_text` is not passed (only `curiosity_investigation.py:3382` passes it).
   - The build's only per-turn input is the raw user message, which exists before orion-mind starts.
-  - Mind uses a GPU (metacog lane); the build uses CPU, Postgres and Falkor, so there is no GPU contention.
+  - Mostly CPU, Postgres and Falkor, **except** the per-turn probe `populate_current_turn_llm_signals` (`chat_stance.py:2654`). On human turns it calls the `chat` route (`current_turn_llm_signals.py:38,428`), i.e. the 35B on gpu0+gpu3, while mind uses the 8B on gpu3. Overlapping them shares gpu3 compute. The PR measures mind's call time with and without the overlap.
 - **Design:**
   - orion-thought fires two requests together: the orion-mind call, and a new cortex-exec RPC `stance_context_prepare` (correlation id + user message + the same ctx `stance_react` would send).
   - cortex-exec builds `chat_stance_inputs` and stores it in a small in-process TTL cache (120 s) keyed by correlation id.
@@ -137,8 +146,14 @@ Hub turn_orchestrator
   - (b) store the prepared inputs in Redis keyed by correlation id so any container can pick them up.
 
   Recommend (a). The inputs hold live objects and per-process caches; serializing them is a new contract for no gain.
+- **Must set `ctx["verb"]="stance_react"`** in the prepare request. The probe and the attention frame read it (`current_turn_llm_signals.py:156`).
+- **No double build on a miss.** `stance_react` must not start a second build while a prepare for the same correlation id is in flight on that container; it awaits the in-flight one. Otherwise:
+  - the duplicate `chat_stance_belief_log`/`cortex_turn`/salience rows that L1 removes come back;
+  - a second chat-lane probe call is made.
+
+  Only an actual failure or a timeout (prepare absent at stance arrival + 2 s) falls back to building inline. The cache entry is marked consumed so it is used once.
 - **Contract:** a new bus channel/kind in `orion/bus/channels.yaml` + `orion/schemas/registry.py` (CLAUDE.md §6), with producer and consumer tests.
-- **Failure mode:** if the prepare call fails or is late, `stance_react` builds as it does today. The worst case is today's latency.
+- **Failure mode:** if the prepare call fails, or never arrives on this container, `stance_react` builds as it does today after a 2 s wait. The worst case is today's latency + 2 s.
 - **Measure:** orion-thought logs the gap between mind done and stance start. The target is about 9 s → about 0–1 s on turns where mind ≥ build.
 - **Expected:** up to about 9 s per turn (UNVERIFIED until timed).
 
@@ -158,7 +173,7 @@ Hub turn_orchestrator
 
 - **Capability change:** activation decays once per unit of real time instead of compounding. Seed concepts stop being held up by an accidental re-save.
 - **Fix:**
-  - In `SubstrateDynamicsEngine.tick()` (`dynamics.py:117-123`), decay by the time since the **last decay applied**: stamp `metadata["activation_decayed_at"]` on persist, and fall back to `observed_at` when absent. Today it decays by the full time since `observed_at` every tick.
+  - In `SubstrateDynamicsEngine.tick()` (`dynamics.py:118-125`), decay by the time since the **last decay applied**: stamp `metadata["activation_decayed_at"]` on persist, and fall back to `observed_at` when absent. Today it decays by the full time since `observed_at` every tick.
   - Equivalent alternative: closed form from a stored `activation_at_observation`. The stamp is the smaller change.
   - `_compute_activations` (`dynamics.py:296`) takes `max(seed, stored)`. Keep it.
 - **Then, in a separate step, the concept re-save:**

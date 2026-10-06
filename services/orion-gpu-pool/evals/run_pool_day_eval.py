@@ -46,6 +46,9 @@ urgent hold arriving while cooling_incident sheds background+system. Hard target
     the running hold keeps getting its calls granted until then
   - chat (interactive) and the urgent hold are granted while shed
   - after the shed clears, waiting background/system work is granted within one tick
+  - D3 (docs/superpowers/specs/2026-10-06-thermal-controller-redesign-design.md): a one-shot
+    (non-retryable) background/system request arriving while shed is refused in the tick it
+    arrives with Unavailable("shed:*") -- it never waits out its deadline
 
 Also measured: lease-graph checkpoint throughput through the real PoolRuntime + MemorySaver.
 That number is an in-memory ceiling; Postgres checkpoint throughput is UNVERIFIED until live.
@@ -493,6 +496,8 @@ def shed_scenario(cfg=CFG) -> dict:
     grants: list[tuple[int, str, str, bool]] = []     # (sec, lease, priority, is_child)
     recalls: list[str] = []
     shed_reported: set[str] = set()
+    one_shot_refused: dict[str, int] = {}              # lease -> wait in ticks before shed refusal
+    one_shot_created: dict[str, int] = {}
     cards = {c: CardLive(c) for c in cfg.cards}
 
     def add(lid: str, req: dict, now: datetime) -> None:
@@ -523,6 +528,10 @@ def shed_scenario(cfg=CFG) -> dict:
             prio = "system" if rng.random() < 0.5 else "background"
             add(f"M{sec}", {"work_class": "metacog", "kind": "request", "priority": prio, "retryable": True}, now)
             work_left[f"M{sec}"] = rng.randint(3, 10)
+        if sec % 15 == 7:   # D3: a one-shot gateway call (orion-mind / memory annotation shape)
+            add(f"F{sec}", {"work_class": "fast", "kind": "request", "priority": "background"}, now)
+            work_left[f"F{sec}"] = 3
+            one_shot_created[f"F{sec}"] = sec
 
         for lid, st in leases.items():
             if st["status"] not in ("granted", "recalling"):
@@ -546,6 +555,8 @@ def shed_scenario(cfg=CFG) -> dict:
             if isinstance(d, (SwapLoad, SwapUnload, SwapBlocked, Serialized)):
                 continue
             st = leases[d.lease_id]
+            if isinstance(d, Unavailable) and d.lease_id in one_shot_created and d.reason.startswith("shed:"):
+                one_shot_refused[d.lease_id] = sec - one_shot_created[d.lease_id]
             ev = {"type": _EV[type(d)], "at": at, "reason": getattr(d, "reason", None)}
             if isinstance(d, Grant):
                 ev["role"] = d.role
@@ -569,6 +580,9 @@ def shed_scenario(cfg=CFG) -> dict:
         "urgent_granted_at_sec": next((g[0] for g in grants if g[1] == "H-urgent"), None),
         "leases_reported_shed": len(shed_reported),
         "first_low_priority_grant_after_clear_sec": (after[0][0] - SHED_UNTIL) if after else None,
+        "one_shots_arrived_while_shed": sum(1 for c in one_shot_created.values() if SHED_FROM <= c < SHED_UNTIL),
+        "one_shots_refused_while_shed": len(one_shot_refused),
+        "one_shot_max_wait_before_refusal_sec": max(one_shot_refused.values(), default=None),
     }
 
 
@@ -586,6 +600,10 @@ def shed_failures(s: dict) -> list[str]:
         out.append("shed_not_reported")
     if s["first_low_priority_grant_after_clear_sec"] is None or s["first_low_priority_grant_after_clear_sec"] > 1:
         out.append("shed_not_cleared")
+    if not s["one_shots_arrived_while_shed"] \
+            or s["one_shots_refused_while_shed"] != s["one_shots_arrived_while_shed"] \
+            or s["one_shot_max_wait_before_refusal_sec"] != 0:
+        out.append("shed_one_shot_waited")
     return out
 
 

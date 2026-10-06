@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     MIND_SEMANTIC_MODEL_ROUTE: str = Field(default="metacog", alias="MIND_SEMANTIC_MODEL_ROUTE")
     MIND_APPRAISAL_MODEL_ROUTE: str = Field(default="metacog", alias="MIND_APPRAISAL_MODEL_ROUTE")
     MIND_STANCE_MODEL_ROUTE: str = Field(default="metacog", alias="MIND_STANCE_MODEL_ROUTE")
+    # On a live Hub turn (engine.carries_live_turn), every phase configured as `metacog` uses this
+    # route instead: same pool class, `interactive` priority, so a heat shed never refuses the
+    # turn's Mind calls (spec 2026-10-06-thermal-controller-redesign D4). Empty = rollback (turns
+    # use the phase routes above, `system`, and are shed with background work).
+    MIND_TURN_MODEL_ROUTE: str = Field(default="metacog_turn", alias="MIND_TURN_MODEL_ROUTE")
     MIND_LLM_TIMEOUT_SEC: float = Field(default=60.0, alias="MIND_LLM_TIMEOUT_SEC")
     MIND_LLM_MAX_TOKENS_SEMANTIC: int = Field(default=2048, alias="MIND_LLM_MAX_TOKENS_SEMANTIC")
     MIND_LLM_MAX_TOKENS_APPRAISAL: int = Field(default=3072, alias="MIND_LLM_MAX_TOKENS_APPRAISAL")

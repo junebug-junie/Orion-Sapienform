@@ -6,6 +6,10 @@ tick. Same code both ways.
 
 Spec: docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md (Part 4).
 Plan: docs/superpowers/plans/2026-09-29-urgent-curiosity-plan-4-5-hardware-watch-and-shedding.md.
+Thermal controller v2: docs/superpowers/specs/2026-10-06-thermal-controller-redesign-design.md --
+``cooling_verdict_v2`` (D5: AC power is a diagnosis, not a trigger) and the ceiling-only heat rules
+(D7). ``cooling_verdict`` / ``shed_verdict`` are the v1 rules, kept only while
+``HARDWARE_WATCH_HEAT_CONTROLLER=v1`` is the one-week rollback path.
 
 "Held for" everywhere means: the contiguous run of readings, newest first, that satisfy the
 condition; the run's age is ``now - oldest reading in the run``. The newest reading must be recent
@@ -16,7 +20,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, Sequence, TypeVar
 
 from orion.autonomy.thermal_gate import DEFAULT_ELEVATED_C, DEFAULT_MAX_READING_AGE_SEC
@@ -103,6 +107,24 @@ def _cooling_ok_sec(live: Sequence[CoolingPoint], now: datetime, cfg: CoolingRul
     return held_for(list(zip(live, working)), lambda x: x[1], now, ts=lambda x: x[0].ts, max_gap_sec=cfg.max_gap_sec)
 
 
+def _freshness_arm(points: Sequence[CoolingPoint], live: Sequence[CoolingPoint], now: datetime,
+                   cfg: CoolingRuleConfig, detail: dict) -> str | None:
+    """No live reading for stale_sec -> named from the newest row (or no_samples: no row at all)."""
+    newest = points[-1] if points else None
+    last_live = live[-1] if live else None
+    silent_sec = _age(now, last_live.ts) if last_live else math.inf
+    detail["silent_sec"] = None if math.isinf(silent_sec) else round(silent_sec, 1)
+    if silent_sec < cfg.stale_sec:
+        return None
+    if newest is None or _age(now, newest.ts) >= cfg.stale_sec:
+        return "no_samples"
+    if not newest.device_online:
+        return "device_offline"
+    if not newest.controller_ready:
+        return "controller_not_ready"
+    return "no_fresh_sample"
+
+
 def cooling_verdict(points: Sequence[CoolingPoint], now: datetime,
                     cfg: CoolingRuleConfig = CoolingRuleConfig()) -> Verdict:
     """``points``: every home_cooling_sample row in the lookback (>= frozen_sec + margin), ascending.
@@ -127,18 +149,7 @@ def cooling_verdict(points: Sequence[CoolingPoint], now: datetime,
         "last_live_watts": last_live.watts if last_live else None,
     }
 
-    open_reason: str | None = None
-    silent_sec = _age(now, last_live.ts) if last_live else math.inf
-    detail["silent_sec"] = None if math.isinf(silent_sec) else round(silent_sec, 1)
-    if silent_sec >= cfg.stale_sec:
-        if newest is None or _age(now, newest.ts) >= cfg.stale_sec:
-            open_reason = "no_samples"
-        elif not newest.device_online:
-            open_reason = "device_offline"
-        elif not newest.controller_ready:
-            open_reason = "controller_not_ready"
-        else:
-            open_reason = "no_fresh_sample"
+    open_reason = _freshness_arm(points, live, now, cfg, detail)
 
     ts = lambda p: p.ts  # noqa: E731
     low = held_for(live, lambda p: p.watts < cfg.low_watts, now, ts=ts, max_gap_sec=cfg.max_gap_sec)
@@ -156,6 +167,80 @@ def cooling_verdict(points: Sequence[CoolingPoint], now: datetime,
     good = _cooling_ok_sec(live, now, cfg)
     detail["cooling_ok_sec"] = round(good, 1)
     return Verdict(open_reason, open_reason is None and good >= cfg.resolve_sec, detail)
+
+
+# --- cooling v2 (D5): AC power is a diagnosis, the cabinet is the trigger -------------------
+
+@dataclass(frozen=True)
+class AcLowConfig:
+    """"AC looks low" = mean live watts over ``window_sec`` below ``low_mean_w``. A healthy cycling
+    AC averaged 187-375 W per 10 min on the 10-06 cool night (compressor ~60 s on, ~3:10 fan-only at
+    ~104 W); a dead one is ~100 W flat. Resolve needs ``resolve_factor`` x the floor (hysteresis, C4)."""
+
+    low_mean_w: float = 140.0
+    window_sec: float = 900.0
+    resolve_factor: float = 1.5
+    lookahead_min: float = 20.0
+    # The window only counts when live readings cover it: none older than this apart, at either end.
+    max_gap_sec: float = 120.0
+
+
+def ac_mean_w(live: Sequence[CoolingPoint], now: datetime, cfg: AcLowConfig) -> float | None:
+    """Mean watts of the live readings in ``[now - window_sec, now]``; None unless they cover the
+    window (first within max_gap of its start, no gap > max_gap, newest within max_gap of now). A
+    half-filled window right after an outage is not evidence of a low AC (10-03 21:16)."""
+    start = now - timedelta(seconds=cfg.window_sec)
+    win = [p for p in live if start <= p.ts <= now]
+    if not win or _age(now, win[-1].ts) > cfg.max_gap_sec or (win[0].ts - start).total_seconds() > cfg.max_gap_sec:
+        return None
+    if any((b.ts - a.ts).total_seconds() > cfg.max_gap_sec for a, b in zip(win, win[1:])):
+        return None
+    return sum(p.watts for p in win) / len(win)
+
+
+FRESHNESS_REASONS = frozenset({"no_samples", "device_offline", "controller_not_ready", "no_fresh_sample"})
+
+
+def cooling_verdict_v2(points: Sequence[CoolingPoint], now: datetime, cabinet, *,
+                       cfg: CoolingRuleConfig = CoolingRuleConfig(), ac: AcLowConfig = AcLowConfig(),
+                       open_reason: str | None = None) -> Verdict:
+    """v2 cooling rule. ``cabinet``: an ``orion.autonomy.cabinet_heat.CabinetHeatReading`` (no AC
+    input). ``open_reason``: the open incident's reason, if one is open (picks the resolve rule).
+
+    Opening arms, first match named:
+      no live reading for stale_sec -> device_offline | controller_not_ready | no_fresh_sample |
+                                       no_samples   (a dead plug is real: these ALERT; they never shed)
+      AC low AND the cabinet is elevated/hot (unknown counts as elevated) or projected to reach hot
+      within lookahead_min                          -> low_power (no bare "rising" arm: C2)
+      identical live watts held frozen_sec          -> frozen
+    Resolve (no opening arm holds AND a covered window): low_power needs the mean >= resolve_factor x
+    the floor; any other reason needs the mean back at or above the floor.
+    ``detail["ac_low"]``: True/False from a covered window, None when the window is not covered."""
+    live = [p for p in points if p.live]
+    last_live = live[-1] if live else None
+    detail: dict = {"rows": len(points), "live_rows": len(live),
+                    "last_live_ts": last_live.ts.isoformat() if last_live else None,
+                    "last_live_watts": last_live.watts if last_live else None}
+    reason = _freshness_arm(points, live, now, cfg, detail)
+    mean = ac_mean_w(live, now, ac)
+    ac_low = None if mean is None else mean < ac.low_mean_w
+    mth = getattr(cabinet, "minutes_to_hot", None)
+    warm = cabinet.effective_state in ("elevated", "hot") or (mth is not None and mth <= ac.lookahead_min)
+    detail.update({"ac_mean_w": None if mean is None else round(mean, 1), "ac_low": ac_low,
+                   "ac_low_mean_w": ac.low_mean_w, "ac_window_sec": ac.window_sec,
+                   "cabinet": cabinet.as_dict(), "cabinet_warm": warm})
+    if reason is None and ac_low and warm:
+        reason = "low_power"
+    if reason is None and last_live is not None:
+        frozen = held_for(live, lambda p: p.watts == last_live.watts, now, ts=lambda p: p.ts,
+                          max_gap_sec=cfg.max_gap_sec)
+        detail["identical_sec"] = round(frozen, 1)
+        if frozen >= cfg.frozen_sec:
+            reason = "frozen"
+    floor = ac.low_mean_w * (ac.resolve_factor if open_reason in (None, "low_power") else 1.0)
+    resolve = reason is None and mean is not None and mean >= floor
+    detail["resolve_floor_w"] = floor
+    return Verdict(reason, resolve, detail)
 
 
 # --- heat (subjects athena, circe, circe/gpuN) -----------------------------------------------
@@ -196,6 +281,10 @@ class HeatRuleConfig:
     ceiling_sustain_sec: float = 120.0
     ceiling_rearm_c: float | None = None    # resolve below this while the p95 arm is not armed
     max_gap_sec: float = 300.0
+    # v2 D7: the p95 is context, not a trigger (it is true ~5 % of the time by construction, C9).
+    p95_opens: bool = True
+    # v2 D7: an open incident whose sensor is silent this long resolves as sensor_lost (C12). None = never.
+    lost_sec: float | None = None
 
 
 def heat_verdict(points: Sequence[TempPoint], now: datetime, base: Baseline,
@@ -217,17 +306,22 @@ def heat_verdict(points: Sequence[TempPoint], now: datetime, base: Baseline,
         detail["above_ceiling_sec"] = round(over, 1)
         if over >= cfg.ceiling_sustain_sec:
             open_reason = "above_ceiling"
-    if open_reason is None and armed:
+    if newest is not None and base.p95 is not None:
+        detail["above_p95_c"] = round(newest.value - base.p95, 2)   # annotation ("22 C above its usual")
+    if open_reason is None and armed and cfg.p95_opens:
         over = held_for(points, lambda p: p.value > base.p95, now, ts=ts, max_gap_sec=cfg.max_gap_sec)
         detail["above_p95_sec"] = round(over, 1)
         if over >= cfg.sustain_sec:
             open_reason = "above_p95"
     resolve = False
     if fresh and open_reason is None:
-        if armed and base.p75 is not None:
+        if armed and cfg.p95_opens and base.p75 is not None:
             resolve = newest.value < base.p75
         elif cfg.ceiling_rearm_c is not None:
             resolve = newest.value < cfg.ceiling_rearm_c
+    elif cfg.lost_sec is not None and (newest is None or _age(now, newest.ts) > cfg.lost_sec):
+        resolve = True
+        detail["resolve_reason"] = "sensor_lost"
     return Verdict(open_reason, resolve, detail)
 
 

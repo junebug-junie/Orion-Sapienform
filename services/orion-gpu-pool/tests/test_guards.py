@@ -77,3 +77,28 @@ def test_visual_baseline_guard_is_gone():
     assert SWAP_GUARDS == ("thermal",)
     with pytest.raises(ValidationError):
         SwapSpec.model_validate({"evicts": ["diffusion"], "guards": ["visual_baseline"]})
+
+
+# --- thermal controller v2, D10 / C10 / C13 -------------------------------------------------------
+
+def test_starts_unknown_not_hot():
+    reader = GuardReader(cabinet_url=CAB)
+    assert reader.thermal_state == "unknown"
+    assert read({CAB: RuntimeError("down")}, reader)["thermal"] == "unavailable:RuntimeError"
+
+
+def test_one_failed_read_inside_grace_holds_the_last_state():
+    from datetime import datetime, timedelta, timezone
+    t = [datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)]
+    reader = GuardReader(cabinet_url=CAB, clock=lambda: t[0])
+    assert read({CAB: cabinet(22.0, age=5)}, reader)["thermal"] is None
+    t[0] += timedelta(seconds=60)
+    assert read({CAB: RuntimeError("blip")}, reader)["thermal"] is None        # C10: one blip is not unknown
+    t[0] += timedelta(seconds=300)
+    assert read({CAB: RuntimeError("down")}, reader)["thermal"].startswith("unavailable")   # past grace
+
+
+def test_elevated_does_not_block_swap_loads_hot_does():
+    """The 32 C hot line is the guard's (Decisions 2026-10-06); 34 C is the reflex shed's."""
+    assert read({CAB: cabinet(30.0)})["thermal"] is None
+    assert read({CAB: cabinet(32.0)})["thermal"].startswith("hot")

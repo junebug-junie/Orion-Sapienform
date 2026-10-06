@@ -122,16 +122,20 @@ def test_winner_binds_within_90s_with_dwell_2():
 @pytest.mark.parametrize("override,refusal", [
     ({"hardware_watch": HardwareWatchView.from_health(None, now=NOW)}, "hardware_watch_unknown:unreachable"),
     ({"hardware_watch": HardwareWatchView.from_health({"enabled": True, "last_tick_ok": True, "last_tick_at": NOW.isoformat(),
-                                                        "open_incidents": [{"incident_id": "x", "rule": "cpu_heat"}]}, now=NOW)},
-     "hardware_watch_incident_open"),
+                                                        "reflex_shed": {"active": True, "reason": "cabinet_unknown"}}, now=NOW)},
+     "reflex_active:cabinet_unknown"),
+    ({"hardware_watch": HardwareWatchView.from_health({"enabled": True, "last_tick_ok": True, "last_tick_at": NOW.isoformat(),
+                                                        "open_incidents": [{"incident_id": "x", "rule": "cooling",
+                                                                            "shed_requested": True, "shed_reason": "cabinet_elevated"}]}, now=NOW)},
+     "reflex_active:cooling_incident:cabinet_elevated"),
     ({"hardware_watch": HardwareWatchView.from_health({"enabled": True, "last_tick_ok": True,
                                                         "last_tick_at": (NOW - timedelta(minutes=10)).isoformat()}, now=NOW)},
      "hardware_watch_unknown:stale"),
     ({"background_granted": 0, "background_queued": 0}, "no_background_work"),
     ({"background_granted": None, "background_queued": None}, "pool_occupancy_unknown"),
     ({"in_flight_episode_ids": ["d1"]}, "winner_loop_in_flight"),
-    ({"cabinet": read_cabinet_heat(_points(30.5, 30.5), NOW)}, "cabinet_not_rising"),
-    ({"cabinet": read_cabinet_heat(_points(31.5, 32.4), NOW)}, "thermal_not_elevated:hot"),
+    ({"cabinet": read_cabinet_heat(_points(26.0, 26.5), NOW)}, "thermal_not_elevated:normal"),
+    ({"cabinet": read_cabinet_heat(_points(33.5, 34.2), NOW)}, "thermal_critical:reflex_covers"),
 ])
 def test_eligibility_refusals(override, refusal):
     snap = _eligibility(**override)
@@ -208,3 +212,37 @@ def test_check3_allowed_world_action_is_prepared_and_clears_the_unchanged_floor(
 def test_check6_acted_is_a_valid_verdict_and_never_terminal():
     assert "acted" not in TERMINAL_VERDICTS
     AttentionLoopOutcomeV1(outcome_id="o", loop_id="l", theme_key="l", verdict="acted", actor="orion")
+
+
+# --- D8 (thermal controller v2, APPROVED 2026-10-06): the learned shed owns 29.5-34 C ----------
+
+@pytest.mark.parametrize("points", [
+    _points(30.5, 30.5),                                  # elevated, flat: no rise needed any more
+    _points(31.5, 32.4),                                  # hot, below the 34 C critical line
+    _points(29.6, 30.4, now=NOW - timedelta(minutes=10)), # unknown (stale)
+])
+def test_d8_eligible_at_elevated_hot_and_unknown(points):
+    snap = _eligibility(cabinet=read_cabinet_heat(points, NOW))
+    assert snap["eligible"], snap["refusals"]
+
+
+def test_d8_not_eligible_at_normal_or_critical():
+    assert "thermal_not_elevated:normal" in _eligibility(cabinet=read_cabinet_heat(_points(25.0, 25.0), NOW))["refusals"]
+    assert "thermal_critical:reflex_covers" in _eligibility(cabinet=read_cabinet_heat(_points(34.0, 34.0), NOW))["refusals"]
+
+
+def test_d8_a_gpu_heat_incident_no_longer_blocks_it():
+    hw = HardwareWatchView.from_health({"enabled": True, "last_tick_ok": True, "last_tick_at": NOW.isoformat(),
+                                        "open_incidents": [{"incident_id": "g", "rule": "gpu_heat", "subject": "circe/gpu3"}],
+                                        "reflex_shed": {"active": False, "reason": None}}, now=NOW)
+    snap = _eligibility(hardware_watch=hw)
+    assert snap["eligible"], snap["refusals"]
+    assert snap["hardware_watch"]["open_incident_rules"] == ["gpu_heat"]
+
+
+def test_d8_an_open_cooling_incident_that_does_not_shed_does_not_block():
+    """v2 cooling incidents are alert-only (D5); only the reflex's own signal blocks (C7)."""
+    hw = HardwareWatchView.from_health({"enabled": True, "last_tick_ok": True, "last_tick_at": NOW.isoformat(),
+                                        "open_incidents": [{"incident_id": "c", "rule": "cooling", "shed_requested": False}],
+                                        "reflex_shed": {"active": False}}, now=NOW)
+    assert _eligibility(hardware_watch=hw)["eligible"]

@@ -402,3 +402,27 @@ def test_identity_lines_from_ephemeral_snapshot_match_the_ctx_fallback() -> None
     assert any(getattr(n, "snapshot_source", None) == "identity_yaml" for n in beliefs.anchors["orion"].snapshots)
     assert from_snapshot == from_fallback
     assert len(from_snapshot["orion_identity_summary"]) == 10
+
+
+# ---------------------------------------------------------------------------
+# L6 step 2 -- concept_induction is ephemeral in both registries
+# ---------------------------------------------------------------------------
+
+
+def test_concept_induction_is_ephemeral_and_bound_in_both_registries() -> None:
+    import functools
+
+    from orion.cognition.projection_builder import build_projection_unification_registry
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    store = InMemorySubstrateGraphStore()
+    for registry in (
+        chat_stance_module._build_unification_registry(concept_store=store),
+        build_projection_unification_registry(concept_store=store),
+    ):
+        entry = _producer(registry, "concept_induction")
+        assert entry.trust_tier.write_through is False
+        assert entry.trust_tier.name == "concept_induced"
+        assert entry.pull_on_cold is True
+        assert isinstance(entry.adapter_fn, functools.partial)
+        assert entry.adapter_fn.keywords == {"store": store}

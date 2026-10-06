@@ -103,8 +103,9 @@ class CognitiveUnificationLayer:
         self._store = store
         self._base_ephemeral = ephemeral_store  # prototype; rebuilt per call
         self._durable_materializer = SubstrateGraphMaterializer(store=store)
-        # Per-producer last-materialized timestamps for accurate per-producer TTL checks.
-        # Updated after each successful cold fan-out materialization.  Falls back to
+        # Per-producer last-pulled timestamps for accurate per-producer TTL checks.
+        # Updated after each successful cold fan-out pull, including one that
+        # returned no record (nothing to add is still fresh).  Falls back to
         # anchor-node age estimate for producers not yet tracked (e.g. first call after
         # restart, or when the store was pre-populated externally).
         self._last_materialized_at: dict[str, datetime] = {}
@@ -212,7 +213,17 @@ class CognitiveUnificationLayer:
                                 degraded_producers.append(producer.producer_id)
                                 continue
 
-                            if record is not None:
+                            if record is None:
+                                # A completed pull that had nothing to add is
+                                # still a fresh pull. Without this, a producer
+                                # that returns None (autonomy, live) was never
+                                # tracked, so its anchors fell back to the seed
+                                # nodes' day-old observed_at and read cold on
+                                # every turn (2026-10-06, turn-latency L6).
+                                # Failures and timeouts above stay untracked so
+                                # they retry next turn.
+                                self._last_materialized_at[producer.producer_id] = datetime.now(timezone.utc)
+                            else:
                                 try:
                                     if producer.trust_tier.write_through:
                                         mat_result = self._durable_materializer.apply_record(record)
@@ -267,7 +278,15 @@ class CognitiveUnificationLayer:
         anchor_slices: dict[str, AnchorBeliefSliceV1] = {}
         for anchor in anchors:
             durable_nodes = [n for n in updated_durable_snapshot.nodes.values() if n.anchor_scope == anchor]
-            ephemeral_nodes = [n for n in ephemeral_snapshot.nodes.values() if n.anchor_scope == anchor]
+            # A non-write-through producer can re-read a node that already lives
+            # durably (concept_induction reads the concept region). Show it once,
+            # with the durable values: the durable copy is the one decay and
+            # other writers keep current (2026-10-06, unified-turn latency L6).
+            durable_ids = {n.node_id for n in durable_nodes}
+            ephemeral_nodes = [
+                n for n in ephemeral_snapshot.nodes.values()
+                if n.anchor_scope == anchor and n.node_id not in durable_ids
+            ]
             all_nodes = durable_nodes + ephemeral_nodes
 
             anchor_producers = self._registry.producers_for_anchor(anchor)

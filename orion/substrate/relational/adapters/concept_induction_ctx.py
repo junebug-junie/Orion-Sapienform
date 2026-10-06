@@ -69,14 +69,15 @@ _STORE: SubstrateGraphStore | None = None
 
 
 def _get_store() -> SubstrateGraphStore | None:
-    """Return (or lazily initialise) the process-level substrate store.
+    """Return (or lazily initialise) this module's own fallback substrate store.
 
-    Mirrors the singleton-caching pattern in
-    ``services/orion-cortex-exec/app/chat_stance.py::_get_unification_layer``
-    without importing from that module — ``chat_stance.py`` lazily imports
-    this adapter inside ``_build_unification_registry``, so importing back
-    from here would be circular. Never raises: a construction failure is
-    logged and the caller degrades to ``None``.
+    Only used when the caller did not bind a store (``store=None``) -- e.g.
+    orion-cortex-orch's cold build, whose layer store is a fresh in-memory
+    store with no concepts in it. The live stance layers bind their own store
+    (see ``build_projection_unification_registry(concept_store=...)``), so
+    this second Falkor connection is never opened on the chat path. Never
+    raises: a construction failure is logged and the caller degrades to
+    ``None``.
     """
     global _STORE
     if _STORE is None:
@@ -88,11 +89,35 @@ def _get_store() -> SubstrateGraphStore | None:
     return _STORE
 
 
-def map_concept_induction_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV1 | None:  # noqa: ARG001
-    """Fetch live concept-region nodes from the substrate store (concept_induced tier)."""
-    store = _get_store()
+def map_concept_induction_ctx_to_substrate(
+    ctx: dict[str, Any],  # noqa: ARG001
+    *,
+    store: SubstrateGraphStore | None = None,
+) -> SubstrateGraphRecordV1 | None:
+    """Fetch live concept-region nodes from the substrate store (concept_induced tier).
+
+    ``store`` is the unification layer's own durable store, bound by the
+    registry builder. ``query_concept_region`` reads that store's in-process
+    cache, which the layer has just refreshed with its own ``snapshot()`` at
+    the top of ``beliefs_for_stance`` -- so this costs no extra Falkor round
+    trip and sees concepts written since boot.
+
+    Before 2026-10-06 (unified-turn latency L6 step 2) this always used a
+    private store that hydrated once at process boot and never called
+    ``snapshot()`` again: every turn read boot-time concepts, and the
+    write-through tier then re-saved those boot-time copies over the live
+    graph. The unbound fallback now calls ``snapshot()`` first, which refreshes
+    when a write landed or the store's refresh ceiling elapsed.
+    """
     if store is None:
-        return None
+        store = _get_store()
+        if store is None:
+            return None
+        try:
+            store.snapshot()
+        except Exception as exc:
+            logger.debug("concept_induction_ctx_snapshot_failed error=%s", exc)
+            return None
 
     try:
         result = store.query_concept_region(limit_nodes=64, limit_edges=64)

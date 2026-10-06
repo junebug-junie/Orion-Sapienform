@@ -3,6 +3,7 @@
 from .beliefs import AnchorBeliefSliceV1, UnifiedRelationalBeliefSetV1
 from .registry import (
     CONCEPT_INDUCED,
+    CONCEPT_INDUCED_EPHEMERAL,
     GRAPHDB_DURABLE,
     OPERATOR_STATIC,
     SNAPSHOT_EPHEMERAL,
@@ -29,6 +30,7 @@ __all__ = [
     "OPERATOR_STATIC",
     "GRAPHDB_DURABLE",
     "CONCEPT_INDUCED",
+    "CONCEPT_INDUCED_EPHEMERAL",
     "SNAPSHOT_EPHEMERAL",
     "TIER_BY_NAME",
     "CognitiveUnificationLayer",

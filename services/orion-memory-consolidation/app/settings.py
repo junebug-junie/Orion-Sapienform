@@ -82,6 +82,14 @@ class Settings(BaseSettings):
         default="/data/memory-episode-reports", alias="MEMORY_EPISODE_REPORT_DIR"
     )
     MEMORY_EPISODE_REPORT_TZ: str = Field(default="America/Denver", alias="MEMORY_EPISODE_REPORT_TZ")
+    # Memory confirmation loop (2026-10-06): open "Orion is asking" cards for high-stakes shadow
+    # memories (max 5 open, 7-day expiry) and apply Juniper's answers from
+    # orion:attention:loop_outcome plus a table catch-up. Kill switch: false stops all three.
+    MEMORY_CONFIRMATION_LOOP_ENABLED: bool = Field(default=True, alias="MEMORY_CONFIRMATION_LOOP_ENABLED")
+    MEMORY_CONFIRMATION_TICK_SEC: float = Field(default=60.0, gt=0.0, alias="MEMORY_CONFIRMATION_TICK_SEC")
+    CHANNEL_ATTENTION_LOOP_OUTCOME: str = Field(
+        default="orion:attention:loop_outcome", alias="CHANNEL_ATTENTION_LOOP_OUTCOME"
+    )
     CHANNEL_MEMORY_EPISODE_CLOSED: str = Field(
         default="orion:memory:episode:closed", alias="CHANNEL_MEMORY_EPISODE_CLOSED"
     )

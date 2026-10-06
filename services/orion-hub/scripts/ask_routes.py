@@ -26,6 +26,16 @@ no-embed-zone box) into a directory this Hub mounts read-only
 64-char lowercase hex digest -- no path to traverse, nothing to enumerate --
 and the bytes are re-hashed before they are served.
 
+**Memory confirmation cards** (``source_kind`` in ``RESOLVABLE_KINDS``; memory-episode spec
+sections 3 and 5, 2026-10-06). These are not closed by ``/answer`` or ``/dismiss`` (409
+``ask_needs_resolution``): ``POST /api/asks/{id}/resolve`` takes Confirm / Revise (note required)
+/ Reject and, in ONE transaction, closes the card and inserts the ``attention_loop_outcome`` row,
+the single resolution record. After the commit it publishes ``AttentionLoopOutcomeV1`` on
+``orion:attention:loop_outcome`` (consumed by orion-memory-consolidation, which also catches up
+from the table, so a failed publish delays the memory update but never loses it) and the usual
+``OrionAskAnsweredV1``. ``GET /api/asks`` adds ``memory_statement`` to these cards so Revise can
+start from the current wording. Gated on ``MEMORY_CONFIRMATION_LOOP_ENABLED``.
+
 Uses the Hub's asyncpg pool (``app.state.memory_pg_pool``, same ``conjourney``
 database sql-writer writes to). All DB calls are awaited, so nothing blocks the
 event loop (``scripts/check_async_routes_not_blocking.py``).
@@ -48,7 +58,17 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.memory.episode.confirmation import (
+    MAX_NOTE_CHARS,
+    RESOLUTION_ASK_STATUS,
+    RESOLUTION_VERDICT,
+    RESOLVABLE_KINDS,
+    memory_id_from_loop,
+    outcome_features,
+    outcome_id_for,
+)
 from orion.schemas.ask import OrionAskAnsweredV1
+from orion.schemas.attention_salience import AttentionLoopOutcomeV1
 
 try:
     from asyncpg.exceptions import (
@@ -73,6 +93,7 @@ router = APIRouter(tags=["asks"])
 
 CHANNEL_ASK_ANSWERED = "orion:ask:answered"
 ASK_ANSWERED_KIND = "orion.ask.answered.v1"
+CHANNEL_LOOP_OUTCOME = "orion:attention:loop_outcome"
 MAX_ANSWER_CHARS = 500
 MAX_LIST = 50
 
@@ -89,6 +110,20 @@ _SELECT_COLUMNS = (
 
 class AskAnswerBody(BaseModel):
     answer: str = Field(min_length=1, max_length=MAX_ANSWER_CHARS)
+
+
+class AskResolveBody(BaseModel):
+    resolution: Literal["confirmed", "revised", "rejected"]
+    note: str = Field(default="", max_length=MAX_NOTE_CHARS)
+
+
+def _confirmation_loop_enabled() -> bool:
+    try:
+        from scripts.settings import settings
+
+        return bool(getattr(settings, "MEMORY_CONFIRMATION_LOOP_ENABLED", True))
+    except Exception:  # settings env not loaded (bare test process)
+        return os.getenv("MEMORY_CONFIRMATION_LOOP_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _pool(request: Request):
@@ -184,9 +219,33 @@ async def list_asks(
                 status,
                 limit,
             )
+            asks = [_row_dict(r) for r in rows]
+            await _attach_memory_statements(conn, asks)
     except Exception as exc:
         _raise_store_http(exc)
-    return {"ok": True, "status": status, "asks": [_row_dict(r) for r in rows]}
+    return {"ok": True, "status": status, "asks": asks}
+
+
+async def _attach_memory_statements(conn: Any, asks: list[dict[str, Any]]) -> None:
+    """Add ``memory_statement`` (the memory's current wording) to memory confirmation cards, so
+    Revise can start from it. Fail-open: a missing shadow table must not take down the panel."""
+    ids = [m for m in (memory_id_from_loop(a.get("source_ref") or "") for a in asks
+                       if a.get("source_kind") in RESOLVABLE_KINDS) if m]
+    if not ids:
+        return
+    try:
+        rows = await conn.fetch(
+            "SELECT memory_id::text AS memory_id, statement FROM episode_memory WHERE memory_id = ANY($1::uuid[])",
+            ids,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ask_memory_statement_lookup_failed error=%s", exc)
+        return
+    by_id = {r["memory_id"]: r["statement"] for r in rows}
+    for a in asks:
+        mid = memory_id_from_loop(a.get("source_ref") or "")
+        if mid and mid in by_id:
+            a["memory_statement"] = by_id[mid]
 
 
 async def _close_ask(
@@ -206,15 +265,17 @@ async def _close_ask(
                 WHERE ask_id = $1
                   AND status = 'open'
                   AND (expires_at IS NULL OR expires_at > now())
+                  AND source_kind <> ALL($4::text[])
                 RETURNING ask_id, status, answer, answered_at, source_kind, source_ref
                 """,
                 ask_id,
                 new_status,
                 answer,
+                list(RESOLVABLE_KINDS),
             )
             if row is None:
                 existing = await conn.fetchrow(
-                    "SELECT status, expires_at FROM orion_ask WHERE ask_id = $1",
+                    "SELECT status, expires_at, source_kind FROM orion_ask WHERE ask_id = $1",
                     ask_id,
                 )
     except Exception as exc:
@@ -223,6 +284,9 @@ async def _close_ask(
     if row is None:
         if existing is None:
             raise HTTPException(status_code=404, detail="ask_not_found")
+        if existing["source_kind"] in RESOLVABLE_KINDS:
+            # Closing these without an outcome row would orphan the memory (spec Stage 3 check 6).
+            raise HTTPException(status_code=409, detail="ask_needs_resolution")
         current = existing["status"]
         detail = f"ask_not_open:{current}"
         if current == "open":
@@ -263,6 +327,131 @@ async def answer_ask(request: Request, ask_id: str, body: AskAnswerBody) -> dict
 @router.post("/api/asks/{ask_id}/dismiss")
 async def dismiss_ask(request: Request, ask_id: str) -> dict[str, Any]:
     return await _close_ask(request, ask_id, new_status="dismissed", answer=None)
+
+
+_INSERT_OUTCOME = """
+INSERT INTO attention_loop_outcome
+    (outcome_id, loop_id, theme_key, verdict, actor, note, salience_at_close, weights_version,
+     features_at_close, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
+ON CONFLICT (outcome_id) DO NOTHING
+"""
+
+
+async def _publish_loop_outcome(outcome: AttentionLoopOutcomeV1) -> bool:
+    from .bus_publish import build_loop_outcome_envelope
+    from .main import bus
+
+    if bus is None or not getattr(bus, "enabled", True):
+        logger.warning("ask_loop_outcome_publish_skipped outcome_id=%s reason=bus_unavailable", outcome.outcome_id)
+        return False
+    try:
+        await bus.publish(CHANNEL_LOOP_OUTCOME, build_loop_outcome_envelope(outcome))
+        return True
+    except Exception as exc:
+        logger.warning("ask_loop_outcome_publish_failed outcome_id=%s error=%s", outcome.outcome_id, exc)
+        return False
+
+
+@router.post("/api/asks/{ask_id}/resolve")
+async def resolve_ask(request: Request, ask_id: str, body: AskResolveBody) -> dict[str, Any]:
+    """Confirm / Revise / Reject a memory confirmation card: card + outcome in one transaction."""
+    if not _confirmation_loop_enabled():
+        raise HTTPException(status_code=404, detail="memory_confirmation_disabled")
+    note = " ".join(body.note.split())
+    if body.resolution == "revised" and not note:
+        raise HTTPException(status_code=422, detail="revised_needs_note")
+    new_status = RESOLUTION_ASK_STATUS[body.resolution]
+    answer = body.resolution if not note else f"{body.resolution}: {note}"
+    pool = _pool(request)
+    outcome: Optional[AttentionLoopOutcomeV1] = None
+    row: Any = None
+    existing: Any = None
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    UPDATE orion_ask
+                    SET status = $2, answer = $3, answered_at = now()
+                    WHERE ask_id = $1
+                      AND status = 'open'
+                      AND (expires_at IS NULL OR expires_at > now())
+                      AND source_kind = ANY($4::text[])
+                    RETURNING ask_id, status, answer, answered_at, source_kind, source_ref
+                    """,
+                    ask_id,
+                    new_status,
+                    answer,
+                    list(RESOLVABLE_KINDS),
+                )
+                if row is None:
+                    existing = await conn.fetchrow(
+                        "SELECT status, expires_at, source_kind FROM orion_ask WHERE ask_id = $1",
+                        ask_id,
+                    )
+                else:
+                    loop_id = row["source_ref"]
+                    outcome = AttentionLoopOutcomeV1(
+                        outcome_id=outcome_id_for(row["ask_id"]),
+                        loop_id=loop_id,
+                        theme_key=loop_id,
+                        verdict=RESOLUTION_VERDICT[body.resolution],  # type: ignore[arg-type]
+                        actor="juniper",
+                        note=note,
+                        features_at_close=outcome_features(
+                            resolution=body.resolution, ask_id=row["ask_id"], memory_id=memory_id_from_loop(loop_id)
+                        ),
+                    )
+                    await conn.execute(
+                        _INSERT_OUTCOME,
+                        outcome.outcome_id,
+                        outcome.loop_id,
+                        outcome.theme_key,
+                        outcome.verdict,
+                        outcome.actor,
+                        outcome.note,
+                        float(outcome.salience_at_close),
+                        outcome.weights_version,
+                        json.dumps(outcome.features_at_close),
+                        outcome.created_at,
+                    )
+    except Exception as exc:
+        _raise_store_http(exc)
+
+    if row is None or outcome is None:
+        if existing is None:
+            raise HTTPException(status_code=404, detail="ask_not_found")
+        if existing["source_kind"] not in RESOLVABLE_KINDS:
+            raise HTTPException(status_code=409, detail="ask_not_resolvable")
+        current = existing["status"]
+        raise HTTPException(status_code=409, detail="ask_not_open:expired" if current == "open" else f"ask_not_open:{current}")
+
+    published_outcome = await _publish_loop_outcome(outcome)
+    answered_at = row["answered_at"]
+    if isinstance(answered_at, datetime) and answered_at.tzinfo is None:
+        answered_at = answered_at.replace(tzinfo=timezone.utc)
+    event = OrionAskAnsweredV1(
+        ask_id=row["ask_id"],
+        status=row["status"],
+        answer=row["answer"],
+        answered_at=answered_at or datetime.now(timezone.utc),
+        source_kind=row["source_kind"],
+        source_ref=row["source_ref"],
+    )
+    published = await _publish_answered(event)
+    logger.info(
+        "ask_resolved ask_id=%s resolution=%s outcome_id=%s loop_id=%s published_outcome=%s",
+        event.ask_id, body.resolution, outcome.outcome_id, outcome.loop_id, published_outcome,
+    )
+    return {
+        "ok": True,
+        "ask": event.model_dump(mode="json"),
+        "outcome_id": outcome.outcome_id,
+        "resolution": body.resolution,
+        "published": published,
+        "published_outcome": published_outcome,
+    }
 
 
 def _crop_thumb_dir() -> Path:

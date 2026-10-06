@@ -3228,8 +3228,12 @@ channels:
     kind: "event"
     schema_id: "AttentionLoopOutcomeV1"
     message_kind: "attention.loop.outcome.v1"
+    # 2026-10-06: also the memory confirmation loop's one resolution record. orion-hub publishes it
+    # after the "Orion is asking" Confirm/Revise/Reject commit (loop_id memory-confirm-<memory_id>);
+    # orion-memory-consolidation applies it to the shadow memory and catches up from the
+    # attention_loop_outcome table, so a lost publish delays an answer but never drops it.
     producer_services: ["orion-hub"]
-    consumer_services: []
+    consumer_services: ["orion-memory-consolidation"]
     stability: "experimental"
     since: "2026-07-07"
 

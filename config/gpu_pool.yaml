@@ -109,13 +109,22 @@ classes:   # roles that may serve a class, in preference order; nothing big spil
 
 routes:    # what llm-gateway callers say -> class (+ priority). Every gateway route must be listed:
            # the gateway refuses a route that is not here rather than guess a GPU.
+           # Always long form with an explicit priority (orion/gpu_pool/tests/test_route_priorities_explicit.py):
+           # the shorthand `name: class` silently meant `system`, i.e. shed under heat (2026-10-06 C6).
   chat: {class: chat, priority: interactive}
   harness: {class: chat, priority: interactive}
-  agent: agent
+  agent: {class: agent, priority: system}
   metacog: {class: metacog, priority: system}
   metacog_background: {class: metacog, priority: background}
-  quick: fast
+  quick: {class: fast, priority: system}
   quick_background: {class: fast, priority: background}
+  # Calls on a human's critical path (spec 2026-10-06-thermal-controller-redesign D4): same classes
+  # as metacog/quick/agent, but interactive, so a heat shed never holds a live Hub turn. The plain
+  # routes stay system: they also carry background callers that should shed. agent_turn is the
+  # unconfirmed Q4 default (split, not "make agent interactive").
+  metacog_turn: {class: metacog, priority: interactive}
+  quick_turn: {class: fast, priority: interactive}
+  agent_turn: {class: agent, priority: interactive}
   # The old "burst" lanes: agent work on a borrowed card. The pool now decides which card
   # (agent -> gpu2 seat when loaded -> gpu0 when lent), so both are just agent work.
   agent-burst: {class: agent, priority: system}

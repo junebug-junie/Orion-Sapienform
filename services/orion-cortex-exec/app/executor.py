@@ -4825,6 +4825,45 @@ async def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: boo
     return stance_inputs
 
 
+# Verbs that run in mode=brain but never read the stance/identity context that
+# prepare_brain_reply_context builds. Shared by the router's pre-plan hook and the
+# step-time check so the two cannot drift (they did: the router skipped a verb the
+# step-time check then rebuilt anyway).
+#   introspect_spark / memory_graph_suggest: render only from context.metadata.
+#   harness_finalize_reflect / orion_response_repair: the harness finalize chain
+#     (orion/harness/finalize.py) runs these right after a stance_react for the same
+#     turn and reads back text only; the rebuild was a full duplicate stance build
+#     (~9 s, plus duplicate cortex_turn / chat_stance_belief_log rows).
+BRAIN_REPLY_CONTEXT_SKIP_VERBS = frozenset(
+    {
+        "introspect_spark",
+        "memory_graph_suggest",
+        "harness_finalize_reflect",
+        "orion_response_repair",
+    }
+)
+
+
+def brain_reply_context_skipped(
+    verb: Any, ctx: Dict[str, Any], options: Dict[str, Any] | None = None
+) -> bool:
+    """True when this verb must not run the brain reply-context build.
+
+    Reads the ``skip_brain_reply_context`` flag from ``ctx`` and from ``options``
+    (``options`` defaults to ``ctx["options"]``); callers such as
+    memory_graph_suggest set it in options only.
+    """
+    verb_name = str(verb or "").strip().lower()
+    if verb_name in BRAIN_REPLY_CONTEXT_SKIP_VERBS:
+        return True
+    if bool(ctx.get("skip_brain_reply_context")):
+        return True
+    opts = options if isinstance(options, dict) else ctx.get("options")
+    if isinstance(opts, dict) and bool(opts.get("skip_brain_reply_context")):
+        return True
+    return False
+
+
 def _should_prepare_brain_reply_context(*, step: ExecutionStep, ctx: Dict[str, Any]) -> bool:
     mode = str(ctx.get("mode") or "").strip().lower()
     if mode != "brain":
@@ -4836,12 +4875,7 @@ def _should_prepare_brain_reply_context(*, step: ExecutionStep, ctx: Dict[str, A
     # context.metadata (prompt/response/spark_meta). Full brain stance + unified
     # beliefs (GraphDB/recall/social) is wasted work and dominated latency after the
     # 2026-05-09 cognitive unification layer landed in build_chat_stance_inputs.
-    if verb_name in {"introspect_spark", "memory_graph_suggest"}:
-        return False
-    if bool(ctx.get("skip_brain_reply_context")):
-        return False
-    opts = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
-    if bool(opts.get("skip_brain_reply_context")):
+    if brain_reply_context_skipped(verb_name, ctx):
         return False
     if verb_name.startswith("skills.runtime."):
         return False

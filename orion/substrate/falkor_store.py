@@ -12,6 +12,8 @@ successful concept/edge decode.
 
 from __future__ import annotations
 
+from .neighborhood import NeighborhoodRequestV1, NeighborhoodResultV1
+
 import logging
 import math
 import os
@@ -718,6 +720,10 @@ class FalkorSubstrateStore:
             self._last_snapshot_at = now_mono
             self._last_snapshot_generation = generation_at_fetch_start
             return self._cache.snapshot()
+
+    def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1:
+        from .neighborhood_backends import read_falkor_neighborhood
+        return read_falkor_neighborhood(self, request)
 
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1:
         return _retag_source(

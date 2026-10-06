@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .neighborhood import NeighborhoodRequestV1, NeighborhoodResultV1
+
 import json
 import logging
 import math
@@ -346,6 +348,10 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
             return self._cache.snapshot()
 
     # ---- primary query layer (GraphDB-first) ----
+    def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1:
+        from .neighborhood_backends import read_sparql_neighborhood
+        return read_sparql_neighborhood(self, request)
+
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1:
         node_ids = [str(node_id).strip() for node_id in node_ids if str(node_id).strip()]
         edges_limit = max(1, int(max_edges))

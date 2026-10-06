@@ -1,0 +1,35 @@
+name: Substrate neighborhood reads
+on:
+  pull_request:
+    paths:
+      - 'orion/substrate/**'
+      - 'orion/core/schemas/cognitive_substrate.py'
+      - 'scripts/replay_substrate_neighborhood.py'
+      - '.github/workflows/substrate-neighborhood.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'orion/substrate/**'
+      - 'orion/core/schemas/cognitive_substrate.py'
+      - 'scripts/replay_substrate_neighborhood.py'
+      - '.github/workflows/substrate-neighborhood.yml'
+jobs:
+  neighborhood:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'pydantic>=2' pydantic-settings requests 'redis<6' PyYAML jinja2 pytest 'rdflib>=7'
+      - name: Store contract and backend regressions
+        run: >-
+          python -m pytest -q
+          orion/substrate/tests/test_neighborhood.py
+          orion/substrate/tests/test_neighborhood_backends.py
+          orion/substrate/tests/test_falkor_store.py
+          orion/substrate/tests/test_graphdb_store.py
+          orion/substrate/tests/test_routed_store.py
+          orion/substrate/tests/test_phase16_query_planning.py
+      - name: Hub-heavy budget and coverage eval
+        run: python -m orion.substrate.evals.run_neighborhood_eval

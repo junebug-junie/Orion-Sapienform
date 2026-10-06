@@ -75,6 +75,9 @@ jobs:
           python -m pip install -r services/orion-durable-runs/requirements.txt
           python -m pip install -r requirements-dev.txt
           python -m pip install asyncpg==0.29.0 pytest-asyncio sqlalchemy
+          # orion-memory-consolidation's pin: redis 5.0.x's graph module imports distutils,
+          # which Python 3.12 removed, so the referent projector's Falkor client needs >=5.1.
+          python -m pip install redis==5.2.1
       - name: Run memory episode tests (Postgres-backed tests must not skip)
         run: |
           set -o pipefail

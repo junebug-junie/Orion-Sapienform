@@ -53,7 +53,8 @@ Recall does not use any of this yet (spec PR D–F). This PR only builds the gra
 - `services/orion-sql-db/manual_migration_referent_alias_v1{,_rollback}.sql` (new).
 - `scripts/backfill_referents_from_episodes.py` (new; dry run by default; the AGENTS.md §14 snapshot/progress/report protocol on `--apply`).
 - Tests/evals: `orion/memory/referents/tests/{test_resolve,test_referents_pg}.py`, `services/orion-memory-consolidation/tests/test_referent_projector_pg.py`, `services/orion-memory-consolidation/evals/test_referent_graph_discipline_eval.py`, `services/orion-durable-runs/tests/test_episode_distill_referent_policy.py`.
-- `.github/workflows/orion-memory-episode-tests.yml`: FalkorDB service, new lanes (still fails on any skip).
+- `.github/workflows/orion-memory-episode-tests.yml`: FalkorDB service, new lanes (still fails on any skip), redis 5.2.1.
+- `services/orion-memory-consolidation/requirements.txt`: `redis==5.2.1` (the Falkor client on Python 3.12).
 
 ## Concepts (each with a producer, a consumer and a test)
 
@@ -149,6 +150,10 @@ The orchestrator runs the review subagent. Found and fixed while building:
 - **Finding (live data):** "circe", "chicago" and "space" were classed as relative names because Juniper says them often.
   - **Fix:** a thing's own key name is always a proper name; the frequency rule applies only to extra aliases.
   - **Evidence:** `test_a_thing_s_own_key_name_is_a_proper_name_however_often_juniper_says_it`, and the live-copy rerun (descriptors went from 16 to 6, all genuinely relative or generic).
+
+- **Finding (CI):** orion-memory-consolidation pinned `redis==5.0.7`. Its graph module imports `distutils`, which Python 3.12 (the consolidation image) removed, so the projector's Falkor client would have crashed in production.
+  - **Fix:** the pin moves to `redis==5.2.1` (substrate-runtime's pin); the CI lane installs the same version.
+  - **Evidence:** CI run 37440072022 failed on exactly this, and `pip install --dry-run -r services/orion-memory-consolidation/requirements.txt` resolves cleanly.
 
 ## Restart required
 

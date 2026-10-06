@@ -1,6 +1,6 @@
 # Unified chat turn latency: corrected findings and design
 
-Date: 2026-10-06. Status: **design. Items L1 and L2 are ready to implement. Items marked PROPOSAL need Juniper's yes/no first.**
+Date: 2026-10-06. Status: **APPROVED 2026-10-06.** L1–L3 ready; Juniper approved L6 (decay fix, then re-save removal), L7 (auto-memory off for chat replies) and L8 (draft first, judge after; sensitive turns stay judge-first). L4/L5 approved as designed.
 
 Supersedes the recommendations in `docs/superpowers/design/2026-10-06-unified-turn-latency-handoff.md`. That doc's diagnosis of where time goes stands. Two of its four "do now" fixes would have backfired or done nothing (see "Corrections"), and it missed the larger levers.
 
@@ -169,7 +169,7 @@ Hub turn_orchestrator
 - This interacts with L7: a chat-specific config dir solves both.
 - **Expected:** 1.5–4 s per turn.
 
-### L6. PROPOSAL: fix the substrate decay loop, then stop the concept re-save
+### L6. APPROVED 2026-10-06: fix the substrate decay loop, then stop the concept re-save
 
 - **Capability change:** activation decays once per unit of real time instead of compounding. Seed concepts stop being held up by an accidental re-save.
 - **Fix:**
@@ -191,7 +191,7 @@ Hub turn_orchestrator
 - **Rollback:** env flag `SUBSTRATE_DYNAMICS_DECAY_MODE=since_last|legacy`, shipped `since_last`.
 - **Order matters:** decay fix live and verified → then the concept producer goes ephemeral. Never the reverse.
 
-### L7. PROPOSAL: turn off the reply writer's auto-memory for chat turns
+### L7. APPROVED 2026-10-06: turn off the reply writer's auto-memory for chat turns
 
 - **What happens today:**
   - Claude Code keeps an auto-memory per working directory and loads its index into every session.
@@ -210,7 +210,7 @@ Hub turn_orchestrator
 - **Rollback:** remove the env var.
 - **Open for Juniper:** should investigation runs keep an ungoverned shared memory at all? That is a separate question and out of scope here.
 
-### L8. PROPOSAL: show the draft first, judge after
+### L8. APPROVED 2026-10-06: show the draft first, judge after
 
 - **Facts** (`harness_turn_trace`, last 7 days, 483 finalize runs):
 

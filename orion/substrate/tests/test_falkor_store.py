@@ -1674,3 +1674,102 @@ def test_legacy_payload_migration_accepts_every_durable_kind():
     src = inspect.getsource(store_mod.FalkorSubstrateStore._migrate_legacy_payload_nodes)
     assert "DURABLE_NODE_KINDS" in src
     assert "entity" in DURABLE_NODE_KINDS
+
+
+# ---------------------------------------------------------------------------
+# Writes vs. snapshot (2026-10-06, turn-latency L2). cortex-exec now runs the
+# stance build (and so snapshot()) on a worker thread while the event loop can
+# still write to the same store.
+# ---------------------------------------------------------------------------
+
+
+class _DurableRecordingClient(RecordingFalkorClient):
+    """Fake Falkor that durably records node MERGEs, like the real graph, and can
+    run a hook from inside the hydrate scan (i.e. mid-snapshot)."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.mid_scan_hook = None
+
+    def graph_query(self, cypher, params=None):
+        if cypher.startswith("MERGE (n:SubstrateNode") and params:
+            self._hydrate_node_rows.append(
+                _hydrated_node_row(str(params["node_id"]), str(params.get("identity_key") or params["node_id"]))
+            )
+        result = super().graph_query(cypher, params)
+        if "e.payload_json IS NOT NULL" in cypher and self.mid_scan_hook is not None:
+            hook, self.mid_scan_hook = self.mid_scan_hook, None
+            hook()
+        return result
+
+
+def test_falkor_write_during_snapshot_never_yields_a_cache_missing_it():
+    client = _DurableRecordingClient(hydrate_node_rows=[_hydrated_node_row("concept-a", "concept:a")])
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(
+            uri="redis://localhost:6379", graph_name="orion_substrate", snapshot_force_refresh_ceiling_sec=60.0
+        ),
+        client=client,
+        hydrate=False,
+    )
+
+    def _write_from_another_thread():
+        import threading
+
+        writer = threading.Thread(
+            target=lambda: store.upsert_node(identity_key="concept:b", node=_concept(node_id="concept-b"))
+        )
+        writer.start()
+        writer.join(timeout=5)
+        assert not writer.is_alive()
+
+    client.mid_scan_hook = _write_from_another_thread
+    during = store.snapshot()
+    assert "concept-b" in during.nodes
+    after = store.snapshot()
+    assert "concept-a" in after.nodes and "concept-b" in after.nodes
+
+
+def test_falkor_concurrent_writes_and_snapshots_keep_every_completed_write():
+    import threading
+
+    client = _DurableRecordingClient(hydrate_node_rows=[_hydrated_node_row("concept-a", "concept:a")])
+    store = FalkorSubstrateStore(
+        FalkorSubstrateStoreConfig(
+            uri="redis://localhost:6379", graph_name="orion_substrate", snapshot_force_refresh_ceiling_sec=60.0
+        ),
+        client=client,
+        hydrate=False,
+    )
+    written: list[str] = []
+    missing: list[tuple[str, int]] = []
+    stop = threading.Event()
+
+    def _writer():
+        for i in range(60):
+            node_id = f"concept-w{i}"
+            store.upsert_node(identity_key=f"concept:w{i}", node=_concept(node_id=node_id))
+            written.append(node_id)
+        stop.set()
+
+    def _reader():
+        while not stop.is_set():
+            done_before = list(written)
+            snap = store.snapshot()
+            for node_id in done_before:
+                if node_id not in snap.nodes:
+                    missing.append((node_id, len(done_before)))
+
+    readers = [threading.Thread(target=_reader) for _ in range(2)]
+    writer = threading.Thread(target=_writer)
+    for t in readers:
+        t.start()
+    writer.start()
+    writer.join(timeout=30)
+    for t in readers:
+        t.join(timeout=30)
+
+    assert missing == []
+    assert store._write_generation == 60
+    final = store.snapshot()
+    assert set(written) <= set(final.nodes)

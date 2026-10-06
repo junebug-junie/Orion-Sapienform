@@ -1043,11 +1043,7 @@ class PlanRunner:
                     prepare_chat_quick_reply_context(ctx)
             elif verb_lc == "chat_kids_story":
                 prepare_chat_quick_reply_context(ctx)
-            elif brain_reply_context_skipped(
-                plan.verb_name,
-                ctx,
-                ctx.get("options") if isinstance(ctx.get("options"), dict) else None,
-            ):
+            elif brain_reply_context_skipped(plan.verb_name, ctx):
                 logger.info(
                     "router_skip_prepare_brain_reply_context corr=%s verb=%s reason=skip_verb_or_flag",
                     correlation_id,

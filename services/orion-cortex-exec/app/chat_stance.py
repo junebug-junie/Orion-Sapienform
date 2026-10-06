@@ -37,6 +37,7 @@ from orion.schemas.reverie import SpontaneousThoughtV1
 from orion.substrate import build_substrate_store_from_env
 from orion.substrate.relational import (
     CONCEPT_INDUCED,
+    GRAPHDB_DURABLE,
     SNAPSHOT_EPHEMERAL,
     CognitiveUnificationLayer,
     ProducerEntryV1,
@@ -142,11 +143,17 @@ _UNIFICATION_LAYER: CognitiveUnificationLayer | None = None
 # process for ~9 s per build. It now runs here.
 #
 # One worker on purpose: it keeps today's one-build-at-a-time ordering for the
-# lazy, unlocked process globals those calls touch (_UNIFICATION_LAYER, the
-# felt-state _READER and its lived-answers cache, the layer's
-# _last_materialized_at), and it keeps this ~9 s work out of the default
-# executor that cortex-exec's ~38 asyncio.to_thread calls share. Each container
-# (cortex-exec, -chat, -background, -spark) gets its own worker.
+# lazy, unlocked state the beliefs path touches (_UNIFICATION_LAYER, the
+# layer's _last_materialized_at, the layer's Falkor store), and it keeps this
+# ~9 s work out of the default executor that cortex-exec's ~38
+# asyncio.to_thread calls share. Each container (cortex-exec, -chat,
+# -background, -spark) gets its own worker.
+#
+# Not covered by the worker: the felt-state reader is also called straight
+# from the loop (identity injection, metacog). Its lazy init is locked and its
+# TTL cache is single-key dict get/set, so the worst overlap is a duplicate
+# fetch. A hung build blocks later stance builds in this container (the
+# worker cannot be cancelled), not the whole process as before.
 _STANCE_BUILD_EXECUTOR: ThreadPoolExecutor | None = None
 _STANCE_BUILD_EXECUTOR_LOCK = threading.Lock()
 
@@ -189,7 +196,6 @@ def _build_unification_registry() -> ProducerRegistryV1:
 
     return ProducerRegistryV1(
         producers=[
-            ProducerEntryV1(
             # snapshot_ephemeral, re-read from ctx every call (2026-10-06,
             # turn-latency L3). It was operator_static write-through, but its
             # StateSnapshotNodeV1 is not a Falkor durable kind (concept/
@@ -197,6 +203,7 @@ def _build_unification_registry() -> ProducerRegistryV1:
             # producer_materialize_failed and marked the orion anchor degraded.
             # Its input is ctx identity that _inject_identity_context already
             # put there; nothing is lost by not persisting it.
+            ProducerEntryV1(
                 producer_id="identity_yaml",
                 trust_tier=SNAPSHOT_EPHEMERAL,
                 anchor_scopes=("orion",),
@@ -220,14 +227,16 @@ def _build_unification_registry() -> ProducerRegistryV1:
                 adapter_fn=map_self_definition_ctx_to_substrate,
             ),
             ProducerEntryV1(
-                # Not write-through (2026-10-06, turn-latency L3): it emits
-                # GoalNodeV1, which the Falkor durable store rejects. Stays
-                # pull_on_cold=True on purpose: this is a network adapter (SPARQL
-                # when the autonomy graph gate is on), so it must keep running in
-                # the cold fan-out pool under its timeout, not inline on every
-                # call like the ctx-only ephemeral producers.
+                # Left write-through on purpose (2026-10-06, turn-latency L3).
+                # Its GoalNodeV1 is not a Falkor durable kind, so a non-None
+                # record would fail like identity_yaml did -- but live it
+                # returns None (autonomy graph gate off; 0 failures in 24 h).
+                # A non-write-through + pull_on_cold producer would make goals
+                # appear on cold turns and vanish on warm ones (the ephemeral
+                # store is per call), and this network adapter can't move to
+                # the always-run ephemeral path. Fix with the gate, not here.
                 producer_id="autonomy",
-                trust_tier=SNAPSHOT_EPHEMERAL,
+                trust_tier=GRAPHDB_DURABLE,
                 anchor_scopes=("orion", "relationship", "juniper"),
                 freshness_ttl_sec=300,
                 pull_on_cold=True,

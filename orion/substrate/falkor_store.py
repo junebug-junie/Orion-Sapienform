@@ -754,72 +754,76 @@ class FalkorSubstrateStore:
         from .neighborhood_backends import read_falkor_neighborhood
         return read_falkor_neighborhood(self, request)
 
+    # Region reads iterate the in-memory cache's dicts; InMemorySubstrateGraphStore
+    # has no lock of its own, so they share _cache_lock with writers.
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1:
-        return _retag_source(
-            self._cache.query_focal_slice(node_ids=node_ids, max_edges=max_edges),
-            self._result_source_kind,
-        )
+        with self._cache_lock:
+            result = self._cache.query_focal_slice(node_ids=node_ids, max_edges=max_edges)
+        return _retag_source(result, self._result_source_kind)
 
     def query_hotspot_region(
         self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateQueryResultV1:
-        result = self._cache.query_hotspot_region(
-            min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
-        )
+        with self._cache_lock:
+            result = self._cache.query_hotspot_region(
+                min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
+            )
         return _retag_source(result, self._result_source_kind)
 
     def query_contradiction_region(
         self, *, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateQueryResultV1:
-        return _retag_source(
-            self._cache.query_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges),
-            self._result_source_kind,
-        )
+        with self._cache_lock:
+            result = self._cache.query_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
+        return _retag_source(result, self._result_source_kind)
 
     def query_concept_region(
         self, *, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateQueryResultV1:
-        return _retag_source(
-            self._cache.query_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges),
-            self._result_source_kind,
-        )
+        with self._cache_lock:
+            result = self._cache.query_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
+        return _retag_source(result, self._result_source_kind)
 
     def query_provenance_neighborhood(
         self, *, evidence_ref: str, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateQueryResultV1:
-        return _retag_source(
-            self._cache.query_provenance_neighborhood(
+        with self._cache_lock:
+            result = self._cache.query_provenance_neighborhood(
                 evidence_ref=evidence_ref, limit_nodes=limit_nodes, limit_edges=limit_edges
-            ),
-            self._result_source_kind,
-        )
+            )
+        return _retag_source(result, self._result_source_kind)
 
     def read_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateNeighborhoodSliceV1:
-        return self._cache.read_focal_slice(node_ids=node_ids, max_edges=max_edges)
+        with self._cache_lock:
+            return self._cache.read_focal_slice(node_ids=node_ids, max_edges=max_edges)
 
     def read_hotspot_region(
         self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateNeighborhoodSliceV1:
-        return self._cache.read_hotspot_region(
-            min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
-        )
+        with self._cache_lock:
+            return self._cache.read_hotspot_region(
+                min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
+            )
 
     def read_contradiction_region(
         self, *, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateNeighborhoodSliceV1:
-        return self._cache.read_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
+        with self._cache_lock:
+            return self._cache.read_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
 
     def read_concept_region(
         self, *, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateNeighborhoodSliceV1:
-        return self._cache.read_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
+        with self._cache_lock:
+            return self._cache.read_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
 
     def read_provenance_neighborhood(
         self, *, evidence_ref: str, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateNeighborhoodSliceV1:
-        return self._cache.read_provenance_neighborhood(
-            evidence_ref=evidence_ref, limit_nodes=limit_nodes, limit_edges=limit_edges
-        )
+        with self._cache_lock:
+            return self._cache.read_provenance_neighborhood(
+                evidence_ref=evidence_ref, limit_nodes=limit_nodes, limit_edges=limit_edges
+            )
 
 
 def _retag_source(result: SubstrateQueryResultV1, source_kind: str) -> SubstrateQueryResultV1:

@@ -38,6 +38,14 @@ from orion.schemas.cortex.schemas import (
 )
 
 FINALIZE_VERBS = ("harness_finalize_reflect", "orion_response_repair")
+
+# Some suites in this directory delete and re-import ``app.*`` modules, so a
+# dotted-path monkeypatch ("app.executor.x") can hit a different module object
+# than the functions imported above. Patch the globals those functions actually
+# resolve names in.
+EXECUTOR_NS = call_step_services.__globals__
+ROUTER_NS = PlanRunner.run_plan.__globals__
+STANCE_NS = EXECUTOR_NS["build_chat_stance_inputs"].__globals__
 SOURCE = ServiceRef(name="test", node="test", version="1.0")
 
 
@@ -89,8 +97,9 @@ async def _run_step(verb: str, ctx: dict, content: str = '{"verdict":"aligned"}'
         order=0,
         prompt_template="{{ raw_user_text }}",
     )
-    with patch(
-        "app.executor.LLMGatewayClient.chat",
+    with patch.object(
+        EXECUTOR_NS["LLMGatewayClient"],
+        "chat",
         new=AsyncMock(return_value=ChatResponsePayload(content=content)),
     ):
         return await call_step_services(
@@ -101,7 +110,7 @@ async def _run_step(verb: str, ctx: dict, content: str = '{"verdict":"aligned"}'
 @pytest.mark.parametrize("verb", FINALIZE_VERBS)
 def test_step_time_path_never_calls_build_chat_stance_inputs(monkeypatch, verb: str) -> None:
     build = AsyncMock(return_value={})
-    monkeypatch.setattr("app.executor.build_chat_stance_inputs", build)
+    monkeypatch.setitem(EXECUTOR_NS, "build_chat_stance_inputs", build)
     result = asyncio.run(_run_step(verb, _brain_ctx()))
     assert result.status == "success"
     assert build.await_count == 0
@@ -110,7 +119,7 @@ def test_step_time_path_never_calls_build_chat_stance_inputs(monkeypatch, verb: 
 def test_step_time_path_still_builds_for_stance_react(monkeypatch) -> None:
     """Positive control: the same harness does reach the build for stance_react."""
     build = AsyncMock(return_value={})
-    monkeypatch.setattr("app.executor.build_chat_stance_inputs", build)
+    monkeypatch.setitem(EXECUTOR_NS, "build_chat_stance_inputs", build)
     asyncio.run(_run_step("stance_react", _brain_ctx(), content='{"imperative":"x"}'))
     assert build.await_count == 1
 
@@ -147,9 +156,10 @@ def _plan_request(verb: str) -> PlanExecutionRequest:
 
 def _run_router(monkeypatch, verb: str, ctx: dict) -> AsyncMock:
     prepare = AsyncMock(return_value=None)
-    monkeypatch.setattr("app.router.prepare_brain_reply_context", prepare)
-    monkeypatch.setattr(
-        "app.router.call_step_services",
+    monkeypatch.setitem(ROUTER_NS, "prepare_brain_reply_context", prepare)
+    monkeypatch.setitem(
+        ROUTER_NS,
+        "call_step_services",
         AsyncMock(
             return_value=StepExecutionResult(
                 status="success",
@@ -164,13 +174,13 @@ def _run_router(monkeypatch, verb: str, ctx: dict) -> AsyncMock:
             )
         ),
     )
-    monkeypatch.setattr("app.router.assemble_stance_grounding", AsyncMock(return_value=None))
+    monkeypatch.setitem(ROUTER_NS, "assemble_stance_grounding", AsyncMock(return_value=None))
     asyncio.run(
         PlanRunner().run_plan(
             bus=object(),
             source=SOURCE,
             req=_plan_request(verb),
-            correlation_id=f"corr-{verb}",
+            correlation_id=str(uuid4()),
             ctx=ctx,
         )
     )
@@ -218,9 +228,9 @@ def test_unified_turn_writes_exactly_one_cortex_turn_row(monkeypatch) -> None:
         return True
 
     monkeypatch.setenv("ORION_CURIOSITY_FRAME_ENABLED", "true")
-    monkeypatch.setattr(chat_stance_module, "publish_attention_schema", _record)
-    monkeypatch.setattr(chat_stance_module, "persist_chat_attention_salience_trace", _no_trace)
-    monkeypatch.setattr(chat_stance_module, "populate_current_turn_llm_signals", _fake_probe)
+    monkeypatch.setitem(STANCE_NS, "publish_attention_schema", _record)
+    monkeypatch.setitem(STANCE_NS, "persist_chat_attention_salience_trace", _no_trace)
+    monkeypatch.setitem(STANCE_NS, "populate_current_turn_llm_signals", _fake_probe)
 
     async def _turn() -> None:
         stance_ctx = {
@@ -252,11 +262,11 @@ def test_concurrent_handler_completes_during_slow_build(monkeypatch) -> None:
         return None
 
     monkeypatch.delenv("ORION_CURIOSITY_FRAME_ENABLED", raising=False)
-    monkeypatch.setattr(chat_stance_module, "_hydrate_and_unify_beliefs", _slow_hydrate_and_unify)
+    monkeypatch.setitem(STANCE_NS, "_hydrate_and_unify_beliefs", _slow_hydrate_and_unify)
 
     async def _scenario() -> tuple[float, bool]:
         build = asyncio.create_task(
-            chat_stance_module.build_chat_stance_inputs({"verb": "chat_general", "skip_unified_beliefs": True})
+            STANCE_NS["build_chat_stance_inputs"]({"verb": "chat_general", "skip_unified_beliefs": True})
         )
         await asyncio.sleep(0.05)  # let the build reach the worker
         t0 = time.monotonic()
@@ -306,9 +316,11 @@ def test_identity_yaml_is_ephemeral_in_both_registries() -> None:
         assert entry.trust_tier.name == "snapshot_ephemeral"
         assert entry.pull_on_cold is False
         assert entry in registry.ephemeral_ctx_producers_for_anchor("orion")
+        # Deliberately unchanged: non-write-through + pull_on_cold would make
+        # goals flicker between cold and warm turns (review finding).
         autonomy = _producer(registry, "autonomy")
-        assert autonomy.trust_tier.write_through is False
-        assert autonomy.pull_on_cold is True  # network adapter stays in the timed cold pool
+        assert autonomy.trust_tier.name == "graphdb_durable"
+        assert autonomy.pull_on_cold is True
 
 
 def test_self_definition_is_ephemeral() -> None:
@@ -365,3 +377,28 @@ def test_signal_probe_sends_its_real_wait_budget_to_the_gateway(monkeypatch) -> 
     env, kwargs = sent[0]
     assert env.payload["options"]["gateway_read_timeout_sec"] == 3.0
     assert kwargs["timeout_sec"] == 3.0
+
+
+def test_identity_lines_from_ephemeral_snapshot_match_the_ctx_fallback() -> None:
+    """Spec acceptance: stance identity lines unchanged. Before L3 the snapshot
+    write failed and _project_identity_from_beliefs fell back to ctx; now it
+    reads the ephemeral snapshot. Both must give the same kernel."""
+    from orion.cognition.projection_builder import build_projection_unification_registry
+    from orion.substrate.relational import CognitiveUnificationLayer, ProducerRegistryV1
+    from orion.substrate.store import InMemorySubstrateGraphStore
+
+    ctx = {
+        "orion_identity_summary": [f"Orion line {i}" for i in range(14)] + ["Orion line 3"],
+        "juniper_relationship_summary": ["Juniper is my collaborator.", "  "],
+        "response_policy_summary": ["Speak plainly."],
+    }
+    layer = CognitiveUnificationLayer(
+        registry=ProducerRegistryV1(producers=[_producer(build_projection_unification_registry(), "identity_yaml")]),
+        store=InMemorySubstrateGraphStore(),
+    )
+    beliefs = layer.beliefs_for_stance(anchors=("orion",), ctx=dict(ctx))
+    from_snapshot = chat_stance_module._project_identity_from_beliefs(beliefs, dict(ctx))
+    from_fallback = chat_stance_module._project_identity_from_beliefs(None, dict(ctx))
+    assert any(getattr(n, "snapshot_source", None) == "identity_yaml" for n in beliefs.anchors["orion"].snapshots)
+    assert from_snapshot == from_fallback
+    assert len(from_snapshot["orion_identity_summary"]) == 10

@@ -14,6 +14,8 @@ on:
       - "orion/harness/tests/fake_claude_stream.py"
       - "orion/harness/tests/test_fcc_*.py"
       - "orion/fcc/**"
+      - "orion/world_pulse_read/mcp_server.py"
+      - "orion/introspect/mcp_server.py"
       - "services/orion-harness-governor/**"
       - ".github/workflows/orion-fcc-warm-pool-tests.yml"
   push:
@@ -44,6 +46,7 @@ jobs:
       - name: Warm pool, relay, and FCC motor tests
         run: |
           python -m pytest orion/harness/tests/test_fcc_warm_pool.py \
+            orion/harness/tests/test_fcc_warm_pool_chat_binding.py \
             orion/harness/tests/test_fcc_motor_cancel.py \
             orion/harness/tests/test_fcc_context_ceiling_compaction.py \
             orion/harness/tests/test_fcc_chat_auto_memory.py \

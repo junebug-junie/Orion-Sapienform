@@ -87,6 +87,8 @@ class _FakeFalkorClient:
             raise AssertionError(f"unexpected read: {cypher[:80]}")
         if cypher.startswith("MERGE (n:SubstrateNode:"):
             return []
+        if cypher == "CREATE INDEX FOR (n:SubstrateNode) ON (n.node_id)":
+            return []
         raise AssertionError(f"unexpected write: {cypher[:80]}")
 
 
@@ -113,11 +115,14 @@ def falkor_env(monkeypatch):
 
 def test_recall_store_is_the_direct_falkor_handle_with_no_snapshot(falkor_env) -> None:
     store = substrate_store.get_substrate_store()
-    assert isinstance(store, FalkorDirectConceptStore)
+    assert isinstance(store._inner, FalkorDirectConceptStore)
     assert not hasattr(store, "snapshot")
     assert substrate_store.get_substrate_store() is store
-    # Construction issued no query at all.
-    assert all(client.calls == [] for client in _FakeFalkorClient.instances)
+    # Construction issued no graph read; the writer only ensured the node_id index.
+    assert next(c for c in _FakeFalkorClient.instances if c.read_only).calls == []
+    assert [cy for cy, _ in next(c for c in _FakeFalkorClient.instances if not c.read_only).calls] == [
+        "CREATE INDEX FOR (n:SubstrateNode) ON (n.node_id)"
+    ]
     # Reads are GRAPH.RO_QUERY; both clients carry the socket timeouts.
     assert sorted(c.read_only for c in _FakeFalkorClient.instances) == [False, True]
     assert all(
@@ -127,6 +132,8 @@ def test_recall_store_is_the_direct_falkor_handle_with_no_snapshot(falkor_env) -
         }
         for c in _FakeFalkorClient.instances
     )
+    # A hung FalkorDB costs at most this per query (review finding 3: was 5s).
+    assert substrate_store.FALKOR_SOCKET_TIMEOUT_S <= 1.5
     assert falkor_env == []
 
 
@@ -139,10 +146,11 @@ def test_concept_region_read_and_reinforce_never_hydrate(falkor_env) -> None:
     reader = next(c for c in _FakeFalkorClient.instances if c.read_only)
     writer = next(c for c in _FakeFalkorClient.instances if not c.read_only)
     assert [cypher for cypher, _ in reader.calls] == [
-        CONCEPT_RANK_CYPHER, CONCEPT_ROWS_CYPHER, CONCEPT_EDGE_CUT_CYPHER, NODE_BY_ID_CYPHER, NODE_BY_ID_CYPHER,
-    ]
-    assert len(writer.calls) == 1
-    _cypher, params = writer.calls[0]
+        CONCEPT_RANK_CYPHER, CONCEPT_ROWS_CYPHER, CONCEPT_EDGE_CUT_CYPHER, NODE_BY_ID_CYPHER,
+    ]  # one node read per reinforced node: node and identity key come from the same row
+    merges = [(cy, p) for cy, p in writer.calls if cy.startswith("MERGE")]
+    assert len(merges) == 1
+    _cypher, params = merges[0]
     assert params["identity_key"] == "concept:c-juniper"
     assert params["activation"] == pytest.approx(0.2 + 0.8 * 0.08)
 
@@ -161,7 +169,9 @@ def test_abandoned_call_reads_but_does_not_reinforce(falkor_env) -> None:
     abandoned.set()
     fragments = fetch_concept_region_fragment_and_reinforce("Juniper", store=store, abandoned=abandoned)
     assert fragments
-    assert all(c.calls == [] for c in _FakeFalkorClient.instances if not c.read_only)
+    assert all(
+        not cy.startswith("MERGE") for c in _FakeFalkorClient.instances if not c.read_only for cy, _ in c.calls
+    )
     assert falkor_env == []
 
 
@@ -235,3 +245,191 @@ def test_boot_does_not_touch_the_substrate_graph(monkeypatch) -> None:
     assert asyncio.run(_go()) is None
     assert builds == []
     assert not hasattr(substrate_store, "warm_substrate_store")
+
+
+# ── review follow-ups (2026-10-06) ─────────────────────────────────────────
+
+
+def _concept_node(node_id: str):
+    from orion.substrate.falkor_codec import decode_node
+
+    return decode_node(_node_row(node_id, node_id, 1))
+
+
+class _RecordingStore:
+    """Minimal store for reinforcement: combined read + recorded writes."""
+
+    def __init__(self, node_ids, *, on_write=None):
+        self.nodes = {nid: _concept_node(nid) for nid in node_ids}
+        self.writes: list[str] = []
+        self.reads: list[str] = []
+        self._on_write = on_write
+
+    def get_node_and_identity_key(self, node_id):
+        self.reads.append(node_id)
+        node = self.nodes.get(node_id)
+        return node, (f"concept:{node_id}" if node else None)
+
+    def get_node_by_id(self, node_id):  # pragma: no cover - must not be used
+        raise AssertionError("separate read used")
+
+    def get_identity_key_by_node_id(self, node_id):  # pragma: no cover
+        raise AssertionError("separate read used")
+
+    def upsert_node(self, *, identity_key, node, skip_metadata_keys=None):
+        self.writes.append(node.node_id)
+        if self._on_write:
+            self._on_write(len(self.writes))
+
+
+def test_reinforcement_reads_each_node_once() -> None:
+    from app.collectors.concept_region import reinforce_matched_concepts
+
+    store = _RecordingStore(["c1", "c2", "c3"])
+    assert reinforce_matched_concepts(["c1", "c2", "c3"], store=store) == 3
+    assert store.reads == ["c1", "c2", "c3"]
+    assert store.writes == ["c1", "c2", "c3"]
+
+
+def test_deadline_mid_reinforcement_loop_stops_further_writes() -> None:
+    """Review finding 2: the abandoned check ran only before the loop, so a
+    deadline that passed during node 1's write still let nodes 2..n write."""
+    from app.collectors.concept_region import reinforce_matched_concepts
+
+    abandoned = threading.Event()
+    store = _RecordingStore(["c1", "c2", "c3", "c4"], on_write=lambda n: abandoned.set() if n == 1 else None)
+    assert reinforce_matched_concepts(["c1", "c2", "c3", "c4"], store=store, abandoned=abandoned) == 1
+    assert store.writes == ["c1"]
+    assert store.reads == ["c1"]
+
+
+def test_abandoned_is_forwarded_from_the_live_entry_point(monkeypatch) -> None:
+    import app.collectors.concept_region as cr
+
+    seen: list = []
+    monkeypatch.setattr(
+        cr, "fetch_concept_region_fragment",
+        lambda q, *, store, limit_nodes, limit_edges: [{"id": f"{cr._NODE_FRAGMENT_ID_PREFIX}c1"}],
+    )
+    monkeypatch.setattr(cr, "reinforce_matched_concepts", lambda ids, *, store, abandoned=None: seen.append(abandoned))
+    ev = threading.Event()
+    cr.fetch_concept_region_fragment_and_reinforce("x", store=object(), abandoned=ev)
+    assert seen == [ev]
+
+
+class _TimeoutInner:
+    def __init__(self):
+        self.calls = 0
+
+    def read_concept_region_matching(self, **_kw):
+        from redis.exceptions import TimeoutError as RedisTimeoutError
+
+        self.calls += 1
+        raise RedisTimeoutError("Timeout reading from socket")
+
+
+def test_breaker_opens_after_consecutive_timeouts_and_reopens_after_cooldown(caplog) -> None:
+    clock = [100.0]
+    breaker = substrate_store.ConceptRegionBreaker(threshold=3, cooldown_s=60.0, clock=lambda: clock[0])
+    inner = _TimeoutInner()
+    guarded = substrate_store._BreakerGuardedStore(inner, breaker)
+    with caplog.at_level(logging.INFO, logger=substrate_store.logger.name):
+        for _ in range(3):
+            with pytest.raises(Exception):
+                guarded.read_concept_region_matching(keep_label=None)
+        assert breaker.is_open() and breaker.trips == 1
+        # Open: refused without touching Falkor.
+        with pytest.raises(substrate_store.ConceptRegionBreakerOpen):
+            guarded.read_concept_region_matching(keep_label=None)
+        assert inner.calls == 3
+        clock[0] += 61.0
+        assert not breaker.is_open()
+        # Half-open probe times out -> reopens immediately.
+        with pytest.raises(Exception):
+            guarded.read_concept_region_matching(keep_label=None)
+        assert breaker.is_open() and breaker.trips == 2
+    assert "recall_concept_region_breaker_open" in caplog.text
+
+
+def test_success_resets_the_consecutive_count() -> None:
+    breaker = substrate_store.ConceptRegionBreaker(threshold=3, cooldown_s=60.0)
+    breaker.record_timeout()
+    breaker.record_timeout()
+    breaker.record_success()
+    breaker.record_timeout()
+    assert not breaker.is_open()
+    assert breaker.stats()["consecutive_timeouts"] == 1
+
+
+def test_non_timeout_errors_do_not_trip_the_breaker() -> None:
+    breaker = substrate_store.ConceptRegionBreaker(threshold=1, cooldown_s=60.0)
+
+    class _Refused:
+        def read_concept_region_matching(self, **_kw):
+            raise ConnectionError("refused")
+
+    guarded = substrate_store._BreakerGuardedStore(_Refused(), breaker)
+    with pytest.raises(ConnectionError):
+        guarded.read_concept_region_matching()
+    assert not breaker.is_open()
+
+
+def test_hung_falkor_is_bounded_per_turn_then_skipped(monkeypatch, caplog) -> None:
+    """Review finding 3: a FalkorDB that accepts connections and never answers.
+    Each turn is bounded by the socket read timeout; after the threshold the
+    breaker skips concept_region entirely, with no connection attempt and no
+    fallback."""
+    import socket
+    import time
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(16)
+    port = server.getsockname()[1]
+    accepted: list = []
+    stop = threading.Event()
+
+    def _accept_and_hang():
+        server.settimeout(0.1)
+        while not stop.is_set():
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                continue
+            accepted.append(conn)  # never read, never answer
+
+    th = threading.Thread(target=_accept_and_hang, daemon=True)
+    th.start()
+    try:
+        monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "falkor")
+        monkeypatch.setenv("FALKORDB_URI", f"redis://127.0.0.1:{port}")
+        monkeypatch.setattr(substrate_store, "FALKOR_SOCKET_TIMEOUT_S", 0.3)
+        monkeypatch.setattr(substrate_store, "FALKOR_SOCKET_CONNECT_TIMEOUT_S", 0.3)
+        monkeypatch.setattr(substrate_store, "_BREAKER", substrate_store.ConceptRegionBreaker(threshold=3, cooldown_s=60.0))
+        monkeypatch.setattr(FalkorSubstrateStore, "_hydrate_from_durable", lambda self: (_ for _ in ()).throw(AssertionError("hydrate")))
+
+        elapsed = []
+        for _ in range(3):
+            started = time.perf_counter()
+            assert fetch_concept_region_fragment_and_reinforce("Juniper", store=substrate_store.get_substrate_store()) == []
+            elapsed.append(time.perf_counter() - started)
+        assert all(e < 1.5 for e in elapsed), elapsed
+        assert substrate_store.breaker_stats()["open"] is True
+        assert substrate_store.breaker_stats()["timeouts"] == 3
+
+        connections_before = len(accepted)
+        with caplog.at_level(logging.INFO, logger=substrate_store.logger.name):
+            started = time.perf_counter()
+            assert substrate_store.get_substrate_store() is None
+            assert fetch_concept_region_fragment_and_reinforce("Juniper", store=None) == []
+            assert time.perf_counter() - started < 0.05
+        assert len(accepted) == connections_before
+        assert substrate_store.breaker_stats()["skipped"] == 1
+        assert "recall_concept_region_breaker_skip" in caplog.text
+    finally:
+        stop.set()
+        th.join(1.0)
+        for conn in accepted:
+            conn.close()
+        server.close()

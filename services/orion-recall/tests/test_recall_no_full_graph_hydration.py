@@ -118,11 +118,9 @@ def test_recall_store_is_the_direct_falkor_handle_with_no_snapshot(falkor_env) -
     assert isinstance(store._inner, FalkorDirectConceptStore)
     assert not hasattr(store, "snapshot")
     assert substrate_store.get_substrate_store() is store
-    # Construction issued no graph read; the writer only ensured the node_id index.
-    assert next(c for c in _FakeFalkorClient.instances if c.read_only).calls == []
-    assert [cy for cy, _ in next(c for c in _FakeFalkorClient.instances if not c.read_only).calls] == [
-        "CREATE INDEX FOR (n:SubstrateNode) ON (n.node_id)"
-    ]
+    # Construction issued no query at all on the store's clients: the node_id
+    # index bootstrap runs in a background thread on its own client.
+    assert all(client.calls == [] for client in _FakeFalkorClient.instances)
     # Reads are GRAPH.RO_QUERY; both clients carry the socket timeouts.
     assert sorted(c.read_only for c in _FakeFalkorClient.instances) == [False, True]
     assert all(
@@ -433,3 +431,157 @@ def test_hung_falkor_is_bounded_per_turn_then_skipped(monkeypatch, caplog) -> No
         for conn in accepted:
             conn.close()
         server.close()
+
+
+# ── #2513 review follow-ups: half-open breaker, off-path index bootstrap ────
+
+
+def _tripped(clock):
+    breaker = substrate_store.ConceptRegionBreaker(threshold=3, cooldown_s=60.0, clock=lambda: clock[0])
+    for _ in range(3):
+        assert breaker.allow()
+        breaker.record_timeout()
+    assert breaker.stats()["state"] == "open"
+    return breaker
+
+
+def test_in_flight_success_does_not_mask_an_open_breaker() -> None:
+    clock = [0.0]
+    breaker = _tripped(clock)
+    breaker.record_success()  # a call that started before the trip finishes OK
+    assert breaker.would_skip()
+    assert breaker.stats()["consecutive_timeouts"] == 3
+    assert not breaker.allow()
+
+
+def test_half_open_admits_exactly_one_probe_under_concurrency() -> None:
+    clock = [0.0]
+    breaker = _tripped(clock)
+    clock[0] += 61.0
+    assert not breaker.would_skip()  # turns may try; the first call is the probe
+    barrier = threading.Barrier(16)
+    admitted: list = []
+
+    def _try():
+        barrier.wait()
+        admitted.append(breaker.allow())
+
+    threads = [threading.Thread(target=_try) for _ in range(16)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert admitted.count(True) == 1
+    assert breaker.stats()["state"] == "half_open"
+    assert breaker.would_skip()  # probe taken: everyone else skips
+
+
+def test_probe_success_closes_and_probe_timeout_reopens_immediately() -> None:
+    clock = [0.0]
+    breaker = _tripped(clock)
+    clock[0] += 61.0
+    assert breaker.allow()
+    breaker.record_timeout()  # ONE timeout, not three
+    assert breaker.stats()["state"] == "open" and breaker.stats()["trips"] == 2
+    assert not breaker.allow()
+
+    clock[0] += 61.0
+    assert breaker.allow()
+    breaker.record_success()
+    stats = breaker.stats()
+    assert stats["state"] == "closed" and stats["consecutive_timeouts"] == 0
+    assert breaker.allow() and breaker.allow()  # closed: everyone through
+
+
+def test_probe_non_timeout_error_frees_the_probe_slot() -> None:
+    clock = [0.0]
+    breaker = _tripped(clock)
+    clock[0] += 61.0
+    assert breaker.allow()
+    breaker.record_other_failure()
+    assert breaker.stats()["state"] == "half_open"
+    assert breaker.allow()  # next caller probes
+
+
+def _hung_server():
+    import socket
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(16)
+    accepted: list = []
+    stop = threading.Event()
+
+    def _loop():
+        server.settimeout(0.1)
+        while not stop.is_set():
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                continue
+            accepted.append(conn)
+
+    th = threading.Thread(target=_loop, daemon=True)
+    th.start()
+
+    def _close():
+        stop.set()
+        th.join(1.0)
+        for conn in accepted:
+            conn.close()
+        server.close()
+
+    return server.getsockname()[1], _close
+
+
+def test_hung_falkor_at_first_build_does_not_delay_the_first_turn(monkeypatch) -> None:
+    """#2513 review finding 3: the index bootstrap ran inside the first build,
+    under _STORE_LOCK, adding a full socket timeout to the first turn."""
+    import time
+
+    port, close = _hung_server()
+    try:
+        read_timeout = 0.5
+        monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "falkor")
+        monkeypatch.setenv("FALKORDB_URI", f"redis://127.0.0.1:{port}")
+        monkeypatch.setattr(substrate_store, "FALKOR_SOCKET_TIMEOUT_S", read_timeout)
+        monkeypatch.setattr(substrate_store, "FALKOR_SOCKET_CONNECT_TIMEOUT_S", read_timeout)
+        started = time.perf_counter()
+        store = substrate_store.get_substrate_store()
+        build_s = time.perf_counter() - started
+        assert fetch_concept_region_fragment_and_reinforce("Juniper", store=store) == []
+        elapsed = time.perf_counter() - started
+        assert build_s < 0.1, build_s
+        # One read timeout for the turn's first query, nothing for the index.
+        assert elapsed < read_timeout + 0.35, elapsed
+        assert substrate_store._INDEX_THREAD is not None
+    finally:
+        close()
+
+
+def test_index_bootstrap_runs_off_the_lock_and_off_the_caller(monkeypatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_ensure(uri, graph, **_kw):
+        started.set()
+        release.wait(5.0)
+        return True
+
+    monkeypatch.setattr(substrate_store, "ensure_substrate_indexes", _slow_ensure)
+    monkeypatch.setattr(falkor_direct, "RedisGraphQueryClient", _FakeFalkorClient)
+    monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "falkor")
+    monkeypatch.setenv("FALKORDB_URI", "redis://falkor.test:6379")
+    try:
+        store = substrate_store.get_substrate_store()
+        assert store is not None
+        assert started.wait(2.0)
+        # Bootstrap still running, yet the lock is free and the handle served.
+        assert substrate_store._STORE_LOCK.acquire(blocking=False)
+        substrate_store._STORE_LOCK.release()
+        assert substrate_store.get_substrate_store() is store
+        # The builder itself did not run the index DDL on the request path.
+        assert all(not c.calls for c in _FakeFalkorClient.instances)
+    finally:
+        release.set()

@@ -189,7 +189,7 @@ Design: `docs/superpowers/specs/2026-09-29-recall-retrieval-query-architecture-d
 - **Deadline.** One budget for the fetch: 80% of the caller's `deadline_ms`, else `RECALL_DEADLINE_MS_DEFAULT`. On expiry, pending backends are cancelled, completed ones are kept, and the decision says `deadline_hit=true`. The entity boost and v2 shadow compare only use what is left of the budget. The shadow compare only runs when the bundle is empty or vector-topped (main's effective triggers).
 - **`mode=context_only`.** Feeds only: no retrievers, no expansion, no boost (for verbs with no user text, e.g. reverie).
 - **Telemetry.** `recall.decision.v1` and `recall_telemetry` carry `query_chars`, `retrieval_query_source`, `sub_query_count`, `candidates_fetched`, `candidates_kept`, `deadline_hit`, `timings_ms` (`intake`, `feeds`, `retrievers`, `fetch`, `windowing`, `suppression`, `pcr_collectors` with `pcr_active_packet`/`pcr_concept_region`, `boost`, `fusion`, `eligible_count`, `shadow_compare`, `total`; feeds/retrievers are the slowest unit in each group since units overlap, and the top-level stages add up to roughly `total`). `latency_ms` is now end-to-end.
-- **PCR collectors under the deadline.** For purposeful (belief) recall, `active_packet` and `concept_region` run concurrently inside what is left of the recall deadline; one still running at the deadline is dropped, `deadline_hit` is set, and the rest of the recall is kept. The substrate store is warmed in the background at startup (when `RECALL_PCR_ENABLED` and `RECALL_CONCEPT_REGION_ENABLED` are on) so the first belief recall after a restart does not pay the cold Falkor hydration (6.25s measured live 2026-09-30); look for `recall_substrate_store_warmed elapsed_ms=` in the boot log.
+- **PCR collectors under the deadline.** For purposeful (belief) recall, `active_packet` and `concept_region` run concurrently inside what is left of the recall deadline; one still running at the deadline is dropped, `deadline_hit` is set, and the rest of the recall is kept. There is no substrate warm-up any more: since 2026-10-06 `concept_region` reads FalkorDB directly with bounded queries and never loads the substrate graph (see §15).
 
 | Variable | Default | Notes |
 | :--- | :--- | :--- |
@@ -869,6 +869,21 @@ neighborhood fragment scoped to that turn. Matching is deliberately dumb — cas
 label substring match, no embedding/LLM call — and it never does a store read at all if the
 turn text matches nothing.
 
+**How it reads FalkorDB (since 2026-10-06): bounded direct queries, never the whole graph.**
+With `SUBSTRATE_STORE_BACKEND=falkor`, `app/substrate_store.py` hands the collector a
+`FalkorDirectConceptStore` (`orion/substrate/falkor_direct.py`), not a `FalkorSubstrateStore`.
+Each turn runs one light `GRAPH.RO_QUERY` that ranks the top 500 concepts by salience and
+confidence and returns only their labels; the labels are matched in Python. No match = done
+(~11ms median live). On a match, two more bounded reads fetch the matched concepts' full rows and
+the edges among the top 500 most salient edges touching the top 500 concepts that touch a
+matched concept (~140ms median live, most of it FalkorDB walking ~32k edges to rank them).
+The reinforcement reads are single-node lookups and the write is one `MERGE ... SET`.
+The selection is identical to the old cache read: 152/152 real recall queries produced the
+same fragments in the same order (`scripts/compare_concept_region_direct_vs_cache.py`).
+Before this, recall built a complete in-process copy of the graph (17-25s since PR #2500)
+and never refreshed it, so concept_region also read a graph frozen at boot. The handle has
+no `snapshot()`; `routed`/`graphdb`/`sparql` backends are refused (they would load a graph).
+
 **Reinforcement-on-recall, live since PR #1173:** the actual live call site in `app/worker.py`
 uses `fetch_concept_region_fragment_and_reinforce()`, not the plain read-only function above
 directly. It composes the same read (unchanged, same "never persists" contract) with a new
@@ -886,7 +901,7 @@ don't) is in `app/collectors/CONCEPT_REINFORCEMENT_DESIGN.md`.
 | Var | Default | Meaning |
 |---|---|---|
 | `RECALL_CONCEPT_REGION_ENABLED` | `true` | Master on/off switch for this collector. |
-| `SUBSTRATE_STORE_BACKEND` | `falkor` | Which substrate store backend `app/substrate_store.py::get_substrate_store()` builds (shared with `orion-cortex-exec`/`orion-hub`, same `FalkorDB` instance/graph). |
+| `SUBSTRATE_STORE_BACKEND` | `falkor` | `falkor` = direct bounded reads (above); `in_memory`/unset = empty in-memory store; anything else is refused. Same `FalkorDB` instance/graph as `orion-cortex-exec`/`orion-hub`. |
 | `FALKORDB_URI` | `redis://orion-athena-falkordb:6379` | Bridge-network Docker DNS — this service runs in bridge mode, **not** Hub's host-mode `127.0.0.1:6380` convention. |
 | `FALKORDB_SUBSTRATE_GRAPH` | `orion_substrate` | Graph name inside FalkorDB. |
 
@@ -897,6 +912,7 @@ substrate store failed to construct (bad `FALKORDB_URI`, FalkorDB unreachable), 
 degrades to `[]` silently — check Hub's own Concept Atlas tab or `orion-hub` logs for
 `recall_substrate_store_init_failed` first.
 
+**Historical (superseded 2026-10-06 — recall no longer holds a `FalkorSubstrateStore` cache).**
 **Formerly a known limitation, fixed by PR #1159:** `FalkorSubstrateStore` used to hydrate its
 snapshot once at process start and never refresh — concepts added by `orion-hub`'s
 topic-foundry scheduler after this service's first `concept_region` call were invisible here

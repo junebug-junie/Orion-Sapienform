@@ -86,6 +86,16 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
         "orion_day graph persist node inserts the orion_day_letter row (app/orion_day_store.py); "
         "hub reads it back via orion.orion_day.store.fetch_letter",
     ),
+    "orion.core.schemas.substrate_graph_journal:SubstrateGraphProposalV1": (
+        "orion-durable-runs",
+        "memory referent persist (orion/memory/referents/store.py) inserts journal rows; the "
+        "orion-memory-consolidation referent projector reads them back via SubstrateGraphJournal",
+    ),
+    "orion.core.schemas.substrate_graph_journal:SubstrateGraphDecisionV1": (
+        "orion-durable-runs",
+        "memory referent persist inserts source_cooccurrence_v1 decisions; the consolidation "
+        "projector (AssertionProjector) reads them back via SubstrateGraphJournal",
+    ),
     # No cross-service writer.
     "orion.substrate.neighborhood:NeighborhoodRequestV1": (
         None,

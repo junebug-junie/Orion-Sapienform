@@ -966,6 +966,45 @@ class FalkorSubstrateStore:
                 state = self._cache.snapshot()
             return replace(state, scan_receipt=receipt)
 
+    def prime_cache_for_producers(self, producers: tuple[str, ...]) -> tuple[int, int]:
+        """Load only these producers' nodes and edges into the cache (no full hydration).
+
+        For a single-writer projector (memory referents) whose own nodes are the only ones it
+        reads back: it needs them after a restart without scanning the whole graph. Returns
+        (nodes, edges) loaded. Raises on an undecodable row (fail closed, like hydration).
+        """
+        params = {"producers": list(producers)}
+        nodes = _normalize_rows(self._client.graph_query(
+            "MATCH (n:SubstrateNode) WHERE n.provenance_producer IN $producers RETURN "
+            + _return_clause("n", NATIVE_NODE_RETURN_FIELDS), params=params), fields=NATIVE_NODE_RETURN_FIELDS)
+        edges = _normalize_rows(self._client.graph_query(
+            "MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode) WHERE e.substrate_edge = true "
+            "AND e.provenance_producer IN $producers RETURN "
+            + _edge_hydrate_return_clause(NATIVE_EDGE_RETURN_FIELDS), params=params),
+            fields=NATIVE_EDGE_RETURN_FIELDS)
+        with self._cache_lock:
+            for row in nodes:
+                node = decode_node(row)
+                if node is None:
+                    raise ValueError(f"undecodable node {row.get('node_id')}")
+                self._cache.upsert_node(identity_key=row.get("identity_key") or None, node=node)
+            for row in edges:
+                edge = decode_edge(row)
+                if edge is None:
+                    raise ValueError(f"undecodable edge {row.get('edge_id')}")
+                self._cache.upsert_edge(identity_key=str(row.get("identity_key") or ""), edge=edge)
+        return len(nodes), len(edges)
+
+    def find_semantic_node_ids_by_label(self, label: str, *, exclude_producers: tuple[str, ...]) -> list[str]:
+        """Concept/Entity nodes whose label equals ``label`` case-insensitively, written by any
+        producer NOT listed. Direct read; for detecting a same-named node another producer owns."""
+        rows = _normalize_rows(self._client.graph_query(
+            "MATCH (n:SubstrateNode) WHERE n.node_kind IN ['concept', 'entity'] "
+            "AND toLower(n.label) = $label AND NOT (n.provenance_producer IN $exclude) "
+            "RETURN n.node_id AS node_id ORDER BY node_id LIMIT 5",
+            params={"label": str(label).lower(), "exclude": list(exclude_producers)}), fields=("node_id",))
+        return [str(row["node_id"]) for row in rows]
+
     def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1:
         from .neighborhood_backends import read_falkor_neighborhood
         return read_falkor_neighborhood(self, request)

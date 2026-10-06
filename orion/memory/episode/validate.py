@@ -109,6 +109,12 @@ class ValidatedMemory:
     referents: list[tuple[str, str]]
     evidence: list[VerifiedEvidence]
     events: list[MemoryEvent]
+    # The writer's own names for each referent key, verbatim, each with the distiller's
+    # alias_kind (proper_name | descriptor). The referent store only checks they are
+    # Juniper's words (alias_grounding_v1); it never classifies them by vocabulary.
+    referent_aliases: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
+    # The distiller's alias_kind for each key's OWN name ("person:my-cousin" -> descriptor).
+    referent_name_kinds: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -373,6 +379,8 @@ def validate_distillation(
             )
 
         referents: list[tuple[str, str]] = []
+        referent_aliases: dict[str, list[tuple[str, str]]] = {}
+        referent_name_kinds: dict[str, str] = {}
         for r in cand.referents:
             key = normalize_referent_key(r.key)
             if key is None:
@@ -380,6 +388,12 @@ def validate_distillation(
                 continue
             if (key, r.role) not in referents:
                 referents.append((key, str(r.role or "about")))
+            referent_name_kinds.setdefault(key, r.alias_kind)
+            kept = referent_aliases.setdefault(key, [])
+            for alias in r.aliases or []:
+                text = normalize_ws(alias.text)
+                if text and text not in {t for t, _k in kept}:
+                    kept.append((text, alias.alias_kind))
 
         stakes, stakes_reason, stakes_event = resolve_stakes(
             cand.stakes, cand.stakes_reason, cand.asks_direction, category_required=category_required
@@ -411,6 +425,8 @@ def validate_distillation(
                 referents=referents,
                 evidence=[ev for ev, _, _ in checked],
                 events=events,
+                referent_aliases={k: v for k, v in referent_aliases.items() if v},
+                referent_name_kinds=referent_name_kinds,
             )
         )
 

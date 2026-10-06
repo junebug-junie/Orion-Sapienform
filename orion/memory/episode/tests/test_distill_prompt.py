@@ -87,7 +87,7 @@ def test_template_states_its_version_and_matches_the_schema_default():
     from orion.memory.episode.distill import UNMARKED_TEMPLATE_VERSION, template_prompt_version
     from orion.schemas.memory_episode import MEMORY_EPISODE_DISTILL_PROMPT_VERSION
 
-    assert template_prompt_version() == MEMORY_EPISODE_DISTILL_PROMPT_VERSION == "memory_episode_distill.v3"
+    assert template_prompt_version() == MEMORY_EPISODE_DISTILL_PROMPT_VERSION == "memory_episode_distill.v4"
     assert "prompt_version" not in render_prompt(episode_id="e", turns=turns_from_rows(ROWS))  # a comment
     assert UNMARKED_TEMPLATE_VERSION == "memory_episode_distill.v2"
 

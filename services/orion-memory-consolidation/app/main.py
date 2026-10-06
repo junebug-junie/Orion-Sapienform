@@ -27,6 +27,7 @@ bus_client: Optional[OrionBusAsync] = None
 _retry_task: Optional[asyncio.Task] = None
 _classify_retry_task: Optional[asyncio.Task] = None
 _report_task: Optional[asyncio.Task] = None
+_referent_task: Optional[asyncio.Task] = None
 _confirmation_task: Optional[asyncio.Task] = None
 
 
@@ -45,6 +46,7 @@ def _cfg() -> ChassisConfig:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global bus_hunter, pg_pool, grammar_pg_pool, bus_client, _retry_task, _classify_retry_task, _report_task
+    global _referent_task
     global _confirmation_task
 
     dsn = (settings.POSTGRES_URI or "").strip()
@@ -117,6 +119,10 @@ async def lifespan(app: FastAPI):
 
         _report_task = asyncio.create_task(run_report_loop(pg_pool, settings))
 
+    if pg_pool is not None and settings.MEMORY_REFERENT_PROJECTOR_ENABLED:
+        from app.referent_projector import run_referent_projector_loop
+
+        _referent_task = asyncio.create_task(run_referent_projector_loop(pg_pool, settings))
     if pg_pool is not None and settings.MEMORY_CONFIRMATION_LOOP_ENABLED:
         _confirmation_task = asyncio.create_task(run_confirmation_loop(pg_pool, settings))
 
@@ -130,6 +136,8 @@ async def lifespan(app: FastAPI):
         _classify_retry_task.cancel()
     if _report_task is not None:
         _report_task.cancel()
+    if _referent_task is not None:
+        _referent_task.cancel()
     if _confirmation_task is not None:
         _confirmation_task.cancel()
     if bus_hunter is not None:
@@ -145,6 +153,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Orion Memory Consolidation", lifespan=lifespan)
 
 
+def _referent_status() -> dict:
+    from app.referent_projector import PROJECTOR_STATUS
+
+    return dict(PROJECTOR_STATUS)
+
+
 @app.get("/health")
 async def health() -> dict:
     return {
@@ -154,5 +168,7 @@ async def health() -> dict:
         "bus": bus_hunter is not None,
         "enabled": settings.MEMORY_CONSOLIDATION_ENABLED,
         "episode_shadow_enabled": settings.MEMORY_EPISODE_SHADOW_ENABLED,
+        "referent_projector_enabled": settings.MEMORY_REFERENT_PROJECTOR_ENABLED,
+        "referent_projector": _referent_status(),
         "confirmation_loop_enabled": settings.MEMORY_CONFIRMATION_LOOP_ENABLED,
     }

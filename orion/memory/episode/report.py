@@ -65,6 +65,28 @@ SELECT run_id, model, prompt_tokens, completion_tokens, llm_latency_ms, hold_wai
 FROM episode_distill_run WHERE episode_id = $1
 """
 
+# Memory Stage 2 referents (orion/memory/referents): what resolution did in the window.
+REFERENT_NODES_SQL = """
+SELECT promotion_state, admitted_by, count(*) AS n FROM referent_alias
+WHERE alias_class = 'key' AND created_at >= $1 AND created_at < $2
+GROUP BY 1, 2 ORDER BY 1, 2
+"""
+REFERENT_ALIASES_SQL = """
+SELECT alias_class, promotion_state, admitted_by, count(*) AS n FROM referent_alias
+WHERE alias_class <> 'key' AND created_at >= $1 AND created_at < $2
+GROUP BY 1, 2, 3 ORDER BY 1, 2, 3
+"""
+IDENTITY_QUESTIONS_SQL = """
+SELECT text, scope, answer_via, source_refs->0->>'reason' AS reason FROM memory_tension_shadow
+WHERE status = 'open' AND source_refs->0->>'reason' IN ('referent_identity', 'alias_collision', 'label_collision')
+ORDER BY created_at
+"""
+HELD_CLAIMS_SQL = """
+SELECT count(*) AS n FROM substrate_graph_journal p
+WHERE p.event_kind = 'proposal' AND p.actor = 'memory.referents' AND p.recorded_at >= $1 AND p.recorded_at < $2
+  AND NOT EXISTS (SELECT 1 FROM substrate_graph_journal d WHERE d.event_kind = 'decision' AND d.proposal_id = p.proposal_id)
+"""
+
 def _voiced(m: dict[str, Any], tz: ZoneInfo) -> VoicedMemory:
     """Map a NEW_ROWS_SQL row onto the shared voice renderer's input."""
     remembered = m.get("remembered_at")
@@ -134,6 +156,28 @@ def render_episode(ep: dict[str, Any], old: Iterable[dict], new: Iterable[dict],
     return lines
 
 
+async def render_referents(conn: Any, *, start: datetime, end: datetime) -> list[str]:
+    """The referent step's own trace: nodes minted, names admitted (and by which rule), the
+    identity questions still open, and co-occurrence claims held back for review."""
+    try:
+        nodes = [dict(r) for r in await conn.fetch(REFERENT_NODES_SQL, start, end)]
+        aliases = [dict(r) for r in await conn.fetch(REFERENT_ALIASES_SQL, start, end)]
+        questions = [dict(r) for r in await conn.fetch(IDENTITY_QUESTIONS_SQL)]
+        held = int((await conn.fetchrow(HELD_CLAIMS_SQL, start, end))["n"])
+    except Exception as exc:  # noqa: BLE001 - the episode report must not depend on Stage 2 tables
+        return ["## Referents", "", f"Unavailable ({type(exc).__name__}): the Stage 2 migrations may not be applied.", ""]
+    lines = ["## Referents", ""]
+    lines.append("Things: " + ("; ".join(f"{r['n']} {r['promotion_state']} ({r['admitted_by']})" for r in nodes)
+                               or "none new") + ".")
+    lines.append("Names: " + ("; ".join(f"{r['n']} {r['alias_class']} {r['promotion_state']} ({r['admitted_by']})"
+                                        for r in aliases) or "none new") + ".")
+    lines.append(f"Co-occurrence claims held for review (not walkable): {held}.")
+    lines.append(f"Open identity questions ({len(questions)}):")
+    lines += [f"- [{q['reason']}, ask via {q['answer_via']}] {q['text']}" for q in questions] or ["- (none)"]
+    lines.append("")
+    return lines
+
+
 async def build_report(conn: Any, *, start: datetime, end: datetime, tz_name: str = "America/Denver") -> str:
     """Markdown for shadow episodes closed in [start, end). ``conn`` is an asyncpg connection/pool."""
     tz = ZoneInfo(tz_name)
@@ -155,6 +199,7 @@ async def build_report(conn: Any, *, start: datetime, end: datetime, tz_name: st
         totals["old"] += len(old)
         totals["new"] += len(new)
         lines += render_episode(ep, old, new, events, dict(run) if run else None, tz)
+    lines += await render_referents(conn, start=start, end=end)
     lines.insert(4, f"Totals: {totals['old']} old crystallization rows, {totals['new']} new memories.")
     lines.insert(5, "")
     return "\n".join(lines).rstrip() + "\n"

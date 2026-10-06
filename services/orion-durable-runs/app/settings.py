@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     # as a NEW durable attempt, at most MEMORY_EPISODE_DISTILL_MAX_ATTEMPTS per episode.
     memory_episode_reconcile_interval_sec: float = Field(900.0, gt=0.0, alias="MEMORY_EPISODE_RECONCILE_INTERVAL_SEC")
     memory_episode_distill_max_attempts: int = Field(3, ge=1, le=10, alias="MEMORY_EPISODE_DISTILL_MAX_ATTEMPTS")
+    # Memory Stage 2 referents (orion/memory/referents). Each acceptance rule has its own switch.
+    memory_referents_enabled: bool = Field(True, alias="MEMORY_REFERENTS_ENABLED")
+    memory_alias_grounding_auto_accept: bool = Field(True, alias="MEMORY_ALIAS_GROUNDING_AUTO_ACCEPT")
+    memory_cooccurrence_auto_accept: bool = Field(True, alias="MEMORY_COOCCURRENCE_AUTO_ACCEPT")
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL
 

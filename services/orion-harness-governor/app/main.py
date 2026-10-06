@@ -12,6 +12,8 @@ from orion.core.bus.bus_schemas import ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 
+from orion.harness.fcc_warm_pool import WarmPoolConfig, get_warm_pool, start_warm_pool, stop_warm_pool
+
 from .bus_listener import run_bus_worker
 from .cancel_listener import run_cancel_worker
 from .settings import settings
@@ -50,6 +52,26 @@ def build_rpc_health_publisher(bus_getter) -> RpcHealthPublisher:
         interval_sec=settings.rpc_health_publish_interval_sec,
         include_channel_latency=settings.rpc_health_channel_latency_enabled,
     )
+
+
+async def start_fcc_warm_pool() -> None:
+    """Start the chat warm pool; on any failure log it and leave turns on the spawn path."""
+    try:
+        await start_warm_pool(
+            WarmPoolConfig.from_runtime_env(
+                size=settings.harness_fcc_chat_warm_pool_size,
+                max_turns=settings.harness_fcc_chat_warm_pool_max_turns,
+                max_age_sec=settings.harness_fcc_chat_warm_pool_max_age_sec,
+                warm_model_label=settings.harness_fcc_chat_warm_pool_model_label,
+                relay_port=settings.harness_fcc_chat_warm_pool_relay_port,
+                spawn_timeout_sec=settings.harness_fcc_chat_warm_pool_spawn_timeout_sec,
+                clear_timeout_sec=settings.harness_fcc_chat_warm_pool_clear_timeout_sec,
+            )
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("fcc_warm_pool_start_failed -- chat turns will spawn per turn")
 
 
 @asynccontextmanager
@@ -100,6 +122,12 @@ async def lifespan(app: FastAPI):
         run_bus_worker(stop_event=app.state.bus_stop_event, lane="agent", bus=app.state.dispatch_bus)
     )
     app.state.cancel_task = asyncio.create_task(run_cancel_worker(app.state.bus_stop_event))
+    # Warm Claude Code pool for chat replies (spec L5). Started in the background so
+    # a slow MCP start-up never delays the governor's readiness; until a slot is
+    # warm, chat turns simply spawn as before.
+    app.state.fcc_warm_pool_task = None
+    if settings.harness_fcc_chat_warm_pool_enabled and settings.orion_harness_governor_enabled:
+        app.state.fcc_warm_pool_task = asyncio.create_task(start_fcc_warm_pool())
     app.state.heartbeat_chassis = build_heartbeat_chassis()
     try:
         await app.state.heartbeat_chassis.start_background()
@@ -123,6 +151,13 @@ async def lifespan(app: FastAPI):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+    warm_task = getattr(app.state, "fcc_warm_pool_task", None)
+    if warm_task is not None and not warm_task.done():
+        warm_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await warm_task
+    with suppress(Exception):
+        await stop_warm_pool()
     publisher = getattr(app.state, "rpc_health_publisher", None)
     if publisher is not None:
         await publisher.stop()
@@ -152,6 +187,17 @@ def _lane_alive(task: "asyncio.Task | None") -> bool | None:
     return task is not None and not task.done()
 
 
+def _warm_pool_status() -> dict | None:
+    pool = get_warm_pool()
+    if pool is not None:
+        return pool.status()
+    from orion.harness import fcc_warm_pool
+
+    if fcc_warm_pool.LAST_START_ERROR:
+        return {"running": False, "start_error": fcc_warm_pool.LAST_START_ERROR}
+    return None
+
+
 @app.get("/health")
 async def health() -> JSONResponse:
     return JSONResponse(
@@ -170,6 +216,9 @@ async def health() -> JSONResponse:
             # not a crash -- see `_lane_alive`.
             "lane_chat_alive": _lane_alive(getattr(app.state, "bus_task_chat", None)),
             "lane_agent_alive": _lane_alive(getattr(app.state, "bus_task_agent", None)),
+            # Warm chat pool (spec L5): slot states, hit/miss/respawn counters.
+            # null = disabled or not started (chat turns spawn per turn).
+            "fcc_warm_pool": _warm_pool_status(),
         }
     )
 

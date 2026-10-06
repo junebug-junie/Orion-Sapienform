@@ -194,6 +194,24 @@ join chat_history_log c on c.correlation_id = t.correlation_id and c.source = 'h
 where t.created_at > now() - interval '7 days';
 ```
 
+### Warm Claude Code pool for chat replies (spec L5)
+
+A spawned `claude -p` spends about 3.4 s starting its MCP servers before it can talk to the model (measured in this container, PR #2509). Chat replies now skip that. The governor keeps `HARNESS_FCC_CHAT_WARM_POOL_SIZE` (default 1) `claude` processes running in streaming-input mode. Each chat-reply turn (`utterance_origin=juniper`, no reading binding) borrows one, wipes its conversation with `/clear`, sends the prompt on stdin, and reads until the CLI's own `result` event. Investigation, curiosity, outreach and reading turns always spawn.
+
+Nothing per-turn lives in the warm process's environment:
+
+- **Model upstream, credential, GPU lease header, correlation id.** The process's `ANTHROPIC_BASE_URL` points at a relay inside the container (`127.0.0.1:${HARNESS_FCC_CHAT_WARM_POOL_RELAY_PORT}`, one URL per slot, guarded by a per-process secret). The relay applies the current turn's values to every request. A model call with no turn bound gets 409 (not retryable), so a killed or overrun turn cannot keep spending its lease.
+- **Turn clock** (`ORION_TURN_BUDGET_SEC` / `_DEADLINE_EPOCH` / `_STEP_STALL_SEC`). Rewritten per turn into the slot's `CLAUDE_ENV_FILE`, which the CLI re-reads on every Bash call.
+- **Model and context window.** Part of the slot's signature. A turn that needs a different one spawns as before, and the idle slot is respawned for it.
+
+Deadline and stall limits are enforced exactly as for a spawned turn. On overrun the process group is killed and the slot respawns. Slots recycle after `..._MAX_TURNS` turns or `..._MAX_AGE_SEC` seconds. A health loop respawns dead slots and `/clear`-probes slots that have been idle for 5 minutes.
+
+Any failure before the prompt is sent falls back to a per-turn spawn: pool not started, slot busy or warming, signature mismatch, `/clear` timeout, or the process dying before it says anything. It is logged as `fcc_warm_pool_fallback corr=... reason=...`. Every turn, in both modes, logs `fcc_turn_start_timing corr=... mode=warm|spawn spawn_or_acquire_ms=... first_event_ms=...`, and the same values go into the final frame metadata.
+
+`GET /health` → `fcc_warm_pool` shows the slot states and hit/miss/respawn counters.
+
+Rollback: `HARNESS_FCC_CHAT_WARM_POOL_ENABLED=false`, then restart. Design and per-value table: `docs/superpowers/pr-reports/2026-10-06-fcc-chat-warm-pool-pr.md`.
+
 ### Stream stall detection
 
 Claude Code only writes a `stream-json` line once a step fully completes — with no `--include-partial-messages`, a single assistant message that never reaches a stop condition produces zero output. Before `HARNESS_FCC_STREAM_STALL_TIMEOUT_SEC` existed, the governor's only defense was `HARNESS_FCC_TIMEOUT_SEC` (900s default) applied to *each* `readline()` call, so one stuck message could hang a turn for the full 15 minutes with the Hub UI showing nothing.

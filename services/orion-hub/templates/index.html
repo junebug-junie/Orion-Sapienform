@@ -259,6 +259,19 @@
     <div id="appPanels">
       <section id="hub" data-panel="hub">
         <div id="hubTabPanel" class="flex flex-col gap-6">
+      <!-- Orion is asking: at the top of the Hub home (memory-episode spec section 5,
+           2026-10-06). Open questions from orion_ask via GET /api/asks. Vision cards
+           post /api/asks/{id}/answer|dismiss; memory confirmation cards post
+           Confirm / Revise / Reject to /api/asks/{id}/resolve (scripts/ask_routes.py).
+           Wired by static/js/vision-asks.js. -->
+      <div id="visionAsksCard" class="w-full bg-gray-900 rounded-2xl shadow-lg p-5 space-y-2">
+        <div class="flex items-center justify-between">
+          <h2 class="text-xl font-bold text-white">Orion is asking</h2>
+          <span class="text-[11px] text-gray-500">Things Orion wants to check with you before keeping them</span>
+        </div>
+        <div id="visionAsksStatus" class="text-xs text-gray-400">Loading Orion's questions…</div>
+        <div id="visionAsksList" class="space-y-2"></div>
+      </div>
       <div class="w-full flex flex-col md:flex-row gap-6 items-stretch">
       
       <div class="w-full md:w-1/2 bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col space-y-4 h-[56rem] min-h-0">
@@ -651,18 +664,6 @@
         </div>
         <div id="affectAmbientStatusLine" class="hidden text-[11px] text-gray-500"></div>
         <div id="affectCaptureResult" class="hidden rounded-lg border border-gray-700 bg-gray-800/60 px-3 py-2 text-xs text-gray-300 whitespace-pre-wrap"></div>
-        <!-- Orion is asking (walkway camera idea 3). Open questions from
-             orion_ask via GET /api/asks; answers/dismissals POST to
-             /api/asks/{id}/answer|dismiss (scripts/ask_routes.py). Wired by
-             static/js/vision-asks.js. -->
-        <div id="visionAsksCard" class="rounded-lg border border-gray-700 bg-gray-900/60 p-3 space-y-2">
-          <div class="flex items-center justify-between">
-            <h3 class="text-sm font-semibold text-white">Orion is asking</h3>
-            <span class="text-[11px] text-gray-500">Things Orion saw and wants your help naming</span>
-          </div>
-          <div id="visionAsksStatus" class="text-xs text-gray-400">Loading Orion's questions…</div>
-          <div id="visionAsksList" class="space-y-2"></div>
-        </div>
       </div>
 
       <!-- ✅ ADDED: Vision pop-out container (hidden; does not change layout) -->

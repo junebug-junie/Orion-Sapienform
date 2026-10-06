@@ -125,6 +125,13 @@ class RedisGraphQueryClient:
     def read_only(self) -> bool:
         return self._read_only
 
+    def close(self) -> None:
+        """Release this client's connection pool. Safe to call twice and on a
+        client built with __new__ (no ``_r``)."""
+        r = getattr(self, "_r", None)
+        if r is not None:
+            r.close()
+
     def graph_query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
         """Run Cypher and return rows as name-keyed dicts.
 

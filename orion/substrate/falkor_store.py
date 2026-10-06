@@ -301,6 +301,7 @@ def ensure_substrate_indexes(uri: str, graph_name: str, *, client: FalkorGraphCl
     indexed" (neither accepts IF NOT EXISTS); that is the steady state, not a
     failure. Rollback: ``DROP INDEX ON :SubstrateNode(node_id)``.
     """
+    owned = client is None
     try:
         if client is None:
             client = RedisGraphQueryClient(
@@ -313,18 +314,29 @@ def ensure_substrate_indexes(uri: str, graph_name: str, *, client: FalkorGraphCl
         logger.warning("falkor_substrate_index_client_failed graph=%s error=%s", graph_name, exc)
         return False
     ok = True
-    for label, prop in SUBSTRATE_INDEXES:
-        try:
-            client.graph_query(substrate_index_cypher(label, prop))
-            logger.info("falkor_substrate_index_created graph=%s label=%s prop=%s", graph_name, label, prop)
-        except Exception as exc:  # noqa: BLE001
-            if "already indexed" in str(exc):
-                continue
-            ok = False
-            logger.warning(
-                "falkor_substrate_index_create_failed graph=%s label=%s prop=%s error=%s",
-                graph_name, label, prop, exc,
-            )
+    try:
+        for label, prop in SUBSTRATE_INDEXES:
+            try:
+                client.graph_query(substrate_index_cypher(label, prop))
+                logger.info("falkor_substrate_index_created graph=%s label=%s prop=%s", graph_name, label, prop)
+            except Exception as exc:  # noqa: BLE001
+                if "already indexed" in str(exc):
+                    continue
+                ok = False
+                logger.warning(
+                    "falkor_substrate_index_create_failed graph=%s label=%s prop=%s error=%s",
+                    graph_name, label, prop, exc,
+                )
+    finally:
+        # A client this function built is throwaway: release its pool so
+        # every store construction does not leak a connection.
+        if owned:
+            close = getattr(client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("falkor_substrate_index_client_close_failed error=%s", exc)
     return ok
 
 

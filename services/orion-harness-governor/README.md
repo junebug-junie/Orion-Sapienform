@@ -27,11 +27,32 @@ sandbox checkout is already a supported, pre-existing case, not a new risk this 
 | `CHANNEL_HARNESS_RUN_ARTIFACT` | `orion:harness:run:artifact` | Audit publish after each run |
 | `CHANNEL_FINALIZE_APPRAISAL_REQUEST` | `orion:substrate:finalize_appraisal:request` | 5a draft molecule RPC |
 | `CHANNEL_POST_TURN_CLOSURE` | `orion:substrate:post_turn_closure` | Step 7 learning closure |
+| `CHANNEL_HARNESS_RUN_DRAFT_PREVIEW` | `orion:harness:run:draft_preview` | Draft-first display: grounded draft published before the finalize judge when the request sets `draft_preview` (see below) |
 
 Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
 `HEARTBEAT_INTERVAL_SEC` (default 10s), independent of the request/cancel bus workers above.
 `GET /health` reports `lane_chat_alive` / `lane_agent_alive` so a dispatch loop that dies
 silently is visible immediately rather than inferred later from turns going unanswered.
+
+## Draft-first display (spec L8)
+
+When the Hub sets `HarnessRunRequestV1.draft_preview` (interactive chat only,
+Hub flag `HUB_UNIFIED_DRAFT_FIRST_ENABLED`), the governor publishes the motor
+draft, after the same deterministic reading-receipt grounding finalize applies
+(no LLM call), as `HarnessRunDraftPreviewV1` on
+`orion:harness:run:draft_preview`, then runs the finalize judge as usual.
+
+- Held back (judge-first, as before) when the stance marks the turn sensitive:
+  boundary register, trust rupture at or above the defer threshold, repair
+  pressure at or above the quick-lane ceiling, or a non-default repair overlay
+  (`orion/harness/finalize.py::sensitive_turn_reason`, shared with the quick
+  lane). Also held for structured (reading) output and cut-short drafts.
+- `HarnessRunV1.draft_preview_text` records exactly what was published and
+  `draft_preview_held_reason` why not, so `harness_turn_trace.run_artifact`
+  holds both what Juniper saw first and the `final_text` it became.
+- Logs: `harness_draft_preview_published` / `_held` / `_revised` with `corr=`.
+- Nothing persists the draft as a turn; chat history and memory read
+  `final_text` only.
 
 ## RPC-health publish (on by default)
 

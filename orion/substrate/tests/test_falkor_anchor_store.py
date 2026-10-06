@@ -230,3 +230,52 @@ def test_concept_region_and_beliefs_match_the_hydrated_store(mixed_graph) -> Non
     for name in anchors:
         assert sorted(n.node_id for n in have.anchors[name].concepts) == sorted(n.node_id for n in want.anchors[name].concepts)
     assert have.cold_anchors == want.cold_anchors and have.degraded_producers == want.degraded_producers
+
+
+class _FailingAfterFirst(_ScriptedClient):
+    def __init__(self, responses) -> None:
+        super().__init__(responses)
+        self.fail = False
+
+    def graph_query(self, cypher, params=None):
+        if self.fail:
+            raise ConnectionError("falkor down")
+        return super().graph_query(cypher, params)
+
+
+def _store_with(read):
+    write = _ScriptedClient()
+    write.read_only = False
+    writer = _NoHydrateWriter(FalkorSubstrateStoreConfig(uri="redis://unused"), client=write, hydrate=False)
+    return FalkorAnchorStanceStore(read_client=read, writer=writer)
+
+
+def test_read_error_serves_last_good_snapshot() -> None:
+    read = _FailingAfterFirst({ANCHOR_NODES_CYPHER: [_row("o1", "orion", 1)]})
+    store = _store_with(read)
+    first = store.snapshot()
+    read.fail = True
+    assert store.snapshot() is first
+    assert store.snapshot_failed_total == 1
+
+
+def test_read_error_with_no_good_snapshot_raises() -> None:
+    read = _FailingAfterFirst({})
+    read.fail = True
+    with pytest.raises(ConnectionError):
+        _store_with(read).snapshot()
+
+
+def test_duplicate_identity_resolves_to_nothing_like_the_lookup() -> None:
+    a, b = _row("o1", "orion", 1), _row("o2", "orion", 2)
+    b["identity_key"] = a["identity_key"]
+    store, _ = _store({ANCHOR_NODES_CYPHER: [a, b]})
+    snap = store.snapshot()
+    assert sorted(snap.nodes) == ["o1", "o2"]
+    assert a["identity_key"] not in snap.node_identity_index
+
+
+def test_writer_cache_does_not_grow() -> None:
+    store, _ = _store()
+    store.upsert_node(identity_key="concept:o9", node=_concept("o9", "orion"))
+    assert store._writer._cache.get_node_by_id("o9") is None

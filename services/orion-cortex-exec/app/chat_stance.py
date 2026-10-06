@@ -218,6 +218,8 @@ def _hydrate_and_unify_beliefs(ctx: Dict[str, Any]) -> UnifiedRelationalBeliefSe
     snaps_after, snap_ms_after = _unification_store_snapshot_stats()
     # Per-phase cost of the stance build's worker step (turn latency, 2026-10-06):
     # the 17-28 s builds were one full-graph Falkor hydrate inside beliefs_ms.
+    # snapshot_calls/ms are process-wide counter deltas, so a concurrent
+    # projection build on another thread can add to them: approximate.
     logger.info(
         "stance_build_phase_timing corr=%s queue_wait_ms=%s felt_state_ms=%.1f beliefs_ms=%.1f "
         "snapshot_calls=%d snapshot_ms=%.1f",

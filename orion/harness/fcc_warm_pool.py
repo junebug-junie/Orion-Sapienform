@@ -434,6 +434,12 @@ class WarmPool:
             if any(s.state == "busy" for s in self._slots):
                 return self._miss(correlation_id, "pool_busy")
             return self._miss(correlation_id, "pool_warming")
+        from orion.fcc.github_repo_context import harness_mcp_enabled
+
+        if reading_binding is not None and harness_mcp_enabled() and not slot.reading_tools:
+            # A spawn would attach the reading tools (or fail loudly without a
+            # bus); this process has none, so never run the turn here without them.
+            return self._miss(correlation_id, "reading_tools_unavailable")
         slot.state = "busy"
 
         slot.stderr_tail.clear()
@@ -468,10 +474,9 @@ class WarmPool:
     async def _release(self, turn: WarmTurn) -> None:
         slot = turn.slot
         self.registry.unbind(slot.slot_id)
-        if slot.proc is turn._proc:
-            clear_slot_bindings(slot)
         if slot.proc is not turn._proc:
-            return  # already replaced (e.g. pool stopped mid-turn)
+            return  # already replaced (e.g. pool stopped mid-turn); respawn cleared the files
+        clear_slot_bindings(slot)
         healthy = turn.result_seen and not turn.killed and slot.alive()
         if not healthy:
             reason = "killed" if turn.killed else ("process_died" if turn.eof else "turn_abandoned")

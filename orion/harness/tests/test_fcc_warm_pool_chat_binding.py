@@ -151,3 +151,39 @@ def test_render_refuses_both_binding_forms(tmp_path):
         mcp_mod.render_mcp_config(
             correlation_id="c", fcc_env={}, reading_binding=_binding("c"), reading_binding_file=tmp_path / "f",
         )
+
+
+@pytest.mark.asyncio
+async def test_binding_cleared_after_a_killed_turn(mcp_on, stub, pool_cleanup):
+    pool = await _start_pool(mcp_on, stub)
+    slot = pool._slots[0]
+    frames = await _turn(mcp_on, stub, "HANG forever", "corr-k", timeout_sec=1.5, reading_binding=_binding("corr-k"))
+    assert _terminal(frames)["type"] == "error"
+    assert slot.reading_binding_file.read_text() == ""
+
+
+@pytest.mark.asyncio
+async def test_slot_without_reading_tools_is_not_used_for_a_bound_turn(mcp_on, stub, pool_cleanup, caplog):
+    caplog.set_level(logging.INFO)
+    pool = await _start_pool(mcp_on, stub)
+    pool._slots[0].reading_tools = False  # e.g. spawned while the bus env was missing
+    frame = _terminal(await _turn(mcp_on, stub, "hi", "corr-nt", reading_binding=_binding("corr-nt")))
+    assert frame["metadata"]["fcc_spawn_mode"] == "spawn"
+    assert any("reason=reading_tools_unavailable" in r.getMessage() for r in caplog.records)
+    assert pool._slots[0].state == "idle"
+
+
+@pytest.mark.asyncio
+async def test_binding_write_failure_falls_back(mcp_on, stub, pool_cleanup, monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    from orion.harness import fcc_warm_pool as wp
+
+    await _start_pool(mcp_on, stub)
+
+    def _boom(slot, binding):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(wp, "write_slot_bindings", _boom)
+    frame = _terminal(await _turn(mcp_on, stub, "hi", "corr-w", reading_binding=_binding("corr-w")))
+    assert frame["metadata"]["fcc_spawn_mode"] == "spawn"
+    assert any("reason=clear_failed:OSError" in r.getMessage() for r in caplog.records)

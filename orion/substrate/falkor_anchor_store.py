@@ -53,7 +53,7 @@ from orion.substrate.falkor_store import (
     _return_clause,
     ensure_substrate_indexes,
 )
-from orion.substrate.store import MaterializedSubstrateGraphState, SubstrateQueryResultV1
+from orion.substrate.store import InMemorySubstrateGraphStore, MaterializedSubstrateGraphState, SubstrateQueryResultV1
 
 logger = logging.getLogger("orion.substrate.falkor_anchor_store")
 
@@ -102,6 +102,10 @@ class FalkorAnchorStanceStore:
         self._stats_lock = threading.Lock()
         self.snapshot_calls = 0
         self.snapshot_ms_total = 0.0
+        self.snapshot_failed_total = 0
+        # Last good read: a Falkor error serves this (as the hydrating store
+        # serves its last good cache) instead of dropping every belief.
+        self._last_good: MaterializedSubstrateGraphState | None = None
 
     def _query(self, cypher: str, params: dict[str, Any], fields: tuple[str, ...]) -> list[dict[str, Any]]:
         return _normalize_rows(self._read.graph_query(cypher, params), fields=fields, strict=True)
@@ -110,13 +114,26 @@ class FalkorAnchorStanceStore:
 
     def snapshot(self) -> MaterializedSubstrateGraphState:
         started = time.perf_counter()
-        rows = self._query(
-            ANCHOR_NODES_CYPHER,
-            {"anchors": sorted(self.snapshot_anchor_scopes)},
-            (*NATIVE_NODE_RETURN_FIELDS, "object_id"),
-        )
+        try:
+            rows = self._query(
+                ANCHOR_NODES_CYPHER,
+                {"anchors": sorted(self.snapshot_anchor_scopes)},
+                (*NATIVE_NODE_RETURN_FIELDS, "object_id"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            with self._stats_lock:
+                self.snapshot_failed_total += 1
+            last = self._last_good
+            logger.warning(
+                "falkor_anchor_snapshot_failed error=%s serving=%s failed_total=%d",
+                exc, "last_good" if last is not None else "raise", self.snapshot_failed_total,
+            )
+            if last is None:
+                raise
+            return last
         nodes: dict[str, BaseSubstrateNodeV1] = {}
         identity_index: dict[str, str] = {}
+        duplicate_identities: set[str] = set()
         for row in rows:
             node = decode_node(row)
             if node is None or not node.node_id or node.node_id in nodes:
@@ -125,16 +142,25 @@ class FalkorAnchorStanceStore:
                 logger.warning("falkor_anchor_snapshot_row_skipped object_id=%s", row.get("object_id"))
                 continue
             nodes[node.node_id] = node
-            identity = row.get("identity_key")
+            identity = str(row.get("identity_key") or "")
             if identity:
-                identity_index[str(identity)] = node.node_id
+                if identity in identity_index:
+                    duplicate_identities.add(identity)
+                identity_index[identity] = node.node_id
+        # Same rule as get_node_id_by_identity: an ambiguous identity resolves
+        # to nothing, in both paths.
+        for identity in duplicate_identities:
+            identity_index.pop(identity, None)
+            logger.warning("falkor_anchor_snapshot_duplicate_identity identity_key=%s", identity)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         with self._stats_lock:
             self.snapshot_calls += 1
             self.snapshot_ms_total += elapsed_ms
-        return MaterializedSubstrateGraphState(
+        state = MaterializedSubstrateGraphState(
             nodes=nodes, edges={}, node_identity_index=identity_index, edge_identity_index={},
         )
+        self._last_good = state
+        return state
 
     def query_concept_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
         nodes_limit = max(1, int(limit_nodes))
@@ -185,9 +211,18 @@ class FalkorAnchorStanceStore:
         skip_metadata_keys: frozenset[str] | None = None,
     ) -> None:
         self._writer.upsert_node(identity_key=identity_key, node=node, skip_metadata_keys=skip_metadata_keys)
+        self._drop_writer_cache()
 
-    def upsert_edge(self, *, identity_key: str | None, edge: SubstrateEdgeV1) -> None:
+    def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None:
         self._writer.upsert_edge(identity_key=identity_key, edge=edge)
+        self._drop_writer_cache()
+
+    def _drop_writer_cache(self) -> None:
+        # The hydrate=False writer still mirrors each write into its own
+        # in-memory cache, which nothing here reads; without this it grows for
+        # the life of the process.
+        with self._writer._cache_lock:
+            self._writer._cache = InMemorySubstrateGraphStore()
 
 
 def build_unification_store_from_env() -> Any:

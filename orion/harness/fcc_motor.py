@@ -688,9 +688,17 @@ def _harness_aitown_env(fcc_env: Dict[str, str]) -> Dict[str, str]:
     return ae
 
 
-def _maybe_render_mcp_config(*, correlation_id: str, reading_binding=None, reading_only=False) -> Optional[Path]:
+def _maybe_render_mcp_config(
+    *,
+    correlation_id: str,
+    reading_binding=None,
+    reading_only=False,
+    warm_binding_files: Optional[Tuple[Path, Path]] = None,
+) -> Optional[Path]:
+    """``warm_binding_files`` = (reading, introspect) files a warm slot rewrites per
+    turn; the reading/introspect servers then follow whichever turn is bound."""
     from orion.fcc.mcp_config import render_mcp_config
-    from orion.introspect.binding import introspect_binding_for_turn
+    from orion.introspect.binding import introspect_binding_for_turn, introspect_enabled, outward_tools_attached
 
     if reading_only:
         return render_mcp_config(correlation_id=correlation_id, fcc_env={}, reading_only=True)
@@ -719,6 +727,15 @@ def _maybe_render_mcp_config(*, correlation_id: str, reading_binding=None, readi
         reading_bus_url=os.environ.get("ORION_BUS_URL"),
         introspect_binding=introspect_binding_for_turn(reading_binding, reading_only=reading_only),
         introspect_bus_url=os.environ.get("ORION_BUS_URL"),
+        **(
+            {
+                "reading_binding_file": warm_binding_files[0],
+                "introspect_binding_file": warm_binding_files[1] if introspect_enabled() else None,
+                "introspect_memory_allowed": not outward_tools_attached(),
+            }
+            if warm_binding_files is not None
+            else {}
+        ),
         include_aitown=include_aitown,
         aitown_env=_harness_aitown_env(env) if include_aitown else None,
         include_gitnexus=_env_truthy("HARNESS_FCC_GITNEXUS_ENABLED"),
@@ -1099,10 +1116,30 @@ async def run_fcc_turn(
         workspace=workspace,
     )
 
-    # Warm pool (spec L5): Juniper's chat replies only, never a turn with a
-    # per-turn reading binding (its MCP config cannot be shared).
+    # Warm pool (spec L5): Juniper's chat replies only. Every Unified Chat turn
+    # carries a reading binding (orion/hub/turn_orchestrator.py); the warm slot
+    # hosts the reading/introspect servers against a per-turn binding file, so
+    # the binding no longer forces a spawn. Reading-only turns (an empty MCP
+    # config) still spawn.
     fallback_reason: Optional[str] = None
-    if chat_reply and not reading_only and reading_binding is None:
+    from orion.harness.fcc_warm_pool import get_warm_pool
+
+    if not chat_reply:
+        warm_decision = "spawn:not_chat_reply"
+    elif reading_only:
+        warm_decision = "spawn:reading_only"
+    elif get_warm_pool() is None:
+        warm_decision = "spawn:no_pool_running"
+    else:
+        warm_decision = "try_warm"
+    warm_eligible = warm_decision == "try_warm"
+    # One line per turn saying why it did or did not try the warm path; a
+    # failed warm attempt adds fcc_warm_pool_fallback with the pool's reason.
+    logger.info(
+        "fcc_warm_path_decision corr=%s decision=%s chat_reply=%s reading_only=%s has_reading_binding=%s",
+        correlation_id, warm_decision, bool(chat_reply), bool(reading_only), reading_binding is not None,
+    )
+    if warm_eligible:
         warm_turn, fallback_reason = await _acquire_warm_turn(
             model_id=model_id,
             n_ctx=lane_n_ctx,
@@ -1116,6 +1153,7 @@ async def run_fcc_turn(
                 turn_deadline_epoch=deadline_epoch,
                 turn_step_stall_sec=stall_timeout_sec,
             ),
+            reading_binding=reading_binding,
         )
         if warm_turn is not None:
             outcome: Dict[str, Any] = {"retry_spawn": False}
@@ -1277,6 +1315,7 @@ async def _acquire_warm_turn(
     auth_token: str,
     fcc_env: Dict[str, str],
     turn_env: Dict[str, str],
+    reading_binding: Any = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """(warm turn, None) on a hit; (None, reason) on a miss; (None, None) when no pool runs here."""
     from orion.harness.fcc_warm_pool import get_warm_pool
@@ -1298,6 +1337,7 @@ async def _acquire_warm_turn(
             binding=binding,
             turn_env=turn_env,
             fcc_env=fcc_env,
+            reading_binding=reading_binding,
         )
     except asyncio.CancelledError:
         raise

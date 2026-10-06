@@ -152,6 +152,31 @@ def write_turn_env_file(path: Path, values: Mapping[str, str]) -> None:
     os.replace(tmp, path)
 
 
+def warm_reading_tools_supported() -> bool:
+    """Warm slots can host the reading/introspect servers: MCP on and a bus to talk to."""
+    from orion.fcc.github_repo_context import harness_mcp_enabled
+
+    return harness_mcp_enabled() and bool(str(os.environ.get("ORION_BUS_URL") or "").strip())
+
+
+def write_slot_bindings(slot: "_Slot", reading_binding: Any) -> None:
+    """Bind the slot's reading/introspect servers to this turn (None = unbound)."""
+    from orion.fcc.turn_binding_file import write_binding_file
+    from orion.introspect.binding import introspect_binding_for_turn
+    from orion.schemas.reading import ReadingToolBindingV1
+
+    rb = ReadingToolBindingV1.model_validate(reading_binding) if reading_binding is not None else None
+    write_binding_file(slot.reading_binding_file, rb)
+    write_binding_file(slot.introspect_binding_file, introspect_binding_for_turn(rb) if rb is not None else None)
+
+
+def clear_slot_bindings(slot: "_Slot") -> None:
+    try:
+        write_slot_bindings(slot, None)
+    except OSError as exc:  # state dir gone: the next acquire's write fails and falls back
+        logger.warning("fcc_warm_pool_binding_clear_failed slot=%s error=%r", slot.slot_id, exc)
+
+
 class _Slot:
     def __init__(self, idx: int, state_dir: Path) -> None:
         self.slot_id = f"s{idx}"
@@ -162,6 +187,14 @@ class _Slot:
         self.model_id: Optional[str] = None
         self.n_ctx: Optional[int] = None
         self.env_file = state_dir / f"{self.slot_id}.turn_env.sh"
+        # Per-turn reading/introspect binding, re-read by the MCP servers on every
+        # tool call (orion/fcc/turn_binding_file.py). Empty between turns.
+        self.reading_binding_file = state_dir / f"{self.slot_id}.reading_binding.json"
+        self.introspect_binding_file = state_dir / f"{self.slot_id}.introspect_binding.json"
+        # True when this process's MCP config carries the reading/introspect
+        # servers, so a Unified Chat turn (which always has a reading binding)
+        # keeps its reading tools on the warm path.
+        self.reading_tools = False
         self.mcp_config_path: Optional[Path] = None
         self.turns = 0
         self.spawned_at = 0.0
@@ -360,8 +393,13 @@ class WarmPool:
         binding: RelayTurnBinding,
         turn_env: Mapping[str, str],
         fcc_env: Optional[Mapping[str, str]] = None,
+        reading_binding: Any = None,
     ) -> Tuple[Optional[WarmTurn], Optional[str]]:
-        """(turn, None) on a hit, (None, reason) on a miss. Never raises on a pool fault it can name."""
+        """(turn, None) on a hit, (None, reason) on a miss. Never raises on a pool fault it can name.
+
+        ``reading_binding`` (every Unified Chat turn carries one) is written to
+        the slot's binding files so the warm MCP servers act for this turn.
+        """
         started = time.monotonic()
         if not self.running or self._stopping:
             return self._miss(correlation_id, "pool_stopped")
@@ -396,11 +434,19 @@ class WarmPool:
             if any(s.state == "busy" for s in self._slots):
                 return self._miss(correlation_id, "pool_busy")
             return self._miss(correlation_id, "pool_warming")
+        from orion.fcc.github_repo_context import harness_mcp_enabled
+
+        if reading_binding is not None and harness_mcp_enabled() and not slot.reading_tools:
+            # A spawn would attach the reading tools (or fail loudly without a
+            # bus); this process has none, so never run the turn here without them.
+            return self._miss(correlation_id, "reading_tools_unavailable")
         slot.state = "busy"
 
         slot.stderr_tail.clear()
         try:
             write_turn_env_file(slot.env_file, turn_env)
+            if slot.reading_tools:
+                write_slot_bindings(slot, reading_binding)
             await self._clear(slot, timeout=self.config.clear_timeout_sec)
             self.registry.bind(slot.slot_id, binding)
         except asyncio.CancelledError:
@@ -429,7 +475,8 @@ class WarmPool:
         slot = turn.slot
         self.registry.unbind(slot.slot_id)
         if slot.proc is not turn._proc:
-            return  # already replaced (e.g. pool stopped mid-turn)
+            return  # already replaced (e.g. pool stopped mid-turn); respawn cleared the files
+        clear_slot_bindings(slot)
         healthy = turn.result_seen and not turn.killed and slot.alive()
         if not healthy:
             reason = "killed" if turn.killed else ("process_died" if turn.eof else "turn_abandoned")
@@ -533,7 +580,16 @@ class WarmPool:
         env["CLAUDE_ENV_FILE"] = str(slot.env_file)
         write_turn_env_file(slot.env_file, {})
         process_tag = f"fcc-warm-{slot.slot_id}-g{slot.generation}"
-        mcp_config_path = m._maybe_render_mcp_config(correlation_id=process_tag)
+        reading_tools = warm_reading_tools_supported()
+        clear_slot_bindings(slot)
+        mcp_config_path = m._maybe_render_mcp_config(
+            correlation_id=process_tag,
+            **(
+                {"warm_binding_files": (slot.reading_binding_file, slot.introspect_binding_file)}
+                if reading_tools
+                else {}
+            ),
+        )
         argv = m.build_claude_argv(
             claude_bin=cfg.claude_bin,
             model_id=model_id,
@@ -562,6 +618,7 @@ class WarmPool:
         slot.proc = proc
         slot.pgid = proc.pid  # start_new_session: the leader's pid is the group id
         slot.mcp_config_path = mcp_config_path
+        slot.reading_tools = reading_tools
         slot.stderr_tail.clear()
         slot.stderr_task = asyncio.create_task(self._drain_stderr(slot, proc))
         # The first /clear makes the CLI start (and wait for) its MCP servers, so

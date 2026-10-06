@@ -94,4 +94,4 @@ No restart required. This patch provides an opt-in read API; existing runtime co
 
 ## PR link
 
-Pending branch publication.
+https://github.com/junebug-junie/Orion-Sapienform/pull/2497

@@ -1,6 +1,7 @@
 # Handoff: why a unified chat turn takes about a minute, and what to fix
 
 Date: 2026-10-06. Author: Claude (session with Juniper). Status: **diagnosis done, nothing changed yet.**
+> **SUPERSEDED (2026-10-06):** recommendations corrected by `docs/superpowers/specs/2026-10-06-unified-turn-latency-design.md`. Do not implement Rec 1 or Rec 3 as written here: Rec 1 removes the only thing currently undoing a compounding decay bug, and Rec 3 saves nothing because the build re-runs at step time.
 
 Scope: only the production path, the unified Hub turn (Hub → orion-thought stance → harness/FCC reply writer → final polishing step). chat_general, chat_quick and chat_kids_story are debug-only and out of scope.
 

@@ -34,6 +34,7 @@ import gzip
 import io
 import json
 import logging
+import statistics
 import subprocess
 import sys
 from collections import Counter
@@ -418,6 +419,33 @@ class PoolBoardSink(Sink):
                                          min(sig.valid_until, now + timedelta(seconds=900))))
 
 
+def load_episodes(path: Path = V2_FIXTURE):
+    """The real shed episodes exported with the fixture (``e`` rows; D11's input)."""
+    from orion.hardware_watch.shed_effect import ShedEpisode
+    out = []
+    with gzip.open(path, "rt") as fh:
+        fh.readline()
+        for row in csv.reader(fh):
+            if row[0] == "e":
+                out.append(ShedEpisode(row[1], row[2], row[3], _ts(row[4]), _ts(row[5]) if row[5] else None))
+    return out
+
+
+def d11_report(temps, episodes) -> dict:
+    """D11 / Acceptance check 4: cabinet delta after each real shed, against a matched no-shed control."""
+    from orion.hardware_watch.shed_effect import control_deltas, shed_effect, summarize
+    cab = temps.get(("athena", "cabinet_temp_c"), [])
+    gpu = temps.get(("athena", "gpu_watts_total"), [])
+    rows = [shed_effect(e, cab, gpu, episodes) for e in episodes]
+    # Live sanity on the 10-04/05 hot days: can the control read both warming and cooling (not degenerate)?
+    hot = [p for p in cab if p.ts.strftime("%m-%d") in ("10-04", "10-05")]
+    ctrl = control_deltas(hot, episodes, near_c=32.0, band_c=0.5, minutes=15)
+    sanity = {"n": len(ctrl), "min": min(ctrl) if ctrl else None, "max": max(ctrl) if ctrl else None,
+              "median": round(statistics.median(ctrl), 3) if ctrl else None,
+              "share_negative": round(sum(1 for d in ctrl if d < 0) / len(ctrl), 2) if ctrl else None}
+    return {"episodes": rows, "summary": summarize(rows), "control_15m_at_32c_on_10_04_05": sanity}
+
+
 def load_v2(path: Path = V2_FIXTURE):
     cooling: list[CoolingPoint] = []
     temps: dict[tuple[str, str], list[TempPoint]] = {}
@@ -661,6 +689,7 @@ def thermal_v2_gate(path: Path = V2_FIXTURE) -> tuple[dict, list[str]]:
         "urgent_requests": dict(Counter(f"{k[0]}:{k[1]}" for k in urgent.elements())),
         "reflex_signals": len(res.sink.reflex),
         "ac_death_injection": inj,
+        "d11_shed_effect": d11_report(temps, load_episodes(path)),
         "shifted_10_05": {"hot_ticks": len(hot_ticks), "hours_ge_34": shifted_hours,
                           "reflex_ticks": sum(1 for tk in hot.ticks if tk["blocked"])},
     }
@@ -820,6 +849,14 @@ def _print_gate(rep: dict | None, fails: list[str]) -> None:
     for i in rep["incidents"]:
         print(f"    {i['rule']}:{i['subject']} {i['open_reason']} {i['opened_at'][:19]} ({i['minutes']} min)")
     print(f"  shifted 10-05 (+{HOT_DAY_SHIFT_C} C): {rep['shifted_10_05']}")
+    d11 = rep.get("d11_shed_effect") or {}
+    print(f"  D11 shed effect: {d11.get('summary')}; control at 32 C (10-04/05): "
+          f"{d11.get('control_15m_at_32c_on_10_04_05')}")
+    for e in d11.get("episodes", []):
+        print(f"    {e['source']} {e['reason']} {e['start'][:16]} ({e['minutes']} min): cabinet {e['cabinet_c_start']} -> "
+              f"+15 {e['cabinet_c_plus15']} / +30 {e['cabinet_c_plus30']}; effect vs control 15m "
+              f"{e['effect_c_15m']} (n={e['control_n_15m']}), 30m {e['effect_c_30m']}; gpu W {e['gpu_w_before']} -> "
+              f"{e['gpu_w_first15m']}")
     for r in rep.get("ac_death_injection", []):
         print(f"  inject {r['case']:22s} at {r['at'][:16]}: low_power after {r['low_power_after_sec']}s, "
               f"cabinet_unknown after {r['cabinet_unknown_after_sec']}s, cabinet_hot after {r['cabinet_hot_after_sec']}s "

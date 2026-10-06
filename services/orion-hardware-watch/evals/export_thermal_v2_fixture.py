@@ -6,6 +6,9 @@ What it reads (SELECT/COPY TO STDOUT only; nothing is written to the database):
 - every ``home_cooling_sample`` row in [since, until)              -> ``c`` rows
 - ``orion_biometrics_summary`` for athena and circe in [since, until):
   ``cabinet_temp_c``, ``temp_c_max``, ``gpu{N}_temp_c``, ``gpu_watts_total``  -> ``t`` rows
+- every real shed episode that started in [since, until) (D11's input)                -> ``e`` rows:
+  ``hardware_watch_incident`` rows with shed_requested (v1 reflex: shed_requested_at -> resolved_at) and
+  ``gpu_pool_orion_shed`` rows that started (Orion's learned shed: started_at -> ended_at)
 
 Size rule (keep the committed fixture small): when the gzipped file would exceed ``--max-bytes``
 (default 5 MB), AC rows are thinned to one per ``--thin-sec`` OUTSIDE the full-resolution windows
@@ -70,10 +73,19 @@ def export(since: datetime, until: datetime, max_bytes: int, thin_sec: float) ->
         f"WHERE timestamp >= '{s}' AND timestamp < '{u}' AND node IN ('athena', 'circe') AND {KEYS_SQL} "
         "ORDER BY node, k, timestamp) TO STDOUT WITH CSV")
 
+    episodes = _copy(
+        "COPY (SELECT 'e', 'hardware_watch_incident', incident_id, coalesce(shed_reason, ''), "
+        "round(extract(epoch FROM shed_requested_at)::numeric, 3), round(extract(epoch FROM resolved_at)::numeric, 3) "
+        f"FROM hardware_watch_incident WHERE shed_requested AND shed_requested_at >= '{s}+00' "
+        f"AND shed_requested_at < '{u}+00' UNION ALL SELECT 'e', 'gpu_pool_orion_shed', shed_id, reason, "
+        "round(extract(epoch FROM started_at)::numeric, 3), round(extract(epoch FROM ended_at)::numeric, 3) "
+        f"FROM gpu_pool_orion_shed WHERE started_at >= '{s}+00' AND started_at < '{u}+00' ORDER BY 5) "
+        "TO STDOUT WITH CSV")
+
     def build(cooling_body: str, note: str) -> bytes:
         head = (f"# since={since.isoformat()} cutoff={until.isoformat()} "
                 f"exported_at={datetime.now(timezone.utc).isoformat()} {note}\n")
-        return gzip.compress((head + cooling_body + temps).encode(), compresslevel=9)
+        return gzip.compress((head + cooling_body + temps + episodes).encode(), compresslevel=9)
 
     n_c = cooling.count("\n")
     blob = build(cooling, f"cooling_rows={n_c} thinned=no")

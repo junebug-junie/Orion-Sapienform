@@ -245,6 +245,6 @@ The other substrate services (cortex-exec, hub, substrate-runtime, concept induc
 
 ## PR link
 
-<filled in after push>
+https://github.com/junebug-junie/Orion-Sapienform/pull/2513
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

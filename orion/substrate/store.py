@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1
+from .neighborhood import NeighborhoodRequestV1, NeighborhoodResultV1, read_memory_neighborhood
 
 
 def _utc_now_iso() -> str:
@@ -53,6 +54,8 @@ class SubstrateGraphStore(Protocol):
     ) -> None: ...
     def upsert_edge(self, *, identity_key: str, edge: SubstrateEdgeV1) -> None: ...
     def snapshot(self) -> MaterializedSubstrateGraphState: ...
+
+    def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1: ...
 
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1: ...
     def query_hotspot_region(self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1: ...
@@ -137,6 +140,9 @@ class InMemorySubstrateGraphStore:
             node_identity_index=dict(self._node_identity_index),
             edge_identity_index=dict(self._edge_identity_index),
         )
+
+    def read_neighborhood(self, request: NeighborhoodRequestV1) -> NeighborhoodResultV1:
+        return read_memory_neighborhood(self, request)
 
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1:
         edges_limit = max(1, int(max_edges))

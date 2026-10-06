@@ -146,6 +146,9 @@ class CognitiveUnificationLayer:
         degraded_producers: list[str] = []
         lineage: list[str] = []
         materialization_results: list[MaterializationResultV1] = []
+        # Node ids a non-write-through cold producer re-read from the durable
+        # store (concept_induction). Only these are deduped against durable.
+        reread_node_ids: set[str] = set()
 
         # ---- Warm path check (per-producer TTL) ----
         now = datetime.now(timezone.utc)
@@ -229,6 +232,10 @@ class CognitiveUnificationLayer:
                                         mat_result = self._durable_materializer.apply_record(record)
                                     else:
                                         mat_result = ephemeral_materializer.apply_record(record)
+                                        reread_node_ids.update(n.node_id for n in record.nodes)
+                                        reread_node_ids.update(
+                                            d.canonical_node_id for d in mat_result.node_decisions
+                                        )
                                     materialization_results.append(mat_result)
                                     self._last_materialized_at[producer.producer_id] = datetime.now(timezone.utc)
                                 except Exception as exc:
@@ -278,14 +285,20 @@ class CognitiveUnificationLayer:
         anchor_slices: dict[str, AnchorBeliefSliceV1] = {}
         for anchor in anchors:
             durable_nodes = [n for n in updated_durable_snapshot.nodes.values() if n.anchor_scope == anchor]
-            # A non-write-through producer can re-read a node that already lives
-            # durably (concept_induction reads the concept region). Show it once,
-            # with the durable values: the durable copy is the one decay and
-            # other writers keep current (2026-10-06, unified-turn latency L6).
+            # A non-write-through cold producer can re-read a node that already
+            # lives durably (concept_induction reads the concept region). Show it
+            # once, with the durable values: the durable copy is the one decay
+            # and other writers keep current (2026-10-06, unified-turn latency
+            # L6). Scoped to re-reads so a per-turn ctx producer that happens to
+            # reuse a durable id is not silently dropped. Side effect: the
+            # adapter's concept_type default does not reach the stance; the
+            # stance's anchor fallback gives the same bucket for orion/
+            # relationship/juniper (only "claude" would differ, not an anchor).
             durable_ids = {n.node_id for n in durable_nodes}
             ephemeral_nodes = [
                 n for n in ephemeral_snapshot.nodes.values()
-                if n.anchor_scope == anchor and n.node_id not in durable_ids
+                if n.anchor_scope == anchor
+                and not (n.node_id in durable_ids and n.node_id in reread_node_ids)
             ]
             all_nodes = durable_nodes + ephemeral_nodes
 

@@ -34,8 +34,10 @@ Confirmed live 2026-08-22: without this, Claude's node was silently dropped
 entirely (not merely misbucketed) by the ``_SUBJECTS`` filter below, so it
 never reached chat_stance's concept summary at all.
 
-Never raises: degrades to ``None`` on any store connectivity failure,
-malformed data, or empty result.
+Returns ``None`` for an empty result. Raises ``ProducerUnavailableError`` on a
+store connectivity failure or degraded read (2026-10-06): the unification
+layer now counts ``None`` as a fresh pull, so a failure must not look like one.
+A malformed individual node is still skipped.
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ from typing import Any
 
 from orion.core.schemas.cognitive_substrate import SubstrateGraphRecordV1
 from orion.substrate import build_substrate_store_from_env, select_concept_nodes_by_anchor_scope
+from orion.substrate.relational.registry import ProducerUnavailableError
 from orion.substrate.store import SubstrateGraphStore
 
 logger = logging.getLogger("orion.substrate.relational.adapters.concept_induction_ctx")
@@ -68,24 +71,22 @@ _ANCHOR_TO_CONCEPT_TYPE: dict[str, str] = {
 _STORE: SubstrateGraphStore | None = None
 
 
-def _get_store() -> SubstrateGraphStore | None:
+def _get_store() -> SubstrateGraphStore:
     """Return (or lazily initialise) this module's own fallback substrate store.
 
     Only used when the caller did not bind a store (``store=None``) -- e.g.
     orion-cortex-orch's cold build, whose layer store is a fresh in-memory
     store with no concepts in it. The live stance layers bind their own store
     (see ``build_projection_unification_registry(concept_store=...)``), so
-    this second Falkor connection is never opened on the chat path. Never
-    raises: a construction failure is logged and the caller degrades to
-    ``None``.
+    this second Falkor connection is never opened on the chat path. A
+    construction failure raises ``ProducerUnavailableError``.
     """
     global _STORE
     if _STORE is None:
         try:
             _STORE = build_substrate_store_from_env()
         except Exception as exc:
-            logger.debug("concept_induction_ctx_store_init_failed error=%s", exc)
-            return None
+            raise ProducerUnavailableError(f"concept_induction store init failed: {exc}") from exc
     return _STORE
 
 
@@ -111,21 +112,23 @@ def map_concept_induction_ctx_to_substrate(
     """
     if store is None:
         store = _get_store()
-        if store is None:
-            return None
         try:
             store.snapshot()
         except Exception as exc:
-            logger.debug("concept_induction_ctx_snapshot_failed error=%s", exc)
-            return None
+            raise ProducerUnavailableError(f"concept_induction snapshot failed: {exc}") from exc
 
+    # Transient failures raise (the layer marks the producer degraded and
+    # retries next turn); None means "reached the store, nothing to add".
     try:
         result = store.query_concept_region(limit_nodes=64, limit_edges=64)
     except Exception as exc:
-        logger.debug("concept_induction_ctx_query_failed error=%s", exc)
-        return None
+        raise ProducerUnavailableError(f"concept_induction query failed: {exc}") from exc
 
-    if result is None or getattr(result, "degraded", False):
+    if result is not None and getattr(result, "degraded", False):
+        raise ProducerUnavailableError(
+            f"concept_induction query degraded: {getattr(result, 'error', None)}"
+        )
+    if result is None:
         return None
 
     region_slice = getattr(result, "slice", None)

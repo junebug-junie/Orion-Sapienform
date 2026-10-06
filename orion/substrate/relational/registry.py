@@ -36,6 +36,16 @@ TIER_BY_NAME: dict[str, TrustTierV1] = {
 }
 
 
+class ProducerUnavailableError(RuntimeError):
+    """An adapter could not reach its source this turn (transient failure).
+
+    Raise this instead of returning ``None``: the unification layer counts a
+    ``None`` return as a completed pull with nothing to add (fresh for the
+    producer's TTL), but an exception marks the producer degraded and leaves
+    it untracked, so the next turn retries.
+    """
+
+
 @dataclass(frozen=True)
 class ProducerEntryV1:
     """Descriptor for a single data producer wired into the unification layer."""

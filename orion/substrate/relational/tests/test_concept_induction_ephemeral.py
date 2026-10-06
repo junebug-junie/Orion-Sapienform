@@ -324,3 +324,90 @@ def test_a_failing_producer_keeps_its_anchors_cold() -> None:
 
     assert second.cold_anchors == ["juniper"]
     assert "flaky" in second.degraded_producers
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups
+# ---------------------------------------------------------------------------
+
+
+def test_tier_name_lookup_still_resolves_to_write_through_concept_tier() -> None:
+    """CONCEPT_INDUCED_EPHEMERAL shares the name on purpose; a name lookup must
+    never be used to rebuild a producer's tier, or write-through comes back."""
+    from orion.substrate.relational import CONCEPT_INDUCED_EPHEMERAL, TIER_BY_NAME
+
+    assert TIER_BY_NAME["concept_induced"] is CONCEPT_INDUCED
+    assert CONCEPT_INDUCED_EPHEMERAL not in TIER_BY_NAME.values()
+
+
+def test_transient_concept_failure_keeps_the_anchor_cold() -> None:
+    """A failed pull must not count as fresh: degraded, untracked, retried."""
+    class _DownStore(InMemorySubstrateGraphStore):
+        def query_concept_region(self, **kwargs):
+            raise ConnectionError("falkor down")
+
+    store = _DownStore()
+    for node in _seeds():
+        store.upsert_node(identity_key=f"concept|{node.anchor_scope}", node=node)
+    layer = _concept_layer(store)
+
+    layer.beliefs_for_stance(anchors=("juniper",), ctx={})
+    second = layer.beliefs_for_stance(anchors=("juniper",), ctx={})
+
+    assert second.cold_anchors == ["juniper"]
+    assert "concept_induction" in second.degraded_producers
+    assert "concept_induction" not in layer._last_materialized_at
+
+
+def test_full_registry_rehydrates_per_cold_build() -> None:
+    """Whole live registry, not concept_induction alone. Spark is still
+    CONCEPT_INDUCED write-through; this pins what it costs today."""
+    from orion.schemas.telemetry.spark import SparkStateSnapshotV1
+
+    spark_ctx = {
+        "spark_state_json": SparkStateSnapshotV1(
+            source_service="test", producer_boot_id="boot-1", seq=1,
+            snapshot_ts=datetime.now(timezone.utc),
+        ).model_dump_json()
+    }
+    counts = {}
+    for label, ctx in (("no_spark", {}), ("spark", spark_ctx)):
+        store, _client, hydrates = _counting_falkor_store(_seeds())
+        layer = CognitiveUnificationLayer(
+            registry=build_projection_unification_registry(concept_store=store), store=store
+        )
+        beliefs = layer.beliefs_for_stance(anchors=_ANCHORS, ctx=ctx)
+        counts[label] = (hydrates[0], store._write_generation, "spark" in beliefs.degraded_producers)
+
+    assert counts["no_spark"] == (1, 0, False)
+    # Spark's node is a state_snapshot, which Falkor refuses as a durable kind,
+    # so its write-through raises before any generation bump: still one
+    # rehydrate (spark degrades, as identity_yaml did before #2508). Live
+    # 2026-10-06: zero spark materialize failures in 24 h, so live ctx carries
+    # no spark state. If spark ever becomes storable this becomes 2.
+    assert counts["spark"] == (1, 0, True)
+
+
+def test_dedupe_is_scoped_to_rereads() -> None:
+    """A per-turn ephemeral producer that reuses a durable id keeps its copy."""
+    from orion.core.schemas.cognitive_substrate import SubstrateGraphRecordV1
+    from orion.substrate.relational import SNAPSHOT_EPHEMERAL
+
+    fresh = _concept("sub-concept-seed-juniper", "juniper", activation=0.11,
+                     observed_at=datetime.now(timezone.utc))
+    entry = ProducerEntryV1(
+        producer_id="per_turn",
+        trust_tier=SNAPSHOT_EPHEMERAL,
+        anchor_scopes=("juniper",),
+        freshness_ttl_sec=0,
+        pull_on_cold=False,
+        adapter_fn=lambda ctx: SubstrateGraphRecordV1(anchor_scope="juniper", nodes=[fresh]),
+    )
+    layer = CognitiveUnificationLayer(
+        registry=ProducerRegistryV1(producers=[entry]), store=_store_with_day_old_seeds()
+    )
+
+    beliefs = layer.beliefs_for_stance(anchors=("juniper",), ctx={})
+
+    activations = sorted(n.signals.activation.activation for n in beliefs.anchors["juniper"].concepts)
+    assert activations == [pytest.approx(0.11), pytest.approx(0.95)]

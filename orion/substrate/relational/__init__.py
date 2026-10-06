@@ -10,6 +10,7 @@ from .registry import (
     TIER_BY_NAME,
     ProducerEntryV1,
     ProducerRegistryV1,
+    ProducerUnavailableError,
     TrustTierV1,
 )
 from .layer import CognitiveUnificationLayer
@@ -27,6 +28,7 @@ __all__ = [
     "TrustTierV1",
     "ProducerEntryV1",
     "ProducerRegistryV1",
+    "ProducerUnavailableError",
     "OPERATOR_STATIC",
     "GRAPHDB_DURABLE",
     "CONCEPT_INDUCED",

@@ -2045,7 +2045,9 @@ async def _run_pcr_collectors(
     Before 2026-09-30 this block ran after the deadline-bounded fetch, with
     no deadline and no timing: a cold get_substrate_store() (first-call
     Falkor hydration, measured 6.25s live) made the first belief recall after
-    a restart take 9.5s with ~9.3s missing from timings_ms.
+    a restart take 9.5s with ~9.3s missing from timings_ms. Since 2026-10-06
+    recall never hydrates: concept_region issues bounded direct Falkor reads
+    (see app/substrate_store.py).
     """
     units: List[Tuple[str, Any]] = []
     # Set when the recall stops waiting for concept_region (deadline or
@@ -2062,11 +2064,10 @@ async def _run_pcr_collectors(
             )
         )
     if pcr_backend_plan.get("concept_region") and settings.RECALL_CONCEPT_REGION_ENABLED:
-        # Both get_substrate_store() (first-call hydration: FalkorDB issues
-        # several synchronous GRAPH.QUERY network calls with no client-side
-        # timeout, see FalkorSubstrateStore.__init__) and
-        # fetch_concept_region_fragment_and_reinforce's store reads/write are
-        # blocking -- both must run inside the offloaded thread. The inner
+        # fetch_concept_region_fragment_and_reinforce's Falkor reads/write
+        # are blocking network calls (bounded by the socket timeouts in
+        # app/substrate_store.py) -- they must run inside the offloaded
+        # thread, and so does get_substrate_store() for symmetry. The inner
         # lambda defers both calls into the thread (an argument expression
         # would be evaluated on the event loop). The collector also writes a
         # small activation bump for whatever it matched (see

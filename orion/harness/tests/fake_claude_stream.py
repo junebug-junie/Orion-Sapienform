@@ -14,7 +14,8 @@ test checks for.
 
 Prompt verbs: ``CRASH`` exits 3 after init; ``CRASH_SILENT`` exits 3 before
 saying anything; ``HANG`` sleeps; ``ENVFILE`` reports the turn clock a Bash
-call would see (process env overlaid by ``$CLAUDE_ENV_FILE`` exports).
+call would see (process env overlaid by ``$CLAUDE_ENV_FILE`` exports);
+``READBINDING`` reports the reading binding its orion-reading MCP server sees.
 """
 
 from __future__ import annotations
@@ -65,6 +66,21 @@ def bash_view_of_turn_clock() -> dict:
     return seen
 
 
+def mcp_view_of_reading_binding() -> dict:
+    """What the orion-reading MCP server would bind a tool call to right now."""
+    cfg_path = _argv_value("--mcp-config")
+    if not cfg_path:
+        return {"error": "no_mcp_config"}
+    server = json.load(open(cfg_path, encoding="utf-8")).get("mcpServers", {}).get("orion-reading")
+    if server is None:
+        return {"error": "no_reading_server"}
+    env = server.get("env") or {}
+    if "ORION_READING_BINDING" in env:
+        return {"mode": "fixed", "binding": json.loads(env["ORION_READING_BINDING"])}
+    text = open(env["ORION_READING_BINDING_FILE"], encoding="utf-8").read().strip()
+    return {"mode": "file", "binding": json.loads(text) if text else None}
+
+
 def call_model() -> str:
     base = os.environ["ANTHROPIC_BASE_URL"].rstrip("/")
     headers = {
@@ -97,6 +113,8 @@ def run_turn(text: str) -> bool:
         reply = "started"
     elif text.startswith("ENVFILE"):
         reply = "CLOCK " + json.dumps(bash_view_of_turn_clock(), sort_keys=True)
+    elif text.startswith("READBINDING"):
+        reply = "BINDING " + json.dumps(mcp_view_of_reading_binding(), sort_keys=True)
     else:
         HISTORY.append({"role": "user", "content": text})
         try:

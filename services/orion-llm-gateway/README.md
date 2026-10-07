@@ -217,6 +217,19 @@ Failure shape (bus): empty text with `raw.error = "gpu_pool_unavailable"` and
 header `X-Gpu-Pool-Bus: down`) until the pool RPC client is connected. HTTP: 503
 with `error.type = "gpu_pool_unavailable"`.
 
+Upstream failure shape (bus, since 2026-10-07): when the granted worker answers non-2xx, answers
+2xx with an error body (`{"error": ...}` and no completion), returns an empty template, or never
+answers (timeout / refused connection), the reply is the same shape -- empty text,
+`raw.error` = `upstream_http_5xx` | `upstream_http_4xx` | `upstream_not_found` |
+`upstream_timeout` | `upstream_connect` | `upstream_error`, and
+`raw.details = {reason, status_code, message, backend, route, served_by, url}` where `message` is
+the worker's own error text (truncated to 500 chars) and `reason` is `http_<status>`,
+`error_body`, `empty_prompt` or the exception type. cortex-exec fails the step as
+`<raw.error>:<reason>: <message>`; the pool lease is released `upstream_error` with that
+message as its detail. No retry and no move to another card: only a context overflow re-leases.
+Before this, a worker 500 came back as text `[Error: llamacpp failed: Server error '500 ...']`
+with `raw={}`, which cortex-exec recorded as a successful step.
+
 Deleted with this cutover: `capacity.py` (durable-runs `/capacity` permits),
 `upstream_admission.py` (per-upstream semaphores), `priority_admission.py` (background `/slots`
 polling -- pool priority replaces it), `lane_gate.py` + `GET/PUT /routes/{id}/gate` (the pool's
@@ -292,9 +305,10 @@ reply -- bus RPC and, since stage 6.2, the OpenAI/Anthropic HTTP passthroughs --
 one `llm_inference_window_observed` atom per node, plus an
 `llm_gateway_window_completed` atom that is sent even for an empty window.
 
-Why here: a failed backend call comes back to the caller as an ordinary reply whose
-text is `[Error: ...]`, so the caller's RPC health counts it a success, and an idle,
-broken backend reads as calm GPU pressure. Only the gateway sees the call fail.
+Why here: a failed backend call comes back to the caller as an ordinary reply (empty text and
+a typed `raw.error`, see the upstream failure shape above), so the caller's RPC health counts it
+a success, and an idle, broken backend reads as calm GPU pressure. Only the gateway sees the
+call fail.
 
 Counts, clock percentiles and token totals only -- no prompt or reply text leaves
 the process. Both the bus path (`handle_chat`) and the HTTP passthroughs
@@ -331,7 +345,8 @@ read once per window from pool state (omitted when the pool is unreachable);
 `prompt_n`/`cache_n` sum llama.cpp's `timings.prompt_n` (prompt tokens processed)
 and `timings.cache_n` (reused from the KV cache) over served calls that reported both.
 
-What counts as a backend failure: only replies framed `[Error: ...` that are a
+What counts as a backend failure: a typed `raw.error` in `UPSTREAM_FAILURE_CLASSES`
+(passed through as its own class), or a reply framed `[Error: ...` that is a
 timeout, refused/failed connection, HTTP 5xx, 404 or other backend error. Upstream
 4xx (e.g. an oversized prompt), image-to-text-route refusals and unreadable
 attachments are the caller's request, counted as `request_invalid`. A call that

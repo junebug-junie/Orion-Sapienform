@@ -40,4 +40,7 @@ echo "checking both binaries run in the final image"
 docker run --rm --gpus device=2 --entrypoint /bin/sh "${IMAGE}" -c \
   'LD_LIBRARY_PATH=/app/prism${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} /app/prism/llama-server --version && /app/prism/llama-server --help >/dev/null'
 docker run --rm --gpus device=2 --entrypoint /app/llama-server "${IMAGE}" --version
-echo "ok ${IMAGE} (commit $(git rev-parse --short HEAD) baked in: app, config/llm_profiles.yaml, orion)"
+# No GPU: the Bonsai profile's chat template (llm_profiles.yaml chat_template_file) must be baked in;
+# the wrapper refuses to boot the seat without it.
+docker run --rm --entrypoint /bin/sh "${IMAGE}" -c 'test -s /app/config/chat_templates/ternary-bonsai-2-27b.jinja'
+echo "ok ${IMAGE} (commit $(git rev-parse --short HEAD) baked in: app, config/llm_profiles.yaml, config/chat_templates, orion)"

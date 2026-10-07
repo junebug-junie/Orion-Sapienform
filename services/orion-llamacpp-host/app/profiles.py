@@ -175,6 +175,10 @@ class LlamaCppConfig(BaseModel):
     # llama-server --reasoning-budget (use 0 to disable Qwen3-style thinking; complements chat_template_kwargs)
     reasoning_budget: Optional[int] = None
     chat_template_kwargs: Optional[Dict[str, Any]] = None
+    # llama-server --chat-template-file: replaces the GGUF's embedded template. A relative path is
+    # resolved against the directory holding llm_profiles.yaml (/app/config, baked into the image).
+    # Fails closed: a missing file or a binary without the flag refuses to boot.
+    chat_template_file: Optional[str] = None
 
     flash_attn: Optional[Literal["on", "off", "auto"]] = None
     rope_scaling: Optional[Literal["none", "linear", "yarn"]] = None

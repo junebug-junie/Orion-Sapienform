@@ -2,10 +2,11 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 698,
   "_last_change": {
-    "change_count": 1,
+    "change_count": 2,
     "high_severity_count": 1,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-hub/orion:attention:loop_outcome (declared_consumers: - -> ['orion-memory-consolidation'])"
+      "high   semantics_changed metric://field_channel/orion-field-digester/contract_pressure (meaning: Pressure from bus/schema \"contract\" mismatches (precise rea\u2026 -> capability:transport only: 0.85 x node:athena's catalog_dri\u2026)",
+      "medium annotation_changed metric://field_channel/orion-field-digester/contract_pressure (notes: category=infra_transport level=node,capability -> category=infra_transport level=capability)"
     ]
   },
   "definitions": {
@@ -4100,8 +4101,8 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/contract_pressure": {
-      "meaning": "Pressure from bus/schema \"contract\" mismatches (precise real-world condition not otherwise documented in code).",
-      "notes": "category=infra_transport level=node,capability",
+      "meaning": "capability:transport only: 0.85 x node:athena's catalog_drift_pressure (share of live bus channels missing from orion/bus/channels.yaml). Not a payload/schema contract check -- the schema-sample version was retired 2026-10-07 because OrionBusAsync.publish() already validates every payload before sending.",
+      "notes": "category=infra_transport level=capability",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-field-digester/conversation_load": {

@@ -437,11 +437,21 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     but no place and Orion resolved "the camera outside" against a travel
     city in recent chat (correlation 5063fb71).
 
-    Fields orion-hub does not yet configure (lab, perception) are turned off here on purpose, not
-    left to `settings_from_runtime`'s own defaults to silently decide: hub
-    has no verified perception/lab runtime dependency yet (no DSN/HTTP
-    egress vetted for its event loop), so wiring those is a follow-up, not
-    an accident of a missing attr. Weather and the runtime probe (which
+    Lab is turned off here on purpose (it has no real provider anywhere), not
+    left to `settings_from_runtime`'s own defaults to silently decide.
+
+    Perception (2026-10-07) IS enabled here now, via Hub's own
+    ORION_SITUATION_PERCEPTION_ENABLED (default ON, Juniper's standing flag
+    rule). It was a literal False while Hub had no vetted DB path for its
+    event loop; every perception read now runs in `asyncio.to_thread`
+    (`_build_room_perception_context`, `_resolve_presence_and_identity_ask`,
+    `_build_street_fields`), and Hub already holds POSTGRES_URI. It is the
+    same builder cortex-exec runs -- not a fork. Privacy: this puts
+    camera-derived text about the home into Hub chat prompts (room
+    narrative, presence fragment, street summary, identity-ask caution);
+    the kill switch is ORION_SITUATION_PERCEPTION_ENABLED=false.
+
+    Weather and the runtime probe (which
     model is currently serving `chat`) ARE enabled -- weather now reads
     orion-hub's own ORION_SITUATION_WEATHER_* fields (added alongside this
     adapter's weather wiring; same provider/coordinates/TTL as cortex-exec's
@@ -452,7 +462,7 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     `asyncio.to_thread`, and the runtime read is an async RPC, so a cache-miss
     fetch cannot stall the event loop.
 
-    Affect (2026-08-25) IS enabled here, unlike perception/lab -- orion-hub
+    Affect (2026-08-25) IS enabled here -- orion-hub
     is the MOST verified host for it, not the least: Hub owns the capture
     loop that produces the read in the first place
     (`services/orion-hub/scripts/vision_affect_ambient.py`) and already
@@ -478,7 +488,7 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     no new sensor-path keys, just a new `ORION_SITUATION_CABINET_*` on/off +
     TTL pair. This is Orion's own physical housing, not private-home
     content, same "no new dependency, no privacy concern" shape as affect/
-    curiosity/reverie above -- unlike lab/perception, which stay off.
+    curiosity/reverie above -- unlike lab, which stays off.
     """
     return SimpleNamespace(
         orion_situation_enabled=bool(getattr(cfg, "ORION_SITUATION_ENABLED", True)),
@@ -536,9 +546,26 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_cabinet_stale_after_sec=float(
             getattr(cfg, "CABINET_SENSORS_STALE_AFTER_SEC", 10.0)
         ),
-        orion_situation_perception_enabled=False,
-        orion_situation_perception_max_age_seconds=900,
+        # 2026-10-07: was a literal False. Reads Hub's own
+        # ORION_SITUATION_PERCEPTION_* keys (same names and defaults as
+        # cortex-exec's) into the SAME shared builder cortex-exec uses --
+        # no forked perception path. Default ON per Juniper's standing flag
+        # rule; ORION_SITUATION_PERCEPTION_ENABLED=false is the kill switch.
+        orion_situation_perception_enabled=bool(
+            getattr(cfg, "ORION_SITUATION_PERCEPTION_ENABLED", True)
+        ),
+        orion_situation_perception_max_age_seconds=int(
+            getattr(cfg, "ORION_SITUATION_PERCEPTION_MAX_AGE_SECONDS", 900)
+        ),
         orion_situation_perception_stream_id="cam0",
+        orion_situation_perception_stream_ids=getattr(
+            cfg, "ORION_SITUATION_PERCEPTION_STREAM_IDS", "carbon,cam0"
+        ),
+        # Plain getattr, no `or` fallback: an explicit "" disables the
+        # Street line (settings_from_runtime's own contract).
+        orion_situation_street_stream_ids=getattr(
+            cfg, "ORION_SITUATION_STREET_STREAM_IDS", "walkway"
+        ),
         orion_situation_identity_ask_cooldown_seconds=1200,
         orion_situation_affect_enabled=bool(getattr(cfg, "ORION_SITUATION_AFFECT_ENABLED", True)),
         orion_situation_affect_max_age_seconds=int(
@@ -1683,9 +1710,9 @@ async def _build_room_perception_context(
     percept, never an exception into turn assembly.
 
     `async` since 2026-08-26: the identity-uncertain cooldown check below is
-    a Redis round-trip (`identity_ask_cooldown.py`), the one await in this
-    function -- everything else here stays the same synchronous SQLAlchemy
-    reads it always was.
+    a Redis round-trip (`identity_ask_cooldown.py`). Since 2026-10-07 the
+    percept SQL read is awaited via `asyncio.to_thread` too, so no
+    synchronous database call runs on the caller's event loop (Hub's).
     """
     if not cfg.perception_enabled:
         diagnostics.provider_status["perception"] = "disabled"
@@ -1697,8 +1724,13 @@ async def _build_room_perception_context(
     reading = await _resolve_presence_and_identity_ask(cfg, diagnostics)
 
     try:
-        percept = fetch_latest_percept(
-            stream_ids=cfg.perception_stream_ids or [cfg.perception_stream_id]
+        # Off the event loop (2026-10-07): this is a synchronous SQLAlchemy
+        # read, and Hub's chat event loop now runs it too. A slow or
+        # unreachable database must stall a worker thread, not every Hub
+        # websocket. The presence and street reads already do this.
+        percept = await asyncio.to_thread(
+            fetch_latest_percept,
+            stream_ids=cfg.perception_stream_ids or [cfg.perception_stream_id],
         )
     except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
         diagnostics.provider_status["perception"] = "error"

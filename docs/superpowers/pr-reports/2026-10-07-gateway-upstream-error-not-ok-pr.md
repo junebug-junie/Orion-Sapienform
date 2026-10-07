@@ -124,6 +124,6 @@ scripts/safe_docker_build.sh orion-llm-gateway up -d --build
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2536
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

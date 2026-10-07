@@ -280,6 +280,6 @@ there should be one `from=none` transition row:
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/2538
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

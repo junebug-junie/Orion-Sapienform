@@ -96,6 +96,11 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
         "memory referent persist inserts source_cooccurrence_v1 decisions; the consolidation "
         "projector (AssertionProjector) reads them back via SubstrateGraphJournal",
     ),
+    "orion.schemas.introspect:DreamsArguments": (
+        "orion-harness-governor",
+        "orion-introspect MCP (spawned by the governor's FCC turns) validates the model's dreams "
+        "tool arguments into the bus request; orion-dream's introspect listener validates them back",
+    ),
     # No cross-service writer.
     "orion.substrate.neighborhood:NeighborhoodRequestV1": (
         None,

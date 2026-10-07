@@ -228,8 +228,23 @@ class _UpstreamFailed(Exception):
     the caller still gets back unchanged."""
 
     def __init__(self, result: Dict[str, Any]):
-        super().__init__(str((result.get("raw") or {}).get("error") or result.get("text") or "upstream_error")[:300])
+        super().__init__(_failure_summary(result))
         self.result = result
+
+
+def _failure_summary(result: Dict[str, Any]) -> str:
+    """What the pool's lease release records as the reason: the error class plus, when the
+    upstream said why (raw.details.message), its own words -- so ``gpu_pool_events`` shows
+    ``upstream_http_5xx: No user query found in messages`` rather than a bare class name."""
+    raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    error = raw.get("error")
+    details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+    message = details.get("message")
+    if error and message:
+        summary = f"{error}: {message}"
+    else:
+        summary = str(error or result.get("text") or "upstream_error")
+    return summary[:300]
 
 
 class _ContextOverflow(_UpstreamFailed):

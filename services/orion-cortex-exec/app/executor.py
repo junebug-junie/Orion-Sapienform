@@ -1795,6 +1795,9 @@ def _append_memory_digest(prompt: str, memory_digest: str) -> str:
     )
 
 
+GATEWAY_FAILURE_MESSAGE_MAX_CHARS = 240
+
+
 def gateway_error_step_failure(result_payload: Any) -> Optional[str]:
     """Name the failure when the gateway answered with no text and an error flag.
 
@@ -1830,9 +1833,16 @@ def gateway_error_step_failure(result_payload: Any) -> Optional[str]:
             return None
     details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
     detail = details.get("stage") or details.get("reason")
+    named = error.strip()
     if isinstance(detail, str) and detail.strip():
-        return f"{error.strip()}:{detail.strip()}"
-    return error.strip()
+        named = f"{named}:{detail.strip()}"
+    # An upstream worker's own words for why it failed (gateway raw.details.message, already
+    # truncated there), e.g. ``upstream_http_5xx:http_500: No user query found in messages.``
+    # -- live 2026-10-02..06 that message existed only in the gateway's log.
+    message = details.get("message")
+    if isinstance(message, str) and message.strip():
+        named = f"{named}: {' '.join(message.split())[:GATEWAY_FAILURE_MESSAGE_MAX_CHARS]}"
+    return named
 
 
 def _extract_llm_text(res: Any) -> str:

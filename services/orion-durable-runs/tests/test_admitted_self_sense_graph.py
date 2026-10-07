@@ -223,3 +223,34 @@ def test_heartbeat_must_fit_twice_inside_the_pool_hold_ttl():
     with _pytest.raises(ValueError, match="at most half"):
         AdmissionRuntime(settings, SimpleNamespace(), pool=None, store=SimpleNamespace(),
                          holds=SimpleNamespace(hold_ttl_sec=90))
+
+
+def test_admitted_run_with_every_answer_empty_fails_with_the_turns_error():
+    """Live 2026-10-02..06: 4 admitted self-sense runs released "completed" with empty=4 while
+    every LLM call 500'd. Now: attempt_failed, run failed, nothing published, the cause named."""
+    err = "upstream_http_5xx:http_500: No user query found in messages."
+
+    class FailWorld(World):
+        async def turn(self, req):
+            self.turn_calls.append(req)
+            return CuriosityTurnResultV1(run_id=req.run_id, correlation_id=req.correlation_id, ok=False, error=err)
+
+        async def release(self, state, reason, keep_requeued=False):
+            # Mirrors admission_runtime.release: nothing held -> nothing to release.
+            if not state.get("hold") and not state.get("lease"):
+                return {"lease": None, "hold": None}
+            return await super().release(state, reason, keep_requeued)
+
+    async def scenario():
+        world, saver = FailWorld(), InMemorySaver()
+        world.grant()
+        result = await asyncio.wait_for(world.graph(saver).ainvoke(initial(), CFG), 2)
+        assert len(world.turn_calls) == 4
+        assert result["status"] == "failed"
+        assert result["last_error"] == f"self_sense_no_answers: {err}"
+        assert world.published == []
+        # One release: the failed node's second release is a no-op once the hold is gone.
+        assert world.releases == ["attempt_failed"]
+        assert (await world.graph(saver).aget_state(CFG)).next == ()
+
+    asyncio.run(scenario())

@@ -1980,7 +1980,7 @@ channels:
   - name: "orion:vector:semantic:upsert"
     kind: "event"
     schema_id: "VectorUpsertV1"
-    producer_services: ["orion-vector-host", "orion-hub"]
+    producer_services: ["orion-vector-host", "orion-hub", "orion-dream"]
     consumer_services: ["orion-vector-writer"]
     stability: "experimental"
     since: "2026-01-16"
@@ -3756,6 +3756,27 @@ channels:
     stability: "experimental"
     since: "2026-09-10"
     description: "Durable queue receipt, durable status, or an IntrospectResultV1 for reading_result. A timeout means acceptance (or the introspection answer) is unknown."
+
+  - name: "orion:introspect:dream:request"
+    kind: "request"
+    schema_id: "IntrospectRequestV1"
+    message_kind: "introspect.tool.request.v1"
+    producer_services: ["orion-harness-governor"]
+    consumer_services: ["orion-dream"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-09-28"
+    description: "orion-introspect dreams tool RPC. Read-only: recent, one by dream_id, or query by meaning over narrative dreams and already-offered sleep-cycle hypotheses (both arms, arm never exposed). Reply on orion:introspect:result:<correlation_id>."
+
+  - name: "orion:introspect:result:*"
+    kind: "result"
+    schema_id: "IntrospectResultV1"
+    message_kind: "introspect.tool.result.v1"
+    producer_services: ["orion-dream"]
+    consumer_services: ["orion-harness-governor"]
+    stability: "experimental"
+    since: "2026-09-28"
+    description: "Owning-service answer to an introspect request. ok=true with items=[] means nothing matched; ok=false or a timeout means the answer is unknown."
 
   - name: "orion:reading:requested"
     kind: "event"

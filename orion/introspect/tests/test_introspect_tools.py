@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
 from orion.introspect.tools import RPC_TIMEOUT_SEC, IntrospectTools, IntrospectUnknownError
+from orion.introspect.transport import DREAM_REQUEST_CHANNEL, REQUEST_KIND, RESULT_KIND, RESULT_PREFIX
 from orion.schemas.introspect import IntrospectResultV1, IntrospectToolBindingV1
 from orion.schemas.reading import ReadingToolResultV1
 from orion.world_pulse_read.events import TOOL_CHANNEL, TOOL_RESULT_PREFIX
@@ -50,8 +51,8 @@ def _invoke(bus, name="reading_results", args=None):
     return asyncio.run(IntrospectTools(bus, BINDING).invoke(name, args or {}))
 
 
-def test_tool_specs_list_only_reading_results():
-    assert [s.name for s in IntrospectTools(ReplyBus(), BINDING).tool_specs()] == ["reading_results"]
+def test_tool_specs_list_reading_results_then_dreams():
+    assert [s.name for s in IntrospectTools(ReplyBus(), BINDING).tool_specs()] == ["reading_results", "dreams"]
 
 
 def test_reading_results_uses_reading_channel_with_normalized_url():
@@ -122,7 +123,89 @@ def test_reading_results_forwards_query_without_url_normalization():
 
 
 def test_description_leads_with_semantic_query():
-    [spec] = IntrospectTools(ReplyBus(), BINDING).tool_specs()
+    [spec] = [s for s in IntrospectTools(ReplyBus(), BINDING).tool_specs() if s.name == "reading_results"]
     assert spec.description.lower().startswith("search")
     assert "query" in spec.description and "similarity" in spec.description
     assert "query" in spec.arguments.model_json_schema()["properties"]
+
+
+def test_dreams_description_asks_for_topic_only_query():
+    """Dream-worded queries lift every narrative's similarity (task-8 calibration, framed set)."""
+    [spec] = [s for s in IntrospectTools(ReplyBus(), BINDING).tool_specs() if s.name == "dreams"]
+    assert (
+        "Every record here is already a dream, so put only the topic in query -- "
+        "'pull requests', not 'a dream about pull requests'."
+    ) in spec.description
+    assert "similarity" in spec.description and "dream_id=<id>" in spec.description
+    assert "items=[] means no dream matched" in spec.description
+
+
+def test_dreams_description_says_what_each_kind_returns():
+    [spec] = [s for s in IntrospectTools(ReplyBus(), BINDING).tool_specs() if s.name == "dreams"]
+    assert "kind=narrative returns only the nightly dream narratives" in spec.description
+    assert "kind=hypothesis only the sleep-cycle hypotheses already offered to you" in spec.description
+
+
+class DreamBus(ReplyBus):
+    def __init__(self, payload=None, *, kind=RESULT_KIND, **kw):
+        super().__init__(payload, **kw)
+        self.kind = kind
+
+    async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec):
+        self.sent.append((channel, envelope, reply_channel, timeout_sec))
+        if self.raise_exc is not None:
+            raise self.raise_exc
+        reply = BaseEnvelope(
+            kind=self.kind,
+            correlation_id=uuid4() if self.wrong_correlation else envelope.correlation_id,
+            source=ServiceRef(name="orion-dream"), payload=self.payload,
+        )
+        return {"data": self.codec.encode(reply)}
+
+
+def _dream_ok(**kw):
+    return IntrospectResultV1(ok=True, operation="dreams", as_of=NOW, total_available=0, **kw).model_dump(mode="json")
+
+
+def test_dreams_uses_dream_channel_with_binding_and_clean_args():
+    bus = DreamBus(_dream_ok())
+    out = _invoke(bus, "dreams", {"query": " vision ", "limit": 2})
+    assert out["ok"] is True and out["operation"] == "dreams"
+    [(channel, envelope, reply_channel, timeout)] = bus.sent
+    assert channel == DREAM_REQUEST_CHANNEL and envelope.kind == REQUEST_KIND
+    assert envelope.reply_to == reply_channel == f"{RESULT_PREFIX}{envelope.correlation_id}"
+    assert timeout == RPC_TIMEOUT_SEC and envelope.source.name == "orion-harness-governor"
+    assert envelope.payload["operation"] == "dreams"
+    assert envelope.payload["binding"]["parent_run_id"] == "run-1"
+    assert envelope.payload["args"] == {"query": "vision", "limit": 2}
+
+
+def test_dreams_rejects_bad_args_before_transport():
+    bus = DreamBus(_dream_ok())
+    with pytest.raises(ValidationError):
+        _invoke(bus, "dreams", {"arm": "dream"})
+    assert bus.sent == []
+
+
+@pytest.mark.parametrize(
+    "bus",
+    [
+        DreamBus(raise_exc=TimeoutError()),
+        DreamBus(_dream_ok(), wrong_correlation=True),
+        DreamBus(_dream_ok(), kind="reading.tool.result.v1"),
+        DreamBus({"ok": True}),
+        DreamBus(IntrospectResultV1(ok=False, operation="dreams", as_of=NOW, error="dreams_unavailable; answer unknown").model_dump(mode="json")),
+        DreamBus(IntrospectResultV1(ok=True, operation="reading_result", as_of=NOW, total_available=0).model_dump(mode="json")),
+    ],
+)
+def test_dreams_failures_are_unknown_never_empty(bus):
+    with pytest.raises(IntrospectUnknownError, match="dreams: answer unknown"):
+        _invoke(bus, "dreams", {})
+
+
+def test_dreams_corrupt_reply_bytes_are_unknown():
+    bus = CorruptDataBus()
+    with pytest.raises(IntrospectUnknownError, match="dreams: answer unknown"):
+        _invoke(bus, "dreams", {})
+    [(channel, _, _, _)] = bus.sent
+    assert channel == DREAM_REQUEST_CHANNEL

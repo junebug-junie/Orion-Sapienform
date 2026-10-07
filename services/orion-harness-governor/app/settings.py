@@ -157,7 +157,7 @@ class HarnessGovernorSettings(BaseSettings):
         False, alias="HARNESS_FCC_CONTEXT_MODE_HOOKS_ENABLED"
     )
     # orion-introspect MCP; read at spawn time by orion/introspect/binding.py.
-    harness_fcc_introspect_enabled: bool = Field(False, alias="HARNESS_FCC_INTROSPECT_ENABLED")
+    harness_fcc_introspect_enabled: bool = Field(True, alias="HARNESS_FCC_INTROSPECT_ENABLED")
     # Opt-in CLAUDE_CONFIG_DIR override for the FCC claude subprocess, read
     # directly from the environment by
     # orion.fcc.context_budget.orion_fcc_claude_config_dir; mirrored here so

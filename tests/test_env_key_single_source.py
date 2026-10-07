@@ -78,12 +78,25 @@ def test_naming_a_key_without_pinning_it_is_not_a_copy(gate) -> None:
         ("HARNESS_FCC_TIMEOUT_SEC=900", "900"),  # env-key-single-source: sample
         ("- HARNESS_FCC_TIMEOUT_SEC=${HARNESS_FCC_TIMEOUT_SEC:-1600}", "1600"),  # env-key-single-source: sample
         ('fcc_timeout_sec: float = Field(1600.0, alias="HARNESS_FCC_TIMEOUT_SEC")', "1600.0"),  # env-key-single-source: sample
+        ('x: float = Field(\n    default=1600.0, gt=0, alias="HARNESS_FCC_TIMEOUT_SEC"\n)', "1600.0"),  # env-key-single-source: sample
         ("up to `HARNESS_FCC_TIMEOUT_SEC=900s` can occupy", "900s"),  # env-key-single-source: sample
     ],
 )
 def test_the_four_shapes_a_value_gets_restated_in(gate, text, expected) -> None:
     found = [v for _, v in gate._literals(text, "HARNESS_FCC_TIMEOUT_SEC")]
     assert expected in found, found
+
+
+@pytest.mark.parametrize(
+    "path,key",
+    [
+        ("services/orion-hub/app/settings.py", "HUB_READING_SEARCH_MIN_SIMILARITY"),
+        ("services/orion-dream/app/settings.py", "DREAM_SEARCH_MIN_SIMILARITY"),
+    ],
+)
+def test_owned_settings_defaults_are_visible_to_the_gate(gate, path, key) -> None:
+    """A settings default the gate cannot see can drift from its owner silently."""
+    assert list(gate._literals((REPO_ROOT / path).read_text(), key)), f"{key}: no default seen in {path}"
 
 
 def test_a_sample_marker_line_is_not_counted_as_a_copy(gate) -> None:
@@ -140,3 +153,10 @@ def test_historical_records_are_not_rewritten_by_config_changes(gate) -> None:
     """PR reports and design specs state what was true when written."""
     assert "docs/superpowers/pr-reports/" in gate.EXCLUDED_PREFIXES
     assert "docs/superpowers/specs/" in gate.EXCLUDED_PREFIXES
+
+
+def test_gitignored_agent_scratch_is_not_scanned(gate) -> None:
+    """`.superpowers/` briefs are frozen agent scratch; the local `.env` stays scanned."""
+    assert ".superpowers/" in gate.EXCLUDED_PREFIXES
+    assert ".env" in gate.SCANNED_NAMES
+    assert ".superpowers/sdd/task-5-brief.md".startswith(gate.EXCLUDED_PREFIXES)

@@ -38,7 +38,6 @@ NODE_CHANNELS = [
     "turn_incompletion",
     "context_gathering_ratio",
     "conversation_load",
-    "contract_pressure",
     "catalog_drift_pressure",
     "observer_failure_pressure",
     # orion-llm-gateway's own view of its calls to this node's backends: share of
@@ -194,6 +193,14 @@ RETIRED_NODE_CHANNELS: dict[str, str | None] = {
     "stream_backlog_pressure": None,
     "stream_backlog_health": None,
     "delivery_confidence": None,
+    # 2026-10-07 (fix/transport-lattice-names-and-contract, docs/superpowers/
+    # specs/2026-10-07-transport-lattice-names-and-contract.md): no successor.
+    # Node-level contract_pressure was the bus observer's XREVRANGE schema
+    # sample of two world_pulse streams; 0.0 on 123,412 of 123,412 field ticks.
+    # NODE level only: capability:transport.contract_pressure is a different
+    # quantity (0.85 x node:athena catalog_drift_pressure via the topology
+    # channel_map) and stays in CAPABILITY_CHANNELS.
+    "contract_pressure": None,
 }
 
 # Same contract as RETIRED_NODE_CHANNELS, one level over: capability channel

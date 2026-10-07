@@ -539,7 +539,6 @@ def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
             ("catalog_drift_pressure", "catalog_drift_pressure"),
             ("observer_failure_pressure", "observer_failure_pressure"),
             ("reliability_pressure", "reliability_pressure"),
-            ("contract_pressure", "contract_pressure"),
         ):
             if key in hints:
                 out.append(

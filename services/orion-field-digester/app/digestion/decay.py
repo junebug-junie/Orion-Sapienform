@@ -60,8 +60,8 @@ NODE_DECAY_CHANNELS = {
     "compliance_deficit",
     "turn_incompletion",
     "context_gathering_ratio",
-    # transport
-    "contract_pressure",
+    # transport (node-level contract_pressure retired 2026-10-07; the
+    # capability-level channel below is a different, still-live quantity)
     "catalog_drift_pressure",
     "observer_failure_pressure",
     "reliability_pressure",

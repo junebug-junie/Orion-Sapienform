@@ -32,7 +32,8 @@ node_channels:
   - execution_friction
   - reasoning_load
   - failure_pressure
-  - contract_pressure
+  # contract_pressure (node level) retired 2026-10-07: see
+  # services/orion-field-digester/app/tensor/channels.py::RETIRED_NODE_CHANNELS.
   - catalog_drift_pressure
   - observer_failure_pressure
   - rpc_timeout_pressure

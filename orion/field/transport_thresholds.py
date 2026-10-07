@@ -24,8 +24,9 @@ reported ``stale`` and the static thresholds apply. A dead producer must not
 look like a calm channel or freeze a learned threshold in place.
 
 Only channels in ``DERIVED_CHANNELS`` are wired. ``contract_pressure`` (5
-distinct values in 3.4 days, flat) and ``observer_failure_pressure`` (96%
-exact zeros, event-only) failed the metric gate; see
+distinct values in 3.4 days, flat; its lattice row was deleted 2026-10-07)
+and ``observer_failure_pressure`` (96% exact zeros, event-only) failed the
+metric gate; see
 ``docs/superpowers/specs/2026-09-30-ewma-transport-thresholds-gate.md``.
 
 One producer (``orion-substrate-runtime``'s bus-synaptic tick) writes the
@@ -51,7 +52,9 @@ logger = logging.getLogger("orion.field.transport_thresholds")
 RUNGS = ("watch_at", "summarize_at", "propose_at")
 
 # Channel -> how the producer's raw value maps onto the channel's own scale.
-# bus_synaptic_pressure is capability:transport.pressure, which is exactly
+# bus_synaptic_pressure is the transport lattice policy's row id (and this
+# module's Redis state key); its policy `source:` is capability:transport.pressure,
+# which is exactly
 # 0.85 x node:substrate.bus_synaptic prediction_error (topology edge weight,
 # verified live: ratio 0.85 over 124k rows). Pinned to the topology yaml by
 # test_transport_thresholds.py.

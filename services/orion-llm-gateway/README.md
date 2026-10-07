@@ -221,7 +221,8 @@ Upstream failure shape (bus, since 2026-10-07): when the granted worker answers 
 2xx with an error body (`{"error": ...}` and no completion), returns an empty template, or never
 answers (timeout / refused connection), the reply is the same shape -- empty text,
 `raw.error` = `upstream_http_5xx` | `upstream_http_4xx` | `upstream_not_found` |
-`upstream_timeout` | `upstream_connect` | `upstream_error`, and
+`upstream_timeout` | `upstream_connect` | `upstream_error` (or `gateway_exception` when the
+gateway's own post-processing raised, which is not blamed on the worker), and
 `raw.details = {reason, status_code, message, backend, route, served_by, url}` where `message` is
 the worker's own error text (truncated to 500 chars) and `reason` is `http_<status>`,
 `error_body`, `empty_prompt` or the exception type. cortex-exec fails the step as

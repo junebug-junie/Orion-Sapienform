@@ -79,7 +79,12 @@ def test_channels_endpoint_returns_38_raw_channels_plus_1_derived(client):
     # 2026-08-16) -- see that entry's own comment in config/field/
     # field_channel_glossary.v1.yaml for why it's listed here despite not
     # being one of the 38.
-    assert len(body["channels"]) == 39
+    # 2026-10-07: the 39 above went stale long ago (this failed on main at 52).
+    # Pinned to the glossary file itself, which tests/test_field_channel_glossary.py
+    # already counts (50 entries after D3 + the observer_failure_pressure retirement).
+    assert len(body["channels"]) == 50
+    assert "contract_pressure" not in {c["channel"] for c in body["channels"]}
+    assert "observer_failure_pressure" not in {c["channel"] for c in body["channels"]}
     assert len(body["categories"]) == 7
     channels_by_name = {c["channel"]: c for c in body["channels"]}
     assert "tension_deviation_pressure" in channels_by_name

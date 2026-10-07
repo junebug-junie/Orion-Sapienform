@@ -140,6 +140,6 @@ ORION_ALLOW_SHARED_CHECKOUT_WRITE=1 scripts/safe_docker_build.sh orion-mind up -
 
 ## PR link
 
-(filled after creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2532
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

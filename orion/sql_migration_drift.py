@@ -664,6 +664,13 @@ def commit_times(repo: Path, ref: str = "HEAD", subdir: Path = MIGRATION_SUBDIR)
     return times
 
 
+def is_rollback_file(name: str) -> bool:
+    """A ``*_rollback.sql`` file undoes another migration and is applied only when backing that
+    migration out, so it is never part of the schema the repo expects. Replaying it made the
+    watch demand the forward migration's objects be dropped (RED on every run, 2026-10-04..07)."""
+    return name.endswith("_rollback.sql")
+
+
 def load_files(repo: Path, times: dict[str, tuple[datetime, datetime]], now: Optional[datetime] = None,
                *, include_uncommitted: bool = True) -> list[MigrationFile]:
     """Every *.sql in the migration dir. A file git has never seen on the ref (uncommitted) is
@@ -672,6 +679,8 @@ def load_files(repo: Path, times: dict[str, tuple[datetime, datetime]], now: Opt
     now = now or datetime.now(timezone.utc)
     files = []
     for p in sorted((repo / MIGRATION_SUBDIR).glob(MIGRATION_GLOB)):
+        if is_rollback_file(p.name):
+            continue
         if p.name not in times and not include_uncommitted:
             continue
         added, changed = times.get(p.name, (now, now))

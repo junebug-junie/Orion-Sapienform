@@ -254,7 +254,10 @@ what moves a number from "unusual" to "meaningful". Separate PR, after phase 1 i
     are knobs graded on live data before readers are switched on.
   - **Absence read as calm.** Guard: the `no_reading`/`stale` states.
 - **Disable / roll back:** one flag per reader (`SELF_CALIBRATION_ATTENTION_ENABLED`, `…_STANCE_`,
-  `…_REVERIE_`, `…_METACOG_`), each defaulting to off. Off means today's behaviour.
+  `…_REVERIE_`, `…_METACOG_`). Per Juniper's standing rule, each one **ships on**
+  (`.env_example`, settings and prod `.env`) in the PR that builds it. The safety comes from the
+  sequencing: a reader's PR only lands after the calibration core has passed live check 2. Setting
+  a flag to false restores today's behaviour for that reader.
 
 ## Acceptance checks
 
@@ -290,7 +293,7 @@ what moves a number from "unusual" to "meaningful". Separate PR, after phase 1 i
    - Classify the degenerate ones.
    - Add the registry and its gate.
    - Let it run 24 h. Do acceptance check 2.
-2. **Attention ranking reader** (10-02 step 3, generalized), behind its flag. Then 48 h of check 3.
+2. **Attention ranking reader** (10-02 step 3, generalized), shipped on, with a kill flag. Then 48 h of check 3.
 3. **Stance + reverie readers** (10-02 step 2, generalized), with check 4.
 4. **Metacog `self_signal_episode`**, and retire flow-on-rest and the repair replay (check 5).
 5. **Phase 2 outcome association.**

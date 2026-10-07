@@ -2,13 +2,10 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 693,
   "_last_change": {
-    "change_count": 4,
-    "high_severity_count": 4,
+    "change_count": 1,
+    "high_severity_count": 1,
     "changes": [
-      "high   semantics_changed metric://field_channel/orion-field-digester/available_capacity (meaning: \u2026s right now. -> \u2026s right now. Derived as 1 - pressure unless an edge writes \u2026)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/confidence (meaning: \u2026e/available. -> \u2026e/available. Derived as 1 - 0.5 * pressure unless an edge w\u2026)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/pressure (meaning: \u2026rt, vision). -> \u2026rt, vision). Where an edge feeds it: absent (key and proven\u2026)",
-      "high   semantics_changed metric://field_channel/orion-field-digester/reliability_pressure (meaning: \u2026 failures, or observer failures). -> \u2026 failures, observer failures, RPC timeouts, storage write f\u2026)"
+      "high   routing_changed metric://bus_channel/orion-biometrics/orion:grammar:event (all_producers: \u2026r', 'orion-hub', 'orion-\u2026 -> \u2026r', 'orion-heartbeat', 'orion-hub', 'orion-\u2026)"
     ]
   },
   "definitions": {
@@ -520,6 +517,7 @@
         "orion-cortex-orch",
         "orion-gpu-pool",
         "orion-harness-governor",
+        "orion-heartbeat",
         "orion-hub",
         "orion-llm-gateway",
         "orion-sql-writer",

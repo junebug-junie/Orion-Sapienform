@@ -88,6 +88,10 @@ def classify_outcome(result: Any) -> str:
     if err:
         if err in REFUSAL_CLASSES or err in REQUEST_INVALID_CLASSES or err == "gateway_exception":
             return err
+        if err in UPSTREAM_FAILURE_CLASSES:
+            # llm_backend's typed upstream failures (upstream_http_5xx, upstream_not_found, ...)
+            # already carry the contract's own class name.
+            return err
         if err == "timeout":
             # the granted node was still working when the caller's budget ran out
             return "upstream_timeout"

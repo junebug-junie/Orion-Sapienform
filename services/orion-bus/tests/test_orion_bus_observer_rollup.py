@@ -67,6 +67,33 @@ async def test_run_tick_publishes_when_enabled() -> None:
         assert bus.publish.await_count >= 1
 
 
+@pytest.mark.asyncio
+async def test_failed_tick_publishes_nothing() -> None:
+    """2026-10-07 (#2534 decision 4): a failed observer tick used to publish a
+    bus_observer_tick_failed trace, which became observer_failure_pressure
+    (0.0 on 123,099 of 123,099 field ticks) plus a ping-unknown 0.5 reliability
+    and a census-off 0.0 catalog drift -- readings nobody took. It now
+    publishes nothing; the warning log and the SystemHealthV1 heartbeat carry
+    the observer's own health."""
+    with patch(
+        "app.bus_observer._fetch_redis_snapshot",
+        new_callable=AsyncMock,
+        side_effect=ConnectionError("redis down"),
+    ):
+        bus = AsyncMock()
+        from app.settings import settings as default_settings
+
+        s = default_settings.model_copy(update={"publish_orion_bus_grammar": True})
+        await run_observer_tick(bus=bus, settings=s)
+        assert bus.publish.await_count == 0
+
+
+def test_tick_failed_atom_producer_is_gone() -> None:
+    from app.grammar_emit import BusTransportGrammarCollector
+
+    assert not hasattr(BusTransportGrammarCollector, "record_tick_failed")
+
+
 # ── schema-sample retirement (2026-10-07) ────────────────────────
 #
 # The bounded XREVRANGE schema sample behind contract_pressure was retired

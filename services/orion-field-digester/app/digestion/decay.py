@@ -63,7 +63,7 @@ NODE_DECAY_CHANNELS = {
     # transport (node-level contract_pressure retired 2026-10-07; the
     # capability-level catalog_drift_pressure below is a separate decay entry)
     "catalog_drift_pressure",
-    "observer_failure_pressure",
+    # observer_failure_pressure retired 2026-10-07 (channels.py RETIRED_NODE_CHANNELS)
     "reliability_pressure",
     # inference_failure_pressure (gateway-reported) is deliberately NOT here: it is
     # written mode="replace" only when a node got upstream traffic, so decaying it

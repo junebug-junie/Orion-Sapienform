@@ -260,6 +260,13 @@ number (157-160 over 24,633 ticks) never meant anything. Transport health lives 
 (`bus_census_computed` -> `catalog_drift_pressure`), `node:substrate.bus_synaptic`, and RPC health. See
 `docs/superpowers/specs/2026-09-25-bus-observer-stream-depth-retirement.md`.
 
+**Observer tick failure retired (2026-10-07, #2534 decision 4).** A failed observer tick used to
+publish a `bus_observer_tick_failed` trace that became `observer_failure_pressure` (0.0 on 123,099 of
+123,099 field ticks; zero failed ticks in 72 h of retained atoms). Its only live effect was keeping
+`capability:transport` reliability "measured" (0.0) through RPC-bridge outages. A failed tick now
+publishes nothing; the observer's own health is its `bus observer tick failed` log line and its
+`SystemHealthV1` heartbeat on `orion:system:health`.
+
 Smoke: `../../scripts/smoke_orion_bus_substrate_trace.sh`
 
 Layer 3 `bus_transport_reducer` is deferred — see `LAYER_PIPELINE_PLAN.md`.

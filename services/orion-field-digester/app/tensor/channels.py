@@ -39,7 +39,7 @@ NODE_CHANNELS = [
     "context_gathering_ratio",
     "conversation_load",
     "catalog_drift_pressure",
-    "observer_failure_pressure",
+    # observer_failure_pressure retired 2026-10-07 (RETIRED_NODE_CHANNELS).
     # orion-llm-gateway's own view of its calls to this node's backends: share of
     # calls sent upstream that came back without an answer, per gateway window
     # (orion/substrate/llm_inference_loop/). Written only for nodes that actually
@@ -197,7 +197,8 @@ RETIRED_NODE_CHANNELS: dict[str, str | None] = {
     # bus observer's own PING, pinned at 1.0: a failed PING means the Redis it
     # publishes to is down, so a 0.0 could never arrive. Mesh-wide transport
     # health lives on capability:transport.pressure (node:substrate.bus_synaptic),
-    # catalog_drift_pressure, observer_failure_pressure and RPC health.
+    # catalog_drift_pressure and RPC health (observer_failure_pressure retired
+    # 2026-10-07).
     "stream_backlog_pressure": None,
     "stream_backlog_health": None,
     "delivery_confidence": None,
@@ -209,6 +210,13 @@ RETIRED_NODE_CHANNELS: dict[str, str | None] = {
     # catalog_drift_pressure) was renamed to catalog_drift_pressure the same
     # day -- see RETIRED_CAPABILITY_CHANNELS.
     "contract_pressure": None,
+    # 2026-10-07 (#2534 decision 4, fix/field-decisions-d3-credit-novelty-
+    # observer): no successor. The bus observer's own tick failures; 0.0 on
+    # 123,099 of 123,099 field ticks. Its only effect was keeping
+    # capability:transport reliability_pressure "measured" (0.0) whenever the
+    # RPC delivery bridge's rpc_timeout_pressure expired -- so an RPC-bridge
+    # outage read as calm reliability. Now that outage reads as unmeasured.
+    "observer_failure_pressure": None,
 }
 
 # Same contract as RETIRED_NODE_CHANNELS, one level over: capability channel

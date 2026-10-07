@@ -206,7 +206,7 @@ def _prediction_error_nodes_enabled() -> bool:
 # and XLEN is retained length, not backlog.
 _TRANSPORT_INCIDENT_FIELDS = (
     "catalog_drift_pressure",
-    "observer_failure_pressure",
+    # observer_failure_pressure retired 2026-10-07 (#2534 decision 4).
     "reliability_pressure",
 )
 
@@ -4386,7 +4386,7 @@ class BiometricsSubstrateWorker:
             # already flows into that same consumer automatically -- no new wiring
             # needed there, killing this write is the entire change. Everything
             # else in this reducer (event processing, projection state, incident
-            # logging above, catalog_drift_pressure/observer_failure_pressure via
+            # logging above, catalog_drift_pressure (observer_failure_pressure retired 2026-10-07) via
             # config/field/orion_field_topology.v1.yaml's still-live edge) is
             # unaffected -- confirmed via _grammar_reducer_poll_loop that reducer-
             # health/cursor tracking is driven by last_id, not by this block.

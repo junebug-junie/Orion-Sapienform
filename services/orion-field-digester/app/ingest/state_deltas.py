@@ -537,7 +537,9 @@ def _delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
         # (RETIRED_NODE_CHANNELS).
         for channel, key in (
             ("catalog_drift_pressure", "catalog_drift_pressure"),
-            ("observer_failure_pressure", "observer_failure_pressure"),
+            # observer_failure_pressure retired 2026-10-07 (#2534 decision 4):
+            # a pre-deploy receipt still carrying the hint is ignored here and
+            # reconcile prunes the name (RETIRED_NODE_CHANNELS).
             ("reliability_pressure", "reliability_pressure"),
         ):
             if key in hints:

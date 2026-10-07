@@ -226,7 +226,6 @@ def _sample_proof_chain_for_gates(
                             "observed_at": ts,
                             "redis_ping_ok": True,
                             "catalog_drift_pressure": catalog_drift_pressure,
-                            "observer_failure_pressure": 0.0,
                             "reliability_pressure": 0.0,
                         }
                     } if source_trace_id else {},
@@ -596,7 +595,7 @@ def test_simulate_catalog_drift_suppressed_when_threshold_above_value(client) ->
                 "thresholds": {
                     "catalog_drift_pressure_watch_at": 1.1,
                     "bus_synaptic_pressure_watch_at": 1.1,
-                    "observer_failure_pressure_watch_at": 1.1,
+                    "transport_reliability_pressure_watch_at": 1.1,
                 },
             },
         )
@@ -701,7 +700,12 @@ def test_latest_lattice_channels_come_from_policy_yaml(client) -> None:
     assert rows["bus_synaptic_pressure"]["state"] == "watch"
     assert rows["catalog_drift_pressure"]["value"] == 0.6
     assert rows["catalog_drift_pressure"]["state"] == "watch"
-    assert rows["observer_failure_pressure"]["state"] == "quiet"
+    # observer_failure_pressure retired 2026-10-07 (#2534 decision 4); the
+    # reliability row reads M4 capability:transport.reliability_pressure.
+    assert "observer_failure_pressure" not in rows
+    assert rows["transport_reliability_pressure"]["value"] == 0.0
+    assert rows["transport_reliability_pressure"]["state"] == "quiet"
+    assert rows["transport_reliability_pressure"]["value_source"] == "M4 capability:transport.reliability_pressure"
     assert "contract_pressure" not in rows
     # value_source comes from the policy row's `source:` block
     assert rows["bus_synaptic_pressure"]["value_source"] == "M4 capability:transport.pressure"

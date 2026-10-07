@@ -50,14 +50,22 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     - capability-level contract_pressure renamed to catalog_drift_pressure
     2026-10-07 (decision D3): its entry folds into the existing
     catalog_drift_pressure entry (now level [node, capability]): 52 -> 51
-    entries, 51 -> 50 names."""
+    entries, 51 -> 50 names.
+    - observer_failure_pressure retired 2026-10-07 (#2534 decision 4, 0.0 on
+    123,099 of 123,099 ticks): 51 -> 50 entries, 50 -> 49 names."""
     glossary = load_glossary()
     entries = glossary["entries"]
-    assert len(entries) == 51
+    assert len(entries) == 50
     names = {e.channel for e in entries}
-    for retired in ("stream_backlog_pressure", "stream_backlog_health", "delivery_confidence", "contract_pressure"):
+    for retired in (
+        "stream_backlog_pressure",
+        "stream_backlog_health",
+        "delivery_confidence",
+        "contract_pressure",
+        "observer_failure_pressure",
+    ):
         assert retired not in names
-    assert len(names) == 50, "a node-qualified entry must not introduce a new distinct channel name"
+    assert len(names) == 49, "a node-qualified entry must not introduce a new distinct channel name"
     assert "cpu_pressure" in names
     assert "reliability_pressure" in names
     assert "tension_deviation_pressure" in names

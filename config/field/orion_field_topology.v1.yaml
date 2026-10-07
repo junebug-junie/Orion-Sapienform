@@ -35,7 +35,8 @@ node_channels:
   # contract_pressure (node level) retired 2026-10-07: see
   # services/orion-field-digester/app/tensor/channels.py::RETIRED_NODE_CHANNELS.
   - catalog_drift_pressure
-  - observer_failure_pressure
+  # observer_failure_pressure retired 2026-10-07 (#2534 decision 4): 0.0 on
+  # 123,099 of 123,099 ticks; see channels.py::RETIRED_NODE_CHANNELS.
   - rpc_timeout_pressure
   - write_failure_pressure
   - conversation_load
@@ -71,7 +72,11 @@ edges:
     weight: 0.85
     channel_map:
       catalog_drift_pressure: catalog_drift_pressure
-      observer_failure_pressure: reliability_pressure
+      # observer_failure_pressure -> reliability_pressure removed 2026-10-07
+      # (#2534 decision 4). capability:transport reliability_pressure now has
+      # one source, node:substrate.rpc_delivery below: when the RPC bridge's
+      # reading expires (120 s), transport reliability reads UNMEASURED
+      # (absent) instead of the observer's constant 0.0.
 
   # 2026-07-26: real mesh-wide transport signal, replacing the removed
   # world_pulse-derived pressure above. node:substrate.bus_synaptic is not a

@@ -43,8 +43,8 @@ class BusTransportGrammarCollector:
     # at collector construction (self.observed_at, trace-START). Unlike the
     # other two siblings, no idempotency-per-atom_id guard is needed here:
     # a fresh BusTransportGrammarCollector is constructed per observer tick
-    # (ObserverRollup.to_collector() in bus_observer.py, and the except-path
-    # fail_collector in run_observer_tick()) and every record_*() method is
+    # (ObserverRollup.to_collector() in bus_observer.py; the except-path
+    # fail_collector was removed 2026-10-07) and every record_*() method is
     # called at most once per instance -- confirmed by tracing the real call
     # sites, not assumed.
     _atom_observed_at: dict[str, datetime] = field(default_factory=dict)
@@ -138,24 +138,9 @@ class BusTransportGrammarCollector:
                 )
             )
 
-    def record_tick_failed(self, *, error_kind: str) -> None:
-        self._put_atom(
-            "bus_observer_tick_failed",
-            GrammarAtomV1(
-                atom_id=self._atom_id("bus_observer_tick_failed"),
-                trace_id=self.trace_id,
-                atom_type="uncertainty_marker",
-                semantic_role="bus_observer_tick_failed",
-                layer="transport",
-                dimensions=["bus", "transport", "failure"],
-                summary=f"Bus observer tick failed error_kind={error_kind}",
-                confidence=0.9,
-                salience=0.9,
-                uncertainty=0.85,
-                source_event_id=self.sample_window_id,
-                payload_ref=f"bus.transport.tick_failed:{self.sample_window_id}",
-            ),
-        )
+    # record_tick_failed() (semantic role bus_observer_tick_failed) retired
+    # 2026-10-07 with observer_failure_pressure (#2534 decision 4): see the
+    # except path in bus_observer.run_observer_tick().
 
     def record_health_observed(self, *, redis_ping_ok: bool) -> None:
         self._put_atom(

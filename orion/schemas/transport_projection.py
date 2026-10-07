@@ -34,6 +34,12 @@ RETIRED_TRANSPORT_BUS_STATE_FIELDS: frozenset[str] = frozenset(
         # docs/superpowers/specs/2026-10-07-transport-lattice-names-and-contract.md.
         "schema_mismatch_stream_count",
         "contract_pressure",
+        # Retired 2026-10-07 (#2534 decision 4, fix/field-decisions-d3-credit-
+        # novelty-observer): the observer's own tick failures. 0.0 on 123,099 of
+        # 123,099 field ticks; it only kept capability:transport reliability
+        # "measured" through RPC-bridge outages.
+        "observer_failure_count",
+        "observer_failure_pressure",
     }
 )
 
@@ -73,7 +79,6 @@ class TransportBusStateV1(BaseModel):
     streams_observed: int = 0
 
     uncataloged_stream_count: int = 0
-    observer_failure_count: int = 0
     # Mesh-wide census diff (orion.bus.census.compute_census(), Phase 2 of
     # docs/superpowers/specs/2026-07-23-bus-channel-velocity-census-design.md),
     # NOT the same thing as uncataloged_stream_count above -- that's scoped to
@@ -89,7 +94,6 @@ class TransportBusStateV1(BaseModel):
     undeclared_active_count: int | None = None
     catalog_size: int = 0
     catalog_drift_pressure: float = Field(ge=0.0, le=1.0, default=0.0)
-    observer_failure_pressure: float = Field(ge=0.0, le=1.0, default=0.0)
     reliability_pressure: float = Field(ge=0.0, le=1.0, default=0.0)
 
     evidence_event_ids: list[str] = Field(default_factory=list)

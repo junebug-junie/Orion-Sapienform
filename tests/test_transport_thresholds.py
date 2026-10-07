@@ -132,7 +132,7 @@ def test_flag_off_is_pure_static():
 
 def test_unwired_channels_are_static():
     state, t = _feed(_calm(CFG.min_samples + 500))
-    for ch in ("contract_pressure", "observer_failure_pressure"):
+    for ch in ("contract_pressure", "observer_failure_pressure", "transport_reliability_pressure"):
         eff = tt.effective_thresholds(STATIC, state, CFG, now_ts=t, channel_id=ch)
         assert eff["_meta"]["reason"] == "channel_not_wired"
         assert eff["watch_at"]["value"] == 0.25

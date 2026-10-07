@@ -678,8 +678,9 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     # real values (pressure/contract_pressure/reliability_pressure), fed by
     # config/field/orion_field_topology.v1.yaml's capability:transport edges
     # (bus_synaptic -> pressure per PR #1394; catalog_drift_pressure ->
-    # contract_pressure and observer_failure_pressure -> reliability_pressure,
-    # both still live) -- no new query needed, this data was already being
+    # contract_pressure and observer_failure_pressure -> reliability_pressure;
+    # 2026-10-07: the first renamed catalog_drift_pressure, the second retired,
+    # reliability_pressure now comes from node:substrate.rpc_delivery) -- no new query needed, this data was already being
     # fetched into the chain and simply never read from the right place.
     # 2026-10-07: the contract gate that read M4 contract_pressure was deleted;
     # the hub no longer reads M4 contract_pressure at all, and the capability
@@ -727,9 +728,11 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     channels = _effective_channels(lattice_policy.get("channels", {}))
     bus_def = channels.get("bus_synaptic_pressure") or {}
     bus_src = _channel_source(bus_def)
-    observer_watch_at = float(
-        (channels.get("observer_failure_pressure") or {}).get("watch_at", 0.25)
-    )
+    # 2026-10-07: the reliability half used to borrow the observer_failure_pressure
+    # row's threshold (that channel is retired); it now reads its own row, whose
+    # source is this same M4 channel.
+    reliability_def = channels.get("transport_reliability_pressure") or {}
+    observer_watch_at = float(reliability_def.get("watch_at", 0.25))
     if m4_status in ("stale", "missing"):
         # Review-caught gap, 2026-07-27: a stale/missing M4 was silently read
         # as "quiet" (0.0 default) or as whatever value was last cached --
@@ -749,9 +752,9 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
         observer_p = float(m4_field_vector.get("reliability_pressure") or 0.0)
         observer_part = (
             # Labels name what is actually read. M4 reliability_pressure is
-            # diffused from node:athena's observer_failure_pressure, not the
-            # M3 observer_failure_pressure channel shown in Lattice Values.
-            f"reliability_pressure={observer_p:.2f} [M4, vs observer_failure_pressure watch_at] "
+            # diffused from node:substrate.rpc_delivery rpc_timeout_pressure
+            # (node:athena's observer_failure_pressure edge retired 2026-10-07).
+            f"reliability_pressure={observer_p:.2f} [M4, vs transport_reliability_pressure watch_at] "
         )
         observer_active = observer_p >= observer_watch_at
         if bus_src is None or bus_src[0] != "m4":

@@ -460,6 +460,26 @@ Keys: `RPC_HEALTH_PUBLISH_ENABLED` (true), `RPC_HEALTH_PUBLISH_INTERVAL_SEC` (30
 `orion-signal-gateway` and `orion-equilibrium-service` on PR #2312's build before this
 service ships `channel_latency` (the schema is `extra="forbid"`).
 
+## Situation graph: `situation.update` (2026-10-07, shadow)
+
+Orion's running situation, per the spec `docs/superpowers/specs/2026-10-07-situation-graph-design.md` (step 2). One self-driven LangGraph thread per UTC day, `situation:juniper:<date>`, written by `app/situation_driver.py`. It is never submitted, never admitted, and needs no GPU lease.
+
+- **Inputs:**
+  - `orion:chat:history:turn`: a finished turn. Its prompt cues recall.
+  - `orion:durable:run:state` rows for a completed `memory.episode_distill`: new facts landed.
+  - A clock tick every `SITUATION_TICK_SEC`.
+
+  Events that arrive during a step are coalesced into the next one.
+- **Graph** (`app/situation_graph.py`): `ingest -> reduce -> expire -> cue -> prime_recall -> project -> done`. Facts are re-derived from `episode_memory` on every step (`app/situation_store.py`), so a step is idempotent. Checkpoints are written once per step (`durability="exit"`), not per node.
+  - **Current state** (`whereabouts`, `doing`): only memories whose end date Juniper stated.
+  - **`recent`:** `happened` memories told within `SITUATION_DEFAULT_TTL_HOURS`.
+  - **`waiting_on`:** open follow-ups.
+  - **Priming:** memories that share a cue referent, ranked by strength decayed over their half-life.
+- **Output:** on a changed revision, Redis `orion:situation:latest` and bus `orion:situation:state` (`SituationStateV1`). A step that changed the situation, or failed to prime, also writes one `DurableRunStateV1` row (workflow `situation.update`). Quiet steps write nothing. Nothing reads the state until step 3.
+- **Retention:** a new day's thread is seeded from the latest earlier day within `SITUATION_RETENTION_DAYS`. Older threads are removed with `adelete_thread`, so the resume sweep (which walks every checkpoint) stays bounded. The sweep skips these threads (`SELF_DRIVEN_WORKFLOWS` in `app/runner.py`).
+- **Health:** `/health` -> `situation: {steps, revision, queued, last_error}`.
+- **Kill switch:** `SITUATION_GRAPH_ENABLED=false`.
+
 ## Deploy order
 
 Stage 4.5 is a cutover: follow `docs/runbooks/2026-09-25-gpu-pool-stage4-cutover.md` exactly
@@ -481,6 +501,10 @@ apply `manual_migration_orion_day_letter_v1.sql`, then deploy orion-sql-writer a
 orion-actions (they parse `DurableRunStateV1` / `JournalEntryWriteV1`), orion-cortex-orch +
 orion-cortex-exec (the two verbs and their budgets), this service, and only then the Hub build
 that submits the workflow.
+
+`situation.update` (2026-10-07, additive `DurableWorkflowV1` value): deploy orion-sql-writer
+first (it validates `DurableRunStateV1` rows; an old one drops them), then this service. Hub and
+orion-actions skip rows they cannot parse and filter by workflow, so their order does not matter.
 
 ## Checks
 

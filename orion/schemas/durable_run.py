@@ -75,6 +75,10 @@ DurableWorkflowV1 = Literal[
     # orion-llm-gateway + orion-gpu-pool (know the memory_distill route) BEFORE orion-durable-runs,
     # which both produces these runs (it subscribes orion:memory:episode:closed) and runs them.
     "memory.episode_distill",
+    # Situation graph step 2 (2026-10-07, shadow): self-driven by its own driver in
+    # orion-durable-runs, never submitted. ADDITIVE on Literal/forbid: deploy orion-sql-writer
+    # (validates DurableRunStateV1 rows) BEFORE orion-durable-runs.
+    "situation.update",
 ]
 
 # The runner's node names, in order. `attention_reason` on the surface lane

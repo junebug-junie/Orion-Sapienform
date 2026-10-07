@@ -72,6 +72,7 @@ from orion.schemas.attention_schema import (
     bind_correlation,
 )
 from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, RecallDirective
+from orion.schemas.situation_state import SITUATION_WORKFLOW
 from orion.schemas.durable_run import (
     CURIOSITY_NODES,
     CURIOSITY_TURN_REPLY_PREFIX,
@@ -123,6 +124,11 @@ def incident_report_to_detail(report: IncidentReport | None) -> dict[str, Any] |
     if report is None:
         return None
     return {**asdict(report), "evidence": list(report.evidence)}
+
+
+# Workflows whose threads have their own single writer and finish every step; the resume sweep
+# skips them without the unknown-workflow warning.
+SELF_DRIVEN_WORKFLOWS = frozenset({SITUATION_WORKFLOW})
 
 
 def _corr_uuid(raw: str) -> UUID:
@@ -971,6 +977,10 @@ class DurableRunner:
                 newest[thread_id] = (None, "")
                 continue
             workflow_raw = values.get("workflow")
+            if workflow_raw in SELF_DRIVEN_WORKFLOWS:
+                # Driven by their own writer (app/situation_driver.py), never resumed by this sweep.
+                newest[thread_id] = (None, "")
+                continue
             workflow = str(workflow_raw) if isinstance(workflow_raw, str) and workflow_raw else DEFAULT_WORKFLOW
             newest[thread_id] = (ts, workflow)
         out: list[tuple[str, str, datetime | None, str]] = []

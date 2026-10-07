@@ -363,9 +363,24 @@ def test_render_includes_ladder_rungs_when_policy_loads(monkeypatch, tmp_path):
 
     out = resolver.render_bus_synaptic_digest_line([_fragment()], dsn="x", render_gate_threshold=0.15)
 
-    assert "0.25 watch threshold" in out
-    assert "0.50 summarize" in out
+    # The policy ladder is on the capability:transport.pressure scale
+    # (0.85 x prediction_error); the sentence states a raw fraction, so the
+    # rungs are converted onto that scale: 0.25 / 0.85 = 0.29, 0.50 / 0.85 = 0.59.
+    assert "31% of live bus channels" in out
+    assert "0.29 watch threshold" in out
+    assert "0.59 summarize" in out
+    assert "0.25 watch threshold" not in out
     resolver._load_bus_synaptic_lattice_rungs.cache_clear()
+
+
+def test_render_ladder_uses_the_policy_row_and_shared_scale():
+    """The row id and the 0.85 scale come from the shared module, not from
+    a second hand-typed copy in this service."""
+    import app.recall_signal_resolver as resolver
+    from orion.field.transport_thresholds import DERIVED_CHANNELS
+
+    assert resolver.LATTICE_ROW_ID == "bus_synaptic_pressure"
+    assert resolver.LATTICE_ROW_ID in DERIVED_CHANNELS
 
 
 def test_render_degrades_gracefully_without_lattice_policy(monkeypatch):

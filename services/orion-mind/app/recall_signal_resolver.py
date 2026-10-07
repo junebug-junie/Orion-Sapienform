@@ -41,7 +41,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from orion.db_readonly import open_readonly_connection
-from orion.field.transport_thresholds import RUNGS, fetch_effective_thresholds
+from orion.field.transport_thresholds import DERIVED_CHANNELS, RUNGS, fetch_effective_thresholds
 from orion.field.channel_glossary import SUBNORMAL_CUTOFF, classify_channel_series, resolve_channel_entry
 
 logger = logging.getLogger("orion.mind.recall_signal_resolver")
@@ -59,9 +59,15 @@ BUS_SYNAPTIC_CHANNEL = "prediction_error"
 # orion/metrics/gate.py's orphan scan (which only trusts subscript/get/
 # dict-key/attribute/collection access as real consumption, not a bare
 # `X = "literal"`) actually sees this as a reader.
+#
+# "bus_synaptic_pressure" is the transport lattice policy's row id, not a
+# metric: its `source:` is capability:transport.pressure, which the topology
+# fills as 0.85 x this node's prediction_error (config/substrate-lattice/
+# transport_lattice_policy.v1.yaml, tests/test_transport_lattice_policy_sources.py).
 METRIC_URN_LOG_TAGS: Dict[str, str] = {
     "node:substrate.bus_synaptic.prediction_error": "bus_synaptic_pressure",
 }
+LATTICE_ROW_ID = METRIC_URN_LOG_TAGS["node:substrate.bus_synaptic.prediction_error"]
 
 # Only this signal_kind is handled by the table-driven path this pass. A
 # fragment with any other signal_kind (or none) passes through
@@ -125,7 +131,7 @@ def _load_bus_synaptic_lattice_rungs() -> Optional[Dict[str, Optional[float]]]:
             continue
         try:
             raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            rung = ((raw.get("channels") or {}).get("bus_synaptic_pressure")) or {}
+            rung = ((raw.get("channels") or {}).get(LATTICE_ROW_ID)) or {}
             if "watch_at" not in rung or "summarize_at" not in rung:
                 return None
             return {
@@ -152,7 +158,7 @@ def _effective_bus_synaptic_rungs() -> Tuple[Optional[Dict[str, Optional[float]]
         return None, "static"
     try:
         eff = fetch_effective_thresholds(
-            "bus_synaptic_pressure", static, os.getenv("ORION_BUS_URL", "").strip()
+            LATTICE_ROW_ID, static, os.getenv("ORION_BUS_URL", "").strip()
         )
         rungs = {r: eff[r]["value"] for r in RUNGS}
         source = "derived" if any(eff[r]["source"] == "derived" for r in RUNGS) else "static"
@@ -372,7 +378,14 @@ def render_bus_synaptic_digest_line(
         return None
     rungs, rung_source = _effective_bus_synaptic_rungs()
     ladder_phrase = ""
+    # The ladder lives on the capability:transport.pressure scale (0.85 x
+    # prediction_error); `latest` is raw prediction_error. Until 2026-10-07 the
+    # sentence put the two side by side unconverted, so the stated threshold
+    # sat ~15% below the point on Orion's own scale where it actually trips.
+    # Converted to the fraction scale so the numbers in one sentence compare.
+    scale = DERIVED_CHANNELS.get(LATTICE_ROW_ID) or 1.0
     if rungs:
+        rungs = {k: (None if v is None else float(v) / scale) for k, v in rungs.items()}
         learned = " (learned from recent history)" if rung_source == "derived" else ""
         ladder_phrase = (
             f", against a {rungs['watch_at']:.2f} watch threshold{learned} "

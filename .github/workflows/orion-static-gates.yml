@@ -105,6 +105,12 @@ jobs:
       - name: Field topology has no dead cap-cap edges
         run: python -m pytest tests/test_field_topology_edges.py -q -p no:cacheprovider
 
+      # Transport lattice policy rows are labels; each `source:` must name a
+      # reading that exists (a topology-written capability channel or a live
+      # TransportBusStateV1 field). The hub used to keep its own name mapping.
+      - name: Transport lattice policy sources resolve
+        run: python -m pytest tests/test_transport_lattice_policy_sources.py -q -p no:cacheprovider
+
       # A service importing orion.substrate must declare requests (package __init__
       # imports graphdb_store -> requests). 2026-09-25: feedback/policy runtimes
       # crash-looped on exactly this after #2343.

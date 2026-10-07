@@ -206,7 +206,6 @@ def _prediction_error_nodes_enabled() -> bool:
 # and XLEN is retained length, not backlog.
 _TRANSPORT_INCIDENT_FIELDS = (
     "catalog_drift_pressure",
-    "contract_pressure",
     "observer_failure_pressure",
     "reliability_pressure",
 )

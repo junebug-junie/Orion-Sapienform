@@ -1,0 +1,138 @@
+# fix(llamacpp-host): Bonsai chat template without the system-only raise
+
+## Summary
+
+- Bonsai (the agent-gpu2 seat's first model since PR #2477) refused every agent step Orion sent it. Its built-in prompt template throws `No user query found in messages.` whenever a request has no ordinary user turn, and cortex-exec sends each verb step as a single system message. llama-server turned that into HTTP 500 in about 0.2 s, every time.
+- Fix: ship Bonsai's own template with only that one check removed, and launch the seat with `--jinja --chat-template-file` pointing at it.
+- New profile field `llamacpp.chat_template_file` (relative to `llm_profiles.yaml`, i.e. `/app/config` in the image). It fails closed: a missing file or a binary without the flag refuses to boot instead of quietly running the broken embedded template.
+- The prism image build now refuses a fork without `--chat-template-file`, and the build script checks the template is actually in the image.
+- No rollback of the profile order. The Q4 profile is untouched and keeps its embedded template.
+
+## Outcome moved
+
+Failure mode: 44/44 cortex-exec agent calls to Bonsai returned HTTP 500 from 10-02 to 10-06 (gateway since 10-06: 10/10 to port 8016 failed, 61/61 to the Q4 on 8015 succeeded). That is why all 5 all-Bonsai curiosity runs ended `no_final_frame` and the self_sense_eval answers were empty. Offline, the exact failing request now renders, and it renders byte-identical to the prompt the Q4 27B gets for the same request. The live fix is UNVERIFIED until the image is rebuilt and Bonsai next loads (post-deploy check below).
+
+## Root cause
+
+- **Which messages:** every failing request carried one message (`msgs=1` on all 10 Bonsai `/v1/chat/completions` calls in `gw_since_1006.log`). That shape comes from `_build_hop_messages` in `services/orion-cortex-exec/app/executor.py`: when a verb step has a rendered prompt and no context messages, it sends `[{"role": "system", "content": <prompt>}]`. Durable-runs (`runner.py:725`) and curiosity (`supervisor.py:275`) both call through cortex-exec, so they get the same shape.
+- **Which check:** Bonsai's embedded template (`tokenizer.chat_template` in `Ternary-Bonsai-2-27B-PQ2_0.gguf`, read straight from the GGUF header on circe) scans backwards for the last real user turn and then does:
+
+  ```jinja
+  {%- if ns.multi_step_tool %}
+      {{- raise_exception('No user query found in messages.') }}
+  {%- endif %}
+  ```
+
+  With no user turn at all, `multi_step_tool` stays true and the template throws. This matches line 100, column 24 in circe's `docker logs orion-circe-atlas-llamacpp-agent-burst`.
+- **Why Q4 works:** Q4's template (`Qwen3.8-27B-UD-Q4_K_XL.gguf`, Unsloth's build of the same Qwen template family; it equals the live `/props` `chat_template` on port 8015) has the same backward scan but no raise. It also merges multiple system messages, accepts a `developer` role, validates tool-call arguments, and maps `reasoning_effort: high` to `xhigh`.
+- **Offline reproduction** (Python jinja2 3.1.2, both embedded templates): system-only means Bonsai raises `No user query found in messages.` while Q4 renders. System + user renders on both.
+
+## Why Bonsai's template minus one check, not Q4's template
+
+Bonsai's tool-call XML format, thinking block and reasoning-effort handling stay exactly as PrismML shipped them. The only difference is the removed raise, and a test pins that. Q4's Unsloth template adds new raises of its own (for example, tool-call arguments passed as a JSON string) and new semantics (system merging, `high` mapped to `xhigh`). Bonsai on the prism build has never been tested with those. On every request shape the agent lane sends, the patched template renders byte-identical to Q4's, so Bonsai now sees exactly the prompt Q4 already serves well.
+
+The text llama.cpp uses to auto-detect the chat format (`<tool_call>`, `<function=`, `<think>`) is unchanged, so the server should pick the same tool-call parser as before.
+
+## Current architecture
+
+- `services/orion-llamacpp-host/app/main.py` builds the `llama-server` argv from a profile in `config/llm_profiles.yaml`. Before this patch it could not override the GGUF's embedded template.
+- `Dockerfile.prism` (image `orion-llamacpp-host-prism:0.1.0`, used only by `atlas-agent-burst`, port 8016) bakes `app/`, `config/` and `orion/` into the image. Its only mount is `/models`.
+- The gateway forwards OpenAI-shaped messages unchanged (`services/orion-llm-gateway/app/llm_backend.py`).
+
+## Architecture touched
+
+- orion-llamacpp-host wrapper: a new optional profile field and the argv flag that goes with it.
+- `config/`: a new template file baked into the image. The Bonsai profile references it.
+- No bus, schema, gateway or cortex-exec change. `launch_digest` is computed over `config/gpu_pool.yaml` only and does not move, so athena and circe do not need to deploy in lockstep.
+
+## Files changed
+
+- `config/chat_templates/ternary-bonsai-2-27b.jinja`: Bonsai's embedded template minus the raise, plus a provenance comment at the end.
+- `config/llm_profiles.yaml`: the Bonsai profile sets `chat_template_file`.
+- `services/orion-llamacpp-host/app/profiles.py`: `LlamaCppConfig.chat_template_file`.
+- `services/orion-llamacpp-host/app/main.py`: `_resolve_chat_template_file` plus the fail-closed `--jinja --chat-template-file` emission.
+- `services/orion-llamacpp-host/Dockerfile.prism`: the build-time flag gate now requires `--chat-template-file` (the pinned fork 88c4bc6 has it in `common/arg.cpp`).
+- `services/orion-llamacpp-host/scripts/build-prism-volta.sh`: a no-GPU check that the template is baked in.
+- `services/orion-llamacpp-host/README.md`: documents the field.
+- `services/orion-llamacpp-host/tests/test_bonsai_chat_template.py`, plus `tests/fixtures/chat_templates/*.embedded.jinja` (both embedded templates, byte-exact from the GGUF headers).
+- `services/orion-llamacpp-host/tests/test_prism_seat.py`: argv and fail-closed tests.
+- `.github/workflows/orion-gpu-pool-tests.yml`: runs the new test and triggers on `config/chat_templates/**`.
+
+## Schema / bus / API changes
+
+- Added: optional `llamacpp.chat_template_file` profile key (the llamacpp-host wrapper is its only consumer).
+- Removed / Renamed: none.
+- Behavior changed: the Bonsai seat now renders prompts with the shipped template instead of the GGUF's embedded one.
+- Compatibility notes: `LlamaCppConfig` ignores unknown keys, so an image built before this change would silently ignore the new field and keep returning 500s. The prism image must be rebuilt.
+
+## Env/config changes
+
+- Added / Removed / Renamed keys: none.
+- `.env_example` updated: no.
+- local `.env` synced: not needed.
+- skipped keys requiring operator action: none.
+
+## Tests run
+
+```text
+services/orion-llamacpp-host: pytest tests/test_worker_announce.py tests/test_prism_seat.py tests/test_bonsai_chat_template.py tests/test_probe_slot_bleed.py  -> 72 passed
+services/orion-llamacpp-host: pytest tests  -> 110 passed, 1 failed (test_profile_forwarding::test_qwen3_8b_atlas_metacog_profile_q5km_single_lane_16k:
+  expects --parallel 1, the metacog profile has 4. Pre-existing on main, unrelated, not in CI.)
+orion/gpu_pool/tests -> 382 passed
+services/orion-llamacpp-bonsai-host/tests -> 7 passed
+python scripts/check_gpu_pool_config.py -> ok (4 cards, 8 roles, 8 classes, 2 launch blocks)
+git diff --check -> clean
+```
+
+## Evals run
+
+```text
+No eval harness for orion-llamacpp-host. test_bonsai_chat_template.py is the offline behavioral check:
+the embedded Bonsai template raises on system-only and on system+assistant+tool; the shipped template
+renders system-only, system+assistant+tool, user chat and a tool-call round trip, with enable_thinking
+false/true/unset and tools on/off, and is byte-identical to Q4's render on each of these shapes.
+The real llama.cpp jinja engine render is the post-deploy check below.
+```
+
+## Docker/build/smoke checks
+
+```text
+Not run. Per instructions, no containers were started on circe and the image was not rebuilt.
+The prism image must be rebuilt on circe (below).
+```
+
+## Review findings fixed
+
+(filled in after review)
+
+## Restart required
+
+One line each. Run them on circe, from its primary checkout once this is merged to main:
+
+```bash
+ssh circe@circe 'cd /mnt/scripts/Orion-Sapienform && git pull --ff-only && services/orion-llamacpp-host/scripts/build-prism-volta.sh'
+```
+
+No container restart is needed. The seat is currently exited, and the lane controller starts it with `up --no-build` on Bonsai's next load, which picks up the rebuilt image. The build script's own smoke runs `--version`/`--help` with `--gpus device=2`. That takes a few seconds and holds no lease, so run it while gpu2 is idle. Nothing on athena needs restarting.
+
+Post-deploy check, once Bonsai is next loaded on 8016:
+
+```bash
+curl -s http://100.112.254.99:8016/props | python3 -c "import json,sys;t=json.load(sys.stdin)['chat_template'];print('raise present:', 'No user query found' in t)"
+```
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://100.112.254.99:8016/v1/chat/completions -H 'Content-Type: application/json' -d '{"messages":[{"role":"system","content":"Reply with the single word: pong"}],"max_tokens":32,"chat_template_kwargs":{"enable_thinking":false}}'
+```
+
+## Risks / concerns
+
+- Severity: medium. Concern: the render was proven with Python jinja2, not llama.cpp's own jinja engine. Mitigation: the server's error text and line match the jinja2 reproduction exactly, and the only change is deleting a raise block. The post-deploy `/props` and system-only probe above close this.
+- Severity: low. Concern: Bonsai still rejects `reasoning_effort: high` and `none` (its own template, already noted in `llm_profiles.yaml`). No caller sends them today. Left as Bonsai's behavior, not changed here.
+- Severity: low. Concern: if someone builds the prism image from an older commit, the field is silently ignored (`extra="ignore"`). Mitigation: the build script now checks the template file is in the image.
+
+## PR link
+
+(filled in after push)
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)

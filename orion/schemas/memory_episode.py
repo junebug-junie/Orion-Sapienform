@@ -53,7 +53,7 @@ class MemoryEpisodeClosedV1(BaseModel):
 # --- Stage 1 PR 2: the shadow distiller (memory.episode_distill) ---------------------------
 
 MEMORY_EPISODE_DISTILL_WORKFLOW = "memory.episode_distill"
-MEMORY_EPISODE_DISTILL_PROMPT_VERSION = "memory_episode_distill.v4"  # v4: alias_kind on every name (2026-10-06)
+MEMORY_EPISODE_DISTILL_PROMPT_VERSION = "memory_episode_distill.v5"  # v5: until_quote + expires_at on any purpose; names only from this episode (2026-10-07)
 
 Purpose = Literal["happened", "about_juniper", "orion_view", "follow_up"]
 Voice = Literal["juniper_said", "worked_out_together", "orion_thought", "orion_read", "orion_self_knowledge"]
@@ -172,6 +172,9 @@ class DistilledMemoryV1(BaseModel):
     evidence: List[DistillEvidenceV1] = Field(default_factory=list)
     due_after: Optional[str] = None
     expires_at: Optional[str] = None
+    # Juniper's exact words naming how long the fact holds ("Will be here till Wednesday"). A
+    # non-follow_up memory keeps expires_at only when this is found in one of her prompts.
+    until_quote: Optional[str] = None
 
 
 class DistilledQuestionV1(BaseModel):

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 from zoneinfo import ZoneInfo
 
-from orion.memory.episode.validate import EpisodeTurn
+from orion.memory.episode.validate import DEFAULT_TZ, EpisodeTurn
 from orion.schemas.memory_episode import EpisodeDistillationV1
 
 PROMPT_PATH = Path(__file__).resolve().parents[2] / "cognition" / "prompts" / "memory_episode_distill.j2"
@@ -35,7 +35,6 @@ def template_prompt_version(path: Path | None = None) -> str:
     return m.group(1) if m else UNMARKED_TEMPLATE_VERSION
 
 
-DEFAULT_TZ = "America/Denver"
 
 # A workflow-command turn is identified by the Hub workflow runtime's own reply header
 # ("Workflow: Journal Pass", "Workflow 'github_compactor_pass' ..."): a structural marker the

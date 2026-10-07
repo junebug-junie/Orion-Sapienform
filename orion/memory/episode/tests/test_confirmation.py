@@ -167,3 +167,11 @@ def test_daily_report_names_every_state_the_loop_writes():
     assert named == {"pending_confirmation", "unconfirmed", "confirmed", "rejected", "corrected"}
     assert named <= set(CONFIRMATION_FLAG)
     assert "auto" not in CONFIRMATION_FLAG
+
+
+def test_ungrounded_name_card_says_why_it_is_asking():
+    """Validator label from the situation-graph writer fixes: the card names the reason instead of
+    falling through to the generic "couldn't tell how personal" line."""
+    q = _q(stakes_reason="ungrounded_name", voice="juniper_said")
+    assert c.WHY_BY_VALIDATOR_LABEL["ungrounded_name"] in q
+    assert c.WHY_UNJUDGED not in q

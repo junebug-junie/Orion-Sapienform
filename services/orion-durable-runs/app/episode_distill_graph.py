@@ -188,7 +188,8 @@ def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: Pers
         turns = turns_from_state(state["turns"])
         prompt_version = rendered_prompt_version(dict(state))
         result = validate_distillation(parse_distillation(state["answer_text"] or ""), turns,
-                                       episode_id=brief.episode_id, prompt_version=prompt_version)
+                                       episode_id=brief.episode_id, prompt_version=prompt_version,
+                                       known_referents=state.get("candidate_referents") or [])
         counts = await persist(
             episode_id=brief.episode_id, run_id=state["run_id"], result=result, model_route=brief.llm_route,
             model=state.get("model"), prompt_version=prompt_version, usage=state.get("usage") or {},

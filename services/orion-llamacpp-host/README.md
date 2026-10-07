@@ -331,6 +331,13 @@ llama.cpp fork (b10750, sm_70) at `/app/prism/`. Every other worker stays on `or
 - **Rebuild it on every wrapper or profile change for this seat.** The image bakes `app/`, `config/` and
   `orion/` like the stock one, but a stock `build` without `--profile agent-burst` skips it. Re-run
   `build-prism-volta.sh` (the fork compile is layer-cached; only the copy layers rebuild).
+- **Chat template override** (`llamacpp.chat_template_file` -> `--jinja --chat-template-file`). Bonsai's
+  embedded GGUF template raises `No user query found in messages.` (HTTP 500) on any request with no plain
+  user turn, which is every cortex-exec verb step sent as a lone system message. The Bonsai profile points
+  at `config/chat_templates/ternary-bonsai-2-27b.jinja`: the embedded template with only that check removed
+  (renders byte-identical to the Q4 template on the agent lane's request shapes;
+  `tests/test_bonsai_chat_template.py`). Relative paths resolve next to `llm_profiles.yaml` (`/app/config`,
+  baked into the image). Fails closed: a missing file or a binary without the flag refuses to boot.
 - **Prompt-cache knobs** (`cache_ram_mib`, `cache_idle_slots` -> `--cache-ram`, `--no-cache-idle-slots`):
   supported, unset. They fail closed if a profile sets one and the binary lacks the flag. After deploy,
   `scripts/probe_slot_bleed.py --url http://100.112.254.99:8016` runs the llama.cpp #27148 bleed canary

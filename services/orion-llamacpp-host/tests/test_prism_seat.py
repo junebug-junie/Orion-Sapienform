@@ -13,7 +13,7 @@ HOST = Path(__file__).resolve().parents[1]
 REPO = HOST.parents[1]
 BONSAI = "ternary-bonsai2-27b-pq2-v100-32gb-circe-agent"
 Q4 = "qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex"
-FLAGS = {"--jinja", "--reasoning", "--reasoning-format", "--chat-template-kwargs", "--flash-attn",
+FLAGS = {"--jinja", "--chat-template-file", "--reasoning", "--reasoning-format", "--chat-template-kwargs", "--flash-attn",
          "--no-context-shift", "--n-predict", "--temp", "--top-k", "--top-p", "--min-p",
          "--presence-penalty", "--cache-ram", "--cache-idle-slots", "--no-cache-idle-slots"}
 
@@ -43,6 +43,8 @@ def wrapper(monkeypatch, tmp_path):
     settings = importlib.import_module("app.settings").settings
     for knob in ("llamacpp_ctx_size_override", "llamacpp_n_parallel_override", "llamacpp_model_path_override"):
         monkeypatch.setattr(settings, knob, None)
+    # The image's /app/config is the repo's config/ (Dockerfile.prism: COPY config /app/config).
+    monkeypatch.setattr(settings, "llm_profiles_config_path", REPO / "config" / "llm_profiles.yaml")
     monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/local/cuda/lib64")
     return main, stock, prism_dir
 
@@ -158,3 +160,38 @@ def test_burst_seat_builds_the_prism_image_under_its_own_tag():
         assert compose[name]["build"]["dockerfile"] == "services/orion-llamacpp-host/Dockerfile", name
     script = (HOST / "scripts" / "build-prism-volta.sh").read_text(encoding="utf-8")
     assert "Dockerfile.prism" in script and "orion-llamacpp-host-prism:0.1.0" in script
+
+
+def test_bonsai_profile_replaces_the_embedded_chat_template(wrapper):
+    """The GGUF's embedded template 500s system-only agent steps (tests/test_bonsai_chat_template.py)."""
+    main, _stock, _prism = wrapper
+    cmd, _env = main.build_llama_server_cmd_and_env(_profile(BONSAI))
+    assert "--jinja" in cmd
+    template = Path(_flag(cmd, "--chat-template-file"))
+    assert template == REPO / "config" / "chat_templates" / "ternary-bonsai-2-27b.jinja"
+    assert template.is_file()
+
+
+def test_q4_rollback_profile_keeps_its_embedded_template(wrapper):
+    main, _stock, _prism = wrapper
+    cmd, _env = main.build_llama_server_cmd_and_env(_profile(Q4))
+    assert "--chat-template-file" not in cmd
+
+
+def test_chat_template_file_fails_closed_when_missing(wrapper):
+    main, _stock, _prism = wrapper
+    with pytest.raises(RuntimeError, match="does not exist"):
+        main.build_llama_server_cmd_and_env(_profile(BONSAI, chat_template_file="chat_templates/nope.jinja"))
+
+
+def test_chat_template_file_fails_closed_on_a_binary_without_the_flag(wrapper, monkeypatch):
+    main, _stock, _prism = wrapper
+    monkeypatch.setattr(main, "_get_supported_llama_server_flags", lambda _bin: FLAGS - {"--chat-template-file"})
+    with pytest.raises(RuntimeError, match="chat-template-file"):
+        main.build_llama_server_cmd_and_env(_profile(BONSAI))
+
+
+def test_prism_build_gates_on_the_chat_template_file_flag():
+    text = (HOST / "Dockerfile.prism").read_text(encoding="utf-8")
+    gate = text[text.index("for f in --ctx-checkpoints"):text.index("done")]
+    assert "--chat-template-file" in gate

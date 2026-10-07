@@ -251,6 +251,19 @@ def _resolve_runtime(profile: LLMProfile) -> Tuple[str, LlamaCppConfig, Dict[str
     return model_path, cfg, env
 
 
+def _resolve_chat_template_file(profile: LLMProfile, value: str) -> str:
+    """Absolute path of ``llamacpp.chat_template_file``; relative paths sit next to llm_profiles.yaml."""
+    path = Path(value)
+    if not path.is_absolute():
+        path = Path(settings.llm_profiles_config_path).parent / path
+    if not path.is_file():
+        raise RuntimeError(
+            f"Profile '{profile.name}' sets chat_template_file={value!r} but {path} does not exist "
+            "(is config/ baked into this image?)"
+        )
+    return str(path)
+
+
 STOCK_SERVER_BIN = "/app/llama-server"
 LEGACY_SERVER_BIN = "/app/llama.cpp/build/bin/llama-server"
 # PrismML's llama.cpp fork (Dockerfile.prism), next to the stock binary, with its own .so files.
@@ -419,6 +432,18 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         if policy.require_jinja:
             ensure_jinja()
         append_flag("--reasoning-budget", str(int(policy.effective_reasoning_budget)))
+
+    # Replaces the GGUF's embedded chat template (Bonsai's raises on system-only requests). Fails
+    # closed: booting on the embedded template would 500 every agent step that has no user turn.
+    if cfg.chat_template_file is not None:
+        template_path = _resolve_chat_template_file(profile, cfg.chat_template_file)
+        ensure_jinja()
+        append_flag("--chat-template-file", template_path)
+        if "--chat-template-file" not in cmd or "--jinja" not in cmd:
+            raise RuntimeError(
+                f"Profile '{profile.name}' sets chat_template_file but this llama-server lacks "
+                "--chat-template-file/--jinja"
+            )
 
     if reasoning_format_emitted and "--jinja" not in cmd:
         logger.warning("--reasoning-format requested but --jinja could not be emitted")

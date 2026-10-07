@@ -131,8 +131,12 @@ def catalog_grammar_producers() -> frozenset[str]:
     """orion:grammar:event's producer_services from orion/bus/channels.yaml.
 
     Used to NAME the producers heartbeat does not route (counted per producer,
-    see service.py), not to route them -- see ORGAN_SITE_MAP for why site
-    assignment stays hand-checked. Empty set if the catalog can't be read;
+    see service.py), not to route them. Site assignment stays the hand-checked
+    ORGAN_SITE_MAP: the 2026-10-07 replay (evals/replay_organ_map_options.py,
+    README "Organ map") showed folding the extra producers onto the fixed 10
+    sites shifts the H1 verdict distribution (redundant 0.3% -> 7.9% in one
+    window, beyond the seed-noise spread), i.e. it would silently change what
+    H1 means. Empty set if the catalog can't be read;
     callers must treat that as "unknown", not "no producers".
     """
     from orion.core.bus.catalog_loader import load_channel_catalog

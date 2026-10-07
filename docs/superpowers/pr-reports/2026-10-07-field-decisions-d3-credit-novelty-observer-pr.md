@@ -259,6 +259,6 @@ select count(*) from substrate_attention_frames where generated_at > '<deploy_ts
 
 ## PR link
 
-(filled on open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/2541
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

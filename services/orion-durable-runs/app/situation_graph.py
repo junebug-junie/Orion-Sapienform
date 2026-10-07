@@ -69,6 +69,7 @@ class SituationGraphState(TypedDict, total=False):
     cues: list
     primed: list
     primed_at: Optional[str]
+    primed_cues: list
     primed_revision: int
     prime_ms: Optional[float]
     prime_error: Optional[str]
@@ -158,6 +159,9 @@ def facts_from_rows(rows: list[dict], now: datetime, default_ttl: timedelta) -> 
     waiting = sorted((f for f in current if f.slot == "waiting_on"), key=lambda f: f.valid_until)
     recent = [f for f in newest_first if f.slot == "recent"]
     return {
+        # Every current memory id, before the per-slot display caps: lapsing is judged against
+        # this, so a fact pushed out of a full slot is not mistaken for one that stopped being true.
+        "current_ids": sorted(f.memory_id for f in current),
         "whereabouts": whereabouts.model_dump(mode="json") if whereabouts else None,
         "doing": [f.model_dump(mode="json") for f in doing[:MAX_DOING]],
         "waiting_on": [f.model_dump(mode="json") for f in waiting[:MAX_WAITING]],
@@ -170,9 +174,10 @@ def _all_facts(juniper: dict) -> list[dict]:
     return out + [f for slot in ("doing", "waiting_on", "recent") for f in (juniper.get(slot) or [])]
 
 
-def lapsed_from(previous: dict, current: dict, prior_lapsed: list, now: datetime) -> list[dict]:
-    """Facts current last revision but not now, newest first, prepended to the prior list."""
-    still = {f["memory_id"] for f in _all_facts(current)}
+def lapsed_from(previous: dict, current_ids: list[str], prior_lapsed: list, now: datetime) -> list[dict]:
+    """Facts shown last revision that are no longer current at all, newest first, prepended to
+    the prior list. ``current_ids`` is every current fact, not just the displayed ones."""
+    still = set(current_ids)
     gone = [
         SituationLapsedV1(memory_id=f["memory_id"], slot=f["slot"], gist=f["gist"], lapsed_at=now).model_dump(mode="json")
         for f in _all_facts(previous) if f["memory_id"] not in still
@@ -228,7 +233,9 @@ def build_situation_graph(deps: SituationDeps, checkpointer: Any):
         ev = dict(state.get("event") or {})
         sit = state.get("situation") or empty_situation(state["thread_id"], deps.now())
         last = (sit.get("last_event") or {}).get("event_id")
-        return {"workflow": SITUATION_WORKFLOW, "situation": sit, "skipped": bool(ev.get("event_id")) and ev.get("event_id") == last}
+        # Step flags are per step: reset them so a skipped step never reports the last one's.
+        return {"workflow": SITUATION_WORKFLOW, "situation": sit, "changed": False, "prime_error": None,
+                "prime_ms": None, "skipped": bool(ev.get("event_id")) and ev.get("event_id") == last}
 
     def after_ingest(state: SituationGraphState) -> str:
         return "done" if state.get("skipped") else "reduce"
@@ -240,7 +247,8 @@ def build_situation_graph(deps: SituationDeps, checkpointer: Any):
 
     async def expire(state: SituationGraphState) -> dict:
         sit = state["situation"]
-        return {"lapsed": lapsed_from(sit.get("juniper") or {}, state["facts"], list(sit.get("lapsed") or []), deps.now())}
+        return {"lapsed": lapsed_from(sit.get("juniper") or {}, state["facts"].get("current_ids") or [],
+                                      list(sit.get("lapsed") or []), deps.now())}
 
     async def cue(state: SituationGraphState) -> dict:
         text = str((state.get("event") or {}).get("text") or "")
@@ -253,18 +261,20 @@ def build_situation_graph(deps: SituationDeps, checkpointer: Any):
         primed_at = _dt(rec.get("primed_at"))
         fresh = primed_at is not None and deps.now() - primed_at < deps.reprime_after
         keep = {"primed": list(rec.get("primed") or []), "primed_at": rec.get("primed_at"),
+                "primed_cues": list(rec.get("primed_cues") or []),
                 "primed_revision": int(rec.get("primed_revision") or 0), "prime_ms": None, "prime_error": None}
-        if cues == list(rec.get("cues") or []) and fresh:
+        if cues == keep["primed_cues"] and fresh:
             return keep
         if not cues:
-            return {**keep, "primed": [], "primed_at": deps.now().isoformat(), "primed_revision": int(sit.get("revision") or 0) + 1}
+            return {**keep, "primed": [], "primed_cues": [], "primed_at": deps.now().isoformat(),
+                    "primed_revision": int(sit.get("revision") or 0) + 1}
         exclude = [f["memory_id"] for f in _all_facts(state["facts"])]
         t0 = time.monotonic()
         try:
             rows = await asyncio.wait_for(deps.prime(cues, exclude, MAX_PRIMED * 4), timeout=deps.prime_timeout_sec)
         except Exception as exc:  # noqa: BLE001 - priming is best-effort; the facts still project
             return {**keep, "prime_ms": round((time.monotonic() - t0) * 1000, 1), "prime_error": type(exc).__name__}
-        return {"primed": rank_primed(rows, cues, deps.now()), "primed_at": deps.now().isoformat(),
+        return {"primed": rank_primed(rows, cues, deps.now()), "primed_at": deps.now().isoformat(), "primed_cues": list(cues),
                 "primed_revision": int(sit.get("revision") or 0) + 1,
                 "prime_ms": round((time.monotonic() - t0) * 1000, 1), "prime_error": None}
 
@@ -272,7 +282,8 @@ def build_situation_graph(deps: SituationDeps, checkpointer: Any):
         sit = state["situation"]
         now = deps.now()
         before = content_hash(sit.get("juniper") or {}, (sit.get("recall") or {}).get("primed") or [], sit.get("lapsed") or [])
-        after = content_hash(state["facts"], state["primed"], state["lapsed"])
+        shown = {k: v for k, v in state["facts"].items() if k != "current_ids"}
+        after = content_hash(shown, state["primed"], state["lapsed"])
         changed = before != after or not sit.get("revision")
         revision = int(sit.get("revision") or 0) + (1 if changed else 0)
         ev = state.get("event") or {}
@@ -280,8 +291,9 @@ def build_situation_graph(deps: SituationDeps, checkpointer: Any):
             thread_id=state["thread_id"], revision=revision, updated_at=now,
             last_event=SituationEventRefV1(event_id=str(ev.get("event_id") or ""), kind=ev.get("kind") or "tick",
                                            correlation_id=ev.get("correlation_id")),
-            juniper=SituationJuniperV1.model_validate(state["facts"]),
-            recall=SituationRecallV1(cues=state["cues"], cues_revision=revision, primed=state["primed"],
+            juniper=SituationJuniperV1.model_validate(shown),
+            recall=SituationRecallV1(cues=state["cues"], primed_cues=list(state.get("primed_cues") or []),
+                                     primed=state["primed"],
                                      primed_at=_dt(state.get("primed_at")),
                                      primed_revision=min(int(state.get("primed_revision") or 0), revision)),
             lapsed=state["lapsed"],

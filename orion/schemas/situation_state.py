@@ -96,7 +96,9 @@ class SituationRecallV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     cues: List[str] = Field(default_factory=list)
-    cues_revision: int = 0
+    # The cues the primed set was actually built from. Differs from ``cues`` after a failed or
+    # timed-out priming, so the next step re-primes instead of trusting a stale set.
+    primed_cues: List[str] = Field(default_factory=list)
     primed: List[SituationPrimedV1] = Field(default_factory=list, max_length=6)
     primed_at: Optional[datetime] = None
     # < revision means priming is behind (or failed); the turn would still use the last set.

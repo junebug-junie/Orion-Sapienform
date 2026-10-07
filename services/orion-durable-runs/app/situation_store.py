@@ -22,6 +22,7 @@ WHERE m.status = 'active'
        OR (m.expires_at IS NULL AND m.purpose = 'happened'
            AND COALESCE(m.occurred_at, m.created_at) > %(since)s))
 GROUP BY m.memory_id
+ORDER BY COALESCE(m.occurred_at, m.created_at) DESC
 LIMIT 200
 """
 

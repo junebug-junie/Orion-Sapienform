@@ -103,9 +103,20 @@ def test_newest_place_wins_whereabouts_and_older_place_stays_doing():
 def test_lapsed_records_what_stopped_being_current():
     before = facts_from_rows([trip()], T0 + timedelta(hours=1), TTL)
     after = facts_from_rows([trip()], T0 + timedelta(hours=50), TTL)
-    lapsed = lapsed_from(before, after, [], T0 + timedelta(hours=50))
+    lapsed = lapsed_from(before, after["current_ids"], [], T0 + timedelta(hours=50))
     assert [x["memory_id"] for x in lapsed] == ["m-trip"]
-    assert lapsed_from(after, after, lapsed, T0 + timedelta(hours=51)) == lapsed  # kept, not doubled
+    assert lapsed_from(after, after["current_ids"], lapsed, T0 + timedelta(hours=51)) == lapsed  # kept, not doubled
+
+
+def test_fact_pushed_out_of_a_full_slot_is_not_lapsed():
+    """Review finding: slots are capped at 3 for display; a 4th newer fact must not make the
+    oldest look like it stopped being true."""
+    rows = [trip(memory_id=f"m-{i}", occurred_at=T0 + timedelta(minutes=i), referents=[],
+                 statement=f"Juniper mentioned event number {i} happening this week.") for i in range(4)]
+    before = facts_from_rows(rows[:3], T0 + timedelta(hours=1), TTL)
+    after = facts_from_rows(rows, T0 + timedelta(hours=1), TTL)
+    assert [f["memory_id"] for f in after["recent"]] == ["m-3", "m-2", "m-1"]
+    assert lapsed_from(before, after["current_ids"], [], T0 + timedelta(hours=1)) == []
 
 
 def test_cues_come_from_facts_and_names_in_the_turn_never_participants():
@@ -327,5 +338,65 @@ def test_resume_sweep_skips_situation_threads_quietly(caplog, monkeypatch):
         with caplog.at_level("WARNING"):
             assert await runner.unfinished_threads() == []
         assert "durable_run_resume_unknown_workflow" not in caplog.text
+
+    asyncio.run(run())
+
+
+
+def test_failed_priming_is_retried_on_the_next_step():
+    """Review finding: after a timed-out priming the new cues were saved, so the next step's
+    'cues unchanged' shortcut kept the stale set for hours."""
+    async def run():
+        w = World([stated_trip()])
+        d = driver(w)
+        await d.step(ev("boot", 1))
+        w.prime_delay = 1.0
+        await d.step(ev("chat_turn", 2, "about Hecate"))
+        assert w.projected[-1].recall.primed_cues == ["place:chicago"]       # built from the old cues
+        w.prime_delay = 0.0
+        w.prime_rows.append({"memory_id": "m-hecate", "statement": "Juniper named the new GPU server Hecate.",
+                             "strength": 0.9, "half_life_days": 14.0, "last_reinforced_at": T0,
+                             "referent_keys": ["project:hecate"]})
+        await d.step(ev("chat_turn", 3, "about Hecate"))
+        model = w.projected[-1]
+        assert model.recall.primed_cues == ["place:chicago", "project:hecate"]
+        assert "m-hecate" in [p.memory_id for p in model.recall.primed]
+        assert model.recall.primed_revision == model.revision
+
+    asyncio.run(run())
+
+
+def test_duplicate_event_publishes_no_row():
+    """Review finding: a redelivered event skipped the graph but reported the previous step's
+    changed=True, so a stale run-state row was published."""
+    async def run():
+        w = World([stated_trip()])
+        d = driver(w)
+        await d.step(ev("chat_turn", 1, "hi"))
+        out = await d.step(ev("chat_turn", 1, "hi"))
+        assert out["skipped"] is True and out["changed"] is False
+        assert len(w.states) == 1
+
+    asyncio.run(run())
+
+
+def test_retirement_is_retried_until_it_succeeds():
+    async def run():
+        class FlakySaver(InMemorySaver):
+            fail = True
+
+            async def adelete_thread(self, thread_id):
+                if FlakySaver.fail:
+                    raise RuntimeError("db down")
+                return await super().adelete_thread(thread_id)
+
+        saver = FlakySaver()
+        w = World([stated_trip()])
+        d = driver(w, saver)
+        await d.step(ev("boot", 1))
+        assert d._retired_for is None              # failed: will retry
+        FlakySaver.fail = False
+        await d.step(ev("tick", 2))
+        assert d._retired_for == thread_for(w.now)
 
     asyncio.run(run())

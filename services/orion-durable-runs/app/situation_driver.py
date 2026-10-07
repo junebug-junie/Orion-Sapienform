@@ -39,6 +39,7 @@ logger = logging.getLogger("orion-durable-runs.situation_driver")
 # Coalescing order: the event that names the step when several were pending.
 _PRIORITY = {"chat_turn": 3, "episode_distilled": 2, "tick": 1, "boot": 0}
 TURN_TEXT_CHARS = 4000
+RETIRE_LOOKBACK_DAYS = 31
 
 
 def thread_for(day: datetime) -> str:
@@ -97,6 +98,7 @@ class SituationDriver:
         self.steps = 0
         self.last_revision: Optional[int] = None
         self.last_error: Optional[str] = None
+        self._retired_for: Optional[str] = None
 
     # --- intake -------------------------------------------------------------------------------
 
@@ -161,12 +163,17 @@ class SituationDriver:
                 return seeded
         return None
 
-    async def _retire_old(self, now: datetime) -> None:
-        for days in range(self._retention_days + 1, self._retention_days + 8):
+    async def _retire_old(self, now: datetime) -> bool:
+        """Delete day threads past retention (a month back, so downtime gaps are covered).
+        True when every delete succeeded; the driver retries on the next step otherwise."""
+        ok = True
+        for days in range(self._retention_days + 1, self._retention_days + RETIRE_LOOKBACK_DAYS):
             try:
                 await self._saver.adelete_thread(thread_for(now - timedelta(days=days)))
             except Exception:  # noqa: BLE001
+                ok = False
                 logger.warning("situation_thread_delete_failed days=%s", days, exc_info=True)
+        return ok
 
     async def step(self, event: dict) -> dict:
         now = self._deps.now()
@@ -175,12 +182,13 @@ class SituationDriver:
         seed = await self._seed(thread_id, now)
         if seed is not None:
             inputs["situation"] = seed
-            await self._retire_old(now)
+        if self._retired_for != thread_id and await self._retire_old(now):
+            self._retired_for = thread_id      # once per day thread, retried until it succeeds
         out = await self._graph.ainvoke(inputs, self._config(thread_id), durability="exit")
         self.steps += 1
         sit = SituationStateV1.model_validate(out["situation"])
         self.last_revision = sit.revision
-        if not out.get("changed") and not out.get("prime_error"):
+        if out.get("skipped") or (not out.get("changed") and not out.get("prime_error")):
             # Quiet steps (most ticks) leave no row: the run views and Hub's activity surface show
             # revisions, not heartbeats. /health still counts every step.
             return out

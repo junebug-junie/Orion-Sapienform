@@ -176,3 +176,113 @@ def test_outcome_resolution_skips_a_claim_whose_before_winner_went_dark() -> Non
         now=NOW,
     )
     assert len(res.records) == 1
+
+
+# ── review findings, 2026-10-07 ────────────────────────────────────────────
+
+
+def _tied_reliability(storage_measured: bool) -> FieldStateV1:
+    caps = {"capability:orchestration": {"reliability_pressure": 0.0}}
+    prov = {"capability:orchestration": {"reliability_pressure": "node:athena"}}
+    if storage_measured:
+        caps["capability:storage"] = {"reliability_pressure": 0.0}
+        prov["capability:storage"] = {"reliability_pressure": "node:substrate.storage_write"}
+    edges = [
+        FieldEdgeV1(source_id="node:athena", target_id="capability:orchestration", edge_type="node_capability",
+                    weight=0.85, channel_map={"failure_pressure": "reliability_pressure"}),
+        FieldEdgeV1(source_id="node:substrate.storage_write", target_id="capability:storage", edge_type="node_capability",
+                    weight=0.85, channel_map={"write_failure_pressure": "reliability_pressure"}),
+    ]
+    return FieldStateV1(generated_at=NOW, tick_id="t", capability_vectors=caps, capability_provenance=prov, edges=edges)
+
+
+def test_tie_at_the_winning_value_is_not_an_outage_when_another_holder_still_measures() -> None:
+    """Two capabilities tie at reliability 0.0; the merge's pick (last iterated,
+    storage) expires, orchestration still measures 0.0 -- a valid comparison."""
+    before = _tied_reliability(storage_measured=True)
+    after = _tied_reliability(storage_measured=False)
+    assert dimension_winner_holder(before, "reliability_pressure")[1] == "capability:storage"
+    assert before_winner_went_unmeasured(before, after, "reliability_pressure") is False
+
+
+def test_decaying_node_winner_with_a_stale_stamp_counts_as_unmeasured() -> None:
+    """A node channel that decays (not expires) keeps its key while silent; with
+    the caller's staleness bar its old stamp reads as unmeasured."""
+    from datetime import timedelta
+
+    before = FieldStateV1(
+        generated_at=NOW, tick_id="b",
+        node_vectors={"node:athena": {"reliability_pressure": 0.9}, "node:circe": {"reliability_pressure": 0.1}},
+        node_vector_updated_at={"node:athena": {"reliability_pressure": NOW}, "node:circe": {"reliability_pressure": NOW}},
+    )
+    later = NOW + timedelta(seconds=600)
+    after = FieldStateV1(
+        generated_at=later, tick_id="a",
+        node_vectors={"node:athena": {"reliability_pressure": 0.3}, "node:circe": {"reliability_pressure": 0.1}},
+        node_vector_updated_at={"node:athena": {"reliability_pressure": NOW}, "node:circe": {"reliability_pressure": later}},
+    )
+    assert before_winner_went_unmeasured(before, after, "reliability_pressure") is False
+    assert before_winner_went_unmeasured(before, after, "reliability_pressure", max_staleness_seconds=120.0) is True
+
+
+def _reliability_pair():
+    edges = [FieldEdgeV1(source_id="node:substrate.rpc_delivery", target_id="capability:transport",
+                         edge_type="node_capability", weight=0.85,
+                         channel_map={"rpc_timeout_pressure": "reliability_pressure"})]
+    nodes_b = {"node:substrate.rpc_delivery": {"rpc_timeout_pressure": 1.0}, "node:athena": {"reliability_pressure": 0.0}}
+    before = FieldStateV1(
+        generated_at=NOW, tick_id="b", node_vectors=nodes_b,
+        node_vector_updated_at={n: {c: NOW for c in v} for n, v in nodes_b.items()},
+        capability_vectors={"capability:transport": {"reliability_pressure": 0.85}},
+        capability_provenance={"capability:transport": {"reliability_pressure": "node:substrate.rpc_delivery"}},
+        edges=edges,
+    )
+    nodes_a = {"node:athena": {"reliability_pressure": 0.0}}
+    after = FieldStateV1(
+        generated_at=NOW, tick_id="a", node_vectors=nodes_a,
+        node_vector_updated_at={n: {c: NOW for c in v} for n, v in nodes_a.items()},
+        capability_vectors={"capability:transport": {}},
+        capability_provenance={"capability:transport": {}},
+        edges=edges,
+    )
+    return before, after
+
+
+def test_reliability_observation_reports_stale_with_the_guard_reason() -> None:
+    """RPC bridge expires: transport reliability (0.85) was the before winner,
+    athena's ping 0.0 wins after. Must be 'stale', never 'improved'."""
+    before, after = _reliability_pair()
+    frame = build_feedback_frame(
+        dispatch_frame=_dispatch(), policy_frame=None, proposal_frame=None,
+        field_before=before, field_after=after, cortex_results=None, policy=POLICY, now=NOW,
+    )
+    kinds = {o.outcome_kind for o in frame.observations if o.source_kind == "field_delta"}
+    assert kinds == {"stale"}
+    stale = next(o for o in frame.observations if o.outcome_kind == "stale")
+    assert stale.reasons == [f"reliability_pressure_{BEFORE_WINNER_UNMEASURED}"]
+    assert frame.withheld_evidence.count(f"withheld:reliability_pressure:{BEFORE_WINNER_UNMEASURED}") == 1
+
+
+def test_reliability_observation_guard_when_reliability_is_not_a_credited_channel() -> None:
+    policy = POLICY.model_copy(update={"positive_delta_channels": {"resource_pressure": "decrease"}})
+    before, after = _reliability_pair()
+    frame = build_feedback_frame(
+        dispatch_frame=_dispatch(), policy_frame=None, proposal_frame=None,
+        field_before=before, field_after=after, cortex_results=None, policy=policy, now=NOW,
+    )
+    stale = [o for o in frame.observations if o.outcome_kind == "stale"]
+    assert len(stale) == 1 and stale[0].reasons == [f"reliability_pressure_{BEFORE_WINNER_UNMEASURED}"]
+    assert f"withheld:reliability_pressure:{BEFORE_WINNER_UNMEASURED}" in frame.withheld_evidence
+
+
+def test_control_arm_skips_a_signal_whose_before_winner_went_dark() -> None:
+    res = resolve_action_outcomes(
+        dispatch_frame=_dispatch(), feedback_frame_id="feedback.frame:t",
+        field_before=BEFORE, field_after=AFTER_DARK, now=NOW,
+    )
+    assert "resource_pressure" not in {o.signal_id for o in res.control_observations}
+    res = resolve_action_outcomes(
+        dispatch_frame=_dispatch(), feedback_frame_id="feedback.frame:t",
+        field_before=BEFORE, field_after=AFTER_RECOVERED, now=NOW,
+    )
+    assert "resource_pressure" in {o.signal_id for o in res.control_observations}

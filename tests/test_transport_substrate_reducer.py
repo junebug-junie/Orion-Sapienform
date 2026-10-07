@@ -234,7 +234,9 @@ def test_reliability_pressure_unchanged_by_observer_failure_retirement(ping_ok: 
     max(observer_failure, ping_pressure). observer_failure_pressure was 0.0 on
     123,099 of 123,099 live ticks and is retired (2026-10-07, #2534 decision 4),
     so every reading production actually produced (observer_failures=0) must
-    be unchanged, in every ping state."""
+    be unchanged, in every ping state. Scope, honestly: the value check would
+    also pass on main (it pins main's only live branch); what is new here is
+    that the retired key is gone from the pressures and the state."""
     from orion.schemas.transport_projection import TransportBusStateV1
 
     state = TransportBusStateV1(

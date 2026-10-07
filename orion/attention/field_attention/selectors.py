@@ -209,6 +209,7 @@ def _novelty_targets(
     # previous_vectors: the previous frame's own field tick (caller checks the
     # tick id matches). Only targets that had a real prior entry are adjusted;
     # a first appearance stays "real news" as documented above.
+    adjusted_reason: dict[str, str] = {}
     if previous_vectors is not None and previous_frame is not None:
         for tid in target_ids:
             prev = previous_vectors.get(tid)
@@ -217,6 +218,13 @@ def _novelty_targets(
             adjusted = _measurement_change_free_novelty(vectors[tid], prev)
             if adjusted is not None:
                 novelty_scores[tid] = adjusted
+                # Recorded on the frame so the live path is checkable from
+                # stored rows (review finding, 2026-10-07).
+                adjusted_reason[tid] = (
+                    "novelty_common_channels_only "
+                    f"went_dark={sorted(set(prev) - set(vectors[tid]))} "
+                    f"came_back={sorted(set(vectors[tid]) - set(prev))}"
+                )
 
     targets: list[FieldAttentionTargetV1] = []
     for target_id in target_ids:
@@ -238,7 +246,8 @@ def _novelty_targets(
                     f"(novelty={novelty:.4f}); magnitude/dwell scorers not applied "
                     "(no real data for this target universe / near-always-empty "
                     "coalition, respectively -- see selector docstring)"
-                ],
+                ]
+                + ([adjusted_reason[target_id]] if target_id in adjusted_reason else []),
                 evidence_refs=[f"field:{field.tick_id}"],
                 suggested_observation_mode=observation_mode_for(novelty, policy),
             )

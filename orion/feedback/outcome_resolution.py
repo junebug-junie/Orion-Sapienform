@@ -318,6 +318,8 @@ def resolve_action_outcomes(
             # #2534 decision 1 (2026-10-07): the vector that won this signal
             # in the before tick no longer measures it, so the signal fell to
             # another source -- an outage would score as the action's effect.
+            # Key/provenance only (no stamp-age check): the scoring window is
+            # settle-length and has no staleness bar of its own to borrow.
             skipped[candidate.dispatch_id] = f"{BEFORE_WINNER_UNMEASURED}:{signal}"
             continue
 

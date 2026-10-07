@@ -103,7 +103,9 @@ def _gate_positive_delta_channels(
     withheld: list[str] = []
     for channel, direction in positive_delta_channels.items():
         backed = channel_write_backed(field_after, channel, max_staleness_seconds=max_staleness_seconds)
-        if backed is True and before_winner_went_unmeasured(field_before, field_after, channel):
+        if backed is True and before_winner_went_unmeasured(
+            field_before, field_after, channel, max_staleness_seconds=max_staleness_seconds
+        ):
             backed_by_channel[channel] = False
             withheld.append(f"withheld:{channel}:{BEFORE_WINNER_UNMEASURED}")
             continue
@@ -405,7 +407,7 @@ def build_feedback_frame(
                     field_after, "reliability_pressure", max_staleness_seconds=stale_after_sec
                 )
                 if reliability_backed is True and before_winner_went_unmeasured(
-                    field_before, field_after, "reliability_pressure"
+                    field_before, field_after, "reliability_pressure", max_staleness_seconds=stale_after_sec
                 ):
                     reliability_backed = False
                     reliability_reason = BEFORE_WINNER_UNMEASURED

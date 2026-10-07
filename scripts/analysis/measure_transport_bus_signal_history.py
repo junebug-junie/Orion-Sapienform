@@ -55,6 +55,10 @@ DEFAULT_POSTGRES_URI = "postgresql://postgres:postgres@orion-athena-sql-db:5432/
 # compute_transport_pressures(). stream_depth_pressure/max_stream_depth get their own
 # percentile treatment (continuous, structurally near-always-nonzero); the other five
 # are real/rare event counts, reported as simple totals + first/last-seen timestamps.
+# Historical analysis over persisted receipts: names retired since (stream
+# depth 2026-09-25; contract_pressure/schema_mismatch and observer_failure_*
+# 2026-10-07) are kept on purpose so old windows still measure. On windows
+# after those dates they read as never produced, which is the truth.
 _COUNT_FIELDS = (
     "backpressure_count",
     "uncataloged_stream_count",

@@ -173,6 +173,8 @@ def cmd_compare(args) -> int:
     a, b = load(args.before), load(args.after)
     c: Counter = Counter()
     examples: dict[str, list] = {}
+    only_a, only_b = set(a) - set(b), set(b) - set(a)
+    print(f"rows: both={len(set(a) & set(b))} only_before={len(only_a)} only_after={len(only_b)}")
     for key in sorted(set(a) & set(b)):
         x, y = a[key], b[key]
         sc = key[1]
@@ -194,7 +196,13 @@ def cmd_compare(args) -> int:
         mx = {k: v for k, v in x["merged"].items() if k not in RENAMED and k not in RETIRED}
         my = {k: v for k, v in y["merged"].items() if k not in RETIRED}
         diff("merged_values", mx, my)
-        diff("merged_keys_raw", sorted(x["merged"]), sorted(y["merged"]))
+        # Key sets after the intended rename/retirement: any remaining
+        # difference is a channel that appeared or vanished unexpectedly.
+        diff(
+            "merged_keys_unexpected",
+            sorted(k for k in x["merged"] if k not in RENAMED and k not in RETIRED),
+            sorted(k for k in y["merged"] if k not in RETIRED),
+        )
         cvx = {cap: _rename(v) for cap, v in x["cap_vectors"].items()}
         cvy = {cap: _rename(v) for cap, v in y["cap_vectors"].items()}
         diff("cap_vectors_after_rename", cvx, cvy)
@@ -223,6 +231,23 @@ def cmd_compare(args) -> int:
     if args.examples:
         for k, ex in sorted(examples.items()):
             print(k, json.dumps(ex[: args.examples])[:2000])
+    # Gate: on natural data nothing a cognition consumer reads may change.
+    # Expected natural differences: none, except capability:transport
+    # reliability going unmeasured on a tick where the RPC bridge expired
+    # (decision 4) -- that is cap_vectors_after_rename and is reported, not gated.
+    gated = (
+        "dims", "dim_winner_channel", "dim_winner_source", "merged_values",
+        "merged_keys_unexpected", "attention_top_capability", "attention_dominant",
+        "novelty_any", "attention_pressure_proxy", "credit_backed",
+    )
+    bad = {lab: c[("natural", lab)] for lab in gated if c[("natural", lab)]}
+    bad.update({f"guard_fired:{d}": c[("natural", f"guard_fired:{d}")] for d in CREDIT_DIMS if c[("natural", f"guard_fired:{d}")]})
+    if only_a or only_b:
+        bad["unpaired_rows"] = len(only_a) + len(only_b)
+    if bad:
+        print("GATE FAIL (natural data moved):", json.dumps(bad, sort_keys=True))
+        return 1
+    print("GATE PASS: natural data -- no consumer-visible change beyond the rename/retirement")
     return 0
 
 

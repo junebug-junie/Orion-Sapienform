@@ -725,14 +725,23 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
     # --- pressure gate ---
+    # Two independent halves, each read from its own policy row's M4 source:
+    # bus_synaptic_pressure (capability:transport.pressure) and
+    # transport_reliability_pressure (capability:transport.reliability_pressure,
+    # RPC delivery since observer_failure_pressure was retired 2026-10-07).
+    # The digester drops a capability channel nothing measured this tick
+    # (absent = unmeasured, never a quiet 0.0). Since the retirement,
+    # reliability is absent whenever the RPC bridge has no counted calls for
+    # 120 s, so each half is judged on its own: a measured half at or above its
+    # watch threshold makes the gate "watch" even while the other half is
+    # unmeasured (before, any absent half blanked the whole gate -- review
+    # finding, 2026-10-07). With nothing active, any unmeasured half keeps the
+    # gate "unknown": absent is never read as quiet.
     channels = _effective_channels(lattice_policy.get("channels", {}))
-    bus_def = channels.get("bus_synaptic_pressure") or {}
-    bus_src = _channel_source(bus_def)
-    # 2026-10-07: the reliability half used to borrow the observer_failure_pressure
-    # row's threshold (that channel is retired); it now reads its own row, whose
-    # source is this same M4 channel.
-    reliability_def = channels.get("transport_reliability_pressure") or {}
-    observer_watch_at = float(reliability_def.get("watch_at", 0.25))
+    halves = (
+        ("bus_synaptic_pressure", "transport"),
+        ("transport_reliability_pressure", "reliability"),
+    )
     if m4_status in ("stale", "missing"):
         # Review-caught gap, 2026-07-27: a stale/missing M4 was silently read
         # as "quiet" (0.0 default) or as whatever value was last cached --
@@ -742,42 +751,39 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
         # substrate_field_state.generated_at).
         pressure_state = "unknown"
         pressure_reason = f"pressure state unknown: M4 field vector is {m4_status}"
-    elif "pressure" not in m4_field_vector or "reliability_pressure" not in m4_field_vector:
-        # The digester drops a capability channel nothing measured this tick
-        # (2026-10-07) -- absent is unmeasured, not a quiet 0.0.
-        missing = [k for k in ("pressure", "reliability_pressure") if k not in m4_field_vector]
-        pressure_state = "unknown"
-        pressure_reason = f"pressure state unknown: capability:transport {', '.join(missing)} unmeasured this tick"
     else:
-        observer_p = float(m4_field_vector.get("reliability_pressure") or 0.0)
-        observer_part = (
-            # Labels name what is actually read. M4 reliability_pressure is
-            # diffused from node:substrate.rpc_delivery rpc_timeout_pressure
-            # (node:athena's observer_failure_pressure edge retired 2026-10-07).
-            f"reliability_pressure={observer_p:.2f} [M4, vs transport_reliability_pressure watch_at] "
-        )
-        observer_active = observer_p >= observer_watch_at
-        if bus_src is None or bus_src[0] != "m4":
-            # No fallback key: the policy row is the only place this reading's
-            # address lives (see _channel_source). The observer half is
-            # independent of that row and still evaluated.
-            pressure_state = "watch" if observer_active else "unknown"
-            pressure_reason = (
-                "bus_synaptic_pressure unmeasured: no M4 source in transport_lattice_policy; "
-                + observer_part
-                + f"(threshold: observer={observer_watch_at})"
-            )
+        parts: list[str] = []
+        thresholds: list[str] = []
+        measured = 0
+        active = False
+        for row_id, short in halves:
+            row_def = channels.get(row_id) or {}
+            src = _channel_source(row_def)
+            watch_at = float(row_def.get("watch_at", 0.25))
+            if src is None or src[0] != "m4":
+                # No fallback key: the policy row is the only place this
+                # reading's address lives (see _channel_source).
+                parts.append(f"{row_id} unmeasured: no M4 source in transport_lattice_policy ")
+                continue
+            key = src[1]
+            if key not in m4_field_vector:
+                parts.append(f"{row_id} unmeasured: {_M4_VECTOR}.{key} absent this tick ")
+                continue
+            value = float(m4_field_vector.get(key) or 0.0)
+            measured += 1
+            active = active or value >= watch_at
+            parts.append(f"{row_id}={value:.2f} [M4 {_M4_VECTOR}.{key}] ")
+            thresholds.append(f"{short}={watch_at}")
+        if active:
+            pressure_state = "watch"
+        elif measured < len(halves):
+            # A calm half cannot vouch for an unmeasured one: absent is not quiet.
+            pressure_state = "unknown"
         else:
-            bus_key = bus_src[1]
-            transport_p = float(m4_field_vector.get(bus_key) or 0.0)
-            transport_watch_at = float(bus_def.get("watch_at", 0.25))
-            pressure_active = transport_p >= transport_watch_at or observer_active
-            pressure_state = "watch" if pressure_active else "quiet"
-            pressure_reason = (
-                f"bus_synaptic_pressure={transport_p:.2f} [M4 {_M4_VECTOR}.{bus_key}] "
-                + observer_part
-                + f"(thresholds: transport={transport_watch_at}, observer={observer_watch_at})"
-            )
+            pressure_state = "quiet"
+        pressure_reason = "".join(parts) + (f"(thresholds: {', '.join(thresholds)})" if thresholds else "")
+        if pressure_state == "unknown":
+            pressure_reason = "pressure state unknown: " + pressure_reason
 
     # The contract gate was deleted 2026-10-07 (fix/transport-lattice-names-
     # and-contract). It read M4 contract_pressure, which the topology fills

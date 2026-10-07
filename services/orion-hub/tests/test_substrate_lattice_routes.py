@@ -497,6 +497,22 @@ def test_gates_pressure_unmeasured_transport_channel_reads_unknown_not_quiet(cli
     assert "reliability_pressure unmeasured" in gates["pressure"]["reason"]
 
 
+def test_gates_pressure_active_bus_half_still_watches_when_reliability_unmeasured(client) -> None:
+    """2026-10-07 review finding: after observer_failure_pressure's retirement,
+    transport reliability is absent during every RPC lull. That must not hide
+    a bus_synaptic reading at or above its watch threshold."""
+    chain = _sample_proof_chain_for_gates(stream_backlog_pressure=0.9)
+    chain["transport"]["m4"]["values"]["field_vector"].pop("reliability_pressure")
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["pressure"]["state"] == "watch"
+    assert "bus_synaptic_pressure=0.90" in gates["pressure"]["reason"]
+    assert "transport_reliability_pressure unmeasured" in gates["pressure"]["reason"]
+
+
 # ── _load_transport_proof_chain internals ────────────────────────
 
 

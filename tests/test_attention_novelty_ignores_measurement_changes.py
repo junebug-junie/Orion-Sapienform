@@ -57,6 +57,10 @@ def test_capability_going_dark_is_not_novel() -> None:
     after = _field("t2", T0 + timedelta(seconds=2), {"reliability_pressure": 0.1}, {"cpu_pressure": 0.3, "rpc_timeout_pressure": 0.4})
     frame = _pair(BEFORE, after)
     assert _all_targets(frame)["capability:vision"].novelty_score == 0.0
+    vision = next(
+        t for b in (frame.capability_targets, frame.suppressed_targets) for t in b if t.target_id == "capability:vision"
+    )
+    assert any(r.startswith("novelty_common_channels_only went_dark=['pressure']") for r in vision.reasons)
     # without the previous field (legacy path) the outage reads as 0.75 of news
     legacy = _pair(BEFORE, after, with_previous_field=False)
     assert _all_targets(legacy)["capability:vision"].novelty_score > 0.7

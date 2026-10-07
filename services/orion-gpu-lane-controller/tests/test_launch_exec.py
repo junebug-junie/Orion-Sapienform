@@ -28,7 +28,7 @@ VISION_PROFILE = "qwen3-vl-8b-vision-test"
 ALT_27B = "gemma-27b-alt-test"
 DEFAULT_27B = "qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex"
 # The committed agent-gpu2 default (first launch.profiles entry) since stage 7.2.
-LIVE_DEFAULT = "ternary-bonsai2-27b-pq2-v100-32gb-circe-agent"
+LIVE_DEFAULT = "qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex"  # Bonsai rolled back 2026-10-07
 LLAMA = "services/orion-llamacpp-host/docker-compose.atlas-workers.yml"
 LLAMA_ENV = "services/orion-llamacpp-host/.env"
 

@@ -76,8 +76,8 @@ def test_live_config_carries_the_5_1_values():
     assert launch.profile_var == "ATLAS_AGENT_BURST_PROFILE_NAME"
     # 5.3: the seat's allow-list; the pool sends the first entry on a load. Stage 7.2 put
     # Ternary-Bonsai first and kept the 27B Q4 second as the rollback.
-    assert launch.profiles == ["ternary-bonsai2-27b-pq2-v100-32gb-circe-agent",
-                               "qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex"]
+    assert launch.profiles == ["qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex",
+                               "ternary-bonsai2-27b-pq2-v100-32gb-circe-agent"]
     assert CFG.load_profile("agent-gpu2") == launch.profiles[0]
     assert CFG.load_profile("diffusion") is None and CFG.load_profile("chat") is None
     assert launch.timeout_sec == 900

@@ -48,9 +48,11 @@ def _ann(profile: str) -> LlmWorkerAnnounceV1:
 
 
 # --- the seat's profile -----------------------------------------------------------------------------
-def test_pool_loads_bonsai_first_and_keeps_q4_as_rollback():
-    assert CFG.roles["agent-gpu2"].launch.profiles == [BONSAI, Q4]
-    assert CFG.load_profile("agent-gpu2") == BONSAI
+def test_seat_is_rolled_back_to_q4_and_keeps_bonsai_listed():
+    # Rolled back 2026-10-07: Bonsai's chat template 500s on agent steps with no user turn.
+    # Bonsai stays second on the allow-list so a seat still running it is confirmed, not refused.
+    assert CFG.roles["agent-gpu2"].launch.profiles == [Q4, BONSAI]
+    assert CFG.load_profile("agent-gpu2") == Q4
 
 
 def test_bonsai_profile_is_two_slots_of_131k_on_the_fork_with_flash_attention():
@@ -148,9 +150,9 @@ def _reordered() -> PoolConfig:
     return PoolConfig.model_validate(data)
 
 
-def test_rollback_is_a_reorder_and_the_next_load_serves_q4():
+def test_re_promotion_is_a_reorder_and_the_next_load_serves_bonsai():
     rolled = _reordered()
-    assert rolled.load_profile("agent-gpu2") == Q4
+    assert rolled.load_profile("agent-gpu2") == BONSAI
     assert check_launch(rolled, ROOT) == []
     # Both profiles stay on the allow-list, so a seat still running Bonsai is confirmed, not refused.
     assert set(rolled.roles["agent-gpu2"].launch.profiles) == {BONSAI, Q4}

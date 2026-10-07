@@ -72,8 +72,12 @@ roles:
                         # role's launch digest: pool (athena) and controller checkout (circe) move together.
                         cuda_env: ATLAS_AGENT_BURST_CUDA_VISIBLE_DEVICES,
                         profile_var: ATLAS_AGENT_BURST_PROFILE_NAME,
-                        profiles: [ternary-bonsai2-27b-pq2-v100-32gb-circe-agent,
-                                   qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex],
+                        # ROLLED BACK 2026-10-07: Bonsai's embedded chat template raises
+                        # "No user query found in messages" on agent steps with no user turn ->
+                        # HTTP 500 on 44/44 cortex-exec chat calls; 0/5 curiosity turns ok on Bonsai.
+                        # Re-promote only with a template fix + a passing replay.
+                        profiles: [qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex,
+                                   ternary-bonsai2-27b-pq2-v100-32gb-circe-agent],
                         ready: /health, timeout_sec: 900}}
   metacog:    {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8012}
   fast:       {kind: llm, cards: [gpu3], owner: [metacog, fast], port: 8013}

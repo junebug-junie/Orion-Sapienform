@@ -35,7 +35,7 @@ from tests.test_runtime import CFG
 REPO = Path(__file__).resolve().parents[3]
 CTL_DIR = REPO / "services" / "orion-gpu-lane-controller"
 # agent-gpu2's committed default (first launch.profiles entry): Ternary-Bonsai since stage 7.2.
-SEAT_DEFAULT = "ternary-bonsai2-27b-pq2-v100-32gb-circe-agent"
+SEAT_DEFAULT = "qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex"  # Bonsai rolled back 2026-10-07
 
 
 def _controller():

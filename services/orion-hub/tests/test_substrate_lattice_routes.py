@@ -459,6 +459,16 @@ def test_pressure_gate_unknown_when_policy_row_has_no_m4_source(client, monkeypa
         resp = client.get("/api/substrate-lattice/transport/gates")
     gates = {g["gate_id"]: g for g in resp.json()["gates"]}
     assert gates["pressure"]["state"] == "unknown"
+    assert "reliability_pressure=" in gates["pressure"]["reason"]
+
+    # The observer half does not depend on that row and still fires.
+    chain["transport"]["m4"]["values"]["field_vector"]["reliability_pressure"] = 0.9
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["pressure"]["state"] == "watch"
 
 
 def test_channel_value_unmeasured_when_row_has_no_source() -> None:

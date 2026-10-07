@@ -61,7 +61,9 @@ def resolve_problems(channels: dict[str, dict]) -> list[str]:
     glossary_cap = {
         e["channel"]
         for e in _yaml(GLOSSARY).get("channels") or []
-        if "node" not in e and "capability" in (e.get("level") or [])
+        # bare entries only: a node-qualified entry (has a `node:` key) is
+        # about one node's channel, not the capability channel
+        if not e.get("node") and "capability" in (e.get("level") or [])
     }
     bus_fields = set(TransportBusStateV1.model_fields)
     problems: list[str] = []
@@ -105,6 +107,8 @@ def test_gate_catches_a_drifted_source() -> None:
     }
     problems = resolve_problems(bad)
     assert len(problems) == 4, problems
+    for row_id in "abcd":
+        assert sum(p.startswith(f"{row_id}:") for p in problems) == 1, (row_id, problems)
 
 
 def test_bus_synaptic_row_is_capability_transport_pressure_from_bus_synaptic() -> None:

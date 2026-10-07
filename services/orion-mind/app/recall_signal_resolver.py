@@ -383,7 +383,7 @@ def render_bus_synaptic_digest_line(
     # sentence put the two side by side unconverted, so the stated threshold
     # sat ~15% below the point on Orion's own scale where it actually trips.
     # Converted to the fraction scale so the numbers in one sentence compare.
-    scale = DERIVED_CHANNELS.get(LATTICE_ROW_ID) or 1.0
+    scale = DERIVED_CHANNELS[LATTICE_ROW_ID]
     if rungs:
         rungs = {k: (None if v is None else float(v) / scale) for k, v in rungs.items()}
         learned = " (learned from recent history)" if rung_source == "derived" else ""

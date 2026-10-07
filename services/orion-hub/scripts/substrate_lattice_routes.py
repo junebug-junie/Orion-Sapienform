@@ -681,6 +681,8 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     # contract_pressure and observer_failure_pressure -> reliability_pressure,
     # both still live) -- no new query needed, this data was already being
     # fetched into the chain and simply never read from the right place.
+    # 2026-10-07: the contract gate that read M4 contract_pressure was deleted;
+    # the hub no longer reads M4 contract_pressure at all.
     m4_status = m4.get("status", "missing")
     m4_field_vector = (
         (m4.get("values") or {}).get("field_vector", {}) if m4_status != "missing" else {}
@@ -724,41 +726,48 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     channels = _effective_channels(lattice_policy.get("channels", {}))
     bus_def = channels.get("bus_synaptic_pressure") or {}
     bus_src = _channel_source(bus_def)
-    if bus_src is None or bus_src[0] != "m4":
-        # No fallback key: the policy row is the only place this reading's
-        # address lives (see _channel_source).
-        pressure_state = "unknown"
-        pressure_reason = "pressure state unknown: bus_synaptic_pressure has no M4 source in transport_lattice_policy"
-    elif m4_status in ("stale", "missing"):
-        # Review-caught gap, 2026-07-27: the (since deleted) contract gate
-        # guarded on m4_status; this one didn't, and a stale/missing M4 was silently
-        # read as "quiet" (0.0 default) or as a real reading of whatever value
-        # last happened to be cached -- the exact failure class (stale/absent
-        # data mistaken for a genuine calm reading) this patch exists to fix.
-        # M3 and M4 have independent freshness clocks in production
+    observer_watch_at = float(
+        (channels.get("observer_failure_pressure") or {}).get("watch_at", 0.25)
+    )
+    if m4_status in ("stale", "missing"):
+        # Review-caught gap, 2026-07-27: a stale/missing M4 was silently read
+        # as "quiet" (0.0 default) or as whatever value was last cached --
+        # stale/absent data mistaken for a genuine calm reading. M3 and M4
+        # have independent freshness clocks in production
         # (substrate_transport_bus_projection.updated_at vs
-        # substrate_field_state.generated_at), so M4 going stale/missing while
-        # M3 stays fresh is a real, not just theoretical, scenario.
+        # substrate_field_state.generated_at).
         pressure_state = "unknown"
         pressure_reason = f"pressure state unknown: M4 field vector is {m4_status}"
     else:
-        bus_key = bus_src[1]
-        transport_p = float(m4_field_vector.get(bus_key) or 0.0)
         observer_p = float(m4_field_vector.get("reliability_pressure") or 0.0)
-        transport_watch_at = float(bus_def.get("watch_at", 0.25))
-        observer_watch_at = float(
-            (channels.get("observer_failure_pressure") or {}).get("watch_at", 0.25)
-        )
-        pressure_active = transport_p >= transport_watch_at or observer_p >= observer_watch_at
-        pressure_state = "watch" if pressure_active else "quiet"
-        pressure_reason = (
+        observer_part = (
             # Labels name what is actually read. M4 reliability_pressure is
             # diffused from node:athena's observer_failure_pressure, not the
             # M3 observer_failure_pressure channel shown in Lattice Values.
-            f"bus_synaptic_pressure={transport_p:.2f} [M4 {_M4_VECTOR}.{bus_key}] "
             f"reliability_pressure={observer_p:.2f} [M4, vs observer_failure_pressure watch_at] "
-            f"(thresholds: transport={transport_watch_at}, observer={observer_watch_at})"
         )
+        observer_active = observer_p >= observer_watch_at
+        if bus_src is None or bus_src[0] != "m4":
+            # No fallback key: the policy row is the only place this reading's
+            # address lives (see _channel_source). The observer half is
+            # independent of that row and still evaluated.
+            pressure_state = "watch" if observer_active else "unknown"
+            pressure_reason = (
+                "bus_synaptic_pressure unmeasured: no M4 source in transport_lattice_policy; "
+                + observer_part
+                + f"(threshold: observer={observer_watch_at})"
+            )
+        else:
+            bus_key = bus_src[1]
+            transport_p = float(m4_field_vector.get(bus_key) or 0.0)
+            transport_watch_at = float(bus_def.get("watch_at", 0.25))
+            pressure_active = transport_p >= transport_watch_at or observer_active
+            pressure_state = "watch" if pressure_active else "quiet"
+            pressure_reason = (
+                f"bus_synaptic_pressure={transport_p:.2f} [M4 {_M4_VECTOR}.{bus_key}] "
+                + observer_part
+                + f"(thresholds: transport={transport_watch_at}, observer={observer_watch_at})"
+            )
 
     # The contract gate was deleted 2026-10-07 (fix/transport-lattice-names-
     # and-contract). It read M4 contract_pressure, which the topology fills

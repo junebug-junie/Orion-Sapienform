@@ -391,6 +391,9 @@ SYNC_PREFIXES = (
     "ORION_SHED_",
     "ORION_GPU_POOL_SHED_",
     "SUBSTRATE_CABINET_HEAT_",
+    # Camera perception in the situation brief (Hub + cortex-exec, 2026-10-07).
+    "ORION_SITUATION_PERCEPTION_",
+    "ORION_SITUATION_STREET_",
 )
 
 SYNC_EXACT = frozenset(

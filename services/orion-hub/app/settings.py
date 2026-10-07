@@ -1577,9 +1577,7 @@ class Settings(BaseSettings):
     # situation brief every "orion" mode chat turn builds
     # (orion.hub.turn_orchestrator.run_unified_turn ->
     # orion.situational.context.build_situation_for_ctx). Default ON --
-    # unlike perception/lab above (left off in
-    # hub_settings_to_runtime_namespace() pending a verified DSN/HTTP
-    # dependency), Hub itself owns the capture loop that produces this read
+    # Hub itself owns the capture loop that produces this read
     # (services/orion-hub/scripts/vision_affect_ambient.py) and already
     # holds the connected bus this reads from -- no new dependency. See
     # orion/situational/juniper_affect_state.py and AffectContextV1
@@ -1641,6 +1639,32 @@ class Settings(BaseSettings):
     # module's private EWMA baseline (_CABINET_TRACKER) on every chat turn.
     ORION_SITUATION_CABINET_TTL_SECONDS: int = Field(
         default=30, alias="ORION_SITUATION_CABINET_TTL_SECONDS"
+    )
+    # 2026-10-07: camera perception in the unified-turn Situation block.
+    # PRIVACY: ON puts camera-derived text about the home into every Hub
+    # chat prompt -- the room camera's narrative ("Three chairs, two desks
+    # ... One person is visible."), a presence fragment ("Someone has been in
+    # view for N minutes."), the walkway/street summary, and the once-per-
+    # cooldown "is that you, Juniper?" identity-ask caution. Never faces or
+    # embeddings (perception_reader.py reads only the narrative column).
+    # Same shared builder and same defaults as cortex-exec's own
+    # ORION_SITUATION_PERCEPTION_* keys. Default ON per Juniper's standing
+    # flag rule; kill switch is this key = false + recreate hub.
+    ORION_SITUATION_PERCEPTION_ENABLED: bool = Field(
+        default=True, alias="ORION_SITUATION_PERCEPTION_ENABLED"
+    )
+    # 900s: past this the Room line says "haven't seen anything recently;
+    # do not infer" instead of narrating an old scene as current.
+    ORION_SITUATION_PERCEPTION_MAX_AGE_SECONDS: int = Field(
+        default=900, alias="ORION_SITUATION_PERCEPTION_MAX_AGE_SECONDS"
+    )
+    # Room cameras, comma-separated -- matches cortex-exec's default.
+    ORION_SITUATION_PERCEPTION_STREAM_IDS: str = Field(
+        default="carbon,cam0", alias="ORION_SITUATION_PERCEPTION_STREAM_IDS"
+    )
+    # Walkway cameras for the Street line. Empty string disables that line.
+    ORION_SITUATION_STREET_STREAM_IDS: str = Field(
+        default="walkway", alias="ORION_SITUATION_STREET_STREAM_IDS"
     )
 
     @field_validator("ORION_SITUATION_WEATHER_LAT", "ORION_SITUATION_WEATHER_LON", mode="before")

@@ -750,7 +750,6 @@ from orion.schemas.brain_frame import (
 )
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
-from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
 from orion.schemas.evidence_index import (
     EvidenceQueryResultItemV1,
     EvidenceQueryV1,
@@ -1419,8 +1418,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "FieldAttentionFrameV1": FieldAttentionFrameV1,
     "FieldGoalProvenanceV1": FieldGoalProvenanceV1,
     "DominanceStreakTickV1": DominanceStreakTickV1,
-    "SelfStateDimensionV1": SelfStateDimensionV1,
-    "SelfStateV1": SelfStateV1,
     "PolicyDecisionV1": PolicyDecisionV1,
     "PolicyDecisionFrameV1": PolicyDecisionFrameV1,
     "ProposalCandidateV1": ProposalCandidateV1,

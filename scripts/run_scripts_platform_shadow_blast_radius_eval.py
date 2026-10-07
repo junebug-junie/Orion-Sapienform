@@ -59,7 +59,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 KNOWN_AFFECTED_FILES: tuple[str, ...] = (
     "orion/mood_arc/fit_encoder.py",
     "scripts/agent_board_lib.py",
-    "scripts/backfill_phi_corpus.py",
     "scripts/backfill_recall_falkor_chat_tags_snapshot.py",
     "scripts/bus_core_health_watchdog.py",
     "scripts/causal_geometry_report.py",

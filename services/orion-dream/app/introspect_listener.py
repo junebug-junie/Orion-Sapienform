@@ -3,6 +3,8 @@
 Trust: replies only when reply_to is exactly orion:introspect:result:<corr> and
 the kind matches; never to a model-supplied subject. Every connection is a
 read-only transaction. Errors become ok=false ("answer unknown"), never [].
+A search that finds nothing is only reported empty when the index is known to
+hold every dream recorded so far; otherwise "no match" could mean "not indexed".
 """
 from __future__ import annotations
 
@@ -49,6 +51,9 @@ class DreamIntrospectListener:
         self._ready = asyncio.Event()
         self.task: asyncio.Task | None = None
         self.index_task: asyncio.Task | None = None
+        # Start time of the last index pass that left nothing pending: every
+        # dream recorded before it is searchable. None until one succeeds.
+        self.index_complete_as_of: datetime | None = None
 
     def _read(self, fn: Callable[[Any], IntrospectResultV1]) -> Any:
         with self.engine_provider().connect() as conn:
@@ -81,6 +86,10 @@ class DreamIntrospectListener:
                     result = await asyncio.to_thread(self._read, lambda c: by_ids(
                         c, scored, kind=args.kind, since=args.since, limit=args.limit, now=now,
                     ))
+                if not result.items and await asyncio.to_thread(self._read, lambda c: self._unindexed(
+                    c, kind=args.kind, since=args.since, now=now,
+                )):
+                    raise SearchUnavailableError("dream index behind the record; empty search is not proof")
             else:
                 result = await asyncio.to_thread(self._read, lambda c: recent(
                     c, kind=args.kind, since=args.since, limit=args.limit, now=now,
@@ -107,10 +116,21 @@ class DreamIntrospectListener:
             source=self.source, payload=result.model_dump(mode="json"),
         ))
 
+    def _unindexed(self, conn: Any, *, kind: Any, since: datetime | None, now: datetime) -> bool:
+        """True when a dream matching the filters may be missing from the index."""
+        as_of = self.index_complete_as_of
+        if as_of is None:
+            return True
+        window = as_of if since is None else max(since, as_of)
+        return bool(recent(conn, kind=kind, since=window, limit=1, now=now).total_available)
+
     async def index_once(self):
+        started = datetime.now(timezone.utc)
         pairs = await asyncio.to_thread(self._read, index_rows)
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC) as client:
             result = await index_missing(pairs, self.search, client=client, bus=self.bus, source=self.source)
+        if result.pending == 0:
+            self.index_complete_as_of = started
         logger.info("dream_search_index indexed=%d pending=%d", result.indexed, result.pending)
         return result
 

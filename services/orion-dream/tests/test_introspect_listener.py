@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from app import introspect_listener as il
@@ -38,7 +38,9 @@ class FakeConn:
         sql = str(clause)
         self.calls.append(sql)
         if "FROM dreams" in sql:
-            return _Result([{**r, "total": len(self.rows)} for r in self.rows])
+            since = (params or {}).get("since")
+            rows = [r for r in self.rows if since is None or r["occurred_at"] >= since]
+            return _Result([{**r, "total": len(rows)} for r in rows])
         return _Result([])
 
 
@@ -63,12 +65,13 @@ class Bus:
         self.published.append((channel, envelope))
 
 
-def _listener(engine=None, search=SEARCH):
+def _listener(engine=None, search=SEARCH, index_complete_as_of=NOW + timedelta(minutes=1)):
     listener = il.DreamIntrospectListener(
         bus_url="redis://x", engine_provider=lambda: engine or FakeEngine([NARR]),
         source=ServiceRef(name="orion-dream"), search=search,
     )
     listener.bus = Bus()
+    listener.index_complete_as_of = index_complete_as_of
     return listener
 
 
@@ -158,15 +161,44 @@ def test_search_hits_then_database_failure_is_query_unknown(monkeypatch):
     assert engine.opened == 1
 
 
-def test_search_with_no_hits_is_empty_and_skips_postgres(monkeypatch):
+def _no_hits(monkeypatch):
     async def no_hits(client, cfg, query, **filters):
         return []
     monkeypatch.setattr(il, "rank", no_hits)
+
+
+def test_search_with_no_hits_on_a_caught_up_index_is_empty(monkeypatch):
+    _no_hits(monkeypatch)
     engine = FakeEngine([NARR])
     [(_, reply)] = _handle(_listener(engine), _envelope({"query": "vision"}))
     result = IntrospectResultV1.model_validate(reply.payload)
     assert result.ok and result.items == [] and result.total_available == 0
-    assert engine.conn.calls == []
+    assert not any("ANY(:ids)" in c for c in engine.conn.calls)
+
+
+def test_empty_search_before_any_complete_index_pass_is_unknown(monkeypatch):
+    _no_hits(monkeypatch)
+    [(_, reply)] = _handle(_listener(index_complete_as_of=None), _envelope({"query": "vision"}))
+    result = IntrospectResultV1.model_validate(reply.payload)
+    assert not result.ok and result.error == il.SEARCH_UNAVAILABLE
+
+
+def test_empty_search_with_a_dream_newer_than_the_index_is_unknown(monkeypatch):
+    """A just-offered hypothesis, or an indexer outage: "no match" would be a lie."""
+    _no_hits(monkeypatch)
+    listener = _listener(FakeEngine([NARR]), index_complete_as_of=NOW - timedelta(minutes=1))
+    [(_, reply)] = _handle(listener, _envelope({"query": "vision"}))
+    result = IntrospectResultV1.model_validate(reply.payload)
+    assert not result.ok and result.error == il.SEARCH_UNAVAILABLE
+
+
+def test_newer_dream_outside_since_window_does_not_block_empty(monkeypatch):
+    _no_hits(monkeypatch)
+    listener = _listener(FakeEngine([NARR]), index_complete_as_of=NOW - timedelta(minutes=1))
+    later = (NOW + timedelta(hours=1)).isoformat()
+    [(_, reply)] = _handle(listener, _envelope({"query": "vision", "since": later}))
+    result = IntrospectResultV1.model_validate(reply.payload)
+    assert result.ok and result.items == []
 
 
 def test_search_hits_are_regated_with_similarity(monkeypatch):
@@ -252,7 +284,8 @@ def test_kind_filtered_search_with_no_such_kind_is_empty_not_unknown(monkeypatch
     [(_, reply)] = _handle(_listener(engine), _envelope({"query": "vision", "kind": "narrative"}))
     result = IntrospectResultV1.model_validate(reply.payload)
     assert result.ok and result.items == [] and result.total_available == 0
-    assert sent == [{"kind": "narrative"}] and engine.conn.calls == []
+    assert sent == [{"kind": "narrative"}]
+    assert not any("ANY(:ids)" in c for c in engine.conn.calls)
 
 
 def test_kind_filtered_search_on_empty_index_is_unknown(monkeypatch):
@@ -283,6 +316,21 @@ def test_index_once_reads_read_only_and_hands_rows_to_indexer(monkeypatch):
     assert seen["cfg"] is SEARCH and seen["bus"] is listener.bus
     assert seen["timeout"] == 1.25
     assert engine.conn.calls[0] == "SET TRANSACTION READ ONLY"
+
+
+def test_index_complete_as_of_advances_only_when_nothing_is_pending(monkeypatch):
+    passes = iter([IndexPass(indexed=10, pending=5), IndexPass(indexed=5, pending=0)])
+
+    async def fake_index(pairs, cfg, *, client, bus, source, batch=None):
+        return next(passes)
+
+    monkeypatch.setattr(il, "index_missing", fake_index)
+    listener = _listener(FakeEngine([NARR]), index_complete_as_of=None)
+    asyncio.run(listener.index_once())
+    assert listener.index_complete_as_of is None
+    before = datetime.now(timezone.utc)
+    asyncio.run(listener.index_once())
+    assert listener.index_complete_as_of is not None and listener.index_complete_as_of <= before + timedelta(seconds=1)
 
 
 def test_start_stop_survives_a_dead_bus_and_skips_index_without_search():

@@ -348,7 +348,7 @@ def resolve_brain_regions() -> list[MetricNode]:
     field channels, inner-state signals, organ signals, and bus channels,
     but nothing named which service backs an EKG *region* -- the Self tab's
     Self-Observability panel had no way to answer "what produced this bar"
-    for any of its 6 dimensions.
+    for any of its dimensions (6 until 2026-10-07, 5 since).
 
     `declared_consumers` names `orion-hub` (resolves to `services/orion-hub/`
     via the bare-service-name form `_resolve_consumer_path()` already

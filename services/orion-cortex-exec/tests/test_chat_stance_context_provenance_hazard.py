@@ -63,16 +63,6 @@ async def test_build_chat_stance_inputs_no_provenance_hazard_without_live_keys(
     assert not any(h.startswith("context_provenance:") for h in built["social"]["hazards"])
 
 
-def _beliefs_with_strained_self_state() -> UnifiedRelationalBeliefSetV1:
-    node = SimpleNamespace(
-        node_kind="concept",
-        label="self:overall_condition",
-        metadata={"overall_condition": "strained", "trajectory_condition": "stable", "prediction_error": 0.1},
-    )
-    anchor_slice = AnchorBeliefSliceV1(anchor="orion", concepts=[node])
-    return UnifiedRelationalBeliefSetV1(anchors={"orion": anchor_slice})
-
-
 @pytest.mark.asyncio
 async def test_provenance_hazard_survives_when_social_hazards_fill_cap(
     monkeypatch: pytest.MonkeyPatch,

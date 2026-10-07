@@ -457,7 +457,9 @@ def test_scheduler_self_revision_lane_is_retired(monkeypatch, scheduler_fixture)
     has had no producer since 2026-07-22 (the stub returned [] every cycle).
     The lane, its flag and its two tuning keys are gone; a stale
     SUBSTRATE_AUTONOMY_SELF_REVISION_ENABLED=true left in an operator .env
-    must not resurrect anything."""
+    must not resurrect anything. The real guards are the hasattr and
+    summary-key checks; the final proposal check is a belt-and-braces
+    tripwire in case something re-feeds that mutation class."""
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_SELF_REVISION_ENABLED", "true")
     monkeypatch.setenv("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", "true")
     payload = api_routes.execute_substrate_mutation_scheduled_cycle(

@@ -22,12 +22,12 @@ gracefully instead of crashing the render.
 
 from __future__ import annotations
 
-import pytest
-
 import importlib.util
 import sys
 import types
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 EXEC_ROOT = Path(__file__).resolve().parents[1]

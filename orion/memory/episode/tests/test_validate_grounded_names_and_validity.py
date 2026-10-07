@@ -177,3 +177,36 @@ def test_follow_up_expiry_is_unchanged():
                        until_quote=None)
     (m,) = _run(TRIP_TURNS, mem).memories
     assert m.due_after is not None and m.expires_at is not None
+
+
+# --- review follow-ups -------------------------------------------------------------------------
+
+
+def test_quoting_orions_own_reply_does_not_ground_a_name_in_juniper_voice():
+    """Review finding: the live row only got caught because it quoted her prompt. Quoting Orion's
+    reply ("Not Chicago") must not ground a claim made in Juniper's voice."""
+    mem = _ogden_memory(voice="worked_out_together", evidence=[
+        {"turn": "t1", "field": "prompt", "quote": "we live in Ogden, Utah"},
+        {"turn": "t1", "field": "response", "quote": "Not Chicago -- that was just where you were"},
+    ])
+    (m,) = _run(OGDEN_TURNS, mem, known=["place:chicago"]).memories
+    assert m.stakes_reason == UNGROUNDED_NAME_STAKES_LABEL
+
+
+def test_orions_own_memory_may_name_what_orion_said():
+    mem = {"purpose": "orion_view", "voice": "orion_thought", "channel": "chat", "stakes": "low", "stakes_reason": "none",
+           "statement": "I pointed out that Chicago was just where Juniper was this week.",
+           "evidence": [{"turn": "t1", "field": "response", "quote": "Not Chicago -- that was just where you were"}]}
+    (m,) = _run(OGDEN_TURNS, mem, known=["place:chicago"]).memories
+    assert m.stakes == "low"
+
+
+def test_end_date_without_offset_is_read_in_juniper_timezone():
+    (m,) = _run(TRIP_TURNS, _trip_memory(expires_at="2026-10-08T23:59:00")).memories
+    assert m.expires_at == datetime(2026, 10, 9, 5, 59, tzinfo=timezone.utc)  # 23:59 MDT
+
+
+def test_too_short_until_quote_says_so():
+    (m,) = _run(TRIP_TURNS, _trip_memory(until_quote="till Wednesday")).memories
+    assert m.expires_at is None
+    assert [e for e in m.events if e.op == "validity_dropped" and e.reason == "until_quote_too_short"]

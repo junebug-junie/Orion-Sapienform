@@ -18,7 +18,8 @@ lists, no "memorability" rules). It only checks things code can check exactly:
   or a duplicate statement within the episode, is rejected.
 * **Names must come from Juniper or the quotes.** A statement that names a known person, place,
   project or service Juniper never said in the episode, and that none of its own quotes contain,
-  is kept but escalated to high stakes ("ungrounded_name") so Juniper is asked. Live case
+  is kept but escalated to high stakes ("ungrounded_name") so Juniper is asked. A memory in
+  Juniper's voice is grounded only by her own prompts; Orion's reply grounds only Orion's voice. Live case
   2026-10-06: "...lives in Ogden, Utah, not Chicago" took "Chicago" from Orion's own reply. The
   names come from referent keys (data), never from a word list.
 * **End dates on any purpose need Juniper's words.** A non-follow_up memory keeps ``expires_at``
@@ -40,6 +41,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional, get_args
+from zoneinfo import ZoneInfo
 
 from orion.schemas.memory_episode import (
     HIGH_STAKES_REASONS,
@@ -49,6 +51,10 @@ from orion.schemas.memory_episode import (
     DistillEvidenceV1,
     EpisodeDistillationV1,
 )
+
+# Juniper's timezone: the prompt asks for datetimes "in her timezone", so a value the model
+# writes without an offset is read there, never as UTC (six hours early in MDT).
+DEFAULT_TZ = "America/Denver"
 
 # Stable namespace so a replayed persist mints the same memory_id (idempotent writes).
 MEMORY_ID_NAMESPACE = uuid.UUID("6f1c7b8e-2d0a-4c35-9a51-3e7d9b0c4a21")
@@ -230,7 +236,7 @@ def _parse_dt(value: Any) -> Optional[datetime]:
         dt = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
     except ValueError:
         return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=ZoneInfo(DEFAULT_TZ))
 
 
 def _contains_word(folded_text: str, folded_name: str) -> bool:
@@ -260,8 +266,15 @@ def ungrounded_names(statement: str, *, known_keys: Iterable[str], grounding_tex
     return out
 
 
-def _juniper_prompt_quote(quote: Optional[str], turns: list[EpisodeTurn]) -> bool:
-    return bool(quote) and any(not t.is_command and quote_in_text(quote, t.prompt) for t in turns)
+def _until_quote_problem(quote: Optional[str], turns: list[EpisodeTurn]) -> Optional[str]:
+    """None when ``quote`` is Juniper's own words from one of her prompts, else the drop reason."""
+    if not quote:
+        return "no_until_quote"
+    if not quote_long_enough(quote):
+        return "until_quote_too_short"
+    if not any(not t.is_command and quote_in_text(quote, t.prompt) for t in turns):
+        return "until_quote_not_in_juniper_prompt"
+    return None
 
 
 def memory_id_for(episode_id: str, purpose: str, statement: str) -> str:
@@ -455,9 +468,12 @@ def validate_distillation(
         )
         if stakes_event is not None:
             events.append(stakes_event)
+        # Source monitoring for names: a memory in Juniper's voice is grounded only by what she
+        # wrote. Orion's own reply never grounds her claim (the live case quoted Orion's "Chicago").
+        # A memory in Orion's voice may also name what Orion said in their quoted reply.
+        own_reply_quotes = [] if voice in JUNIPER_VOICES else [ev.quote for ev, _, fld in verified if fld == "response"]
         imported = ungrounded_names(
-            statement, known_keys=known_keys,
-            grounding_texts=juniper_prompts + [ev.quote for ev, _, _ in verified],
+            statement, known_keys=known_keys, grounding_texts=juniper_prompts + own_reply_quotes,
         )
         if imported:
             events.append(MemoryEvent("ungrounded_name", "statement_names_what_juniper_did_not_say",
@@ -471,12 +487,8 @@ def validate_distillation(
         expires_at = _parse_dt(cand.expires_at)
         if cand.purpose != "follow_up" and expires_at is not None:
             # An end date on a fact must rest on Juniper's own words for that period.
-            drop = None
-            if not cand.until_quote:
-                drop = "no_until_quote"
-            elif not _juniper_prompt_quote(cand.until_quote, turns):
-                drop = "until_quote_not_in_juniper_prompt"
-            elif episode_start is not None and expires_at <= episode_start:
+            drop = _until_quote_problem(cand.until_quote, turns)
+            if drop is None and episode_start is not None and expires_at <= episode_start:
                 drop = "ends_before_episode"
             if drop:
                 events.append(MemoryEvent("validity_dropped", drop,

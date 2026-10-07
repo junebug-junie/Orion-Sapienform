@@ -39,6 +39,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from orion.memory.episode.validate import (  # noqa: E402
+    JUNIPER_VOICES,
     MEMORY_ID_NAMESPACE,
     UNGROUNDED_NAME_STAKES_LABEL,
     ungrounded_names,
@@ -51,8 +52,10 @@ SNAPSHOT_ROW_LIMIT = 100_000
 CANDIDATES_SQL = """
 SELECT m.memory_id::text AS memory_id, m.episode_id, m.statement, m.stakes, m.stakes_reason,
        m.confirmation_state, m.status,
+       m.voice,
        COALESCE((SELECT array_agg(e.quote) FROM episode_memory_evidence e
-                 WHERE e.memory_id = m.memory_id AND e.verified), '{}') AS quotes,
+                 WHERE e.memory_id = m.memory_id AND e.verified AND e.source_kind = 'chat_response'), '{}')
+         AS reply_quotes,
        COALESCE((SELECT array_agg(h.prompt)
                  FROM memory_episode_shadow s, jsonb_array_elements(s.turns) t
                  JOIN chat_history_log h ON h.correlation_id::text = t->>'correlation_id'
@@ -75,16 +78,20 @@ ON CONFLICT (event_id) DO NOTHING
 """
 
 
-def find_flags(rows: list[dict], keys: list[str]) -> list[dict]:
-    flags = []
+def find_flags(rows: list[dict], keys: list[str]) -> tuple[list[dict], list[str]]:
+    """(flagged rows, memory ids skipped because their episode's prompts did not load). Same rule
+    as the validator: Juniper's voice is grounded only by her prompts, Orion's also by their own reply."""
+    flags, skipped = [], []
     for r in rows:
-        names = ungrounded_names(
-            r["statement"], known_keys=keys,
-            grounding_texts=list(r["juniper_prompts"] or []) + list(r["quotes"] or []),
-        )
+        prompts = list(r["juniper_prompts"] or [])
+        if not prompts:
+            skipped.append(r["memory_id"])  # no episode text: every name would look imported
+            continue
+        own = [] if r["voice"] in JUNIPER_VOICES else list(r["reply_quotes"] or [])
+        names = ungrounded_names(r["statement"], known_keys=keys, grounding_texts=prompts + own)
         if names:
             flags.append({**r, "referents": names})
-    return flags
+    return flags, skipped
 
 
 def _log(line: str) -> None:
@@ -110,8 +117,9 @@ def main() -> int:
             _log(f"stop: {len(rows)} candidate rows exceeds {SNAPSHOT_ROW_LIMIT}")
             return 2
         keys = [r["referent_key"] for r in conn.execute(KEYS_SQL).fetchall()]
-        flags = find_flags(rows, keys)
-        _log(f"checked rows={len(rows)} known_keys={len(keys)} flagged={len(flags)} errors=0")
+        flags, skipped = find_flags(rows, keys)
+        _log(f"checked rows={len(rows)} known_keys={len(keys)} flagged={len(flags)} "
+             f"skipped_no_episode_text={len(skipped)} errors=0")
 
         with (OUT / "before_after.csv").open("w", newline="") as fh:
             w = csv.writer(fh)
@@ -125,6 +133,7 @@ def main() -> int:
         if args.apply and flags:
             (OUT / "snapshot.json").write_text(json.dumps(flags, default=str, indent=2))
             now = datetime.now(timezone.utc)
+            started = datetime.now(timezone.utc)
             with conn.transaction():
                 for i, f in enumerate(flags, 1):
                     cur = conn.execute(UPDATE_SQL, (UNGROUNDED_NAME_STAKES_LABEL, now, f["memory_id"]))
@@ -133,13 +142,18 @@ def main() -> int:
                         conn.execute(EVENT_SQL, (event_id, f["memory_id"], ACTOR, f["episode_id"],
                                                  json.dumps({"referents": f["referents"]}), now))
                         written += 1
-                    _log(f"row {i}/{len(flags)} {100 * i // len(flags)}% memory={f['memory_id'][:8]} "
+                    elapsed = max((datetime.now(timezone.utc) - started).total_seconds(), 1e-6)
+                    rate = i / elapsed
+                    _log(f"repair {100 * i // len(flags)}% rows {i}/{len(flags)} rate={rate:.1f}/s "
+                         f"eta={(len(flags) - i) / rate:.1f}s errors=0 memory={f['memory_id'][:8]} "
                          f"updated={cur.rowcount}")
 
     report = [
         f"# Episode memory ungrounded-name repair ({mode})", "",
         f"- rows checked (active, low, auto): {len(rows)}",
-        f"- known referent keys: {len(keys)}",
+        f"- known referent keys: {len(keys)} (every key in episode_memory_referent; wider than the "
+        "validator's per-run candidate list, so this can only flag more, never fewer)",
+        f"- skipped, episode text did not load: {len(skipped)}",
         f"- flagged: {len(flags)}",
         f"- written: {written}" if args.apply else "- written: 0 (dry run)",
         "- errors: 0", "",

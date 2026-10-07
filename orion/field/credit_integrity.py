@@ -146,6 +146,7 @@ from pathlib import Path
 from orion.field.pressure import (
     CHANNEL_DIMENSION_MAP,
     collect_field_channel_pressures,
+    collect_field_channel_pressures_with_holders,
     map_channels_to_dimensions_with_provenance,
     winning_write_time,
 )
@@ -331,6 +332,75 @@ def channel_write_backed(
     if verdict == "unknown":
         return None
     return verdict == "producer_written"
+
+
+# Reason recorded when before_winner_went_unmeasured() withholds a dimension.
+BEFORE_WINNER_UNMEASURED = "before_winner_unmeasured"
+
+
+def dimension_winner_holder(
+    state: FieldStateV1, dimension: str
+) -> tuple[str, str, str] | None:
+    """(level, vector_id, channel) that won `dimension` this tick: level is
+    "node" (a raw node_vectors entry) or "capability" (a capability_vectors
+    entry). None when the dimension has no winner this tick."""
+    merged, provenance, holders = collect_field_channel_pressures_with_holders(state)
+    _dims, detail = map_channels_to_dimensions_with_provenance(merged, provenance)
+    if dimension not in detail:
+        return None
+    channel = detail[dimension].winning_channel
+    holder = holders.get(channel)
+    if holder is None:
+        return None
+    return holder[0], holder[1], channel
+
+
+def _vector_measures(state: FieldStateV1, level: str, vector_id: str, channel: str) -> bool:
+    """Does this vector carry a measured `channel` this tick?
+
+    Absent key = unmeasured, the field's convention for both levels (decay.py
+    expire_unrefreshed_channels for nodes; diffusion.apply_diffusion for
+    capabilities, 2026-10-07). A capability channel some topology edge feeds
+    also needs a provenance entry, the same rule apply_diffusion uses for a
+    cap->cap source: reconcile re-seeds the key every tick, provenance it does
+    not. A capability channel no edge feeds is a seeded constant and is
+    reported as present -- it never measured anything before either."""
+    if level == "node":
+        return channel in (state.node_vectors.get(vector_id) or {})
+    if channel not in (state.capability_vectors.get(vector_id) or {}):
+        return False
+    diffused = any(
+        edge.target_id == vector_id and channel in edge.channel_map.values() for edge in state.edges
+    )
+    if diffused:
+        return channel in (state.capability_provenance.get(vector_id) or {})
+    return True
+
+
+def before_winner_went_unmeasured(
+    before: FieldStateV1 | None, after: FieldStateV1 | None, dimension: str
+) -> bool:
+    """#2534 decision 1 (approved 2026-10-07): True when the vector whose
+    channel WON `dimension` in the BEFORE tick no longer measures that channel
+    in the AFTER tick.
+
+    The trap: capability:vision pressure 0.85 wins resource_pressure, then the
+    frame router dies; vision's pressure is dropped as unmeasured, the
+    dimension falls to the next measured capability (say 0.3), and the drop
+    reads as a -0.55 "decrease" -- an outage credited as recovery.
+    channel_write_backed() cannot see it: it only checks the AFTER winner,
+    which is genuinely measured. The comparison is what is invalid, so the
+    caller withholds the dimension in both directions, same as R5b.
+
+    False when there is no before tick / no before winner: nothing to compare
+    against is R5b's question (channel_write_backed), not this one."""
+    if before is None or after is None:
+        return False
+    holder = dimension_winner_holder(before, dimension)
+    if holder is None:
+        return False
+    level, vector_id, channel = holder
+    return not _vector_measures(after, level, vector_id, channel)
 
 
 def _samples_for(

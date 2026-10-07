@@ -12,7 +12,11 @@ from orion.feedback.extractors import (
 )
 from orion.feedback.policy import FeedbackPolicyV1
 from orion.feedback.scoring import aggregate_confidence, score_for_outcome_status
-from orion.field.credit_integrity import channel_write_backed
+from orion.field.credit_integrity import (
+    BEFORE_WINNER_UNMEASURED,
+    before_winner_went_unmeasured,
+    channel_write_backed,
+)
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchCandidateV1, ExecutionDispatchFrameV1
 from orion.schemas.feedback_frame import FeedbackFrameV1, OutcomeObservationV1
 from orion.schemas.field_state import FieldStateV1
@@ -67,6 +71,7 @@ def _gate_positive_delta_channels(
     positive_delta_channels: dict[str, str],
     *,
     max_staleness_seconds: float,
+    field_before: FieldStateV1 | None = None,
 ) -> tuple[dict[str, str], dict[str, bool | None], list[str]]:
     """R5b: drop a channel from crediting (either direction -- see
     build_feedback_frame's own docstring for why both directions) when its
@@ -79,7 +84,16 @@ def _gate_positive_delta_channels(
     (build_feedback_frame's reliability_pressure observation, below) can
     reuse it instead of calling channel_write_backed() a second time for the
     same channel/tick -- review caught the second call producing a duplicate
-    withheld_evidence entry for reliability_pressure."""
+    withheld_evidence entry for reliability_pressure.
+
+    #2534 decision 1 (2026-10-07): a channel whose AFTER value is backed is
+    still withheld when the vector that won it in `field_before` no longer
+    measures it in `field_after` (credit_integrity.before_winner_went_
+    unmeasured) -- the dimension fell to another source because the winner
+    went dark, so the delta is an outage, not an effect. Recorded as
+    `withheld:<channel>:before_winner_unmeasured`, and `backed_by_channel`
+    reads False for it so the reliability observation below reports "stale"
+    too, never "improved"."""
     if field_after is None:
         # No AFTER snapshot at all is the most acute case of "no write
         # evidence" -- every channel is unbacked, not just some.
@@ -89,6 +103,10 @@ def _gate_positive_delta_channels(
     withheld: list[str] = []
     for channel, direction in positive_delta_channels.items():
         backed = channel_write_backed(field_after, channel, max_staleness_seconds=max_staleness_seconds)
+        if backed is True and before_winner_went_unmeasured(field_before, field_after, channel):
+            backed_by_channel[channel] = False
+            withheld.append(f"withheld:{channel}:{BEFORE_WINNER_UNMEASURED}")
+            continue
         backed_by_channel[channel] = backed
         if backed is not True:
             withheld.append(f"withheld:{channel}:{_write_evidence_reason(backed)}")
@@ -242,7 +260,10 @@ def build_feedback_frame(
     backed_by_channel: dict[str, bool | None] = {}
     if policy.write_evidence_guard_enabled:
         gated_positive_delta_channels, backed_by_channel, gate_withheld = _gate_positive_delta_channels(
-            field_after, policy.positive_delta_channels, max_staleness_seconds=stale_after_sec
+            field_after,
+            policy.positive_delta_channels,
+            max_staleness_seconds=stale_after_sec,
+            field_before=field_before,
         )
         withheld_evidence.extend(gate_withheld)
     else:
@@ -364,6 +385,7 @@ def build_feedback_frame(
         reliability_delta = pressure_after.get("reliability_pressure", 0.0) - pressure_before.get(
             "reliability_pressure", 0.0
         )
+        reliability_reason: str | None = None
         if policy.write_evidence_guard_enabled:
             if "reliability_pressure" in backed_by_channel:
                 # Reuse the result _gate_positive_delta_channels already
@@ -372,6 +394,8 @@ def build_feedback_frame(
                 # caught the second call producing a duplicate
                 # withheld_evidence entry for reliability_pressure.
                 reliability_backed = backed_by_channel["reliability_pressure"]
+                if f"withheld:reliability_pressure:{BEFORE_WINNER_UNMEASURED}" in withheld_evidence:
+                    reliability_reason = BEFORE_WINNER_UNMEASURED
             else:
                 # reliability_pressure isn't a policy-configured credited
                 # channel in this deployment, so the gate above never
@@ -380,7 +404,15 @@ def build_feedback_frame(
                 reliability_backed = channel_write_backed(
                     field_after, "reliability_pressure", max_staleness_seconds=stale_after_sec
                 )
-                if reliability_backed is not True:
+                if reliability_backed is True and before_winner_went_unmeasured(
+                    field_before, field_after, "reliability_pressure"
+                ):
+                    reliability_backed = False
+                    reliability_reason = BEFORE_WINNER_UNMEASURED
+                    withheld_evidence.append(
+                        f"withheld:reliability_pressure:{BEFORE_WINNER_UNMEASURED}"
+                    )
+                elif reliability_backed is not True:
                     withheld_evidence.append(
                         f"withheld:reliability_pressure:{_write_evidence_reason(reliability_backed)}"
                     )
@@ -399,7 +431,9 @@ def build_feedback_frame(
                     score=scoring.unknown_score,
                     confidence=_FIELD_DELTA_OBSERVATION_CONFIDENCE,
                     observed_at=generated_at,
-                    reasons=[f"reliability_pressure_{_write_evidence_reason(reliability_backed)}"],
+                    reasons=[
+                        f"reliability_pressure_{reliability_reason or _write_evidence_reason(reliability_backed)}"
+                    ],
                 )
             )
         elif reliability_delta < -0.05:
